@@ -235,12 +235,12 @@ export async function runCase(c: EvalCase, opts: RunOptions): Promise<{ result: 
       emit: (e: AiEvent) => {
         if (e.kind !== 'message' || !e.message) return;
         if (e.message.result) last = e.message;
-        const q = e.message.question;
-        if (q && q.answered === undefined && asked !== q.text) {
-          asked = q.text;
-          // The run registers its handler right after emitting the question.
+        const q = e.message.questions?.at(-1);
+        if (q?.id && q.answered === undefined && asked !== q.id) {
+          const id = q.id;
+          asked = id;
           queueMicrotask(() => {
-            orch.answer(e.runId, answers.shift() ?? 'Use your best judgement.');
+            orch.answer(e.runId, id, answers.shift() ?? 'Use your best judgement.');
             asked = null;
           });
         }
