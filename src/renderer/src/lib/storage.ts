@@ -33,7 +33,7 @@ export function describeTrim(plan: ReclaimPlan): { undo: TrimmedSide | null; red
       steps: labels.slice(0, SHOWN_STEPS),
       more: rest > 0 ? `and ${plural(rest, `${earlier} step`, `${earlier} steps`)}` : null,
       after: verb === 'undone'
-        ? kept ? `Your ${plural(kept, 'latest step', 'latest steps')} can still be undone.` : 'Nothing will be left to undo.'
+        ? kept > 1 ? `Your ${kept} latest steps can still be undone.` : kept ? 'Your latest step can still be undone.' : 'Nothing will be left to undo.'
         : kept ? `${plural(kept, 'step', 'steps')} before ${n === 1 ? 'it' : 'them'} can still be redone.` : 'Nothing will be left to redo.'
     };
   };

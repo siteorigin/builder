@@ -785,7 +785,14 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         <div className={`panel-body${assets.length ? '' : ' asset-body-empty'}`}>
           {body}
           {!sel && !replacing && fonts.length > 0 && <FontList fonts={fonts} usage={usage} />}
-          {!sel && !replacing && storage.info && <StorageSummary info={storage.info} onFree={() => setFreeing(true)} />}
+          {!sel && !replacing && storage.info && <StorageSummary
+              info={storage.info}
+              onFree={() => {
+                // The dialog shows the figures as they are when it opens.
+                storage.refresh();
+                setFreeing(true);
+              }}
+            />}
         </div>
         {freeing && storage.info && <FreeSpaceDialog info={storage.info} onClose={() => setFreeing(false)} refresh={storage.refresh} />}
         {over && assets.length > 0 && (

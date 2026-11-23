@@ -101,6 +101,8 @@ describe('project storage', () => {
     info = await again.storageInfo();
     expect(info.media).toEqual({ files: 3, bytes: 3000 });
     expect(info.kept).toEqual({ files: 0, bytes: 0 });
+    // Steps that can be redone count too.
+    expect(info.history.steps).toBe(2);
   });
 
   it('frees the space by dropping only the oldest steps, so later steps still undo and current images keep every size', async () => {
@@ -135,6 +137,8 @@ describe('project storage', () => {
     const after = await s.storageInfo();
     expect(after.kept).toEqual({ files: 0, bytes: 0 });
     expect(after.reclaim).toBeNull();
+    // The versions only the dropped steps used are gone from disk too.
+    expect(blobBytes(dir)).toBe(after.history.bytes);
     // The shorter history is what the project reopens with, and every step that stayed still undoes and redoes.
     await s.close();
     const again = await reopen(dir);
@@ -179,7 +183,7 @@ describe('project storage', () => {
     // A hand-written style sheet uses one small copy by its address; a caption file of a kind no list of text
     // extensions would name builds the other's address from its parts.
     write(dir, 'static/css/extra.css', `.hero { background: url(/assets/${styled.files[1]}); }\n`);
-    write(dir, 'static/media/captions.vtt', `WEBVTT\n\n00:00.000 --> 00:01.000\n<img src="/assets/third-' + 'eeeeffff' + '.png">\n`);
+    write(dir, 'src/lib/captions.vtt', `WEBVTT\n\n00:00.000 --> 00:01.000\n<img src="/assets/third-' + 'eeeeffff' + '.png">\n`);
     // A document named a copy of the third image for a while: undoing the second edit would bring that mention back.
     await site(s, { description: `See /assets/${gone.files[2]}` }, 'Describe with image');
     await site(s, { description: 'Plain' }, 'Describe plainly');
@@ -206,7 +210,7 @@ describe('project storage', () => {
     await remove(s, [asset], 'Remove image');
     // Just over one read's worth of data, with the image's hash split across the first one-megabyte read.
     const big = Buffer.alloc(1024 * 1024 + 4096, 0x20);
-    big.write('1a2b3c4d', 1024 * 1024 - 4, 'latin1');
+    big.write('1a2b3c4d', 1024 * 1024 - 7, 'latin1');
     write(dir, 'static/data/archive.json', big);
     const info = await s.storageInfo();
     expect(info.media).toEqual({ files: 3, bytes: 3000 });
@@ -238,8 +242,9 @@ describe('project storage', () => {
     const { asset, files } = image(dir, 'photo', '1a2b3c4d');
     await add(s, [asset], 'Import image');
     await remove(s, [asset], 'Remove image');
+    write(dir, 'static/late.css', '.a { color: red; }\n');
     const { key } = (await s.storageInfo()).reclaim!;
-    // Saved after the plan was checked and the history trimmed, before anything is deleted.
+    // Edited after the plan was checked and the history trimmed, before anything is deleted.
     s.once('history', () => write(dir, 'static/late.css', `.a { background: url(/assets/${files[0]}); }\n`));
     expect((await s.reclaimStorage(key)).ok).toBe(true);
     expect(labels(s)).toEqual([]);
@@ -332,18 +337,20 @@ describe('the Free up space dialog wording', () => {
     const t = describeTrim(plan(['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5', 'Step 6'], [], 2, 0));
     expect(t.undo).toEqual({ lead: 'These 6 steps can no longer be undone:', steps: ['Step 6', 'Step 5', 'Step 4', 'Step 3'], more: 'and 2 earlier steps', after: 'Your 2 latest steps can still be undone.' });
     expect(t.redo).toBeNull();
-    expect(describeTrim(plan(['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5'], [], 0, 0)).undo?.more).toBe('and 1 earlier step');
+    expect(describeTrim(plan(['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5'], [], 1, 0)).undo).toMatchObject({ more: 'and 1 earlier step', after: 'Your latest step can still be undone.' });
   });
 
   it('says when nothing is left to undo, and which redo steps stay, nearest first', () => {
     const t = describeTrim(plan(['Remove 6 unused images'], ['Import image', 'Rename site'], 0, 1));
     expect(t.undo).toMatchObject({ lead: 'This step can no longer be undone:', steps: ['Remove 6 unused images'], more: null, after: 'Nothing will be left to undo.' });
     expect(t.redo).toMatchObject({ lead: 'These 2 steps can no longer be redone:', steps: ['Import image', 'Rename site'], after: '1 step before them can still be redone.' });
+    expect(describeTrim(plan([], ['Import image'], 0, 2)).redo).toMatchObject({ lead: 'This step can no longer be redone:', after: '2 steps before it can still be redone.' });
   });
 
   it('formats sizes the way the panel shows them', () => {
     expect(formatBytes(49_661_260)).toBe('47.4 MB');
     expect(formatBytes(1536)).toBe('2 KB');
     expect(formatBytes(1)).toBe('1 byte');
+    expect(formatBytes(0)).toBe('0 bytes');
   });
 });

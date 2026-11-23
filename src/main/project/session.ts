@@ -1472,7 +1472,13 @@ export class ProjectSession extends EventEmitter {
   private async collectAssets() {
     const inv = await this.assetInventory(this.history, 'sweep');
     if (!inv) return;
-    for (const f of inv.files) if (inv.unneeded(f)) await fs.rm(join(inv.dir, f.name), { force: true });
+    for (const f of inv.files) {
+      if (!inv.unneeded(f)) continue;
+      // Only the file the inventory looked at: one written since (by another app) is new, and waits its own turn.
+      const st = await fs.lstat(join(inv.dir, f.name)).catch(() => null);
+      if (!st?.isFile() || st.mtimeMs !== f.mtimeMs || st.size !== f.bytes || Date.now() - st.mtimeMs < ASSET_GRACE_MS) continue;
+      await fs.rm(join(inv.dir, f.name), { force: true });
+    }
   }
 
   /** What each stored version names, by hash and token. Versions never change, so the answers are kept. */
@@ -1553,11 +1559,12 @@ export class ProjectSession extends EventEmitter {
       if (text) for (const t of tokens) if (!found.has(t) && text.includes(t)) found.add(t);
     };
     for (const text of this.docs.values()) look(text);
+    // Both sides of a held conflict: the version on disk may be kept, wherever a link puts it.
     for (const p of this.pending.keys()) {
       try {
-        look(await this.diskContent(p));
-      } catch {
-        return new Set(tokens);
+        look(await fs.readFile(safeJoin(this.dir, p), 'utf8'));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return new Set(tokens);
       }
     }
     let complete = true;
