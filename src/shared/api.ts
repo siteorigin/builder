@@ -1,5 +1,5 @@
 import type { ApplyResult, EditBatch } from './ops';
-import type { ElementRef, ProjectState } from './types';
+import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
 
@@ -144,10 +144,22 @@ export interface ChatActivity {
 }
 
 export interface ChatChange {
+  /** What changed and where, in plain words. */
   label: string;
   pageId?: string;
   nodeId?: string;
   definitionId?: string;
+  /** The document the element is in, so header, footer and component elements can be shown too. */
+  owner?: OwnerRef;
+  /** The raw operation types behind this change: technical detail, shown only in Developer mode. */
+  operations?: string[];
+}
+
+/** pass: the check ran and found nothing; issue: the site has a problem; unverified: the check itself could not tell. */
+export type CheckStatus = 'pass' | 'issue' | 'unverified';
+export interface ChatCheck {
+  status: CheckStatus;
+  text: string;
 }
 
 export interface ChatMessage {
@@ -162,7 +174,10 @@ export interface ChatMessage {
     status: RunStatus;
     summary: string;
     changes: ChatChange[];
+    /** The check lines in plain words. Results stored before `checks` existed have only these. */
     validation: string[];
+    /** The same checks with their status; `validation` is their text. */
+    checks?: ChatCheck[];
     canUndo: boolean;
     error?: string;
     usage?: { inputTokens: number; outputTokens: number };

@@ -1,5 +1,6 @@
 import { api, getState } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from './bridge';
+import { failedImages, missingImages, missingSections, staleImages } from './inspect-check';
 
 /** How long the preview server gets to pick up files the AI just wrote before a fresh page load. */
 const SETTLE_MS = 400;
@@ -9,28 +10,28 @@ const SETTLE_MS = 400;
  * Only structural and geometric evidence is collected; no pixels leave the app.
  */
 export async function runInspection(req: { requestId: string; pageId: string; width: number }) {
+  const state = () => getState().snapshot?.state;
   let report = await measure(req);
-  // A page the dev server has not caught up with (a route created moments ago, sections just added)
-  // is missing some of its sections; give it one more chance before reporting.
-  if (missingSections(req.pageId, report).length) {
+  // A page the dev server has not caught up with (a route created moments ago, sections just added, an image
+  // just changed) is missing some of its sections or images, or shows an image it no longer uses, and a file the
+  // server has not picked up yet fails to load; give it one more chance before reporting.
+  const behind = (r: unknown) => missingSections(state(), req.pageId, r).length || missingImages(state(), req.pageId, r).length || staleImages(state(), req.pageId, r).length;
+  if (behind(report) || failedImages(report)) {
     await new Promise((r) => setTimeout(r, 1500));
     report = await measure(req);
   }
-  const missing = missingSections(req.pageId, report);
-  const page = getState().snapshot?.state.pages[req.pageId];
-  if (page && missing.length && missing.length === page.rootIds.length) report = { error: 'The preview has not caught up with the latest changes to this page.' };
-  // The section list is only for this check; it is not evidence for the AI.
-  if (report && typeof report === 'object') delete (report as { sections?: unknown }).sections;
+  const missing = missingSections(state(), req.pageId, report);
+  const page = state()?.pages[req.pageId];
+  // A load still showing the page from before an image change measured that old page, layout included: it is a
+  // check that could not run, not a result.
+  if ((page && missing.length && missing.length === page.rootIds.length) || missingImages(state(), req.pageId, report).length || staleImages(state(), req.pageId, report).length)
+    report = { error: 'The preview has not caught up with the latest changes to this page.' };
+  if (report && typeof report === 'object') {
+    // The section and image address lists are only for these checks; they are not evidence for the AI.
+    delete (report as { sections?: unknown }).sections;
+    delete (report as { images?: { sources?: unknown } }).images?.sources;
+  }
   api.inspectResult(req.requestId, report);
-}
-
-/** Top-level sections of the page that the measured load did not render. */
-function missingSections(pageId: string, report: unknown): string[] {
-  const r = report as { error?: unknown; sections?: string[] } | null;
-  const page = getState().snapshot?.state.pages[pageId];
-  if (!r || r.error || !Array.isArray(r.sections) || !page) return [];
-  const rendered = new Set(r.sections);
-  return page.rootIds.filter((id) => !rendered.has(`page:${pageId}|${id}`));
 }
 
 async function measure(req: { requestId: string; pageId: string; width: number }): Promise<unknown> {
@@ -59,8 +60,8 @@ async function measure(req: { requestId: string; pageId: string; width: number }
       if (!m) return;
       if (m.type === 'ready') {
         postToFrame(frame, origin, sessionId, 'mode', { mode: 'preview' });
-        // The frame waits (up to 4s) for fonts and images itself before measuring; loading and
-        // measuring get separate deadlines.
+        // The frame waits (up to 4s) for fonts and images itself, and up to 2.5s more to request again
+        // images that showed nothing, before measuring; loading and measuring get separate deadlines.
         clearTimeout(timer);
         timer = setTimeout(() => done({ error: 'Timed out measuring the page.' }), 8000);
         postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId });

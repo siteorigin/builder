@@ -409,17 +409,129 @@ function cancelEdit() {
 // Layout inspection (no screenshots; structural and geometric evidence only)
 // ---------------------------------------------------------------------------
 
-/** Resolves when fonts are ready and images have loaded (or failed), or after `ms` at the latest. */
-function settled(ms) {
-  // The inspection frame is never scrolled, so lazy images would otherwise never start loading.
-  for (const img of document.images) if (img.loading === 'lazy') img.loading = 'eager';
-  const fonts = document.fonts ? document.fonts.ready.catch(() => {}) : Promise.resolve();
-  const images = Promise.all([...document.images].filter((i) => !i.complete).map((i) => new Promise((r) => { i.addEventListener('load', r, { once: true }); i.addEventListener('error', r, { once: true }); })));
-  const frames = new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-  return Promise.race([Promise.all([fonts, images]).then(() => frames), new Promise((r) => setTimeout(r, ms))]);
+/** Waits for `promise`, or until `deadline` (a Date.now() time), whichever comes first. */
+function until(deadline, promise) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    promise.then(done, done);
+  });
 }
 
-function inspect() {
+/** Resolves when the image has loaded or failed, removing both of its listeners. */
+function imageDone(img) {
+  return new Promise((resolve) => {
+    const end = () => {
+      img.removeEventListener('load', end);
+      img.removeEventListener('error', end);
+      resolve();
+    };
+    img.addEventListener('load', end);
+    img.addEventListener('error', end);
+    if (img.complete) end();
+  });
+}
+
+/** Resolves when fonts are ready and images have loaded (or failed), or at `deadline` at the latest. */
+async function settled(deadline) {
+  // Asked for first: the browser can hold this until the page has loaded, which waits for its images.
+  const fonts = document.fonts ? document.fonts.ready : Promise.resolve();
+  // Hydration or an update can replace images while earlier ones load, so look again until none is pending.
+  for (let round = 0; round < 3 && Date.now() < deadline; round++) {
+    // The inspection frame is never scrolled, so lazy images would otherwise never start loading.
+    for (const img of document.images) if (img.loading === 'lazy') img.loading = 'eager';
+    // The switch starts each request on a later task; until then a deferred image can look finished.
+    await new Promise((r) => setTimeout(r, 0));
+    const pending = [...document.images].filter((i) => !i.complete);
+    if (!pending.length) break;
+    await until(deadline, Promise.all(pending.map(imageDone)));
+  }
+  await until(deadline, fonts);
+  // The final layout, once what changes it has arrived.
+  await until(deadline, new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+}
+
+/**
+ * The image's address as an author would recognise it: the path on this site, or the address elsewhere. An
+ * inline image's address is its whole content, so it is named, never sent (it could exceed a message's size).
+ */
+function imagePath(url) {
+  if (/^(data|blob):/i.test(url)) return 'an inline image';
+  try {
+    const u = new URL(url, location.href);
+    return (u.origin === location.origin ? decodeURI(u.pathname) : u.href).slice(0, 300);
+  } catch {
+    return String(url).slice(0, 300);
+  }
+}
+
+/**
+ * Requests the image again in a fresh element: true when it loads, false when the request fails or the file is
+ * not an image, null when it is still loading at `deadline`. (Load events, not decode(): a hidden measuring frame
+ * does not render, so decode() may never settle there.)
+ */
+function probe(url, deadline) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const finish = (v) => {
+      clearTimeout(timer);
+      img.onload = img.onerror = null;
+      if (v === null) img.removeAttribute('src');
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish(null), Math.max(0, deadline - Date.now()));
+    img.onload = () => finish(true);
+    img.onerror = () => finish(false);
+    img.src = url;
+  });
+}
+
+/**
+ * Every image on the page, each with an outcome: loaded; failed (its file could not be loaded, confirmed by
+ * requesting it again); or unverified (still loading when the check ran out of time, which says nothing about
+ * the site). An image whose element shows nothing but whose file loads when requested again counts as loaded:
+ * the measuring frame missed it, not the site.
+ */
+async function imageReport(deadline) {
+  // sources: the address each image was given (not the variant chosen), so the editor can tell a load that
+  // shows an image the page no longer has.
+  const summary = { total: 0, loaded: 0, failed: 0, unverified: 0, failedFiles: [], sources: [] };
+  const issues = [];
+  const checks = [];
+  for (const img of document.querySelectorAll('img')) {
+    const url = img.currentSrc || img.getAttribute('src') || '';
+    if (!url) continue;
+    summary.total++;
+    if (summary.sources.length < 200) summary.sources.push(imagePath(img.getAttribute('src') || url));
+    if (img.complete && img.naturalWidth > 0) {
+      summary.loaded++;
+      continue;
+    }
+    checks.push(
+      probe(url, deadline).then((ok) => {
+        const path = imagePath(url);
+        if (ok === true) summary.loaded++;
+        else if (ok === false) {
+          summary.failed++;
+          if (summary.failedFiles.length < 10) summary.failedFiles.push(path.slice(path.lastIndexOf('/') + 1) || path);
+          issues.push({ kind: 'broken-image', message: `Image ${path} failed to load.` });
+        } else {
+          summary.unverified++;
+          issues.push({ kind: 'image-unverified', message: `Image ${path} was still loading when the check ran out of time, so it could not be checked. This is not a problem with the site.` });
+        }
+      })
+    );
+  }
+  await Promise.all(checks);
+  return { summary, issues };
+}
+
+async function inspect(deadline) {
+  // Images first: one that arrives while they are requested again can still change the layout measured below.
+  const images = await imageReport(deadline);
   const vw = document.documentElement.clientWidth;
   const issues = [];
   const docWidth = document.documentElement.scrollWidth;
@@ -435,10 +547,9 @@ function inspect() {
     if (el.scrollWidth > el.clientWidth + 2 && getComputedStyle(el).overflowX === 'visible' && el.clientWidth > 0 && el.children.length === 0)
       issues.push({ kind: 'text-overflow', desc: descOf(el), text: textPreview(el), message: 'Text is wider than its box.' });
   }
-  for (const img of document.querySelectorAll('img')) {
-    if (!img.hasAttribute('alt')) issues.push({ kind: 'missing-alt', message: `Image ${img.getAttribute('src')} has no alt attribute.` });
-    if (img.complete && img.naturalWidth === 0) issues.push({ kind: 'broken-image', message: `Image ${img.getAttribute('src')} failed to load.` });
-  }
+  for (const img of document.querySelectorAll('img')) if (!img.hasAttribute('alt')) issues.push({ kind: 'missing-alt', message: `Image ${imagePath(img.getAttribute('src') || '')} has no alt attribute.` });
+  // After the layout findings, which the cap must not hide; the image counts in `images` are never capped.
+  issues.push(...images.issues);
   const placeholders = document.querySelectorAll('.so-img--placeholder').length;
   if (placeholders) issues.push({ kind: 'image-placeholder', message: `${placeholders} image placeholder(s) have no image chosen.` });
   const h1 = document.querySelectorAll('h1').length;
@@ -450,7 +561,7 @@ function inspect() {
     const ctx = el.getAttribute('data-so-ctx');
     sections.add(ctx.includes('|') ? ctx.split('|').slice(0, 2).join('|') : `${ctx}|${el.getAttribute('data-so-node')}`);
   }
-  return { path: location.pathname, sections: [...sections].slice(0, 500), viewportWidth: vw, documentWidth: docWidth, documentHeight: document.documentElement.scrollHeight, issues: issues.slice(0, 40), runtimeErrors: errors.slice(-10) };
+  return { path: location.pathname, sections: [...sections].slice(0, 500), viewportWidth: vw, documentWidth: docWidth, documentHeight: document.documentElement.scrollHeight, images: images.summary, issues: issues.slice(0, 40), runtimeErrors: errors.slice(-10) };
 }
 
 // ---------------------------------------------------------------------------
@@ -506,9 +617,10 @@ window.addEventListener('message', async (e) => {
     case 'inspect':
       // This frame is measured and never scrolled: a classic scrollbar would take its width from the viewport.
       document.documentElement.style.scrollbarWidth = 'none';
-      // Measure only once web fonts and images have settled: both change line wrapping and widths.
-      await settled(4000);
-      send('inspectResult', { requestId: m.payload.requestId, report: inspect() });
+      // Measure only once web fonts and images have settled: both change line wrapping and widths. Images that
+      // still show nothing then get their own, shorter, deadline to be requested again.
+      await settled(Date.now() + 4000);
+      send('inspectResult', { requestId: m.payload.requestId, report: await inspect(Date.now() + 2500) });
       break;
     case 'revision':
       revision = m.payload.revision;

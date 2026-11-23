@@ -1,12 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowUp, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, FileText, Globe, History, Info, KeyRound, MousePointerClick, Plus, RotateCcw, Settings2, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChatActivity, ChatContext, ChatMessage } from '@shared/api';
+import type { ChatActivity, ChatChange, ChatContext, ChatMessage } from '@shared/api';
 import { refKey } from '@shared/types';
 import { api, getState, setState, toast, useStore, confirmDialog, selectChatDraft, setChatDraft } from '../store';
 import { afterSend, draftFor, moveDraft, unsentDrafts, withDraft } from '../lib/chatDrafts';
 import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
+import { canOpen, changeTarget, changeText, checksOf } from '../lib/result';
 import { Segmented, Spinner, useMenu } from '../components/ui';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
@@ -582,8 +583,17 @@ function AssistantMessage({ m, live, undoable, onAnswered }: { m: ChatMessage; l
   );
 }
 
-/** Checks that need attention, from the agent's plain-language check lines (and older stored wording). */
-const ISSUE = /wider than the screen|overflows its box|(?<!no )horizontal overflow detected|issues? remains?|could(?: not|n['’]t) (?:run|check)|^stopped at /i;
+/** Show a change: its page, then the element if it is still there. */
+function openChange(c: ChatChange) {
+  const st = getState().snapshot?.state;
+  if (!st) return;
+  const target = changeTarget(st, getState().pageId, c);
+  if (!target) return;
+  if ('error' in target) return toast(target.error, 'info');
+  selectPage(target.pageId);
+  if (target.selection) setState({ selection: target.selection });
+  if (target.note) toast(target.note, 'info');
+}
 
 function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
   const r = m.result!;
@@ -596,8 +606,7 @@ function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
   const problems = steps.filter((a) => a.status === 'error' && !(stopped && !a.detail)).length;
   const undone = r.status === 'failed' || r.status === 'cancelled';
   const authProblem = !!r.error && /API key/i.test(r.summary);
-  const issues = r.validation.filter((v) => ISSUE.test(v));
-  const passes = r.validation.filter((v) => !ISSUE.test(v));
+  const { issues, unverified, passes } = checksOf(r);
   const [showPasses, setShowPasses] = useState(false);
   const retry = async () => {
     const conv = getState().conversation;
@@ -673,41 +682,34 @@ function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
               <ul aria-label="Changes that were undone">
                 {r.changes.map((c, i) => (
                   <li key={i} className="faint">
-                    {c.label}
+                    {changeText(c).label}
                   </li>
                 ))}
               </ul>
             </div>
           ) : (
             <ul className="changes" aria-label="Changes">
-              {r.changes.map((c, i) => (
-                <li key={i}>
-                  {c.pageId ? (
-                    <button
-                      className="change-link"
-                      onClick={() => {
-                        const st = getState().snapshot?.state;
-                        if (!st?.pages[c.pageId!]) return toast('That page is no longer in the site.', 'info');
-                        selectPage(c.pageId!);
-                        if (!c.nodeId) return;
-                        const ref = { owner: { kind: 'page' as const, id: c.pageId! }, instancePath: [], nodeId: c.nodeId };
-                        let exists = false;
-                        try {
-                          exists = !!resolveRef(st, ref).node;
-                        } catch {
-                          exists = false;
-                        }
-                        if (exists) setState({ selection: ref });
-                        else toast(`That element is no longer on ${st.pages[c.pageId!].title}. Showing the page instead.`, 'info');
-                      }}
-                    >
-                      {c.label}
-                    </button>
-                  ) : (
-                    <span>{c.label}</span>
-                  )}
-                </li>
-              ))}
+              {r.changes.map((c, i) => {
+                const { label, operations } = changeText(c);
+                return (
+                  <li key={i}>
+                    {canOpen(c) ? (
+                      <button className="change-link" onClick={() => openChange(c)}>
+                        {label}
+                      </button>
+                    ) : (
+                      <span>{label}</span>
+                    )}
+                    {/* Technical detail: the operations behind the change, for people working on the site's code. */}
+                    {devMode && operations.length > 0 && (
+                      <code className="change-ops">
+                        <span className="sr-only">Operations: </span>
+                        {operations.join(', ')}
+                      </code>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           ))}
         {r.validation.length > 0 && (
@@ -718,6 +720,16 @@ function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
                 <TriangleAlert aria-hidden="true" />
                 <span>
                   <span className="sr-only">Issue: </span>
+                  {v}
+                </span>
+              </li>
+            ))}
+            {/* A check that could not run says nothing about the site, so it is not counted as a problem or a pass. */}
+            {unverified.map((v, i) => (
+              <li key={`u${i}`} className="unverified">
+                <CircleHelp aria-hidden="true" />
+                <span>
+                  <span className="sr-only">Not checked: </span>
                   {v}
                 </span>
               </li>
