@@ -847,6 +847,18 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   return markup;
 }
 
+/**
+ * Markup of an editor variant, between boundary comments of its own. The preview swaps a changed file in place,
+ * and Svelte removes the old copy by walking from the first DOM node it recorded for it. Hydrated markup that
+ * starts with another component records that component's first element, which a hot update of the component
+ * alone replaces; the next update of this file then removes nothing and the old copy stays above the new one
+ * (#14). A constant key block renders its contents once and adds an empty comment before and after them.
+ * Editor variants only: the exported site is never hot-updated and stays free of it.
+ */
+function hotBoundary(markup: string): string {
+  return `{#key 'siteorigin'}\n${markup}\n{/key}`;
+}
+
 function renderImports(imports: Map<string, string>): string {
   return [...imports.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -921,7 +933,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   const uid = ctx.usesUid ? `\tconst uid = $props.id();\n` : '';
   return (
     HEADER_NOTE(`siteorigin/components/${def.id}/component.json`) +
-    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}</script>\n\n${markup}\n`
+    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}</script>\n\n${opts.instrument ? hotBoundary(markup) : markup}\n`
   );
 }
 
@@ -1011,7 +1023,7 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   return (
     HEADER_NOTE(`siteorigin/pages/${page.id}.json`) +
     (imports ? `<script>\n${imports}\n</script>\n\n` : '') +
-    `<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n${markup}\n`
+    `<svelte:head>\n${head.join('\n')}\n</svelte:head>\n\n${opts.instrument ? hotBoundary(markup) : markup}\n`
   );
 }
 

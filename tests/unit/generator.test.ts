@@ -369,3 +369,32 @@ describe('contact form', () => {
     expect(src).toContain('aria-busy');
   });
 });
+
+describe('editor variants and hot updates', () => {
+  // #14: a hydrated page starting with a component lost track of its own DOM once that component was
+  // hot-updated alone, so the next update of the page left the old copy above the new one.
+  it('puts page and component markup between boundaries of their own in editor variants only', () => {
+    const s = fresh();
+    const dev = generateProject(s, { instrument: true });
+    const clean = generateProject(s);
+    const page = dev.get('src/routes/+page.svelte')!;
+    // The Home page starts with the hero component; the head stays outside the boundary.
+    expect(page).toMatch(/<\/svelte:head>\n\n\{#key 'siteorigin'\}\n<C_\w+\n[\s\S]*\n\{\/key\}\n$/);
+    expect(page.match(/\{#key /g)).toHaveLength(1);
+    const hero = [...dev].find(([p]) => p.endsWith('/foundation-hero-split.svelte'))![1];
+    expect(hero).toMatch(/<\/script>\n\n\{#key 'siteorigin'\}\n<section [\s\S]*<\/section>\n\{\/key\}\n$/);
+    // The layout starts and ends with markup of its own, and the exported files never carry the boundary.
+    expect(dev.get('src/routes/+layout.svelte')).not.toContain('{#key');
+    for (const [path, source] of clean) if (path.endsWith('.svelte')) expect(source, path).not.toContain('{#key');
+    expect(compileAll(dev)).toEqual([]);
+  });
+
+  it('keeps an empty page valid', () => {
+    const s = fresh();
+    home(s).rootIds = [];
+    home(s).nodes = {};
+    const page = generateProject(s, { instrument: true }).get('src/routes/+page.svelte')!;
+    expect(page).toMatch(/\{#key 'siteorigin'\}\n\n\{\/key\}\n$/);
+    expect(compileAll(new Map([['src/routes/+page.svelte', page]]))).toEqual([]);
+  });
+});
