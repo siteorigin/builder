@@ -13,12 +13,17 @@ export function currentOwner(): OwnerRef | null {
   return s.pageId ? { kind: 'page', id: s.pageId } : null;
 }
 
-/** Only nodes in the owner tree itself (not inside component definitions) can be moved, duplicated or removed. */
-export function structuralTarget(ref: ElementRef | null): ElementRef | null {
+/** Only nodes in the owner tree itself (not inside component definitions) can be moved, duplicated or removed.
+ *  While a component is edited everywhere its own nodes can, except its root, which is the component itself
+ *  (`withRoot` keeps it, for inserting into it). */
+export function structuralTarget(ref: ElementRef | null, { withRoot = false }: { withRoot?: boolean } = {}): ElementRef | null {
   if (!ref) return null;
   const s = getState();
-  const b = boundaryOf(s.snapshot!.state, ref);
-  return b.instancePath.length ? null : b;
+  const st = s.snapshot!.state;
+  const b = boundaryOf(st, ref);
+  if (b.instancePath.length) return null;
+  if (!withRoot && b.owner.kind === 'component' && st.components[b.owner.id]?.tree?.rootIds[0] === b.nodeId) return null;
+  return b;
 }
 
 export async function deleteSelection() {
@@ -63,7 +68,7 @@ export function insertionPoint(kind: 'section' | 'element'): { owner: OwnerRef; 
   const state = s.snapshot.state;
   const tree = treeFor(state, owner);
   if (!tree) return null;
-  const sel = structuralTarget(s.selection);
+  const sel = structuralTarget(s.selection, { withRoot: true });
   if (sel && sel.owner.kind === owner.kind && sel.owner.id === owner.id) {
     const node = tree.nodes[sel.nodeId];
     // Elements go inside a selected container or section slot.
@@ -148,7 +153,7 @@ export async function commitText(ref: ElementRef, text: string | string[]) {
   const target = inlineField(r.node as GraphNode | undefined);
   if (!target) return;
   if (sameValue(currentValue(ref, target.value), text)) return;
-  const label = target.field === 'label' ? 'Edit button text' : 'Edit text';
+  const label = (target.field === 'label' ? 'Edit button text' : 'Edit text') + (ref.owner.kind === 'component' ? ' everywhere' : '');
   if (!ref.instancePath.length) {
     await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label);
     return;
@@ -175,6 +180,8 @@ export function canInlineEdit(ref: ElementRef): boolean {
   if (!s.snapshot) return false;
   const target = inlineField(resolveRef(s.snapshot.state, ref).node);
   if (!target) return false;
+  // A component's own text (editing it everywhere) is its design; a bound field is filled in per placement.
+  if (ref.owner.kind === 'component') return !ref.instancePath.length && !isBinding(target.value);
   if (!ref.instancePath.length) return true;
   return ref.instancePath.length === 1 && isBinding(target.value);
 }

@@ -377,7 +377,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   // In component editing the canvas selects the definition's root through the placement; match it here.
   const isDefRoot = owner.kind === 'component' && state.components[owner.id]?.tree?.rootIds[0] === id;
   const defRoot = isDefRoot && !!definitionMode && !!selection && selection.instancePath.length === 1 && selection.nodeId === id;
-  const selected = sameRef(selection, ref) || defRoot;
+  // A node of a component being edited, picked on the canvas in one repeated item, is still this row.
+  const selected = sameRef(selection, ref) || defRoot || (owner.kind === 'component' && !!selection?.itemPath?.length && sameRef({ ...selection, itemPath: undefined }, ref));
   // Holds the selection: a part of this component (at any depth), or anything nested inside this container,
   // judged by where the selection's outermost component sits in this tree.
   const anchor = selection && selection.owner.id === owner.id ? (selection.instancePath[0] ?? selection.nodeId) : null;

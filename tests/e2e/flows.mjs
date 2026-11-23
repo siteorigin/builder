@@ -76,6 +76,34 @@ await eventually(async () => assert.deepEqual(await order(), ['Logo strip', 'Spl
 await win.locator('.list-item', { hasText: 'Split hero' }).dragTo(win.locator('.list-item', { hasText: 'Logo strip' }), { targetPosition: { x: 40, y: 4 } });
 await eventually(async () => assert.deepEqual(await order(), ['Split hero', 'Logo strip', 'Services grid'], 'the Layers drag moves the hero back to the top'));
 
+step('edit a component everywhere: canvas, layers and inspector agree');
+await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
+const compSection = win.locator('.section-head', { hasText: 'Component' });
+if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
+await win.getByRole('button', { name: 'Edit everywhere…' }).click();
+await win.getByRole('button', { name: /Make a copy and edit/ }).click();
+await win.locator('.mode-band').waitFor();
+await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'entering outlines the design on the canvas'));
+// A click in the page picks the design's own node under the pointer: Layers and the inspector follow it.
+const gridId = await win.evaluate(async () => {
+  const s = await window.builder.project.snapshot();
+  return s.state.pages[s.state.site.homePageId].rootIds[2];
+});
+const gridHeading = frame.locator(`[data-so-ctx$="|${gridId}"] h2`).first();
+const headingNode = await gridHeading.getAttribute('data-so-node');
+await gridHeading.click();
+await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${headingNode}"]`).getAttribute('aria-selected'), 'true', 'Layers selects the picked node of the design'));
+await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'the picked node is outlined'));
+await win.locator('.insp-scope.definition').first().waitFor();
+// And back: Escape shows the overview, then the Layers row outlines that node on the canvas again.
+await win.keyboard.press('Escape');
+await eventually(async () => assert.equal(await win.locator('.ov-selected').count(), 0, 'Escape clears the selection'));
+await win.locator(`[role="tree"] [data-node="${headingNode}"]`).click();
+await eventually(async () => assert.ok((await win.locator('.ov-selected').count()) >= 1, 'a Layers pick in the design is outlined on the canvas'));
+await win.locator('.insp-scope.definition').first().waitFor();
+await win.locator('.mode-band-done').click();
+await win.locator('.mode-band').waitFor({ state: 'detached' });
+
 step('site styles and chat panels');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
 await win.locator('#dock-panel-styles').waitFor();

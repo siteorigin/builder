@@ -11,7 +11,7 @@ import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
 import { paragraphsFromDom, richDom } from '../lib/richtext';
 import { dropAt, moveIndex } from '../lib/reorder';
 import { externalLink } from '@shared/links';
-import { boundaryOf, descOf, refLabel, resolveRef, selectionFromChain, type BridgeDesc } from '../lib/model';
+import { boundaryOf, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateSelection, moveSelection, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
@@ -64,6 +64,11 @@ export function Canvas() {
   const measureWaiters = useRef(new Map<string, (rects: unknown) => void>());
   /** The element chain under the pointer in the page, so hover can be re-resolved when the selection changes. */
   const hoverChain = useRef<BridgeDesc[] | null>(null);
+  /** While editing a component everywhere: the placement the last pick went through, and the one under the
+   *  pointer. The component's own nodes are outlined through them. */
+  const placementRef = useRef<ElementRef | null>(null);
+  const hoverPlacement = useRef<ElementRef | null>(null);
+  const shownHover = useRef<ElementRef | null>(null);
   const canvasHover = useRef<ElementRef | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   /** The canvas itself: where focus goes when the chip control that had it goes away. */
@@ -155,6 +160,8 @@ export function Canvas() {
           // ends any other (its element goes away) with its own cancel.
           setState({ frameReady: true });
           syncPage(path);
+          // What is outlined may be shown through a different placement on this page.
+          syncTrack();
           break;
         }
         case 'hover':
@@ -168,7 +175,7 @@ export function Canvas() {
           if (!st) return;
           pagePick();
           const chain = chainOf(p.chain);
-          const next = withinDefinition(chain.length ? selectionFromChain(st, chain, s.selection, !!p.alt || !!p.meta || !!s.definitionMode) : null);
+          const next = pick(chain, !!p.alt || !!p.meta);
           setState({ selection: next });
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
           break;
@@ -176,10 +183,10 @@ export function Canvas() {
         case 'dblclick': {
           if (!st) return;
           const chain = chainOf(p.chain);
-          const ref = withinDefinition(selectionFromChain(st, chain, s.selection, true));
-          if (ref && canInlineEdit(ref)) {
+          const ref = pick(chain, true);
+          const desc = ref && canInlineEdit(ref) ? descFor(ref) : null;
+          if (ref && desc) {
             setState({ selection: ref });
-            const desc = descOf(st, ref);
             const editId = Math.random().toString(36).slice(2);
             pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]) });
             inlineEdit.active = true;
@@ -188,7 +195,12 @@ export function Canvas() {
           } else if (ref) {
             setState({ selection: ref, rightTab: 'inspect' });
             const r = resolveRef(st, ref);
-            if (r.node?.kind === 'text') toast('This text is part of the component design. Use Edit definition or Make unique to change it.');
+            if (r.node?.kind === 'text' || r.node?.kind === 'link')
+              toast(
+                s.definitionMode && inDefinition(ref, s.definitionMode.definitionId)
+                  ? 'This text is filled in on each placement. Click Done editing, then change it on the page.'
+                  : 'This text is part of the component design. Use Edit everywhere or Make unique to change it.'
+              );
           }
           break;
         }
@@ -222,7 +234,7 @@ export function Canvas() {
           if (!st) return;
           pagePick();
           const chain = chainOf(p.chain);
-          const ref = chain.length ? withinDefinition(selectionFromChain(st, chain, s.selection, false)) : null;
+          const ref = pick(chain, false);
           if (!ref && s.definitionMode) {
             setState({ selection: null });
             break;
@@ -299,8 +311,11 @@ export function Canvas() {
     const s = getState();
     const st = s.snapshot?.state;
     const chain = hoverChain.current;
-    const next = st && chain?.length && s.mode === 'edit' && !inlineEdit.active && !openMenus.count ? withinDefinition(selectionFromChain(st, chain, s.selection, false)) : null;
+    const next = st && chain?.length && s.mode === 'edit' && !inlineEdit.active && !openMenus.count ? pick(chain, false, true) : null;
     if (!sameRef(next, s.hover)) setState({ hover: next });
+    // The same node of a component, now under the pointer in another of its placements.
+    else if (next && hoverPlacement.current !== shownHover.current) syncTrack();
+    shownHover.current = hoverPlacement.current;
     canvasHover.current = next;
   }
 
@@ -322,7 +337,7 @@ export function Canvas() {
     const s = getState();
     const st = s.snapshot?.state;
     if (!st) return;
-    post('track', { selected: s.selection ? descOf(st, s.selection) : null, hovered: s.hover ? descOf(st, s.hover) : null });
+    post('track', { selected: descFor(s.selection), hovered: descFor(s.hover, hoverPlacement.current) });
   }
 
   // A click changes what the next click would select, even if the pointer has not moved.
@@ -336,7 +351,8 @@ export function Canvas() {
   }, [ready, selection, hover, snapshot?.revision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (ready && selection && state) post('scrollTo', { desc: descOf(state, selection) });
+    const desc = ready ? descFor(selection) : null;
+    if (desc) post('scrollTo', { desc });
   }, [ready, selection && refKey(selection)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -355,16 +371,62 @@ export function Canvas() {
     post('navigate', { path: page.route });
   }, [pageId, page?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** While editing a component everywhere, a pick outside it selects nothing (the overview), so the
-   *  canvas, chip and inspector never describe a different section under the "everywhere" band. */
-  function withinDefinition(ref: ElementRef | null): ElementRef | null {
-    const dm = getState().definitionMode;
-    const st = getState().snapshot?.state;
-    if (!dm || !ref || !st) return ref;
-    if (ref.owner.kind === 'component' && ref.owner.id === dm.definitionId) return ref;
-    const inst = ref.instancePath.length ? resolveRef(st, { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] }).node : resolveRef(st, ref).node;
-    return inst?.kind === 'instance' && inst.definitionId === dm.definitionId ? (ref.instancePath.length ? ref : { ...ref, instancePath: [ref.nodeId], nodeId: st.components[dm.definitionId]?.tree?.rootIds[0] ?? ref.nodeId }) : null;
+  /**
+   * What a pick in the page selects. Normally the selection steps in one level per click (see
+   * selectionFromChain). While a component is edited everywhere it is the component's own node under the
+   * pointer, any node of the design, and a pick outside the component selects nothing (the overview), so the
+   * canvas, chip and inspector never describe a different section under the "everywhere" band.
+   */
+  function pick(chain: BridgeDesc[], deep: boolean, hovering = false): ElementRef | null {
+    const s = getState();
+    const st = s.snapshot?.state;
+    if (!st || !chain.length) return null;
+    const dm = s.definitionMode;
+    if (!dm) return selectionFromChain(st, chain, s.selection, deep);
+    const hit = definitionPick(st, dm.definitionId, chain);
+    if (hovering) hoverPlacement.current = hit?.placement ?? null;
+    else if (hit) placementRef.current = hit.placement;
+    return hit?.ref ?? null;
   }
+
+  /** The element the page shows for a reference: a component's own node is shown through one of its
+   *  placements (the one it was picked through, else the first on this page); null when there is none. */
+  function descFor(ref: ElementRef | null, via: ElementRef | null = null): BridgeDesc | null {
+    const s = getState();
+    const st = s.snapshot?.state;
+    if (!ref || !st) return null;
+    const dm = s.definitionMode;
+    if (!dm || !inDefinition(ref, dm.definitionId)) return descOf(st, ref);
+    // A remembered placement counts only while it is on the page the canvas shows.
+    const page = s.pageId ? st.pages[s.pageId] : undefined;
+    const isPlacement = (pl: ElementRef | null) => {
+      if (!pl || !page || (pl.owner.kind === 'page' ? pl.owner.id !== page.id : pl.owner.kind !== 'shell' || page.shell === 'none')) return false;
+      const n = resolveRef(st, pl).node;
+      return n?.kind === 'instance' && n.definitionId === dm.definitionId;
+    };
+    const placement = [via, placementRef.current].find(isPlacement) ?? (s.pageId ? placementsOn(st, dm.definitionId, s.pageId)[0] : undefined);
+    return placement ? descOf(st, throughPlacement(ref, placement)) : null;
+  }
+
+  // The component being edited went away (its copy was undone): editing it everywhere ends.
+  useEffect(() => {
+    if (definitionMode && state && !state.components[definitionMode.definitionId]) setState({ definitionMode: null, pageId: definitionMode.returnPageId, selection: null });
+  }, [definitionMode, state]);
+  // A new component being edited starts without a remembered placement (declared first: it runs before the
+  // effect below, which may set one).
+  useEffect(() => {
+    placementRef.current = null;
+    hoverPlacement.current = null;
+  }, [definitionMode?.definitionId]);
+  // While editing everywhere, a selection made through a placement (entering the mode, the page's own
+  // commands) becomes the component's own node, so Layers, the inspector and edits all name the design.
+  useEffect(() => {
+    const st = state;
+    if (!definitionMode || !selection || !st || inDefinition(selection, definitionMode.definitionId)) return;
+    const hit = toDefinitionRef(st, definitionMode.definitionId, selection);
+    if (hit) placementRef.current = hit.placement;
+    setState({ selection: hit?.ref ?? null });
+  }, [definitionMode?.definitionId, selection && refKey(selection)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function openContextMenu(x: number, y: number, ref: ElementRef | null, trigger?: HTMLElement, focusLast?: boolean) {
     if (!ref || !state) return;
@@ -386,7 +448,7 @@ export function Canvas() {
     };
     const items = [
         { heading: name },
-        ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: () => setState({ selection: withinDefinition(parent) }) }] : []),
+        ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: () => setState({ selection: parent }) }] : []),
         { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: () => askAiAbout(ref) },
         ...(t
           ? [
@@ -426,7 +488,10 @@ export function Canvas() {
     const requestId = Math.random().toString(36).slice(2);
     const rects = await new Promise<Array<Rect | null> | null>((resolve) => {
       measureWaiters.current.set(requestId, (raw) => resolve(measuredRects(raw, info.list.length)));
-      post('measure', { requestId, descs: info.list.map((id) => descOf(st, { owner: t.owner, instancePath: [], nodeId: id })) });
+      // A sibling the page cannot show (no placement) is asked for by a descriptor that matches nothing.
+      // Siblings share the selection's repeated item, so every box comes from the same copy of the list.
+      const itemPath = s.selection?.itemPath;
+      post('measure', { requestId, descs: info.list.map((id) => descFor({ owner: t.owner, instancePath: [], nodeId: id, ...(itemPath?.length ? { itemPath } : {}) }) ?? { ctx: '', node: '', items: '' }) });
       setTimeout(() => resolve(null), 1500);
     });
     window.removeEventListener('pointerup', early);
@@ -526,15 +591,17 @@ export function Canvas() {
   const z = zoom;
   const toBox = (r: Rect) => ({ left: r.x * z, top: r.y * z, width: r.width * z, height: r.height * z });
   // Text and other small parts get a few pixels of breathing room, so the outline never touches the glyphs.
-  const pad = selection?.instancePath.length ? 3 : 0;
+  // While editing everywhere, the component's own nodes are its parts; its root stands for the whole design.
+  const inDef = !!definitionMode && inDefinition(selection, definitionMode.definitionId);
+  const defRoot = inDef && !selection!.instancePath.length && state?.components[definitionMode!.definitionId]?.tree?.rootIds[0] === selection!.nodeId;
+  const isPart = !!selection?.instancePath.length || (inDef && !defRoot);
+  const pad = isPart ? 3 : 0;
   const selBoxes = mode === 'edit' && !stylesOpen ? rects.selected.map(toBox).map((b) => ({ left: b.left - pad, top: b.top - pad, width: b.width + pad * 2, height: b.height + pad * 2 })) : [];
   const hovBoxes = mode === 'edit' ? rects.hovered.map(toBox) : [];
-  const isPart = !!selection?.instancePath.length;
   const selLabel = selection && state ? chromeLabel(state, selection) : '';
   const hovering = hover && !sameRef(hover, selection) && !reorder && !dragging && !menu.isOpen;
   const firstSel = selBoxes[0];
-  const defRoot = !!definitionMode && !!selection && selection.instancePath.length === 1 && state?.components[definitionMode.definitionId]?.tree?.rootIds[0] === selection.nodeId;
-  const placement = firstSel && selection ? chipPlacement(firstSel, !selection.instancePath.length || defRoot, frameH * z) : null;
+  const placement = firstSel && selection ? chipPlacement(firstSel, !isPart, frameH * z) : null;
 
   return (
     <main ref={canvasRef} tabIndex={-1} className={`canvas${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}`} aria-label="Website preview">

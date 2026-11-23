@@ -11,8 +11,9 @@ let hovered = null;
 /** The innermost element under the pointer, as last reported to the editor. */
 let pointerAt = null;
 let editing = null; // { el, desc, editId, original, rich }
-/** Larger commits than this would be dropped by the editor's message size check. */
+/** Larger commits than this would be dropped by the editor's message size check, or refused by the editor. */
 const MAX_COMMIT_CHARS = 150000;
+const MAX_TEXT_CHARS = 20000;
 const errors = [];
 
 function send(type, payload = {}) {
@@ -255,8 +256,8 @@ function commitEdit() {
   // Rich text goes back as a small copy of its structure (blocks, breaks, bold, italic) for the editor to
   // turn into paragraphs; plain text as its words.
   const payload = rich ? { desc, editId, rich: richCopy(el) } : { desc, editId, text: el.innerText.replace(/\s+/g, ' ').trim() };
-  // Too much to send: put the text back and say why, rather than lose the message (and the edit) on the way.
-  if (JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
+  // Too much to send or to keep: put the text back and say why, rather than lose the edit on the way.
+  if ((rich && !payload.rich) || (!rich && payload.text.length > MAX_TEXT_CHARS) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
     el.innerHTML = original;
     endEdit();
     return send('textCancel', { desc, editId, reason: 'too-large' });

@@ -824,6 +824,14 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           </Field>
         </Section>
       )}
+      {/* A button's own label (not one each placement fills in), as the canvas edits it in place. */}
+      {node.kind === 'link' && !isBinding(node.label) && (
+        <Section title="Content" id="def-label" level={LEVEL} scope="Same in every placement">
+          <Field label="Button text">
+            <DraftInput value={String(node.label)} onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'label', value: v }], 'Edit button text everywhere')} />
+          </Field>
+        </Section>
+      )}
       <Section title="Style" id="def-style" level={LEVEL} scope={repeated ? `Every ${itemWord ?? 'item'} · ${placements}` : placements}>
         <StyleControls
           styles={changed}
