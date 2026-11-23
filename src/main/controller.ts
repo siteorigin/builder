@@ -20,6 +20,11 @@ import { newId } from '@shared/ids';
 
 const INSTANCE_ID = randomUUID();
 
+/** Where new projects go by default: Documents/SiteOrigin. */
+export function defaultProjectsFolder(): string {
+  return join(app.getPath('documents'), 'SiteOrigin');
+}
+
 export function resourcesDir(): string {
   return app.isPackaged ? process.resourcesPath : app.getAppPath();
 }
@@ -154,7 +159,7 @@ export class Controller {
     let dir = dirArg;
     if (!dir) {
       const win = this.getWindow();
-      const r = await dialog.showOpenDialog(win!, { title: 'Open a SiteOrigin Builder project', properties: ['openDirectory', 'openFile'], filters: [{ name: 'SiteOrigin project', extensions: ['json'] }] });
+      const r = await dialog.showOpenDialog(win!, { title: 'Open a SiteOrigin Builder project', defaultPath: existsSync(defaultProjectsFolder()) ? defaultProjectsFolder() : undefined, properties: ['openDirectory', 'openFile'], filters: [{ name: 'SiteOrigin project', extensions: ['json'] }] });
       if (r.canceled || !r.filePaths[0]) return { ok: false };
       dir = r.filePaths[0];
       if (basename(dir) === MANIFEST_FILE) dir = join(dir, '..');

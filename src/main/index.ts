@@ -3,7 +3,7 @@ import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 import type { ProviderId, SettingsPatch } from '@shared/api';
-import { Controller } from './controller';
+import { Controller, defaultProjectsFolder } from './controller';
 import { loadSettings, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
@@ -116,7 +116,7 @@ function registerIpc() {
     const r = await dialog.showOpenDialog(win!, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] });
     return r.canceled ? null : r.filePaths[0];
   });
-  handle('dialogs:defaultProjectsFolder', () => join(app.getPath('documents'), 'SiteOrigin Sites'));
+  handle('dialogs:defaultProjectsFolder', () => defaultProjectsFolder());
   handle('projects:recents', () => recents());
   handle('projects:removeRecent', (dir: string) => removeRecent(dir));
   handle('projects:create', (opts) => controller.create(opts));
