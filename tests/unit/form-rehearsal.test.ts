@@ -266,8 +266,8 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       expect(service.requests[0].body).toContain('A rehearsal enquiry');
       await expect.poll(status).toBe(SENT);
       await expect.poll(results).toEqual([
-        { kind: 'live', result: 'sending' },
-        { kind: 'live', result: 'sent', status: 202 }
+        { kind: 'live', result: 'sending', destination: ENDPOINT },
+        { kind: 'live', result: 'sent', status: 202, destination: ENDPOINT }
       ]);
       expect((await field('Name').inputValue())).toBe('');
 
@@ -291,7 +291,7 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       service.status = 422;
       await toFrame('formLiveTest', { id: await formId(), requestId: 'live-1' });
       await expect.poll(alert).toBe(FAILED);
-      await expect.poll(async () => (await results()).at(-1)).toEqual({ kind: 'live', result: 'refused', status: 422 });
+      await expect.poll(async () => (await results()).at(-1)).toEqual({ kind: 'live', result: 'refused', status: 422, destination: ENDPOINT });
       expect(service.requests).toHaveLength(1);
     });
   }, 30_000);

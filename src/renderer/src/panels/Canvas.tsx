@@ -20,6 +20,8 @@ import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { runPhase } from '../lib/savestate';
+import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
+import { FormPractice } from './FormPractice';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -56,6 +58,11 @@ export function Canvas() {
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [session, setSession] = useState(() => newSessionId());
   const [ready, setReady] = useState(false);
+  /** Forms in Preview (issue #193): the page's forms, the reply practice sends get, the last send, the live test on its way. */
+  const [forms, setForms] = useState<PreviewForm[]>([]);
+  const [practice, setPractice] = useState<PracticeResult>('success');
+  const [lastSend, setLastSend] = useState<FormSend | null>(null);
+  const [liveRequest, setLiveRequest] = useState<string | null>(null);
   // The page's own error is shared through the store, so the status bar and Project health tell the same story.
   const frameError = useStore((s) => s.previewIssue);
   const setFrameError = (m: string | null) => setState({ previewIssue: m });
@@ -161,6 +168,11 @@ export function Canvas() {
           frameTextFocus.active = false;
           endInlineEdit();
           post('mode', { mode: getState().mode });
+          // A new page load knows nothing of the last one's forms or sends.
+          setForms([]);
+          setLastSend(null);
+          setLiveRequest(null);
+          post('formPractice', { result: practice });
           syncTrack();
           // A new page starts with nothing revealed.
           sentReveal.current = null;
@@ -323,6 +335,17 @@ export function Canvas() {
         case 'revisionApplied':
           setFrameError(null);
           break;
+        case 'forms':
+          setForms(formsOf(p.forms));
+          break;
+        case 'formResult': {
+          const send = formSendOf(p);
+          // A live test's reports count only for the test the editor asked for.
+          if (!send || (send.kind === 'live' && send.requestId !== liveRequest)) break;
+          if (send.kind === 'live' && sendSettled(send)) setLiveRequest(null);
+          setLastSend(send);
+          break;
+        }
         case 'measured': {
           const w = measureWaiters.current.get(String(p.requestId));
           if (w) {
@@ -430,6 +453,22 @@ export function Canvas() {
   useEffect(() => {
     if (ready) post('mode', { mode });
   }, [mode, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Each visit to Preview starts practising successful sends, with nothing said about earlier ones.
+  useEffect(() => {
+    setLastSend(null);
+    setLiveRequest(null);
+    if (mode === 'preview') setPractice('success');
+  }, [mode]);
+  useEffect(() => {
+    if (ready) post('formPractice', { result: practice });
+  }, [practice, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  const liveTest = (form: PreviewForm) => {
+    const requestId = `live-${Date.now()}`;
+    setLiveRequest(requestId);
+    setLastSend(null);
+    post('formLiveTest', { id: form.id, requestId });
+  };
 
   // Navigate when the current page changes.
   useEffect(() => {
@@ -705,6 +744,18 @@ export function Canvas() {
             <Pencil size={13} /> Back to editing
           </button>
         </div>
+      )}
+      {mode === 'preview' && forms.length > 0 && (
+        // Above the other bottom bars: the preview pill, the AI run and a page problem.
+        <FormPractice
+          forms={forms}
+          practice={practice}
+          onPractice={setPractice}
+          last={lastSend}
+          liveBusy={!!liveRequest}
+          onLiveTest={liveTest}
+          bottom={18 + 46 + (runStatus ? 46 : 0) + (frameError && runtime.state === 'ready' ? 46 : 0)}
+        />
       )}
       {runStatus && (
         <div className="ai-veil" role="status" style={{ bottom: mode === 'preview' ? 64 : 18 }}>

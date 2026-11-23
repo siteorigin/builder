@@ -523,7 +523,7 @@ function practise(form) {
 function sendLive(test, id, input, init) {
   test.sent = true;
   if (liveTest === test) liveTest = null;
-  const reply = (result, status) => send('formResult', { id, requestId: test.requestId, kind: 'live', result, ...(status ? { status } : {}) });
+  const reply = (result, status) => send('formResult', { id, requestId: test.requestId, kind: 'live', result, destination: test.destination, ...(status ? { status } : {}) });
   reply('sending');
   return nativeFetch.call(window, input, init).then(
     (response) => (reply(response.ok ? 'sent' : 'refused', response.status), response),

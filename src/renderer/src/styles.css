@@ -591,6 +591,20 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .preview-pill svg { width: 15px; height: 15px; }
 .preview-pill button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 12px; border: 0; border-radius: 99px; background: var(--sky-2); color: var(--ink); font-size: 12px; font-weight: 600; }
 .preview-pill button:hover { background: var(--sky-1); }
+/* Forms in Preview: what a send does, the practice reply, and a confirmed live test. Above the other bottom bars. */
+.form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 10px 14px; border-radius: 12px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); }
+.form-practice p { margin: 0; }
+.form-practice-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 5px; color: var(--text); font-size: 13px; }
+.form-practice-title svg { width: 14px; height: 14px; align-self: center; color: var(--accent-text); flex: none; }
+.form-practice-title strong { font-weight: 600; }
+.form-practice-where { overflow-wrap: anywhere; }
+.form-practice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.form-practice-label { color: var(--text); font-weight: 500; }
+.form-practice-live { margin-left: auto; }
+.form-practice-confirm { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, var(--raised)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
+.form-practice-confirm select { min-width: 0; max-width: 100%; }
+.form-practice-result:empty { display: none; }
+.form-practice-result { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
 .ai-veil { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: 10px; padding: 6px 6px 6px 14px; border-radius: 99px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; }
 .ai-veil .spark { color: var(--accent-text); }
 
