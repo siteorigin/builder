@@ -5,6 +5,9 @@ import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
  * The single, versioned operation union used by manual editing and by the AI agent.
  * Tool schemas and runtime validators are both derived from these definitions.
  */
+/** What rich text accepts, for models writing a value. */
+const RICH_TEXT_VALUE = 'For richtext: a string or string[] with **bold**, *italic*, [label](/route/ or URL), and line prefixes "- ", "1. ", "- [x] ", "### ", "#### ", "> ".';
+
 export const OPS_VERSION = 1;
 
 const owner = z
@@ -120,7 +123,7 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     field: z.enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'tag', 'anchor']),
-    value: z.unknown()
+    value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({
     type: z.literal('node.setBinding'),
@@ -137,7 +140,7 @@ export const OPERATION_SCHEMAS = {
     prop: z.string(),
     itemId: z.string().optional().describe('For list properties: the stable item ID to edit.'),
     field: z.string().optional().describe('For list properties: the item field to set.'),
-    value: z.unknown()
+    value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'instance.listInsert': z.object({
     type: z.literal('instance.listInsert'),

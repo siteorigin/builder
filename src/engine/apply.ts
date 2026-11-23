@@ -11,7 +11,8 @@ import type {
   ResponsiveScope,
   StyleValue,
   TokenDef,
-  TokenValue
+  TokenValue,
+  RichText
 } from '@shared/types';
 import type { Binding } from '@shared/types';
 import { SCHEMA_VERSION, isBinding } from '@shared/types';
@@ -25,7 +26,7 @@ import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { EngineError, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, subtreeIds, allTrees } from './tree';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
-import { normalizeImage, normalizeItem, normalizeLink, normalizeProp } from './values';
+import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { enclosingList, normalizeProperties } from './schema';
 import { forEachTokenRef, tokenUsageCounts } from './tokens';
 import {
@@ -494,7 +495,7 @@ function pageSetHome(state: ProjectState, pageId: string): OpResult {
 // Nodes
 // ---------------------------------------------------------------------------
 
-function primitiveNode(kind: NonNullable<Op<'node.insert'>['primitive']>, text?: string): GraphNode[] {
+function primitiveNode(state: ProjectState, kind: NonNullable<Op<'node.insert'>['primitive']>, text?: string): GraphNode[] {
   const id = newId('n');
   const space = (t: string) => ({ token: t });
   switch (kind) {
@@ -511,7 +512,7 @@ function primitiveNode(kind: NonNullable<Op<'node.insert'>['primitive']>, text?:
     case 'paragraph':
       return [{ id, kind: 'text', tag: 'p', text: text ?? 'Write something here.', styles: { base: { textStyle: space('text.body') } } }];
     case 'richtext':
-      return [{ id, kind: 'text', tag: 'div', rich: true, text: (text ?? 'Write something here.').split(/\n{2,}|\n/).map((s) => s.trim()).filter(Boolean), styles: { base: { textStyle: space('text.body') } } }];
+      return [{ id, kind: 'text', tag: 'div', rich: true, text: normalizeRichText(text ?? 'Write something here.', state, 'Rich text'), styles: { base: { textStyle: space('text.body') } } }];
     case 'slot':
     case 'repeat':
       fail(`A ${kind} needs a component definition and "bind".`);
@@ -553,7 +554,7 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   if (op.primitive === 'slot' || op.primitive === 'repeat') {
     nodes = [structuralNode(state, op.owner, op.primitive, op.bind)];
   } else if (op.primitive) {
-    nodes = primitiveNode(op.primitive, op.text);
+    nodes = primitiveNode(state, op.primitive, op.text);
   } else {
     let def: ComponentDefinition;
     if (op.definitionId) def = state.components[op.definitionId] ?? fail(`Component definition "${op.definitionId}" is not installed.`);
@@ -815,8 +816,9 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
   switch (op.field) {
     case 'text': {
       if (node.kind !== 'text') fail('Only text nodes have text.');
-      const val = node.rich ? (Array.isArray(v) ? v.map(String) : String(v ?? '').split(/\n{2,}|\n/)).map((s) => s.trim()).filter(Boolean) : String(v ?? '');
-      if (!setBound(node.text, () => val)) node.text = val;
+      // A bound field is read by its property's schema, which knows how plain lines are shown there.
+      if (setBound(node.text, () => (node.rich ? (v ?? '') : String(v ?? '')))) return {};
+      node.text = node.rich ? normalizeRichText(v ?? '', state, label) : String(v ?? '');
       return {};
     }
     case 'image': {
@@ -1269,7 +1271,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
       const isHeading = /^h\d$/.test(n.tag);
       const name = propName(n.rich ? 'body' : isHeading ? 'heading' : 'text');
       properties[name] = n.rich
-        ? { type: 'richtext', label: titleCase(name), default: clone(n.text as string[]) }
+        ? { type: 'richtext', label: titleCase(name), default: clone(n.text as RichText) }
         : { type: 'string', label: titleCase(name), default: String(n.text), multiline: !isHeading };
       props[name] = clone(n.text);
       n.text = { $prop: name };

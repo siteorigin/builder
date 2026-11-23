@@ -2,6 +2,7 @@ import { useId, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import type { PropSchema } from '@shared/types';
 import { checkPropName } from '@engine/schema';
+import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { DraftInput, Field } from '../components/ui';
 
 /**
@@ -118,7 +119,7 @@ function RowEditor({ row, onChange, onRemove, readOnly }: { row: SchemaRow; onCh
         )}
         {type === 'richtext' && (
           <Field label="Default" hint="One paragraph per line.">
-            <DraftInput multiline rows={2} value={Array.isArray(s.default) ? (s.default as string[]).join('\n') : ''} onCommit={(v) => set({ default: v.split('\n').map((p) => p.trim()).filter(Boolean) })} ariaLabel={named('default')} />
+            <DraftInput multiline rows={2} value={typeof s.default === 'string' ? s.default : richTextToMarkdown(toRichText(s.default), {})} onCommit={(v) => set({ default: v as never })} ariaLabel={named('default')} />
           </Field>
         )}
         {type === 'number' && (

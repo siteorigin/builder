@@ -8,7 +8,7 @@ import { refKey, sameRef } from '@shared/types';
 import { api, confirmDialog, getState, markDraft, setState, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
-import { paragraphsFromDom, richDom } from '../lib/richtext';
+import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, moveIndex } from '../lib/reorder';
 import { externalLink } from '@shared/links';
 import { boundaryOf, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
@@ -212,9 +212,11 @@ export function Canvas() {
           const d = descOrNull(p.desc);
           // Accept only the commit for an edit the editor started, on that exact element.
           if (!d || JSON.stringify([d.ctx, d.node, d.items]) !== edit.desc || !canInlineEdit(edit.ref)) break;
-          // Rich text arrives as a copy of its structure (bold and italic included), plain text as a string.
+          // Rich text arrives as a copy of its structure (marks, lists and links included), plain text as a string.
           const dom = p.rich !== undefined ? richDom(p.rich) : null;
-          const value = dom ? paragraphsFromDom(dom) : p.rich === undefined && typeof p.text === 'string' && p.text.length <= 20000 ? p.text : null;
+          const rich = dom ? blocksFromDom(dom, getState().snapshot?.state.pages ?? {}) : null;
+          const value = rich ? rich.blocks : p.rich === undefined && typeof p.text === 'string' && p.text.length <= 20000 ? p.text : null;
+          if (rich?.droppedLinks) toast('A link pointed to something that is not a page, web address, email or phone number, so it was removed.', 'error');
           if (value === null || (Array.isArray(value) && value.length > 500)) {
             toast('That text change could not be saved. Try editing it in the inspector.', 'error');
             break;

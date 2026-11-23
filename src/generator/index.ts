@@ -31,6 +31,7 @@ import { IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJ
 import { routeDir } from '@shared/routes';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
+import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -82,7 +83,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_id', 'so_eager', '__so', 'has', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_id', 'so_eager', '__so', 'has', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'richParagraphs']);
 /** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
 const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_id', 'so_eager', '__so', 'children']);
 
@@ -128,6 +129,8 @@ function itemField(itemVar: string, field: string): string {
 
 export interface ResolveContext {
   state: ProjectState;
+  /** Rich text goes to a code component written for paragraph strings. */
+  richAsParagraphs?: boolean;
 }
 
 /**
@@ -182,6 +185,26 @@ export function resolveImage(img: ImageValue | null | undefined, ctx: ResolveCon
   return out;
 }
 
+/** Rich text ready to render: page links become their current routes, and a link that cannot resolve is plain text. */
+export function resolveRichText(value: unknown, ctx: ResolveContext, plainAs?: RichListType) {
+  const spans = (list: RichSpan[]) =>
+    list.map(({ link, ...s }) => {
+      const resolved = link ? resolveLink(link, ctx) : null;
+      return resolved ? { ...s, link: resolved } : s;
+    });
+  return toRichText(value, plainAs).map((b) => (isListBlock(b) ? { type: b.type, items: b.items.map(spans) } : { type: b.type, spans: spans(b.spans) }));
+}
+
+/**
+ * Whether a code component reads rich text as paragraph strings. One that renders through the RichText helper
+ * takes the blocks, links included; any other was written for the strings it has always been given.
+ */
+function takesParagraphs(def: ComponentDefinition): boolean {
+  return def.kind === 'code' && !/RichText\.svelte|^<!-- Code component converted from/.test(def.source ?? '');
+}
+
+const holdsRichText = (schema: PropSchema) => schema.type === 'richtext' || (schema.type === 'list' && Object.values(schema.fields).some((f) => f.type === 'richtext'));
+
 export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx: ResolveContext): unknown {
   if (!schema) return value;
   switch (schema.type) {
@@ -190,7 +213,9 @@ export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx
     case 'image':
       return resolveImage((value as ImageValue) ?? schema.default, ctx);
     case 'richtext':
-      return Array.isArray(value) ? value : typeof value === 'string' ? value.split(/\n{2,}/) : schema.default;
+      return ctx.richAsParagraphs
+        ? richTextToParagraphs(toRichText(value ?? schema.default, schema.plainAs))
+        : resolveRichText(value ?? schema.default, ctx, schema.plainAs);
     case 'list': {
       const items = Array.isArray(value) ? value : schema.default;
       return items.map((it: Record<string, unknown>) => {
@@ -684,11 +709,10 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     case 'text': {
       if (node.rich) {
         useImport(ctx, 'SoRichText', `${RUNTIME_DIR}/RichText.svelte`);
-        const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(Array.isArray(node.text) ? node.text : String(node.text).split(/\n{2,}/));
-        const listAttr = node.list ? ` list=${js(node.list)}` : '';
-        return `${p}<SoRichText paragraphs={${val}}${listAttr} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
+        const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(resolveRichText(node.text, ctx.rctx));
+        return `${p}<SoRichText value={${val}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
       }
-      const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(Array.isArray(node.text) ? node.text.join('\n\n') : node.text);
+      const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(Array.isArray(node.text) ? richTextToPlain(toRichText(node.text)) : node.text);
       const parentId = parentMap(ctx.tree).get(node.id);
       const parent = parentId ? ctx.tree.nodes[parentId] : undefined;
       const labels = !node.anchor && parent && labellingHeading(ctx, parent)?.id === node.id;
@@ -744,7 +768,12 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   if (ctx.def) attrs.push(`class=${classExpr(ctx, node)}`);
   for (const [propName, schema] of Object.entries(def.properties).sort(([a], [b]) => a.localeCompare(b))) {
     const raw = Object.hasOwn(node.props, propName) ? node.props[propName] : schema.default;
-    const expr = isBinding(raw) ? bindExpr(ctx, raw) : js(resolveValue(schema, raw, ctx.rctx));
+    const paragraphs = takesParagraphs(def);
+    let expr = isBinding(raw) ? bindExpr(ctx, raw) : js(resolveValue(schema, raw, paragraphs ? { ...ctx.rctx, richAsParagraphs: true } : ctx.rctx));
+    if (paragraphs && isBinding(raw) && holdsRichText(schema)) {
+      useImport(ctx, '{ richParagraphs }', `${RUNTIME_DIR}/util.js`);
+      expr = `richParagraphs(${expr})`;
+    }
     attrs.push(propAttr(propKey(def, propName), expr));
   }
   const variant = node.variant ?? def.defaultVariant;

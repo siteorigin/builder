@@ -1,5 +1,6 @@
 import type { EditOperation } from '@shared/ops';
-import type { ElementRef, GraphNode, OwnerRef } from '@shared/types';
+import type { ElementRef, GraphNode, OwnerRef, RichText } from '@shared/types';
+import { sameRichText, toRichText } from '@shared/richtext';
 import { isBinding } from '@shared/types';
 import { findParent } from '@engine/tree';
 import { api, applyOps, getState, setState, toast } from '../store';
@@ -137,16 +138,14 @@ function currentValue(ref: ElementRef, bound: unknown): unknown {
   return item ? (item as Record<string, unknown>)[bound.$item] : undefined;
 }
 
-/** Whether an edit leaves the field as it was. Rich text compares as paragraphs (a stored string is split the
- *  way the engine splits it), plain text as a string. */
-function sameValue(current: unknown, next: string | string[]): boolean {
+/** Whether an edit leaves the field as it was. Rich text compares as canonical blocks, plain text as a string. */
+function sameValue(current: unknown, next: string | RichText): boolean {
   if (!Array.isArray(next)) return typeof current === 'string' && current === next;
-  const paras = Array.isArray(current) ? current.map(String) : typeof current === 'string' ? current.split(/\n{2,}|\n/).map((p) => p.trim()).filter(Boolean) : null;
-  return !!paras && paras.length === next.length && paras.every((p, i) => p === next[i]);
+  return sameRichText(toRichText(current), next);
 }
 
 /** Commit inline text from the canvas to the right document field. Text that ends up as it was makes no edit. */
-export async function commitText(ref: ElementRef, text: string | string[]) {
+export async function commitText(ref: ElementRef, text: string | RichText) {
   const s = getState();
   if (!s.snapshot) return;
   const r = resolveRef(s.snapshot.state, ref);

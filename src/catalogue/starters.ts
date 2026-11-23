@@ -3,6 +3,7 @@ import { SCHEMA_VERSION, GENERATOR_VERSION } from '@shared/types';
 import { installComponent, makeInstance } from '@engine/install';
 import { newId } from '@shared/ids';
 import { getTheme } from './index';
+import { canonicalRich } from './dsl';
 import { TEMPLATE_VERSION } from './fonts';
 
 export type StarterId = 'business' | 'blank';
@@ -76,7 +77,9 @@ function emptyState(name: string, themeId = 'foundation'): ProjectState {
 
 function inst(state: ProjectState, componentId: string, props: Record<string, unknown> = {}, variant?: string): InstanceNode {
   const defId = installComponent(state, componentId);
-  return makeInstance(state.components[defId], props, variant);
+  const def = state.components[defId];
+  const stored = Object.fromEntries(Object.entries(props).map(([k, v]) => [k, Object.hasOwn(def.properties, k) ? canonicalRich(def.properties[k], v) : v]));
+  return makeInstance(def, stored, variant);
 }
 
 function tree(node: InstanceNode): NodeTree {

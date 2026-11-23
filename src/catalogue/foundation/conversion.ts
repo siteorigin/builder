@@ -21,7 +21,7 @@ export const pricing = managed({
         period: P.str('Period', ''),
         description: P.text('Description', ''),
         badge: P.str('Badge', ''),
-        features: P.rich('Features', ['A feature']),
+        features: P.rich('Features', ['A feature'], { plainAs: 'check' }),
         actionLabel: P.str('Action label', 'Get started'),
         actionLink: P.link('Action link')
       },
@@ -67,8 +67,6 @@ export const pricing = managed({
       ])
     ])
 });
-// Features render as a check list.
-(pricing.tree!.nodes['features'] as { list?: string }).list = 'check';
 
 export const faq = managed({
   componentId: 'faq.list',

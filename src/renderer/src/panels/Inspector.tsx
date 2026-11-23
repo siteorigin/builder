@@ -30,6 +30,7 @@ import {
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { styleSetFor } from '@shared/styles';
+import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
@@ -650,7 +651,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
               </Field>
             )}
             <Field label="Text" hint="Or double-click the text on the page to edit it there.">
-              <DraftInput multiline rows={2} value={Array.isArray(node.text) ? node.text.join('\n\n') : isBinding(node.text) ? '' : String(node.text)} onCommit={(v) => content('text', v)} />
+              <DraftInput multiline rows={2} value={Array.isArray(node.text) ? richTextToMarkdown(toRichText(node.text), state.pages) : isBinding(node.text) ? '' : String(node.text)} onCommit={(v) => content('text', v)} />
             </Field>
           </>
         )}
@@ -801,7 +802,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       {node.kind === 'text' && !isBinding(node.text) && (
         <Section title="Content" id="def-text" level={LEVEL} scope="Same in every placement">
           <Field label="Text">
-            <DraftInput multiline rows={2} value={Array.isArray(node.text) ? node.text.join('\n\n') : String(node.text)} onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'text', value: v }], 'Edit definition text')} />
+            <DraftInput multiline rows={2} value={Array.isArray(node.text) ? richTextToMarkdown(toRichText(node.text), state.pages) : String(node.text)} onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'text', value: v }], 'Edit definition text')} />
           </Field>
         </Section>
       )}

@@ -1,4 +1,5 @@
-import type { ImageValue, LinkValue, ListItem, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import type { ImageValue, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
+import { cleanBlocks, isListBlock, isRichBlock, linkFromTarget, mergeLists, parseRichText, richTextToPlain } from '@shared/richtext';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -7,11 +8,11 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string): L
   if (v === null || v === undefined || v === '') return { type: 'none', target: '' };
   if (typeof v === 'string') {
     // Accept shorthand strings from simpler callers.
-    if (/^https?:\/\//i.test(v)) return { type: 'url', target: v };
-    if (/^mailto:/i.test(v)) return { type: 'email', target: v.slice(7) };
-    if (/^tel:/i.test(v)) return { type: 'tel', target: v.slice(4) };
-    if (v.startsWith('#')) return { type: 'anchor', target: v.slice(1) };
-    if (state.pages[v]) return { type: 'page', target: v };
+    if (/^https?:\/\//i.test(v)) return normalizeLink({ type: 'url', target: v }, state, label);
+    if (/^mailto:/i.test(v)) return normalizeLink({ type: 'email', target: v.slice(7) }, state, label);
+    if (/^tel:/i.test(v)) return normalizeLink({ type: 'tel', target: v.slice(4) }, state, label);
+    if (v.startsWith('#')) return normalizeLink({ type: 'anchor', target: v.slice(1) }, state, label);
+    if (Object.hasOwn(state.pages, v)) return { type: 'page', target: v };
     const byRoute = Object.values(state.pages).find((p) => p.route === v || p.route === `/${v.replace(/^\/|\/$/g, '')}/`);
     if (byRoute) return { type: 'page', target: byRoute.id };
     fail(`${label}: "${v}" is not a page ID, route, https URL, mailto:, tel: or #anchor.`);
@@ -24,7 +25,7 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string): L
     case 'none':
       return { type: 'none', target: '' };
     case 'page':
-      if (!state.pages[target]) fail(`${label}: page "${target}" does not exist.`);
+      if (!Object.hasOwn(state.pages, target)) fail(`${label}: page "${target}" does not exist.`);
       break;
     case 'url':
       if (!/^https?:\/\/[^\s<>"]+$/i.test(target)) fail(`${label}: external links must be full http(s) URLs.`);
@@ -42,7 +43,10 @@ export function normalizeLink(v: unknown, state: ProjectState, label: string): L
       fail(`${label}: unknown link type "${type}".`);
   }
   const out: LinkValue = { type, target: type === 'anchor' ? target.replace(/^#/, '') : target };
-  if (l.anchor) out.anchor = String(l.anchor).replace(/^#/, '');
+  if (l.anchor) {
+    out.anchor = String(l.anchor).replace(/^#/, '');
+    if (!/^[A-Za-z][\w-]*$/.test(out.anchor)) fail(`${label}: "${out.anchor.slice(0, 40)}" is not a valid anchor.`);
+  }
   if (l.newTab) out.newTab = true;
   return out;
 }
@@ -60,6 +64,49 @@ export function normalizeImage(v: unknown, state: ProjectState, label: string): 
   return out;
 }
 
+const MAX_RICH_CHARS = 20000;
+const MAX_RICH_BLOCKS = 500;
+
+/**
+ * Rich text in its stored form, from anything callers may send: a string (one block per line, with **bold**, *italic*,
+ * [label](/route/), and "- ", "1. ", "- [x] ", "### ", "#### " and "> " line markers), an array of such strings, or
+ * structured blocks. Every link is validated, and a link to a page stores the page's ID.
+ */
+export function normalizeRichText(v: unknown, state: ProjectState, label: string, plainAs?: RichListType): RichText {
+  const link = (target: string, newTab: boolean) => {
+    const out = linkFromTarget(target, state.pages, newTab);
+    if (!out && target.startsWith('/')) fail(`${label}: no page has the route "${target.slice(0, 60)}".`);
+    return out;
+  };
+  const fromText = (s: string) => parseRichText(s, { markdown: true, link, plainAs });
+  const span = (raw: unknown): RichSpan => {
+    if (typeof raw === 'string') return { text: raw };
+    if (!raw || typeof raw !== 'object' || typeof (raw as RichSpan).text !== 'string') fail(`${label}: a span needs { text, strong?, em?, link? }.`);
+    const s = raw as RichSpan;
+    const out: RichSpan = { text: s.text };
+    if (s.strong) out.strong = true;
+    if (s.em) out.em = true;
+    if (s.link) {
+      const l = normalizeLink(s.link, state, label);
+      if (l.type !== 'none') out.link = l;
+    }
+    return out;
+  };
+  const block = (raw: RichBlock): RichBlock => (isListBlock(raw) ? { type: raw.type, items: raw.items.map((it) => (Array.isArray(it) ? it : [it]).map(span)) } : { type: raw.type, spans: raw.spans.map(span) });
+  let blocks: RichBlock[];
+  if (typeof v === 'string') blocks = fromText(v);
+  else if (Array.isArray(v))
+    blocks = v.flatMap((x) => {
+      if (typeof x === 'string' || typeof x === 'number') return fromText(String(x));
+      if (isRichBlock(x)) return [block(x)];
+      return fail(`${label}: expected text or blocks such as { type: "p", spans: [{ text }] } or { type: "ul", items: [[{ text }]] }.`);
+    });
+  else fail(`${label}: expected text, paragraphs or rich text blocks.`);
+  const out = mergeLists(cleanBlocks(blocks!));
+  if (out.length > MAX_RICH_BLOCKS || richTextToPlain(out).replace(/\n/g, '').length > MAX_RICH_CHARS) fail(`${label}: text is too long.`);
+  return out;
+}
+
 /**
  * `stored` is the value already saved for this field, if any. A value that was valid under older rules is
  * kept when it is not being changed, so editing one field never fails on another.
@@ -73,12 +120,10 @@ export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: Pro
       if (s.length > max) fail(`${label}: text is longer than ${max} characters.`);
       return schema.multiline ? s : s.replace(/\s*\n\s*/g, ' ');
     }
-    case 'richtext': {
-      const arr = Array.isArray(v) ? v.map(String) : typeof v === 'string' ? v.split(/\n{2,}|\n/) : fail(`${label}: expected paragraphs.`);
-      const cleaned = arr.map((p) => p.trim()).filter((p) => p.length);
-      if (cleaned.join('').length > 20000) fail(`${label}: text is too long.`);
-      return cleaned;
-    }
+    case 'richtext':
+      // Content saved under older limits stays valid while it is not being changed.
+      if (stored !== undefined && JSON.stringify(v) === JSON.stringify(stored)) return v;
+      return normalizeRichText(v, state, label, schema.plainAs);
     case 'number': {
       const n = Number(v);
       if (!Number.isFinite(n)) fail(`${label}: expected a number.`);

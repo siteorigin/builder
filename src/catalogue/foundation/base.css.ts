@@ -30,7 +30,13 @@ address { font-style: normal; }
 .so-skip-link:focus { top: 12px; }
 
 .so-rich > * + * { margin-top: 1em; }
-.so-rich a { color: var(--so-color-brand); text-underline-offset: 3px; }
+/* Inline links take the surrounding text colour, so they stay readable on every section tone. */
+.so-rich a { color: inherit; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.so-rich h3 { font-family: var(--so-text-h3-family); font-size: var(--so-text-h3-size); line-height: var(--so-text-h3-line-height); font-weight: var(--so-text-h3-weight); letter-spacing: var(--so-text-h3-tracking); }
+.so-rich h4 { font-size: 1.05em; font-weight: 600; }
+.so-rich blockquote { padding-inline-start: 1em; border-inline-start: 3px solid color-mix(in srgb, currentColor 28%, transparent); }
+.so-rich--number { padding-inline-start: 1.5em; list-style: decimal; display: grid; gap: 0.65em; }
+.so-rich--number > * + * { margin-top: 0; }
 
 .so-link { color: var(--so-color-brand); background: var(--so-btn-bg, none); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 

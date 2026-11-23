@@ -5,6 +5,9 @@
  * Svelte routes, components and stylesheets are derived from them by the generator.
  */
 import { LATEST_SCHEMA_VERSION } from './migrations';
+import type { RichListType, RichText } from './richtext';
+
+export type { RichBlock, RichListBlock, RichListType, RichSpan, RichText, RichTextBlock } from './richtext';
 
 /** The current document format: one more than the number of migrations (see `./migrations`). */
 export const SCHEMA_VERSION = LATEST_SCHEMA_VERSION;
@@ -59,8 +62,10 @@ export interface StringProp extends PropBase {
 }
 export interface RichTextProp extends PropBase {
   type: 'richtext';
-  /** Paragraphs. Inline **strong** and *emphasis* are supported. */
-  default: string[];
+  /** Structured blocks of inline spans (see shared/richtext.ts). */
+  default: RichText;
+  /** Plain lines given to this property become items of this kind of list. */
+  plainAs?: RichListType;
 }
 export interface NumberProp extends PropBase {
   type: 'number';
@@ -144,11 +149,9 @@ export interface ElementNode extends NodeBase {
 export interface TextNode extends NodeBase {
   kind: 'text';
   tag: TextTag;
-  /** For rich text nodes the value is an array of paragraphs. */
-  text: Bindable<string | string[]>;
+  /** For rich text nodes the value is structured blocks. */
+  text: Bindable<string | RichText>;
   rich?: boolean;
-  /** Render rich text paragraphs as a list. */
-  list?: 'check' | 'bullet';
 }
 export interface ImageNode extends NodeBase {
   kind: 'image';

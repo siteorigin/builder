@@ -26,6 +26,153 @@ export interface Migration {
   migrate(project: ProjectState, due: (doc: { schemaVersion: number }) => boolean): void;
 }
 
+// ---------------------------------------------------------------------------
+// structured-rich-text. Self-contained on purpose: it reads the old format as the old renderer did, whatever the
+// current rich text code later becomes.
+// ---------------------------------------------------------------------------
+
+type Loose = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+interface V3Span {
+  text: string;
+  strong?: boolean;
+  em?: boolean;
+}
+const V2_LIST: Record<string, string> = { check: 'check', bullet: 'ul' };
+
+/** One old paragraph's marks, by the old renderer's own pattern, with spaces moved outside them. */
+function v3Spans(paragraph: string): V3Span[] {
+  const raw: V3Span[] = [];
+  const re = /(\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  let last = 0;
+  for (let m = re.exec(paragraph); m; m = re.exec(paragraph)) {
+    if (m.index > last) raw.push({ text: paragraph.slice(last, m.index) });
+    raw.push(m[0].startsWith('**') ? { text: m[0].slice(2, -2), strong: true } : { text: m[0].slice(1, -1), em: true });
+    last = m.index + m[0].length;
+  }
+  if (last < paragraph.length) raw.push({ text: paragraph.slice(last) });
+  const parts: V3Span[] = [];
+  for (const r of raw) {
+    const text = r.text.replace(/[\s\u00a0]+/g, ' ');
+    const core = text.trim();
+    if (!r.strong && !r.em) parts.push({ text });
+    else if (!core) parts.push({ text: ' ' });
+    else {
+      if (text.startsWith(' ')) parts.push({ text: ' ' });
+      parts.push({ ...r, text: core });
+      if (text.endsWith(' ')) parts.push({ text: ' ' });
+    }
+  }
+  const out: V3Span[] = [];
+  for (const part of parts) {
+    const prev = out[out.length - 1];
+    if (prev && !!prev.strong === !!part.strong && !!prev.em === !!part.em) prev.text += part.text;
+    else out.push({ ...part });
+  }
+  out.forEach((x, i) => {
+    x.text = x.text.replace(/ {2,}/g, ' ');
+    if (i > 0 && out[i - 1].text.endsWith(' ')) x.text = x.text.replace(/^ /, '');
+  });
+  if (out.length) out[0].text = out[0].text.replace(/^ /, '');
+  if (out.length) out[out.length - 1].text = out[out.length - 1].text.replace(/ $/, '');
+  return out.filter((x) => x.text);
+}
+
+/** An old rich text value as blocks. A value already in blocks (a document restored at a newer version) stays. */
+function v3Blocks(value: unknown, list?: string): unknown {
+  if (Array.isArray(value) && value.length && value.every((b) => b && typeof b === 'object' && typeof b.type === 'string')) return value;
+  const paragraphs = Array.isArray(value) ? value.map(String) : typeof value === 'string' ? value.split(/\n{2,}/) : [];
+  const lines = paragraphs.map(v3Spans).filter((spans) => spans.length);
+  if (list) return lines.length ? [{ type: list, items: lines }] : [];
+  return lines.map((spans) => ({ type: 'p', spans }));
+}
+
+const v3IsBinding = (v: unknown) => !!v && typeof v === 'object' && ('$prop' in v || '$item' in v);
+
+/** How each rich property of a definition is listed, from the old `list` on the node showing it, or its schema. */
+function v3ListKinds(def: Loose): Map<string, string> {
+  const kinds = new Map<string, string>();
+  for (const [name, schema] of Object.entries<Loose>(def.properties ?? {})) {
+    if (schema?.plainAs) kinds.set(name, schema.plainAs);
+    if (schema?.type === 'list') for (const [f, field] of Object.entries<Loose>(schema.fields ?? {})) if (field?.plainAs) kinds.set(`${name}.${f}`, field.plainAs);
+  }
+  const nodes: Record<string, Loose> = def.tree?.nodes ?? {};
+  const parents = new Map<string, string>();
+  for (const n of Object.values(nodes)) for (const c of (Array.isArray(n.children) ? n.children : []) as string[]) parents.set(c, n.id);
+  for (const n of Object.values(nodes)) {
+    const kind = n.kind === 'text' && n.rich ? V2_LIST[n.list] : undefined;
+    if (!kind || !v3IsBinding(n.text)) continue;
+    const bound = n.text as { $prop?: string; $item?: string };
+    if (bound.$prop !== undefined) kinds.set(bound.$prop, kind);
+    else {
+      const seen = new Set<string>();
+      let at = parents.get(n.id);
+      while (at && !seen.has(at) && nodes[at]?.kind !== 'repeat') {
+        seen.add(at);
+        at = parents.get(at);
+      }
+      const listProp = at ? nodes[at]?.list?.$prop : undefined;
+      if (listProp) kinds.set(`${listProp}.${bound.$item}`, kind);
+    }
+  }
+  return kinds;
+}
+
+function structureRichText(project: ProjectState, due: (doc: { schemaVersion: number }) => boolean) {
+  const components = project.components as Record<string, Loose>;
+  // Read from every definition first: a document that is not due can still describe the values of one that is.
+  const kinds = new Map(Object.values(components).map((d) => [d.id as string, v3ListKinds(d)]));
+  const items = (list: unknown, schema: Loose, name: string, of: Map<string, string> | undefined) => {
+    if (!Array.isArray(list)) return list;
+    return list.map((it: Loose) => {
+      if (!it || typeof it !== 'object') return it;
+      const out = { ...it };
+      for (const [f, field] of Object.entries<Loose>(schema.fields ?? {})) {
+        if (field?.type === 'richtext' && Object.hasOwn(out, f) && !v3IsBinding(out[f])) out[f] = v3Blocks(out[f], of?.get(`${name}.${f}`));
+      }
+      return out;
+    });
+  };
+  const convertTree = (tree: Loose | undefined) => {
+    for (const n of Object.values<Loose>(tree?.nodes ?? {})) {
+      if (n.kind === 'text' && n.rich) {
+        if (!v3IsBinding(n.text)) n.text = v3Blocks(n.text, V2_LIST[n.list]);
+        delete n.list;
+      } else if (n.kind === 'instance') {
+        const def = components[n.definitionId];
+        const of = kinds.get(n.definitionId);
+        for (const [name, schema] of Object.entries<Loose>(def?.properties ?? {})) {
+          if (!n.props || !Object.hasOwn(n.props, name) || v3IsBinding(n.props[name])) continue;
+          if (schema?.type === 'richtext') n.props[name] = v3Blocks(n.props[name], of?.get(name));
+          else if (schema?.type === 'list') n.props[name] = items(n.props[name], schema, name, of);
+        }
+      }
+    }
+  };
+  for (const def of Object.values(components)) {
+    if (!due(def as ComponentDefinition)) continue;
+    const of = kinds.get(def.id);
+    for (const [name, schema] of Object.entries<Loose>(def.properties ?? {})) {
+      if (schema?.type === 'richtext') {
+        schema.default = v3Blocks(schema.default, of?.get(name));
+        if (of?.has(name)) schema.plainAs = of.get(name);
+      } else if (schema?.type === 'list') {
+        for (const [f, field] of Object.entries<Loose>(schema.fields ?? {})) {
+          if (field?.type !== 'richtext') continue;
+          field.default = v3Blocks(field.default, of?.get(`${name}.${f}`));
+          if (of?.has(`${name}.${f}`)) field.plainAs = of.get(`${name}.${f}`);
+        }
+        schema.default = items(schema.default, schema, name, of);
+      }
+    }
+    convertTree(def.tree);
+  }
+  for (const page of Object.values(project.pages)) if (due(page)) convertTree(page);
+  if (due(project.site)) {
+    convertTree(project.site.shell?.header);
+    convertTree(project.site.shell?.footer);
+  }
+}
+
 export const MIGRATIONS: Migration[] = [
   {
     id: 'document-baseline',
@@ -43,6 +190,11 @@ export const MIGRATIONS: Migration[] = [
         page.shell ??= 'default';
       }
     }
+  },
+  {
+    id: 'structured-rich-text',
+    description: 'Store rich text as blocks of spans instead of strings with ** and * marks.',
+    migrate: structureRichText
   }
 ];
 

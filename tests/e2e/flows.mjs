@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
 
 const { WORK, SHOTS: OUT, cleanup } = scratch('flows');
 const { app, win, errors } = await launch(WORK);
@@ -23,6 +23,56 @@ await win.keyboard.press('Enter');
 await eventually(() => assert.ok(read('src/routes/+page.svelte').includes('Rooms that work beautifully'), 'the new heading is written to the page source'));
 assert.ok(!read('src/routes/+page.svelte').includes('data-so-'), 'no editor instrumentation in the page source');
 await eventually(async () => assert.equal(await h1.innerText(), 'Rooms that work beautifully', 'the preview shows the new heading'));
+
+step('inline rich text: bold, italic and a page link');
+const rich = frame.locator('.so-rich', { hasText: 'That conversation shapes' }).first();
+await rich.scrollIntoViewIfNeeded();
+await rich.click();
+await win.waitForTimeout(300);
+await rich.dblclick();
+await eventually(async () => assert.equal(await rich.getAttribute('contenteditable'), 'true', 'the rich text is being edited'));
+await rich.evaluate((el) => {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    const at = n.nodeValue.indexOf('conversation');
+    if (at < 0) continue;
+    const range = document.createRange();
+    range.setStart(n, at);
+    range.setEnd(n, at + 'conversation'.length);
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return;
+  }
+});
+await win.keyboard.press(`${MOD}+b`);
+await win.keyboard.press(`${MOD}+i`);
+await win.keyboard.press(`${MOD}+k`);
+await eventually(async () => assert.equal(await win.locator('[role="dialog"]').count(), 0, 'the command menu stays closed while editing text'));
+await win.keyboard.type('/about/');
+await win.keyboard.press('Enter');
+await eventually(async () => assert.equal(await rich.locator('a[href="/about/"]').count(), 1, 'the words are linked'));
+await win.keyboard.press(`${MOD}+Enter`);
+const richSpan = async () =>
+  win.evaluate(async () => {
+    const s = await window.builder.project.snapshot();
+    const page = s.state.pages[s.state.site.homePageId];
+    const about = Object.values(s.state.pages).find((x) => x.title === 'About');
+    for (const n of Object.values(page.nodes)) {
+      for (const b of Array.isArray(n.props?.body) ? n.props.body : []) {
+        const span = b.spans?.find((x) => x.text === 'conversation');
+        if (span) return { span, about: about.id };
+      }
+    }
+    return null;
+  });
+await eventually(async () => {
+  const found = await richSpan();
+  assert.ok(found, 'the edited words are stored as their own span');
+  assert.deepEqual(found.span, { text: 'conversation', strong: true, em: true, link: { type: 'page', target: found.about } }, 'bold, italic and the page ID are stored together');
+});
+await eventually(async () => assert.equal(await rich.locator('a[href="/about/"] strong em').count(), 1, 'the preview shows the linked bold italic words'));
+assert.ok(!read('src/lib/siteorigin/runtime/RichText.svelte').includes('data-so-'), 'no editor instrumentation in the rich text helper');
 
 step('insert pricing via Insert panel');
 await win.getByRole('button', { name: 'Insert', exact: true }).click();

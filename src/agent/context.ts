@@ -1,20 +1,27 @@
 import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
 import { displayName } from '@engine/tree';
 import { effectiveTokens } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
-function summarizeValue(v: unknown, depth = 0): unknown {
+function summarizeValue(v: unknown, pages: RichPages, depth = 0): unknown {
   if (typeof v === 'string') return clip(v, 220);
   if (Array.isArray(v)) {
+    // Rich text reads as the same short text form the tools accept.
+    if (v.length && v.every(isRichBlock)) {
+      const text = richTextToMarkdown(v, pages);
+      // Never a shortened string that could be written back as the whole value.
+      return text.length <= 1200 ? text : { truncated: true, chars: text.length, preview: clip(text, 400) };
+    }
     if (depth > 2) return `[${v.length} items]`;
-    return v.slice(0, 12).map((x) => summarizeValue(x, depth + 1));
+    return v.slice(0, 12).map((x) => summarizeValue(x, pages, depth + 1));
   }
   if (v && typeof v === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [k, x] of Object.entries(v)) out[k] = summarizeValue(x, depth + 1);
+    for (const [k, x] of Object.entries(v)) out[k] = summarizeValue(x, pages, depth + 1);
     return out;
   }
   return v;
@@ -64,7 +71,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       base.definitionId = n.definitionId;
       if (def?.owner === 'project') base.projectOwned = true;
       if (n.variant ?? def?.defaultVariant) base.variant = n.variant ?? def?.defaultVariant;
-      base.props = summarizeValue(n.props);
+      base.props = summarizeValue(n.props, state.pages);
       if (n.overrides) base.styleOverrides = n.overrides;
       if (n.slots && depth < 4) base.slots = Object.fromEntries(Object.entries(n.slots).map(([k, ids]) => [k, ids.map((c) => compactNode(state, tree, c, depth + 1))]));
       break;
@@ -78,7 +85,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
     case 'text':
       base.kind = 'text';
       base.tag = n.tag;
-      base.text = isBinding(n.text) ? n.text : summarizeValue(n.text);
+      base.text = isBinding(n.text) ? n.text : summarizeValue(n.text, state.pages);
       if (n.styles) base.styles = n.styles;
       break;
     case 'image':
@@ -172,8 +179,8 @@ export function tokensSummary(state: ProjectState) {
 }
 
 /** The selected element's own content, in full unless it is very large: this is what the edit works from. */
-function selectedProps(props: Record<string, unknown>): unknown {
-  return JSON.stringify(props).length <= 6000 ? props : summarizeValue(props);
+function selectedProps(props: Record<string, unknown>, pages: RichPages): unknown {
+  return JSON.stringify(props).length <= 6000 ? props : summarizeValue(props, pages);
 }
 
 export function describeSelection(state: ProjectState, ref: ElementRef | null): Record<string, unknown> | null {
@@ -184,7 +191,7 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
   if (!ref.instancePath.length) {
     const node = compactNode(state, tree, ref.nodeId);
     const selected = tree.nodes[ref.nodeId];
-    if (selected?.kind === 'instance') node.props = selectedProps(selected.props);
+    if (selected?.kind === 'instance') node.props = selectedProps(selected.props, state.pages);
     return { owner: ref.owner, nodeId: ref.nodeId, node };
   }
   const instId = ref.instancePath[0];
@@ -206,7 +213,7 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
     innerNodeId: ref.nodeId,
     itemId: ref.itemPath?.[ref.itemPath.length - 1] ?? null,
     boundTo: binding,
-    ...(inst?.kind === 'instance' ? { currentProps: selectedProps(inst.props) } : {}),
+    ...(inst?.kind === 'instance' ? { currentProps: selectedProps(inst.props, state.pages) } : {}),
     note: 'Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId.'
   };
 }

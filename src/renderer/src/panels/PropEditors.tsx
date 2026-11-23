@@ -5,6 +5,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { api, toast, useStore } from '../store';
 import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
 import { assetUrl } from '../lib/model';
+import { richTextToMarkdown, toRichText } from '@shared/richtext';
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
@@ -493,10 +494,10 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
           {...wired}
           multiline
           rows={4}
-          value={(Array.isArray(value) ? value : []).join('\n\n')}
-          onCommit={(t) => onChange(t.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean))}
+          value={richTextToMarkdown(toRichText(value, schema.plainAs), state.pages, schema.plainAs)}
+          onCommit={onChange}
           ariaLabel={name}
-          placeholder="Separate paragraphs with a blank line. Use **bold** and *italic*."
+          placeholder={'One paragraph per line. Use **bold**, *italic*, [a link](/about/), "- " for lists and "### " for headings.'}
         />
       );
     case 'number':

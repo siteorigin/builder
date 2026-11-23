@@ -1,57 +1,85 @@
 import { describe, expect, it } from 'vitest';
-import { paragraphsFromDom, richDom, sameParagraphs, type RichDomNode } from '../../src/renderer/src/lib/richtext';
+import { blocksFromDom, richDom, type RichDomNode } from '../../src/renderer/src/lib/richtext';
 import { dropAt, moveIndex, rowsOf } from '../../src/renderer/src/lib/reorder';
 
 const el = (tag: string, ...children: RichDomNode[]): RichDomNode => ({ tag, children });
 
 describe('rich text from the canvas', () => {
-  it('keeps bold and italic as ** and * marks', () => {
-    // What SoRichText renders for ["Every room starts with **every decision** made *together*.", "Second."]
+  const pages = { pg_about: { id: 'pg_about', route: '/about/' } };
+  const blocks = (dom: RichDomNode[]) => blocksFromDom(dom, pages).blocks;
+  const p = (...spans: Array<string | Record<string, unknown>>) => ({ type: 'p', spans: spans.map((x) => (typeof x === 'string' ? { text: x } : x)) });
+
+  it('keeps bold and italic as marks on spans', () => {
     const dom = ['\n', el('p', 'Every room starts with ', el('strong', 'every decision'), ' made ', el('em', 'together'), '.'), ' ', el('p', 'Second.')];
-    expect(paragraphsFromDom(dom)).toEqual(['Every room starts with **every decision** made *together*.', 'Second.']);
+    expect(blocks(dom)).toEqual([p('Every room starts with ', { text: 'every decision', strong: true }, ' made ', { text: 'together', em: true }, '.'), p('Second.')]);
   });
 
   it('reads the browser’s own bold and italic commands', () => {
-    expect(paragraphsFromDom([el('p', el('b', 'Bold'), ' and ', el('i', 'italic'))])).toEqual(['**Bold** and *italic*']);
+    expect(blocks([el('p', el('b', 'Bold'), ' and ', el('i', 'italic'))])).toEqual([p({ text: 'Bold', strong: true }, ' and ', { text: 'italic', em: true })]);
     // Un-bolding part of a bold run leaves a span with font-weight: normal.
-    expect(paragraphsFromDom([el('p', el('strong', 'one ', { tag: 'span', b: false, children: ['two'] }, ' three'))])).toEqual(['**one** two **three**']);
-    expect(paragraphsFromDom([el('p', { tag: 'span', b: true, children: ['styled'] })])).toEqual(['**styled**']);
+    expect(blocks([el('p', el('strong', 'one ', { tag: 'span', b: false, children: ['two'] }, ' three'))])).toEqual([p({ text: 'one', strong: true }, ' two ', { text: 'three', strong: true })]);
+    expect(blocks([el('p', { tag: 'span', b: true, children: ['styled'] })])).toEqual([p({ text: 'styled', strong: true })]);
   });
 
-  it('splits paragraphs on blocks and line breaks, and drops empty ones', () => {
-    expect(paragraphsFromDom([el('p', 'One', el('br'), 'Two'), el('div', 'Three'), el('p', '  '), el('p', el('br'))])).toEqual(['One', 'Two', 'Three']);
-    expect(paragraphsFromDom(['Loose text'])).toEqual(['Loose text']);
-    expect(paragraphsFromDom([el('ul', el('li', 'A'), el('li', el('strong', 'B')))])).toEqual(['A', '**B**']);
+  it('splits blocks on block elements and line breaks, and drops empty ones', () => {
+    expect(blocks([el('p', 'One', el('br'), 'Two'), el('div', 'Three'), el('p', '  '), el('p', el('br'))])).toEqual([p('One'), p('Two'), p('Three')]);
+    expect(blocks(['Loose text'])).toEqual([p('Loose text')]);
   });
 
   it('moves spaces outside marks, merges neighbours and collapses whitespace', () => {
-    expect(paragraphsFromDom([el('p', 'A', el('strong', ' bold '), 'word')])).toEqual(['A **bold** word']);
-    expect(paragraphsFromDom([el('p', el('strong', 'a'), el('b', 'b'))])).toEqual(['**ab**']);
-    expect(paragraphsFromDom([el('p', 'non breaking   spaces')])).toEqual(['non breaking spaces']);
-    expect(paragraphsFromDom([el('p', el('strong', '   '))])).toEqual([]);
+    expect(blocks([el('p', 'A', el('strong', ' bold '), 'word')])).toEqual([p('A ', { text: 'bold', strong: true }, ' word')]);
+    expect(blocks([el('p', el('strong', 'a'), el('b', 'b'))])).toEqual([p({ text: 'ab', strong: true })]);
+    expect(blocks([el('p', 'non breaking   spaces')])).toEqual([p('non breaking spaces')]);
+    expect(blocks([el('p', el('strong', '   '))])).toEqual([]);
   });
 
-  it('never writes marks it cannot express', () => {
-    // Nested marks keep the strongest; a literal asterisk anywhere in the paragraph could pair with a mark, so
-    // that paragraph keeps its words without marks.
-    expect(paragraphsFromDom([el('p', el('strong', el('em', 'both')))])).toEqual(['**both**']);
-    expect(paragraphsFromDom([el('p', el('em', '2 * 3'), ' = 6')])).toEqual(['2 * 3 = 6']);
-    expect(paragraphsFromDom([el('p', '2 * 3 ', el('strong', 'today'))])).toEqual(['2 * 3 today']);
-    expect(paragraphsFromDom([el('p', 'Plain'), el('p', 'a*b ', el('em', 'c'))])).toEqual(['Plain', 'a*b c']);
+  it('holds bold and italic together, and treats an asterisk as a character', () => {
+    expect(blocks([el('p', el('strong', el('em', 'both')))])).toEqual([p({ text: 'both', strong: true, em: true })]);
+    expect(blocks([el('p', el('em', '2 * 3'), ' = 6')])).toEqual([p({ text: '2 * 3', em: true }, ' = 6')]);
+    expect(blocks([el('p', '2 * 3 ', el('strong', 'today'))])).toEqual([p('2 * 3 ', { text: 'today', strong: true })]);
+    expect(blocks([el('p', '**not bold**')])).toEqual([p('**not bold**')]);
   });
 
-  it('renders back to the same marks (the RichText component’s own reading of the format)', () => {
-    // The generated RichText component's segment regex, applied to what the serializer writes.
-    const segments = (text: string) => [...text.matchAll(/(\*\*[^*]+\*\*|\*[^*]+\*)/g)].map((m) => m[0]);
-    const out = paragraphsFromDom([el('p', 'A ', el('strong', 'bold'), ' and ', el('em', 'em'), ' and ', el('b', 'more'))]);
-    expect(segments(out[0])).toEqual(['**bold**', '*em*', '**more**']);
+  it('keeps every kind of block', () => {
+    const dom: RichDomNode[] = [
+      el('h3', 'Heading'),
+      el('h4', 'Smaller'),
+      el('blockquote', 'Quote'),
+      el('ul', el('li', 'A'), el('li', el('strong', 'B'))),
+      el('p', 'Between'),
+      el('ol', el('li', 'One')),
+      el('p', 'Then'),
+      { tag: 'ul', check: true, children: [el('li', 'Done')] }
+    ];
+    expect(blocks(dom)).toEqual([
+      { type: 'h3', spans: [{ text: 'Heading' }] },
+      { type: 'h4', spans: [{ text: 'Smaller' }] },
+      { type: 'blockquote', spans: [{ text: 'Quote' }] },
+      { type: 'ul', items: [[{ text: 'A' }], [{ text: 'B', strong: true }]] },
+      p('Between'),
+      { type: 'ol', items: [[{ text: 'One' }]] },
+      p('Then'),
+      { type: 'check', items: [[{ text: 'Done' }]] }
+    ]);
   });
 
-  it('round-trips without change', () => {
-    const value = ['Plain', 'With **bold** and *em*'];
-    expect(sameParagraphs(value, paragraphsFromDom([el('p', 'Plain'), el('p', 'With ', el('strong', 'bold'), ' and ', el('em', 'em'))]))).toBe(true);
-    expect(sameParagraphs('Plain', ['Plain'])).toBe(true);
-    expect(sameParagraphs(['a'], ['a', 'b'])).toBe(false);
+  it('flattens a nested list and joins neighbouring lists of one kind', () => {
+    expect(blocks([el('ul', el('li', 'A', el('ul', el('li', 'B'))), el('li', 'C'))])).toEqual([{ type: 'ul', items: [[{ text: 'A' }], [{ text: 'B' }], [{ text: 'C' }]] }]);
+    expect(blocks([el('ul', el('li', 'A')), el('ul', el('li', 'B'))])).toEqual([{ type: 'ul', items: [[{ text: 'A' }], [{ text: 'B' }]] }]);
+  });
+
+  it('reads links back by destination, so a page link keeps its ID', () => {
+    const a = (href: string, text: string, newTab?: boolean): RichDomNode => ({ tag: 'a', href, ...(newTab ? { newTab } : {}), children: [text] });
+    expect(blocksFromDom([el('p', a('/about/', 'About'), ' ', a('/about/#team', 'Team'), ' ', a('https://example.com/', 'Web', true))], pages)).toEqual({
+      droppedLinks: 0,
+      blocks: [p({ text: 'About', link: { type: 'page', target: 'pg_about' } }, ' ', { text: 'Team', link: { type: 'page', target: 'pg_about', anchor: 'team' } }, ' ', { text: 'Web', link: { type: 'url', target: 'https://example.com/', newTab: true } })]
+    });
+  });
+
+  it('keeps the words of a link it cannot store, and counts it', () => {
+    for (const href of ['javascript:alert(1)', 'data:text/html,x', '/no-such-page/', '//evil.test/x', 'file:///etc/passwd']) {
+      expect(blocksFromDom([el('p', { tag: 'a', href, children: ['Words'] })], pages), href).toEqual({ droppedLinks: 1, blocks: [p('Words')] });
+    }
   });
 
   it('validates the copy the preview sends', () => {
@@ -59,6 +87,10 @@ describe('rich text from the canvas', () => {
     expect(richDom('<p>')).toBeNull();
     expect(richDom([{ tag: 'p' }])).toBeNull();
     expect(richDom([{ tag: 'p', b: 'yes', children: [] }])).toBeNull();
+    expect(richDom([{ tag: 'a', href: 1, children: [] }])).toBeNull();
+    expect(richDom([{ tag: 'a', href: 'x'.repeat(3000), children: [] }])).toBeNull();
+    expect(richDom([{ tag: 'ul', check: 'yes', children: [] }])).toBeNull();
+    expect(richDom([{ tag: 'a', href: '/', newTab: 1, children: [] }])).toBeNull();
     let deep: RichDomNode = 'x';
     for (let i = 0; i < 30; i++) deep = el('span', deep);
     expect(richDom([deep])).toBeNull();

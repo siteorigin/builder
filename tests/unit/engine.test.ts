@@ -555,7 +555,7 @@ describe('definition editing operations (§2.5)', () => {
       { type: 'node.insert', owner: own, parentId: rep, primitive: 'heading' }
     ]).state;
     const repNode = s.components[f.id].tree!.nodes[rep] as { children: string[] };
-    expect(s.components[f.id].tree!.nodes[repNode.children[0]]).toMatchObject({ kind: 'text', rich: true, text: ['One', 'Two'] });
+    expect(s.components[f.id].tree!.nodes[repNode.children[0]]).toMatchObject({ kind: 'text', rich: true, text: [{ type: 'p', spans: [{ text: 'One' }] }, { type: 'p', spans: [{ text: 'Two' }] }] });
     s = applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: repNode.children[1], field: 'text', binding: { $item: 'title' } }]).state;
     expect(errors(s)).toEqual([]);
     for (const [path, src] of generateProject(s)) if (path.endsWith('.svelte')) await compiles(path, src);

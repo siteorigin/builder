@@ -6,6 +6,7 @@ import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState, PropSc
 import { isBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
+import { richTextToPlain, toRichText } from '@shared/richtext';
 import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, instancesOf } from './tree';
 import { clone } from './install';
@@ -125,7 +126,9 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
     }
     if (retyped && !(lossless[prev!.type] ?? []).includes(schema.type)) fail(`${label}: "${name}" has content that a ${schema.type} property cannot keep. Remove the property and add it again to start over.`);
     try {
-      node.props[name] = normalizeProp(schema, v, state, `${def.name} → ${schema.label}`);
+      // Rich text kept as a plain string keeps its words.
+      const kept = retyped && prev!.type === 'richtext' && schema.type === 'string' ? richTextToPlain(toRichText(v)) : v;
+      node.props[name] = normalizeProp(schema, kept, state, `${def.name} → ${schema.label}`);
     } catch (e) {
       if (!(e instanceof EngineError)) throw e;
       fail(`${label}: ${e.message} Change that content first, or remove the property and add it again.`);
@@ -296,8 +299,8 @@ function literalFor(field: BindField, node: GraphNode, schema: PropSchema | unde
   const d = schema?.default;
   switch (field) {
     case 'text':
-      if (node.kind === 'text' && node.rich) return Array.isArray(d) ? clone(d) : [String(d ?? '')].filter(Boolean);
-      return Array.isArray(d) ? d.join('\n\n') : String(d ?? '');
+      if (node.kind === 'text' && node.rich) return toRichText(d);
+      return Array.isArray(d) ? richTextToPlain(toRichText(d)) : String(d ?? '');
     case 'label':
       return String(d ?? '');
     case 'appearance':

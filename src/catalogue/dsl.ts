@@ -21,7 +21,8 @@ import type {
   TextTag,
   VariantDef
 } from '@shared/types';
-import { SCHEMA_VERSION } from '@shared/types';
+import { SCHEMA_VERSION, isBinding } from '@shared/types';
+import { toRichText, type RichListType } from '@shared/richtext';
 
 export const prop = (name: string): Binding => ({ $prop: name });
 export const item = (name: string): Binding => ({ $item: name });
@@ -59,7 +60,7 @@ export class TreeBuilder {
     return this.add({ id, kind: 'text', tag, text }, opts);
   }
   rich(id: string, text: string[] | Binding, opts: NodeOpts = {}): string {
-    return this.add({ id, kind: 'text', tag: 'div', text, rich: true }, opts);
+    return this.add({ id, kind: 'text', tag: 'div', text: isBinding(text) ? text : toRichText(text), rich: true }, opts);
   }
   image(id: string, image: ImageValue | Binding, opts: NodeOpts = {}): string {
     return this.add({ id, kind: 'image', image }, opts);
@@ -142,11 +143,22 @@ export function managed(spec: ComponentSpec): ComponentDefinition {
 // Property helpers
 // ---------------------------------------------------------------------------
 
+/** A value authored with plain strings, with its rich text in the stored form. */
+export function canonicalRich(schema: PropSchema, value: unknown): unknown {
+  if (schema.type === 'richtext') return isBinding(value) ? value : toRichText(value, schema.plainAs);
+  if (schema.type !== 'list' || !Array.isArray(value)) return value;
+  return value.map((it: Record<string, unknown>) => {
+    const out = { ...it };
+    for (const [k, f] of Object.entries(schema.fields)) if (k in out) out[k] = canonicalRich(f, out[k]);
+    return out;
+  });
+}
+
 export const P = {
   str: (label: string, def: string, extra: Partial<ScalarPropSchema> = {}): ScalarPropSchema =>
     ({ type: 'string', label, default: def, ...extra }) as ScalarPropSchema,
   text: (label: string, def: string): ScalarPropSchema => ({ type: 'string', label, default: def, multiline: true }),
-  rich: (label: string, def: string[]): ScalarPropSchema => ({ type: 'richtext', label, default: def }),
+  rich: (label: string, def: string[], extra: { plainAs?: RichListType } = {}): ScalarPropSchema => ({ type: 'richtext', label, default: toRichText(def, extra.plainAs), ...extra }),
   bool: (label: string, def: boolean): ScalarPropSchema => ({ type: 'boolean', label, default: def }),
   num: (label: string, def: number, min?: number, max?: number): ScalarPropSchema => ({ type: 'number', label, default: def, min, max }),
   choice: (label: string, def: string, options: Array<[string, string]>): ScalarPropSchema => ({
@@ -173,7 +185,7 @@ export const P = {
     label,
     itemLabel,
     fields,
-    default: items.map((it, i) => ({ id: `item-${i + 1}`, ...it }) as ListItem),
+    default: items.map((it, i) => canonicalRich({ type: 'list', fields } as ListProp, [{ id: `item-${i + 1}`, ...it }]) as ListItem[]).flat(),
     max: 24,
     ...extra
   })

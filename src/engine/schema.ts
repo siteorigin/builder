@@ -64,6 +64,10 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
       break;
     }
     case 'richtext':
+      if (r.plainAs !== undefined) {
+        if (typeof r.plainAs !== 'string' || !['ul', 'ol', 'check'].includes(r.plainAs)) fail(`${label}: plainAs must be ul, ol or check.`);
+        out.plainAs = r.plainAs;
+      }
       out.default = [];
       break;
     case 'number': {

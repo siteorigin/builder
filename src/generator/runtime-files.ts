@@ -14,7 +14,8 @@ export const LINK_SVELTE = `<script>
 	 */
 	import { resolve } from '$app/paths';
 	let { link = null, appearance = '', class: className = '', children, ...rest } = $props();
-	const href = $derived(link?.href ? (link.href.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link.href) : null);
+	const safe = $derived(typeof link?.href === 'string' && /^(https?:|mailto:|tel:|#|\\/)/i.test(link.href) ? link.href : null);
+	const href = $derived(safe ? (safe.startsWith('/') && !safe.startsWith('//') ? resolve(safe) : safe) : null);
 	const BUTTONS = ['primary', 'secondary', 'text', 'light'];
 	const button = $derived(BUTTONS.includes(appearance));
 	const kind = $derived(button ? \`so-btn so-btn--\${appearance}\` : appearance === 'plain' ? 'so-plain-link' : 'so-link');
@@ -88,10 +89,12 @@ export const IMAGE_SVELTE = `<script>
 
 export const RICHTEXT_SVELTE = `<script>
 	/**
-	 * Renders structured rich text: an array of paragraphs with inline **strong** and *emphasis*.
-	 * Text is always escaped; HTML is never interpreted.
+	 * Renders structured rich text as plain semantic HTML: paragraphs, headings, quotes and lists of text spans.
+	 * Text is always escaped; HTML is never interpreted. \`paragraphs\` and \`list\` are the older form, which code
+	 * components written against it still pass: strings with inline **strong** and *emphasis*.
 	 */
-	let { paragraphs = [], list = '', class: className = '', ...rest } = $props();
+	import SoLink from './Link.svelte';
+	let { value = undefined, paragraphs = undefined, list = '', class: className = '', ...rest } = $props();
 
 	function segments(text) {
 		const out = [];
@@ -108,26 +111,40 @@ export const RICHTEXT_SVELTE = `<script>
 		if (last < text.length) out.push({ text: text.slice(last) });
 		return out;
 	}
-	const items = $derived(Array.isArray(paragraphs) ? paragraphs : [String(paragraphs ?? '')]);
+	function toBlocks(input, kind) {
+		const out = [];
+		for (const entry of Array.isArray(input) ? input : input == null ? [] : [String(input)]) {
+			if (typeof entry !== 'string') out.push(entry);
+			else if (!kind) out.push({ type: 'p', spans: segments(entry) });
+			else if (out.at(-1)?.type === kind) out.at(-1).items.push(segments(entry));
+			else out.push({ type: kind, items: [segments(entry)] });
+		}
+		return out;
+	}
+	const blocks = $derived(toBlocks(value ?? paragraphs, list === 'check' ? 'check' : list ? 'ul' : ''));
+	const LIST_CLASS = { ul: 'so-rich--bullet', check: 'so-rich--check', ol: 'so-rich--number' };
 </script>
 
-{#if list}
-	<ul class={['so-rich', "so-rich--" + list, className]} {...rest}>
-		{#each items as paragraph, i (i)}
-			<li>
-				{#each segments(paragraph) as seg, j (j)}{#if seg.strong}<strong>{seg.text}</strong>{:else if seg.em}<em>{seg.text}</em>{:else}{seg.text}{/if}{/each}
-			</li>
-		{/each}
-	</ul>
-{:else}
-	<div class={['so-rich', className]} {...rest}>
-		{#each items as paragraph, i (i)}
-			<p>
-				{#each segments(paragraph) as seg, j (j)}{#if seg.strong}<strong>{seg.text}</strong>{:else if seg.em}<em>{seg.text}</em>{:else}{seg.text}{/if}{/each}
-			</p>
-		{/each}
-	</div>
-{/if}
+{#snippet marked(s)}{#if s.strong && s.em}<strong><em>{s.text}</em></strong>{:else if s.strong}<strong>{s.text}</strong>{:else if s.em}<em>{s.text}</em>{:else}{s.text}{/if}{/snippet}
+{#snippet inline(spans)}{#each spans as s, i (i)}{#if s.link}<SoLink link={s.link} appearance="link">{@render marked(s)}</SoLink>{:else}{@render marked(s)}{/if}{/each}{/snippet}
+
+<div class={['so-rich', className]} {...rest}>
+	{#each blocks as block, i (i)}
+		{#if block.type === 'ol'}
+			<ol class={LIST_CLASS.ol}>{#each block.items as item, j (j)}<li>{@render inline(item)}</li>{/each}</ol>
+		{:else if block.items}
+			<ul class={LIST_CLASS[block.type]}>{#each block.items as item, j (j)}<li>{@render inline(item)}</li>{/each}</ul>
+		{:else if block.type === 'h3'}
+			<h3>{@render inline(block.spans)}</h3>
+		{:else if block.type === 'h4'}
+			<h4>{@render inline(block.spans)}</h4>
+		{:else if block.type === 'blockquote'}
+			<blockquote>{@render inline(block.spans)}</blockquote>
+		{:else}
+			<p>{@render inline(block.spans)}</p>
+		{/if}
+	{/each}
+</div>
 `;
 
 export function iconSvelte(): string {
@@ -216,5 +233,14 @@ export function has(value) {
 		return true;
 	}
 	return !!value;
+}
+
+/** Rich text blocks as paragraph strings, for code components written against that older form. */
+export function richParagraphs(value) {
+	if (!Array.isArray(value)) return value;
+	const isBlock = (b) => !!b && typeof b === 'object' && (Array.isArray(b.spans) || Array.isArray(b.items));
+	const line = (spans) => spans.map((s) => (s.strong ? '**' + s.text + '**' : s.em ? '*' + s.text + '*' : s.text)).join('');
+	if (value.length && value.every(isBlock)) return value.flatMap((b) => (b.items ? b.items.map(line) : [line(b.spans)]));
+	return value.map((it) => (it && typeof it === 'object' && !Array.isArray(it) ? Object.fromEntries(Object.entries(it).map(([k, v]) => [k, richParagraphs(v)])) : it));
 }
 `;

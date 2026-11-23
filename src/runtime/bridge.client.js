@@ -11,6 +11,7 @@ let hovered = null;
 /** The innermost element under the pointer, as last reported to the editor. */
 let pointerAt = null;
 let editing = null; // { el, desc, editId, original, rich }
+let linkEditor = null; // { host, input, range }
 /** Larger commits than this would be dropped by the editor's message size check, or refused by the editor. */
 const MAX_COMMIT_CHARS = 150000;
 const MAX_TEXT_CHARS = 20000;
@@ -104,6 +105,7 @@ document.documentElement.addEventListener('mouseleave', () => {
 document.addEventListener(
   'click',
   (e) => {
+    if (linkEditor && e.target === linkEditor.host) return;
     if (editing && editing.el.contains(e.target)) {
       // Clicks place the caret in the text being edited; they never follow a link or toggle a disclosure.
       if (e.target.closest && e.target.closest('a[href], summary')) e.preventDefault();
@@ -144,7 +146,7 @@ document.addEventListener(
 document.addEventListener(
   'contextmenu',
   (e) => {
-    if (mode !== 'edit') return;
+    if (mode !== 'edit' || (linkEditor && e.target === linkEditor.host)) return;
     e.preventDefault();
     send('contextmenu', { chain: chainFrom(e.target), x: e.clientX, y: e.clientY });
   },
@@ -153,6 +155,7 @@ document.addEventListener(
 document.addEventListener('submit', (e) => mode === 'edit' && e.preventDefault(), true);
 for (const t of ['pointerdown', 'mousedown', 'touchstart']) {
   document.addEventListener(t, (e) => {
+    if (linkEditor && e.target === linkEditor.host) return;
     if (mode === 'edit' && !(editing && editing.el.contains(e.target))) e.preventDefault();
   }, { capture: true, passive: false });
 }
@@ -179,7 +182,7 @@ function beginTextEdit(desc, editId) {
   if (editing) commitEdit();
   const rich = el.classList.contains('so-rich');
   editing = { el, desc, editId, original: el.innerHTML, rich };
-  // Rich text keeps its bold and italic (⌘B, ⌘I); everything else is plain text.
+  // Rich text keeps its bold, italic (⌘B, ⌘I) and links (⌘K); everything else is plain text.
   el.setAttribute('contenteditable', rich ? 'true' : 'plaintext-only');
   el.setAttribute('spellcheck', 'true');
   el.style.outline = 'none';
@@ -208,6 +211,11 @@ function onEditKey(e) {
     if (editing.rich && k !== 'u') document.execCommand(k === 'b' ? 'bold' : 'italic');
     return;
   }
+  if (mod && !e.altKey && !e.shiftKey && k === 'k') {
+    e.preventDefault();
+    openLinkEditor();
+    return;
+  }
   if (e.key === 'Escape') {
     e.preventDefault();
     cancelEdit();
@@ -220,7 +228,99 @@ function onEditKey(e) {
   }
 }
 function onEditBlur() {
-  if (editing) commitEdit();
+  // Moving into the link editor is still the same edit.
+  if (editing && !linkEditor) commitEdit();
+}
+
+const LINK_EDITOR_CSS = `
+  form { display: flex; gap: 4px; padding: 4px; border-radius: 8px; background: #1b1d21; box-shadow: 0 6px 24px rgb(0 0 0 / 0.32); font: 13px/1.2 system-ui, sans-serif; }
+  input { width: 220px; height: 28px; box-sizing: border-box; padding: 0 8px; border: 1px solid #4a4e57; border-radius: 5px; background: #111316; color: #f4f5f7; font: inherit; outline: none; }
+  input:focus { border-color: #7aa7ff; }
+  input[aria-invalid='true'] { border-color: #ff7a7a; }
+  button { height: 28px; padding: 0 9px; border: 0; border-radius: 5px; background: #2d3037; color: #f4f5f7; font: inherit; cursor: pointer; }
+  button:hover, button:focus-visible { background: #40444d; outline: none; }
+`;
+
+/** ⌘K while editing rich text: a small field for the selected words' link, or the link under the caret. */
+function openLinkEditor() {
+  if (!editing || !editing.rich || linkEditor) return;
+  const sel = getSelection();
+  if (!sel.rangeCount) return;
+  const range = sel.getRangeAt(0).cloneRange();
+  if (!editing.el.contains(range.commonAncestorContainer)) return;
+  const at = range.commonAncestorContainer;
+  const found = (at.nodeType === 1 ? at : at.parentElement).closest('a');
+  const anchor = found && editing.el.contains(found) ? found : null;
+  if (anchor) range.selectNodeContents(anchor);
+  else if (range.collapsed) return;
+  const box = range.getBoundingClientRect();
+  const host = document.createElement('div');
+  const top = box.bottom + 50 > innerHeight ? Math.max(8, box.top - 44) : box.bottom + 6;
+  host.style.cssText = `position: fixed; z-index: 2147483647; left: ${Math.max(8, Math.min(box.left, innerWidth - 340))}px; top: ${top}px;`;
+  const root = host.attachShadow({ mode: 'open' });
+  root.innerHTML = `<style>${LINK_EDITOR_CSS}</style><form><input aria-label="Link destination" placeholder="/about/, https://…, email or phone" spellcheck="false"><button type="submit">Apply</button>${anchor ? '<button type="button">Remove</button>' : ''}</form>`;
+  const input = root.querySelector('input');
+  input.value = anchor ? anchor.getAttribute('href') || '' : '';
+  // Pressing a button keeps focus in the field, so the edit does not end on the way to the click.
+  root.addEventListener('mousedown', (e) => e.target !== input && e.preventDefault());
+  root.querySelector('form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    applyLink(input.value);
+  });
+  const remove = root.querySelector('button[type="button"]');
+  if (remove) remove.addEventListener('click', () => applyLink(''));
+  input.addEventListener('input', () => input.removeAttribute('aria-invalid'));
+  root.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeLinkEditor(true);
+    }
+  });
+  root.addEventListener('focusout', (e) => {
+    if (!linkEditor || linkEditor.input !== input || root.contains(e.relatedTarget)) return;
+    closeLinkEditor(false);
+    commitEdit();
+  });
+  linkEditor = { host, input, range };
+  document.documentElement.appendChild(host);
+  input.focus();
+  input.select();
+}
+function closeLinkEditor(restore) {
+  if (!linkEditor) return;
+  const { host, range } = linkEditor;
+  linkEditor = null;
+  host.remove();
+  if (restore && editing) {
+    editing.el.focus();
+    const s = getSelection();
+    s.removeAllRanges();
+    s.addRange(range);
+  }
+}
+/** Only destinations the editor can store are written; it checks them again when the edit is committed. */
+function applyLink(raw) {
+  const text = raw.trim();
+  if (!text) {
+    closeLinkEditor(true);
+    document.execCommand('unlink');
+    return;
+  }
+  const href = /^[^\s@/:]+@[^\s@/]+\.[^\s@/]+$/.test(text) ? `mailto:${text}` : /^[a-z0-9-]+(\.[a-z0-9-]+)+([/?#]\S*)?$/i.test(text) ? `https://${text}` : text;
+  if (!/^(https?:\/\/\S|mailto:\S|tel:\S|#\S|\/)/i.test(href)) {
+    linkEditor.input.setAttribute('aria-invalid', 'true');
+    return;
+  }
+  const { range } = linkEditor;
+  // The text changed underneath the field: there is no longer a selection to link.
+  if (range.collapsed || !editing.el.contains(range.commonAncestorContainer)) {
+    linkEditor.input.setAttribute('aria-invalid', 'true');
+    return;
+  }
+  closeLinkEditor(true);
+  document.execCommand('createLink', false, href);
 }
 /** Pasted content arrives as plain text: formatting, images and markup from elsewhere never get in. */
 function onEditPaste(e) {
@@ -232,6 +332,7 @@ function onEditDrop(e) {
   e.preventDefault();
 }
 function endEdit() {
+  closeLinkEditor(false);
   const { el } = editing;
   el.removeAttribute('contenteditable');
   el.removeAttribute('spellcheck');
@@ -253,8 +354,8 @@ function commitEdit() {
     endEdit();
     return send('textCancel', { desc, editId });
   }
-  // Rich text goes back as a small copy of its structure (blocks, breaks, bold, italic) for the editor to
-  // turn into paragraphs; plain text as its words.
+  // Rich text goes back as a small copy of its structure (blocks, lists, breaks, marks, links) for the editor
+  // to turn into its stored form; plain text as its words.
   const payload = rich ? { desc, editId, rich: richCopy(el) } : { desc, editId, text: el.innerText.replace(/\s+/g, ' ').trim() };
   // Too much to send or to keep: put the text back and say why, rather than lose the edit on the way.
   if ((rich && !payload.rich) || (!rich && payload.text.length > MAX_TEXT_CHARS) || JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
@@ -265,7 +366,7 @@ function commitEdit() {
   endEdit();
   send('textCommit', payload);
 }
-/** Text, element names and inline bold/italic of what an edit left, as plain data; null when too large. */
+/** Text, element names, inline marks, list kinds and links of what an edit left, as plain data; null when too large. */
 function richCopy(root) {
   let budget = 4000;
   const copy = (n, depth) => {
@@ -277,6 +378,12 @@ function richCopy(root) {
     if (w) out.b = w === 'bold' || w === 'bolder' || Number(w) >= 600;
     const st = n.style && n.style.fontStyle;
     if (st) out.i = st === 'italic' || st === 'oblique';
+    if (out.tag === 'ul' && n.classList.contains('so-rich--check')) out.check = true;
+    if (out.tag === 'a' && n.hasAttribute('href')) {
+      out.href = n.getAttribute('href');
+      if (out.href.length > 2100) throw new Error('too large');
+      if (n.getAttribute('target') === '_blank') out.newTab = true;
+    }
     for (const c of n.childNodes) {
       const v = copy(c, depth + 1);
       if (v !== null) out.children.push(v);
@@ -292,7 +399,8 @@ function richCopy(root) {
 function cancelEdit() {
   if (!editing) return;
   const { el, original, desc, editId } = editing;
-  el.innerHTML = original;
+  // Untouched text keeps its live nodes, which Svelte still owns.
+  if (el.innerHTML !== original) el.innerHTML = original;
   endEdit();
   send('textCancel', { desc, editId });
 }
