@@ -157,6 +157,19 @@ describe('restoring a removal', () => {
     const none = removeAndRestore('s2', ['s2', 'c', 'h', 'p'], arrive, [version(['s1', 'n', 's2', 'm', 's3', 's4'])]);
     expect(none.r).toMatchObject({ ok: false, gap: true });
   });
+
+  it('takes no order from a version where an arrival stood outside the gap', () => {
+    // n stood beyond s3 when s2 was there, and has moved into s2's gap since: that version cannot place s2 against it.
+    const arrive = (t: NodeTree) => {
+      t.rootIds.splice(1, 0, 'n');
+      t.nodes.n = el('n') as never;
+    };
+    const elsewhere = tree(['s1', 's2', 's3', 'n', 's4'], [...Object.values(base().nodes), el('n')] as Array<{ id: string }>);
+    expect(removeAndRestore('s2', ['s2', 'c', 'h', 'p'], arrive, [elsewhere]).r).toMatchObject({ ok: false, gap: true });
+    // Nor from one that lacks a neighbour marking the gap.
+    const noLeft = tree(['s2', 'n', 's3', 's4'], [...Object.values(base().nodes), el('n')] as Array<{ id: string }>);
+    expect(removeAndRestore('s2', ['s2', 'c', 'h', 'p'], arrive, [noLeft]).r).toMatchObject({ ok: false, gap: true });
+  });
 });
 
 describe('sameValue', () => {

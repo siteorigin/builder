@@ -1528,11 +1528,14 @@ export class ProjectSession extends EventEmitter {
     let put = restoreRemoval(before, removal, page);
     if (!put.ok && put.gap) {
       // Only versions the page really went through count: an undone change shows an order the user took back.
+      // A version history can no longer read could have shown another order, so it refuses rather than skips.
       const applied: PageDoc[] = [];
       for (const e of this.history.entries.slice(0, this.history.cursor).reverse())
         for (const hash of [e.docs[path]?.after, e.docs[path]?.before]) {
-          const v = hash ? await read(hash) : null;
-          if (v) applied.push(v);
+          if (!hash) continue;
+          const v = await read(hash);
+          if (!v) return refuse(lost);
+          applied.push(v);
         }
       put = restoreRemoval(before, removal, page, applied);
     }

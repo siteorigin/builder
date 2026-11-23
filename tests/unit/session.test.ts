@@ -523,6 +523,22 @@ describe('undoing one history entry', () => {
     expect(home(s).rootIds).toEqual(order);
   });
 
+  it('refuses to order a section by guesswork when history has lost the version that showed it', async () => {
+    const { dir, s } = await make();
+    const order = [...home(s).rootIds];
+    const [a, b] = order.slice(1, 3);
+    const x = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: a }] }, { label: 'Delete A' });
+    const y = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: b }] }, { label: 'Delete B' });
+    expect((await s.undoEntry(x.entryId!)).ok).toBe(true);
+    // The page before A was deleted is the only version holding both A and B.
+    const entry = JSON.parse(readFileSync(join(dir, '.siteorigin/history/history.json'), 'utf8')).entries.find((e: { id: string }) => e.id === x.entryId);
+    const [doc] = Object.values(entry.docs) as Array<{ before: string }>;
+    rmSync(join(dir, '.siteorigin/history/blobs', `${doc.before}.json`));
+    const before = unchanged(s);
+    expect((await s.undoEntry(y.entryId!)).error?.message).toBe('Other changes came after “Delete B”, so it can’t be undone on its own. History no longer holds the page as it was. Open History to undo it.');
+    expect(unchanged(s)).toEqual(before);
+  });
+
   it('waits for the AI like Undo', async () => {
     const { s } = await make();
     const r = await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });

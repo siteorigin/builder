@@ -70,7 +70,7 @@ export function restoreRemoval<T extends NodeTree>(before: T, removal: Removal, 
   const changed = 'The sections around where it was have changed.';
   const gap = list.slice(from, to);
   if (from > to || gap.some((id) => removal.left.includes(id) || removal.right.includes(id))) return { ok: false, reason: changed };
-  const ahead = gap.length ? orderInGap(removal, gap, earlier) : 0;
+  const ahead = gap.length ? orderInGap(removal, gap, earlier, leftAnchor, rightAnchor) : 0;
   if (ahead === null) return { ok: false, reason: changed, gap: true };
   list.splice(from + ahead, 0, removal.rootId);
   // Defined, not assigned, so even an ID such as "__proto__" (from a hand-edited document) lands as a node.
@@ -79,14 +79,19 @@ export function restoreRemoval<T extends NodeTree>(before: T, removal: Removal, 
 }
 
 /** How many of the sections that arrived in the gap since go before the removed one: from the first version of the
- *  tree whose same list holds it and all of them, in the order they stand in now. Null when no version shows it. */
-function orderInGap(removal: Removal, gap: string[], earlier: NodeTree[]): number | null {
+ *  tree whose same list holds it and all of them between the same neighbours, in the order they stand in now. Null
+ *  when no version shows it. */
+function orderInGap(removal: Removal, gap: string[], earlier: NodeTree[], leftAnchor?: string, rightAnchor?: string): number | null {
   for (const v of earlier) {
     const list = removal.parentId === null ? v.rootIds : v.nodes[removal.parentId] && childLists(v.nodes[removal.parentId]).find((cl) => cl.slot === removal.slot)?.ids;
-    const at = list?.indexOf(removal.rootId) ?? -1;
-    if (!list || at < 0) continue;
+    if (!list) continue;
+    const lo = leftAnchor === undefined ? -1 : list.indexOf(leftAnchor);
+    const hi = rightAnchor === undefined ? list.length : list.indexOf(rightAnchor);
+    const at = list.indexOf(removal.rootId);
+    // A version where a neighbour is missing, or where they stood elsewhere, says nothing about this gap.
+    if ((leftAnchor !== undefined && lo < 0) || hi < 0 || at <= lo || at >= hi) continue;
     const pos = gap.map((id) => list.indexOf(id));
-    if (pos.some((p, i) => p < 0 || (i > 0 && p < pos[i - 1]))) continue;
+    if (pos.some((p, i) => p <= lo || p >= hi || (i > 0 && p < pos[i - 1]))) continue;
     return pos.filter((p) => p < at).length;
   }
   return null;
