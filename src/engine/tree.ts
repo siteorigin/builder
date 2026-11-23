@@ -185,6 +185,8 @@ export function displayName(state: ProjectState, node: GraphNode, def?: Componen
     case 'instance':
       return state.components[node.definitionId]?.name ?? 'Missing component';
     case 'text':
+      // A tag a property chooses is a heading of whichever level the placement picks.
+      if (isBinding(node.tag)) return 'Heading';
       return node.tag.startsWith('h') ? `Heading ${node.tag.slice(1)}` : node.rich ? 'Rich text' : 'Text';
     case 'image':
       return 'Image';

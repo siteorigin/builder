@@ -21,10 +21,11 @@ export function linkSvelte(instrument = false): string {
 	 * Renders a resolved link. Site-relative links go through SvelteKit's resolve(), so the site also
 	 * works when it is published under a sub-path. A button without a destination but with a click handler
 	 * (from your own code) is a real button; one with neither is left out (keeping only its id, so links to
-	 * it still land). Other links without a destination render as their text.
+	 * it still land). Other links without a destination render as their text. With \`card\` (a tag), the link is a
+	 * whole container: an anchor around everything inside it, or that tag when there is nowhere to go.
 	 */
 	import { resolve } from '$app/paths';
-	let { link = null, appearance = '', class: className = '', children, ...rest } = $props();
+	let { link = null, appearance = '', card = '', class: className = '', children, ...rest } = $props();
 	const safe = $derived(typeof link?.href === 'string' && /^(https?:|mailto:|tel:|#|\\/)/i.test(link.href) ? link.href : null);
 	const href = $derived(safe ? (safe.startsWith('/') && !safe.startsWith('//') ? resolve(safe) : safe) : null);
 	const BUTTONS = ['primary', 'secondary', 'text', 'light'];
@@ -32,7 +33,19 @@ export function linkSvelte(instrument = false): string {
 	const kind = $derived(button ? \`so-btn so-btn--\${appearance}\` : appearance === 'plain' ? 'so-plain-link' : 'so-link');
 </script>
 
-{#if href}
+{#if card}
+	{#if href}
+		<a
+			{href}
+			class={['so-card-link', className]}
+			target={link?.newTab ? '_blank' : undefined}
+			rel={link?.newTab ? 'noopener noreferrer' : undefined}
+			{...rest}>{@render children?.()}</a
+		>
+	{:else}
+		<svelte:element this={card} class={className} {...rest}>{@render children?.()}</svelte:element>
+	{/if}
+{:else if href}
 	<a
 		{href}
 		class={[kind, className]}

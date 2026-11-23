@@ -1,9 +1,10 @@
 /**
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
-import type { Binding, ComponentDefinition, GraphNode, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
-import { isBinding } from '@shared/types';
+import type { Binding, ComponentDefinition, Comparison, GraphNode, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import { ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
+import { axesOf } from '@shared/variants';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
 
@@ -182,7 +183,22 @@ export function normalizeProperties(raw: Record<string, unknown> | undefined, st
 // Binding sites
 // ---------------------------------------------------------------------------
 
-export type BindField = 'text' | 'image' | 'fallbackAlt' | 'link' | 'label' | 'appearance' | 'icon' | 'when' | 'unless' | 'list' | 'prop';
+export type BindField =
+  | 'text'
+  | 'image'
+  | 'fallbackAlt'
+  | 'link'
+  | 'label'
+  | 'appearance'
+  | 'icon'
+  | 'iconPosition'
+  | 'ariaLabel'
+  | 'tag'
+  | 'when'
+  | 'unless'
+  | 'list'
+  | 'prop'
+  | 'variant';
 
 /** Property types each bindable node field accepts. `null` means any type (visibility conditions). */
 export function acceptedTypes(node: GraphNode, field: BindField, nested?: PropSchema): readonly string[] | null {
@@ -199,6 +215,13 @@ export function acceptedTypes(node: GraphNode, field: BindField, nested?: PropSc
       return ['enum', 'string'];
     case 'icon':
       return ['icon', 'enum', 'string'];
+    case 'ariaLabel':
+      return ['string', 'enum'];
+    // Each option must be a value the field can take (see `bindingProblem`), so only a choice fits.
+    case 'tag':
+    case 'variant':
+    case 'iconPosition':
+      return ['enum'];
     case 'image':
       return ['image'];
     case 'link':
@@ -210,28 +233,126 @@ export function acceptedTypes(node: GraphNode, field: BindField, nested?: PropSc
   }
 }
 
+/** One place a node can hold a binding: the field, its current value, and a way to replace that value. */
+export interface BindingSlot {
+  field: BindField;
+  /** For `prop`, the nested property; for `variant`, the axis. */
+  prop?: string;
+  value: unknown;
+  set: (v: unknown) => void;
+}
+
+/** Every place a node can hold a binding, bound or not. Conditions are listed as they are (plain or compared). */
+export function bindingSlots(n: GraphNode): BindingSlot[] {
+  const r = n as unknown as Record<string, unknown>;
+  const field = (f: BindField, key: string = f): BindingSlot => ({ field: f, value: r[key], set: (v) => (r[key] = v) });
+  const out: BindingSlot[] = [field('when'), field('unless')];
+  switch (n.kind) {
+    case 'element':
+      out.push(field('tag'), field('link'), field('ariaLabel'));
+      break;
+    case 'text':
+      out.push(field('text'), field('tag'));
+      break;
+    case 'image':
+      out.push(field('image'), field('fallbackAlt'));
+      break;
+    case 'link':
+      out.push(field('link'), field('label'), field('appearance'), field('icon'), field('iconPosition'), field('ariaLabel'));
+      break;
+    case 'icon':
+      out.push(field('icon'), field('ariaLabel'));
+      break;
+    case 'repeat':
+      out.push(field('list'));
+      break;
+    case 'instance':
+      for (const k of Object.keys(n.props)) out.push({ field: 'prop', prop: k, value: n.props[k], set: (v) => (n.props[k] = v) });
+      for (const k of Object.keys(n.variants ?? {})) out.push({ field: 'variant', prop: k, value: n.variants![k], set: (v) => (n.variants![k] = v as string) });
+      break;
+  }
+  return out;
+}
+
 export interface BindingSite {
   node: GraphNode;
   field: BindField;
+  /** For `prop`, the nested property; for `variant`, the axis. */
   prop?: string;
   binding: Binding;
+  /** The comparison a `when` or `unless` makes with its binding, if it is not a plain presence test. */
+  comparison?: Comparison;
 }
 
-/** Every binding in a managed definition's tree. */
+/** Every binding in a managed definition's tree, including the binding a compared condition reads. */
 export function bindingSites(def: ComponentDefinition): BindingSite[] {
   const out: BindingSite[] = [];
   for (const n of Object.values(def.tree?.nodes ?? {})) {
-    const add = (field: BindField, v: unknown, prop?: string) => isBinding(v) && out.push({ node: n, field, binding: v, prop });
-    add('when', n.when);
-    add('unless', n.unless);
-    if (n.kind === 'text') add('text', n.text);
-    if (n.kind === 'image') (add('image', n.image), add('fallbackAlt', n.fallbackAlt));
-    if (n.kind === 'link') (add('link', n.link), add('label', n.label), add('appearance', n.appearance));
-    if (n.kind === 'icon') add('icon', n.icon);
-    if (n.kind === 'repeat') add('list', n.list);
-    if (n.kind === 'instance') for (const [k, v] of Object.entries(n.props)) add('prop', v, k);
+    for (const slot of bindingSlots(n)) {
+      const condition = slot.field === 'when' || slot.field === 'unless';
+      const binding = condition ? conditionRef(slot.value) : isBinding(slot.value) ? slot.value : undefined;
+      if (!binding) continue;
+      out.push({ node: n, field: slot.field, prop: slot.prop, binding, ...(condition && isComparison(slot.value) ? { comparison: slot.value } : {}) });
+    }
   }
   return out;
+}
+
+const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
+const ELEMENT_TAG_SET = new Set<string>(ELEMENT_TAGS);
+const optionValues = (schema: PropSchema) => (schema.type === 'enum' ? schema.options.map((o) => o.value) : []);
+const listed = (values: string[]) => values.map((v) => `"${v}"`).join(', ');
+
+/**
+ * What is wrong with a binding site whose binding resolves to `schema`, beyond the property type (which
+ * `acceptedTypes` covers): a compared value the property can never hold, or a choice with an option the field
+ * cannot take (a tag that is not one, a variant the nested component lacks, an icon side other than start or end).
+ * Null when it fits. Shared by load validation, binding and property changes, so every path refuses the same.
+ */
+export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'node' | 'field' | 'prop' | 'comparison'>, schema: PropSchema): string | null {
+  const { node, field, comparison } = site;
+  if (comparison) {
+    const value = 'eq' in comparison ? comparison.eq : comparison.ne;
+    const shown = JSON.stringify(value);
+    switch (schema.type) {
+      case 'boolean':
+        return typeof value === 'boolean' ? null : `compares a yes/no property with ${shown}; compare it with true or false.`;
+      case 'number':
+        return typeof value === 'number' && Number.isFinite(value) ? null : `compares a number property with ${shown}; compare it with a number.`;
+      case 'string':
+      case 'icon':
+        return typeof value === 'string' ? null : `compares a text property with ${shown}; compare it with text.`;
+      case 'enum':
+        return typeof value === 'string' && optionValues(schema).includes(value) ? null : `compares a choice with ${shown}, which is not one of its options (${listed(optionValues(schema))}).`;
+      default:
+        return `compares a ${schema.type} property with a value; a ${schema.type} can only be tested for being set.`;
+    }
+  }
+  const ok = acceptedTypes(node, field, undefined);
+  if (field === 'prop' || !ok) return null;
+  if (!ok.includes(schema.type)) return `shows a ${schema.type} property as its ${field}, which needs a ${ok.join(' or ')} property.`;
+  const options = optionValues(schema);
+  switch (field) {
+    case 'tag': {
+      if (node.kind === 'text' && node.rich) return 'binds the tag of rich text, which keeps its own paragraph structure.';
+      const allowed = node.kind === 'text' ? TEXT_TAG_SET : ELEMENT_TAG_SET;
+      const bad = options.filter((o) => !allowed.has(o));
+      return bad.length ? `takes its tag from a choice whose options ${listed(bad)} are not ${node.kind === 'text' ? 'text' : 'element'} tags.` : null;
+    }
+    case 'variant': {
+      const nested = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
+      const axis = nested ? axesOf(nested).find(([a]) => a === site.prop)?.[1] : undefined;
+      if (!nested || !axis) return `binds the variant axis "${site.prop}", which ${nested ? `"${nested.name}"` : 'the nested component'} does not have.`;
+      const bad = options.filter((o) => !Object.hasOwn(axis.options, o));
+      return bad.length ? `takes its ${axis.label ?? site.prop} from a choice whose options ${listed(bad)} are not options of "${nested.name}".` : null;
+    }
+    case 'iconPosition': {
+      const bad = options.filter((o) => !(ICON_POSITIONS as string[]).includes(o));
+      return bad.length ? `takes its icon side from a choice whose options ${listed(bad)} are not ${listed(ICON_POSITIONS)}.` : null;
+    }
+    default:
+      return null;
+  }
 }
 
 /** The list property repeated by the nearest repeat above a node, or null outside any repeat. */

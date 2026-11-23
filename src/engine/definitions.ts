@@ -2,17 +2,17 @@
  * Definition-level editing of project components: removal, property schema, parts, variants, slots and
  * property bindings. Every operation keeps instances consistent with the definition it changes.
  */
-import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState, PropSchema } from '@shared/types';
-import { isBinding } from '@shared/types';
+import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ProjectState, PropSchema } from '@shared/types';
+import { ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
-import { findVariant } from '@shared/variants';
+import { axesOf, findVariant } from '@shared/variants';
 import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, instancesOf } from './tree';
 import { clone } from './install';
 import { normalizeProp } from './values';
-import { acceptedTypes, bindingSites, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties, normalizePropSchema, type BindField } from './schema';
+import { acceptedTypes, bindingProblem, bindingSites, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties, normalizePropSchema, type BindField } from './schema';
 import { defFile } from '@generator/index';
 
 type OpResult = Record<string, unknown>;
@@ -131,6 +131,8 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
       const nested = site.field === 'prop' ? state.components[(site.node as InstanceNode).definitionId]?.properties[site.prop!] : undefined;
       const ok = acceptedTypes(site.node, site.field as BindField, nested);
       if (ok && !ok.includes(schema.type)) fail(`"${name}" is shown by ${describeNode(site.node)} as its ${site.field === 'prop' ? site.prop : site.field}, which needs a ${ok.join(' or ')} property. Unbind it first.`);
+      const problem = bindingProblem(state, site, schema);
+      if (problem) fail(`"${name}" cannot change this way: ${describeNode(site.node)} ${problem}`);
     }
     if ('$item' in b && enclosingRepeatProp(def, site.node.id) === name) {
       if (schema.type !== 'list') fail(`"${name}" is repeated in the design, so it must stay a list.`);
@@ -139,6 +141,8 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
       const nested = site.field === 'prop' ? state.components[(site.node as InstanceNode).definitionId]?.properties[site.prop!] : undefined;
       const ok = acceptedTypes(site.node, site.field as BindField, nested);
       if (ok && !ok.includes(f.type)) fail(`The list field "${b.$item}" is shown by ${describeNode(site.node)}, which needs a ${ok.join(' or ')} field.`);
+      const problem = bindingProblem(state, site, f);
+      if (problem) fail(`The list field "${b.$item}" cannot change this way: ${describeNode(site.node)} ${problem}`);
     }
   }
   // Changing the type of a property that has content keeps that content only where the conversion is lossless.
@@ -332,9 +336,13 @@ const FIELD_KINDS: Record<BindField, GraphNode['kind'][] | null> = {
   link: ['link'],
   label: ['link'],
   appearance: ['link'],
-  icon: ['icon'],
+  icon: ['icon', 'link'],
+  iconPosition: ['link'],
+  ariaLabel: ['element', 'icon', 'link'],
+  tag: ['element', 'text'],
   list: ['repeat'],
   prop: ['instance'],
+  variant: ['instance'],
   when: null,
   unless: null
 };
@@ -356,7 +364,17 @@ function literalFor(field: BindField, node: GraphNode, schema: PropSchema | unde
     case 'image':
       return schema?.type === 'image' ? clone(d) : { assetId: null, alt: '' };
     case 'link':
+      // A card without a destination is just its container.
+      if (node.kind === 'element') return schema?.type === 'link' && (d as { type?: string })?.type !== 'none' ? clone(d) : undefined;
       return schema?.type === 'link' ? clone(d) : { type: 'none', target: '' };
+    case 'ariaLabel':
+      return typeof d === 'string' && d.trim() ? d : undefined;
+    case 'iconPosition':
+      return (ICON_POSITIONS as unknown[]).includes(d) ? d : undefined;
+    case 'tag': {
+      const tags: readonly string[] = node.kind === 'text' ? TEXT_TAGS : ELEMENT_TAGS;
+      return typeof d === 'string' && tags.includes(d) ? d : node.kind === 'text' ? 'p' : 'div';
+    }
     case 'prop':
       return clone(schema && nested && schema.type === nested.type ? d : nested?.default);
     default:
@@ -372,19 +390,37 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
   const field = op.field as BindField;
   const kinds = FIELD_KINDS[field];
   if (kinds && !kinds.includes(node.kind)) fail(`${describeNode(node)} has no "${field}" to bind.`);
+  const condition = field === 'when' || field === 'unless';
+  if (op.eq !== undefined && op.ne !== undefined) fail('A condition compares with "eq" or "ne", not both.');
+  if ((op.eq !== undefined || op.ne !== undefined) && (!condition || op.binding === null)) fail('Only a "when" or "unless" binding compares its value, with "eq" or "ne".');
   let nested: PropSchema | undefined;
   if (field === 'prop') {
     if (!op.prop) fail('Name the nested property to bind with "prop".');
     const nd = state.components[(node as InstanceNode).definitionId];
     nested = own(nd?.properties, op.prop) ?? fail(`"${nd?.name ?? 'This component'}" has no property "${op.prop}".`);
   }
-  const holder = (field === 'prop' ? (node as InstanceNode).props : node) as Record<string, unknown>;
-  const key = field === 'prop' ? op.prop! : field;
+  const nestedDef = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
+  const axis = field === 'variant' ? (op.axis ?? fail('Name the variant axis to bind with "axis".')) : undefined;
+  const axisDef = axis !== undefined ? (axesOf(nestedDef ?? {}).find(([a]) => a === axis)?.[1] ?? fail(`"${nestedDef?.name ?? 'This component'}" has no variant axis "${axis}".`)) : undefined;
+  const inst = node as InstanceNode;
+  const holder = (field === 'prop' ? inst.props : field === 'variant' ? (inst.variants ?? {}) : node) as Record<string, unknown>;
+  const key = field === 'prop' ? op.prop! : (axis ?? field);
   const current = holder[key];
   if (op.binding === null) {
-    if (field === 'when' || field === 'unless' || field === 'fallbackAlt') delete holder[key];
+    if (condition || field === 'fallbackAlt') delete holder[key];
     else if (field === 'list') fail('Repeated items always come from a list property. Remove the repeat instead.');
-    else if (isBinding(current)) holder[key] = literalFor(field, node, boundSchema(def, node.id, current), nested);
+    else if (field === 'variant' && isBinding(current)) {
+      // The placement keeps the option the property showed by default, where the nested component has it.
+      const d = boundSchema(def, node.id, current)?.default;
+      if (typeof d === 'string' && Object.hasOwn(axisDef!.options, d)) holder[key] = d;
+      else delete holder[key];
+      if (inst.variants && !Object.keys(inst.variants).length) delete inst.variants;
+    } else if (isBinding(current)) {
+      // A field the node may leave out (a card destination, an accessible name) goes when nothing usable is left.
+      const literal = literalFor(field, node, boundSchema(def, node.id, current), nested);
+      if (literal === undefined) delete holder[key];
+      else holder[key] = literal;
+    }
     return {};
   }
   const b = op.binding;
@@ -397,8 +433,12 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
   const ok = acceptedTypes(node, field, nested);
   if (ok && !ok.includes(schema.type)) fail(`A ${schema.type} property cannot be used as ${field === 'prop' ? `"${op.prop}"` : `the ${field}`}. It needs a ${ok.join(' or ')} property.`);
   if (field === 'list' && '$prop' in b && enclosingRepeatProp(def, node.id) === b.$prop) fail('A repeat cannot repeat the list it is already inside.');
+  const comparison = op.eq !== undefined ? ({ ref: clone(b), eq: op.eq } as Comparison) : op.ne !== undefined ? ({ ref: clone(b), ne: op.ne } as Comparison) : undefined;
+  const problem = bindingProblem(state, { node, field, prop: axis ?? op.prop, comparison }, schema);
+  if (problem) fail(`${describeNode(node)} ${problem}`);
   const before = holder[key];
-  holder[key] = clone(b);
+  holder[key] = comparison ?? clone(b);
+  if (field === 'variant') inst.variants = holder as Record<string, string>;
   if (field === 'list') {
     // Everything inside the repeat that shows an item field must find it, with a fitting type, in the new list.
     for (const site of bindingSites(def)) {
@@ -406,7 +446,7 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
       const f = boundSchema(def, site.node.id, site.binding);
       const nestedSchema = site.field === 'prop' ? state.components[(site.node as InstanceNode).definitionId]?.properties[site.prop!] : undefined;
       const ok = acceptedTypes(site.node, site.field, nestedSchema);
-      if (!f || (ok && !ok.includes(f.type))) {
+      if (!f || (ok && !ok.includes(f.type)) || bindingProblem(state, site, f)) {
         holder[key] = before;
         fail(`${describeNode(site.node)} inside the repeat shows "${site.binding.$item}", which "${(b as { $prop: string }).$prop}" items do not have${f ? ' in a fitting type' : ''}.`);
       }

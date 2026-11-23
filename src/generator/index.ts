@@ -7,6 +7,7 @@
  * portable project source.
  */
 import type {
+  Binding,
   ComponentDefinition,
   GraphNode,
   ImageValue,
@@ -23,7 +24,7 @@ import type {
   TokenDef,
   TokenValue
 } from '@shared/types';
-import { GENERATOR_VERSION, isBinding } from '@shared/types';
+import { ELEMENT_TAGS, GENERATOR_VERSION, TEXT_TAGS, isBinding, isComparison, type Condition } from '@shared/types';
 import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
@@ -34,6 +35,7 @@ import { fontFaceCss } from '@shared/fonts';
 import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { effectiveItem } from '@shared/page-teasers';
+import { brokenCardKeys, cardKey, isCardLink } from './card-links';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -574,6 +576,10 @@ interface EmitCtx {
   firstSection?: boolean;
   /** Set when the markup refers to the per-instance `uid` from `$props.id()`. */
   usesUid?: boolean;
+  /** The list properties of the repeats currently open (outermost first), for the schema of an item field. */
+  lists?: PropSchema[];
+  /** Cards that render as their plain container because something interactive renders inside them. */
+  brokenCards?: Set<string>;
 }
 
 function useImport(ctx: EmitCtx, name: string, path: string) {
@@ -649,15 +655,23 @@ function emitNode(ctx: EmitCtx, id: string): string {
     useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
     out = `${p}{#if ${children}}\n${indentBlock(out)}\n${p}{/if}`;
   }
-  if (node.when && ctx.def) {
-    useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
-    out = `${p}{#if has(${bindExpr(ctx, node.when)})}\n${indentBlock(out)}\n${p}{/if}`;
-  }
-  if (node.unless && ctx.def) {
-    useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
-    out = `${p}{#if !has(${bindExpr(ctx, node.unless)})}\n${indentBlock(out)}\n${p}{/if}`;
-  }
+  if (node.when && ctx.def) out = `${p}{#if ${conditionExpr(ctx, node.when, false)}}\n${indentBlock(out)}\n${p}{/if}`;
+  if (node.unless && ctx.def) out = `${p}{#if ${conditionExpr(ctx, node.unless, true)}}\n${indentBlock(out)}\n${p}{/if}`;
   return out;
+}
+
+/**
+ * A condition as a Svelte expression: `has(value)` for a plain binding (negated for `unless`), or a strict
+ * comparison with the literal, so a property set to `"video"` or an item whose `featured` is `true` decides it.
+ */
+function conditionExpr(ctx: EmitCtx, c: Condition, negate: boolean): string {
+  if (isComparison(c)) {
+    const equal = 'eq' in c;
+    const value = equal ? c.eq : c.ne;
+    return `${bindExpr(ctx, c.ref)} ${equal !== negate ? '===' : '!=='} ${js(value)}`;
+  }
+  useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+  return `${negate ? '!' : ''}has(${bindExpr(ctx, c)})`;
 }
 
 function indentBlock(s: string): string {
@@ -670,8 +684,8 @@ function indentBlock(s: string): string {
  */
 function renderCondition(ctx: EmitCtx, node: GraphNode, seen: Set<string>): string | null {
   const parts: string[] = [];
-  if (node.when) parts.push(`has(${bindExpr(ctx, node.when)})`);
-  if (node.unless) parts.push(`!has(${bindExpr(ctx, node.unless)})`);
+  if (node.when) parts.push(conditionExpr(ctx, node.when, false));
+  if (node.unless) parts.push(conditionExpr(ctx, node.unless, true));
   if (node.kind === 'repeat') parts.push(`has(${bindExpr(ctx, node.list)})`);
   const inner = node.kind === 'element' && node.collapseEmpty ? childrenCondition(ctx, node, seen) : null;
   if (inner) parts.push(`(${inner})`);
@@ -701,7 +715,7 @@ function childrenCondition(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, 
 function labellingHeading(ctx: EmitCtx, node: GraphNode): (GraphNode & { kind: 'text' }) | null {
   if (!ctx.def || ctx.items.length || node.kind !== 'element' || node.tag !== 'nav') return null;
   const first = ctx.tree.nodes[node.children[0]];
-  if (first?.kind !== 'text' || first.rich || !/^h[2-6]$/.test(first.tag) || first.unless) return null;
+  if (first?.kind !== 'text' || first.rich || typeof first.tag !== 'string' || !/^h[2-6]$/.test(first.tag) || first.unless) return null;
   return !first.when || headingGuardedByOwnText(first) ? first : null;
 }
 
@@ -715,13 +729,87 @@ function headingGuardedByOwnText(heading: GraphNode & { kind: 'text' }): boolean
  * default text (so several landmarks stay distinguishable), or no name when that default is blank.
  */
 function landmarkLabelAttrs(ctx: EmitCtx, heading: GraphNode & { kind: 'text' }): string {
+  const { by, label } = landmarkLabel(ctx, heading);
+  return ` aria-labelledby={${by}}${label ? ` aria-label={${label}}` : ''}`;
+}
+
+/** The landmark's heading reference and, while a conditional heading is hidden, its fallback name, as expressions. */
+function landmarkLabel(ctx: EmitCtx, heading: GraphNode & { kind: 'text' }): { by: string; label?: string } {
   const ref = headingIdExpr(ctx, heading);
-  if (!heading.when) return ` aria-labelledby={${ref}}`;
+  if (!heading.when) return { by: ref };
   useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
-  const shown = `has(${bindExpr(ctx, heading.when)})`;
+  const shown = `has(${bindExpr(ctx, heading.when as Binding)})`;
   const def = propSchemaFor(ctx, heading.text)?.default;
-  const fallback = typeof def === 'string' && def.trim() ? ` aria-label={${shown} ? undefined : ${js(def.trim())}}` : '';
-  return ` aria-labelledby={${shown} ? ${ref} : undefined}${fallback}`;
+  return { by: `${shown} ? ${ref} : undefined`, label: typeof def === 'string' && def.trim() ? `${shown} ? undefined : ${js(def.trim())}` : undefined };
+}
+
+/**
+ * An element's accessible name. An explicit name wins; a bound one left blank falls back to the navigation
+ * heading that would otherwise name the landmark, so clearing it never leaves the region unnamed.
+ */
+function elementLabelAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' }): string {
+  const heading = labellingHeading(ctx, node);
+  const own = node.ariaLabel;
+  if (own === undefined || (!isBinding(own) && !String(own).trim())) return heading ? landmarkLabelAttrs(ctx, heading) : '';
+  if (!isBinding(own)) return ` aria-label=${attrJs(String(own).trim())}`;
+  useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+  const value = bindExpr(ctx, own);
+  if (!heading) return ` aria-label={has(${value}) ? ${value} : undefined}`;
+  const { by, label } = landmarkLabel(ctx, heading);
+  return ` aria-label={has(${value}) ? ${value} : ${label ?? 'undefined'}} aria-labelledby={has(${value}) ? undefined : ${by}}`;
+}
+
+/** An accessible name passed straight to a runtime helper (`label` on icons, `aria-label` on links). */
+function nameAttr(ctx: EmitCtx, attr: string, v: unknown): string {
+  if (v === undefined) return '';
+  if (!isBinding(v)) return String(v).trim() ? ` ${attr}=${attrJs(String(v).trim())}` : '';
+  return ` ${attr}={${bindExpr(ctx, v)} || undefined}`;
+}
+
+/** The schema a binding reads in this scope: a property of the definition, or a field of the innermost list. */
+function bindingSchema(ctx: EmitCtx, b: Binding): PropSchema | undefined {
+  if (!ctx.def) return undefined;
+  if ('$prop' in b) return Object.hasOwn(ctx.def.properties, b.$prop) ? ctx.def.properties[b.$prop] : undefined;
+  const list = ctx.lists?.at(-1);
+  return list?.type === 'list' && Object.hasOwn(list.fields, b.$item) ? list.fields[b.$item] : undefined;
+}
+
+const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
+const ELEMENT_TAG_SET = new Set<string>(ELEMENT_TAGS);
+
+/**
+ * The tags a node can render: its literal tag, or for a bound tag the choice's options that are tags of its kind,
+ * with the one shown for any other value last (the choice's default, or the kind's plain tag when nothing fits).
+ */
+function tagChoices(ctx: EmitCtx, node: GraphNode & { kind: 'text' | 'element' }): { value?: string; tags: string[] } {
+  const allowed = node.kind === 'text' ? TEXT_TAG_SET : ELEMENT_TAG_SET;
+  const plain = node.kind === 'text' ? 'p' : 'div';
+  if (!isBinding(node.tag)) return { tags: [allowed.has(node.tag) ? node.tag : plain] };
+  const schema = bindingSchema(ctx, node.tag);
+  const options = schema?.type === 'enum' ? schema.options.map((o) => o.value).filter((o) => allowed.has(o)) : [];
+  const fallback = schema?.type === 'enum' && options.includes(schema.default) ? schema.default : (options[0] ?? plain);
+  return { value: bindExpr(ctx, node.tag), tags: [...options.filter((o) => o !== fallback), fallback] };
+}
+
+/** Markup for each tag a node can render, chosen at runtime when the tag is bound. */
+function perTag(ctx: EmitCtx, choices: { value?: string; tags: string[] }, render: (tag: string) => string): string {
+  const p = pad(ctx);
+  if (choices.tags.length === 1) return render(choices.tags[0]);
+  ctx.indent++;
+  const branches = choices.tags.map((tag) => render(tag));
+  ctx.indent--;
+  const last = choices.tags.length - 1;
+  return choices.tags
+    .map((tag, i) => (i === 0 ? `${p}{#if ${choices.value} === ${js(tag)}}` : i === last ? `${p}{:else}` : `${p}{:else if ${choices.value} === ${js(tag)}}`) + `\n${branches[i]}`)
+    .join('\n') + `\n${p}{/if}`;
+}
+
+/** Whether an element renders as a card link: it has a destination and nothing interactive renders inside it. */
+function rendersAsCard(ctx: EmitCtx, node: GraphNode): boolean {
+  if (!isCardLink(node)) return false;
+  ctx.brokenCards ??= brokenCardKeys(ctx.state);
+  const owner = ctx.def ? { kind: 'component' as const, id: ctx.def.id } : { kind: ctx.ctxExpr.split(':')[0] as 'page' | 'shell', id: ctx.ctxExpr.split(':').slice(1).join(':') };
+  return !ctx.brokenCards.has(cardKey({ owner, cardId: node.id }));
 }
 
 function headingIdExpr(ctx: EmitCtx, heading: GraphNode): string {
@@ -783,9 +871,22 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       ctx.indent++;
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
-      const heading = labellingHeading(ctx, node);
-      const label = heading ? landmarkLabelAttrs(ctx, heading) : '';
-      return `${p}<${node.tag} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${label}${ids}>${children ? `\n${children}\n${p}` : ''}</${node.tag}>`;
+      const label = elementLabelAttrs(ctx, node);
+      const choices = tagChoices(ctx, node);
+      const attrs = `class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${label}${ids}`;
+      if (rendersAsCard(ctx, node)) {
+        // One link around the whole card; the runtime helper renders the container's own tag without a destination.
+        useImport(ctx, 'SoLink', `${RUNTIME_DIR}/Link.svelte`);
+        const link = isBinding(node.link) ? bindExpr(ctx, node.link) : js(resolveLink(node.link as LinkValue, ctx.rctx));
+        const fallback = choices.tags[choices.tags.length - 1];
+        const tag = choices.tags.length === 1 ? js(fallback) : `${js(choices.tags.slice(0, -1))}.includes(${choices.value}) ? ${choices.value} : ${js(fallback)}`;
+        return `${p}<SoLink link={${link}} card={${tag}} ${attrs}>${children ? `\n${children}\n${p}` : ''}</SoLink>`;
+      }
+      if (choices.tags.length === 1) return `${p}<${choices.tags[0]} ${attrs}>${children ? `\n${children}\n${p}` : ''}</${choices.tags[0]}>`;
+      // A bound tag renders the children once, from a snippet each possible tag renders.
+      const snippet = `so_children_${safeIdent(node.id)}`;
+      const body = children ? `${p}{#snippet ${snippet}()}\n${children}\n${p}{/snippet}\n` : '';
+      return body + perTag(ctx, choices, (tag) => `${pad(ctx)}<${tag} ${attrs}>${children ? `{@render ${snippet}()}` : ''}</${tag}>`);
     }
     case 'text': {
       if (node.rich) {
@@ -798,7 +899,8 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const parent = parentId ? ctx.tree.nodes[parentId] : undefined;
       const labels = !node.anchor && parent && labellingHeading(ctx, parent)?.id === node.id;
       const idAttr = labels ? ` id={${headingIdExpr(ctx, node)}}` : anchorAttr(ctx, node);
-      return `${p}<${node.tag} class=${classExpr(ctx, node)}${idAttr}${ids}>{${val}}</${node.tag}>`;
+      const attrs = `class=${classExpr(ctx, node)}${idAttr}${ids}`;
+      return perTag(ctx, tagChoices(ctx, node), (tag) => `${pad(ctx)}<${tag} ${attrs}>{${val}}</${tag}>`);
     }
     case 'image': {
       useImport(ctx, 'SoImage', `${RUNTIME_DIR}/Image.svelte`);
@@ -814,22 +916,26 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const link = isBinding(node.link) ? bindExpr(ctx, node.link) : js(resolveLink(node.link as LinkValue, ctx.rctx));
       const label = bindExpr(ctx, node.label);
       const appearance = bindExpr(ctx, node.appearance);
-      return `${p}<SoLink link={${link}} appearance={${appearance}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids}>{${label}}</SoLink>`;
+      const name = nameAttr(ctx, 'aria-label', node.ariaLabel);
+      return `${p}<SoLink link={${link}} appearance={${appearance}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${name}${ids}>${linkContent(ctx, node, label)}</SoLink>`;
     }
     case 'icon': {
       useImport(ctx, 'SoIcon', `${RUNTIME_DIR}/Icon.svelte`);
-      return `${p}<SoIcon name={${bindExpr(ctx, node.icon)}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
+      return `${p}<SoIcon name={${bindExpr(ctx, node.icon)}}${nameAttr(ctx, 'label', node.ariaLabel)} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
     }
     case 'divider':
       return `${p}<hr class=${classExpr(ctx, node, [js('so-divider')])}${anchorAttr(ctx, node)}${ids} />`;
     case 'repeat': {
       const v = `item${ctx.items.length ? ctx.items.length + 1 : ''}`;
       const list = bindExpr(ctx, node.list);
+      const listSchema = bindingSchema(ctx, node.list);
       ctx.items.push(v);
+      ctx.lists = [...(ctx.lists ?? []), ...(listSchema ? [listSchema] : [])];
       ctx.indent++;
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
       ctx.items.pop();
+      if (listSchema) ctx.lists = ctx.lists.slice(0, -1);
       return `${p}{#each ${list} ?? [] as ${v} (${v}.id)}\n${children}\n${p}{/each}`;
     }
     case 'slot':
@@ -837,6 +943,27 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     case 'instance':
       return emitInstance(ctx, node);
   }
+}
+
+/**
+ * What a link shows: its label, and its icon (decorative, since the label names the link) on the chosen side.
+ * A bound icon shows only while it is set, and a bound side is read at runtime.
+ */
+function linkContent(ctx: EmitCtx, node: GraphNode & { kind: 'link' }, label: string): string {
+  const icon = node.icon;
+  if (icon === undefined || (!isBinding(icon) && !String(icon).trim())) return `{${label}}`;
+  useImport(ctx, 'SoIcon', `${RUNTIME_DIR}/Icon.svelte`);
+  const name = isBinding(icon) ? bindExpr(ctx, icon) : js(String(icon));
+  const mark = (side: string) => {
+    const svg = `<SoIcon name={${name}} class=${js(`so-link__icon so-link__icon--${side}`)} />`;
+    if (!isBinding(icon)) return svg;
+    useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+    return `{#if has(${name})}${svg}{/if}`;
+  };
+  const at = (side: string) => (side === 'end' ? `{${label}}${mark('end')}` : `${mark('start')}{${label}}`);
+  const position = node.iconPosition;
+  if (!isBinding(position)) return at(position === 'end' ? 'end' : 'start');
+  return `{#if ${bindExpr(ctx, position)} === 'end'}${at('end')}{:else}${at('start')}{/if}`;
 }
 
 function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
@@ -859,14 +986,21 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     attrs.push(propAttr(propKey(def, propName), expr));
   }
   const chosen = Object.entries(selectedVariants(def, node.variants));
-  const variantExpr = (v: unknown) => (isBinding(v) ? `{${bindExpr(ctx, v)}}` : js(v));
+  const axes = new Map(axesOf(def));
+  // A bound axis shows its default for any value that is not one of its options.
+  const variantExpr = (v: unknown, axis: string) => {
+    if (!isBinding(v)) return js(v);
+    const a = axes.get(axis)!;
+    const value = bindExpr(ctx, v);
+    return `{${js(Object.keys(a.options))}.includes(${value}) ? ${value} : ${js(a.default)}}`;
+  };
   for (const [axis, value] of chosen) {
     // A code component gets an axis prop only if its source reads it; anything else would land in its rest props.
     if (def.kind === 'code' && (Object.hasOwn(def.properties, variantProp(axis)) || !def.source?.includes(variantProp(axis)))) continue;
-    attrs.push(`${variantProp(axis)}=${variantExpr(value)}`);
+    attrs.push(`${variantProp(axis)}=${variantExpr(value, axis)}`);
   }
   // Code components read the first axis as `variant`, the contract they have always had.
-  if (def.kind === 'code' && chosen.length && !Object.hasOwn(def.properties, 'variant')) attrs.push(`variant=${variantExpr(chosen[0][1])}`);
+  if (def.kind === 'code' && chosen.length && !Object.hasOwn(def.properties, 'variant')) attrs.push(`variant=${variantExpr(chosen[0][1], chosen[0][0])}`);
   // A section's anchor lands on its component's root element.
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);

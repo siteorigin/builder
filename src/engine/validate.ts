@@ -1,10 +1,11 @@
-import type { ImageValue, ProjectState, ResponsiveStyles } from '@shared/types';
+import type { GraphNode, ImageValue, ProjectState, ResponsiveStyles } from '@shared/types';
 import { effectiveItem, followsPage } from '@shared/page-teasers';
-import { ELEMENT_TAGS, TEXT_TAGS, isBinding } from '@shared/types';
+import { ELEMENT_TAGS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { validateRoute } from '@shared/routes';
 import { variantIdsValid, variantOptions } from '@shared/variants';
 import { allTrees, childLists, displayName, subtreeIds } from './tree';
-import { boundSchema } from './schema';
+import { bindingProblem, bindingSlots, boundSchema } from './schema';
+import { cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle } from './tokens';
 import { missingSectionLinks, unlinkedButtons } from '@generator/checks';
 import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, namesFormFields } from '@catalogue/foundation/form';
@@ -84,21 +85,24 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       const n = tree.nodes[id];
       if (!n || visited.has(id)) return;
       visited.add(id);
-      const bindings: unknown[] = [n.when, n.unless];
-      if (n.kind === 'text') bindings.push(n.text);
-      if (n.kind === 'image') bindings.push(n.image, n.fallbackAlt);
-      if (n.kind === 'link') bindings.push(n.link, n.label, n.appearance);
-      if (n.kind === 'icon') bindings.push(n.icon);
-      if (n.kind === 'repeat') bindings.push(n.list);
-      if (n.kind === 'instance') bindings.push(...Object.values(n.props));
-      for (const b of bindings) {
-        if (!isBinding(b)) continue;
+      for (const slot of bindingSlots(n)) {
+        const condition = slot.field === 'when' || slot.field === 'unless';
+        if (condition && slot.value !== undefined && !conditionShapeValid(slot.value)) {
+          out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: ${nodeLabel(n)} has a ${slot.field} condition that is neither a property, a list item field, nor a comparison of one with a value.`, owner, nodeId: id });
+          continue;
+        }
+        const b = condition ? conditionRef(slot.value) : isBinding(slot.value) ? slot.value : undefined;
+        if (!b) continue;
         if ('$prop' in b && !(b.$prop in def.properties))
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: an element uses the property "${b.$prop}", which the component does not have.`, owner, nodeId: id });
         if ('$item' in b && !inRepeat)
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: an element shows a list item field outside its list.`, owner, nodeId: id });
         else if ('$item' in b && !boundSchema(def, id, b))
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: an element shows the item field "${b.$item}", which its list does not have.`, owner, nodeId: id });
+        const schema = ('$prop' in b || inRepeat) && boundSchema(def, id, b);
+        const comparison = condition && isComparison(slot.value) ? slot.value : undefined;
+        const problem = schema ? bindingProblem(state, { node: n, field: slot.field, prop: slot.prop, comparison }, schema) : null;
+        if (problem) out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: ${nodeLabel(n)} ${problem}`, owner, nodeId: id });
       }
       for (const cl of childLists(n)) cl.ids.forEach((c) => check(c, inRepeat || n.kind === 'repeat'));
     };
@@ -187,6 +191,14 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       }
     }
   }
+  for (const p of cardLinkProblems(state))
+    out.push({
+      severity: 'error',
+      code: 'CARD_LINK_INTERACTIVE',
+      message: `${p.label}: ${p.what} sits inside a card that links somewhere, and a link or control cannot sit inside another. Move it out of the card, or remove the card's link.`,
+      owner: p.owner,
+      nodeId: p.nodeId
+    });
   for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {
     const where = i.owner.kind === 'shell' ? (i.owner.id === 'header' ? 'Header' : 'Footer') : (state.pages[i.owner.id]?.title ?? 'A page');
     const what = i.label ? `the “${i.label}” link${i.inText ? ' in the text' : ''}` : `a link${i.inText ? ' in the text' : ''}`;
@@ -205,6 +217,24 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
 
 const ELEMENT_TAG_SET = new Set<string>(ELEMENT_TAGS);
 const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
+
+/** A plain binding names exactly one property or item field; anything else in it would be silently ignored. */
+const plainBinding = (v: unknown) => {
+  if (!isBinding(v)) return false;
+  const keys = Object.keys(v);
+  return keys.length === 1 && typeof (v as Record<string, unknown>)[keys[0]] === 'string';
+};
+
+/** A condition is a plain binding, or a binding (`ref`) compared with one string, number or yes/no value. */
+function conditionShapeValid(v: unknown): boolean {
+  if (plainBinding(v)) return true;
+  if (!isComparison(v) || !plainBinding(v.ref)) return false;
+  const keys = Object.keys(v);
+  const value = 'eq' in v ? v.eq : v.ne;
+  return keys.length === 2 && (typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)));
+}
+
+const nodeLabel = (n: GraphNode) => (n.name ? `“${n.name}”` : n.kind === 'link' ? 'a button' : n.kind === 'instance' ? 'a nested component' : `a ${n.kind} element`);
 
 /**
  * Checks that catch documents edited outside the editor: unknown HTML tags, slots that do not match their
@@ -227,8 +257,8 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     // Theme definitions are fixed theme data, checked when the theme is built.
     if (def?.owner === 'theme') continue;
     for (const n of Object.values(tree.nodes)) {
-      if (n.kind === 'element' && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
-      if (n.kind === 'text' && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
+      if (n.kind === 'element' && !isBinding(n.tag) && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
+      if (n.kind === 'text' && !isBinding(n.tag) && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
       if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });
       else if (n.kind === 'slot' && !Object.hasOwn(def!.slots ?? {}, n.slot))
         out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });

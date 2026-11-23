@@ -451,13 +451,20 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         <Section title="Design" id="design" level={LEVEL}>
           {axes.map(([axisId, axis]) => (
             <Field key={axisId} label={axis.label}>
-              <select className="select" value={String(selectedAxes[axisId])} onChange={(e) => void applyOps([{ type: 'instance.setVariant', owner, nodeId: node.id, axis: axisId, variant: e.target.value }], `Change ${axis.label.toLowerCase()}`)}>
-                {Object.entries(axis.options).map(([id, v]) => (
-                  <option key={id} value={id}>
-                    {v.label}
-                  </option>
-                ))}
-              </select>
+              {isBinding(selectedAxes[axisId]) ? (
+                // Chosen by a property of the component this one sits in.
+                <select className="select" value="" disabled>
+                  <option value="">Set by a property</option>
+                </select>
+              ) : (
+                <select className="select" value={String(selectedAxes[axisId])} onChange={(e) => void applyOps([{ type: 'instance.setVariant', owner, nodeId: node.id, axis: axisId, variant: e.target.value }], `Change ${axis.label.toLowerCase()}`)}>
+                  {Object.entries(axis.options).map(([id, v]) => (
+                    <option key={id} value={id}>
+                      {v.label}
+                    </option>
+                  ))}
+                </select>
+              )}
             </Field>
           ))}
         </Section>
@@ -753,7 +760,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
       <Section title="Content" id="prim-content" level={LEVEL}>
         {node.kind === 'text' && (
           <>
-            {!node.rich && (
+            {!node.rich && !isBinding(node.tag) && (
               <Field label="Type">
                 <select className="select" value={node.tag} onChange={(e) => content('tag', e.target.value)}>
                   {['h1', 'h2', 'h3', 'h4', 'p'].map((tg) => (
