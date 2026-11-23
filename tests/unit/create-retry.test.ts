@@ -37,10 +37,16 @@ vi.mock('../../src/main/runtime/manager', () => ({
   buildProject: async () => ({ ok: true, logs: [] }),
   DevServer: class {
     status = { state: 'idle' };
+    constructor(private dir: string) {}
     onStatus() {}
     notifyRevision() {}
     async start() {
-      if (deps.previewFails) throw new Error('The preview could not start.');
+      if (!deps.previewFails) return;
+      // It got as far as writing its own output into the project.
+      const { mkdirSync, writeFileSync } = await import('node:fs');
+      mkdirSync(`${this.dir}/.svelte-kit`, { recursive: true });
+      writeFileSync(`${this.dir}/.svelte-kit/tsconfig.json`, '{}');
+      throw new Error('The preview could not start.');
     }
     async stop() {}
   }
@@ -249,6 +255,25 @@ describe('New project when the preview fails to start', () => {
     deps.previewFails = false;
     expect(await c.create(opts(parent))).toEqual({ ok: true });
   });
+
+  it('gives a project it could not close its manifest back, and removes nothing of it', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    deps.previewFails = true;
+    let refuse = true;
+    c.onSessionClosing = async () => {
+      if (refuse) throw new Error('EIO: the workspace could not be saved');
+    };
+    const r = await c.create(opts(parent));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain(`The new project’s files were left in ${dir}.`);
+    // Still open in the editor, and still a project on disk.
+    expect(c.session?.dir).toBe(dir);
+    expect(existsSync(join(dir, 'siteorigin.project.json'))).toBe(true);
+    expect(existsSync(join(dir, 'package.json'))).toBe(true);
+    refuse = false;
+  });
 });
 
 describe('New project when cleaning up goes wrong', () => {
@@ -452,6 +477,48 @@ describe('protecting what was already there', () => {
       }
     });
   }
+
+  it('removes nothing when another app took over a project whose manifest it had put there first', async () => {
+    const { c, parent, hooks } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    const cp = fs.cp.bind(fs);
+    vi.spyOn(fs, 'cp').mockImplementation((async (from: string, to: string, o?: object) => {
+      await cp(from, to, o);
+      if (to === dir) writeFileSync(join(dir, 'siteorigin.project.json'), '{}');
+    }) as never);
+    let before: string[] = [];
+    deps.run = (d, signal) => {
+      writeFileSync(join(d, '.siteorigin', 'lock.json'), theirLock);
+      const installing = untilCancelled(d, signal);
+      before = tree(d);
+      return installing;
+    };
+    hooks.cancelAt = 'dependencies';
+    expect((await c.create(opts(parent))).ok).toBe(false);
+    expect(tree(dir)).toEqual(before);
+  });
+
+  it('takes the manifest away first when setting up fails before the lock was taken', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    const create = ProjectSession.create.bind(ProjectSession);
+    vi.spyOn(ProjectSession, 'create').mockImplementation(async (d, state) => {
+      await create(d, state);
+      throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+    });
+    const removed: string[] = [];
+    const rm = fs.rm.bind(fs);
+    vi.spyOn(fs, 'rm').mockImplementation((async (p: string, o?: object) => {
+      if (p.startsWith(dir)) removed.push(p.slice(dir.length + 1));
+      return rm(p, o);
+    }) as never);
+    expect((await c.create(opts(parent))).ok).toBe(false);
+    expect(removed[0]).toBe('siteorigin.project.json');
+    expect(removed).toContain('package.json');
+    expect(readdirSync(dir)).toEqual([]);
+  });
 
   it('keeps a folder something else made under a project name before this attempt wrote there', async () => {
     const { c, parent } = setup();

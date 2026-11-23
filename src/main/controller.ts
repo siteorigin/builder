@@ -242,7 +242,8 @@ export class Controller {
       for (const n of names) if (!wrote.has(n) && !existsSync(join(dir, n))) wrote.add(n);
     };
     let session: ProjectSession | null = null;
-    // Set once this attempt holds the new project's lock.
+    // Set once this attempt starts writing the project's own documents, and once it holds the new project's lock.
+    let sessionStarted = false;
     let locked = false;
     await this.close();
     try {
@@ -307,6 +308,7 @@ export class Controller {
       }
       if (signal.aborted) throw new Error('Cancelled');
       own(...SESSION_ENTRIES);
+      sessionStarted = true;
       session = await ProjectSession.create(dir, state);
       const lockErr = await session.acquireLock(INSTANCE_ID);
       if (lockErr) {
@@ -331,18 +333,27 @@ export class Controller {
       return { ok: true };
     } catch (e) {
       let msg = friendlyError((e as Error).message);
-      // Once the manifest is written the new project may be another app's: it opened it before this attempt had the
-      // lock (a lock file this attempt never made), or took it over since (Unlock in another window). Then nothing here
-      // may remove it. Otherwise the manifest goes first, under the lock, so no other app can open what is left as a
-      // project, and no takeover can land between that check and the removal.
-      const ours =
-        !wrote.has(MANIFEST_FILE) ||
-        (locked ? await session!.whileOwner(() => fs.rm(join(dir, MANIFEST_FILE), { force: true })).catch(() => false) : !existsSync(join(dir, LOCAL_DIR, 'lock.json')));
-      // A project that could not be closed is still open in the editor: none of it may go.
+      // Once the project's own documents are being written it may be another app's: it opened the project before this
+      // attempt had the lock (a lock file this attempt never made), or took it over since (Unlock in another window).
+      // Then nothing here may remove it. Otherwise the manifest goes first, so no other app can open what is left as a
+      // project: under the lock when this attempt holds it, so no takeover can land between the check and the removal.
+      const manifestPath = join(dir, MANIFEST_FILE);
+      const dropped: { manifest: Buffer | null } = { manifest: null };
+      const dropManifest = async () => {
+        if (!wrote.has(MANIFEST_FILE)) return;
+        dropped.manifest = await fs.readFile(manifestPath).catch(() => null);
+        await fs.rm(manifestPath, { force: true });
+      };
+      let ours = true;
+      if (sessionStarted && locked) ours = await session!.whileOwner(dropManifest).catch(() => false);
+      else if (sessionStarted && (ours = !existsSync(join(dir, LOCAL_DIR, 'lock.json')))) await dropManifest().catch(() => undefined);
+      // A project that could not be closed is still open in the editor: it gets its manifest back, and none of it goes.
       const closed = await this.close().then(
         () => true,
         () => false
       );
+      const kept = dropped.manifest;
+      if (!closed && kept) await session!.whileOwner(() => atomicWrite(manifestPath, kept)).catch(() => false);
       if (!ours || !closed) {
         if (wrote.size) msg = `${msg} The new project’s files were left in ${dir}.`;
         wrote.clear();
