@@ -45,7 +45,6 @@ async function bundleForm(): Promise<string> {
   const out = (await build({
     configFile: false,
     logLevel: 'silent',
-    mode: 'production',
     plugins: [{ name: 'contact-form', resolveId: (id) => (id in modules ? id : null), load: (id) => modules[id] ?? null }],
     build: { write: false, minify: false, rolldownOptions: { input: '\0entry', output: { format: 'iife', codeSplitting: false } } }
   })) as Rolldown.RolldownOutput | Rolldown.RolldownOutput[];
@@ -53,6 +52,11 @@ async function bundleForm(): Promise<string> {
   if (!chunk || chunk.type !== 'chunk') throw new Error('The form did not bundle');
   return chunk.code;
 }
+
+// Counts sends in the page itself, so a second send is seen the moment it starts, not when it is intercepted.
+const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="app"></div>
+<script>window.fetches = 0; const send = window.fetch; window.fetch = function (...args) { window.fetches++; return send.apply(this, args); };</script>
+<script src="/form.js"></script></body></html>`;
 
 interface Post {
   path: string;
@@ -65,7 +69,12 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
   let script: string;
 
   beforeAll(async () => {
-    [script, browser] = await Promise.all([bundleForm(), chromium.launch({ headless: true, executablePath: chromium.executablePath() })]);
+    // Settled separately, so a browser that launched is still closed when the bundle fails.
+    const [bundled, launched] = await Promise.allSettled([bundleForm(), chromium.launch({ headless: true, executablePath: chromium.executablePath() })]);
+    if (launched.status === 'fulfilled') browser = launched.value;
+    if (bundled.status === 'rejected') throw bundled.reason;
+    if (launched.status === 'rejected') throw launched.reason;
+    script = bundled.value;
   }, 60_000);
 
   afterAll(async () => {
@@ -75,19 +84,18 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
   /** Runs `body` against a fresh page with the form mounted; every POST waits until the test answers it. */
   async function withForm(props: Record<string, unknown>, body: (form: Awaited<ReturnType<typeof openForm>>) => Promise<void>) {
     const context = await browser.newContext();
-    const page = await context.newPage();
-    const form = await openForm(page, props);
+    const held: Route[] = [];
     try {
-      await body(form);
+      const page = await context.newPage();
+      await body(await openForm(page, props, held));
     } finally {
-      await form.releaseAll();
-      await page.unrouteAll({ behavior: 'ignoreErrors' });
+      for (const route of held.splice(0)) await route.abort().catch(() => {});
+      for (const page of context.pages()) await page.unrouteAll({ behavior: 'ignoreErrors' });
       await context.close();
     }
   }
 
-  async function openForm(page: Page, props: Record<string, unknown>) {
-    const held: Array<Route> = [];
+  async function openForm(page: Page, props: Record<string, unknown>, held: Route[]) {
     const waiting: Post[] = [];
     const listeners: Array<(p: Post) => void> = [];
     const posts: Post[] = [];
@@ -96,13 +104,19 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       const url = new URL(request.url());
       if (request.method() === 'GET') {
         if (url.pathname === '/form.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script });
-        return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="app"></div><script src="/form.js"></script></body></html>' });
+        return route.fulfill({ contentType: 'text/html; charset=utf-8', body: PAGE });
       }
       held.push(route);
-      const data = await new Response(request.postDataBuffer(), { headers: { 'content-type': request.headers()['content-type'] ?? '' } }).formData();
+      let body: Record<string, string>;
+      try {
+        const data = await new Response(request.postDataBuffer(), { headers: { 'content-type': request.headers()['content-type'] ?? '' } }).formData();
+        body = Object.fromEntries([...data].map(([k, v]) => [k, String(v)]));
+      } catch {
+        body = { unparsed: request.postData() ?? '' };
+      }
       const post: Post = {
         path: url.pathname,
-        body: Object.fromEntries([...data].map(([k, v]) => [k, String(v)])),
+        body,
         respond: async (status) => {
           held.splice(held.indexOf(route), 1);
           await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ ok: status < 400 }) });
@@ -124,7 +138,15 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       button: page.locator('.so-form__actions button'),
       status: () => page.locator('.so-form__status[role="status"]').innerText(),
       alert: () => page.locator('.so-form__status[role="alert"]').innerText(),
-      nextPost: () => new Promise<Post>((resolve) => (waiting.length ? resolve(waiting.shift()!) : listeners.push(resolve))),
+      /** Calls to fetch so far, counted in the page as each send starts. */
+      fetches: () => page.evaluate<number>('window.fetches'),
+      nextPost: () =>
+        new Promise<Post>((resolve, reject) => {
+          if (waiting.length) return resolve(waiting.shift()!);
+          const take = (p: Post) => (clearTimeout(timer), resolve(p));
+          const timer = setTimeout(() => (listeners.splice(listeners.indexOf(take), 1), reject(new Error('No POST reached the form service within 5s'))), 5000);
+          listeners.push(take);
+        }),
       editable: async () => Promise.all(['Name', 'Email', 'Message'].map((l) => field(l).isEditable())),
       values: async () => Promise.all(['Name', 'Email', 'Message'].map((l) => field(l).inputValue())),
       /** Types at the end of a field the way a visitor would, with real key presses. */
@@ -133,14 +155,11 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await page.keyboard.press('End');
         await page.keyboard.type(text);
       },
-      releaseAll: async () => {
-        for (const route of held.splice(0)) await route.abort().catch(() => {});
-      }
     };
   }
 
-  it('sends what the visitor saw, keeps every field read-only until the reply, then resets', async () => {
-    await withForm({ provider: 'netlify', formName: 'contact', fields: FIELDS }, async ({ page, field, posts, button, status, nextPost, editable, values, typeInto }) => {
+  it('sends what the visitor saw, keeps the fields read-only until the reply, then resets', async () => {
+    await withForm({ provider: 'netlify', formName: 'contact', fields: FIELDS }, async ({ page, field, posts, button, status, nextPost, fetches, editable, values, typeInto }) => {
       await field('Name').fill('Ada');
       await field('Message').fill('First request');
       await field('Email').fill('ada@example.com');
@@ -149,21 +168,24 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       expect(post.path).toBe('/contact/');
       expect(post.body).toMatchObject({ 'form-name': 'contact', name: 'Ada', email: 'ada@example.com', message: 'First request' });
 
-      // While the reply is held back, nothing the visitor does changes what is being sent.
+      // While the reply is held back the draft cannot change, so the reset after success has nothing newer to discard.
       await expect.poll(() => button.innerText()).toBe('Sending…');
       expect(await status()).toBe('Sending your message…');
       expect(await editable()).toEqual([false, false, false]);
       await typeInto('Message', ', corrected date');
       await typeInto('Name', ' Lovelace');
       expect(await values()).toEqual(['Ada', 'ada@example.com', 'First request']);
+      // Neither Enter nor a scripted submit starts a second send while the first is in flight.
       await field('Email').press('Enter');
       await page.evaluate(`document.querySelector('form').requestSubmit()`);
+      expect(await fetches()).toBe(1);
 
       await post.respond(200);
       await expect.poll(status).toBe(SENT);
       expect(await values()).toEqual(['', '', '']);
       expect(await editable()).toEqual([true, true, true]);
       expect(posts).toHaveLength(1);
+      expect(await fetches()).toBe(1);
     });
   }, 20_000);
 
@@ -176,9 +198,10 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       await (await nextPost()).respond(200);
       await expect.poll(status).toBe(SENT);
 
-      await typeInto('Message', 'Second');
+      // A text input this time; the failure case below edits the textarea.
+      await typeInto('Name', 'Grace');
       expect(await status()).toBe('');
-      expect(await field('Message').inputValue()).toBe('Second');
+      expect(await field('Name').inputValue()).toBe('Grace');
     });
   }, 20_000);
 
