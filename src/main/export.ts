@@ -447,7 +447,7 @@ export async function publishFolder(from: string, dest: string, beforeCommit?: (
 }
 
 /** Put `tmp` where the empty folder `dest` is. Something else there now is reported as an existing location. */
-async function replaceEmptyFolder(tmp: string, dest: string) {
+export async function replaceEmptyFolder(tmp: string, dest: string) {
   const taken = () => Object.assign(new Error(`${dest} already exists.`), { code: 'EEXIST' });
   const occupied = (e: unknown, codes: string[]) => {
     if (codes.includes((e as NodeJS.ErrnoException).code ?? '')) throw taken();

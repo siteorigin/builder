@@ -3,7 +3,7 @@
  * and folder, leaves the folder untouched, and never rejects the call (which left the Open button disabled).
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, statSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, promises as fsp, readFileSync, statSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,7 +16,11 @@ vi.mock('electron', () => ({
   shell: {}
 }));
 
+import { dialog } from 'electron';
 import { Controller, readManifestSummary } from '../../src/main/controller';
+import { loadSettings, trust } from '../../src/main/settings';
+import { NOT_A_PROJECT_ZIP, WEBSITE_ZIP } from '../../src/main/unzip';
+import { zipDirectory } from '../../src/main/zip';
 
 const dirs: string[] = [];
 const tmp = (p: string) => {
@@ -108,5 +112,161 @@ describe('readManifestSummary', () => {
     writeFileSync(join(dir, 'siteorigin.project.json'), '{}');
     const r = await readManifestSummary(dir);
     expect(r.ok && r.name).toBe(dir.split('/').pop());
+  });
+});
+
+describe('opening a project ZIP file (#263)', () => {
+  /** An editable project exported as a ZIP file the way Builder exports one: under one `cafe-source/` folder. */
+  async function editableZip(name = 'Cafe') {
+    const src = tmp('so-zip-src-');
+    writeFileSync(join(src, 'siteorigin.project.json'), JSON.stringify({ schemaVersion: 1, projectId: 'p_abc', name }));
+    mkdirSync(join(src, 'siteorigin', 'pages'), { recursive: true });
+    writeFileSync(join(src, 'siteorigin', 'pages', 'home.json'), '{"title":"Home"}');
+    mkdirSync(join(src, 'static', 'assets'), { recursive: true });
+    writeFileSync(join(src, 'static', 'assets', 'photo-1234abcd.jpg'), Buffer.alloc(64 * 1024, 9));
+    const zip = join(tmp('so-zip-'), 'cafe-source.zip');
+    await zipDirectory(src, zip, 'cafe-source');
+    return zip;
+  }
+  const chooseFolder = (dir: string) => vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [dir] });
+  const hash = (f: string) => createHash('sha256').update(readFileSync(f)).digest('hex');
+
+  beforeEach(() => vi.mocked(dialog.showOpenDialog).mockReset());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('unpacks an editable project ZIP into a new folder where the recipient chooses, then asks for trust', async () => {
+    const zip = await editableZip();
+    const before = hash(zip);
+    const parent = tmp('so-recipient-');
+    chooseFolder(parent);
+    const c = new Controller(() => null);
+    const r = await c.open(zip);
+    expect(r).toEqual({ ok: false, needsTrust: { dir: join(parent, 'cafe'), name: 'Cafe' } });
+    // The project is at the top of its folder, with its pages and media as exported, and nothing else is left beside it.
+    expect(readdirSync(parent)).toEqual(['cafe']);
+    expect(JSON.parse(readFileSync(join(parent, 'cafe', 'siteorigin.project.json'), 'utf8')).name).toBe('Cafe');
+    expect(readFileSync(join(parent, 'cafe', 'siteorigin', 'pages', 'home.json'), 'utf8')).toBe('{"title":"Home"}');
+    expect(readFileSync(join(parent, 'cafe', 'static', 'assets', 'photo-1234abcd.jpg'))).toEqual(Buffer.alloc(64 * 1024, 9));
+    // Nothing opened or remembered before the recipient trusts it, and the ZIP file is as it was.
+    expect(c.session).toBeNull();
+    expect((await loadSettings()).recents.some((x) => x.dir.startsWith(parent))).toBe(false);
+    expect(hash(zip)).toBe(before);
+    // Cancelling the trust prompt keeps the working copy; opening it later asks again.
+    expect((await c.open(join(parent, 'cafe'))).needsTrust).toEqual({ dir: join(parent, 'cafe'), name: 'Cafe' });
+  });
+
+  it('opens the same ZIP file twice into two working copies, never overwriting the first', async () => {
+    const zip = await editableZip();
+    const parent = tmp('so-recipient-');
+    const c = new Controller(() => null);
+    chooseFolder(parent);
+    expect((await c.open(zip)).needsTrust?.dir).toBe(join(parent, 'cafe'));
+    // The first copy is edited meanwhile.
+    writeFileSync(join(parent, 'cafe', 'siteorigin', 'pages', 'home.json'), '{"title":"Edited"}');
+    chooseFolder(parent);
+    expect((await c.open(zip)).needsTrust?.dir).toBe(join(parent, 'cafe-2'));
+    expect(readFileSync(join(parent, 'cafe', 'siteorigin', 'pages', 'home.json'), 'utf8')).toBe('{"title":"Edited"}');
+    expect(readFileSync(join(parent, 'cafe-2', 'siteorigin', 'pages', 'home.json'), 'utf8')).toBe('{"title":"Home"}');
+    expect(readdirSync(parent).sort()).toEqual(['cafe', 'cafe-2']);
+  });
+
+  it('takes a ZIP file chosen in the Open project picker, and the picker now offers ZIP files', async () => {
+    const zip = await editableZip();
+    const parent = tmp('so-recipient-');
+    chooseFolder(zip);
+    chooseFolder(parent);
+    const r = await new Controller(() => null).open();
+    expect(r.needsTrust?.dir).toBe(join(parent, 'cafe'));
+    const picker = vi.mocked(dialog.showOpenDialog).mock.calls[0][1] as { filters: Array<{ extensions: string[] }> };
+    expect(picker.filters[0].extensions).toEqual(['json', 'zip']);
+  });
+
+  it('explains a website ZIP and any other ZIP file without asking where to save anything', async () => {
+    const site = tmp('so-site-');
+    writeFileSync(join(site, 'index.html'), '<h1>Cafe</h1>');
+    mkdirSync(join(site, '_app'));
+    writeFileSync(join(site, '_app', 'start.js'), '');
+    const websiteZip = join(tmp('so-zip-'), 'cafe-site.zip');
+    await zipDirectory(site, websiteZip);
+    const c = new Controller(() => null);
+    expect(await c.open(websiteZip)).toEqual({ ok: false, message: WEBSITE_ZIP });
+    expect(WEBSITE_ZIP).toMatch(/editable version/);
+    const other = tmp('so-other-');
+    writeFileSync(join(other, 'notes.txt'), 'hello');
+    const otherZip = join(tmp('so-zip-'), 'notes.zip');
+    await zipDirectory(other, otherZip);
+    expect(await c.open(otherZip)).toEqual({ ok: false, message: NOT_A_PROJECT_ZIP });
+    expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+  });
+
+  it('refuses a project ZIP whose manifest is damaged, before asking where to save it', async () => {
+    const src = tmp('so-zip-src-');
+    writeFileSync(join(src, 'siteorigin.project.json'), truncated);
+    const zip = join(tmp('so-zip-'), 'half.zip');
+    await zipDirectory(src, zip, 'half-source');
+    const r = await new Controller(() => null).open(zip);
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/siteorigin\.project\.json in that ZIP file is incomplete or damaged/);
+    expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+  });
+
+  it('still opens a project folder whose name ends in .zip as a folder', async () => {
+    const dir = join(tmp('so-parent-'), 'studio.zip');
+    mkdirSync(dir);
+    writeFileSync(join(dir, 'siteorigin.project.json'), JSON.stringify({ name: 'Studio' }));
+    expect((await new Controller(() => null).open(dir)).needsTrust).toEqual({ dir, name: 'Studio' });
+  });
+
+  it('leaves nothing behind when the recipient cancels choosing a folder', async () => {
+    const zip = await editableZip();
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    expect(await new Controller(() => null).open(zip)).toEqual({ ok: false });
+  });
+
+  it('leaves nothing behind when the unpacking is cancelled part way', async () => {
+    const zip = await editableZip();
+    const parent = tmp('so-recipient-');
+    const c = new Controller(() => null);
+    const mkdir = fsp.mkdir.bind(fsp);
+    let cancelled = false;
+    vi.spyOn(fsp, 'mkdir').mockImplementation(async (p, o) => {
+      // The first folder made inside the private unpacking folder: files are being written.
+      if (!cancelled && String(p).includes('.siteorigin-open-')) {
+        cancelled = true;
+        c.cancelOpen();
+      }
+      return mkdir(p, o as never);
+    });
+    chooseFolder(parent);
+    expect(await c.open(zip)).toEqual({ ok: false });
+    expect(cancelled).toBe(true);
+    expect(readdirSync(parent)).toEqual([]);
+    // A cancel with nothing being unpacked does nothing, and the next open works.
+    c.cancelOpen();
+    vi.restoreAllMocks();
+    chooseFolder(parent);
+    expect((await c.open(zip)).needsTrust?.dir).toBe(join(parent, 'cafe'));
+  });
+
+  it('never unpacks into a folder that appears while it unpacks, and never inherits an old folder’s trust', async () => {
+    const zip = await editableZip();
+    const parent = tmp('so-recipient-');
+    // An earlier copy at cafe-2 was trusted, then deleted.
+    await trust(join(parent, 'cafe-2'), 'old-hash');
+    const mkdir = fsp.mkdir.bind(fsp);
+    let appeared = false;
+    vi.spyOn(fsp, 'mkdir').mockImplementation(async (p, o) => {
+      if (!appeared && String(p).includes('.siteorigin-open-')) {
+        appeared = true;
+        // Something else makes the folder the copy would have taken.
+        mkdirSync(join(parent, 'cafe'));
+      }
+      return mkdir(p, o as never);
+    });
+    chooseFolder(parent);
+    const r = await new Controller(() => null).open(zip);
+    expect(r.needsTrust?.dir).toBe(join(parent, 'cafe-2'));
+    expect(readdirSync(join(parent, 'cafe'))).toEqual([]);
+    expect((await loadSettings()).trusted[join(parent, 'cafe-2')]).toBeUndefined();
   });
 });

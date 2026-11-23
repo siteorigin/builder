@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { crc32, deflateRawSync } from 'node:zlib';
 import { afterEach, describe, expect, it } from 'vitest';
 import { zipDirectory } from '../../src/main/zip';
-import { classifyZip, extractEntries, readZipEntries, safeEntryPath, ZipError } from '../../src/main/unzip';
+import { classifyZip, decodeName, extractEntries, readZipEntries, safeEntryPath, unpackProject, ZipError } from '../../src/main/unzip';
 
 const dirs: string[] = [];
 const temp = (p = 'so-unzip-') => {
@@ -130,10 +130,26 @@ describe('telling ZIP files apart', () => {
   });
 
   it('recognizes a website ZIP, and says when it is neither', async () => {
-    expect(classifyZip(await readZipEntries(zipFile([{ name: 'index.html', data: '<h1>' }, { name: '_app/x.js', data: '' }])))).toEqual({ kind: 'website' });
-    expect(classifyZip(await readZipEntries(zipFile([{ name: 'cafe-site/index.html', data: '<h1>' }])))).toEqual({ kind: 'website' });
-    expect(classifyZip(await readZipEntries(zipFile([{ name: 'notes.txt', data: 'hi' }])))).toEqual({ kind: 'other' });
-    expect(classifyZip(await readZipEntries(zipFile([{ name: 'a/siteorigin.project.json', data: '{}' }, { name: 'b/siteorigin.project.json', data: '{}' }])))).toEqual({ kind: 'several' });
+    const kind = async (entries: RawEntry[]) => classifyZip(await readZipEntries(zipFile(entries))).kind;
+    expect(await kind([{ name: 'index.html', data: '<h1>' }, { name: '_app/x.js', data: '' }])).toBe('website');
+    expect(await kind([{ name: 'cafe-site/index.html', data: '<h1>' }, { name: 'cafe-site/_app/x.js', data: '' }])).toBe('website');
+    // A page on its own is not a website export, and neither is a folder of notes.
+    expect(await kind([{ name: 'cafe-site/index.html', data: '<h1>' }])).toBe('other');
+    expect(await kind([{ name: 'notes.txt', data: 'hi' }])).toBe('other');
+  });
+
+  it('takes a project only at the top or inside the one folder, never one of several or one buried deeper', async () => {
+    const kind = async (entries: RawEntry[]) => classifyZip(await readZipEntries(zipFile(entries))).kind;
+    expect(await kind([{ name: 'a/siteorigin.project.json', data: '{}' }, { name: 'b/siteorigin.project.json', data: '{}' }])).toBe('other');
+    expect(await kind([{ name: 'Downloads/cafe/siteorigin.project.json', data: '{}' }])).toBe('other');
+    expect(await kind([{ name: 'cafe/siteorigin.project.json', data: '{}' }, { name: 'readme.txt', data: 'x' }])).toBe('other');
+    // The Finder's own folder beside the project's one folder does not count as a second folder.
+    expect(await kind([{ name: 'cafe/siteorigin.project.json', data: '{}' }, { name: '__MACOSX/cafe/._x', data: '' }])).toBe('project');
+  });
+
+  it('reads names older Windows tools write in code page 437', () => {
+    expect(decodeName(Buffer.from([0x63, 0x61, 0x66, 0x82, 0x2e, 0x70, 0x6e, 0x67]), false)).toBe('café.png');
+    expect(decodeName(Buffer.from('café.png', 'utf8'), true)).toBe('café.png');
   });
 
   it('refuses a file that is not a ZIP file, or one cut short', async () => {
@@ -147,9 +163,13 @@ describe('telling ZIP files apart', () => {
 });
 
 describe('an archive that could do harm', () => {
-  it.each(['../evil.txt', 'a/../../evil.txt', '/etc/evil', 'C:/evil.txt', 'C:evil.txt', '..\\evil.txt', 'a\u0000b'])('refuses %j before writing anything', async (name) => {
+  it.each(['../evil.txt', 'a/../../evil.txt', '/etc/evil', 'C:/evil.txt', 'C:evil.txt', '..\\evil.txt', 'static\\..\\..\\evil.txt'])('refuses %j before writing anything', async (name) => {
     const zip = zipFile([{ name: 'siteorigin.project.json', data: '{}' }, { name, data: 'x' }]);
     await expect(readZipEntries(zip)).rejects.toThrow(/outside its folder/);
+  });
+
+  it.each(['a\u0000b', 'static/CON', 'static/nul.txt', 'static/photo.jpg:stream', 'static/trailing.', 'static/trailing '])('refuses the file name %j, which Windows would read as something else', async (name) => {
+    await expect(readZipEntries(zipFile([{ name: 'siteorigin.project.json', data: '{}' }, { name, data: 'x' }]))).rejects.toThrow(/cannot be used safely/);
   });
 
   it('keeps ordinary names as they are, and treats backslashes as folders', () => {
@@ -160,6 +180,10 @@ describe('an archive that could do harm', () => {
 
   it('refuses two names one folder cannot tell apart', async () => {
     await expect(readZipEntries(zipFile([{ name: 'p/Logo.png', data: 'a' }, { name: 'p/logo.png', data: 'b' }]))).rejects.toThrow(/two files named/);
+    await expect(readZipEntries(zipFile([{ name: 'p\\logo.png', data: 'a' }, { name: 'p/logo.png', data: 'b' }]))).rejects.toThrow(/two files named/);
+    await expect(readZipEntries(zipFile([{ name: 'P/a', data: 'a' }, { name: 'p/a/b', data: 'b' }]))).rejects.toThrow(/both as a file and as a folder/);
+    // The same folder spelled two ways is one folder: its files are different files.
+    expect(await readZipEntries(zipFile([{ name: 'p/', mode: 0o40755 }, { name: 'P/a', data: 'a' }, { name: 'p/b', data: 'b' }]))).toHaveLength(3);
     await expect(readZipEntries(zipFile([{ name: 'p/a', data: 'a' }, { name: 'p/a/b', data: 'b' }]))).rejects.toThrow(/both as a file and as a folder/);
   });
 
@@ -198,5 +222,40 @@ describe('an archive that could do harm', () => {
     const abort = new AbortController();
     abort.abort();
     await expect(extractEntries(zip, contents.entries, contents.root, temp(), abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
+
+describe('unpacking a project into a new folder', () => {
+  const project = async (zip: string) => {
+    const c = classifyZip(await readZipEntries(zip));
+    if (c.kind !== 'project') throw new Error(c.kind);
+    return c;
+  };
+
+  it('moves on to the next name when someone else fills the folder it claimed, keeping their files', async () => {
+    const zip = zipFile([{ name: 'cafe/siteorigin.project.json', data: '{}' }]);
+    const parent = temp();
+    let claims = 0;
+    const dest = await unpackProject(zip, await project(zip), parent, 'cafe', {
+      beforePublish: async (dir) => {
+        if (claims++ === 0) writeFileSync(join(dir, 'theirs.txt'), 'mine');
+      }
+    });
+    expect(dest).toBe(join(parent, 'cafe-2'));
+    expect(readFileSync(join(parent, 'cafe', 'theirs.txt'), 'utf8')).toBe('mine');
+    expect(tree(parent)).toEqual(['cafe-2/siteorigin.project.json', 'cafe/theirs.txt']);
+  });
+
+  it('gives a project named like a Windows device a folder Windows can use', async () => {
+    const zip = zipFile([{ name: 'siteorigin.project.json', data: '{}' }]);
+    const parent = temp();
+    expect(await unpackProject(zip, await project(zip), parent, 'con')).toBe(join(parent, 'con-site'));
+  });
+
+  it('removes what it wrote when a file turns out damaged', async () => {
+    const zip = zipFile([{ name: 'siteorigin.project.json', data: '{}' }, { name: 'z.txt', data: 'zzz', crc: 1 }]);
+    const parent = temp();
+    await expect(unpackProject(zip, await project(zip), parent, 'cafe')).rejects.toThrow(/z\.txt in that ZIP file is damaged/);
+    expect(readdirSync(parent)).toEqual([]);
   });
 });

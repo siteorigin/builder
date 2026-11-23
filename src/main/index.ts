@@ -221,7 +221,8 @@ function registerIpc() {
   handle('projects:create', (opts) => controller.create(opts));
   handle('projects:cancelCreate', () => controller.cancelCreate());
   handle('projects:websiteTools', () => controller.websiteTools());
-  handle('projects:open', (dir?: string) => controller.open(dir));
+  handle('projects:open', (dir?: unknown, opts?: unknown) => controller.open(typeof dir === 'string' ? dir : undefined, { folder: !!(opts as { folder?: unknown } | undefined)?.folder }));
+  handle('projects:cancelOpen', () => controller.cancelOpen());
   handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
   handle('projects:close', () => controller.closeProject());
   handle('projects:duplicate', () => controller.duplicate());
@@ -451,6 +452,8 @@ async function createWindow() {
   self.webContents.on('render-process-gone', () => {
     menuCommands.unready(self);
     leaveGate.editorGone();
+    // A project ZIP file being unpacked for this editor is called off: no one is left to answer its trust prompt.
+    controller.cancelOpen();
   });
   // A right-click in text that takes typing offers its spelling suggestions and the editing actions, natively:
   // a native menu leaves focus where it is, so a word being edited on the canvas stays in its edit. The canvas
@@ -483,7 +486,10 @@ async function createWindow() {
   self.on('unresponsive', () => leaveGate.editorUnresponsive());
   self.on('responsive', () => leaveGate.editorResponsive());
   self.webContents.on('did-start-navigation', (details) => {
-    if (details.isMainFrame && !details.isSameDocument) leaveGate.editorReplaced();
+    if (details.isMainFrame && !details.isSameDocument) {
+      leaveGate.editorReplaced();
+      controller.cancelOpen();
+    }
   });
   // A new page has replaced the editor (it committed): only it may say it is ready for menu commands from here on.
   // A navigation the editor refuses never commits, so it leaves the editor ready.
@@ -492,6 +498,7 @@ async function createWindow() {
     if (win === self) win = null;
     menuCommands.closed(self);
     leaveGate.editorGone();
+    controller.cancelOpen();
   });
   if (DEV_URL) await win.loadURL(DEV_URL);
   else await win.loadURL('app://editor/index.html');

@@ -23,6 +23,9 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
+/** macOS's picker takes a folder or a file; Windows and Linux pickers take one or the other. */
+const pickerTakesFolders = api.platform === 'darwin';
+
 export function Welcome() {
   // null until the first load, so returning users never see a flash of the first-run screen.
   const [recents, setRecents] = useState<RecentProject[] | null>(null);
@@ -46,14 +49,14 @@ export function Welcome() {
     return () => window.removeEventListener('builder-command', onCmd);
   }, []);
 
-  const open = async (dir?: string) => {
+  const open = async (dir?: string, opts?: { folder?: boolean }) => {
     // One open at a time: a second request must not clear the busy state of the first, or race it in the main process.
     // The disabled buttons show it; this also stops the Open project menu command, which no button state reaches.
     if (openingRef.current) return;
     openingRef.current = true;
-    setOpening(dir ?? 'dialog');
+    setOpening(dir ?? (opts?.folder ? 'folder-dialog' : 'dialog'));
     try {
-      const r = await api.projects.open(dir);
+      const r = await api.projects.open(dir, opts);
       if (r.needsTrust) setTrust(r.needsTrust);
       else if (!r.ok && r.message) toast(r.message, 'error');
     } catch (e) {
@@ -94,10 +97,21 @@ export function Welcome() {
             <span className="ico">{opening === 'dialog' ? <Spinner decorative /> : <FolderOpen size={18} />}</span>
             <span className="grow">
               <strong>Open project…</strong>
-              <span>Choose a project folder</span>
+              <span>{pickerTakesFolders ? 'Choose a project folder or ZIP file' : 'Choose a project file or ZIP file'}</span>
             </span>
             <ChevronRight className="chev" />
           </button>
+          {/* Windows and Linux pickers take files or folders, not both: a project folder has its own. */}
+          {!pickerTakesFolders && (
+            <button className="welcome-action secondary" disabled={!!opening} onClick={() => void open(undefined, { folder: true })}>
+              <span className="ico">{opening === 'folder-dialog' ? <Spinner decorative /> : <Folder size={18} />}</span>
+              <span className="grow">
+                <strong>Open project folder…</strong>
+                <span>Choose the folder a project is in</span>
+              </span>
+              <ChevronRight className="chev" />
+            </button>
+          )}
         </div>
         <div className="spacer" />
         <div className="col no-drag" style={{ gap: 4 }}>

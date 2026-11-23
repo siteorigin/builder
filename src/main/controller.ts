@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'electron';
 import { watch, type FSWatcher } from 'node:fs';
 import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -15,6 +15,7 @@ import { basePath, generateManagedComponent, generatePage, defFile, liveRedirect
 import { placeholderImageCount } from '@generator/checks';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
+import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
 import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
@@ -27,7 +28,7 @@ import { DevServer, buildProject, dependenciesReady, prepareDependencies, starte
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { canonicalDir } from '../runtime/policy';
-import { addRecent, isTrusted, loadSettings, trust } from './settings';
+import { addRecent, isTrusted, loadSettings, trust, untrust } from './settings';
 import { newId } from '@shared/ids';
 
 const INSTANCE_ID = randomUUID();
@@ -102,6 +103,30 @@ async function configHash(dir: string): Promise<string> {
   return sha(parts.map((p) => p ?? '').join('\n--\n'));
 }
 
+type OpenResult = { ok: boolean; message?: string; needsTrust?: { dir: string; name: string } };
+
+/**
+ * Open project's picker. On macOS one picker takes a project folder, its siteorigin.project.json or a project ZIP file.
+ * Windows and Linux cannot mix files and folders in one picker, so theirs takes the file or a ZIP file, and a folder
+ * when one is asked for (Welcome's Open project folder).
+ */
+function openProjectDialog(folder: boolean): OpenDialogOptions {
+  const defaultPath = existsSync(defaultProjectsFolder()) ? defaultProjectsFolder() : undefined;
+  if (folder && process.platform !== 'darwin') return { title: 'Open a SiteOrigin Builder project folder', defaultPath, properties: ['openDirectory'] };
+  return {
+    title: 'Open a SiteOrigin Builder project',
+    defaultPath,
+    properties: process.platform === 'darwin' ? ['openDirectory', 'openFile'] : ['openFile'],
+    filters: [{ name: 'SiteOrigin project or ZIP file', extensions: ['json', 'zip'] }]
+  };
+}
+
+/** Is `path` a ZIP file (a folder that happens to end in .zip is still a folder)? */
+async function isZipFile(path: string): Promise<boolean> {
+  if (!/\.zip$/i.test(path)) return false;
+  return (await fs.stat(path).catch(() => null))?.isFile() ?? false;
+}
+
 /** A failure message that says which project folder it is about. */
 const inFolder = (message: string, dir: string) => `${message} Project folder: "${dir}".`;
 
@@ -137,8 +162,10 @@ export class Controller {
   private handingOver = false;
   /** Set once the app is quitting: no project replaces the one being closed for it. */
   quitting = false;
-  /** New projects being made, each until it is shown or has gone again. */
+  /** New projects being made (or unpacked from a ZIP file), each until it is shown or has gone again. */
   private creations = new Map<Promise<unknown>, AbortController>();
+  /** The project ZIP file being unpacked now, so Cancel (or its window going) can call it off. */
+  private unpackAbort: AbortController | null = null;
   /** Previews of the open project's exported websites, one per export. */
   private previews = new StaticPreviews();
   /** What the open project exported since it was opened, newest first. */
@@ -470,24 +497,26 @@ export class Controller {
     return starterTools(templateFiles());
   }
 
-  async open(dirArg?: string): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }> {
+  /** Open a project folder, or a project ZIP file (#263). With no path, the author chooses one (`folder`: a folder). */
+  async open(dirArg?: string, opts: { folder?: boolean } = {}): Promise<OpenResult> {
     // Every exit is a structured result: a thrown error would reject the IPC call and leave the Welcome screen busy.
     try {
-      return await this.openChosen(dirArg);
+      return await this.openChosen(dirArg, opts.folder === true);
     } catch (e) {
       return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
     }
   }
 
-  private async openChosen(dirArg?: string): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }> {
+  private async openChosen(dirArg: string | undefined, folder: boolean): Promise<OpenResult> {
     let dir = dirArg;
     if (!dir) {
       const win = this.getWindow();
-      const r = await dialog.showOpenDialog(win!, { title: 'Open a SiteOrigin Builder project', defaultPath: existsSync(defaultProjectsFolder()) ? defaultProjectsFolder() : undefined, properties: ['openDirectory', 'openFile'], filters: [{ name: 'SiteOrigin project', extensions: ['json'] }] });
+      const r = await dialog.showOpenDialog(win!, openProjectDialog(folder));
       if (r.canceled || !r.filePaths[0]) return { ok: false };
       dir = r.filePaths[0];
       if (basename(dir) === MANIFEST_FILE) dir = join(dir, '..');
     }
+    if (await isZipFile(dir)) return this.openZip(dir);
     if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' };
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
@@ -499,6 +528,60 @@ export class Controller {
       return { ok: false, needsTrust: { dir, name: manifest.name } };
     }
     return this.openTrusted(dir);
+  }
+
+  /**
+   * Open a project ZIP file (#263). A website export, or any other ZIP file, is explained instead. For an editable
+   * project the author chooses where the working copy goes; it is unpacked into a new folder there (never into one that
+   * exists) and then asks for trust like any project from another computer. The ZIP file is only read, and calling
+   * off the folder picker or the unpacking leaves nothing behind.
+   */
+  private async openZip(file: string): Promise<OpenResult> {
+    let project: Awaited<ReturnType<typeof readProjectZip>>;
+    try {
+      project = await readProjectZip(file);
+    } catch (e) {
+      if (e instanceof ZipError) return { ok: false, message: e.message };
+      return { ok: false, message: `Could not read the ZIP file: ${(e as Error).message}` };
+    }
+    if (project.kind === 'website') return { ok: false, message: WEBSITE_ZIP };
+    if (project.kind !== 'project') return { ok: false, message: NOT_A_PROJECT_ZIP };
+    const name = project.name || basename(file).replace(/\.zip$/i, '');
+    const r = await dialog.showOpenDialog(this.getWindow()!, {
+      title: `Choose where to save ${name}`,
+      message: `A new folder for ${name} is made in the folder you choose. The ZIP file is not changed.`,
+      defaultPath: existsSync(defaultProjectsFolder()) ? defaultProjectsFolder() : app.getPath('documents'),
+      buttonLabel: 'Save here',
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (r.canceled || !r.filePaths[0] || this.quitting) return { ok: false };
+    const parent = r.filePaths[0];
+    if (this.session && isInside(this.session.dir, parent)) return { ok: false, message: 'Choose a location outside the open project’s folder.' };
+    const abort = new AbortController();
+    this.unpackAbort = abort;
+    // A trust given to an earlier folder of the same name (since deleted) never carries over to this one.
+    const run = unpackProject(file, project, parent, slugify(name) || 'website', { signal: abort.signal, beforePublish: (dir) => untrust(canonicalDir(dir)) });
+    // Quitting calls it off and waits for it, as for a new project being made.
+    this.creations.set(run, abort);
+    this.send('projects:unpacking', { name, dir: parent });
+    let dir: string;
+    try {
+      dir = await run;
+    } catch (e) {
+      if (abort.signal.aborted) return { ok: false };
+      if (e instanceof ZipError) return { ok: false, message: e.message };
+      return { ok: false, message: `Could not unpack ${name} into ${parent}: ${(e as Error).message}` };
+    } finally {
+      this.creations.delete(run);
+      if (this.unpackAbort === abort) this.unpackAbort = null;
+      this.send('projects:unpacking', null);
+    }
+    return { ok: false, needsTrust: { dir: canonicalDir(dir), name } };
+  }
+
+  /** Call off the project ZIP file being unpacked, if any: whatever it wrote is removed. */
+  cancelOpen() {
+    this.unpackAbort?.abort();
   }
 
   async trustAndOpen(opened: string): Promise<{ ok: boolean; message?: string }> {
