@@ -35,7 +35,7 @@ import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
-import { formFieldsAsSent, formKeyNote, namesFormFields } from '@catalogue/foundation/form';
+import { formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, type FormServiceSetup } from '@catalogue/foundation/form';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import { applyOps, applyWith, setState, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
@@ -55,6 +55,16 @@ function formKeyNotes(def: ComponentDefinition, value: unknown): ((item: ListIte
   if (value !== undefined && !Array.isArray(value)) return undefined;
   const fields = formFieldsAsSent(def, value);
   return (_item, i) => ({ field: 'name', ...formKeyNote(fields, i) });
+}
+
+/** Under a contact form's service setting: what the form still needs, then how to get it from the service. */
+function formServiceHint(service: FormServiceSetup): ReactNode {
+  return (
+    <>
+      {service.problem && <span className="field-warning">{service.problem}</span>}
+      {service.setup}
+    </>
+  );
 }
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): EditOperation {
@@ -353,7 +363,13 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         ]
       : [])
   ];
-  const fields = groupFields(Object.entries(def.properties).map(([key, schema]) => ({ key, schema, data: null })));
+  // A contact form shows only the setting its service needs. The others keep their values for a switch back.
+  const service = formServiceSetup(def, node.props);
+  const fields = groupFields(
+    Object.entries(def.properties)
+      .filter(([key]) => !service?.hidden.includes(key))
+      .map(([key, schema]) => ({ key, schema, data: null }))
+  );
   return (
     <>
       <Header
@@ -389,6 +405,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               name={key}
               schema={schema}
               label={label}
+              hint={service && key === service.prop ? formServiceHint(service) : undefined}
               value={node.props[key] ?? schema.default}
               onChange={(v, edit) => set(key, v, edit)}
               onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}

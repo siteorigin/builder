@@ -198,6 +198,52 @@ await axis('Tone').selectOption('muted');
 await eventually(() => assert.match(read('src/routes/+page.svelte'), /variant="muted"/, 'the form takes the tone chosen in the Inspector'));
 await eventually(async () => assert.equal(await frame.locator('section.so-form--muted').count(), 1, 'the preview shows the form in that tone'));
 
+step('a contact form shows only the setting its service needs, and keeps the others');
+const inspector = win.locator('#dock-panel-inspect');
+const setting = (label) => inspector.getByLabel(label, { exact: true });
+const SETTINGS = ['Form endpoint URL', 'Web3Forms access key', 'Netlify form name'];
+// Exactly one service setting is in the inspector, and its note says what is missing and how to get it.
+const showsOnly = async (label, note) =>
+  eventually(async () => {
+    for (const other of SETTINGS) assert.equal(await setting(other).count(), other === label ? 1 : 0, `${other} is ${other === label ? 'shown' : 'hidden'} for this service`);
+    const described = await setting(label).evaluate((el) => document.getElementById(el.getAttribute('aria-describedby') ?? '')?.textContent ?? '');
+    for (const text of note) assert.ok(described.includes(text), `the note under ${label} says “${text}”: ${described}`);
+  });
+const formWarning = () => win.evaluate(async () => (await window.builder.project.snapshot()).diagnostics.filter((d) => d.code === 'FORM_UNCONNECTED').map((d) => d.message).join(' '));
+const service = setting('Form service');
+await showsOnly('Form endpoint URL', ['Add the HTTPS endpoint your form service gives you.', 'https://formspree.io/f/abc123']);
+await eventually(async () => assert.match(await formWarning(), /Add the HTTPS endpoint your form service gives you\./, 'the project check names the missing endpoint'));
+await service.selectOption('web3forms');
+await showsOnly('Web3Forms access key', ['Add your Web3Forms access key.', 'web3forms.com']);
+await eventually(async () => assert.match(await formWarning(), /Add your Web3Forms access key\./, 'the project check names the missing key'));
+await setting('Web3Forms access key').fill('e2e-test-key');
+await setting('Web3Forms access key').press('Enter');
+await eventually(async () => assert.equal(await formWarning(), '', 'a key connects the form'));
+await showsOnly('Web3Forms access key', ['web3forms.com']);
+assert.doesNotMatch(await setting('Web3Forms access key').evaluate((el) => document.getElementById(el.getAttribute('aria-describedby') ?? '')?.textContent ?? ''), /Add your Web3Forms access key/, 'nothing is missing once the key is in');
+await service.selectOption('netlify');
+await showsOnly('Netlify form name', ['form detection']);
+assert.equal(await setting('Netlify form name').inputValue(), 'contact', 'Netlify starts with a form name');
+await setting('Netlify form name').fill('');
+await setting('Netlify form name').press('Enter');
+await showsOnly('Netlify form name', ['Add a form name for Netlify Forms.', 'form detection']);
+await eventually(async () => assert.match(await formWarning(), /Add a form name for Netlify Forms\./, 'the project check names the missing form name'));
+// Clicking the service straight from the edited setting commits it on the way, as an author would.
+await setting('Netlify form name').fill('enquiries');
+await service.focus();
+await service.selectOption('endpoint');
+await showsOnly('Form endpoint URL', ['Add the HTTPS endpoint your form service gives you.']);
+await setting('Form endpoint URL').fill('http://insecure.example/f');
+await setting('Form endpoint URL').press('Enter');
+await showsOnly('Form endpoint URL', ['Use the full HTTPS endpoint your form service gives you, starting with https://.']);
+await service.selectOption('netlify');
+await showsOnly('Netlify form name', ['form detection']);
+assert.equal(await setting('Netlify form name').inputValue(), 'enquiries', 'the Netlify form name typed before the switch is kept');
+await service.selectOption('web3forms');
+await showsOnly('Web3Forms access key', ['web3forms.com']);
+assert.equal(await setting('Web3Forms access key').inputValue(), 'e2e-test-key', 'switching back shows the key entered before');
+await eventually(() => assert.match(read('src/routes/+page.svelte'), /accessKey=\{?"e2e-test-key"/, 'the page sends the form with that key'));
+
 step('repeatable lists: capacity, and focus after a move to either end');
 if (!(await win.locator('[role="tree"]').first().isVisible())) await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
