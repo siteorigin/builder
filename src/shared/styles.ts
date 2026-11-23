@@ -1,3 +1,4 @@
+import { isFocusValue } from './focus';
 import type { StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 
 /**
@@ -5,7 +6,7 @@ import type { StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } fro
  * Anything outside this list belongs in a code component.
  */
 
-export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css';
+export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'focus' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css';
 
 export interface StylePropDef {
   id: string;
@@ -90,7 +91,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'objectFit', label: 'Image fit', group: 'size', kind: 'enum', options: [
     { value: 'cover', label: 'Fill (crop)' }, { value: 'contain', label: 'Fit (no crop)' }
   ] },
-  { id: 'objectPosition', label: 'Image focus', group: 'size', kind: 'enum', description: 'Which part stays in view when the image is cropped.', options: [
+  { id: 'objectPosition', label: 'Image focus', group: 'size', kind: 'focus', description: 'Which part stays in view when the image is cropped: a keyword, or "X% Y%" across and down the picture.', options: [
     { value: 'top', label: 'Top' }, { value: 'center', label: 'Center' }, { value: 'bottom', label: 'Bottom' }, { value: 'left', label: 'Left' }, { value: 'right', label: 'Right' }
   ] },
   { id: 'overflow', label: 'Overflow', group: 'size', kind: 'enum', advanced: true, description: 'Clip lets rounded corners cut off what sits inside them.', options: [
@@ -546,6 +547,8 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       return def.options!.some((o) => o.value === s) ? null : `${def.label} must be one of: ${def.options!.map((o) => o.value).join(', ')}.`;
     case 'ratio':
       return /^(auto|\d+(\.\d+)?\s*\/\s*\d+(\.\d+)?)$/.test(s) ? null : `${def.label} must look like 16/9.`;
+    case 'focus':
+      return typeof value === 'string' && isFocusValue(s) ? null : `${def.label} must be one of ${def.options!.map((o) => o.value).join(', ')}, or two percentages across and down such as "50% 20%".`;
     case 'color':
       if (propId === 'background' && isGradient(s)) return isValidGradient(s) ? null : `"${s.slice(0, 60)}" is not a supported gradient. Use colors, angles and percentages inside linear-gradient(), radial-gradient() or conic-gradient().`;
       return COLOR_RE.test(s) ? null : `"${s}" is not a supported color. Use a hex value, rgb(), hsl() or oklch().`;
