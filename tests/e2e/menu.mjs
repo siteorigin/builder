@@ -27,13 +27,21 @@ const choose = (label) =>
     item.click();
   }, label);
 
-/** Answer the next native folder picker with `dir` (or cancel it), so no dialog appears during the test. */
+/** Answer native folder pickers with `dir` (or cancel them), so no dialog appears during the test. Each picker
+ *  records the id of the window it was shown over. */
 const answerPicker = (dir) =>
   app.evaluate(({ dialog }, d) => {
-    dialog.showOpenDialog = async () => (d ? { canceled: false, filePaths: [d] } : { canceled: true, filePaths: [] });
+    globalThis.pickerParents = [];
+    dialog.showOpenDialog = async (w) => {
+      globalThis.pickerParents.push(w?.id ?? null);
+      return d ? { canceled: false, filePaths: [d] } : { canceled: true, filePaths: [] };
+    };
   }, dir);
+const pickerParents = () => app.evaluate(() => globalThis.pickerParents);
 
 const windowCount = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+const windowId = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.id ?? null);
+const openProjectNow = () => win.evaluate(() => window.builder.project.snapshot()).then((snap) => snap?.dir ?? null);
 
 /** Close the only window, as File > Close Window does. */
 async function closeWindow() {
@@ -99,9 +107,16 @@ await win.waitForSelector('.editor');
 await expectProjectItems(true, 'after Open Project');
 
 step('a project: Open Project switches to the chosen project, New Project leaves for Welcome and its dialog');
+const opening = () => win.evaluate(() => window.builder.project.snapshot()).then((snap) => snap?.workspaceKey ?? null);
+const before = await opening();
 await answerPicker(dirA);
 await choose('Open Project…');
+await eventually(async () => {
+  const now = await opening();
+  assert.ok(now && now !== before, 'the project was opened again');
+});
 await win.waitForSelector('.editor');
+assert.deepEqual(await pickerParents(), [await windowId()], 'one folder picker, shown over the window');
 await choose('New Project…');
 await win.waitForSelector('.welcome');
 await newProjectDialog().waitFor();
@@ -117,11 +132,12 @@ if (process.platform === 'darwin') {
   await newProjectDialog().waitFor();
   await win.keyboard.press('Escape');
 
-  step('no window (macOS): Open Project brings up a window, then the folder picker, and opens the project');
+  step('no window (macOS): Open Project brings up a window, then the folder picker over it, and opens the project');
   await closeWindow();
   await answerPicker(dirA);
   await chooseWithNoWindow('Open Project…');
   await win.waitForSelector('.editor', { timeout: 60000 });
+  assert.deepEqual(await pickerParents(), [await windowId()], 'one folder picker, shown over the new window');
   await expectProjectItems(true, 'after opening a project with no window');
 
   step('no window with a project open (macOS): Export brings the editor back with its dialog');
@@ -131,18 +147,33 @@ if (process.platform === 'darwin') {
   await win.waitForSelector('.editor', { timeout: 60000 });
   await exportDialog().waitFor();
   await win.keyboard.press('Escape');
+  await exportDialog().waitFor({ state: 'detached' });
 
-  step('no window with a project open (macOS): Close Project closes it');
+  step('no window with a project open (macOS): New Project closes the project, then shows its dialog');
+  await closeWindow();
+  await chooseWithNoWindow('New Project…');
+  await win.waitForSelector('.welcome', { timeout: 60000 });
+  await newProjectDialog().waitFor();
+  assert.equal(await openProjectNow(), null, 'the project was closed');
+  await expectProjectItems(false, 'after leaving the project for a new one');
+  await win.keyboard.press('Escape');
+
+  step('no window with a project open (macOS): Close Project brings up the window and closes the project');
+  const reopened = await win.evaluate((d) => window.builder.projects.open(d), dirA);
+  assert.ok(reopened.ok, `the project opens again: ${JSON.stringify(reopened)}`);
+  await win.waitForSelector('.editor');
   await closeWindow();
   await chooseWithNoWindow('Close Project');
   await win.waitForSelector('.welcome', { timeout: 60000 });
+  assert.equal(await openProjectNow(), null, 'the project was closed');
   await expectProjectItems(false, 'after closing the project with no window');
 
-  step('a cancelled folder picker with no window leaves Welcome as it was');
+  step('no window (macOS): a cancelled folder picker leaves Welcome as it was');
   await closeWindow();
   await answerPicker(null);
   await chooseWithNoWindow('Open Project…');
   await win.waitForSelector('.welcome', { timeout: 60000 });
+  await eventually(async () => assert.deepEqual(await pickerParents(), [await windowId()], 'the picker was shown over the new window'));
   await expectProjectItems(false, 'after a cancelled Open Project');
 }
 

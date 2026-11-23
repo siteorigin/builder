@@ -358,6 +358,8 @@ export interface BuilderApi {
   on(channel: 'menu:history', cb: (e: { action: 'undo' | 'redo'; fromKey: boolean }) => void): () => void;
   on(channel: 'input:key', cb: (k: { key: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
+  /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */
+  menuReady(): void;
   /** 'asking' while the author decides about a change that cannot be saved; then 'leave' or 'stay'. */
   leaveResult(requestId: string, answer: 'leave' | 'stay' | 'asking'): void;
   pathForFile(file: File): string;

@@ -48,6 +48,8 @@ export function Welcome() {
       if (cmd === 'open-project') void open();
     };
     window.addEventListener('builder-command', onCmd);
+    // A File menu command chosen while there was no window (macOS) is sent now that Welcome can act on it.
+    api.menuReady();
     return () => window.removeEventListener('builder-command', onCmd);
   }, []);
 

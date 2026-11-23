@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, toast, useStore } from './store';
 import { cleanDrafts, moveDraft, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
@@ -19,13 +19,19 @@ function historyContext(): HistoryContext {
 
 export function App() {
   const screen = useStore((s) => s.screen);
+  // No screen is shown until the project that is open (if any) is known, so a File menu command waiting for this
+  // window reaches the screen that will stay: Welcome, or the editor of a project left open with no window (macOS).
+  const [booted, setBooted] = useState(false);
 
   useEffect(() => {
     void api.app.getSettings().then((settings) => setState({ settings }));
     void api.ai.providers().then((providers) => setState({ providers }));
-    void api.project.snapshot().then((snap) => snap && openSnapshot(snap));
+    // A project opened or closed before the first snapshot arrives is newer than that snapshot.
+    let superseded = false;
+    let unmounted = false;
     const offs = [
       api.on('project:changed', (snap) => {
+        superseded = true;
         const s = getState();
         // Another opening (of another project, or of this one again) loads its own state, drafts included. A project
         // that is closing names no opening, and is not one.
@@ -37,6 +43,7 @@ export function App() {
         }
       }),
       api.on('project:closed', () => {
+        superseded = true;
         forgetCopy();
         opened++;
         projectClosed();
@@ -75,12 +82,20 @@ export function App() {
       }),
       useStore.subscribe(persistChatState)
     ];
-    return () => offs.forEach((o) => o());
+    void api.project
+      .snapshot()
+      .then((snap) => !unmounted && !superseded && snap && openSnapshot(snap))
+      .catch(() => undefined)
+      .finally(() => !unmounted && setBooted(true));
+    return () => {
+      unmounted = true;
+      offs.forEach((o) => o());
+    };
   }, []);
 
   return (
     <>
-      {screen === 'welcome' ? <Welcome /> : <Editor />}
+      {booted && (screen === 'welcome' ? <Welcome /> : <Editor />)}
       <Toasts />
       <ConfirmHost />
     </>

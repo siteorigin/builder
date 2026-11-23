@@ -352,6 +352,8 @@ export function Editor() {
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('builder-command', onCmd);
+    // A File menu command chosen while there was no window (macOS) is sent now that the editor can act on it.
+    api.menuReady();
     return () => {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('builder-command', onCmd);
