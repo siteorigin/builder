@@ -1,6 +1,7 @@
 import type { EditOperation } from '@shared/ops';
 import type { GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { getTheme } from '@catalogue/index';
+import { displayName } from '@engine/tree';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -254,6 +255,17 @@ export function placeOf(state: ProjectState, op: EditOperation): string {
   if (typeof o.assetId === 'string') return has(state.assets.assets, o.assetId)?.name ?? 'File';
   if (typeof o.definitionId === 'string') return has(state.components, o.definitionId)?.name ?? 'Component';
   return 'Site settings';
+}
+
+/** The element the field `op` writes belongs to, and where it is, in the author's words: "Split hero on Home",
+ *  "Logo in Header". A field of no element (a page or site setting) is just where it is. */
+export function whereOf(state: ProjectState, op: EditOperation): string {
+  const o = op as Record<string, unknown>;
+  const place = placeOf(state, op);
+  if (!o.owner || typeof o.owner !== 'object' || typeof o.nodeId !== 'string') return place;
+  const owner = o.owner as OwnerRef;
+  const node = nodeOf(state, owner, o.nodeId);
+  return typeof node === 'string' ? place : `${displayName(state, node)} ${owner.kind === 'page' ? 'on' : 'in'} ${place}`;
 }
 
 export type HeldAction = 'stop-apply' | 'apply' | 'replace' | 'copy' | 'retry' | 'discard';
