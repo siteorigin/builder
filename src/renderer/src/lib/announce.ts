@@ -35,10 +35,10 @@ export function announcementText(msg: string | null, count: number): { text: str
 }
 
 /**
- * The toolbar's save status, as screen readers hear it settle. `working`, `asking` and `checking` are the AI's
+ * The toolbar's save status, as screen readers hear it settle. `working`, `asking`, `checking` and `stopping` are the AI's
  * phases (see `runPhase`). `held`: an edit typed while the AI worked waits.
  */
-export type SaveStatus = 'conflict' | 'working' | 'asking' | 'checking' | 'held' | 'busy' | 'saved';
+export type SaveStatus = 'conflict' | 'working' | 'asking' | 'checking' | 'stopping' | 'held' | 'busy' | 'saved';
 
 /** How the last AI request ended (`run`), and what became of an edit held while it worked (`edit`). */
 export interface AiEnding {
@@ -66,8 +66,9 @@ export function saveStatusAnnouncement(prev: SaveStatus, next: SaveStatus, endin
   if (next === 'asking') return 'AI is waiting for your answer';
   if (next === 'checking') return 'AI is checking its changes';
   if (next === 'working') return 'AI is working';
+  if (next === 'stopping') return 'AI is stopping. Its changes are being undone';
   if (next === 'busy') return '';
-  const fromAi = prev === 'working' || prev === 'asking' || prev === 'checking';
+  const fromAi = prev === 'working' || prev === 'asking' || prev === 'checking' || prev === 'stopping';
   const ran = !fromAi ? undefined : ending === undefined ? 'AI changes saved' : ending?.run ? RUN_ENDED[ending.run] : undefined;
   if (next === 'held') {
     const edit = ending?.edit === 'held' ? 'Your edit was not applied. Review it below' : ending?.edit === 'saved' ? 'Your edit was saved. Another edit is not saved yet' : 'Your edit is not saved yet';

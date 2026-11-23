@@ -89,23 +89,23 @@ export function Toolbar() {
   const spin = <LoaderCircle style={{ animation: 'spin 1s linear infinite' }} />;
   const save = conflicts
     ? { cls: 'error', icon: <CircleAlert />, text: 'File conflict', title: 'A project file was changed outside SiteOrigin Builder. Review it in Project health.' }
-    : runStatus === 'stopping' || stoppingForEdit
+    : phase === 'stopping' || stoppingForEdit
       ? { cls: 'pending', icon: spin, text: 'Stopping AI…', title: stoppingForEdit ? 'Your edit is applied once the AI’s changes are undone.' : 'Anything the AI changed in this request is undone.' }
-      : handoff
-        ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Checking and saving your edit' }
-        : phase === 'asking'
-          ? { cls: 'pending', icon: <MessageCircleQuestionMark />, text: 'AI is waiting for you', title: 'The AI asked a question. Answer it in the AI panel.' }
+      : phase === 'asking'
+        ? { cls: 'pending', icon: <MessageCircleQuestionMark />, text: 'AI is waiting for you', title: 'The AI asked a question. Answer it in the AI panel.' }
+        : handoff
+          ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Checking and saving your edit' }
           : phase === 'checking'
             ? { cls: 'pending', icon: spin, text: 'AI is checking', title: 'The AI’s changes are saved once they pass checks.' }
             : phase
               ? { cls: 'pending', icon: spin, text: 'AI is working', title: 'The AI is editing this site. Its changes are saved once they pass checks.' }
               : held
-              ? { cls: 'pending', icon: <Pencil />, text: 'Edit not saved', title: 'An edit you made while the AI was working is waiting for you.' }
-              : drafting
-                ? { cls: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
-                : pending
-                  ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
-                  : { cls: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
+                ? { cls: 'pending', icon: <Pencil />, text: 'Edit not saved', title: 'An edit you made while the AI was working is waiting for you.' }
+                : drafting
+                  ? { cls: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
+                  : pending
+                    ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
+                    : { cls: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
   const siteName = state.site.name;
   const defName = definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
   const placeName = defName ?? page?.title ?? '';

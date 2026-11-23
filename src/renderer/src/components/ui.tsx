@@ -740,7 +740,8 @@ const HELD_LABELS: Record<HeldAction, string> = {
 
 /** A typed edit made while the AI was working: kept, with what can be done with it now. */
 function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
-  const { message, actions } = heldPrompt(h, !!aiRunId);
+  const asking = useStore((s) => s.runStatus === 'awaiting-input');
+  const { message, actions } = heldPrompt(h, !!aiRunId, asking);
   const row = useRef<HTMLDivElement>(null);
   // The buttons change with the edit's state and the AI's. Focus that was on one stays in the row, and a
   // row that goes (saved or discarded) hands focus to the next one, never dropping it on the page.

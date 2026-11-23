@@ -8,7 +8,7 @@ import { afterSend, draftFor, moveDraft, unsentDrafts, withDraft } from '../lib/
 import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, resumableId } from '../lib/result';
-import { composerAction, isStarting, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { composerAction, isPaused, isStarting, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
 
@@ -157,7 +157,8 @@ export function Chat() {
       } else if (runStatus === 'preparing' && announcedRun.current !== `${activeRunId}:start`) {
         announcedRun.current = `${activeRunId}:start`;
         setAnnounce(`AI started working${target ? ` on ${target}` : ''}.`);
-      } else if (runStatus === 'running') setAnnounce('');
+      } else if (runStatus === 'stopping') setAnnounce('Stopping the AI. Its changes are being undone.');
+      else if (runStatus === 'running') setAnnounce('');
     }
     const run = trackedRun.current;
     const done = run && announcedRun.current !== `${run}:done` ? msgs.find((m) => m.role === 'assistant' && m.runId === run && m.result) : undefined;
@@ -626,7 +627,7 @@ function AssistantMessage({ m, live, awaiting, undoable, asking, onContinue }: {
   const activities = m.activities ?? [];
   // A live turn of a run that waits for the author is paused: nothing in it spins, whichever message holds the
   // question, because the status and the question message arrive separately.
-  const waitingHere = asking?.messageId === m.id || (live && awaiting);
+  const waitingHere = isPaused(asking, m.id, live, awaiting);
   // Every question of the turn stays with it, in order, with its answer.
   const questions = shownQuestions(m, asking);
   return (

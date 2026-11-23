@@ -212,6 +212,8 @@ describe('held edit row', () => {
   it('explains a changed field with what it holds now, and a gone target with what can still be done', () => {
     expect(heldPrompt({ phase: 'changed', text: 'Mine', currentText: 'Old' }, false)).toEqual({ message: 'Not applied: this changed while the AI was working and now holds “Old”. Replace it with your edit?', actions: ['replace', 'discard'] });
     expect(heldPrompt({ phase: 'changed', text: 'Mine', currentText: '' }, false).message).toContain('now holds nothing');
+    expect(heldPrompt({ phase: 'waiting', text: 'x' }, true, true).message).toBe('Not saved yet: the AI is waiting for your answer.');
+    expect(heldPrompt({ phase: 'waiting', text: 'x' }, true).message).toBe('Not saved yet: the AI is working.');
     expect(heldPrompt({ phase: 'gone', text: 'Our people', note: 'page' }, false)).toEqual({
       message: 'Not applied: the page this edit was for no longer exists, so there is nothing to apply it to. Copy your text to use it elsewhere.',
       actions: ['copy', 'discard']
@@ -226,7 +228,7 @@ describe('toolbar save state', () => {
 
   it('treats stopping the AI for an edit as an AI step, saving it as a save, and a kept edit as its own state', () => {
     expect(settledState({ ...base, runStatus: 'awaiting-input' })).toBe('asking');
-    expect(settledState({ ...base, stopping: true, handoff: true })).toBe('working');
+    expect(settledState({ ...base, stopping: true, handoff: true })).toBe('stopping');
     expect(settledState({ ...base, handoff: true, pending: true })).toBe('busy');
     expect(settledState({ ...base, handoff: true, held: true })).toBe('busy');
     expect(settledState({ ...base, runStatus: 'running', conflict: true })).toBe('conflict');
@@ -238,13 +240,18 @@ describe('toolbar save state', () => {
   });
 
   it('tells an AI waiting for the author from one working and one checking its changes', () => {
-    for (const r of ['preparing', 'running', 'stopping'] as const) expect(settledState({ ...base, runStatus: r })).toBe('working');
+    for (const r of ['preparing', 'running'] as const) expect(settledState({ ...base, runStatus: r })).toBe('working');
     expect(settledState({ ...base, runStatus: 'awaiting-input' })).toBe('asking');
     for (const r of ['validating', 'repairing'] as const) expect(settledState({ ...base, runStatus: r })).toBe('checking');
     expect(runPhase(null)).toBeNull();
+    // Stopping is its own phase, so Stop while a question is open is never heard as a resume.
+    expect(runPhase('stopping')).toBe('stopping');
+    expect(settledState({ ...base, runStatus: 'stopping' })).toBe('stopping');
+    expect(settledState({ ...base, runStatus: 'awaiting-input', stopping: true })).toBe('stopping');
+    // A question while the AI is running is not saving: the toolbar says who must act, not "Saving…".
+    expect(settledState({ ...base, runStatus: 'awaiting-input', handoff: true })).toBe('asking');
+    expect(settledState({ ...base, runStatus: 'running', handoff: true })).toBe('working');
     expect(runPhase('awaiting-input')).toBe('asking');
-    // Stopping the AI for a held edit while it waits is work, not waiting.
-    expect(settledState({ ...base, runStatus: 'awaiting-input', stopping: true })).toBe('working');
     expect(settledState({ ...base, runStatus: 'awaiting-input', conflict: true })).toBe('conflict');
   });
 
@@ -253,6 +260,11 @@ describe('toolbar save state', () => {
     expect(saveAnnouncement('working', 'asking', null)).toBe('AI is waiting for your answer');
     // Resuming after an answer, or stopping while it waits: the toolbar says the same.
     expect(saveAnnouncement('asking', 'working', null)).toBe('AI is working');
+    // A question can come while its changes are being repaired.
+    expect(saveAnnouncement('checking', 'asking', null)).toBe('AI is waiting for your answer');
+    expect(saveAnnouncement('asking', 'stopping', null)).toBe('AI is stopping. Its changes are being undone');
+    expect(saveAnnouncement('stopping', 'saved', { run: 'cancelled' })).toBe('AI stopped');
+    expect(saveAnnouncement('working', 'saved', { run: 'no-changes' })).toBe('AI finished without changing anything');
     expect(saveAnnouncement('working', 'checking', null)).toBe('AI is checking its changes');
     expect(saveAnnouncement('asking', 'checking', null)).toBe('AI is checking its changes');
     // A question that ends the request (Stop, or a failure) is announced as how it ended.

@@ -678,7 +678,7 @@ export function Canvas() {
               </button>
             </>
           ) : (
-            runPhase(runStatus) === 'checking' ? 'The AI is checking its changes. You can look around while it works.' : 'The AI is editing this site. You can look around while it works.'
+            runPhase(runStatus) === 'checking' ? 'The AI is checking its changes. You can look around while it works.' : runPhase(runStatus) === 'stopping' ? 'Stopping the AI and undoing its changes.' : 'The AI is editing this site. You can look around while it works.'
           )}
           <button className="btn btn-sm" onClick={() => void api.ai.stop()}>
             Stop
