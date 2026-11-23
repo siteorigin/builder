@@ -4,15 +4,18 @@
  * generated layout runs. Its POSTs are intercepted and held, so each reply can be delayed, failed or let through.
  * No real enquiry is ever sent.
  */
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { chromium, type Browser, type Page, type Route } from 'playwright';
 import { compile } from 'svelte/compiler';
+import { render } from 'svelte/server';
+import type { Component } from 'svelte';
 import { build, type Rolldown } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
+import { applyOperations } from '@engine/apply';
 import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
 import { validateState } from '@engine/validate';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
@@ -431,6 +434,152 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     }
   }, 30_000);
 
+  describe('single-choice questions and checkboxes (issue #238)', () => {
+    const SERVICE = 'Which service are you interested in?';
+    const ENDPOINT = `${ORIGIN}/f/abc`;
+    let serverForm: Component<Record<string, unknown>>;
+    let dir: string;
+
+    beforeAll(async () => {
+      // The exported component rendered on the server, as a page reaches a visitor whose JavaScript is off.
+      mkdirSync(resolve('.tmp'), { recursive: true });
+      dir = mkdtempSync(join(resolve('.tmp'), 'contact-form-ssr-'));
+      writeFileSync(join(dir, 'form.js'), compile(exportedFormSource(), { filename: 'ContactForm.svelte', generate: 'server', runes: true }).js.code);
+      serverForm = (await import(/* @vite-ignore */ join(dir, 'form.js'))).default;
+    });
+    afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+    /**
+     * The fields of a form authored in the editor and exported: the stock fields, then a required question whose
+     * second choice was renamed after it was made, an optional checkbox and a required one.
+     */
+    function authoredFields(props: Record<string, unknown>): Array<Record<string, unknown>> {
+      const s = createStarterState('business', 'Test Studio', false);
+      const defId = installComponent(s, 'contact.form');
+      const node = makeInstance(s.components[defId], props);
+      const home = s.pages[s.site.homePageId];
+      home.nodes[node.id] = node;
+      home.rootIds.push(node.id);
+      const at = (op: Record<string, unknown>) => ({ owner: { kind: 'page', id: s.site.homePageId }, nodeId: node.id, prop: 'fields', ...op }) as EditOperation;
+      let state = applyOperations(s, [
+        at({ type: 'instance.listInsert', item: { label: SERVICE, type: 'choice', required: true, options: ['Kitchen', 'Lighting', 'Other'] } }),
+        at({ type: 'instance.listInsert', item: { label: 'Send me a copy', type: 'checkbox' } }),
+        at({ type: 'instance.listInsert', item: { label: 'I agree to be contacted', type: 'checkbox', required: true } })
+      ]).state;
+      const service = ((state.pages[state.site.homePageId].nodes[node.id] as InstanceNode).props.fields as ListItem[]).find((f) => f.label === SERVICE)!;
+      const renamed = (service.options as Array<Record<string, string>>).map((o) => (o.label === 'Lighting' ? { ...o, label: 'Éclairage' } : o));
+      state = applyOperations(state, [at({ type: 'instance.setProp', itemId: service.id, field: 'options', value: renamed })]).state;
+      const files = generateProject(state);
+      expect(files.get(defFile(state.components[defId]))).toBe(exportedFormSource());
+      const emitted = /^\tfields=\{(.*)\}$/m.exec(files.get('src/routes/+page.svelte')!);
+      if (!emitted) throw new Error('The exported page passes the form no fields');
+      return JSON.parse(emitted[1]);
+    }
+
+    /** What the service receives: the stock answers, the renamed choice under the value it was made with, consent. */
+    const ANSWERS: Array<[string, string]> = [
+      ['name', 'Ada'],
+      ['email', 'ada@example.com'],
+      ['phone', ''],
+      ['message', 'A new kitchen'],
+      ['which-service-are-you-interested-in', 'Lighting'],
+      ['i-agree-to-be-contacted', 'yes']
+    ];
+
+    /** Fills in the text answers, then shows that neither the unanswered question nor unticked consent lets it go. */
+    async function answerAll(page: Page, submit: () => Promise<void>, sent: () => Promise<number> | number) {
+      const question = page.getByRole('group', { name: SERVICE });
+      expect(await question.getByRole('radio').count()).toBe(3);
+      expect(await question.getByRole('radio', { name: 'Éclairage', exact: true }).getAttribute('value')).toBe('Lighting');
+      await page.getByLabel('Name').fill('Ada');
+      await page.getByLabel('Email').fill('ada@example.com');
+      await page.getByLabel('Message').fill('A new kitchen');
+      await submit();
+      await page.waitForTimeout(250);
+      expect(await sent()).toBe(0);
+      expect(await page.locator('input[type="radio"]:invalid').count()).toBe(3);
+      await question.getByRole('radio', { name: 'Éclairage', exact: true }).check();
+      expect(await page.locator('input[type="radio"]:invalid').count()).toBe(0);
+      await submit();
+      await page.waitForTimeout(250);
+      expect(await sent()).toBe(0);
+      // Only the required checkbox holds it back; the optional one is simply not sent while unticked.
+      expect(await page.locator('input[type="checkbox"]:invalid').count()).toBe(1);
+      await page.getByRole('checkbox', { name: 'I agree to be contacted' }).check();
+      expect(await page.getByRole('checkbox', { name: 'Send me a copy' }).isChecked()).toBe(false);
+    }
+
+    it('asks with labelled native controls, sends nothing until required answers are given, then sends the visitor’s choice', async () => {
+      const fields = authoredFields({ provider: 'netlify', formName: 'contact' });
+      await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, button, status, alert, nextPost, fetches, posts }) => {
+        await answerAll(page, () => button.click(), fetches);
+        await button.click();
+        const failed = await nextPost();
+        expect(failed.entries).toEqual([['form-name', 'contact'], ...ANSWERS, ['bot-field', '']]);
+        // While the reply is held back the answers cannot change, as the text fields cannot.
+        const kitchen = page.getByRole('radio', { name: 'Kitchen' });
+        const agree = page.getByRole('checkbox', { name: 'I agree to be contacted' });
+        await expect.poll(() => kitchen.isDisabled()).toBe(true);
+        expect(await agree.isDisabled()).toBe(true);
+        expect(await page.getByRole('checkbox', { name: 'Send me a copy' }).isDisabled()).toBe(true);
+        await failed.respond(500);
+        await expect.poll(alert).toBe(FAILED);
+        // A failure keeps every answer, and lets the visitor change them again.
+        expect(await page.getByRole('radio', { name: 'Éclairage' }).isChecked()).toBe(true);
+        expect(await agree.isChecked()).toBe(true);
+        expect(await kitchen.isEnabled()).toBe(true);
+        await page.getByRole('checkbox', { name: 'Send me a copy' }).check();
+        await button.click();
+        const sent = await nextPost();
+        expect(sent.entries).toEqual([['form-name', 'contact'], ...ANSWERS.slice(0, 5), ['send-me-a-copy', 'yes'], ANSWERS[5], ['bot-field', '']]);
+        await sent.respond(200);
+        await expect.poll(status).toBe(SENT);
+        expect(await page.locator('input:checked').count()).toBe(0);
+        expect(await kitchen.isEnabled()).toBe(true);
+        expect(posts).toHaveLength(2);
+      });
+    }, 20_000);
+
+    it('refuses to send while a question has nothing to choose from, and says why', async () => {
+      const fields = [...FIELDS, { id: 'f4', label: SERVICE, name: 'service', type: 'choice', required: true, placeholder: '', options: [] }];
+      await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, button, status, fetches }) => {
+        expect(await page.getByRole('group', { name: SERVICE }).getByRole('radio').count()).toBe(0);
+        expect(await button.isDisabled()).toBe(true);
+        expect(await status()).toBe('A question in this form has no answers to choose from yet, so it cannot be sent.');
+        await page.evaluate(`document.querySelector('form').requestSubmit()`);
+        await page.waitForTimeout(250);
+        expect(await fetches()).toBe(0);
+      });
+    }, 20_000);
+
+    it('sends the same answers without JavaScript, and the browser holds back an unanswered required one', async () => {
+      const props = { provider: 'endpoint', endpoint: ENDPOINT };
+      const fields = authoredFields(props);
+      const html = render(serverForm, { props: { ...props, fields } }).body;
+      const context = await browser.newContext({ javaScriptEnabled: false });
+      try {
+        const page = await context.newPage();
+        const posts: Array<{ url: string; type: string; entries: Array<[string, string]> }> = [];
+        await page.route(`${ORIGIN}/**`, async (route) => {
+          const request = route.request();
+          if (request.method() === 'GET') return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><html><head><meta charset="utf-8"></head><body><main>${html}</main></body></html>` });
+          const type = request.headers()['content-type'] ?? '';
+          const data = await new Response(request.postDataBuffer(), { headers: { 'content-type': type } }).formData();
+          posts.push({ url: request.url(), type, entries: [...data].map(([k, v]) => [k, String(v)]) });
+          return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<!doctype html><p>Received</p>' });
+        });
+        await page.goto(`${ORIGIN}/contact/`);
+        const button = page.getByRole('button', { name: 'Send message' });
+        await answerAll(page, () => button.click(), () => posts.length);
+        await Promise.all([page.waitForURL(ENDPOINT), button.click()]);
+        // An ordinary form post, straight to the service.
+        expect(posts).toEqual([{ url: ENDPOINT, type: 'application/x-www-form-urlencoded', entries: [...ANSWERS, ['_gotcha', '']] }]);
+      } finally {
+        await context.close();
+      }
+    }, 20_000);
+  });
+
   describe('in the tab history (issue #274)', () => {
     const PROPS = { provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: FIELDS };
     const ENQUIRY = ['Ada', 'ada@example.com', 'A question about materials'];
@@ -669,6 +818,59 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await leave();
         await arrive([PROPS], older);
         expect(await values()).toEqual(EMPTY);
+      });
+    }, 20_000);
+
+    it('brings back a ticked choice and checkbox, never takes untouched ones for a draft, and keeps one ticked since (issue #238)', async () => {
+      const CHOICES = {
+        provider: 'endpoint',
+        endpoint: `${ORIGIN}/f/abc`,
+        fields: [
+          { id: 'f1', label: 'Name', name: 'name', type: 'text', required: false, placeholder: '' },
+          {
+            id: 'f4',
+            label: 'Service',
+            name: 'service',
+            type: 'choice',
+            required: true,
+            placeholder: '',
+            options: [
+              { id: 'c1', label: 'Kitchen', value: 'Kitchen' },
+              { id: 'c2', label: 'Éclairage', value: 'Lighting' }
+            ]
+          },
+          { id: 'f5', label: 'Send me a copy', name: 'copy', type: 'checkbox', required: false, placeholder: '' }
+        ]
+      };
+      await withForm(CHOICES, async ({ page, leave, arrive, restore }) => {
+        const ticked = () => page.evaluate<string[]>(`[...document.querySelectorAll('main input:checked')].map((i) => i.value)`);
+        // Radio buttons and a checkbox nobody touched hold no draft, whatever their values are.
+        expect(kept(await leave())).toBeNull();
+        await arrive([CHOICES]);
+        await page.getByLabel('Éclairage').check();
+        await page.getByLabel('Send me a copy').check();
+        const answered = await leave();
+        // Each answer once, by field id: the id of the ticked choice, and the checkbox's value.
+        expect(kept(answered)).toEqual({
+          path: '/contact',
+          drafts: [{ key: 'page f1 f4:radio f5:checkbox', n: 0, message: expect.any(String), values: [['f1', ''], ['f4', 'c2'], ['f5', 'yes']] }]
+        });
+        await arrive([CHOICES]);
+        expect(await ticked()).toEqual([]);
+        await leave();
+        await arrive([CHOICES], answered);
+        expect(await ticked()).toEqual(['Lighting', 'yes']);
+        await leave();
+        // A choice made before the draft came back (no input event reached the keeper) stays; the checkbox returns.
+        await arrive([CHOICES]);
+        await page.evaluate(`document.querySelector('main input[value="Kitchen"]').checked = true`);
+        await restore(answered);
+        expect(await ticked()).toEqual(['Kitchen', 'yes']);
+        await leave();
+        // The choice was removed and another made with its value: the visitor never picked that one.
+        const REPLACED = { ...CHOICES, fields: CHOICES.fields.map((f) => (f.id === 'f4' ? { ...f, options: [f.options![0], { id: 'c3', label: 'Call me', value: 'Lighting' }] } : f)) };
+        await arrive([REPLACED], answered);
+        expect(await ticked()).toEqual(['yes']);
       });
     }, 20_000);
   });

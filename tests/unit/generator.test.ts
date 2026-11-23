@@ -91,8 +91,9 @@ describe('unsent form drafts (issue #274)', () => {
     const source = contactForm.source!;
     const all = elements(source);
     expect(all.filter((e) => e.attributes.includes('data-keep-draft')).map((e) => e.name)).toEqual(['form']);
-    // Every visible answer, and nothing else: not the provider's hidden fields or the spam trap.
-    expect(all.filter((e) => e.attributes.includes('data-draft-field')).map((e) => e.name)).toEqual(['textarea', 'input']);
+    // Every visible answer, and nothing else: not the provider's hidden fields or the spam trap. In order, a
+    // single-choice question's radio buttons, a checkbox, long text and the other text fields (issue #238).
+    expect(all.filter((e) => e.attributes.includes('data-draft-field')).map((e) => e.name)).toEqual(['input', 'input', 'textarea', 'input']);
     expect(all.filter((e) => e.attributes.includes('data-draft-field')).every((e) => e.attributes.includes('required') && e.attributes.includes('oninput'))).toBe(true);
     // Forking or duplicating the form makes it a project component, whose code must pass the ordinary check.
     expect((await checkSvelteSource(source)).filter((p) => p.severity === 'error')).toEqual([]);

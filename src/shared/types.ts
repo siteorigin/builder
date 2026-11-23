@@ -126,6 +126,20 @@ export interface IconProp extends PropBase {
   type: 'icon';
   default: string;
 }
+/**
+ * One answer a visitor can pick. `label` is what they read; `value` is what is sent, fixed when the choice is first
+ * named so renaming or translating the label never moves earlier answers to another value.
+ */
+export interface ChoiceOption {
+  id: string;
+  label: string;
+  value: string;
+}
+/** An ordered set of answers to pick from, such as the options of a single-choice form field. */
+export interface ChoicesProp extends PropBase {
+  type: 'choices';
+  default: ChoiceOption[];
+}
 export type ScalarPropSchema =
   | StringProp
   | RichTextProp
@@ -134,7 +148,8 @@ export type ScalarPropSchema =
   | EnumProp
   | LinkProp
   | ImageProp
-  | IconProp;
+  | IconProp
+  | ChoicesProp;
 export interface ListProp extends PropBase {
   type: 'list';
   itemLabel: string;

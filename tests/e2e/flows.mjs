@@ -323,6 +323,70 @@ assert.equal(await setting('Web3Forms access key').inputValue(), 'e2e-test-key',
 assert.deepEqual(await formState(), { provider: 'web3forms', endpoint: 'https://formspree.io/f/e2etest', accessKey: 'e2e-test-key', formName: 'enquiries', warning: '' }, 'the project keeps every service’s setting');
 await eventually(async () => assert.equal(await frame.locator('form.so-form__form input[name="access_key"]').inputValue(), 'e2e-test-key', 'the preview form sends that key to Web3Forms'));
 
+step('a contact form asks a single-choice question whose choices the author names, orders and removes (issue #238)');
+const QUESTION = 'Which service are you interested in?';
+const formFields = inspector.locator('[data-list="fields"]');
+// The fields of the placed form, from the project itself.
+const storedFields = () =>
+  win.evaluate(async () => {
+    const s = await window.builder.project.snapshot();
+    const page = s.state.pages[s.state.site.homePageId];
+    const node = Object.values(page.nodes).find((n) => n.kind === 'instance' && s.state.components[n.definitionId]?.componentId === 'contact.form');
+    return node.props.fields.map((f) => ({ label: f.label, name: f.name, type: f.type, options: (f.options ?? []).map((o) => [o.label, o.value]) }));
+  });
+const question = () => storedFields().then((fields) => fields.find((f) => f.type === 'choice' || f.label === QUESTION));
+await formFields.getByRole('button', { name: 'Add field' }).click();
+const opened = formFields.locator('.list-editor-body:not([hidden])');
+await opened.getByLabel('Label', { exact: true }).fill(QUESTION);
+await opened.getByLabel('Label', { exact: true }).press('Enter');
+await eventually(async () => assert.equal((await question())?.label, QUESTION, 'the new field takes the question as its label'));
+const choicesGroup = opened.getByRole('group', { name: /^Choices/ });
+assert.equal(await choicesGroup.count(), 0, 'a text field has no choices to edit');
+assert.equal(await opened.getByLabel('Placeholder', { exact: true }).count(), 1, 'a text field has a placeholder');
+await opened.getByLabel('Type', { exact: true }).selectOption('choice');
+await eventually(async () => {
+  assert.equal(await choicesGroup.count(), 1, 'a single-choice field shows its choices');
+  assert.equal(await opened.getByLabel('Placeholder', { exact: true }).count(), 0, 'and no placeholder, which it never shows');
+});
+const newChoice = choicesGroup.getByLabel('New choice');
+for (const [i, label] of ['Kitchen', 'Lighting', 'Other'].entries()) {
+  await newChoice.fill(label);
+  await newChoice.press('Enter');
+  await eventually(async () => assert.equal((await question()).options.length, i + 1, `“${label}” is added`));
+}
+// The author acts on what the inspector shows, once it shows what the project holds.
+const shownChoices = () => choicesGroup.locator('.choices-row input').evaluateAll((inputs) => inputs.map((input) => input.value));
+await eventually(async () => assert.deepEqual(await shownChoices(), ['Kitchen', 'Lighting', 'Other'], 'the inspector lists the three choices'));
+// Renamed, then moved before the rename has come back: both land, and the choice is still sent as it was made.
+await choicesGroup.getByLabel('Choice 2', { exact: true }).fill('Éclairage');
+await choicesGroup.getByRole('button', { name: 'Move “Lighting” up' }).click();
+await eventually(async () =>
+  assert.deepEqual((await question()).options, [['Éclairage', 'Lighting'], ['Kitchen', 'Kitchen'], ['Other', 'Other']], 'the renamed choice moves up and keeps its value')
+);
+await eventually(async () => assert.ok((await choicesGroup.innerText()).includes('Sent as “Lighting”'), 'the editor says what the renamed choice is sent as'));
+// A rename the project refuses (a label already offered), then a move at once: the move lands, the label comes back.
+await eventually(async () => assert.deepEqual(await shownChoices(), ['Éclairage', 'Kitchen', 'Other'], 'the inspector shows the move'));
+await choicesGroup.getByLabel('Choice 2', { exact: true }).fill('ÉCLAIRAGE');
+await choicesGroup.getByRole('button', { name: 'Move “Kitchen” up' }).click();
+await eventually(async () => assert.deepEqual((await question()).options, [['Kitchen', 'Kitchen'], ['Éclairage', 'Lighting'], ['Other', 'Other']], 'the move lands though the rename before it was refused'));
+await eventually(async () => assert.deepEqual(await shownChoices(), ['Kitchen', 'Éclairage', 'Other'], 'and the refused label is put back'));
+await choicesGroup.getByRole('button', { name: 'Remove “Other”' }).click();
+await eventually(async () => assert.deepEqual((await question()).options, [['Kitchen', 'Kitchen'], ['Éclairage', 'Lighting']], 'the removed choice is gone'));
+await eventually(async () => {
+  const preview = frame.locator('fieldset.so-form__choices', { has: frame.locator('legend', { hasText: QUESTION }) });
+  assert.deepEqual(await preview.locator('input[type="radio"]').evaluateAll((radios) => radios.map((r) => [r.closest('label').textContent.trim(), r.value])), [['Kitchen', 'Kitchen'], ['Éclairage', 'Lighting']], 'the preview asks with radio buttons that send each choice’s value');
+});
+// A checkbox has neither choices nor a placeholder; switching back finds the choices as they were.
+await opened.getByLabel('Type', { exact: true }).selectOption('checkbox');
+await eventually(async () => {
+  assert.equal(await choicesGroup.count(), 0, 'a checkbox hides the choices');
+  assert.equal(await opened.getByLabel('Placeholder', { exact: true }).count(), 0, 'and the placeholder');
+});
+await eventually(async () => assert.equal(await frame.locator('.so-form__check input[type="checkbox"]').count(), 1, 'the preview shows a checkbox'));
+await opened.getByLabel('Type', { exact: true }).selectOption('choice');
+await eventually(async () => assert.deepEqual((await question()).options, [['Kitchen', 'Kitchen'], ['Éclairage', 'Lighting']], 'the choices are kept while hidden'));
+await eventually(async () => assert.equal(await choicesGroup.count(), 1, 'and shown again'));
+
 step('a contact form practises its sends in Preview, and sends one real message only when the author confirms a live test (issue #193)');
 // The service is answered here and counted. A .test address never resolves, so nothing could reach a real service.
 const ENDPOINT = 'https://forms.e2e.test/f/rehearsal';

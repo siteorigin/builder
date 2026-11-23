@@ -36,13 +36,13 @@ import type { EditOperation } from '@shared/ops';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
-import { formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, type FormServiceSetup } from '@catalogue/foundation/form';
+import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import { applyOps, applyWith, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
-import { ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
+import { ownerLabel, pagesUsingShell, refLabel, resolveRef, treeFor } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -88,9 +88,21 @@ function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): Edi
  * Apply a list edit. A field edit joins the same field's last edit (`coalesceKey`); a repair the inspector offered
  * is its own undo step under its own name, on the project revision it was planned against.
  */
+/**
+ * A placement's value for a property as the project holds it now, with that revision: read when an edit is built,
+ * after the edits before it have landed, rather than as the panel last rendered it.
+ */
+function readProp(owner: OwnerRef, nodeId: string, prop: string): { value: unknown; revision: number } | undefined {
+  const snap = getState().snapshot;
+  const node = snap ? treeFor(snap.state, owner)?.nodes[nodeId] : undefined;
+  if (!snap || node?.kind !== 'instance') return undefined;
+  const schema = snap.state.components[node.definitionId]?.properties[prop];
+  return { value: node.props[prop] ?? schema?.default, revision: snap.revision };
+}
+
 function applyListOp(owner: OwnerRef, nodeId: string, prop: string, op: ListOp, label: string, coalesceKey?: string) {
-  if (op.kind === 'repair') return void applyOps([listOps(owner, nodeId, prop, op)], op.label, undefined, op.revision);
-  void applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, nodeId, prop, op)], label, op.kind === 'field' ? coalesceKey : undefined);
+  if (op.kind === 'repair') return applyOps([listOps(owner, nodeId, prop, op)], op.label, undefined, op.revision);
+  return applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, nodeId, prop, op)], label, op.kind === 'field' ? coalesceKey : undefined);
 }
 
 /** Default styles a definition gives a node (base + selected variant), used as inherited placeholders. */
@@ -405,7 +417,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   // Making a code component unique copies its source into the project, which is only editable in developer mode.
   const canMakeUnique = def.kind === 'managed' || dev;
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
-  const set = (prop: string, value: unknown, edit?: PendingEdit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], `Edit ${def.properties[prop]?.label ?? prop}`, `${node.id}:${prop}`);
+  const set = (prop: string, value: unknown, edit?: PendingEdit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], `Edit ${def.properties[prop]?.label ?? prop}`, `${node.id}:${prop}`);
   const onStyle = (partId: string) => (property: string, value: StyleValue | null) =>
     void applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], `Style ${def.parts[partId]?.label ?? partId}`, `${node.id}:${partId}:${scope}:${property}`);
   const overrides = countStyles(node.overrides?.[styledPart]);
@@ -503,9 +515,11 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                 value={node.props[key] ?? schema.default}
                 onChange={(v, edit) => set(key, v, edit)}
                 onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+                read={() => readProp(owner, node.id, key)}
                 state={state}
                 openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}
                 annotate={notes(key)}
+                hiddenFields={key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden : undefined}
                 linkPairs={schema.type === 'list' ? itemLinkPairs(def, key) : undefined}
                 error={found ? unlinkedNote({ hide: own?.hide }) : undefined}
                 action={hideAction(own)}
@@ -746,6 +760,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
                   state={state}
                   onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${instNodeId}:${b.prop}`)}
                   onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
+                  read={() => readProp(instOwner, instNodeId, b.prop!)}
                   linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
                   {...flagged(b.kind)}
                   place={schema.type === 'list' ? { ref: parent, list: b.prop! } : undefined}

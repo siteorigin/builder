@@ -855,6 +855,11 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .style-footer-hint { font-size: 12px; color: var(--text-3); }
 .style-footer-every { margin-top: 4px; font-size: 12px; min-height: 24px; }
 .list-editor { display: flex; flex-direction: column; gap: 4px; }
+.choices-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.choices-row { display: flex; flex-direction: column; gap: 3px; }
+.choices-row-controls, .choices-add { display: flex; align-items: center; gap: 4px; }
+.choices-row-controls > .grow, .choices-add > .input { flex: 1; min-width: 0; }
+.choices-row-controls > .grow > .input { width: 100%; }
 .list-editor-item { border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); overflow: hidden; }
 .list-editor-item.focused { border-color: var(--accent); box-shadow: var(--ring); }
 .list-editor-head { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px 0 8px; }
