@@ -210,7 +210,7 @@ describe('save status announcements', () => {
   it('announces a save completing, again even when the words repeat', () => {
     expect(saveStatusAnnouncement('busy', 'saved')).toBe('All changes saved');
     expect(saveStatusAnnouncement('conflict', 'saved')).toBe('File conflict resolved. All changes saved');
-    expect(saveStatusAnnouncement('ai', 'saved')).toBe('AI changes saved');
+    expect(saveStatusAnnouncement('working', 'saved')).toBe('AI changes saved');
     const first = announcementText('All changes saved', 0)!;
     const second = announcementText('All changes saved', first.count)!;
     expect(first.text).not.toBe(second.text);

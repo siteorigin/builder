@@ -204,7 +204,7 @@ async function commitWhileBusy(op: EditOperation, label = 'Change browser title'
 /** "Stop AI and apply my edit", for the request the row shows. */
 const stopAndApply = (id: number) => store.applyHeld(id, { stopRunId: store.getState().snapshot!.aiRunId! });
 
-const outcomeText = () => saveAnnouncement('ai', 'saved', store.getState().aiOutcome);
+const outcomeText = () => saveAnnouncement('working', 'saved', store.getState().aiOutcome);
 
 describe('Stop AI and apply my edit', () => {
   it('applies an edit made while the AI waits for an answer, after the request is cancelled (issue #177)', async () => {
@@ -273,7 +273,7 @@ describe('Stop AI and apply my edit', () => {
     const kept = store.getState().heldEdits[0];
     expect(kept).toMatchObject({ phase: 'changed', text: 'Meet our design team', currentText: '' });
     expect(store.getState().aiOutcome).toMatchObject({ run: 'cancelled', edit: 'held' });
-    expect(saveAnnouncement('ai', 'held', store.getState().aiOutcome)).toBe('AI stopped. Your edit was not applied. Review it below');
+    expect(saveAnnouncement('working', 'held', store.getState().aiOutcome)).toBe('AI stopped. Your edit was not applied. Review it below');
 
     // Something else changes the field after the author reviewed it: replacing it needs a new review.
     await session.apply({ operations: [browserTitle(about, 'Changed again')] }, { label: 'Other', source: 'user' });
