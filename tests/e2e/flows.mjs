@@ -199,7 +199,7 @@ await eventually(() => assert.match(read('src/routes/+page.svelte'), /variant="m
 await eventually(async () => assert.equal(await frame.locator('section.so-form--muted').count(), 1, 'the preview shows the form in that tone'));
 
 step('repeatable lists: capacity, and focus after a move to either end');
-await win.locator('.rail [aria-label="Layers"]').click();
+if (!(await win.locator('[role="tree"]').first().isVisible())) await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
 const cards = win.locator('#dock-panel-inspect [data-list]').first();
 await cards.waitFor();
@@ -211,6 +211,7 @@ assert.ok(max >= (await rows.count()), 'the count shows the maximum from the sch
 await cards.getByRole('button', { name: /^Add / }).click(); // Four cards, so a middle card can move without reaching an end.
 await eventually(async () => assert.equal(await rows.count(), 4, 'a card is added'));
 const count = 4;
+assert.equal((await cards.locator('.insp-count').innerText()).trim(), `4 / ${max}`, 'the count shows the schema maximum');
 const subject = (await titles())[1];
 const focusedId = () => win.evaluate(() => document.activeElement?.id ?? '');
 const status = () => cards.locator('[role="status"]').innerText();
@@ -224,9 +225,15 @@ const moveTo = async (dir, expectedIndex) => {
 const focusedCard = async () => win.evaluate(() => document.activeElement?.closest('.list-editor-item')?.querySelector('button.title')?.textContent?.trim());
 // Intermediate moves keep focus on the button that moved the card.
 await moveTo('down', 2);
-await eventually(async () => assert.match(await focusedId(), /^list-down-/, 'focus stays on Move down for a move that is not the last'));
+await eventually(async () => {
+  assert.match(await focusedId(), /^list-down-/, 'focus stays on Move down for a move that is not the last');
+  assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), `Move ${subject} down`, 'on the moved card\'s own button');
+});
 await moveTo('up', 1);
-await eventually(async () => assert.match(await focusedId(), /^list-up-/, 'focus stays on Move up for a move that is not the first'));
+await eventually(async () => {
+  assert.match(await focusedId(), /^list-up-/, 'focus stays on Move up for a move that is not the first');
+  assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), `Move ${subject} up`, 'on the moved card\'s own button');
+});
 // Reaching either end disables the button that was used, so focus goes to the card's disclosure.
 await moveTo('up', 0);
 await eventually(async () => assert.match(await focusedId(), /^list-head-/, 'focus lands on the disclosure at the top'));
@@ -249,9 +256,12 @@ await addButton.focus();
 assert.equal(await win.evaluate(() => document.activeElement?.classList.contains('insp-add')), true, 'Add can be focused at the maximum');
 assert.match(await cards.locator('.insp-note').innerText(), new RegExp(`at most ${max} items`), 'the limit is explained at the add action');
 assert.equal(await addButton.getAttribute('aria-describedby'), await cards.locator('.insp-note').getAttribute('id'), 'the explanation describes Add');
+const revision = () => win.evaluate(async () => (await window.builder.project.snapshot()).revision);
+const before = await revision();
 await addButton.click({ force: true });
-await win.waitForTimeout(300);
+await win.waitForTimeout(400);
 assert.equal(await rows.count(), max, 'a click at the maximum adds nothing');
+assert.equal(await revision(), before, 'and sends no edit');
 assert.equal((await cards.locator('.insp-count').innerText()).trim(), `${max} / ${max}`);
 
 step('site styles and chat panels');

@@ -23,6 +23,12 @@ describe('list capacity', () => {
     expect(removeLimitNote(0, 'Card')).toBeNull();
   });
 
+  it('gives one reason for a fixed-size list', () => {
+    expect(addLimitNote(2, 'Card', 2, 2)).toBe(removeLimitNote(2, 'Card', 2, 2));
+    expect(addLimitNote(2, 'Card', 2, 2)).toContain('fixed at 2 items');
+    expect(addLimitNote(1, 'Card', 3, 1)).toBeNull();
+  });
+
   it('reads the Contact details limit from its schema', () => {
     const list = contact.properties.items;
     expect(list.type === 'list' && list.max).toBe(8);

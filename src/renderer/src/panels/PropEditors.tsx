@@ -6,6 +6,8 @@ import { api, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
 import { isSettling } from '../lib/pending';
 import { announcementText } from '../lib/announce';
+
+const MOVE_PENDING_MS = 3000;
 import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
 import { assetUrl } from '../lib/model';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
@@ -667,7 +669,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
   const [open, setOpen] = useState<string | null>(null);
   const labelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
-  const after = useRef<{ kind: 'added'; before: string[] } | { kind: 'removed'; focus: string | null } | { kind: 'moved'; id: string; direction: MoveDirection; index: number; title: string } | null>(null);
+  const after = useRef<{ kind: 'added'; before: string[] } | { kind: 'removed'; focus: string | null } | { kind: 'moved'; id: string; direction: MoveDirection; index: number; title: string; at: number } | null>(null);
   const [said, setSaid] = useState({ text: '', count: 0 });
   const addNoteId = useId();
   const removeNoteId = useId();
@@ -684,12 +686,22 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
       setOpen(added.id);
       requestAnimationFrame(() => focusRow(added.id));
     } else if (a.kind === 'moved') {
+      // The move lands with the next saved revision. Until the item is where the move put it, the request is still
+      // pending (another item's move may have landed first); one that never lands (rejected) is dropped, so it can't
+      // claim a later, unrelated change such as an Undo.
+      if (items[a.index]?.id !== a.id) {
+        if (Date.now() - a.at > MOVE_PENDING_MS) after.current = null;
+        return;
+      }
       after.current = null;
-      if (items[a.index]?.id !== a.id) return;
       const target = moveFocusTarget(a.direction, a.index, items.length);
       requestAnimationFrame(() => {
-        const part = target === 'head' ? 'head' : target;
-        const el = root?.querySelector<HTMLElement>(`#list-${part}-${CSS.escape(a.id)}`) ?? root?.querySelector<HTMLElement>(`#list-head-${CSS.escape(a.id)}`);
+        // Only put focus back where it was taken from: still on the page body (the button it was on moved or went
+        // disabled) or inside the moved item. Someone who has already tabbed elsewhere keeps their place.
+        const active = document.activeElement;
+        const row = root?.querySelector<HTMLElement>(`#list-head-${CSS.escape(a.id)}`)?.closest('.list-editor-item');
+        if (active && active !== document.body && !row?.contains(active)) return;
+        const el = root?.querySelector<HTMLElement>(`#list-${target}-${CSS.escape(a.id)}`) ?? root?.querySelector<HTMLElement>(`#list-head-${CSS.escape(a.id)}`);
         el?.focus();
       });
       setSaid((p) => announcementText(moveAnnouncement(a.title, a.index, items.length), p.count) ?? p);
@@ -706,11 +718,13 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
   const L = onList as (op: unknown) => void;
   const move = (it: ListItem, i: number, direction: MoveDirection) => {
     const index = direction === 'up' ? i - 1 : i + 1;
-    after.current = { kind: 'moved', id: it.id, direction, index, title: titleOf(it, i) };
+    after.current = { kind: 'moved', id: it.id, direction, index, title: titleOf(it, i), at: Date.now() };
     L({ kind: 'move', itemId: it.id, index });
   };
-  const addNote = addLimitNote(items.length, schema.itemLabel, schema.max);
-  const removeNote = removeLimitNote(items.length, schema.itemLabel, schema.min);
+  const addNote = addLimitNote(items.length, schema.itemLabel, schema.max, schema.min);
+  const removeNote = removeLimitNote(items.length, schema.itemLabel, schema.min, schema.max);
+  // A fixed-size list gives one reason for both actions.
+  const removeNoteShared = removeNote !== null && removeNote === addNote;
   const fields = groupFields(Object.entries(schema.fields).map(([key, s]) => ({ key, schema: s, data: null })));
   return (
     <div className="field" role="group" aria-labelledby={labelId} data-list={name} ref={rootRef}>
@@ -749,7 +763,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
               <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} down`} id={`list-down-${it.id}`} disabled={i === items.length - 1} onClick={() => move(it, i, 'down')}>
                 <ArrowDown />
               </button>
-              <button className="icon-btn sm" aria-label={`Remove ${titleOf(it, i)}`} aria-disabled={removeNote ? true : undefined} aria-describedby={removeNote ? removeNoteId : undefined} title={removeNote ?? undefined} onClick={() => {
+              <button className="icon-btn sm" aria-label={`Remove ${titleOf(it, i)}`} aria-disabled={removeNote ? true : undefined} aria-describedby={removeNote ? (removeNoteShared ? addNoteId : removeNoteId) : undefined} title={removeNote ?? undefined} onClick={() => {
                   if (removeNote) return;
                   after.current = { kind: 'removed', focus: (items[i + 1] ?? items[i - 1])?.id ?? null };
                   L({ kind: 'remove', itemId: it.id });
@@ -792,7 +806,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
             {addNote}
           </p>
         )}
-        {removeNote && (
+        {removeNote && !removeNoteShared && (
           <p className="insp-note muted" id={removeNoteId}>
             {removeNote}
           </p>

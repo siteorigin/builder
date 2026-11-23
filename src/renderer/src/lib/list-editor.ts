@@ -14,13 +14,17 @@ export function countLabel(count: number, itemLabel: string, max?: number): stri
 
 const items = (n: number, itemLabel: string) => `${n} ${n === 1 ? itemLabel.toLowerCase() : 'items'}`;
 
+const fixedSize = (count: number, itemLabel: string, min?: number, max?: number) => min !== undefined && max !== undefined && min === max && count === min;
+
 /** Why Add does nothing, or null while the list has room (or no maximum). */
-export function addLimitNote(count: number, itemLabel: string, max?: number): string | null {
+export function addLimitNote(count: number, itemLabel: string, max?: number, min?: number): string | null {
+  if (fixedSize(count, itemLabel, min, max)) return `This list is fixed at ${items(count, itemLabel)}, so items can't be added or removed.`;
   return max !== undefined && count >= max ? `Limit reached: this list holds at most ${items(max, itemLabel)}. Remove one to add another.` : null;
 }
 
 /** Why Remove does nothing, or null while the list is above its minimum (or has none). */
-export function removeLimitNote(count: number, itemLabel: string, min?: number): string | null {
+export function removeLimitNote(count: number, itemLabel: string, min?: number, max?: number): string | null {
+  if (fixedSize(count, itemLabel, min, max)) return addLimitNote(count, itemLabel, max, min);
   return min !== undefined && count <= min ? `This list needs at least ${items(min, itemLabel)}, so nothing can be removed. Add one first.` : null;
 }
 
