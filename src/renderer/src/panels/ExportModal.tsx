@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { ChevronRight, CircleCheck, Cloud, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { ChevronRight, CircleCheck, Cloud, Copy, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
 import type { ExportFormat, ExportResult, RecentExport } from '@shared/api';
 import { api, setState, useStore } from '../store';
 import { Modal, Segmented, Spinner } from '../components/ui';
@@ -12,6 +12,45 @@ function finishedAt(iso: string): string {
   const d = new Date(iso);
   const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
+}
+
+/**
+ * What a failed build said, for the author to read and copy into a support request. Copying works with the details
+ * closed; a clipboard that is unavailable or refuses says so, and the text can still be selected.
+ */
+function BuildDetails({ text }: { text: string }) {
+  const bodyId = useId();
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState<'copied' | 'failed' | null>(null);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied('copied');
+    } catch {
+      setCopied('failed');
+      setOpen(true);
+    }
+  };
+  return (
+    <div className="build-details" data-testid="export-build-details">
+      <div className="row" style={{ gap: 6 }}>
+        <button type="button" className="btn btn-sm btn-ghost" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}>
+          <ChevronRight size={14} style={{ transform: open ? 'rotate(90deg)' : undefined }} /> Technical details
+        </button>
+        <button type="button" className="btn btn-sm" onClick={() => void copy()}>
+          <Copy size={13} /> Copy details
+        </button>
+        <span className="faint" role="status" style={{ fontSize: 12 }}>
+          {copied === 'copied' ? 'Copied. Paste it into your support request.' : copied === 'failed' ? 'Could not copy. Select the details and copy them.' : ''}
+        </span>
+      </div>
+      <div id={bodyId} hidden={!open}>
+        <pre tabIndex={0} aria-label="Technical details of the failed build" data-testid="export-build-details-text">
+          {text}
+        </pre>
+      </div>
+    </div>
+  );
 }
 
 export function ExportModal() {
@@ -104,6 +143,7 @@ export function ExportModal() {
           <Cloud size={14} /> One-click publishing with SiteOrigin Hosting is coming soon.
         </p>
         {result && result.message && (
+          <>
           <div ref={resultRef} tabIndex={-1} className={`scope-note ${result.ok ? 'shared' : 'danger'}`} role={result.ok ? 'status' : 'alert'} style={{ flexDirection: 'column', gap: 8 }}>
             <div className="row">
               {result.ok ? <CircleCheck size={15} /> : <TriangleAlert size={15} />}
@@ -119,7 +159,11 @@ export function ExportModal() {
                 Open in Assets
               </button>
             )}
+            {!result.ok && result.details && <span>Fix what is listed above, then export again. If it keeps failing, copy the technical details into a support request.</span>}
           </div>
+          {/* Outside the alert: opening the report or copying it must not make the result announce itself again. */}
+          {!result.ok && result.details && <BuildDetails text={result.details} />}
+          </>
         )}
         {recent.length > 0 && (
           <section className="export-history" aria-labelledby="export-history-title">

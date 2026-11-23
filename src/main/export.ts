@@ -12,6 +12,7 @@ import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { unlinkedButtons } from '@generator/checks';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
+import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
 import type { MissingAssetFiles } from '@shared/api';
@@ -658,25 +659,41 @@ export function unlinkedButtonWarnings(state: ProjectState): string[] {
 }
 
 /**
- * Why a production build failed, in words a person can act on. When the build refused a link to a missing section
- * (SvelteKit's prerender checks every #fragment), the links Project health found lead the details.
+ * Why a production build failed, in words a person can act on: the page or file it was building, what went wrong,
+ * and a report to copy into a support request. When the build refused a link to a missing section (SvelteKit's
+ * prerender checks every #fragment), the links Project health found lead the details.
  */
 const MISSING_ID = /no element with id|handleMissingId|prerender_missing_id/i;
 
-export function explainBuildFailure(state: ProjectState, output: string[]): { message: string; warnings: string[] } {
-  const all = output.filter(Boolean);
-  if (!MISSING_ID.test(all.join('\n'))) return { message: 'The production build failed.', warnings: all.slice(0, 8) };
+export function explainBuildFailure(state: ProjectState, build: BuildReport, ctx: BuildFailureContext = {}): { message: string; warnings: string[]; details: string } {
+  const read = readBuildFailure(state, build, ctx);
+  const all = read.entries;
+  if (!MISSING_ID.test(all.join('\n'))) return generalFailure(read);
+  const done = (message: string, warnings: string[]) => ({ message, warnings, details: read.report(message) });
   // The lines that name the page and the missing ID come first, so a long build log cannot push them out.
   const named = all.flatMap((d) => d.split('\n')).filter((l) => MISSING_ID.test(l)).map((l) => l.trim());
   const details = [...new Set([...named, ...all])];
   const broken = brokenSectionLinks(state);
   // Project health cannot see IDs a code component computes or hides, so the build may know of a link it does not.
-  if (!broken.length) return { message: 'The production build failed because a link goes to a section its page does not have. The details below name the page and the missing ID.', warnings: details.slice(0, 8) };
+  if (!broken.length) return done('The production build failed because a link goes to a section its page does not have. The details below name the page and the missing ID.', details.slice(0, 8));
   // The build's own lines keep a place however many links Project health lists: they may name one it missed.
   const kept = named.slice(0, 3);
-  return {
-    message: `The production build failed because ${broken.length === 1 ? 'a link goes to a section its page does not have' : 'links go to sections their pages do not have'}. Choose a section for ${broken.length === 1 ? 'the link' : 'each link'} in Project health, then export again.`,
-    warnings: [...new Set([...broken.slice(0, 8 - kept.length), ...kept, ...details])].slice(0, 8)
-  };
+  return done(
+    `The production build failed because ${broken.length === 1 ? 'a link goes to a section its page does not have' : 'links go to sections their pages do not have'}. Choose a section for ${broken.length === 1 ? 'the link' : 'each link'} in Project health, then export again.`,
+    [...new Set([...broken.slice(0, 8 - kept.length), ...kept, ...details])].slice(0, 8)
+  );
+}
+
+/** Any other failure: the headline names where the build was, and the first details say what went wrong. */
+function generalFailure(read: ExplainedBuild): { message: string; warnings: string[]; details: string } {
+  const { page, route, file, line, component } = read.where;
+  const place = file ? `${file}${line ? `, line ${line}` : ''}` : '';
+  // A project component is named as the author knows it; its file is how a developer finds it.
+  const at = component ? `the “${component}” component (${place})` : place;
+  const message = page ? `The production build failed while building the ${pageTitle(page)} page (${route}).` : route ? `The production build failed while building ${route}.` : at ? `The production build failed in ${at}.` : 'The production build failed.';
+  const warnings = [...read.causes];
+  if (at && (page || route)) warnings.push(`The build was working in ${at}.`);
+  if (!warnings.length) warnings.push('The build did not say what went wrong. The technical details list everything it printed.');
+  return { message, warnings: warnings.slice(0, 8), details: read.report(message) };
 }
 

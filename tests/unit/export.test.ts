@@ -579,17 +579,19 @@ describe('links to missing sections', () => {
     header.props.ctaLink = { type: 'page', target: contact, anchor: 'get-in-touch-with-us' };
     return s;
   };
+  /** A failed build as the worker reports it: the message it ended with, then what it printed. */
+  const build = (error: string, ...logs: string[]) => ({ error, logs });
   const prerender = 'Error: The following pages contain links to /contact/#get-in-touch-with-us, but no element with id="get-in-touch-with-us" exists on /contact/ - see the `handleMissingId` option';
 
   it('names the links when the build refuses a missing section', () => {
-    const r = explainBuildFailure(broken(), [prerender, 'at prerender']);
+    const r = explainBuildFailure(broken(), build(prerender, 'at prerender'));
     expect(r.message).toMatch(/a link goes to a section its page does not have/);
     expect(r.warnings[0]).toContain('the “Book a call” link goes to #get-in-touch-with-us on Contact');
     expect(r.warnings).toContain(prerender);
   });
 
   it('says so plainly when the build finds a missing section Project health does not', () => {
-    const r = explainBuildFailure(createStarterState('business', 'Studio', false), [prerender]);
+    const r = explainBuildFailure(createStarterState('business', 'Studio', false), build(prerender));
     expect(r.message).toMatch(/a link goes to a section its page does not have/);
     expect(r.message).not.toMatch(/Project health/);
     expect(r.warnings).toEqual([prerender]);
@@ -597,7 +599,7 @@ describe('links to missing sections', () => {
 
   it('puts the missing ID first, however long the build log', () => {
     const log = [...Array.from({ length: 12 }, (_, i) => `vite warning ${i}`), 'Error: [prerender_missing_id] no element with id="gone" exists on /contact/'].join('\n');
-    const r = explainBuildFailure(createStarterState('business', 'Studio', false), ['Prerendering failed', log]);
+    const r = explainBuildFailure(createStarterState('business', 'Studio', false), build('Prerendering failed', log));
     expect(r.warnings[0]).toBe('Error: [prerender_missing_id] no element with id="gone" exists on /contact/');
   });
 
@@ -605,17 +607,20 @@ describe('links to missing sections', () => {
     const s = broken();
     const banner = Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'features.grid') as { props: Record<string, unknown> };
     banner.props.items = Array.from({ length: 9 }, (_, i) => ({ id: `i${i}`, icon: 'star', title: `T${i}`, description: '', linkLabel: 'More', link: { type: 'anchor', target: `gone${i}` } }));
-    const r = explainBuildFailure(s, ['Prerendering failed', prerender]);
+    const r = explainBuildFailure(s, build('Prerendering failed', prerender));
     expect(r.warnings).toHaveLength(8);
     expect(r.warnings).toContain(prerender);
   });
 
   it('does not take an unrelated build error for a missing section', () => {
-    expect(explainBuildFailure(broken(), ["Error: Cannot find module './missing_id.js'"]).message).toBe('The production build failed.');
+    expect(explainBuildFailure(broken(), build("Error: Cannot find module './missing_id.js'")).message).toBe('The production build failed.');
   });
 
   it('leaves other build failures as they are', () => {
-    expect(explainBuildFailure(broken(), ['Error: Cannot find module x'])).toEqual({ message: 'The production build failed.', warnings: ['Error: Cannot find module x'] });
+    const r = explainBuildFailure(broken(), build('Error: Cannot find module x'));
+    expect(r.message).toBe('The production build failed.');
+    expect(r.warnings).toEqual(['Error: Cannot find module x']);
+    expect(r.details).toContain('Error: Cannot find module x');
   });
 
   it('warns a source export that will not build', () => {

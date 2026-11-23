@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, shell } from 'electron';
 import { watch, type FSWatcher } from 'node:fs';
 import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState } from '@shared/api';
@@ -12,6 +13,7 @@ import { assetUsages, sourceHash } from '@engine/apply';
 import { themeUpdates } from '@engine/theme-updates';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
+import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { StaticPreviews } from './static-preview';
 import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
@@ -1388,6 +1390,29 @@ export class Controller {
     });
   }
 
+  /**
+   * What a failed build's report needs to say who and where: the app, the system, and the folders its output may name
+   * (the temporary copy that was built, the project it came from, the author's home) so none shows as an absolute path.
+   */
+  private buildFailureContext(staging: string, project: string, source: string): BuildFailureContext {
+    const real = (p: string) => (existsSync(p) ? canonicalDir(p) : p);
+    return {
+      appVersion: app.getVersion(),
+      platform: `${process.platform} ${process.arch}`,
+      roots: [
+        { path: project, label: '<project>' },
+        { path: real(project), label: '<project>' },
+        { path: source, label: '<project>' },
+        { path: real(source), label: '<project>' },
+        { path: staging, label: '<temp>' },
+        { path: real(staging), label: '<temp>' },
+        { path: tmpdir(), label: '<temp>' },
+        { path: real(tmpdir()), label: '<temp>' },
+        { path: homedir(), label: '~' }
+      ]
+    };
+  }
+
   private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat): Promise<ExportResult> {
     const project = join(staging, 'project');
     const snap = await this.snapshotSource(s, project, { forBuild: true });
@@ -1416,7 +1441,7 @@ export class Controller {
       return { ok: false, message: 'The website tools are not set up. Open Project health and reinstall them, then export again.', warnings: [(e as Error).message] };
     }
     const build = await buildProject(project);
-    if (!build.ok) return { ok: false, ...explainBuildFailure(state, [stripAnsi(build.error ?? ''), ...build.logs.map(stripAnsi)]) };
+    if (!build.ok) return { ok: false, ...explainBuildFailure(state, build, this.buildFailureContext(staging, project, s.dir)) };
     const out = join(project, 'build');
     const warnings: string[] = [];
     // Verify page inventory.
@@ -1549,4 +1574,3 @@ export function friendlyError(msg: string): string {
   return msg.length > 200 ? 'Setting up the website tools failed. Open Diagnostics for details, then choose Reinstall website tools.' : msg;
 }
 
-const stripAnsi = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, '');
