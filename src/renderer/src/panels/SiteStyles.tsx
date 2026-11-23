@@ -9,12 +9,12 @@ import { importedFontStack, projectFontFamilies } from '@shared/fonts';
 import { api, applyOps, getState, toast, useStore } from '../store';
 import { DraftInput, Field, Section, openSection } from '../components/ui';
 import { CustomTokens } from './CustomTokens';
+import { fontFamilies, installedFonts } from '@catalogue/fonts';
 
 /** The font menu's "Import a font…" entry; never saved as a value. */
 const IMPORT_FONT = '__import-font';
-const FONT_CHOICES = [
-  { label: 'Inter (sans-serif)', value: "'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif" },
-  { label: 'Fraunces (serif)', value: "'Fraunces Variable', 'Fraunces', Georgia, 'Times New Roman', serif" },
+/** Fonts that need no download; the project's installed web fonts are listed above them. */
+const SYSTEM_FONT_CHOICES = [
   { label: 'System sans-serif', value: "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" },
   { label: 'Georgia (serif)', value: "Georgia, 'Times New Roman', serif" },
   { label: 'Helvetica / Arial', value: "'Helvetica Neue', Helvetica, Arial, sans-serif" },
@@ -556,9 +556,13 @@ export function SiteStyles() {
     if (font?.font) set(t.id, importedFontStack(font.font.family));
     else if (r.assetIds.length) toast('That file is not a font. Choose a WOFF2 or WOFF file.', 'error');
   };
+  const fontChoices = [...installedFonts(st).map((f) => ({ label: `${f.name} (${f.category})`, value: f.stack })), ...SYSTEM_FONT_CHOICES];
   const fontRow = (t: TokenDef) => {
     const stack = String(t.value);
-    const known = FONT_CHOICES.some((f) => f.value === stack) || importedFonts.some((f) => f.value === stack);
+    // An equivalent stack (same first family) shows as that font; the stored value stays until a new choice.
+    const primary = fontFamilies(stack)[0]?.toLowerCase();
+    const selected = [...importedFonts, ...fontChoices].find((f) => f.value === stack) ?? [...importedFonts, ...fontChoices].find((f) => fontFamilies(f.value)[0]?.toLowerCase() === primary);
+    const known = !!selected;
     const selectId = `${uid}-font-${t.id}`;
     return (
       <div className={`ss-font${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row>
@@ -578,7 +582,7 @@ export function SiteStyles() {
           <select
             id={selectId}
             className="select sm"
-            value={known ? stack : ''}
+            value={selected?.value ?? ''}
             onChange={(e) => {
               if (e.target.value === IMPORT_FONT) void importFontFor(t);
               else set(t.id, e.target.value);
@@ -595,7 +599,7 @@ export function SiteStyles() {
               </optgroup>
             )}
             <optgroup label="Built-in fonts">
-              {FONT_CHOICES.map((f) => (
+              {fontChoices.map((f) => (
                 <option key={f.label} value={f.value}>
                   {f.label}
                 </option>

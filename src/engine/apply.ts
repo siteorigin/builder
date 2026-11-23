@@ -21,6 +21,7 @@ import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { fontAssetUsages, projectFontFamilies, renameFontFamily } from '@shared/fonts';
 import { getTheme, listThemes } from '@catalogue/index';
+import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { EngineError, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, subtreeIds, allTrees } from './tree';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
@@ -713,6 +714,12 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     const err = validateStyleValue(op.property, op.value);
     if (err) fail(err);
     checkTokenRef(state, op.value);
+    // A literal family on an element follows the same rule as a font token; keywords and var() name no family.
+    if (op.property === 'fontFamily' && typeof op.value === 'string' && !/^(inherit|initial|unset|revert|revert-layer|var\(.*)$/i.test(op.value.trim())) {
+      const font = resolveFontStack(state, op.value);
+      if ('error' in font) fail(font.error);
+      op = { ...op, value: font.stack };
+    }
   }
   const scope = op.scope as ResponsiveScope;
   if (op.variant !== undefined) {
@@ -978,13 +985,23 @@ function tokenSetInner(state: ProjectState, op: Op<'token.set'>): OpResult {
     if (fam && typeof fam === 'object') {
       const ref = String((fam as { token?: string }).token ?? '');
       if (!ref.startsWith('font.') || !effectiveTokens(state).some((t) => t.id === ref)) fail('A text style font must reference an existing font token.');
-    } else if (!/^[\p{L}\p{N}_\s'",.-]{1,200}$/u.test(String(fam))) fail('Font names may contain letters, numbers, spaces, quotes, commas and hyphens only.');
+    } else if (Object.hasOwn(v as object, 'family')) {
+      // Only a family being set now is checked, so an older value never blocks an unrelated change.
+      if (!/^[\p{L}\p{N}_\s'",.-]{1,200}$/u.test(String(fam)) || !isSafeCssValue(String(fam))) fail('Font names may contain letters, numbers, spaces, quotes, commas and hyphens only.');
+      const font = resolveFontStack(state, String(fam));
+      if ('error' in font) fail(font.error);
+      merged.family = font.stack;
+    }
     if (merged.transform !== undefined && !['none', 'uppercase', 'lowercase', 'capitalize'].includes(String(merged.transform))) fail('Text transform must be none, uppercase, lowercase or capitalize.');
     state.tokens.overrides[op.tokenId] = merged as unknown as TokenValue;
     return {};
   } else if (tdef.group === 'font') {
     const s = String(v);
-    if (!/^[\p{L}\p{N}_\s'",.-]+$/u.test(s) || s.length > 200) fail('Font stacks may contain names, quotes, commas and hyphens only.');
+    if (!/^[\p{L}\p{N}_\s'",.-]+$/u.test(s) || s.length > 200 || !isSafeCssValue(s)) fail('Font stacks may contain names, quotes, commas and hyphens only.');
+    const font = resolveFontStack(state, s);
+    if ('error' in font) fail(font.error);
+    state.tokens.overrides[op.tokenId] = font.stack;
+    return {};
   } else {
     const s = String(v);
     if (!/^[0-9a-z.,%+\-*/ ()#]+$/i.test(s) || s.length > 200 || !isSafeCssValue(s)) fail(`Invalid value "${s}".`);

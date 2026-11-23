@@ -12,8 +12,13 @@
 		"node": ">=22.17.0"
 	},
 	"devDependencies": {
+		"@fontsource-variable/dm-sans": "5.3.0",
 		"@fontsource-variable/fraunces": "5.3.0",
 		"@fontsource-variable/inter": "5.3.0",
+		"@fontsource-variable/lora": "5.3.0",
+		"@fontsource-variable/playfair-display": "5.3.0",
+		"@fontsource-variable/plus-jakarta-sans": "5.3.0",
+		"@fontsource-variable/space-grotesk": "5.3.0",
 		"@sveltejs/adapter-static": "4.0.1",
 		"@sveltejs/kit": "3.4.0",
 		"@sveltejs/vite-plugin-svelte": "7.3.1",

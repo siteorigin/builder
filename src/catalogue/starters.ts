@@ -3,6 +3,7 @@ import { SCHEMA_VERSION, GENERATOR_VERSION } from '@shared/types';
 import { installComponent, makeInstance } from '@engine/install';
 import { newId } from '@shared/ids';
 import { getTheme } from './index';
+import { TEMPLATE_VERSION } from './fonts';
 
 export type StarterId = 'business' | 'blank';
 
@@ -51,7 +52,7 @@ function emptyState(name: string, themeId = 'foundation'): ProjectState {
       projectId: newId('p', 12),
       name,
       createdAt: new Date().toISOString(),
-      template: { id: 'sveltekit-brochure', version: '0.1.0' },
+      template: { id: 'sveltekit-brochure', version: TEMPLATE_VERSION },
       generator: GENERATOR_VERSION,
       app: '0.1.0'
     },

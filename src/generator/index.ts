@@ -26,6 +26,7 @@ import type {
 import { GENERATOR_VERSION, isBinding } from '@shared/types';
 import { MEDIA_QUERIES, isSafeCssValue, styleToCss, tokenVar } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
+import { usedFontPackages } from '@catalogue/fonts';
 import { IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs } from './runtime-files';
 import { routeDir } from '@shared/routes';
 import { stableHash } from '@shared/ids';
@@ -924,7 +925,6 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
 
 export function generateLayout(state: ProjectState, opts: GenerateOptions): string {
   const file = 'src/routes/+layout.svelte';
-  const theme = getTheme(state.site.themeId);
   const mk = (tree: NodeTree, part: 'header' | 'footer'): EmitCtx => ({
     state,
     file,
@@ -952,7 +952,7 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const favicon = state.site.favicon && state.assets.assets[state.site.favicon];
   const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
   const iconType = favicon ? favicon.mime : 'image/svg+xml';
-  const fontImports = theme.fontImports.map((f) => `\timport '${f}';`).join('\n');
+  const fontImports = usedFontPackages(state, effectiveTokens(state).map((t) => t.value)).map((f) => `\timport '${f}';`).join('\n');
   const devBridge = opts.instrument
     ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tonMount(() => {\n\t\timport('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => window.dispatchEvent(new CustomEvent('siteorigin:navigated')));`
     : '';

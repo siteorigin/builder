@@ -38,6 +38,12 @@ const used = Object.values(after.assets.assets).find((a) => JSON.stringify(after
 assert.ok(used, 'the starter uses at least one image');
 const usedFile = basename(used.file);
 
+step('a bundled font chosen by name really ships');
+const font = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: 'Lora' }] }, { label: 'Change font' }));
+assert.equal(font.ok, true, `the bundled font is accepted: ${font.error?.message}`);
+const unknownFont = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: 'Montserrat' }] }, { label: 'Change font' }));
+assert.equal(unknownFont.ok, false, 'a font that is not installed is refused instead of silently falling back');
+
 step('export through the controller');
 // Folder exports ask for a parent folder and create a new folder inside it, so nothing is ever replaced.
 const exportsDir = join(WORK, 'exports');
@@ -118,6 +124,11 @@ const staticFiles = scan(staticOut, 'static');
 assert.ok(staticFiles.includes('index.html') && staticFiles.includes('about/index.html'), 'static export has the prerendered pages');
 noDeletedImage(staticFiles, 'static');
 assert.ok(staticFiles.includes('favicon.svg'), 'static export has a favicon');
+assert.ok(staticFiles.some((f) => /lora.*\.woff2$/i.test(f)), 'the chosen font is built into the site');
+assert.ok(!staticFiles.some((f) => /fraunces.*\.woff2$/i.test(f)), 'the font it replaced is not');
+const css = staticFiles.filter((f) => f.endsWith('.css')).map((f) => readFileSync(join(staticOut, f), 'utf8')).join('\n');
+assert.match(css, /--so-font-display:\s*['"]Lora Variable['"]/, 'the display font token uses the family the font declares');
+assert.match(css, /@font-face\s*\{[^}]*font-family:\s*['"]?Lora Variable[^}]*url\([^)]*lora[^)]*\.woff2/i, 'the font has an @font-face rule pointing at its file');
 const authoring = staticFiles.filter((f) => f === 'siteorigin.project.json' || f.startsWith('siteorigin/') || f.endsWith('.svelte'));
 assert.deepEqual(authoring, [], 'static export has no authoring metadata or sources');
 
@@ -138,6 +149,7 @@ if (BUILD) {
   }
   assert.ok(existsSync(join(sourceOut, 'build', 'index.html')), 'the standalone build writes build/index.html');
   assert.ok(existsSync(join(sourceOut, 'build', 'about', 'index.html')), 'the standalone build prerenders nested routes');
+  assert.ok(files(join(sourceOut, 'build')).some((f) => /lora.*\.woff2$/i.test(f)), 'the standalone build includes the chosen font');
 } else console.log('\n(skipping the standalone npm ci && npm run build; pass --build to run it)');
 
 cleanup();

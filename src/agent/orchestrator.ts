@@ -1,3 +1,4 @@
+import { installedFonts } from '@catalogue/fonts';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import type { AiEvent, ChatActivity, ChatContext, ChatMessage, Conversation, ProviderId, RunStatus } from '@shared/api';
@@ -118,7 +119,7 @@ Working rules:
 
 Things that are easy to get wrong:
 - The site name (site.update name) only sets the browser title and metadata. The visible brand lives in the shared header and footer props: header "siteName"; footer "siteName", "tagline", "copyright" and the "contact" list (email and phone links). When you rename or rebrand the site, update those props too, and replace placeholder contact details.
-- Fonts: only these font families are installed: ${bundledFonts(theme.fontImports).join(', ')}. Any other family name falls back to a system font. System stacks (system-ui, Georgia, ui-serif, ui-monospace) are always fine. Change fonts with token.set on font.body / font.display.
+- Fonts: only these font families are installed: ${bundledFonts(installedFonts(state).map((f) => f.package)).join(', ')}. Any other family name falls back to a system font. System stacks (system-ui, Georgia, ui-serif, ui-monospace) are always fine. Change fonts with token.set on font.body / font.display.
 - Icons: icon props accept only the icon names listed by read_project with sections ["catalogue"] (for example sparkles, compass, leaf, phone, mail). Unknown names are rejected.
 - Text styles: textStyle is always a token reference such as { "token": "text.h2" }, never a bare string.
 

@@ -8,6 +8,7 @@ import { contact, cta, faq, pricing } from './foundation/conversion';
 import { footer, header } from './foundation/shell';
 import { contactForm } from './foundation/form';
 import { PACK_VERSION } from './dsl';
+import { BUNDLED_FONTS } from './fonts';
 import { makeAltTheme } from './foundation-alt';
 
 export interface ThemePack {
@@ -17,7 +18,7 @@ export interface ThemePack {
   description: string;
   tokens: TokenDef[];
   baseCss: string;
-  /** Font packages imported by the generated root layout. */
+  /** Font packages the website template installs. The generated layout imports the ones a site uses. */
   fontImports: string[];
   components: ComponentDefinition[];
   aiProfile: { guidance: string[] };
@@ -32,7 +33,7 @@ const FOUNDATION: ThemePack = {
   description: 'Clean and restrained, for service businesses, studios and personal sites.',
   tokens: FOUNDATION_TOKENS,
   baseCss: FOUNDATION_BASE_CSS,
-  fontImports: ['@fontsource-variable/inter', '@fontsource-variable/fraunces'],
+  fontImports: BUNDLED_FONTS.map((f) => f.package),
   components: [
     header,
     footer,
