@@ -225,7 +225,7 @@ function registerIpc() {
     if (dir != null && typeof dir !== 'string') return { ok: false, message: 'Could not open the project: no folder or file was named.' };
     return controller.open(dir ?? undefined, { folder: (opts as { folder?: unknown } | null | undefined)?.folder === true });
   });
-  handle('projects:cancelOpen', () => controller.cancelOpen());
+  handle('projects:cancelOpen', () => controller.cancelUnpacking());
   handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
   handle('projects:close', () => controller.closeProject());
   handle('projects:duplicate', () => controller.duplicate());

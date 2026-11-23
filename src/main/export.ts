@@ -446,14 +446,18 @@ export async function publishFolder(from: string, dest: string, beforeCommit?: (
   }
 }
 
-/** Put `tmp` where the empty folder `dest` is. Something else there now is reported as an existing location. */
-export async function replaceEmptyFolder(tmp: string, dest: string) {
+/**
+ * Put `tmp` where the empty folder `dest` is. Something else there now is reported as an existing location.
+ * `beforeMove` runs just before the move, after Windows has let go of the empty folder, and may still call it off.
+ */
+export async function replaceEmptyFolder(tmp: string, dest: string, beforeMove?: () => void) {
   const taken = () => Object.assign(new Error(`${dest} already exists.`), { code: 'EEXIST' });
   const occupied = (e: unknown, codes: string[]) => {
     if (codes.includes((e as NodeJS.ErrnoException).code ?? '')) throw taken();
     throw e;
   };
   if (process.platform !== 'win32') {
+    beforeMove?.();
     // An empty folder is replaced in one step; a folder with files in it, or a file, is not.
     await fs.rename(tmp, dest).catch((e) => occupied(e, ['ENOTEMPTY', 'EEXIST', 'ENOTDIR', 'EISDIR']));
     return;
@@ -462,6 +466,7 @@ export async function replaceEmptyFolder(tmp: string, dest: string) {
   await fs.rmdir(dest).catch((e: NodeJS.ErrnoException) => {
     if (e.code !== 'ENOENT') occupied(e, ['ENOTEMPTY', 'ENOTDIR', 'EEXIST']);
   });
+  beforeMove?.();
   await fs.rename(tmp, dest).catch((e) => occupied(e, ['EEXIST', 'EPERM', 'ENOTEMPTY']));
 }
 

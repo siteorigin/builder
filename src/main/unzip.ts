@@ -28,9 +28,9 @@ export const MAX_TOTAL_BYTES = 2 * 1024 ** 3;
 const MAX_MANIFEST_BYTES = 1024 ** 2;
 /** The archive's list of files is read whole, so it is held to what MAX_ENTRIES entries plausibly need. */
 const MAX_DIRECTORY_BYTES = 16 * 1024 ** 2;
-/** A path's length and depth, so checking every folder on the way to a file stays cheap. */
-const MAX_PATH_LENGTH = 1024;
-const MAX_DEPTH = 64;
+/** A path's length and depth: no file a computer can hold is longer or deeper. */
+const MAX_PATH_LENGTH = 4096;
+const MAX_DEPTH = 256;
 /** How many numbered folder names (cafe-2, cafe-3, …) are tried before giving up. */
 const MAX_NAMES = 1000;
 
@@ -83,18 +83,19 @@ const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)
 
 /**
  * A ZIP entry's name as a safe relative path, or a ZipError. In archives made on Windows (`dosSeparators`) a backslash
- * is a folder separator; elsewhere it is part of a name, which a Windows computer could not keep, so it is refused.
- * Absolute paths, drive letters, `..`, control characters, empty, overlong or deeply nested names, and names Windows
- * would read as something else are refused too. The spelling is kept as it is (decomposed accents stay decomposed).
+ * is a folder separator. Elsewhere it is part of a name: kept as it is on macOS and Linux, and refused on Windows,
+ * which would read it as a folder. Absolute paths, drive letters, `..`, control characters, empty, overlong or deeply
+ * nested names, and names Windows would read as something else are refused too. The spelling is kept as it is
+ * (decomposed accents stay decomposed).
  */
-export function safeEntryPath(raw: string, dosSeparators = false): string {
+export function safeEntryPath(raw: string, dosSeparators = false, windows = process.platform === 'win32'): string {
   const quoted = JSON.stringify(raw.slice(0, 120));
   const outside = () => new ZipError(`That ZIP file contains a file that would be saved outside its folder (${quoted}), so it was not opened.`);
   const unusable = () => new ZipError(`That ZIP file contains a file name that cannot be used safely on this computer (${quoted}), so it was not opened.`);
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(raw) || raw.length > MAX_PATH_LENGTH) throw unusable();
-  if (raw.includes('\\') && !dosSeparators) throw unusable();
-  const name = raw.replace(/\\/g, '/');
+  if (raw.includes('\\') && !dosSeparators && windows) throw unusable();
+  const name = dosSeparators ? raw.replace(/\\/g, '/') : raw;
   if (name.startsWith('/') || /^[a-zA-Z]:/.test(name)) throw outside();
   // A directory entry ends with a slash, and a doubled slash or a `.` changes nothing: those parts are dropped.
   const kept = name.split('/').filter((p) => p !== '' && p !== '.');
@@ -120,7 +121,8 @@ const CP437 =
  * otherwise code page 437 (older Windows tools).
  */
 export function decodeName(raw: Buffer, utf8: boolean, extra: Buffer = Buffer.alloc(0)): string {
-  if (utf8 || raw.every((b) => b < 0x80)) return raw.toString('utf8');
+  if (utf8) return raw.toString('utf8');
+  // The Unicode name wins over the legacy one, even a plain ASCII stand-in such as "cafe.png" for "café.png".
   for (let i = 0; i + 4 <= extra.length; ) {
     const id = extra.readUInt16LE(i);
     const length = extra.readUInt16LE(i + 2);
@@ -132,12 +134,22 @@ export function decodeName(raw: Buffer, utf8: boolean, extra: Buffer = Buffer.al
   return Array.from(raw, (b) => (b < 0x80 ? String.fromCharCode(b) : CP437[b - 0x80])).join('');
 }
 
-/** Where the end record is: the last one whose comment runs exactly to the end of the file. */
-function findEndRecord(tail: Buffer): number {
+/**
+ * Where the end record is in `tail` (the end of a file of `size` bytes): the last one whose comment runs exactly to
+ * the end of the file and whose list of files ends right where it starts, so one quoted in a comment is passed over.
+ */
+function findEndRecord(tail: Buffer, size: number): number {
   for (let i = tail.length - 22; i >= 0; i--) {
-    if (tail.readUInt32LE(i) === END_RECORD && i + 22 + tail.readUInt16LE(i + 20) === tail.length) return i;
+    if (tail.readUInt32LE(i) !== END_RECORD || i + 22 + tail.readUInt16LE(i + 20) !== tail.length) continue;
+    if (tail.readUInt32LE(i + 16) + tail.readUInt32LE(i + 12) === size - tail.length + i) return i;
   }
   return -1;
+}
+
+/** A folder (or file) in the archive's tree, keyed by each name as a case-insensitive disk would compare it. */
+interface TreeNode {
+  kind: 'file' | 'dir';
+  children?: Map<string, TreeNode>;
 }
 
 /** List a ZIP file's entries from its central directory, checking every name and limit before anything is written. */
@@ -149,7 +161,7 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
     // The end record is the last 22 bytes, followed by a comment of at most 64 KB.
     const tailLength = Math.min(size, 22 + 0xffff);
     const tail = await readAt(fh, size - tailLength, tailLength);
-    const end = findEndRecord(tail);
+    const end = findEndRecord(tail, size);
     if (end < 0) throw new ZipError(DAMAGED);
     const disk = tail.readUInt16LE(end + 4);
     const cdDisk = tail.readUInt16LE(end + 6);
@@ -162,8 +174,10 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
     if (cdOffset + cdSize > size) throw new ZipError(DAMAGED);
     const cd = await readAt(fh, cdOffset, cdSize);
     const entries: ZipEntry[] = [];
-    // Every path, folders included, as a folder on a case-insensitive disk would see it.
-    const seen = new Map<string, 'file' | 'dir'>();
+    // Every path, folders included, as a tree of names a case-insensitive disk would compare: each name is held once,
+    // so a hostile list of long, deep paths costs no more than its own size.
+    const tree: TreeNode = { kind: 'dir', children: new Map() };
+    let folders = 0;
     let total = 0;
     let p = 0;
     for (let n = 0; n < count; n++) {
@@ -201,16 +215,24 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
         if (total > MAX_TOTAL_BYTES) throw new ZipError(`That ZIP file would take more than ${MAX_TOTAL_BYTES / 1024 ** 3} GB once extracted, so it was not opened. ${EXTRACT_ELSEWHERE}`);
       }
       // Two names one folder cannot tell apart (different case or accents, a file where a folder must go) would
-      // overwrite each other.
+      // overwrite each other. Every folder a path implies counts, so empty folders cannot multiply unseen.
       const parts = path.split('/');
-      for (let i = 1; i <= parts.length; i++) {
-        const sub = parts.slice(0, i).join('/');
-        const key = sub.normalize('NFC').toLowerCase();
-        const kind = i < parts.length || directory ? 'dir' : 'file';
-        const before = seen.get(key);
-        if ((before === 'file' && kind === 'dir') || (before === 'dir' && kind === 'file' && i === parts.length)) throw new ZipError(`That ZIP file contains ${JSON.stringify(sub.slice(0, 120))} both as a file and as a folder, so it was not opened.`);
-        if (before === 'file') throw new ZipError(`That ZIP file contains two files named ${JSON.stringify(path.slice(0, 120))} (perhaps with different capital letters or accents), so it was not opened.`);
-        if (!before) seen.set(key, kind);
+      let node = tree;
+      for (let i = 0; i < parts.length; i++) {
+        const kind = i < parts.length - 1 || directory ? 'dir' : 'file';
+        const key = parts[i].normalize('NFC').toLowerCase();
+        const before = node.children!.get(key);
+        const where = () => JSON.stringify(parts.slice(0, i + 1).join('/').slice(0, 120));
+        if (before && before.kind !== kind) throw new ZipError(`That ZIP file contains ${where()} both as a file and as a folder, so it was not opened.`);
+        if (before?.kind === 'file') throw new ZipError(`That ZIP file contains two files named ${where()} (perhaps with different capital letters or accents), so it was not opened.`);
+        if (before) {
+          node = before;
+          continue;
+        }
+        if (kind === 'dir' && ++folders > MAX_ENTRIES) throw new ZipError('That ZIP file holds more folders than a project can, so it was not opened.');
+        const added: TreeNode = kind === 'dir' ? { kind, children: new Map() } : { kind };
+        node.children!.set(key, added);
+        node = added;
       }
       entries.push({ path, directory, special, executable: (unixMode & 0o111) !== 0, method, crc, compressedSize, size: entrySize, localOffset, dataLimit: cdOffset });
     }
@@ -263,6 +285,18 @@ function checked(e: ZipEntry, name: string) {
   return { stream, verify };
 }
 
+/** The bytes from `start`, read from the archive's own handle (never reopened by name) in pieces. */
+async function* readRange(fh: fs.FileHandle, start: number, length: number) {
+  for (let position = start, left = length; left > 0; ) {
+    const buf = Buffer.alloc(Math.min(left, 256 * 1024));
+    const { bytesRead } = await fh.read(buf, 0, buf.length, position);
+    if (!bytesRead) throw new ZipError(DAMAGED);
+    yield buf.subarray(0, bytesRead);
+    position += bytesRead;
+    left -= bytesRead;
+  }
+}
+
 /**
  * Send one entry's contents, decompressed and checked, to the stream `open` makes. The stream is made only once the
  * entry's header has been checked, and handed straight to the pipeline, so a file that cannot be made is an error
@@ -274,7 +308,7 @@ async function copyEntry(fh: fs.FileHandle, e: ZipEntry, name: string, open: () 
   const start = e.localOffset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
   if (start + e.compressedSize > e.dataLimit) throw new ZipError(DAMAGED);
   signal?.throwIfAborted();
-  const source = e.compressedSize ? fh.createReadStream({ start, end: start + e.compressedSize - 1, autoClose: false }) : Readable.from([]);
+  const source = Readable.from(readRange(fh, start, e.compressedSize));
   const check = checked(e, name);
   try {
     if (e.method === 8) await pipeline(source, createInflateRaw(), check.stream, open(), { signal });
@@ -353,6 +387,24 @@ export async function readProjectZip(file: string): Promise<{ kind: 'project'; n
   return { ...contents, name: typeof name === 'string' && name.trim() ? name.trim() : '' };
 }
 
+/**
+ * Remove the empty folder claimed at `dest`, trying again while Windows holds it for a moment. Only an empty folder
+ * is ever removed: one someone else has put files in stays. One that cannot be removed is named.
+ */
+async function removeClaim(dest: string) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rmdir(dest);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTEMPTY' || code === 'ENOTDIR' || code === 'EEXIST') return;
+      if (attempt >= 5) throw new ZipError(`The empty folder "${dest}" could not be removed. Delete it yourself.`);
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+}
+
 /** Is something at `path` now (a folder, a file, a link)? */
 async function occupied(path: string): Promise<boolean> {
   return fs.lstat(path).then(
@@ -392,16 +444,15 @@ export async function unpackProject(
       }
       try {
         await beforePublish?.(dest);
-        // The last chance to call it off: from the move on, the project is in place.
-        signal?.throwIfAborted();
-        await replaceEmptyFolder(tmp, dest);
+        // The last chance to call it off is just before the move (after Windows lets go of the claim): from the move
+        // on, the project is in place.
+        await replaceEmptyFolder(tmp, dest, () => signal?.throwIfAborted());
         return dest;
       } catch (e) {
         // Someone else's files arrived in the claimed folder: they stay, and the next name is tried. A move that failed
         // with the name still free (Windows reports a file held open in the private folder as EPERM) is no collision.
         if ((e as NodeJS.ErrnoException).code === 'EEXIST' && (await occupied(dest))) continue;
-        // Removed only while it is still the empty folder claimed above.
-        await fs.rmdir(dest).catch(() => undefined);
+        await removeClaim(dest);
         throw e;
       }
     }

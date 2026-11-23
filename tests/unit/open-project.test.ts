@@ -18,7 +18,7 @@ vi.mock('electron', () => ({
 
 import { dialog } from 'electron';
 import { Controller, readManifestSummary } from '../../src/main/controller';
-import { loadSettings, trust } from '../../src/main/settings';
+import { loadSettings, trust, untrust } from '../../src/main/settings';
 import { NOT_A_PROJECT_ZIP, WEBSITE_ZIP } from '../../src/main/unzip';
 import { zipDirectory } from '../../src/main/zip';
 
@@ -259,6 +259,41 @@ describe('opening a project ZIP file (#263)', () => {
     expect(mkdtemp).not.toHaveBeenCalled();
   });
 
+  it('cancels only the ZIP file being unpacked, not one waiting its turn', async () => {
+    const zip = await editableZip();
+    const parent = tmp('so-recipient-');
+    const c = new Controller(() => null);
+    const mkdir = fsp.mkdir.bind(fsp);
+    let cancelled = false;
+    vi.spyOn(fsp, 'mkdir').mockImplementation(async (p, o) => {
+      if (!cancelled && String(p).includes('.siteorigin-open-')) {
+        cancelled = true;
+        c.cancelUnpacking();
+      }
+      return mkdir(p, o as never);
+    });
+    chooseFolder(parent);
+    chooseFolder(parent);
+    const [first, second] = await Promise.all([c.open(zip), c.open(zip)]);
+    expect(first).toEqual({ ok: false });
+    expect(second.needsTrust?.dir).toBe(join(parent, 'cafe'));
+  });
+
+  it('saves a forgotten trust once a save that failed can be made, so it never comes back', async () => {
+    const dir = join(tmp('so-recipient-'), 'cafe');
+    await trust(dir, 'old-hash');
+    const file = join(state.userData, 'settings.json');
+    const saved = readFileSync(file, 'utf8');
+    // The settings cannot be written: the removal fails, and the old record is still on disk.
+    rmSync(file);
+    mkdirSync(join(file, 'blocked'), { recursive: true });
+    await expect(untrust(dir)).rejects.toThrow();
+    rmSync(file, { recursive: true });
+    writeFileSync(file, saved);
+    await untrust(dir);
+    expect(JSON.parse(readFileSync(file, 'utf8')).trusted[dir]).toBeUndefined();
+  });
+
   it('unpacks nothing when its window goes while the folder picker is up', async () => {
     const zip = await editableZip();
     const parent = tmp('so-recipient-');
@@ -282,7 +317,8 @@ describe('opening a project ZIP file (#263)', () => {
       // The first folder made inside the private unpacking folder: files are being written.
       if (!cancelled && String(p).includes('.siteorigin-open-')) {
         cancelled = true;
-        c.cancelOpen();
+        // The unpacking dialog's Cancel.
+        c.cancelUnpacking();
       }
       return mkdir(p, o as never);
     });
@@ -291,7 +327,7 @@ describe('opening a project ZIP file (#263)', () => {
     expect(cancelled).toBe(true);
     expect(readdirSync(parent)).toEqual([]);
     // A cancel with nothing being unpacked does nothing, and the next open works.
-    c.cancelOpen();
+    c.cancelUnpacking();
     vi.restoreAllMocks();
     chooseFolder(parent);
     expect((await c.open(zip)).needsTrust?.dir).toBe(join(parent, 'cafe'));

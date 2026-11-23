@@ -37,6 +37,8 @@ interface RawEntry {
   /** Overrides for the recorded values. */
   crc?: number;
   size?: number;
+  /** The compressed size recorded, whatever the data is. */
+  csize?: number;
   /** Point the entry at another entry's bytes (its index). */
   sameDataAs?: number;
 }
@@ -62,7 +64,7 @@ function rawZip(entries: RawEntry[], comment: Buffer = Buffer.alloc(0)): Buffer 
     local.writeUInt16LE(flags, 6);
     local.writeUInt16LE(method, 8);
     local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(e.csize ?? body.length, 18);
     local.writeUInt32LE(size, 22);
     local.writeUInt16LE(name.length, 26);
     const header = Buffer.alloc(46);
@@ -72,7 +74,7 @@ function rawZip(entries: RawEntry[], comment: Buffer = Buffer.alloc(0)): Buffer 
     header.writeUInt16LE(flags, 8);
     header.writeUInt16LE(method, 10);
     header.writeUInt32LE(crc, 16);
-    header.writeUInt32LE(body.length, 20);
+    header.writeUInt32LE(e.csize ?? body.length, 20);
     header.writeUInt32LE(size, 24);
     header.writeUInt16LE(name.length, 28);
     header.writeUInt16LE(extra.length, 30);
@@ -189,6 +191,8 @@ describe('telling ZIP files apart', () => {
     expect((await readZipEntries(zipFile([{ name: legacy, utf8: false, extra: field(legacy), data: 'x' }])))[0].path).toBe('ĉaŭ.png');
     // A field written for some other name (the legacy name was changed since) is not trusted.
     expect((await readZipEntries(zipFile([{ name: legacy, utf8: false, extra: field(Buffer.from('other')), data: 'x' }])))[0].path).toBe('cêaù.png');
+    // A plain ASCII stand-in gives way to the real name too.
+    expect((await readZipEntries(zipFile([{ name: 'cau.png', utf8: false, extra: field(Buffer.from('cau.png')), data: 'x' }])))[0].path).toBe('ĉaŭ.png');
   });
 
   it('refuses a file that is not a ZIP file, one cut short, and one whose list of files is damaged', async () => {
@@ -208,8 +212,10 @@ describe('telling ZIP files apart', () => {
   it('finds the real end of a ZIP file whose comment holds what looks like one', async () => {
     const fake = Buffer.alloc(22);
     fake.writeUInt32LE(0x06054b50, 0);
-    const entries = await readZipEntries(zipFile([{ name: 'siteorigin.project.json', data: '{}' }], Buffer.concat([Buffer.from('note '), fake, Buffer.from(' end')])));
-    expect(entries.map((e) => e.path)).toEqual(['siteorigin.project.json']);
+    for (const comment of [Buffer.concat([Buffer.from('note '), fake, Buffer.from(' end')]), Buffer.concat([Buffer.from('note '), fake])]) {
+      const entries = await readZipEntries(zipFile([{ name: 'siteorigin.project.json', data: '{}' }], comment));
+      expect(entries.map((e) => e.path)).toEqual(['siteorigin.project.json']);
+    }
   });
 });
 
@@ -223,11 +229,19 @@ describe('an archive that could do harm', () => {
     expect((await readZipEntries(zipFile([{ name: 'static\\logo.png', data: 'x', host: 0 }])))[0].path).toBe('static/logo.png');
   });
 
-  it('refuses a backslash that is part of a name, which a Windows computer would read as a folder', async () => {
-    await expect(readZipEntries(zipFile([{ name: 'static/draft\\cover.svg', data: 'x' }]))).rejects.toThrow(/cannot be used safely/);
+  it('keeps a backslash that is part of a name on macOS and Linux, and refuses it on Windows, which would read it as a folder', async () => {
+    expect(safeEntryPath('static/draft\\cover.svg', false, false)).toBe('static/draft\\cover.svg');
+    expect(safeEntryPath('..\\evil.txt', false, false)).toBe('..\\evil.txt');
+    expect(() => safeEntryPath('static/draft\\cover.svg', false, true)).toThrow(/cannot be used safely/);
+    if (process.platform !== 'win32') {
+      const zip = zipFile([{ name: 'siteorigin.project.json', data: '{}' }, { name: 'static/draft\\cover.svg', data: 'x' }]);
+      const dest = temp();
+      await extractEntries(zip, await readZipEntries(zip), '', dest);
+      expect(readFileSync(join(dest, 'static', 'draft\\cover.svg'), 'utf8')).toBe('x');
+    }
   });
 
-  it.each(['a\u0000b', 'static/CON', 'static/nul.txt', 'static/com1.js', 'static/LPT¹', 'static/photo.jpg:stream', 'static/trailing.', 'static/trailing ', `${'a/'.repeat(70)}x`, 'x'.repeat(1100)])(
+  it.each(['a\u0000b', 'static/CON', 'static/nul.txt', 'static/com1.js', 'static/LPT¹', 'static/photo.jpg:stream', 'static/trailing.', 'static/trailing ', `${'a/'.repeat(300)}x`, 'x'.repeat(4200)])(
     'refuses the file name %j, which this computer or Windows could not use safely',
     async (name) => {
       await expect(readZipEntries(zipFile([{ name: 'siteorigin.project.json', data: '{}' }, { name, data: 'x' }]))).rejects.toThrow(/cannot be used safely/);
@@ -283,6 +297,18 @@ describe('an archive that could do harm', () => {
     const crc = zipFile([{ name: 'siteorigin.project.json', data: '{}', crc: 1234 }]);
     const c2 = await project(crc);
     await expect(extractEntries(crc, c2.entries, c2.root, temp())).rejects.toThrow(/damaged/);
+  });
+
+  it('refuses more folders than a project could have, however few entries name them', async () => {
+    const deep = Array.from({ length: 80 }, (_, k) => ({ name: `d${k}/${'a/'.repeat(255)}` }));
+    await expect(readZipEntries(zipFile([{ name: 'siteorigin.project.json', data: '{}' }, ...deep]))).rejects.toThrow(/more folders than a project can/);
+  });
+
+  it('never reads past an entry into the next one', async () => {
+    // The first file says it holds 10 bytes; its 3 bytes are followed by the next entry's header.
+    const zip = zipFile([{ name: 'siteorigin.project.json', data: '{}' }, { name: 'a.txt', data: 'abc', size: 10, csize: 10 }, { name: 'b.txt', data: 'b' }]);
+    const contents = await project(zip);
+    await expect(extractEntries(zip, contents.entries, contents.root, temp())).rejects.toThrow(/damaged or incomplete/);
   });
 
   it('refuses entries that share their bytes, rather than writing them over and over', async () => {

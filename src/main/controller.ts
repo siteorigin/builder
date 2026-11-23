@@ -164,8 +164,10 @@ export class Controller {
   quitting = false;
   /** New projects being made (or unpacked from a ZIP file), each until it is shown or has gone again. */
   private creations = new Map<Promise<unknown>, AbortController>();
-  /** Every open under way, so Cancel (or its window going) can call off a project ZIP file being opened. */
+  /** Every open under way, so its window going can call off a project ZIP file being opened. */
   private openAborts = new Set<AbortController>();
+  /** The open whose ZIP file is being unpacked now: the one the unpacking dialog's Cancel means. */
+  private unpacking: AbortController | null = null;
   /** Project ZIP files are opened one at a time, each after the last has finished or cleaned up. */
   private zipOpens: Promise<unknown> = Promise.resolve();
   /** Previews of the open project's exported websites, one per export. */
@@ -559,6 +561,8 @@ export class Controller {
       if (e instanceof ZipError) return { ok: false, message: e.message };
       return { ok: false, message: `Could not read the ZIP file: ${(e as Error).message}` };
     }
+    // Its window went while the ZIP file was read: no picker is shown over whatever replaced it.
+    if (abort.signal.aborted) return { ok: false };
     if (project.kind === 'website') return { ok: false, message: WEBSITE_ZIP };
     if (project.kind !== 'project') return { ok: false, message: NOT_A_PROJECT_ZIP };
     const name = project.name || basename(file).replace(/\.zip$/i, '');
@@ -576,6 +580,7 @@ export class Controller {
     const run = unpackProject(file, project, parent, slugify(name) || 'website', { signal: abort.signal, beforePublish: (dir) => untrust(canonicalDir(dir)) });
     // Quitting calls it off and waits for it, as for a new project being made.
     this.creations.set(run, abort);
+    this.unpacking = abort;
     this.send('projects:unpacking', { name, dir: parent });
     let dir: string;
     try {
@@ -587,12 +592,18 @@ export class Controller {
       return { ok: false, message: `Could not unpack ${name} into ${parent}: ${(e as Error).message}` };
     } finally {
       this.creations.delete(run);
+      if (this.unpacking === abort) this.unpacking = null;
       this.send('projects:unpacking', null);
     }
     return { ok: false, needsTrust: { dir: canonicalDir(dir), name } };
   }
 
-  /** Call off any project ZIP file being opened: before its copy is in place, whatever it wrote is removed. */
+  /** The unpacking dialog's Cancel: call off the ZIP file being unpacked (any other open waiting goes on). */
+  cancelUnpacking() {
+    this.unpacking?.abort();
+  }
+
+  /** Its window went: call off every project ZIP file being opened. Before a copy is in place, what it wrote is removed. */
   cancelOpen() {
     for (const abort of this.openAborts) abort.abort();
   }
