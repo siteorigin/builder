@@ -47,10 +47,12 @@ const lastResult = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, starter: 'business' | 'blank' = 'business') {
+async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, starter: 'business' | 'blank' = 'business', prepare?: (s: ProjectState) => void) {
   const dir = mkdtempSync(join(tmpdir(), 'so-tools-'));
   dirs.push(dir);
-  const session = await ProjectSession.create(dir, createStarterState(starter, 'Test Studio', false));
+  const initial = createStarterState(starter, 'Test Studio', false);
+  prepare?.(initial);
+  const session = await ProjectSession.create(dir, initial);
   const adapter = new FakeAdapter(turns, caps);
   const events: AiEvent[] = [];
   const orch = new Orchestrator({
@@ -185,6 +187,67 @@ describe('upsert_page_with_sections', () => {
     ]);
     await run('Rebuild the home page');
     expect(componentsOn(session.state, '/')).toEqual(['cta.banner', 'hero.split']);
+  });
+
+  it('removes forked and custom project sections when asked, but leaves layout that is not an instance', async () => {
+    let layoutId = '';
+    const { session, run } = await setup(
+      [() => [call('r1', 'upsert_page_with_sections', { slug: 'home', removeOtherSections: true, sections: [{ componentId: 'hero.split', props: { heading: 'Only this' } }] })], () => finish()],
+      {},
+      'business',
+      (s) => {
+        // Hand-built layout at the page root is not a section the macro can express, so it must survive.
+        const home = s.pages[s.site.homePageId];
+        layoutId = 'n_layout';
+        home.nodes[layoutId] = { id: layoutId, kind: 'text', tag: 'p', text: 'Hand-made note' };
+        home.rootIds.push(layoutId);
+      }
+    );
+    const home = () => pageAt(session.state, '/')!;
+    const instanceOf = (componentId: string) => home().rootIds.find((id) => session.state.components[(home().nodes[id] as InstanceNode).definitionId]?.componentId === componentId)!;
+    const homeOwner = { kind: 'page' as const, id: session.state.site.homePageId };
+    const testimonials = (home().nodes[instanceOf('testimonials.grid')] as InstanceNode).definitionId;
+    const fork = await session.apply({ operations: [{ type: 'component.fork', definitionId: testimonials }] }, { label: 'Edit everywhere', source: 'user' });
+    expect(fork.ok).toBe(true);
+    const unique = await session.apply({ operations: [{ type: 'component.makeUnique', owner: homeOwner, nodeId: instanceOf('cta.banner'), name: 'Our banner' }] }, { label: 'Make unique', source: 'user' });
+    expect(unique.ok).toBe(true);
+    const owners = home().rootIds.filter((id) => home().nodes[id].kind === 'instance').map((id) => session.state.components[(home().nodes[id] as InstanceNode).definitionId].owner);
+    expect(owners.filter((o) => o === 'project')).toHaveLength(2);
+
+    await run('Rebuild the home page with just a hero');
+    expect(home().rootIds.map((id) => (home().nodes[id].kind === 'instance' ? session.state.components[(home().nodes[id] as InstanceNode).definitionId].componentId : id))).toEqual(['hero.split', layoutId]);
+    expect(((home().nodes[home().rootIds[0]] as InstanceNode).props.heading as string)).toBe('Only this');
+  });
+
+  it('rewrites copy in an existing team without losing the portraits it leaves out', async () => {
+    const portraits = ['a_p1', 'a_p2', 'a_p3'];
+    const people = [
+      { name: 'Hannah Wells', role: 'Founder', bio: 'Hannah leads every project from the first sketch.' },
+      { name: 'Marcus Lee', role: 'Project manager', bio: 'Marcus keeps budgets honest.' },
+      { name: 'Sofia Alvarez', role: 'Interior designer', bio: 'Sofia chooses every finish.' }
+    ];
+    const { session, run } = await setup(
+      [() => [call('t1', 'upsert_page_with_sections', { slug: 'about', sections: [{ componentId: 'team.grid', props: { people } }] })], () => finish()],
+      {},
+      'business',
+      (s) => {
+        for (const id of portraits) s.assets.assets[id] = { id, name: id, file: `static/assets/${id}.jpg`, mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' };
+        const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+        const team = about.rootIds.map((id) => about.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'team.grid')!;
+        (team.props.people as ListItem[]).forEach((p, i) => (p.portrait = { assetId: portraits[i], alt: `Portrait of ${p.name}` }));
+      }
+    );
+    const team = () => {
+      const about = pageAt(session.state, '/about/')!;
+      return about.rootIds.map((id) => about.nodes[id] as InstanceNode).find((n) => session.state.components[n.definitionId]?.componentId === 'team.grid')!;
+    };
+    const ids = (team().props.people as ListItem[]).map((p) => p.id);
+    await run('Rewrite the team bios');
+    const after = team().props.people as ListItem[];
+    expect(after.map((p) => p.bio)).toEqual(people.map((p) => p.bio));
+    expect(after.map((p) => p.role)).toEqual(people.map((p) => p.role));
+    expect(after.map((p) => p.portrait)).toEqual(portraits.map((assetId, i) => ({ assetId, alt: `Portrait of ${people[i].name}` })));
+    expect(after.map((p) => p.id)).toEqual(ids);
   });
 
   it('connects a link to a page built later, including a link inside a list item', async () => {
