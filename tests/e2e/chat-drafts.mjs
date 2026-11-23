@@ -124,6 +124,30 @@ await eventually(async () => assert.equal(await chatTitle().textContent(), 'New 
 await composerIs('');
 await suggestions().waitFor();
 assert.equal(await sendButton().isDisabled(), true, 'Send is not enabled with the other client’s text');
+
+step('starters name the pages this site has, whatever they are called (#54)');
+const starterTexts = async () => (await suggestions().locator('.suggestion').allTextContents()).map((x) => x.trim());
+const create = (page, about) => `Create a new ${page} page with ${about}, and link it from the header menu`;
+const contactAbout = 'a short note, how to get in touch and a simple way to send a message';
+// A one-page site: its own page, the page it is missing, and one thing that needs no page.
+assert.deepEqual(await starterTexts(), ['Build out the “Home” page: it is mostly empty, so add the sections and content it needs', create('Contact', contactAbout), 'Make the brand color a deep navy blue across the whole site']);
+await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'page.create', title: 'お問い合わせ', starter: 'intro', addToNavigation: true }] }, { label: 'Add page' }));
+await win.locator('.pages-list [role="option"]', { hasText: 'お問い合わせ' }).click();
+await eventually(async () => assert.match(await win.locator('.toolbar .project-title').innerText(), /お問い合わせ/, 'the second page is open'));
+// The open page comes first, Home is labelled as another page, and お問い合わせ is the contact page, so About is the page offered.
+const forSecond = [
+  'Build out the “お問い合わせ” page: it is mostly empty, so add the sections and content it needs',
+  'On another page, “Home”: build out its content, it is mostly empty',
+  create('About', 'who is behind the site, what it stands for and a call to action')
+];
+await eventually(async () => assert.deepEqual(await starterTexts(), forSecond));
+// Renaming the open page renames its starters.
+await win.evaluate((id) => window.builder.project.apply({ operations: [{ type: 'page.update', pageId: id, title: 'Say hello' }] }, { label: 'Rename page' }), (await win.evaluate(() => window.builder.project.snapshot())).state.site.pageOrder[1]);
+await eventually(async () => assert.deepEqual(await starterTexts(), [forSecond[0].replace('お問い合わせ', 'Say hello'), ...forSecond.slice(1)]));
+await suggestions().locator('.suggestion', { hasText: 'On another page' }).click();
+await composerIs(forSecond[1]);
+await message().fill('');
+await suggestions().waitFor();
 await type('Lantern light');
 await win.evaluate(() => window.builder.projects.close());
 await win.waitForSelector('.welcome');
