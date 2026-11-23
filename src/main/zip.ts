@@ -19,10 +19,10 @@ const CENTRAL_HEADER = 46;
 const END_RECORD = 22;
 
 /**
- * Formats that are already compressed. Deflating them again costs real time and saves next to nothing (a 14 MB
- * PNG shrank by 13 KB), so they are stored as they are.
+ * Formats that are always compressed. Deflating them again costs real time and saves next to nothing (a 14 MB
+ * PNG shrank by 13 KB), so they are stored as they are. ZIP is not one: its entries may be stored.
  */
-const PRECOMPRESSED = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.woff', '.woff2', '.zip', '.gz', '.br', '.mp3', '.mp4', '.webm']);
+const PRECOMPRESSED = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.woff', '.woff2', '.gz', '.br', '.mp3', '.mp4', '.webm']);
 
 /** DOS timestamps cover 1980 to 2107; anything else is clamped to that range. */
 function dosDateTime(d: Date): { time: number; date: number } {

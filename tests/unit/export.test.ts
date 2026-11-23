@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { deflateRawSync, inflateRawSync, crc32 } from 'node:zlib';
+import { inflateRawSync, crc32 } from 'node:zlib';
 import { createStarterState } from '@catalogue/starters';
 import { assetUsages } from '@engine/apply';
 import { generateProject } from '@generator/index';
@@ -27,6 +27,25 @@ import {
 } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
 
+/**
+ * The ZIP writer's compressor runs as normal, but a test can see every input it was given and hold one: `hold`
+ * returns true to take over that call, and the export then waits until the test calls `finish`.
+ */
+const compressor = vi.hoisted(() => ({
+  inputs: [] as Buffer[],
+  hold: null as null | ((input: Buffer, finish: (error?: Error) => void) => boolean)
+}));
+vi.mock('node:zlib', async (importOriginal) => {
+  const zlib = await importOriginal<typeof import('node:zlib')>();
+  const deflateRaw = (input: Buffer, ...rest: unknown[]) => {
+    const callback = rest.pop() as (error: Error | null, result?: Buffer) => void;
+    const run = () => zlib.deflateRaw(input, (rest[0] ?? {}) as import('node:zlib').ZlibOptions, callback);
+    compressor.inputs.push(input);
+    if (!compressor.hold?.(input, (error) => (error ? callback(error) : run()))) run();
+  };
+  return { ...zlib, deflateRaw };
+});
+
 const dirs: string[] = [];
 const temp = () => {
   const d = mkdtempSync(join(tmpdir(), 'so-export-'));
@@ -35,13 +54,18 @@ const temp = () => {
 };
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  compressor.inputs = [];
+  compressor.hold = null;
 });
 const write = (root: string, rel: string, text: string) => {
   mkdirSync(join(root, rel, '..'), { recursive: true });
   writeFileSync(join(root, rel), text);
 };
 
-/** A minimal reader: every entry's name and inflated content, checked against its CRC. `methods` collects each entry's compression method. */
+/**
+ * A minimal reader: every entry's name and inflated content, checked against its CRC and sizes, with the local
+ * header agreeing with the central one. `methods` collects each entry's compression method.
+ */
 function readZip(buf: Buffer, methods = new Map<string, number>()): Map<string, Buffer> {
   const out = new Map<string, Buffer>();
   const end = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
@@ -52,6 +76,7 @@ function readZip(buf: Buffer, methods = new Map<string, number>()): Map<string, 
     const method = buf.readUInt16LE(p + 10);
     const crc = buf.readUInt32LE(p + 16);
     const csize = buf.readUInt32LE(p + 20);
+    const size = buf.readUInt32LE(p + 24);
     const nameLen = buf.readUInt16LE(p + 28);
     const offset = buf.readUInt32LE(p + 42);
     const name = buf.subarray(p + 46, p + 46 + nameLen).toString('utf8');
@@ -59,7 +84,9 @@ function readZip(buf: Buffer, methods = new Map<string, number>()): Map<string, 
     const data = buf.subarray(offset + 30 + localNameLen, offset + 30 + localNameLen + csize);
     const body = method === 8 ? inflateRawSync(data) : Buffer.from(data);
     expect(crc32(body) >>> 0).toBe(crc);
-    expect(buf.readUInt16LE(offset + 8), `${name}: local and central headers agree on the method`).toBe(method);
+    expect(body.length).toBe(size);
+    const local = [buf.readUInt16LE(offset + 8), buf.readUInt32LE(offset + 14), buf.readUInt32LE(offset + 18), buf.readUInt32LE(offset + 22)];
+    expect(local, `${name}: the local header agrees with the central one`).toEqual([method, crc, csize, size]);
     out.set(name, body);
     methods.set(name, method);
     p += 46 + nameLen + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
@@ -74,13 +101,21 @@ describe('ZIP export', () => {
     write(src, 'about/index.html', 'About');
     write(src, 'assets/café.txt', 'crème');
     write(src, 'empty.txt', '');
+    const noise = randomBytes(4096);
+    writeFileSync(join(src, 'noise.bin'), noise);
     const zip = join(temp(), 'site.zip');
     const r = await zipDirectory(src, zip);
-    expect(r.files).toBe(4);
-    const entries = readZip(readFileSync(zip));
-    expect([...entries.keys()].sort()).toEqual(['about/index.html', 'assets/café.txt', 'empty.txt', 'index.html']);
+    expect(r.files).toBe(5);
+    const methods = new Map<string, number>();
+    const entries = readZip(readFileSync(zip), methods);
+    expect([...entries.keys()].sort()).toEqual(['about/index.html', 'assets/café.txt', 'empty.txt', 'index.html', 'noise.bin']);
     expect(entries.get('index.html')!.toString()).toBe('<h1>Hello</h1>'.repeat(50));
     expect(entries.get('assets/café.txt')!.toString()).toBe('crème');
+    expect(entries.get('noise.bin')!.equals(noise)).toBe(true);
+    // Deflated where it shrinks the file, stored where it wouldn't.
+    expect(methods.get('index.html')).toBe(8);
+    expect(methods.get('noise.bin')).toBe(0);
+    expect(methods.get('empty.txt')).toBe(0);
     // The system's own unzip agrees, where one is available.
     const check = spawnSync('unzip', ['-tq', zip], { encoding: 'utf8' });
     if (!check.error) expect(check.status, check.stdout + check.stderr).toBe(0);
@@ -106,62 +141,60 @@ describe('ZIP export', () => {
     expect(readdirSync(out)).toEqual(['site.zip']);
   });
 
-  it('keeps the main process responsive while it compresses a large file', async () => {
+  it('compresses off the main thread, publishing nothing until the archive is complete', async () => {
     const src = temp();
-    // Text that deflates, but only with real work: one synchronous pass over it holds the thread for a long time.
-    const text = Buffer.from(randomBytes(6 * 1024 * 1024).toString('base64'));
-    writeFileSync(join(src, 'data.json'), text);
-    const started = performance.now();
-    deflateRawSync(text);
-    const blocking = performance.now() - started;
-    let last = performance.now();
-    let longest = 0;
-    const gap = () => {
-      const now = performance.now();
-      longest = Math.max(longest, now - last);
-      last = now;
-    };
-    const ticker = setInterval(gap, 1);
-    const zip = join(temp(), 'big.zip');
-    try {
-      await zipDirectory(src, zip);
-      gap();
-    } finally {
-      clearInterval(ticker);
-    }
-    expect(longest, `longest pause ${longest.toFixed(1)}ms; a synchronous deflate takes ${blocking.toFixed(1)}ms`).toBeLessThan(blocking / 2);
-    const methods = new Map<string, number>();
-    expect(readZip(readFileSync(zip), methods).get('data.json')!.equals(text)).toBe(true);
-    expect(methods.get('data.json')).toBe(8);
-  });
-
-  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('keeps an existing ZIP intact when the export fails partway through', async () => {
-    const src = temp();
-    write(src, 'a.txt', 'first entry, written before the failure');
-    write(src, 'b.txt', 'unreadable');
-    chmodSync(join(src, 'b.txt'), 0);
+    const text = JSON.stringify({ text: 'compressible '.repeat(10000) });
+    write(src, 'data.json', text);
     const out = temp();
     const zip = join(out, 'site.zip');
     writeFileSync(zip, 'previous export');
-    await expect(zipDirectory(src, zip)).rejects.toThrow(/EACCES|permission/i);
+    let finish!: (error?: Error) => void;
+    const compressing = new Promise<string>((resolve) => {
+      compressor.hold = (_, f) => ((finish = f), resolve('compressing'), true);
+    });
+    const exporting = zipDirectory(src, zip);
+    // A synchronous compressor would finish the whole export before handing anything off.
+    expect(await Promise.race([compressing, exporting.then(() => 'finished')])).toBe('compressing');
+    expect(readFileSync(zip, 'utf8')).toBe('previous export');
+    finish();
+    await exporting;
+    const methods = new Map<string, number>();
+    expect(readZip(readFileSync(zip), methods).get('data.json')!.toString()).toBe(text);
+    expect(methods.get('data.json')).toBe(8);
+    expect(readdirSync(out)).toEqual(['site.zip']);
+  });
+
+  it('keeps an existing ZIP intact when compression fails partway through', async () => {
+    const src = temp();
+    write(src, 'a.txt', 'first entry, written before the failure');
+    write(src, 'b.txt', 'second entry');
+    const out = temp();
+    const zip = join(out, 'site.zip');
+    writeFileSync(zip, 'previous export');
+    compressor.hold = (input, finish) => input.toString() === 'second entry' && (setImmediate(() => finish(new Error('compressor failed'))), true);
+    await expect(zipDirectory(src, zip)).rejects.toThrow('compressor failed');
+    expect(compressor.inputs.map(String)).toEqual(['first entry, written before the failure', 'second entry']);
     expect(readFileSync(zip, 'utf8')).toBe('previous export');
     expect(readdirSync(out)).toEqual(['site.zip']);
   });
 
   it('stores already-compressed media as it is and compresses everything else', async () => {
     const src = temp();
-    // Deliberately compressible content, so only the file type decides.
-    const body = 'x'.repeat(20000);
-    const media = ['photo.png', 'PHOTO.JPG', 'img/hero.jpeg', 'img/hero-480.webp', 'img/hero.avif', 'anim.gif', 'fonts/inter.woff2', 'fonts/old.woff'];
-    const text = ['index.html', 'logo.svg', 'app.css', 'data.json'];
-    for (const f of [...media, ...text]) write(src, f, body);
+    // Deliberately compressible content, so only the file type decides. Each file starts with its own name.
+    const body = (f: string) => `${f}\n${'x'.repeat(20000)}`;
+    const media = ['photo.png', 'PHOTO.JPG', 'img/hero.jpeg', 'img/hero-480.webp', 'img/hero.avif', 'anim.gif', 'fonts/inter.woff2', 'fonts/old.woff', 'clip.mp4', 'clip.webm', 'audio.mp3', 'data.json.gz', 'app.js.br'];
+    // A ZIP may hold stored entries, so it is compressed like any other file.
+    const text = ['index.html', 'logo.svg', 'app.css', 'data.json', 'bundle.zip'];
+    for (const f of [...media, ...text]) write(src, f, body(f));
     const zip = join(temp(), 'media.zip');
     await zipDirectory(src, zip);
     const methods = new Map<string, number>();
     const entries = readZip(readFileSync(zip), methods);
-    for (const f of [...media, ...text]) expect(entries.get(f)!.toString(), f).toBe(body);
+    for (const f of [...media, ...text]) expect(entries.get(f)!.toString(), f).toBe(body(f));
     for (const f of media) expect(methods.get(f), f).toBe(0);
     for (const f of text) expect(methods.get(f), f).toBe(8);
+    // Media never reaches the compressor at all.
+    expect(compressor.inputs.map((b) => b.toString().split('\n')[0]).sort()).toEqual([...text].sort());
     const check = spawnSync('unzip', ['-tq', zip], { encoding: 'utf8' });
     if (!check.error) expect(check.status, check.stdout + check.stderr).toBe(0);
   });
