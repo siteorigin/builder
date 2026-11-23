@@ -201,7 +201,7 @@ function registerIpc() {
   handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
   handle('project:resolveConflict', (p: string, choice: 'keep' | 'restore') => controller.resolveConflict(p, choice));
   handle('project:unlock', () => controller.unlock());
-  handle('project:saveLocalState', (s: LocalWorkspaceState, dir: string) => controller.saveLocalState(s, String(dir ?? '')));
+  handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
   handle('project:validateSource', async (source: string) => {
     const problems = await checkSvelteSource(String(source));
     const errors = problems.filter((p) => p.severity === 'error');
@@ -419,12 +419,18 @@ app.on('window-all-closed', () => {
 });
 
 let quitting = false;
+let closedForQuit = false;
 app.on('before-quit', (e) => {
-  if (quitting) return;
+  if (closedForQuit) return;
+  // A second Quit while the project is still closing waits for it too, so its unsaved state is written first.
+  if (quitting) return e.preventDefault();
   if (controller.session) {
     e.preventDefault();
     quitting = true;
-    void controller.close().finally(() => app.quit());
+    void controller.close().finally(() => {
+      closedForQuit = true;
+      app.quit();
+    });
   }
 });
 

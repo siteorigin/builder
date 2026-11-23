@@ -52,8 +52,9 @@ export class Controller {
   private createAbort: AbortController | null = null;
   private staticServer: Server | null = null;
   private localState: LocalWorkspaceState = {};
-  /** The project whose workspace state is being kept; null while none is open or the open one is closing. */
-  private localDir: string | null = null;
+  /** Names this opening of the project in workspace saves; null while none is open or the open one is closing. */
+  private workspaceKey: string | null = null;
+  private openings = 0;
   private localDirty = false;
   private localTimer: NodeJS.Timeout | null = null;
   private localWrites: Promise<void> = Promise.resolve();
@@ -91,7 +92,8 @@ export class Controller {
       conflicts: s.conflicts,
       readOnly: s.readOnly,
       themeUpdates: s.readOnly ? undefined : themeUpdates(s.state),
-      localState: this.localState
+      localState: this.localState,
+      workspaceKey: this.workspaceKey ?? ''
     };
   }
 
@@ -158,7 +160,7 @@ export class Controller {
       await prepareDependencies(dir, (line) => this.progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal);
       if (signal.aborted) throw new Error('Cancelled');
       this.progress({ step: 'preview', message: 'Starting preview…' });
-      await this.attach(session);
+      await this.attach(session, {});
       await addRecent(dir, name);
       this.progress({ step: 'done', message: 'Ready' });
       return { ok: true };
@@ -227,13 +229,14 @@ export class Controller {
       else return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
     }
     // Workspace layout and recents are conveniences: a broken file or a failed save never blocks opening.
+    let workspace: LocalWorkspaceState = {};
     try {
-      this.localState = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
+      workspace = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
     } catch {
-      this.localState = {};
+      workspace = {};
     }
     if (!session.readOnly) await addRecent(dir, session.state.site.name).catch(() => undefined);
-    void this.attach(session).catch(async (e) => {
+    void this.attach(session, workspace).catch(async (e) => {
       if (this.session === session) await this.close();
       else await session.close();
       this.send('runtime:status', { state: 'error', message: `The project could not be opened: ${(e as Error).message}` });
@@ -258,9 +261,12 @@ export class Controller {
     return s.resolveConflict(path, choice);
   }
 
-  private async attach(session: ProjectSession) {
+  /** Make `session` the open project, with its own workspace state installed in the same step. */
+  private async attach(session: ProjectSession, workspace: LocalWorkspaceState) {
     this.session = session;
-    this.localDir = session.dir;
+    this.localState = workspace;
+    this.localDirty = false;
+    this.workspaceKey = `${session.dir}#${++this.openings}`;
     session.on('changed', (ev) => {
       this.dev?.notifyRevision(ev.revision);
       this.broadcast();
@@ -361,7 +367,7 @@ export class Controller {
     this.staticServer = null;
     if (!this.session) return;
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
-    this.localDir = null;
+    this.workspaceKey = null;
     await this.onSessionClosing?.();
     await this.dev?.stop();
     this.dev = null;
@@ -393,12 +399,13 @@ export class Controller {
   }
 
   /**
-   * Remember workspace state (open page, tabs, unsent AI drafts) for the project the editor meant by `dir`. A save
-   * that arrives once that project has started closing is dropped: it must never reach the next project. The file
-   * is written shortly after the last change, and always before the project closes.
+   * Remember workspace state (open page, tabs, unsent AI drafts) for the opening of the project the editor meant
+   * (`key`, from its snapshot). A save for an opening that has started closing is dropped: it must never reach the
+   * next project, or a later opening of the same one. The file is written shortly after the last change, and always
+   * before the project closes.
    */
-  saveLocalState(state: LocalWorkspaceState, dir: string) {
-    if (!this.session || this.localDir !== dir) return;
+  saveLocalState(state: LocalWorkspaceState, key: string) {
+    if (!this.session || !key || this.workspaceKey !== key) return;
     this.localState = { ...this.localState, ...state };
     this.localDirty = true;
     if (this.localTimer) clearTimeout(this.localTimer);
@@ -413,7 +420,12 @@ export class Controller {
     if (this.localDirty && s && !s.readOnly) {
       const file = s.local('workspace.json');
       const bytes = JSON.stringify(this.localState);
-      this.localWrites = this.localWrites.then(() => atomicWrite(file, bytes)).catch(() => undefined);
+      // A failed write (a full disk) is tried again with the next change, or when the project closes.
+      this.localWrites = this.localWrites
+        .then(() => atomicWrite(file, bytes))
+        .catch(() => {
+          if (this.session === s) this.localDirty = true;
+        });
     }
     this.localDirty = false;
     return this.localWrites;

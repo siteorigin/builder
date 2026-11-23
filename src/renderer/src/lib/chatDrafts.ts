@@ -65,19 +65,20 @@ export function restorePlan(remembered: string | undefined, activeId: string, sa
 }
 
 export interface ChatPersistState {
-  dir: string | null;
+  /** The opening of the project (its snapshot's workspaceKey), or null when none is open. */
+  key: string | null;
   drafts: ChatDrafts;
   conversationId: string | null;
 }
 
 /**
- * What to save after the composer state changed, and for which project: edits and conversation switches are saved
- * to the project they happened in. Loading a project's own state, or leaving it, saves nothing.
+ * What to save after the composer state changed, and for which opening of a project: edits and conversation
+ * switches are saved to the project they happened in. Loading a project's own state, or leaving it, saves nothing.
  */
-export function chatStatePatch(prev: ChatPersistState, next: ChatPersistState): { dir: string; patch: LocalWorkspaceState } | null {
-  if (!next.dir || next.dir !== prev.dir) return null;
+export function chatStatePatch(prev: ChatPersistState, next: ChatPersistState): { key: string; patch: LocalWorkspaceState } | null {
+  if (!next.key || next.key !== prev.key) return null;
   const patch: LocalWorkspaceState = {};
   if (next.drafts !== prev.drafts) patch.chatDrafts = next.drafts;
   if (next.conversationId && next.conversationId !== prev.conversationId) patch.chatConversation = next.conversationId;
-  return Object.keys(patch).length ? { dir: next.dir, patch } : null;
+  return Object.keys(patch).length ? { key: next.key, patch } : null;
 }

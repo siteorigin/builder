@@ -193,7 +193,7 @@ export function Chat() {
     if (!configured) return openSettings();
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
-    const dir = snap.dir;
+    const opening = snap.workspaceKey;
     // Freeze the exact context at send time.
     const ctx: ChatContext = {
       pageId: ctxOn.page && page ? page.id : st.site.homePageId,
@@ -211,18 +211,21 @@ export function Chat() {
     if (!r.ok) return toast(r.message ?? 'Could not start the request.', 'error');
     // Clear what was sent, but never text typed while the request was starting.
     const s = getState();
-    if (s.snapshot?.dir !== dir) return;
+    if (s.snapshot?.workspaceKey !== opening) return;
     const drafts = afterSend(s.chatDrafts, conversationId, text);
     if (drafts === s.chatDrafts) return;
     setState({ chatDrafts: drafts });
     if (taRef.current && s.conversation?.id === conversationId) taRef.current.style.height = '';
   };
 
-  // Switching conversations shows that conversation's own draft; a failed switch stays where it was.
+  // Switching conversations shows that conversation's own draft; a failed switch stays where it was. A reply that
+  // arrives after the project changed is not this project's.
+  const opening = snap.workspaceKey;
+  const stillOpen = () => getState().snapshot?.workspaceKey === opening;
   const show = (pending: Promise<NonNullable<typeof conversation>>, drafts?: (c: NonNullable<typeof conversation>) => Record<string, string>) =>
     void pending.then(
       (c) => {
-        if (getState().snapshot?.dir !== snap.dir) return;
+        if (!stillOpen()) return;
         setState({ conversation: c, ...(drafts ? { chatDrafts: drafts(c) } : {}) });
         focusComposer();
       },
@@ -230,7 +233,12 @@ export function Chat() {
     );
 
   const openHistory = async (el: HTMLElement) => {
-    const { list } = await api.ai.conversations();
+    const listed = await api.ai.conversations().catch((e: Error) => {
+      if (stillOpen()) toast(e.message || 'Could not list the earlier conversations.', 'error');
+      return null;
+    });
+    if (!listed || !stillOpen()) return;
+    const { list } = listed;
     // A new conversation left before anything was sent is not saved, so its draft is offered here instead.
     const unsent = unsentDrafts(getState().chatDrafts, list.map((c) => c.id), getState().conversation?.id);
     if (!list.length && !unsent.length) return toast('No earlier conversations yet.', 'info');
@@ -251,7 +259,7 @@ export function Chat() {
         ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: day(c.createdAt), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
         { separator: true },
         // Unsent drafts belong to the conversations being removed, so they go with them.
-        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'All AI conversations in this project, including this one, will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && show(api.ai.clearHistory(), () => ({}))) }
+        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'All AI conversations in this project, including this one, will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(), () => ({}))) }
       ],
       'Conversations'
     );
@@ -265,10 +273,11 @@ export function Chat() {
           <span className="chat-title" title={title}>
             {title}
           </span>
-          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" aria-haspopup="menu" aria-expanded={menu.isOpen} onClick={(e) => void openHistory(e.currentTarget)} disabled={running || sending}>
+          {/* Switching waits for the project's own conversation to load, and for a message being sent. */}
+          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" aria-haspopup="menu" aria-expanded={menu.isOpen} onClick={(e) => void openHistory(e.currentTarget)} disabled={running || sending || !conversation}>
             <History />
           </button>
-          <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={running || sending || msgs.length === 0 || !configured} onClick={() => show(api.ai.newConversation())}>
+          <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={running || sending || !conversation || msgs.length === 0 || !configured} onClick={() => show(api.ai.newConversation())}>
             <Plus />
           </button>
         </div>

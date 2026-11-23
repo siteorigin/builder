@@ -165,6 +165,7 @@ ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}${preferred}`;
 
 export class Orchestrator {
   private run: ActiveRun | null = null;
+  private clearing = false;
   conversation: Conversation | null = null;
 
   constructor(private deps: OrchestratorDeps) {}
@@ -250,9 +251,14 @@ export class Orchestrator {
     this.notRunning();
     const session = this.deps.session();
     const dir = this.chatDir();
-    if (dir) await fs.rm(dir, { recursive: true, force: true });
+    // No request may start while the files are going: it would add to a conversation that is being removed.
+    this.clearing = true;
+    try {
+      if (dir) await fs.rm(dir, { recursive: true, force: true });
+    } finally {
+      this.clearing = false;
+    }
     this.sameSession(session);
-    this.notRunning();
     this.conversation = this.freshConversation();
     return this.conversation;
   }
@@ -293,6 +299,7 @@ export class Orchestrator {
   /** `conversationId` is the conversation the message was written in; it is sent only if that one is still open. */
   async send(text: string, context: ChatContext, conversationId?: string): Promise<{ ok: boolean; runId?: string; message?: string }> {
     if (this.run) return { ok: false, message: 'The AI is already working on a request.' };
+    if (this.clearing) return { ok: false, message: 'The conversation history is being cleared. Send your message again in a moment.' };
     const session = this.deps.session();
     if (!session) return { ok: false, message: 'Open a project first.' };
     if (!this.conversation) await this.loadConversations();
@@ -309,10 +316,11 @@ export class Orchestrator {
     this.emitMessage(userMsg, runId);
     this.emitMessage(assistant, runId);
     void this.execute(runId, userMsg, assistant, history).finally(async () => {
-      this.run = null;
-      this.deps.onBusyChange(false);
+      // Saved before the run counts as finished, so opening this thread again never reads the older transcript.
       // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
       await this.saveConversation().catch(() => undefined);
+      this.run = null;
+      this.deps.onBusyChange(false);
     });
     return { ok: true, runId };
   }

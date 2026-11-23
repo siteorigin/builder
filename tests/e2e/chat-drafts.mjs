@@ -78,6 +78,14 @@ await eventually(async () => assert.equal(await chatTitle().textContent(), 'New 
 await composerIs('');
 await suggestions().waitFor();
 assert.equal(await sendButton().isDisabled(), true, 'nothing to send in the new conversation');
+// A starter fills this conversation's composer, and steps aside once there is text.
+const starter = (await suggestions().locator('.suggestion').first().textContent()).trim();
+await suggestions().locator('.suggestion').first().click();
+await composerIs(starter);
+assert.equal(await sendButton().isDisabled(), false, 'the starter can be sent');
+assert.equal(await suggestions().count(), 0, 'starters step aside once the composer has text');
+await message().fill('');
+await suggestions().waitFor();
 
 step('returning to a thread restores its own draft, across earlier threads');
 await pick('Add a photo to the home page');
@@ -99,8 +107,13 @@ await composerIs('Add another photo here');
 await pick('Write a calmer About page');
 await eventually(async () => assert.equal(await chatTitle().textContent(), 'New conversation'));
 await composerIs('Write a calmer About page');
-await pick('Add a photo to the home page');
-await composerIs('Add another photo here');
+// Picked up, it is the open conversation's draft, no longer one waiting in the list.
+await win.getByRole('button', { name: 'Earlier conversations' }).click();
+await win.locator('.menu [role^="menuitem"]', { hasText: 'Add a photo to the home page' }).waitFor();
+assert.equal(await win.locator('.menu [role^="menuitem"]', { hasText: 'Write a calmer About page' }).count(), 0);
+await win.keyboard.press('Escape');
+await pick('Make the brand colour navy');
+await composerIs('Use navy for the buttons too');
 
 step('creating another site starts its chat empty');
 await createProject(win, { name: '灯台', parentDir: sites, starter: 'blank', sampleImages: false });
@@ -119,15 +132,16 @@ assert.match(workspace(lighthouse), /Lantern light/, '灯台 keeps its own draft
 
 step('opening the original project restores its thread and draft');
 await openProject(kloof);
-await eventually(async () => assert.equal(await chatTitle().textContent(), 'Add a photo to the home page'));
-await composerIs('Add another photo here');
+// The older thread that was open comes back, not just the newest one.
+await eventually(async () => assert.equal(await chatTitle().textContent(), 'Make the brand colour navy'));
+await composerIs('Use navy for the buttons too');
 assert.doesNotMatch(workspace(kloof), /Lantern light/, 'no 灯台 text in Kloof’s workspace');
 
 step('Open project straight from another project, and back');
 await openProject(lighthouse);
 await composerIs('Lantern light');
 await openProject(kloof);
-await composerIs('Add another photo here');
+await composerIs('Use navy for the buttons too');
 
 step('a draft in a new conversation survives a restart');
 await win.getByRole('button', { name: 'New conversation', exact: true }).click();

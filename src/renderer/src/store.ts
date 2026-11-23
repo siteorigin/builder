@@ -106,8 +106,8 @@ export const setState = (p: Partial<State>) => useStore.setState(p);
 
 /** Save workspace state (open page, viewport, tabs) to the project that is open now. */
 export function saveLocal(state: LocalWorkspaceState) {
-  const dir = getState().snapshot?.dir;
-  if (dir) void api.project.saveLocalState(state, dir);
+  const key = getState().snapshot?.workspaceKey;
+  if (key) void api.project.saveLocalState(state, key);
 }
 
 /** The unsent message of the open conversation. */
@@ -124,10 +124,10 @@ export function setChatDraft(conversationId: string | null | undefined, text: st
 /** Save drafts and the open conversation to the project they belong to, as they change. */
 export function persistChatState(s: State, prev: State) {
   const out = chatStatePatch(
-    { dir: prev.snapshot?.dir ?? null, drafts: prev.chatDrafts, conversationId: prev.conversation?.id ?? null },
-    { dir: s.snapshot?.dir ?? null, drafts: s.chatDrafts, conversationId: s.conversation?.id ?? null }
+    { key: prev.snapshot?.workspaceKey ?? null, drafts: prev.chatDrafts, conversationId: prev.conversation?.id ?? null },
+    { key: s.snapshot?.workspaceKey ?? null, drafts: s.chatDrafts, conversationId: s.conversation?.id ?? null }
   );
-  if (out) void api.project.saveLocalState(out.patch, out.dir);
+  if (out) void api.project.saveLocalState(out.patch, out.key);
 }
 
 let toastId = 0;

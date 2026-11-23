@@ -80,6 +80,8 @@ export interface ProjectSnapshot {
   /** Installed theme components with a newer version in the theme. */
   themeUpdates?: ThemeUpdates;
   localState: LocalWorkspaceState;
+  /** Names this opening of the project; workspace saves carry it, so one meant for another opening is dropped. */
+  workspaceKey: string;
 }
 
 export interface LocalWorkspaceState {
@@ -228,8 +230,8 @@ export interface BuilderApi {
     restoreGenerated(path: string): Promise<void>;
     resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }>;
     unlock(): Promise<{ ok: boolean; message?: string }>;
-    /** `dir` is the project the state belongs to; a save for a project that is no longer open is dropped. */
-    saveLocalState(state: LocalWorkspaceState, dir: string): Promise<void>;
+    /** `workspaceKey` is the opening of the project the state belongs to (from its snapshot); any other is dropped. */
+    saveLocalState(state: LocalWorkspaceState, workspaceKey: string): Promise<void>;
     validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
     flush(): Promise<void>;
   };
