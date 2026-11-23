@@ -204,8 +204,8 @@ describe('project storage', () => {
     const { asset, files } = image(dir, 'photo', '1a2b3c4d');
     await add(s, [asset], 'Import image');
     await remove(s, [asset], 'Remove image');
-    // Twelve megabytes of data, with the image's hash split across the first one-megabyte read.
-    const big = Buffer.alloc(12 * 1024 * 1024, 0x20);
+    // Just over one read's worth of data, with the image's hash split across the first one-megabyte read.
+    const big = Buffer.alloc(1024 * 1024 + 4096, 0x20);
     big.write('1a2b3c4d', 1024 * 1024 - 4, 'latin1');
     write(dir, 'static/data/archive.json', big);
     const info = await s.storageInfo();
