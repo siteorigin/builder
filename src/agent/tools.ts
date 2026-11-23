@@ -67,20 +67,38 @@ const NEVER_OFFERED = new Set<OperationType>(['asset.add']);
 /** Operations that need Developer mode. */
 export const CODE_OPERATIONS = new Set<OperationType>(['component.createCode', 'component.updateSource', 'component.convertToCode']);
 const CODE_TOOLS = new Set<ToolName>(['read_source', 'apply_source_patch']);
+/** Editing a component's own contract. Rarely needed, so left out of the schema unless the run can use it. */
+const DEFINITION_OPERATIONS = new Set<OperationType>([
+  'node.setBinding',
+  'component.setPropSchema',
+  'component.removePropSchema',
+  'component.setPart',
+  'component.removePart',
+  'component.setVariant',
+  'component.removeVariant',
+  'component.setSlot',
+  'component.removeSlot'
+]);
 
 /** The operation union the model is shown for a run; the app still checks every operation it receives. */
-function offeredOperations(codeEnabled: boolean) {
-  const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[]).filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t))).map((t) => OPERATION_SCHEMAS[t]);
+function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
+  const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
+    .filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)))
+    .map((t) => OPERATION_SCHEMAS[t]);
   return z.discriminatedUnion('type', schemas as unknown as [z.ZodObject<{ type: z.ZodLiteral<string> }>, ...z.ZodObject<{ type: z.ZodLiteral<string> }>[]]);
 }
 
-/** Tool definitions for one run. Without Developer mode, code tools and code operations are left out. */
-export function toolDefinitions(opts: { codeEnabled?: boolean } = {}): ToolDefinition[] {
+/**
+ * Tool definitions for one run. Without Developer mode, code tools and code operations are left out, and
+ * component contract operations are offered only when the run is working inside a component definition.
+ */
+export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: boolean } = {}): ToolDefinition[] {
   const codeEnabled = opts.codeEnabled ?? true;
+  const definitionOps = opts.definitionOps ?? codeEnabled;
   return (Object.keys(TOOL_ARGS) as ToolName[])
     .filter((name) => codeEnabled || !CODE_TOOLS.has(name))
     .map((name) => {
-      const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled)).min(1).max(30) }) : TOOL_ARGS[name];
+      const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled, definitionOps)).min(1).max(30) }) : TOOL_ARGS[name];
       const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
       delete schema.$schema;
       return { name, description: DESCRIPTIONS[name], parameters: schema };
@@ -145,8 +163,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'read_page': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_page']>;
-      a.pageId = pageIdFor(state, a.pageId);
-      const detail = pageDetail(state, a.pageId);
+      const resolved = pageIdFor(state, a.pageId);
+      if (resolved) a.pageId = resolved;
+      const detail = resolved ? pageDetail(state, resolved) : null;
       if (!detail) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `No page "${a.pageId}". Pages: ${state.site.pageOrder.join(', ')}` } };
       if (a.nodeId) {
         const page = state.pages[a.pageId];
@@ -236,8 +255,9 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'inspect_layout': {
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_layout']>;
-      a.pageId = pageIdFor(state, a.pageId);
-      if (!state.pages[a.pageId]) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Unknown page.' } };
+      const resolved = pageIdFor(state, a.pageId);
+      if (!resolved) return { ok: false, content: { error: 'INVALID_ARGUMENT', viewport: a.viewport, message: 'Unknown page.' } };
+      a.pageId = resolved;
       try {
         const report = (await host.inspectLayout(a.pageId, WIDTHS[a.viewport])) as { error?: unknown } | null;
         // A preview that is not running or did not load is a failed check, never a clean result.
@@ -262,10 +282,13 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
 }
 
 /** Models often pass a route ("/about/") where a page ID is expected; both find the page. */
-function pageIdFor(state: ProjectState, ref: string): string {
-  if (state.pages[ref]) return ref;
-  const route = `/${ref.replace(/^\/+|\/+$/g, '')}/`.replace(/^\/\/$/, '/');
-  return Object.values(state.pages).find((p) => p.route === route || p.route === ref)?.id ?? ref;
+function pageIdFor(state: ProjectState, ref: string): string | null {
+  if (Object.hasOwn(state.pages, ref)) return ref;
+  const trimmed = ref.trim();
+  if (!trimmed) return null;
+  const path = trimmed.replace(/^\/+|\/+$/g, '');
+  const route = path ? `/${path}/` : '/';
+  return Object.values(state.pages).find((p) => p.route === route)?.id ?? null;
 }
 
 export function labelForOps(ops: EditOperation[], state: ProjectState): string {

@@ -10,6 +10,10 @@ import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
 import { toolDefinitions } from '@agent/tools';
+import { checkAuthority, OP_REACH, type Authority } from '@agent/scope';
+import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
+import type { ProjectState } from '@shared/types';
+import { subtreeIds } from '@engine/tree';
 import { catalogueIndex } from '@agent/context';
 import { applyOperations } from '@engine/apply';
 import { styleToCss, validateStyleValue } from '@shared/styles';
@@ -509,6 +513,127 @@ describe('tool definitions', () => {
     const results = env.adapter.requests[1].items.filter((i) => i.kind === 'tool_result') as Array<{ content: string; isError?: boolean }>;
     expect(results.map((r) => !!r.isError)).toEqual([false, false, true]);
     expect(JSON.parse(results[0].content).title).toBe('About');
+  });
+
+  it('resolves routes for inspect_layout and never treats inherited keys or blanks as pages', async () => {
+    const inspected: string[] = [];
+    const env = await setup(
+      [() => [calls(['a', 'inspect_layout', { pageId: '/about/', viewport: 'phone' }], ['b', 'read_page', { pageId: 'constructor' }], ['c', 'read_page', { pageId: '  ' }], ['d', 'inspect_layout', { pageId: 'constructor', viewport: 'phone' }])], () => finish('Checked.')],
+      { inspectLayout: async (pageId) => (inspected.push(pageId), { issues: [] }) }
+    );
+    const about = Object.values(env.session.state.pages).find((p) => p.route === '/about/')!;
+    const { result } = await env.run('Check the about page');
+    expect(result?.status).toBe('no-changes');
+    expect(inspected).toEqual([about.id]);
+    const results = env.adapter.requests[1].items.filter((i) => i.kind === 'tool_result') as Array<{ isError?: boolean }>;
+    expect(results.map((r) => !!r.isError)).toEqual([false, true, true, true]);
+  });
+
+  it('offers contract operations to a run selected inside a definition, even without Developer mode', async () => {
+    const env = await setup([() => finish('Nothing to do.')], { codeEnabled: false });
+    const homeId = env.session.state.site.homePageId;
+    await env.session.apply({ operations: [{ type: 'component.makeUnique', owner: { kind: 'page', id: homeId }, nodeId: env.session.state.pages[homeId].rootIds[0], name: 'My hero' }] }, { label: 'Make unique', source: 'user' });
+    const def = Object.values(env.session.state.components).find((d) => d.name === 'My hero')!;
+    const r = await env.orch.send('Make this editable', { pageId: homeId, pageTitle: 'Home', selection: { owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: def.tree!.rootIds[0] }, selectionLabel: 'Hero', viewport: 1280 });
+    expect(r.ok).toBe(true);
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect(JSON.stringify(env.adapter.requests[0].tools.find((t) => t.name === 'apply_operations'))).toContain('node.setBinding');
+  });
+
+  it('never removes the shared header, even with it selected', async () => {
+    let rootId = '';
+    const env = await setup([() => [call('x', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'node.remove', owner: { kind: 'shell', id: 'header' }, nodeId: rootId }] })], () => finish('Left it alone.')]);
+    rootId = env.session.state.site.shell.header.rootIds[0];
+    const homeId = env.session.state.site.homePageId;
+    await env.orch.send('Remove this', { pageId: homeId, pageTitle: 'Home', selection: { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: rootId }, selectionLabel: 'Header', viewport: 1280 });
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect(env.session.state.site.shell.header.rootIds).toEqual([rootId]);
+    expect(JSON.stringify(env.adapter.requests[1].items.at(-1))).toContain('cannot be removed');
+  });
+});
+
+describe('operation reach', () => {
+  const homeOf = (s: ProjectState) => s.pages[s.site.homePageId];
+  const selectionOn = (s: ProjectState, nodeId = homeOf(s).rootIds[0]): Authority => ({ kind: 'selection', owner: { kind: 'page', id: s.site.homePageId }, nodeId, label: 'the section' });
+
+  /** A project-owned copy of the hero, selected on one leaf node inside its definition. */
+  function inDefinition() {
+    const base = createStarterState('business', 'Test', false);
+    const { state } = applyOperations(base, [{ type: 'component.makeUnique', owner: { kind: 'page', id: base.site.homePageId }, nodeId: homeOf(base).rootIds[0], name: 'My hero' }]);
+    const def = Object.values(state.components).find((d) => d.name === 'My hero')!;
+    const root = def.tree!.rootIds[0];
+    const ids = subtreeIds(def.tree!, root);
+    const leaf = ids[ids.length - 1];
+    const authority: Authority = { kind: 'selection', owner: { kind: 'component', id: def.id }, nodeId: leaf, label: 'the heading' };
+    return { state, def, root, leaf, authority };
+  }
+
+  it('classifies every operation type', () => {
+    const types = Object.keys(OPERATION_SCHEMAS);
+    expect(types.filter((t) => !['node', 'insert', 'copy', 'definition', 'wider'].includes(OP_REACH[t as OperationType]))).toEqual([]);
+    expect(Object.keys(OP_REACH).sort()).toEqual([...types].sort());
+  });
+
+  it('refuses every wider operation inside a selection', () => {
+    const state = createStarterState('business', 'Test', false);
+    const wider = (Object.keys(OP_REACH) as OperationType[]).filter((t) => OP_REACH[t] === 'wider');
+    expect(wider).toEqual(expect.arrayContaining(['token.create', 'token.remove', 'component.remove', 'component.removePropSchema', 'page.remove', 'asset.remove']));
+    for (const type of wider) expect(checkAuthority(state, [{ type } as EditOperation], selectionOn(state))).toMatch(/changes more than/);
+    expect(checkAuthority(state, [{ type: 'token.create', group: 'color', label: 'Sea', value: '#00f' }], { kind: 'site' })).toBeNull();
+  });
+
+  it('allows a copy into the selection from anywhere, but not out of it', () => {
+    const state = createStarterState('business', 'Test', false);
+    const home = homeOf(state);
+    const about = Object.values(state.pages).find((p) => p.id !== home.id)!;
+    const section = home.rootIds.find((id) => { const n = home.nodes[id]; return n.kind === 'instance' && !!n.slots; }) ?? home.rootIds[0];
+    const authority = selectionOn(state, section);
+    const copy = (toOwner: { kind: 'page'; id: string }, parentId: string | null) => ({ type: 'node.copy' as const, owner: { kind: 'page' as const, id: about.id }, nodeId: about.rootIds[0], toOwner, parentId });
+    expect(checkAuthority(state, [copy({ kind: 'page', id: home.id }, section)], authority)).toBeNull();
+    expect(checkAuthority(state, [copy({ kind: 'page', id: home.id }, null)], authority)).toMatch(/node\.copy adds content outside/);
+    // Each destination guard on its own: a sibling on the same page, and the selected ID under another owner.
+    const sibling = home.rootIds.find((id) => id !== section)!;
+    expect(checkAuthority(state, [copy({ kind: 'page', id: home.id }, sibling)], authority)).toMatch(/node\.copy adds content outside/);
+    expect(checkAuthority(state, [copy({ kind: 'page', id: about.id }, section)], authority)).toMatch(/node\.copy adds content outside/);
+  });
+
+  it('lets a selection inside a definition bind its element and add to the contract, nothing more', () => {
+    const { state, def, root, leaf, authority } = inDefinition();
+    const owner = authority.kind === 'selection' ? authority.owner : (null as never);
+    const prop = Object.keys(def.properties)[0];
+    const allow = (op: unknown) => expect(checkAuthority(state, [op as EditOperation], authority)).toBeNull();
+    const deny = (op: unknown) => expect(checkAuthority(state, [op as EditOperation], authority)).toMatch(/outside|changes more than/);
+    allow({ type: 'node.setBinding', owner, nodeId: leaf, field: 'text', binding: { $prop: 'tagline' } });
+    deny({ type: 'node.setBinding', owner, nodeId: root, field: 'text', binding: { $prop: 'tagline' } });
+    allow({ type: 'component.setPropSchema', definitionId: def.id, prop: 'tagline', schema: { type: 'string', label: 'Tagline', default: '' } });
+    deny({ type: 'component.setPropSchema', definitionId: def.id, prop, schema: { type: 'string', label: 'Changed', default: '' } });
+    deny({ type: 'component.setPropSchema', definitionId: 'foundation.hero.split', prop: 'tagline', schema: { type: 'string', label: 'Tagline', default: '' } });
+    allow({ type: 'component.setPart', definitionId: def.id, partId: 'newPart', nodeId: leaf, label: 'New part' });
+    deny({ type: 'component.setPart', definitionId: def.id, partId: 'newPart', nodeId: root, label: 'New part' });
+    const hasVariants = Object.keys(def.variants ?? {}).length > 0;
+    expect(hasVariants).toBe(true);
+    allow({ type: 'component.setVariant', definitionId: def.id, variant: 'quiet', label: 'Quiet' });
+    deny({ type: 'component.setVariant', definitionId: def.id, variant: 'quiet', label: 'Quiet', makeDefault: true });
+    // The first variant of a component becomes every placement's default.
+    const noVariants = structuredClone(state);
+    noVariants.components[def.id].variants = {};
+    expect(checkAuthority(noVariants, [{ type: 'component.setVariant', definitionId: def.id, variant: 'quiet', label: 'Quiet' }], authority)).toMatch(/changes more than/);
+    allow({ type: 'component.setSlot', definitionId: def.id, slot: 'extra', label: 'Extra' });
+    deny({ type: 'component.removePropSchema', definitionId: def.id, prop });
+    // The same contract edit from a selection on a page is out of bounds.
+    const page = selectionOn(state);
+    expect(checkAuthority(state, [{ type: 'component.setSlot', definitionId: def.id, slot: 'extra', label: 'Extra' }], page)).toMatch(/changes more than/);
+  });
+
+  it('offers component contract operations only to runs that can use them', () => {
+    const offered = (opts: { codeEnabled: boolean; definitionOps?: boolean }) => {
+      const apply = toolDefinitions(opts).find((d) => d.name === 'apply_operations')!.parameters as { properties: { operations: { items: { oneOf?: Array<{ properties: { type: { const: string } } }>; anyOf?: Array<{ properties: { type: { const: string } } }> } } } };
+      return (apply.properties.operations.items.oneOf ?? apply.properties.operations.items.anyOf ?? []).map((v) => v.properties.type.const);
+    };
+    expect(offered({ codeEnabled: false })).not.toContain('node.setBinding');
+    expect(offered({ codeEnabled: false })).not.toContain('component.setPropSchema');
+    expect(offered({ codeEnabled: false, definitionOps: true })).toContain('node.setBinding');
+    expect(offered({ codeEnabled: true })).toContain('component.setPropSchema');
   });
 });
 

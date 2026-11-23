@@ -349,7 +349,8 @@ export function Chat() {
                   options={[
                     {
                       value: 'selection',
-                      title: `Only ${selLabel}`,
+                      // A part of a component is scoped to the whole component placement (see agent/scope.ts).
+                      title: selection?.instancePath.length ? `Only the component containing ${selLabel}` : `Only ${selLabel}`,
                       label: (
                         <>
                           <MousePointerClick /> <span className="ellipsis">{selLabel}</span>
