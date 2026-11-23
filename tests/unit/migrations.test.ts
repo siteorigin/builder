@@ -97,18 +97,75 @@ describe('the migration pipeline', () => {
 
   it('fills in missing containers without touching ones that have content', async () => {
     const stored = (await readProject(copyFixture())).stored;
-    const [a, b] = Object.values(stored.pages);
+    const [a, b] = Object.values(stored.pages) as Array<(typeof stored.pages)[string] & { shell?: string }>;
     delete (a as Partial<typeof a>).seo;
-    delete (a as Partial<typeof a>).shell;
+    delete a.shell;
     b.shell = 'none';
     delete (stored.tokens as Partial<typeof stored.tokens>).custom;
     stored.tokens.overrides = { 'color.brand': '#123456' };
     const { state } = migrateProject(stored)!;
     expect(state.pages[a.id].seo).toEqual({});
-    expect(state.pages[a.id].shell).toBe('default');
-    expect(state.pages[b.id].shell).toBe('none');
+    // A page that had no setting showed both shared parts, and still does.
+    expect(state.pages[a.id]).toMatchObject({ showHeader: true, showFooter: true });
+    expect(state.pages[b.id]).toMatchObject({ showHeader: false, showFooter: false });
     expect(state.tokens.custom).toEqual([]);
     expect(state.tokens.overrides).toEqual({ 'color.brand': '#123456' });
+  });
+
+  it('turns the single header and footer setting into one for each, in the same place in the page file', async () => {
+    const stored = (await readProject(copyFixture())).stored;
+    const [both, neither] = Object.values(stored.pages) as Array<(typeof stored.pages)[string] & { shell?: string }>;
+    expect(both.shell).toBe('default');
+    neither.shell = 'none';
+    const { state, applied } = migrateProject(stored)!;
+    expect(applied).toContain('independent-header-footer');
+    expect(state.pages[both.id]).toMatchObject({ showHeader: true, showFooter: true });
+    expect(state.pages[neither.id]).toMatchObject({ showHeader: false, showFooter: false });
+    for (const page of Object.values(state.pages)) {
+      expect(page).not.toHaveProperty('shell');
+      const keys = Object.keys(page);
+      expect(keys.slice(keys.indexOf('seo'), keys.indexOf('seo') + 3)).toEqual(['seo', 'showHeader', 'showFooter']);
+    }
+    // A page whose setting sat elsewhere in the file gets the two in that place.
+    const moved = (await readProject(copyFixture())).stored;
+    const page = Object.values(moved.pages)[0] as unknown as Record<string, unknown>;
+    const { shell, ...rest } = page;
+    for (const k of Object.keys(page)) delete page[k];
+    Object.assign(page, { shell, ...rest });
+    expect(Object.keys(migrateProject(moved)!.state.pages[page.id as string]).slice(0, 3)).toEqual(['showHeader', 'showFooter', 'schemaVersion']);
+    // Pages render as they did: both parts, or neither.
+    const layout = generateProject(state).get('src/routes/+layout.svelte')!;
+    const route = state.pages[neither.id].route.replace(/\/$/, '');
+    expect(layout).toContain(`const pagesWithoutHeader = new Set(${JSON.stringify([route])});`);
+    expect(layout).toContain(`const pagesWithoutFooter = new Set(${JSON.stringify([route])});`);
+  });
+
+  it('converts only the pages still in the old format, keeping a newer page’s own choices', async () => {
+    const current = migrateProject((await readProject(copyFixture())).stored)!.state;
+    const [older, newer] = Object.values(current.pages);
+    newer.showHeader = false;
+    const stored = structuredClone(current);
+    const old = stored.pages[older.id] as unknown as Record<string, unknown>;
+    old.schemaVersion = SCHEMA_VERSION - 1;
+    delete old.showHeader;
+    delete old.showFooter;
+    old.shell = 'none';
+    const { state, applied } = migrateProject(stored)!;
+    expect(applied).toEqual(['independent-header-footer']);
+    expect(state.pages[older.id]).toMatchObject({ showHeader: false, showFooter: false, schemaVersion: SCHEMA_VERSION });
+    expect(state.pages[newer.id]).toEqual(newer);
+    // A page with only one of the two settings keeps it and takes the other from the old setting.
+    const half = structuredClone(current);
+    const partial = half.pages[older.id] as unknown as Record<string, unknown>;
+    partial.schemaVersion = SCHEMA_VERSION - 1;
+    partial.showHeader = true;
+    delete partial.showFooter;
+    partial.shell = 'none';
+    expect(migrateProject(half)!.state.pages[older.id]).toMatchObject({ showHeader: true, showFooter: false });
+    // A page in this format that is stamped older (a file put back from a copy) keeps its choices too.
+    const restamped = structuredClone(current);
+    restamped.pages[newer.id].schemaVersion = 1;
+    expect(migrateProject(restamped)!.state.pages[newer.id]).toEqual(newer);
   });
 
   it('gives each document exactly the steps it has not had', async () => {

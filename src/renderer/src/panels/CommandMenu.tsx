@@ -4,7 +4,8 @@ import { Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, 
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
-import { api, setState, useStore } from '../store';
+import { api, setState, toast, useStore } from '../store';
+import { pageShowing, partName } from '@shared/page-shell';
 import { insert, selectPage, askAiAbout, setMode, openSiteStyles } from '../lib/actions';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
@@ -71,10 +72,11 @@ export function CommandMenu() {
         icon: <Component />,
         run: () => {
           const st = useStore.getState();
-          // The header and footer show on the current page unless it has none; then on the first page with them.
-          const shows = (id: string | null) => !!id && st.snapshot?.state.pages[id]?.shell !== 'none' && !!st.snapshot?.state.pages[id];
-          const pageId = x.pageId ?? (shows(st.pageId) ? st.pageId : snap.state.site.pageOrder.find(shows)) ?? null;
-          if (pageId && (pageId !== st.pageId || st.definitionMode)) selectPage(pageId);
+          // The header or footer shows on the current page when it has it; else on the first page that does.
+          const now = st.snapshot?.state ?? snap.state;
+          const pageId = x.pageId ?? (x.ref.owner.kind === 'shell' ? pageShowing(now, x.ref.owner.id, st.pageId) : undefined) ?? null;
+          if (!pageId) return toast(`No page shows ${partName(x.ref.owner.id)}.`, 'info');
+          if (pageId !== st.pageId || st.definitionMode) selectPage(pageId);
           setState({ mode: 'edit', selection: x.ref, rightTab: 'inspect', dockOpen: true });
         }
       }));

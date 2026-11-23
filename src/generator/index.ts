@@ -36,6 +36,7 @@ import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type Ri
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { effectiveItem } from '@shared/page-teasers';
 import { brokenCardKeys, cardKey, isCardLink } from './card-links';
+import { showsPart, type ShellPart } from '@shared/page-shell';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -1283,13 +1284,14 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   fctx.imports = hctx.imports;
   const footer = emitNodes(fctx, state.site.shell.footer.rootIds);
   const imports = renderImports(hctx.imports);
-  const noShell = state.site.pageOrder
-    .map((id) => state.pages[id])
-    .filter((p) => p && p.shell === 'none')
-    .map((p) => routeId(p.route))
-    // An old address only sends visitors on: it shows no header or footer while it does.
-    .concat(liveRedirects(state).map((r) => routeId(r.from)))
-    .sort();
+  // An old address only sends visitors on: it shows no header or footer while it does.
+  const redirects = liveRedirects(state).map((r) => routeId(r.from));
+  const without = (part: ShellPart) =>
+    state.site.pageOrder
+      .filter((id) => Object.hasOwn(state.pages, id) && !showsPart(state.pages[id], part))
+      .map((id) => routeId(state.pages[id].route))
+      .concat(redirects)
+      .sort();
   const favicon = state.site.favicon && state.assets.assets[state.site.favicon];
   const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
   const iconType = favicon ? favicon.mime : 'image/svg+xml';
@@ -1315,8 +1317,11 @@ ${imports}${devBridge}
 	let { children } = $props();
 	// A message typed into a form and not sent comes back when the visitor returns with Back.
 	keepDrafts();
-	const pagesWithoutShell = new Set(${js(noShell)});
-	const showShell = $derived(!pagesWithoutShell.has(page.route.id ?? ''));
+	// Each page chooses the shared header and footer on its own.
+	const pagesWithoutHeader = new Set(${js(without('header'))});
+	const pagesWithoutFooter = new Set(${js(without('footer'))});
+	const showHeader = $derived(!pagesWithoutHeader.has(page.route.id ?? ''));
+	const showFooter = $derived(!pagesWithoutFooter.has(page.route.id ?? ''));
 </script>
 
 <svelte:head>
@@ -1325,13 +1330,13 @@ ${imports}${devBridge}
 </svelte:head>
 
 <a class="so-skip-link" href="#main">Skip to content</a>
-{#if showShell}
+{#if showHeader}
 ${header}
 {/if}
 <main id="main">
 	{@render children()}
 </main>
-{#if showShell}
+{#if showFooter}
 ${footer}
 {/if}
 `

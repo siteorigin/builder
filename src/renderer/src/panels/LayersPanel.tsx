@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Box, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
+import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
 import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, useStore } from '../store';
@@ -322,7 +323,7 @@ export function LayersPanel() {
           </>
         ) : (
           <>
-            {page.shell !== 'none' && (
+            {showsPart(page, 'header') && (
               <>
                 <SectionLabel id="layers-sec-header" icon={<PanelTop />} label="Shared header" />
                 <TreeList state={st} owner={{ kind: 'shell', id: 'header' }} tree={st.site.shell.header} ids={st.site.shell.header.rootIds} depth={0} onMenu={openMenu} path={['Shared header']} labelledBy="layers-sec-header" />
@@ -351,7 +352,7 @@ export function LayersPanel() {
                 </button>
               </div>
             )}
-            {page.shell !== 'none' && (
+            {showsPart(page, 'footer') && (
               <>
                 <SectionLabel id="layers-sec-footer" icon={<PanelBottom />} label="Shared footer" />
                 <TreeList state={st} owner={{ kind: 'shell', id: 'footer' }} tree={st.site.shell.footer} ids={st.site.shell.footer.rootIds} depth={0} onMenu={openMenu} path={['Shared footer']} labelledBy="layers-sec-footer" />

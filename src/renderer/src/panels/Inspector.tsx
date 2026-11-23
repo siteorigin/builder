@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { showsPart } from '@shared/page-shell';
 import { styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
@@ -43,7 +44,7 @@ import { applyOps, applyWith, getState, setState, toast, useStore, type Inspecto
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
-import { ownerLabel, pagesUsingShell, refLabel, resolveRef, treeFor } from '../lib/model';
+import { ownerLabel, refLabel, resolveRef, shellReach, treeFor } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -352,11 +353,12 @@ function Scope({ tone, icon, children, aside }: { tone: Tone; icon: ReactNode; c
 }
 
 function OwnerScope({ owner, state, aside }: { owner: OwnerRef; state: ProjectState; aside?: ReactNode }) {
+  const pageId = useStore((s) => s.pageId);
   if (owner.kind === 'shell') {
-    const n = pagesUsingShell(state);
+    const { pages: n, here } = shellReach(state, owner.id, pageId);
     return (
       <Scope tone="shared" icon={<Users />} aside={aside}>
-        <strong>Shared {owner.id}.</strong> Changes show on {n === 1 ? 'the 1 page' : `all ${n} pages`} that use it.
+        <strong>Shared {owner.id}.</strong> {here ? '' : 'Not shown on this page. '}Changes show on {n === 1 ? 'the 1 page' : `all ${n} pages`} that use it.
       </Scope>
     );
   }
@@ -647,7 +649,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           <DraftInput value={node.name ?? ''} placeholder={def.name} onCommit={(v) => void applyOps([{ type: 'node.rename', owner, nodeId: node.id, name: v }], 'Rename layer')} />
         </Field>
         {def.kind === 'managed' && (
-          <Field label="Anchor ID" hint={`Lets links jump straight to this ${shell ? 'part of every page' : 'section'}, as #${node.anchor || 'pricing'}. Choose it in a link’s Section.`}>
+          <Field label="Anchor ID" hint={`Lets links jump straight to this ${shell ? 'part of every page that shows it' : 'section'}, as #${node.anchor || 'pricing'}. Choose it in a link’s Section.`}>
             <DraftInput value={node.anchor ?? ''} placeholder="e.g. pricing" onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'anchor', value: v.trim() }], 'Set anchor')} />
           </Field>
         )}
@@ -1140,7 +1142,6 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         <Field label="Address" hint={isHome ? 'The home page is always at /.' : 'Links to this page update automatically when you change it.'}>
           {isHome ? <input className="input" value="/" readOnly aria-label="Page address" /> : <DraftInput value={page.route} onCommit={(v) => upd({ route: v }, 'Change page address')} ariaLabel="Page address" />}
         </Field>
-        <SwitchRow checked={page.shell !== 'none'} onChange={(v) => upd({ shell: v ? 'default' : 'none' })} label="Show shared header and footer" />
         {/* The Home page is the website's front door: it is always published. */}
         {!isHome && (
           <SwitchRow
@@ -1154,6 +1155,11 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
             }
           />
         )}
+      </Section>
+      <Section title="Shared header and footer" id="page-shell" level={LEVEL} scope="This page only">
+        <SwitchRow checked={showsPart(page, 'header')} onChange={(v) => upd({ showHeader: v }, v ? 'Show shared header on page' : 'Hide shared header on page')} label="Show shared header" />
+        <SwitchRow checked={showsPart(page, 'footer')} onChange={(v) => upd({ showFooter: v }, v ? 'Show shared footer on page' : 'Hide shared footer on page')} label="Show shared footer" />
+        <p className="insp-note field-hint">Other pages keep their own choice. Editing the header or footer changes it on every page that shows it.</p>
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL}>
         <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>

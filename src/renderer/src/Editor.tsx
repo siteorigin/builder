@@ -73,7 +73,7 @@ function copySelection(): boolean {
   const t = structuralTarget(s.selection);
   if (!t || !s.snapshot) return false;
   if (t.owner.kind !== 'page') {
-    toast(t.owner.kind === 'shell' ? 'The shared header and footer are on every page already, so they aren’t copied.' : 'Copy sections from a page. Inside a component, use Duplicate.', 'error');
+    toast(t.owner.kind === 'shell' ? 'The shared header and footer are shared by the pages that show them, so they aren’t copied.' : 'Copy sections from a page. Inside a component, use Duplicate.', 'error');
     return true;
   }
   const snap = s.snapshot;

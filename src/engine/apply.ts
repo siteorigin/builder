@@ -27,7 +27,7 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
-import { pageIds } from '@generator/checks';
+import { NO_SHELL_IDS, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, subtreeIds, allTrees } from './tree';
 import { followText, joinedLines } from '@shared/contact-links';
@@ -472,7 +472,7 @@ function pageCreate(state: ProjectState, op: Op<'page.create'>): OpResult {
   if (op.pageId && Object.hasOwn(state.pages, op.pageId)) fail(`Page "${op.pageId}" already exists.`);
   claimRoute(state, route);
   const id = op.pageId ?? newId('pg');
-  const page: PageDoc = { schemaVersion: SCHEMA_VERSION, id, title: op.title.trim(), route, seo: {}, shell: 'default', rootIds: [], nodes: {} };
+  const page: PageDoc = { schemaVersion: SCHEMA_VERSION, id, title: op.title.trim(), route, seo: {}, showHeader: true, showFooter: true, rootIds: [], nodes: {} };
   if (op.starter === 'intro') {
     const defId = installComponent(state, 'intro.page');
     const intro = makeInstance(state.components[defId], { eyebrow: '', heading: op.title.trim(), lead: '' });
@@ -523,7 +523,8 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
     if (op.draft) page.draft = true;
     else delete page.draft;
   }
-  if (op.shell !== undefined) page.shell = op.shell;
+  if (op.showHeader !== undefined) page.showHeader = op.showHeader;
+  if (op.showFooter !== undefined) page.showFooter = op.showFooter;
   if (op.socialImage !== undefined) {
     if (op.socialImage && own(state.assets.assets, op.socialImage)?.kind !== 'image') fail('Social image asset not found.');
     if (op.socialImage) page.seo.socialImage = op.socialImage;
@@ -570,8 +571,8 @@ function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult 
  * the source page as a whole stay as they were: a link back to the source is one the author chooses.
  */
 function keepSectionLinksOnCopy(state: ProjectState, sourceId: string, copy: PageDoc) {
-  // An empty shell set leaves the header and footer's IDs out: those are shared, so their links stay where they were.
-  const ids = pageIds(state, copy.id, new Set());
+  // No shell IDs leaves the header and footer's IDs out: those are shared, so their links stay where they were.
+  const ids = pageIds(state, copy.id, NO_SHELL_IDS);
   const walk = (v: unknown) => {
     if (Array.isArray(v)) return v.forEach(walk);
     if (!v || typeof v !== 'object') return;

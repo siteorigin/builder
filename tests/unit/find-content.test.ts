@@ -50,10 +50,17 @@ describe('finding content', () => {
     expect(ms.filter((m) => m.field.where === 'Contact').every((m) => m.field.sharedPages === undefined && m.field.owner.id === contact.id)).toBe(true);
     expect(ms[1]).toMatchObject({ before: '', match: 'hello@example.com', after: '' });
 
-    // A page without the shared header and footer does not count.
-    s.pages[pageAt(s, '/about/').id].shell = 'none';
-    expect(findContent(s, 'hello@example.com').find((m) => m.field.where === 'Footer')?.field.sharedPages).toBe(2);
+    // A page without the shared header does not count for it, and still counts for the footer it keeps.
+    const about = pageAt(s, '/about/').id;
+    s.pages[about].showHeader = false;
+    expect(findContent(s, 'hello@example.com').find((m) => m.field.where === 'Footer')?.field.sharedPages).toBe(3);
     expect(findContent(s, 'Test Studio').find((m) => m.field.where === 'Header')?.field.sharedPages).toBe(2);
+    s.pages[about].showFooter = false;
+    expect(findContent(s, 'hello@example.com').find((m) => m.field.where === 'Footer')?.field.sharedPages).toBe(2);
+    // A part no page shows is not searched at all.
+    for (const id of s.site.pageOrder) s.pages[id].showHeader = false;
+    expect(findContent(s, 'Test Studio').some((m) => m.field.where === 'Header')).toBe(false);
+    expect(findContent(s, 'Test Studio').find((m) => m.field.where === 'Footer')?.field.sharedPages).toBe(2);
   });
 
   it('finds the starter’s contact details shown from a component’s defaults, and keeps settings out', () => {
@@ -439,13 +446,17 @@ describe('opening a match', () => {
   it('opens a shared footer item on a page that shows the footer, at the item’s part', () => {
     const s = fresh();
     const about = pageAt(s, '/about/');
-    s.pages[about.id].shell = 'none';
+    s.pages[about.id].showFooter = false;
     const m = findContent(s, 'hello@example.com').find((x) => x.field.where === 'Footer' && x.kind === 'text')!;
     const footer = footerOf(s);
     const target = contentTarget(s, m.field, about.id)!;
     expect(target.pageId).toBe(s.site.homePageId);
     expect(target.selection).toMatchObject({ owner: { kind: 'shell', id: 'footer' }, instancePath: [footer.id], nodeId: m.field.defNodeId, itemPath: [m.field.source?.kind === 'prop' ? m.field.source.itemId : ''] });
     expect(contentTarget(s, m.field, pageAt(s, '/contact/').id)!.pageId).toBe(pageAt(s, '/contact/').id);
+    // A page that hides only the header still shows the footer, so its items open there.
+    s.pages[about.id].showFooter = true;
+    s.pages[about.id].showHeader = false;
+    expect(contentTarget(s, m.field, about.id)!.pageId).toBe(about.id);
     // A part the component declares is selected as that part, with the field it shows focused.
     const name = findContent(s, 'Test Studio').find((x) => x.field.where === 'Footer' && x.field.label === 'Site name')!;
     const at = contentTarget(s, name.field, about.id)!;

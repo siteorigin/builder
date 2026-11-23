@@ -307,7 +307,7 @@ One page is Home. A user deleting Home must choose a replacement or leave a new 
 
 ### 6.2 Shared site shell
 
-Store header and footer as shared site instances. Pages use the default shell or explicitly opt out. Editing navigation content changes the shared instance across participating pages; it does not require editing the component's structural definition.
+Store header and footer as shared site instances. Each page shows or hides the shared header and the shared footer independently (`showHeader`, `showFooter`), so a landing page can keep the footer without the menu. Editing navigation content changes the shared instance across participating pages; it does not require editing the component's structural definition.
 
 The header includes a working accessible mobile menu. Navigation items can point to a page, an anchor, an HTTPS URL, an email address or a telephone number. Keep email/telephone links distinct from ordinary web URLs.
 
@@ -316,7 +316,7 @@ The header includes a working accessible mobile menu. Navigation items can point
 | Scope | Fields |
 | --- | --- |
 | Site | Name, default language, favicon, default description, social image, optional public base URL and default shell. |
-| Page | Browser title, meta description, social image override, index/noindex setting and route. |
+| Page | Browser title, meta description, social image override, index/noindex setting, route, and whether it shows the shared header and the shared footer. |
 | Links | Page reference, anchor, external destination, new-tab behavior and accessible label when needed. |
 
 Generate title/meta tags, canonical URLs when a base URL is known, and a sitemap/robots file from the explicit page inventory. Do not invent a production domain. Export without a configured base URL should explain which absolute metadata is omitted.

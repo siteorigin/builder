@@ -5,6 +5,7 @@ import { sameRichText, toRichText } from '@shared/richtext';
 import { isBinding } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
+import { pageShowing } from '@shared/page-shell';
 import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAction } from '../store';
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { showAsset } from './place';
@@ -35,7 +36,7 @@ export async function deleteSelection() {
   const t = structuralTarget(s.selection);
   if (!t || !s.snapshot) return;
   const label = refLabel(s.snapshot.state, t);
-  if (t.owner.kind === 'shell') return toast('The shared header and footer cannot be deleted. Hide a page’s header and footer in its page settings instead.', 'error');
+  if (t.owner.kind === 'shell') return toast('The shared header and footer cannot be deleted. Hide either one on a page in its page settings instead.', 'error');
   const r = await commitOps([{ type: 'node.remove', owner: t.owner, nodeId: t.nodeId }], `Delete ${label}`);
   // A reply that arrives after its project closed has nothing left here to select or announce.
   if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
@@ -347,6 +348,20 @@ export function canInlineEdit(ref: ElementRef): boolean {
 export function selectPage(pageId: string) {
   setState({ pageId, selection: null, definitionMode: null });
   saveLocal({ pageId });
+}
+
+/**
+ * Open a page that shows the shared header or footer, when the page on screen does not: each page chooses them on its
+ * own, so an element selected there would not be on the canvas. Editing a component everywhere ends, since the part
+ * is then selected as itself. False when no page shows that part.
+ */
+export function goToShellPart(part: string): boolean {
+  const s = getState();
+  const st = s.snapshot?.state;
+  const pageId = st && pageShowing(st, part, s.definitionMode?.returnPageId ?? s.pageId);
+  if (!pageId) return false;
+  if (pageId !== s.pageId || s.definitionMode) selectPage(pageId);
+  return true;
 }
 
 export function askAiAbout(ref: ElementRef | null) {

@@ -30,7 +30,8 @@ const PAGE_FIELDS: Record<string, string[]> = {
   description: ['seo', 'description'],
   noindex: ['seo', 'noindex'],
   draft: ['draft'],
-  shell: ['shell'],
+  showHeader: ['showHeader'],
+  showFooter: ['showFooter'],
   socialImage: ['seo', 'socialImage']
 };
 const SITE_FIELDS = ['name', 'language', 'description', 'baseUrl', 'favicon', 'socialImage'];

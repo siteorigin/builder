@@ -58,10 +58,19 @@ describe('locateField', () => {
     const option = schema.options.find((o) => o.value === ((header.nodes[nodeId] as InstanceNode).props.ctaStyle ?? schema.default))!;
     expect(r.ok && (r.shown ?? r.value)).toBe(option.label);
     // From a page without the header, it opens on the first page that has one.
-    about.shell = 'none';
-    expect(locateField(state, { owner: { kind: 'shell', id: 'header' }, nodeId, prop: 'ctaStyle' }, about.id)).toMatchObject({ ok: true, pageId: state.site.pageOrder.find((id) => state.pages[id].shell !== 'none') });
-    for (const p of Object.values(state.pages)) p.shell = 'none';
-    expect(locateField(state, { owner: { kind: 'shell', id: 'header' }, nodeId, prop: 'ctaStyle' }, about.id)).toEqual({ ok: false, message: 'No page shows the shared header and footer.' });
+    // A page without the footer still shows the header, so it opens there.
+    about.showFooter = false;
+    expect(locateField(state, { owner: { kind: 'shell', id: 'header' }, nodeId, prop: 'ctaStyle' }, about.id)).toMatchObject({ ok: true, pageId: about.id });
+    about.showHeader = false;
+    expect(locateField(state, { owner: { kind: 'shell', id: 'header' }, nodeId, prop: 'ctaStyle' }, about.id)).toMatchObject({ ok: true, pageId: state.site.pageOrder.find((id) => state.pages[id].showHeader) });
+    for (const p of Object.values(state.pages)) p.showHeader = false;
+    expect(locateField(state, { owner: { kind: 'shell', id: 'header' }, nodeId, prop: 'ctaStyle' }, about.id)).toEqual({ ok: false, message: 'No page shows the shared header.' });
+    // The footer goes by its own setting: About hides it, the pages without the header still show it.
+    const footerNode = state.site.shell.footer.rootIds[0];
+    const footerAt = (pageId: string) => locateField(state, { owner: { kind: 'shell', id: 'footer' }, nodeId: footerNode, prop: 'tagline' }, pageId);
+    expect(footerAt(about.id)).toMatchObject({ ok: true, pageId: state.site.pageOrder.find((id) => state.pages[id].showFooter) });
+    const other = state.site.pageOrder.find((id) => id !== about.id)!;
+    expect(footerAt(other)).toMatchObject({ ok: true, pageId: other });
   });
 
   it('still finds the field after its row and its section move, and says when it has gone', () => {

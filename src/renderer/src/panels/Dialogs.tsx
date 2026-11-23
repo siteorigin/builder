@@ -11,7 +11,7 @@ import { applyOps, api, getState, setState, toast, useStore } from '../store';
 import { Field, Modal, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { resolveRef, treeFor } from '../lib/model';
-import { selectPage } from '../lib/actions';
+import { goToShellPart, selectPage } from '../lib/actions';
 import { planPageRemoval, reviewPageRemoval, withoutCards } from '../lib/page-removal';
 import { sectionOptions } from '../lib/sections';
 
@@ -368,6 +368,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
 function reviewShellLink(link: ShellPageLink) {
   // The link may have gone since (an undo, an edit): leave the selection as it is.
   if (!getState().snapshot?.state.site.shell[link.part].nodes[link.nodeId]) return toast('That link is no longer in the header or footer.', 'info');
+  if (!goToShellPart(link.part)) return toast(`No page shows the shared ${link.part}, so the link is not on any page.`, 'info');
   setState({ selection: { owner: { kind: 'shell', id: link.part }, instancePath: [], nodeId: link.nodeId }, rightTab: 'inspect', dockOpen: true, definitionMode: null });
   setTimeout(() => openSection('content'), 50);
 }

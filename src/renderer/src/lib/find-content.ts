@@ -11,6 +11,7 @@ import { applyOperations } from '@engine/apply';
 import { normalizeLink } from '@engine/values';
 import { childLists, displayName, itemLinkPairs } from '@engine/tree';
 import { partIdFor } from './model';
+import { pageShowing, pagesShowing } from '@shared/page-shell';
 
 /** One field of the site that shows content: a text, a button's label, a list item's field, or a destination. */
 export interface ContentField {
@@ -140,15 +141,16 @@ function fieldLabel(state: ProjectState, tree: NodeTree, c: RenderedContent): { 
 
 /**
  * Every field of the site that shows content, in reading order: the shared header, each page, the shared footer.
- * The header and footer are left out when no page shows them.
+ * The header or footer is left out when no page shows it.
  */
 export function contentFields(state: ProjectState): ContentField[] {
   const pages = state.site.pageOrder.filter((id) => own(state.pages, id));
-  const shellPages = pages.filter((id) => state.pages[id].shell !== 'none').length;
+  const headerPages = pagesShowing(state, 'header').length;
+  const footerPages = pagesShowing(state, 'footer').length;
   const trees: Array<{ owner: OwnerRef; tree: NodeTree; where: string; shared?: number }> = [];
-  if (shellPages) trees.push({ owner: { kind: 'shell', id: 'header' }, tree: state.site.shell.header, where: 'Header', shared: shellPages });
+  if (headerPages) trees.push({ owner: { kind: 'shell', id: 'header' }, tree: state.site.shell.header, where: 'Header', shared: headerPages });
   for (const id of pages) trees.push({ owner: { kind: 'page', id }, tree: state.pages[id], where: state.pages[id].title });
-  if (shellPages) trees.push({ owner: { kind: 'shell', id: 'footer' }, tree: state.site.shell.footer, where: 'Footer', shared: shellPages });
+  if (footerPages) trees.push({ owner: { kind: 'shell', id: 'footer' }, tree: state.site.shell.footer, where: 'Footer', shared: footerPages });
   const out: ContentField[] = [];
   for (const { owner, tree, where, shared } of trees) {
     const sectionOf = sectionsOf(tree);
@@ -579,8 +581,7 @@ export interface ContentTarget {
  * or the section with that field opened. Null when the field is no longer in the project.
  */
 export function contentTarget(state: ProjectState, field: ContentField, currentPageId: string | null): ContentTarget | null {
-  const showsShell = (id: string | null | undefined) => !!id && !!own(state.pages, id) && state.pages[id].shell !== 'none';
-  const pageId = field.owner.kind === 'page' ? (own(state.pages, field.owner.id) ? field.owner.id : undefined) : showsShell(currentPageId) ? currentPageId! : state.site.pageOrder.find(showsShell);
+  const pageId = field.owner.kind === 'page' ? (own(state.pages, field.owner.id) ? field.owner.id : undefined) : pageShowing(state, field.owner.id, currentPageId);
   const tree = treeOf(state, field.owner);
   const node: GraphNode | undefined = tree && own(tree.nodes, field.nodeId);
   if (!pageId || !node) return null;
@@ -637,10 +638,8 @@ export function placedSections(state: ProjectState): PlacedSection[] {
     for (const id of tree.rootIds) visit(id, true);
   };
   for (const id of state.site.pageOrder) if (own(state.pages, id)) add({ kind: 'page', id }, state.pages[id], id, state.pages[id].title);
-  if (state.site.pageOrder.some((id) => own(state.pages, id)?.shell !== 'none')) {
-    add({ kind: 'shell', id: 'header' }, state.site.shell.header, null, 'Header');
-    add({ kind: 'shell', id: 'footer' }, state.site.shell.footer, null, 'Footer');
-  }
+  if (pagesShowing(state, 'header').length) add({ kind: 'shell', id: 'header' }, state.site.shell.header, null, 'Header');
+  if (pagesShowing(state, 'footer').length) add({ kind: 'shell', id: 'footer' }, state.site.shell.footer, null, 'Footer');
   return out;
 }
 

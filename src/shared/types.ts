@@ -426,7 +426,10 @@ export interface PageDoc extends NodeTree {
   route: string;
   navLabel?: string;
   seo: PageSeo;
-  shell: 'default' | 'none';
+  /** Whether this page shows the site's shared header. Each page chooses on its own. */
+  showHeader: boolean;
+  /** Whether this page shows the site's shared footer, independently of the header. */
+  showFooter: boolean;
   /**
    * A draft stays in the project (editable, previewed, in the editable project export) but is left out of the
    * website: no page file, no sitemap entry, no old address leading to it. Unlike seo.noindex, which publishes the
