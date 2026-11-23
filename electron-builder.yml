@@ -25,6 +25,8 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  # Notarizes when APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID are set (see release workflow).
+  notarize: true
 win:
   target: [nsis]
   icon: build/icon.png
