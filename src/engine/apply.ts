@@ -613,6 +613,8 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
         if (!schema) fail(`"${def.name}" has no property "${k}". Properties: ${Object.keys(def.properties).join(', ')}.`);
         inst.props[k] = normalizeProp(schema, v, state, `${def.name} → ${schema.label}`);
       }
+      // Every field of a new form is new, so each gets a key of its own unless its name already decides one.
+      if (Array.isArray(inst.props.fields) && 'fields' in op.props && namesFormFields(def)) inst.props.fields = settleFormKeys([], inst.props.fields as ListItem[]);
     }
     nodes = [inst];
   }

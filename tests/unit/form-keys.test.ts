@@ -226,6 +226,23 @@ describe('keys stay distinct and stable through edits', () => {
     expect(clashWarnings(rewritten)[0].message).toContain('“Autre” and “Téléphone” fields are both sent as “field-2”');
   });
 
+  it('gives the fields of a form the agent inserts keys of their own', () => {
+    const s = fresh();
+    const r = applyOperations(s, [
+      {
+        type: 'node.insert',
+        owner: owner(s),
+        parentId: null,
+        componentId: 'contact.form',
+        props: { fields: [{ label: 'Email', type: 'email' }, { label: 'Email', type: 'email' }, { label: '電話', type: 'tel' }, { label: 'Phone', name: 'tel', type: 'tel' }, { label: 'Same', name: 'tel' }] }
+      } as EditOperation
+    ]);
+    const nodeId = r.results[0].nodeId as string;
+    expect(fieldsOf(r.state, nodeId).map((f) => f.name)).toEqual(['email', 'email-2', 'field', 'tel', 'tel']);
+    // Typed names stay as typed, so the two "tel" fields are reported rather than renamed.
+    expect(clashWarnings(r.state)).toHaveLength(1);
+  });
+
   it('leaves forms with custom key code alone', () => {
     const custom = { ...contactForm, owner: 'project' as const, source: contactForm.source!.replace("'subject', ", '') };
     const legacy = [
