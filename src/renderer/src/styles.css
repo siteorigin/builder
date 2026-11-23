@@ -322,11 +322,12 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .welcome-actions { display: flex; flex-direction: column; gap: 8px; }
 /* Cards are identified by their icon and text, so they take a soft hairline and lift, not a hard outline. */
 .welcome-action { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; border-radius: var(--r-md); border: 0; background: var(--raised); text-align: left; box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgb(28 39 66 / 0.06); transition: box-shadow 140ms; }
-.welcome-action:hover:not(:disabled) { box-shadow: 0 0 0 1px var(--border-strong), 0 8px 20px -10px rgb(28 39 66 / 0.25); }
+.welcome-action:hover:not(:disabled, [aria-disabled='true']) { box-shadow: 0 0 0 1px var(--border-strong), 0 8px 20px -10px rgb(28 39 66 / 0.25); }
 @media (prefers-color-scheme: dark) { .welcome-action { box-shadow: 0 0 0 1px var(--border-strong); } }
-.welcome-action:disabled { opacity: 0.55; }
+.welcome-action:disabled, .welcome-action[aria-disabled='true'] { opacity: 0.55; }
+.welcome-action[aria-disabled='true'] { cursor: default; }
 .welcome-action > .chev { width: 16px; height: 16px; flex: none; color: var(--text-3); }
-.welcome-action:hover:not(:disabled) > .chev { color: var(--accent-text); }
+.welcome-action:hover:not(:disabled, [aria-disabled='true']) > .chev { color: var(--accent-text); }
 .welcome-action .ico { width: 34px; height: 34px; border-radius: var(--r-sm); display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); flex: none; }
 .welcome-action.secondary .ico { background: var(--active); color: var(--text-2); }
 .welcome-action strong { display: block; font-size: 13px; font-weight: 600; color: var(--text); }
