@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compile } from 'svelte/compiler';
+import { compile, parse } from 'svelte/compiler';
 import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
@@ -8,7 +8,9 @@ import { validateStyleValue } from '@shared/styles';
 import { applyOperations } from '@engine/apply';
 import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, generateProject, js, propLocals, resolveLink } from '@generator/index';
 import { externalLink } from '@shared/links';
-import { usedIcons } from '@generator/runtime-files';
+import { DRAFTS_JS, usedIcons } from '@generator/runtime-files';
+import { contactForm } from '@catalogue/foundation/form';
+import { checkSvelteSource } from '../../src/main/codecheck';
 import { pageIds, pageSections, placeholderImageCount, planSectionPick, sharedPageIds } from '@generator/checks';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -48,6 +50,52 @@ describe('generated Svelte compiles', () => {
     expect(compileAll(generateProject(s))).toEqual([]);
     expect(compileAll(generateProject(s, { instrument: true }))).toEqual([]);
     expect(compileAll(generateProject(createStarterState('blank', 'Blank', false)))).toEqual([]);
+  });
+});
+
+describe('unsent form drafts (issue #274)', () => {
+  /** Every element in a Svelte source, with the names of its attributes. */
+  const elements = (source: string) => {
+    const found: Array<{ name: string; attributes: string[] }> = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== 'object') return;
+      const n = node as { type?: string; name?: string; attributes?: Array<{ type: string; name?: string }> };
+      if (n.type === 'RegularElement') found.push({ name: n.name!, attributes: (n.attributes ?? []).filter((a) => a.type === 'Attribute').map((a) => a.name!) });
+      for (const [key, value] of Object.entries(node)) if (key !== 'metadata' && key !== 'parent') walk(value);
+    };
+    walk(parse(source, { modern: true }).fragment);
+    return found;
+  };
+
+  it('ships the draft keeper with every site and runs it once from the root layout, in the export and the preview', () => {
+    for (const files of [generateProject(fresh()), generateProject(fresh(), { instrument: true }), generateProject(createStarterState('blank', 'Blank', false))]) {
+      expect(files.get(`${RUNTIME_DIR}/drafts.js`)).toBe(DRAFTS_JS);
+      // A statement of the layout's own script, so it runs whenever the layout does.
+      const body = (parse(files.get('src/routes/+layout.svelte')!, { modern: true }).instance?.content.body ?? []) as unknown as Array<{
+        type: string;
+        source?: { value: string };
+        specifiers?: Array<{ imported?: { name: string }; local: { name: string } }>;
+        expression?: { type: string; callee?: { type: string; name?: string }; arguments?: unknown[] };
+      }>;
+      expect(body.filter((n) => n.type === 'ImportDeclaration' && n.source?.value === '../lib/siteorigin/runtime/drafts.js').map((n) => n.specifiers?.map((sp) => [sp.imported?.name, sp.local.name]))).toEqual([[['keepDrafts', 'keepDrafts']]]);
+      const calls = body.filter((n) => n.type === 'ExpressionStatement' && n.expression?.type === 'CallExpression' && n.expression.callee?.type === 'Identifier' && n.expression.callee.name === 'keepDrafts');
+      expect(calls.map((n) => n.expression?.arguments)).toEqual([[]]);
+    }
+    // Plain SvelteKit: no editor instrumentation, and nothing imported but Svelte and SvelteKit.
+    expect(DRAFTS_JS).not.toMatch(/data-so-|__so|siteorigin-bridge/);
+    expect([...DRAFTS_JS.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['svelte', '$app/navigation', '$app/state']);
+  });
+
+  it('marks the theme contact form and each answer for it, and keeps the form a component a customised copy can save', async () => {
+    const source = contactForm.source!;
+    const all = elements(source);
+    expect(all.filter((e) => e.attributes.includes('data-keep-draft')).map((e) => e.name)).toEqual(['form']);
+    // Every visible answer, and nothing else: not the provider's hidden fields or the spam trap.
+    expect(all.filter((e) => e.attributes.includes('data-draft-field')).map((e) => e.name)).toEqual(['textarea', 'input']);
+    expect(all.filter((e) => e.attributes.includes('data-draft-field')).every((e) => e.attributes.includes('required') && e.attributes.includes('oninput'))).toBe(true);
+    // Forking or duplicating the form makes it a project component, whose code must pass the ordinary check.
+    expect((await checkSvelteSource(source)).filter((p) => p.severity === 'error')).toEqual([]);
   });
 });
 

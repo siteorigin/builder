@@ -1,7 +1,8 @@
 /**
  * The contact form as a visitor uses it, in a real headless browser: the generated component is compiled for
- * the client, bundled with Svelte's browser runtime and mounted on a stand-in page. Its POSTs are intercepted
- * and held, so each reply can be delayed, failed or let through. No real enquiry is ever sent.
+ * the client, bundled with Svelte's browser runtime and mounted on a stand-in page, beside the draft keeper the
+ * generated layout runs. Its POSTs are intercepted and held, so each reply can be delayed, failed or let through.
+ * No real enquiry is ever sent.
  */
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,7 +13,7 @@ import { build, type Rolldown } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
-import { defFile, generateProject } from '@generator/index';
+import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
 import { validateState } from '@engine/validate';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
@@ -28,25 +29,87 @@ const FIELDS = [
 const SENT = 'Thank you. Your message has been sent.';
 const FAILED = 'Sorry, your message could not be sent. Please try again or contact us directly.';
 
-/** The contact form exactly as an exported site ships it. */
-function exportedFormSource(): string {
+/** An exported site with a contact form on its home page. */
+function exportedSite() {
   const s = createStarterState('business', 'Test Studio', false);
   const def = s.components[installComponent(s, 'contact.form')];
   const node = makeInstance(def, { provider: 'netlify' });
   const home = s.pages[s.site.homePageId];
   home.nodes[node.id] = node;
   home.rootIds.push(node.id);
-  const source = generateProject(s).get(defFile(def));
+  return { files: generateProject(s), formFile: defFile(def) };
+}
+
+/** The contact form exactly as an exported site ships it. */
+function exportedFormSource(): string {
+  const { files, formFile } = exportedSite();
+  const source = files.get(formFile);
   if (!source) throw new Error('The export has no contact form component');
   return source;
 }
 
-/** The component and Svelte's browser runtime as one script that defines `window.mountForm(props)`. */
+/**
+ * SvelteKit's `snapshot` as its router drives it (`@sveltejs/kit` 3.4, runtime/client/snapshots.js): a mounted
+ * component's registration is captured by id just before the page is left, and handed back after the page it
+ * returns to has mounted. The layout's registration stays mounted throughout. Ids must be unique among mounted
+ * registrations, as SvelteKit insists in development. Values go through JSON, as SvelteKit stores them in the
+ * tab's session storage.
+ */
+const NAVIGATION_STUB = `import { onMount } from 'svelte';
+const registrations = new Set();
+export function snapshot(options) {
+	const registration = { ...options };
+	onMount(() => {
+		if ([...registrations].some((r) => r.id === registration.id)) throw new Error('Two snapshots share the id ' + registration.id);
+		registrations.add(registration);
+		return () => registrations.delete(registration);
+	});
+}
+window.snapshotRegistrations = () => [...registrations].map((r) => ({ id: r.id, reset: typeof r.reset === 'function' }));
+window.captureSnapshots = () => Object.fromEntries([...registrations].map((r) => [r.id, JSON.stringify(r.capture() ?? null)]));
+window.restoreSnapshots = (values) => {
+	for (const r of registrations) if (values && Object.hasOwn(values, r.id)) r.restore(JSON.parse(values[r.id]));
+};`;
+
+/** `$app/state`: the page the router is on, which a test can move to stand for another page of the site. */
+const STATE_STUB = `export const page = {
+	get url() {
+		return new URL(window.pagePath ?? location.pathname, location.href);
+	}
+};`;
+
+/**
+ * The component, the exported draft keeper and Svelte's browser runtime as one script. It mounts a stand-in for
+ * the root layout, which runs the keeper for as long as the page is open, and defines `window.mountForm(props,
+ * inShell)`, which adds a form to the page's <main> or to the header and footer around it, and
+ * `window.unmountForms()`, which takes the page's forms off it as leaving the page does.
+ */
 async function bundleForm(): Promise<string> {
-  const component = compile(exportedFormSource(), { filename: 'ContactForm.svelte', generate: 'client', css: 'injected', runes: true }).js.code;
+  const { files, formFile } = exportedSite();
+  const compiled = (source: string, filename: string) => compile(source, { filename, generate: 'client', css: 'injected', runes: true }).js.code;
+  const layout = files.get('src/routes/+layout.svelte') ?? '';
+  // The keeper exactly as the export ships it, and only if the exported layout really runs it.
+  if (!layout.includes("import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';") || !/^\tkeepDrafts\(\);$/m.test(layout)) throw new Error('The exported layout does not keep drafts');
   const modules: Record<string, string> = {
-    '\0entry': "import { mount } from 'svelte'; import Form from '\0form'; window.mountForm = (props) => mount(Form, { target: document.getElementById('app'), props });",
-    '\0form': component
+    '\0entry': `import { flushSync, mount, unmount } from 'svelte'; import Form from '\0form'; import Layout from '\0layout';
+mount(Layout, { target: document.body.appendChild(document.createElement('div')) });
+flushSync();
+const forms = [];
+window.mountForm = (props, inShell = false) => {
+	const target = document.getElementById(inShell ? 'shell' : 'app').appendChild(document.createElement('div'));
+	const form = mount(Form, { target, props });
+	if (!inShell) forms.push(form);
+	flushSync();
+};
+window.unmountForms = () => {
+	for (const form of forms.splice(0)) unmount(form);
+	document.getElementById('app').replaceChildren();
+};`,
+    '\0form': compiled(files.get(formFile)!, 'ContactForm.svelte'),
+    '\0layout': compiled(`<script>\n\timport { keepDrafts } from '\\0drafts';\n\tkeepDrafts();\n</script>\n`, 'Layout.svelte'),
+    '\0drafts': files.get(`${RUNTIME_DIR}/drafts.js`)!,
+    '$app/navigation': NAVIGATION_STUB,
+    '$app/state': STATE_STUB
   };
   const out = (await build({
     configFile: false,
@@ -60,7 +123,7 @@ async function bundleForm(): Promise<string> {
 }
 
 // Counts sends in the page itself, so a second send is seen the moment it starts, not when it is intercepted.
-const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="app"></div>
+const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="shell"></div><main id="app"></main>
 <script>window.fetches = 0; const send = window.fetch; window.fetch = function (...args) { window.fetches++; return send.apply(this, args); };</script>
 <script src="/form.js"></script></body></html>`;
 
@@ -165,6 +228,29 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await page.keyboard.press('End');
         await page.keyboard.type(text);
       },
+      /** What the router keeps for this history entry when the visitor moves to another one. */
+      capture: () => page.evaluate<Record<string, string>>('window.captureSnapshots()'),
+      /** Leaves the page as client-side navigation does: the entry's snapshot is captured, then every form unmounts. */
+      leave: async () => {
+        const kept = await page.evaluate<Record<string, string>>('window.captureSnapshots()');
+        await page.evaluate('window.unmountForms()');
+        return kept;
+      },
+      /**
+       * Comes to the page with these forms: a new visit when nothing was kept, or Back to an entry, whose snapshot
+       * the router hands back once the page has mounted.
+       */
+      arrive: async (forms: Array<Record<string, unknown>>, kept?: Record<string, string>) => {
+        for (const p of forms) await page.evaluate(`window.mountForm(${JSON.stringify(p)})`);
+        if (kept) await page.evaluate(`window.restoreSnapshots(${JSON.stringify(kept)})`);
+      },
+      /** Adds a form to the header or footer, which stays mounted as the visitor moves between pages. */
+      inShell: (props: Record<string, unknown>) => page.evaluate(`window.mountForm(${JSON.stringify(props)}, true)`),
+      /** Restores a kept snapshot into the forms still mounted, as a Back between two entries of one page does. */
+      restore: (kept: Record<string, string>) => page.evaluate(`window.restoreSnapshots(${JSON.stringify(kept)})`),
+      /** The page the router reports, standing for another page of the site. */
+      onPage: (path: string) => page.evaluate(`window.pagePath = ${JSON.stringify(path)}`),
+      registrations: () => page.evaluate<Array<{ id: string; reset: boolean }>>('window.snapshotRegistrations()')
     };
   }
 
@@ -344,4 +430,246 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       rmSync(dir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  describe('in the tab history (issue #274)', () => {
+    const PROPS = { provider: 'endpoint', endpoint: `${ORIGIN}/f/abc`, fields: FIELDS };
+    const ENQUIRY = ['Ada', 'ada@example.com', 'A question about materials'];
+    const EMPTY = ['', '', ''];
+    type Kept = Record<string, string>;
+    /** What the layout's registration kept for an entry: the page, and a draft per form that had one. */
+    const kept = (snapshot: Kept) =>
+      JSON.parse(snapshot['siteorigin-drafts'] ?? 'null') as { path: string; drafts: Array<{ key: string; n: number; message: string; values: string[][] }> } | null;
+    /** Everything the page keeps in storage, as text, to search for answers. */
+    const stored = (page: Page) => page.evaluate<string>('JSON.stringify({ session: { ...sessionStorage }, local: { ...localStorage } })');
+    const fillEnquiry = async (field: (label: string) => ReturnType<Page['getByLabel']>) => {
+      await field('Name').fill('Ada');
+      await field('Email').fill('ada@example.com');
+      await field('Message').fill('A question about materials');
+    };
+
+    it('brings an unsent enquiry back on Back to its entry, not to a new visit, and sends nothing', async () => {
+      await withForm(PROPS, async ({ page, field, values, leave, arrive, fetches, posts, registrations }) => {
+        // One registration for the whole site, held by the layout, and no reset: a new entry never clears a form.
+        expect(await registrations()).toEqual([{ id: 'siteorigin-drafts', reset: false }]);
+        // A form that has not opted in is never kept, whatever its controls are marked with.
+        await page.evaluate(`document.getElementById('app').insertAdjacentHTML('beforeend', '<form><input data-draft-field="f1" value="Not kept"></form>')`);
+        await fillEnquiry(field);
+        const typedIn = await leave();
+        // The page, then the answers by field id: never the provider's hidden fields or the spam trap.
+        expect(kept(typedIn)).toEqual({
+          path: '/contact',
+          drafts: [{ key: 'page f1 f2 f3', n: 0, message: expect.any(String), values: [['f1', 'Ada'], ['f2', 'ada@example.com'], ['f3', 'A question about materials']] }]
+        });
+        // Following a link back to the page is a new visit, which starts empty.
+        await arrive([PROPS]);
+        expect(await values()).toEqual(EMPTY);
+        const newVisit = await leave();
+        expect(kept(newVisit)).toBeNull();
+        await arrive([PROPS], typedIn);
+        expect(await values()).toEqual(ENQUIRY);
+        await leave();
+        await arrive([PROPS], newVisit);
+        expect(await values()).toEqual(EMPTY);
+        expect(await fetches()).toBe(0);
+        expect(posts).toHaveLength(0);
+        // Nothing the visitor typed went into the address or into storage of the site's own.
+        expect(page.url()).toBe(`${ORIGIN}/contact/`);
+        expect(await stored(page)).not.toMatch(/Ada|example\.com|materials/);
+      });
+    }, 20_000);
+
+    it('never hands one page’s draft to another page that reuses its history entry', async () => {
+      await withForm(PROPS, async ({ field, values, leave, arrive, onPage }) => {
+        // A site published under a sub-path, on a host that also answers without the trailing slash.
+        await onPage('/studio/contact/');
+        await fillEnquiry(field);
+        const contact = await leave();
+        await onPage('/studio/contact');
+        await arrive([PROPS], contact);
+        expect(await values()).toEqual(ENQUIRY);
+        // SvelteKit reuses an abandoned entry's slot for an in-page link on another page, with the old snapshot in it.
+        for (const other of ['/studio/', '/studio/about/', '/']) {
+          await leave();
+          await onPage(other);
+          await arrive([PROPS], contact);
+          expect(await values(), other).toEqual(EMPTY);
+        }
+      });
+    }, 20_000);
+
+    it('never brings a sent message back, from its own entry, an older one, or after a reload', async () => {
+      await withForm(PROPS, async ({ page, field, button, status, values, capture, leave, arrive, nextPost }) => {
+        // The visitor leaves the enquiry unsent and comes back to it with Back, then sends it.
+        await fillEnquiry(field);
+        const typedIn = await leave();
+        await arrive([PROPS], typedIn);
+        // SvelteKit also keeps the entry's snapshot when the tab is hidden; here that happens just before sending.
+        const hidden = await capture();
+        await button.click();
+        const post = await nextPost();
+        // A message on its way is no longer a draft, whatever the reply.
+        expect(kept(await capture())).toBeNull();
+        await post.respond(200);
+        await expect.poll(status).toBe(SENT);
+
+        const sentIn = await leave();
+        expect(kept(sentIn)).toBeNull();
+        for (const older of [typedIn, hidden]) {
+          await arrive([PROPS], older);
+          expect(await values()).toEqual(EMPTY);
+          await leave();
+        }
+        await page.reload();
+        await arrive([PROPS], typedIn);
+        expect(await values()).toEqual(EMPTY);
+        // The tab remembers only an opaque id for the sent message.
+        expect(await stored(page)).not.toMatch(/Ada|example\.com|materials/);
+      });
+    }, 20_000);
+
+    it('does not bring back a message the visitor left while it was sending, once it has been sent', async () => {
+      await withForm(PROPS, async ({ field, button, values, capture, leave, arrive, nextPost }) => {
+        await fillEnquiry(field);
+        const beforeSending = await capture();
+        await button.click();
+        const post = await nextPost();
+        const leftWhileSending = await leave();
+        expect(kept(leftWhileSending)).toBeNull();
+        await post.respond(200);
+        await arrive([PROPS], leftWhileSending);
+        expect(await values()).toEqual(EMPTY);
+        await leave();
+        await arrive([PROPS], beforeSending);
+        expect(await values()).toEqual(EMPTY);
+      });
+    }, 20_000);
+
+    it('gives a message back after a failed send, older copies included, and keeps an unsent draft from another visit after a send', async () => {
+      await withForm(PROPS, async ({ page, field, button, status, alert, values, capture, leave, arrive, nextPost }) => {
+        await fillEnquiry(field);
+        const typedIn = await leave();
+        await arrive([PROPS], typedIn);
+        await button.click();
+        const failing = await nextPost();
+        // A second submit while the first is on its way is refused by the form and changes nothing here.
+        await page.evaluate(`document.querySelector('main form').requestSubmit()`);
+        await failing.respond(500);
+        await expect.poll(alert).toBe(FAILED);
+        const failedIn = await leave();
+        expect(kept(failedIn)?.drafts.map((d) => d.message)).toEqual(kept(typedIn)?.drafts.map((d) => d.message));
+        for (const entry of [failedIn, typedIn]) {
+          await arrive([PROPS], entry);
+          expect(await values()).toEqual(ENQUIRY);
+          await leave();
+        }
+
+        // A later visit sends a different enquiry, kept by its entry before it went; the unsent one is still the visitor's.
+        await arrive([PROPS]);
+        await field('Name').fill('Grace');
+        await field('Email').fill('grace@example.com');
+        await field('Message').fill('Something else');
+        const laterVisit = await capture();
+        await button.click();
+        await (await nextPost()).respond(200);
+        await expect.poll(status).toBe(SENT);
+        await leave();
+        await arrive([PROPS], laterVisit);
+        expect(await values()).toEqual(EMPTY);
+        await leave();
+        await arrive([PROPS], typedIn);
+        expect(await values()).toEqual(ENQUIRY);
+      });
+    }, 20_000);
+
+    it('keeps and retires the drafts of a form whose answers are named like the form’s own methods', async () => {
+      // Each named control shadows the form's property of that name (form.matches is the "matches" answer).
+      const SHADOWING = {
+        ...PROPS,
+        fields: [
+          { id: 'm1', label: 'Matches', name: 'matches', type: 'text', required: true, placeholder: '' },
+          { id: 'm2', label: 'Closest', name: 'closest', type: 'text', required: true, placeholder: '' },
+          { id: 'm3', label: 'Query', name: 'querySelectorAll', type: 'textarea', required: true, placeholder: '' }
+        ]
+      };
+      await withForm(SHADOWING, async ({ field, button, status, leave, arrive, nextPost }) => {
+        const answers = () => Promise.all(['Matches', 'Closest', 'Query'].map((l) => field(l).inputValue()));
+        await field('Matches').fill('a');
+        await field('Closest').fill('b');
+        await field('Query').fill('c');
+        const typedIn = await leave();
+        await arrive([SHADOWING], typedIn);
+        expect(await answers()).toEqual(['a', 'b', 'c']);
+        await button.click();
+        await (await nextPost()).respond(200);
+        await expect.poll(status).toBe(SENT);
+        await leave();
+        await arrive([SHADOWING], typedIn);
+        expect(await answers()).toEqual(['', '', '']);
+      });
+    }, 20_000);
+
+    it('keeps each copy of one form apart, and a form in the header or footer apart from the page’s', async () => {
+      const OTHER = { ...PROPS, fields: FIELDS.map((f) => ({ ...f, id: `other-${f.id}` })) };
+      await withForm(PROPS, async ({ page, leave, arrive, inShell }) => {
+        // Two copies with the same fields, as a project component that wraps the form and is placed twice renders,
+        // with a different form between them. Only the second copy is filled in.
+        await arrive([OTHER, PROPS]);
+        const input = (n: number, name: string) => page.locator('main .so-form__form').nth(n).locator(`[name="${name}"]`);
+        await input(2, 'name').fill('Grace');
+        const twoCopies = await leave();
+        // Back to the page with the other form not shown this time: each copy is still known by its own place.
+        await arrive([PROPS, PROPS], twoCopies);
+        expect([await input(0, 'name').inputValue(), await input(1, 'name').inputValue()]).toEqual(['', 'Grace']);
+        await leave();
+
+        // The same form in the footer and on the page: the page's draft never moves into the footer when the page's
+        // form is not there to take it.
+        await inShell(PROPS);
+        await arrive([PROPS]);
+        await input(0, 'name').fill('Ada');
+        const withPageForm = await leave();
+        await arrive([], withPageForm);
+        expect(await page.locator('#shell [name="name"]').inputValue()).toBe('');
+      });
+    }, 20_000);
+
+    it('never puts an older draft over what the visitor has since typed, emptied or been given back, and fills only empty answers', async () => {
+      await withForm(PROPS, async ({ page, field, button, status, values, leave, arrive, restore, nextPost }) => {
+        await fillEnquiry(field);
+        const older = await leave();
+        await arrive([PROPS]);
+        await field('Name').fill('Newer');
+        const newer = await leave();
+
+        // Back between two entries of one page leaves the form on screen and hands back the older entry's draft.
+        await arrive([PROPS], newer);
+        // Emptied without an input event, which typing would fire: being given a draft back already settles it.
+        await page.evaluate(`document.querySelector('main [name="message"]').value = ''`);
+        await restore(older);
+        expect(await values()).toEqual(['Newer', '', '']);
+        await leave();
+
+        // Typed in, then emptied: the visitor's emptiness stands.
+        await arrive([PROPS]);
+        await field('Name').fill('Briefly');
+        await field('Name').fill('');
+        await restore(older);
+        expect(await values()).toEqual(EMPTY);
+        await leave();
+
+        // Filled in before the page was ready (no input event reached the keeper): that answer stays, the rest return.
+        await arrive([PROPS]);
+        await page.evaluate(`document.querySelector('main [name="email"]').value = 'early@example.com'`);
+        await restore(older);
+        expect(await values()).toEqual(['Ada', 'early@example.com', 'A question about materials']);
+        // That form now holds the older message, so sending it retires every copy of it.
+        await button.click();
+        await (await nextPost()).respond(200);
+        await expect.poll(status).toBe(SENT);
+        await leave();
+        await arrive([PROPS], older);
+        expect(await values()).toEqual(EMPTY);
+      });
+    }, 20_000);
+  });
 });

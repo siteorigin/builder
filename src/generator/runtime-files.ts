@@ -249,3 +249,155 @@ export function richParagraphs(value) {
 	return value.map((it) => (it && typeof it === 'object' && !Array.isArray(it) ? Object.fromEntries(Object.entries(it).map(([k, v]) => [k, richParagraphs(v)])) : it));
 }
 `;
+
+/**
+ * Keeps an unsent message with the history entry it was typed in. The root layout registers it once, so a form's
+ * draft is found again by the form's fields and its place on the page, however Svelte orders mounts.
+ */
+export const DRAFTS_JS = `/**
+ * Keeps a message the visitor typed into a form and has not sent with its place in the tab's history, as the
+ * browser keeps a form when JavaScript is off: Back brings it back, a new visit to the page starts empty, and a
+ * message that was sent never comes back. A form takes part with data-keep-draft on the <form>, data-draft-field
+ * naming each answer's control, aria-busy="true" from the moment it submits (before anything in its submit handler
+ * waits) until the reply, and a reset once the message has been sent.
+ *
+ * SvelteKit's snapshot() holds the drafts, in memory and in the tab's session storage, never in the address or in
+ * anything sent to a server. Besides them, the tab keeps only an opaque id for each message it has sent.
+ */
+import { onMount } from 'svelte';
+import { snapshot } from '$app/navigation';
+import { page } from '$app/state';
+
+const FORMS = 'form[data-keep-draft]';
+const SENT = 'siteorigin-drafts-sent';
+// Forms that show the visitor's latest answers since they appeared: typed in, sent from, or given a draft back.
+// An older draft never replaces those, so Back between two entries of one page cannot undo typing.
+const settled = new WeakSet();
+// The message each form holds, as an opaque id. Sending retires the id, so no copy of that message comes back.
+const messages = new WeakMap();
+// Messages on their way. The form resets once one is sent; if it keeps its answers instead, the send failed or was
+// refused, and the message is a draft again.
+const sending = new WeakMap();
+const sent = new Set();
+
+// A field can shadow a form's own methods (one named "matches"), so the DOM's are called directly.
+function call(node, method, ...args) {
+	return (node instanceof Document ? Document : Element).prototype[method].call(node, ...args);
+}
+
+function sentBefore() {
+	try {
+		const ids = JSON.parse(sessionStorage.getItem(SENT) ?? '[]');
+		return Array.isArray(ids) ? ids : [];
+	} catch {
+		return [];
+	}
+}
+
+function wasSent(id) {
+	return sent.has(id) || sentBefore().includes(id);
+}
+
+function markSent(id, isSent) {
+	if (isSent) sent.add(id);
+	else sent.delete(id);
+	try {
+		const ids = sentBefore().filter((other) => other !== id);
+		sessionStorage.setItem(SENT, JSON.stringify(isSent ? [...ids, id] : ids));
+	} catch {}
+}
+
+// The page a snapshot belongs to, the same however the address spells its trailing slash.
+function pagePath() {
+	return page.url.pathname.replace(/\\/+$/, '') || '/';
+}
+
+function answers(form) {
+	return [...call(form, 'querySelectorAll', '[data-draft-field]')];
+}
+
+// Every form on the page, known by where it is (the page itself or the header and footer around it), its fields,
+// and its place among forms with the same fields there.
+function forms() {
+	const seen = new Map();
+	return [...call(document, 'querySelectorAll', FORMS)].map((form) => {
+		const key = (call(form, 'closest', 'main') ? 'page ' : 'shell ') + answers(form).map((a) => a.dataset.draftField).join(' ');
+		const n = seen.get(key) ?? 0;
+		seen.set(key, n + 1);
+		return { form, key, n };
+	});
+}
+
+function capture() {
+	const drafts = [];
+	for (const { form, key, n } of forms()) {
+		// A message on its way is no longer a draft, whatever the reply.
+		if (call(form, 'getAttribute', 'aria-busy') === 'true') continue;
+		const pending = sending.get(form);
+		if (pending) {
+			sending.delete(form);
+			markSent(pending, false);
+			messages.set(form, pending);
+		}
+		const values = answers(form).map((a) => [a.dataset.draftField, a.value]);
+		if (!values.some(([, value]) => value)) continue;
+		let message = messages.get(form);
+		if (!message) messages.set(form, (message = Date.now().toString(36) + Math.random().toString(36).slice(2)));
+		drafts.push({ key, n, message, values });
+	}
+	// The page the drafts were typed on: an entry SvelteKit reuses for another page never hands them over.
+	return drafts.length ? { path: pagePath(), drafts } : null;
+}
+
+function restore(kept) {
+	if (!kept || kept.path !== pagePath() || !Array.isArray(kept.drafts)) return;
+	for (const { form, key, n } of forms()) {
+		const draft = kept.drafts.find((d) => d?.key === key && d.n === n);
+		if (!draft || settled.has(form) || wasSent(draft.message)) continue;
+		settled.add(form);
+		messages.set(form, draft.message);
+		const controls = answers(form);
+		for (const [field, value] of Array.isArray(draft.values) ? draft.values : []) {
+			const control = controls.find((a) => a.dataset.draftField === field);
+			// An answer already there, filled in by the browser or typed before the page was ready, stays.
+			if (control && !control.value && typeof value === 'string') control.value = value;
+		}
+	}
+}
+
+/** Called once, from the root layout. */
+export function keepDrafts() {
+	snapshot({ id: 'siteorigin-drafts', capture, restore });
+	onMount(() => {
+		const draftForm = (event) => (event.target instanceof Element ? call(event.target, 'closest', FORMS) : null);
+		const typed = (event) => {
+			const form = draftForm(event);
+			if (form) settled.add(form);
+		};
+		// Retired as the message leaves, so a reply that comes after the visitor has moved on still counts.
+		const submitted = (event) => {
+			const form = draftForm(event);
+			if (!form) return;
+			settled.add(form);
+			const message = messages.get(form);
+			messages.delete(form);
+			if (!message) return;
+			sending.set(form, message);
+			markSent(message, true);
+		};
+		// Heard once the form's own handlers have run, so a reset they cancel changes nothing.
+		const reset = (event) => {
+			const form = event.defaultPrevented ? null : draftForm(event);
+			if (form) sending.delete(form);
+		};
+		document.addEventListener('input', typed, true);
+		document.addEventListener('submit', submitted, true);
+		document.addEventListener('reset', reset);
+		return () => {
+			document.removeEventListener('input', typed, true);
+			document.removeEventListener('submit', submitted, true);
+			document.removeEventListener('reset', reset);
+		};
+	});
+}
+`;

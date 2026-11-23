@@ -98,8 +98,9 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
           if (id === '\0empty') return '';
           if (id === '\0$app/paths') return 'export const base = ""; export const resolve = (p) => p; export const asset = (p) => "/" + p;';
           if (id === '\0$app/state') return 'export const page = { route: { id: "/" }, url: new URL("https://site.test/") };';
+          // snapshot() is the layout's draft keeper registering; these pages hold no form, so it has nothing to keep.
           if (id === '\0$app/navigation')
-            return "import { onMount } from 'svelte'; const callbacks = new Set(); export function afterNavigate(fn) { onMount(() => { callbacks.add(fn); return () => callbacks.delete(fn); }); } export function navigated(type) { for (const fn of callbacks) fn({ type }); } export function beforeNavigate() {}";
+            return "import { onMount } from 'svelte'; const callbacks = new Set(); export function afterNavigate(fn) { onMount(() => { callbacks.add(fn); return () => callbacks.delete(fn); }); } export function navigated(type) { for (const fn of callbacks) fn({ type }); } export function beforeNavigate() {} export function snapshot() {}";
           const text = src.get(id);
           if (text === undefined) return null;
           return id.endsWith('.svelte') ? compile(text, { filename: id.slice(1), generate: 'client', css: 'injected' }).js.code : text;

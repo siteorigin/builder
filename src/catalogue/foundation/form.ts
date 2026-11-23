@@ -46,6 +46,9 @@ const FORM_SOURCE = `<script>
 	 * the result in place. A hidden honeypot field catches most spam bots. Until the form is connected to a
 	 * service it says so and cannot be sent: it never pretends to send. The same goes for two fields that share
 	 * a name, whose answers the service could not tell apart.
+	 *
+	 * data-keep-draft and data-draft-field let the site's layout keep a message the visitor has not sent with
+	 * its place in the tab's history (src/lib/siteorigin/runtime/drafts.js), so Back brings it back.
 	 */
 	let {
 		eyebrow = '',
@@ -144,6 +147,7 @@ ${FIELD_NAME_SOURCE}
 			netlify-honeypot={provider === 'netlify' ? honeypot : undefined}
 			aria-labelledby={heading ? uid + '-heading' : undefined}
 			aria-busy={status === 'sending'}
+			data-keep-draft
 			onsubmit={submit}
 		>
 			{#if provider === 'netlify'}<input type="hidden" name="form-name" value={netlifyName} />{/if}
@@ -157,6 +161,7 @@ ${FIELD_NAME_SOURCE}
 						<textarea
 							id={uid + '-' + i}
 							name={names[i]}
+							data-draft-field={field.id ?? i}
 							required={field.required}
 							readonly={status === 'sending'}
 							rows="5"
@@ -168,6 +173,7 @@ ${FIELD_NAME_SOURCE}
 							id={uid + '-' + i}
 							type={field.type === 'email' || field.type === 'tel' ? field.type : 'text'}
 							name={names[i]}
+							data-draft-field={field.id ?? i}
 							required={field.required}
 							readonly={status === 'sending'}
 							autocomplete={AUTOCOMPLETE[field.type] ?? (names[i] === 'name' ? 'name' : undefined)}
