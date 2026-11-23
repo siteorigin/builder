@@ -14,6 +14,8 @@ This is a prototype. The goal right now is a good, usable builder that can make 
 - `npm test` — Vitest unit tests in `tests/unit/` (engine, generator, agent harness, sessions, codecheck, SVG).
 - `npm run test:e2e` — Playwright scripts in `tests/e2e/` that drive the built Electron app (`npm run build` first). `tests/e2e/ai.mjs` calls a live provider and costs money: run it only when asked.
 
+**E2E runs headless, always.** The main process detects a Playwright launch (or `SITEORIGIN_HEADLESS=1`) and never shows the window, never takes focus, and keeps the app out of the Dock (`src/main/index.ts`). Nothing may pop up on the user's screen during tests: don't call `show()`/`focus()` on test paths, don't open external links or Finder, and use the `window.builderTest` hooks instead of native dialogs. `SITEORIGIN_HEADED=1` shows the window only when a human is debugging a script.
+
 Definition of done for a change: typecheck green, unit tests covering the change added and green, and the one e2e script that covers the change run when there is one. Don't chase e2e failures outside your change. Bug fixes get a regression test that fails without the fix. Never weaken an assertion to make a change pass.
 
 **Stabilization.** The whole tree — unit, e2e, build, packaged smoke — is driven to green by the `stabilize` skill (`.agents/skills/stabilize/`), run with Codex (`$stabilize`) or Claude Code (`/stabilize`), and only when a human invokes it. For now it is **local only, on macOS**; Linux and Windows stages are added later, together with CI. Failures in the full suites are fixed there, not by every change.

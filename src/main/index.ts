@@ -22,6 +22,21 @@ const controller = new Controller(() => win);
 // Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
 app.commandLine.appendSwitch('use-mock-keychain');
 
+// Automated runs never put a window on screen or take focus. Playwright's Electron loader defines
+// __playwright_run before this module loads; SITEORIGIN_HEADLESS=1 forces it for other drivers, and
+// SITEORIGIN_HEADED=1 shows the window when debugging a test.
+const headless =
+  process.env.SITEORIGIN_HEADED !== '1' &&
+  (process.env.SITEORIGIN_HEADLESS === '1' || typeof (globalThis as { __playwright_run?: unknown }).__playwright_run === 'function');
+if (headless) {
+  // A hidden window must keep painting, running timers and animation frames at full speed.
+  app.commandLine.appendSwitch('disable-background-timer-throttling');
+  app.commandLine.appendSwitch('disable-renderer-backgrounding');
+  app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+  // No Dock icon, no menu bar takeover, no focus stealing.
+  if (process.platform === 'darwin') app.setActivationPolicy('accessory');
+}
+
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
 // ---------------------------------------------------------------------------
@@ -119,6 +134,7 @@ function registerIpc() {
     return s;
   });
   handle('app:openExternal', async (url: string) => {
+    if (headless) return;
     if (/^https?:\/\//.test(url)) await shell.openExternal(url);
   });
   handle('dialogs:chooseFolder', async (title: string, defaultPath?: string) => {
@@ -217,11 +233,13 @@ async function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
-      spellcheck: true
+      spellcheck: true,
+      backgroundThrottling: !headless
     }
   });
   // Open maximized: the editor is used with as much room for the site preview as the screen allows.
   win.once('ready-to-show', () => {
+    if (headless) return;
     win?.maximize();
     win?.show();
   });
@@ -230,7 +248,7 @@ async function createWindow() {
     if (!isEditorUrl(url)) e.preventDefault();
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) void shell.openExternal(url);
+    if (!headless && /^https?:\/\//.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
   // The preview iframe must not navigate away from the project origin or open popups.
@@ -299,6 +317,7 @@ app.on('second-instance', () => {
     if (app.isReady()) void createWindow();
     return;
   }
+  if (headless) return;
   if (win.isMinimized()) win.restore();
   win.show();
   win.focus();
@@ -306,7 +325,7 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   // Packaged builds carry the icon in the bundle; in development the dock would otherwise show Electron's.
-  if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(join(here, '../../build/icon.png'));
+  if (!app.isPackaged && !headless && process.platform === 'darwin') app.dock?.setIcon(join(here, '../../build/icon.png'));
   // Serve the packaged editor from an app-controlled secure origin.
   protocol.handle('app', (req) => {
     const url = new URL(req.url);
