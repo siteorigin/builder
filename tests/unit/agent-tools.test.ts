@@ -61,7 +61,8 @@ async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, start
     adapter: async () => ({ adapter, model: 'fake', provider: 'openai' }),
     emit: (e) => {
       events.push(e);
-      if (e.kind === 'message' && e.message?.question && !e.message.question.answered) queueMicrotask(() => answers.length && orch.answer(e.runId, answers.shift()!));
+      const waiting = e.kind === 'message' ? e.message?.questions?.at(-1) : undefined;
+      if (waiting?.id && waiting.answered === undefined) queueMicrotask(() => answers.length && orch.answer(e.runId, waiting.id!, answers.shift()!));
     },
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [] }),
