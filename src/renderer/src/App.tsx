@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, toast, useStore } from './store';
-import { cleanDrafts, moveDraft, restorePlan } from './lib/chatDrafts';
+import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
 import { ConfirmHost, Toasts, openDialogs, openMenus } from './components/ui';
@@ -48,7 +48,7 @@ export function App() {
         opened++;
         projectClosed();
         // Held edits and the last AI outcome belong to the project that closed.
-        setState({ screen: 'welcome', snapshot: null, selection: null, conversation: null, chatDrafts: {}, definitionMode: null, heldEdits: [], aiOutcome: null });
+        setState({ screen: 'welcome', snapshot: null, selection: null, conversation: null, chatDrafts: {}, chatImages: {}, definitionMode: null, heldEdits: [], aiOutcome: null });
       }),
       // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
       api.on('lifecycle:request', ({ requestId }) => {
@@ -125,6 +125,7 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     rightWidth: restorePanelWidth('right', local.rightWidth),
     // Drafts and the open conversation are this project's own; the conversation follows once it is loaded.
     chatDrafts: cleanDrafts(local.chatDrafts),
+    chatImages: cleanImages(local.chatImages),
     conversation: null,
     selection: null,
     mode: 'edit',
@@ -148,13 +149,14 @@ async function restoreConversation(seq: number, remembered: string | undefined) 
     const { active, list } = await api.ai.conversations();
     if (!current()) return;
     const saved = list.map((c) => c.id);
-    const plan = restorePlan(remembered, active.id, saved, getState().chatDrafts);
+    const plan = restorePlan(remembered, active.id, saved, getState().chatDrafts, getState().chatImages);
     let conversation = active;
     if (plan.kind === 'open') conversation = await api.ai.openConversation(plan.id).catch(() => active);
     // A new conversation left with a draft was never saved: a new one takes its place, and its draft.
     else if (plan.kind === 'fresh' && active.messages.length) conversation = await api.ai.newConversation();
     if (!current()) return;
-    setState({ conversation, chatDrafts: plan.kind === 'fresh' ? moveDraft(getState().chatDrafts, plan.from, conversation.id) : getState().chatDrafts });
+    const s = getState();
+    setState(plan.kind === 'fresh' ? { conversation, chatDrafts: moveDraft(s.chatDrafts, plan.from, conversation.id), chatImages: moveImages(s.chatImages, plan.from, conversation.id) } : { conversation });
   } catch {
     // The project closed while its conversations were loading: nothing to show. If they could not be read, a new
     // conversation still lets the panel work.

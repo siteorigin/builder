@@ -1,17 +1,18 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowUp, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, FileText, Globe, History, Info, KeyRound, MousePointerClick, Play, Plus, RotateCcw, Settings2, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChatActivity, ChatChange, ChatContext, ChatMessage } from '@shared/api';
+import type { ChatActivity, ChatChange, ChatContext, ChatImageRef, ChatMessage } from '@shared/api';
 import { refKey } from '@shared/types';
-import { api, getState, setState, toast, useStore, confirmDialog, selectChatDraft, setChatDraft } from '../store';
-import { afterSend, draftFor, moveDraft, unsentDrafts, withDraft } from '../lib/chatDrafts';
+import { api, getState, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft } from '../store';
+import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { refLabel, resolveRef } from '../lib/model';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, resumableId } from '../lib/result';
-import { composerAction, isPaused, isStarting, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { composerAction, isPaused, isStarting, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
+import { ImageChips, ImageChoices } from '../components/ChatImages';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
 function Md({ text }: { text: string }) {
@@ -74,6 +75,8 @@ export function Chat() {
   const activeRunId = useStore((s) => s.activeRunId);
   // Each conversation keeps its own unsent message.
   const draft = useStore(selectChatDraft);
+  // ...and the library images attached to it, by asset ID.
+  const images = useStore(selectChatImages);
   const selection = useStore((s) => s.selection);
   const pageId = useStore((s) => s.pageId);
   const snap = useStore((s) => s.snapshot);
@@ -180,13 +183,13 @@ export function Chat() {
   const openSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const focusComposer = () => requestAnimationFrame(() => taRef.current?.focus());
 
-  /** Answer the waiting question, with a choice or the composer's text. Each question takes one answer. */
-  const answer = async (q: WaitingQuestion, text: string, typed: boolean) => {
+  /** Answer the waiting question, with a choice, an offered picture or the composer's text. Each question takes one answer. */
+  const answer = async (q: WaitingQuestion, value: string | ChatImageRef, typed: boolean) => {
     const key = `${q.runId}:${q.question.id}`;
-    if (!text.trim() || answering.current === key) return;
+    if ((typeof value === 'string' && !value.trim()) || answering.current === key) return;
     answering.current = key;
     if (typed) answeredAt.current = Date.now();
-    const ok = await api.ai.answer(q.runId, q.question.id, text.trim()).catch(() => false);
+    const ok = await api.ai.answer(q.runId, q.question.id, typeof value === 'string' ? value.trim() : { assetId: value.assetId }).catch(() => false);
     if (!ok) {
       if (answering.current === key) {
         answering.current = null;
@@ -201,7 +204,7 @@ export function Chat() {
     if (typed) setAnswerBox((b) => (b.key === key ? { key, text: '' } : b));
   };
 
-  /** `context` replaces the editor's own, for a message that continues an earlier request. */
+  /** `context` replaces the editor's own (and its images), for a message that continues an earlier request. */
   const send = async (text = draft, context?: ChatContext) => {
     if (!text.trim() || running || sending || !conversation) return;
     if (!configured) return openSettings();
@@ -214,7 +217,9 @@ export function Chat() {
       pageTitle: ctxOn.page && page ? page.title : st.pages[st.site.homePageId]?.title ?? '',
       selection: ctxOn.selection && selection ? structuredClone(selection) : null,
       selectionLabel: ctxOn.selection && selLabel ? selLabel : null,
-      viewport
+      viewport,
+      // The images go by asset ID only; the app checks they are still in Assets before anything is sent.
+      ...(images.length ? { assetIds: [...images] } : {})
     };
     // Keep focus in the composer: the Send button is about to be disabled.
     taRef.current?.focus();
@@ -225,13 +230,13 @@ export function Chat() {
     if (!r.ok) return toast(r.message ?? 'Could not start the request.', 'error');
     // A continuation was never typed, so whatever is in the composer is the user's own next message.
     if (context) return;
-    // Clear what was sent, but never text typed while the request was starting.
+    // Clear what was sent, but never text typed (or images attached) while the request was starting.
     const s = getState();
     if (s.snapshot?.workspaceKey !== opening) return;
-    const drafts = afterSend(s.chatDrafts, conversationId, text);
-    if (drafts === s.chatDrafts) return;
-    setState({ chatDrafts: drafts });
-    if (taRef.current && s.conversation?.id === conversationId) taRef.current.style.height = '';
+    const after = afterSendMessage(s.chatDrafts, s.chatImages, conversationId, text, ctx.assetIds ?? []);
+    if (after.drafts === s.chatDrafts && after.images === s.chatImages) return;
+    setState({ chatDrafts: after.drafts, chatImages: after.images });
+    if (after.drafts !== s.chatDrafts && taRef.current && s.conversation?.id === conversationId) taRef.current.style.height = '';
   };
 
   /** Carry on with an unfinished request, with that request's own page and selection, leaving the draft alone. */
@@ -252,11 +257,11 @@ export function Chat() {
   // arrives after the project changed is not this project's.
   const opening = snap.workspaceKey;
   const stillOpen = () => getState().snapshot?.workspaceKey === opening;
-  const show = (pending: Promise<NonNullable<typeof conversation>>, drafts?: (c: NonNullable<typeof conversation>) => Record<string, string>) =>
+  const show = (pending: Promise<NonNullable<typeof conversation>>, unsent?: (c: NonNullable<typeof conversation>) => Pick<ReturnType<typeof getState>, 'chatDrafts' | 'chatImages'>) =>
     void pending.then(
       (c) => {
         if (!stillOpen()) return;
-        setState({ conversation: c, ...(drafts ? { chatDrafts: drafts(c) } : {}) });
+        setState({ conversation: c, ...(unsent ? unsent(c) : {}) });
         focusComposer();
       },
       (e: Error) => stillOpen() && toast(e.message || 'Could not open that conversation.', 'error')
@@ -270,7 +275,7 @@ export function Chat() {
     if (!listed || !stillOpen()) return;
     const { list } = listed;
     // A new conversation left before anything was sent is not saved, so its draft is offered here instead.
-    const unsent = unsentDrafts(getState().chatDrafts, list.map((c) => c.id), getState().conversation?.id);
+    const unsent = unsentDrafts(getState().chatDrafts, list.map((c) => c.id), getState().conversation?.id, getState().chatImages);
     if (!list.length && !unsent.length) return toast('No earlier conversations yet.', 'info');
     const day = (iso: string) => {
       const d = new Date(iso);
@@ -283,13 +288,13 @@ export function Chat() {
         ...(unsent.length
           ? [
               { heading: 'Not sent yet' },
-              ...unsent.map((d) => ({ label: d.text.trim().split('\n')[0].slice(0, 60), hint: 'Draft', onSelect: () => show(api.ai.newConversation(), (c) => moveDraft(getState().chatDrafts, d.id, c.id)) }))
+              ...unsent.map((d) => ({ label: d.text.trim().split('\n')[0].slice(0, 60) || `Message with ${d.images === 1 ? '1 image' : `${d.images} images`}`, hint: d.images ? `Draft · ${d.images === 1 ? '1 image' : `${d.images} images`}` : 'Draft', onSelect: () => show(api.ai.newConversation(), (c) => ({ chatDrafts: moveDraft(getState().chatDrafts, d.id, c.id), chatImages: moveImages(getState().chatImages, d.id, c.id) })) }))
             ]
           : []),
         ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: day(c.createdAt), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
         { separator: true },
         // Unsent drafts belong to the conversations being removed, so they go with them.
-        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'All AI conversations in this project, including this one, will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => ({}))) }
+        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'All AI conversations in this project, including this one, will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => ({ chatDrafts: {}, chatImages: {} }))) }
       ],
       'Conversations'
     );
@@ -411,6 +416,16 @@ export function Chat() {
           <div className="question-text" id="ai-question-text">
             {asking.question.text}
           </div>
+          {offeredImages(asking.question).length > 0 && (
+            <ImageChoices
+              key={askingKey}
+              images={offeredImages(asking.question)}
+              onChoose={(img) => {
+                void answer(asking, img, false);
+                focusComposer();
+              }}
+            />
+          )}
           {asking.question.choices.length > 0 && (
             <div className="choices">
               {asking.question.choices.map((c, i) => (
@@ -428,12 +443,8 @@ export function Chat() {
             </div>
           )}
           <p className="question-hint" id="ai-question-hint">
-            {asking.question.widen
-              ? 'Choose an option, or type a reply below. Only the first option, or a plain “yes”, allows changes beyond the selection.'
-              : asking.question.choices.length
-                ? 'Choose an option, or type your own answer below.'
-                : 'Type your answer below.'}
-            {draft.trim() ? ' Your unsent message is kept for afterwards.' : ''}
+            {questionHint(asking.question)}
+            {draft.trim() || images.length ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
         </div>
       )}
@@ -476,6 +487,18 @@ export function Chat() {
                 />
               )}
             </div>
+          )}
+          {/* The message's images wait with it while a question is answered. */}
+          {!asking && (
+            <ImageChips
+              images={images.map((id) => ({ assetId: id, name: (st.assets.assets[id]?.kind === 'image' && st.assets.assets[id].name.trim()) || id }))}
+              label="Images in your next message"
+              onRemove={(id) => {
+                if (!conversation) return;
+                setState({ chatImages: withImages(getState().chatImages, conversation.id, imagesFor(getState().chatImages, conversation.id).filter((x) => x !== id)) });
+                focusComposer();
+              }}
+            />
           )}
           <textarea
             ref={taRef}
@@ -566,9 +589,11 @@ export function Chat() {
 
 function UserMessage({ m }: { m: ChatMessage }) {
   const target = targetOf(m.context);
+  const images = Array.isArray(m.images) ? m.images.filter((i) => typeof i?.assetId === 'string' && typeof i.name === 'string') : [];
   return (
     <div className="msg-user">
-      {m.text}
+      {typeof m.text === 'string' ? m.text : ''}
+      {images.length > 0 && <ImageChips images={images} label="Attached images" />}
       {target && <span className="ctx">{target}</span>}
     </div>
   );
@@ -635,18 +660,27 @@ function AssistantMessage({ m, live, awaiting, undoable, asking, onContinue }: {
           </span>
         </div>
       )}
-      {questions.map((q) => (
-        <div key={q.key} className={`answered${q.answered === undefined ? ' unanswered' : ''}`}>
-          <span className="answered-q">{q.text}</span>
-          {q.answered !== undefined ? (
-            <span>
-              You answered: <strong>{q.answered}</strong>
-            </span>
-          ) : (
-            <span>Not answered</span>
-          )}
-        </div>
-      ))}
+      {questions.map((q) => {
+        // A picture chosen from the offer is shown with its name, told apart from any other offered with the same one.
+        const offered = offeredImages(q);
+        const picked = q.answeredAssetId ? offered.find((i) => i.assetId === q.answeredAssetId) : undefined;
+        return (
+          <div key={q.key} className={`answered${q.answered === undefined ? ' unanswered' : ''}`}>
+            <span className="answered-q">{q.text}</span>
+            {picked ? (
+              <span className="answered-image">
+                You chose: <ImageChips images={[picked]} label="The image you chose" />
+              </span>
+            ) : q.answered !== undefined ? (
+              <span>
+                You answered: <strong>{q.answered}</strong>
+              </span>
+            ) : (
+              <span>Not answered</span>
+            )}
+          </div>
+        );
+      })}
       {r && <ResultCard m={m} undoable={undoable} onContinue={onContinue} />}
     </div>
   );
@@ -681,9 +715,14 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
     const conv = getState().conversation;
     if (!conv) return;
     const typed = draftFor(getState().chatDrafts, conv.id).trim();
-    const original = conv.messages[conv.messages.findIndex((x) => x.id === m.id) - 1]?.text;
+    const request = conv.messages[conv.messages.findIndex((x) => x.id === m.id) - 1];
+    const original = request?.text;
+    // The request's images come back with it, whether or not they are still in Assets: a missing one is shown so.
+    const originalImages = Array.isArray(request?.context?.assetIds) ? request.context.assetIds.filter((id): id is string => typeof id === 'string') : [];
+    const attached = imagesFor(getState().chatImages, conv.id);
+    const otherImages = attached.length > 0 && attached.join('\n') !== originalImages.join('\n');
     // Never discard something the user is writing without asking.
-    if (typed && typed !== original?.trim()) {
+    if ((typed && typed !== original?.trim()) || otherImages) {
       const ok = await confirmDialog({ title: 'Replace your draft?', body: 'The message you are writing will be replaced by the original request, so you can edit it and try again.', confirmLabel: 'Replace draft' });
       // The request goes back into the conversation it came from, and only while that one is still open.
       if (ok !== true || getState().conversation?.id !== conv.id) return;
@@ -706,6 +745,7 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
       })();
       setState({
         chatDrafts: withDraft(getState().chatDrafts, conv.id, user.text),
+        chatImages: withImages(getState().chatImages, conv.id, originalImages),
         ...(pageOk ? { pageId: ctx!.pageId } : {}),
         selection: selOk ? ctx!.selection : null,
         chatContextEnabled: { page: true, selection: selOk }

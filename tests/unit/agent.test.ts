@@ -9,7 +9,7 @@ import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agen
 import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
-import { toolDefinitions } from '@agent/tools';
+import { imageRef, libraryImage, toolDefinitions } from '@agent/tools';
 import { checkAuthority, OP_REACH, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
@@ -469,6 +469,250 @@ describe('clarification questions', () => {
     expect(system).toContain('Wait for each answer before asking the next question');
     expect(system).toContain('reply in chat and change nothing');
     expect(tools.find((t) => t.name === 'request_clarification')?.description).toMatch(/interview/);
+  });
+});
+
+describe('library images in the chat (#12)', () => {
+  /** Five different imports with the same name and size, and a font: only the asset ID tells the photos apart. */
+  const photo = (id: string, file: string, extra: { description?: string; altSuggestion?: string } = {}) => ({ id, name: 'hero', file: `static/assets/${file}.jpg`, mime: 'image/jpeg', bytes: 1000, width: 1536, height: 1024, hash: id, kind: 'image' as const, createdAt: '2026-01-01T00:00:00Z', ...extra });
+  const first = photo('a_yca1j3rh', 'hero-1a2b3c4d', { description: 'Reading nook by the window', altSuggestion: 'An armchair by a sunny window' });
+  const second = photo('a_hodln13r', 'hero-5e6f7a8b');
+  const third = photo('a_third001', 'hero-9a0b1c2d');
+  const fourth = photo('a_fourth01', 'hero-3e4f5a6b');
+  const fifth = photo('a_fifth001', 'hero-7c8d9e0f');
+  const font = { id: 'a_brandfont', name: 'Brand Sans', file: 'static/assets/brand-sans-1a2b.woff2', mime: 'font/woff2', bytes: 1000, hash: 'f', kind: 'font' as const, createdAt: '2026-01-01T00:00:00Z', font: { family: 'Brand Sans', weight: '400', style: 'normal' as const } };
+  /** The font goes in first, so a search that limits before leaving fonts out would list it. */
+  const withLibrary = async (env: Awaited<ReturnType<typeof setup>>) => {
+    const r = await env.session.apply({ operations: [font, first, second, third, fourth, fifth].map((asset) => ({ type: 'asset.add' as const, asset })) }, { label: 'Import', source: 'user' });
+    expect(r.ok).toBe(true);
+  };
+  const waiting = async (env: Awaited<ReturnType<typeof setup>>) => {
+    const q = () => [...env.events].reverse().find((e) => e.message?.questions?.length && e.message.questions.at(-1)!.answered === undefined)?.message?.questions?.at(-1);
+    for (let i = 0; i < 300 && !q(); i++) await new Promise((res) => setTimeout(res, 10));
+    expect(q()).toBeDefined();
+    return q()!;
+  };
+  const runIdOf = (env: Awaited<ReturnType<typeof setup>>) => env.events.find((e) => e.runId)!.runId;
+  const settle = async (env: Awaited<ReturnType<typeof setup>>) => {
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+  };
+  const heroImage = (s: ProjectState) => {
+    const home = s.pages[s.site.homePageId];
+    const hero = home.nodes[home.rootIds[0]] as { props: Record<string, unknown> };
+    return hero.props.image as { assetId: string | null } | undefined;
+  };
+  const toolResult = (req: CanonicalModelRequest, id: string) => {
+    const item = req.items.find((i) => i.kind === 'tool_result' && i.callId === id) as { content: string } | undefined;
+    return item ? JSON.parse(item.content) : undefined;
+  };
+  const textOf = (i: CanonicalModelRequest['items'][number]) => (i.kind === 'tool_result' ? '' : i.text);
+  const editorContext = (req: CanonicalModelRequest) => JSON.parse(/<editor_context>\n([\s\S]*)\n<\/editor_context>/.exec(textOf(req.items.at(-1)!))![1]);
+  const base = (env: Awaited<ReturnType<typeof setup>>): ChatContext => ({ pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 });
+
+  it('offers same-named photos by asset ID and uses the one the author picks, live and when replayed', async () => {
+    const env = await setup([
+      () => [call('q1', 'request_clarification', { question: 'Which photo should the Home hero use?', assetIds: [first.id, second.id, third.id, first.id], choices: ['Keep the current one'] })],
+      (req) => {
+        // The answer names the exact image, so the edit can use it.
+        const answer = toolResult(req, 'q1')?.answer as string;
+        const assetId = /assetId: ([\w-]+)/.exec(answer)?.[1] ?? null;
+        const home = env.session.state.pages[env.session.state.site.homePageId];
+        return [call('e1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home.id }, nodeId: home.rootIds[0], prop: 'image', value: { assetId, alt: 'Hero photo' } }] })];
+      },
+      () => finish('Set the hero photo.'),
+      () => finish('Noted.')
+    ]);
+    await withLibrary(env);
+    const pending = env.run('Change the Home hero photo and ask me which one to use');
+    const q = await waiting(env);
+    // Each image is offered once, in order, by its ID and name; the text choice stays.
+    expect(q.images).toEqual([
+      { assetId: first.id, name: 'hero' },
+      { assetId: second.id, name: 'hero' },
+      { assetId: third.id, name: 'hero' }
+    ]);
+    expect(q.choices).toEqual(['Keep the current one']);
+    // The middle one: neither the first nor the last offered.
+    expect(env.orch.answer(runIdOf(env), q.id!, { assetId: second.id })).toBe(true);
+    const { result } = await pending;
+    expect(result?.status).toBe('completed');
+    expect(heroImage(env.session.state)?.assetId).toBe(second.id);
+    expect(toolResult(env.adapter.requests[1], 'q1')).toEqual({ answer: `I chose the image "hero" (assetId: ${second.id}).` });
+    const turn = env.orch.conversation!.messages.find((m) => m.role === 'assistant')!;
+    expect(turn.questions?.[0]).toMatchObject({ answered: 'hero', answeredAssetId: second.id });
+
+    // The next request hears which images were offered and which one was chosen, by ID, in the order they were said.
+    const before = env.adapter.requests.length;
+    await env.run('Thanks');
+    const items = env.adapter.requests[before].items;
+    expect(items.slice(0, 3).map((i) => [i.kind, textOf(i)])).toEqual([
+      ['user', 'Change the Home hero photo and ask me which one to use'],
+      ['assistant', `Which photo should the Home hero use?\nChoices: image "hero" (assetId: ${first.id}) | image "hero" (assetId: ${second.id}) | image "hero" (assetId: ${third.id}) | Keep the current one`],
+      ['user', `I chose the image "hero" (assetId: ${second.id}).`]
+    ]);
+  });
+
+  it('refuses a picture the question did not offer, one removed since, or a malformed answer, and keeps waiting', async () => {
+    const env = await setup([() => [call('q1', 'request_clarification', { question: 'Which photo?', assetIds: [first.id, second.id] })], () => finish('Done.')]);
+    await withLibrary(env);
+    const pending = env.run('Ask me which photo to use');
+    const q = await waiting(env);
+    const answer = env.orch.answer.bind(env.orch) as (...a: unknown[]) => boolean;
+    // A photo in the library with the same name, but not offered by this question.
+    expect(answer(runIdOf(env), q.id!, { assetId: third.id })).toBe(false);
+    expect(answer(runIdOf(env), q.id!, { assetId: 'a_brandfont' })).toBe(false);
+    expect(answer(runIdOf(env), q.id!, { assetId: 'a_notoffered' })).toBe(false);
+    expect(answer(runIdOf(env), q.id!, { id: first.id })).toBe(false);
+    expect(answer(runIdOf(env), q.id!, null)).toBe(false);
+    expect(answer(runIdOf(env), q.id!, 42)).toBe(false);
+    // Removed after it was offered (the author cannot edit while the AI works, so it lands inside the run): it can no
+    // longer be chosen.
+    const removed = await env.session.apply({ operations: [{ type: 'asset.remove', assetId: first.id }] }, { label: 'Remove', source: 'ai', runId: runIdOf(env), history: false });
+    expect(removed.ok, JSON.stringify(removed.error)).toBe(true);
+    expect(answer(runIdOf(env), q.id!, { assetId: first.id })).toBe(false);
+    expect(env.orch.conversation!.messages.find((m) => m.role === 'assistant')!.questions![0].answered).toBeUndefined();
+    expect(env.adapter.requests).toHaveLength(1);
+    // A typed answer that looks like an ID is still the author's own words.
+    expect(answer(runIdOf(env), q.id!, first.id)).toBe(true);
+    expect(answer(runIdOf(env), q.id!, { assetId: second.id })).toBe(false);
+    await pending;
+    expect(toolResult(env.adapter.requests[1], 'q1')).toEqual({ answer: first.id });
+    const asked = env.orch.conversation!.messages.find((m) => m.role === 'assistant')!.questions![0];
+    expect(asked).toMatchObject({ answered: first.id });
+    expect(asked.answeredAssetId).toBeUndefined();
+  });
+
+  it('never asks with a picture that is not in the library, too many pictures, or a scope question', async () => {
+    const env = await setup([
+      () => [call('q1', 'request_clarification', { question: 'Which?', assetIds: [first.id, 'a_missing'] })],
+      () => [call('q2', 'request_clarification', { question: 'Which?', assetIds: [font.id] })],
+      () => [call('q3', 'request_clarification', { question: 'Change more?', assetIds: [first.id], widenScope: true })],
+      () => [call('q4', 'request_clarification', { question: 'Which?', assetIds: [first.id, second.id, third.id, fourth.id, fifth.id] })],
+      () => finish('Could not ask.')
+    ]);
+    await withLibrary(env);
+    const { result } = await env.run('Ask me which photo');
+    expect(result?.status).toBe('no-changes');
+    expect(env.events.some((e) => e.status === 'awaiting-input')).toBe(false);
+    expect(toolResult(env.adapter.requests[1], 'q1')).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringContaining('"a_missing"') });
+    expect(toolResult(env.adapter.requests[2], 'q2')).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringContaining(`"${font.id}"`) });
+    expect(toolResult(env.adapter.requests[3], 'q3')).toMatchObject({ error: 'INVALID_ARGUMENT', message: expect.stringContaining('widenScope') });
+    expect(JSON.stringify(toolResult(env.adapter.requests[4], 'q4'))).toMatch(/assetIds/);
+    expect(env.adapter.requests[4].items.at(-1)).toMatchObject({ kind: 'tool_result', isError: true });
+  });
+
+  it('names the pictures a stopped question offered when the conversation goes on', async () => {
+    const env = await setup([() => [call('q1', 'request_clarification', { question: 'Which photo?', assetIds: [first.id, second.id] })], () => finish('Using the second.')]);
+    await withLibrary(env);
+    const pending = env.run('Ask me which photo to use');
+    await waiting(env);
+    env.orch.stop();
+    await pending;
+    await env.run('Use the second one you showed me');
+    const replayed = env.adapter.requests.at(-1)!.items.slice(0, -1).map(textOf).join('\n');
+    expect(replayed).toContain(`I asked "Which photo?", but the request ended before it was answered. It offered image "hero" (assetId: ${first.id}), image "hero" (assetId: ${second.id}).`);
+  });
+
+  it('sends the attached images by ID and their text, never their files, and keeps them with the request', async () => {
+    const env = await setup([() => finish('Using them.'), () => finish('Again.'), () => finish('Plain.')]);
+    await withLibrary(env);
+    expect((await env.orch.send('Use these photos in the hero', { ...base(env), assetIds: [second.id, first.id] })).ok).toBe(true);
+    await settle(env);
+    const sent = textOf(env.adapter.requests[0].items.at(-1)!);
+    // In the order attached, with the text the author gave each one.
+    expect(editorContext(env.adapter.requests[0]).attachedImages).toEqual([
+      { assetId: second.id, name: 'hero', width: 1536, height: 1024 },
+      { assetId: first.id, name: 'hero', width: 1536, height: 1024, description: first.description, altSuggestion: first.altSuggestion }
+    ]);
+    expect(sent).not.toMatch(/static\/assets|\.jpg|data:image/);
+    const user = env.orch.conversation!.messages.find((m) => m.role === 'user')!;
+    expect(user.context?.assetIds).toEqual([second.id, first.id]);
+    expect(user.images).toEqual([
+      { assetId: second.id, name: 'hero' },
+      { assetId: first.id, name: 'hero' }
+    ]);
+    // A later request hears which images the earlier one attached.
+    await env.run('And the about page?');
+    expect(env.adapter.requests[1].items[0]).toMatchObject({ kind: 'user', text: `Use these photos in the hero\n(Attached image "hero" (assetId: ${second.id}), image "hero" (assetId: ${first.id}))` });
+    expect(editorContext(env.adapter.requests[1]).attachedImages).toBeUndefined();
+    // An empty list sends as before: nothing attached.
+    expect((await env.orch.send('Hello', { ...base(env), assetIds: [] })).ok).toBe(true);
+    await settle(env);
+    expect(editorContext(env.adapter.requests[2]).attachedImages).toBeUndefined();
+    const hello = env.orch.conversation!.messages.filter((m) => m.role === 'user').at(-1)!;
+    expect(hello.context?.assetIds).toBeUndefined();
+    expect(hello.images).toBeUndefined();
+  });
+
+  it('refuses a message whose images are missing, fonts, repeated, too many or malformed, before it joins the conversation', async () => {
+    const env = await setup([() => finish('Sure.')]);
+    await withLibrary(env);
+    const refused = async (assetIds: unknown, message: RegExp) => {
+      const r = await env.orch.send('Use this', { ...base(env), assetIds } as ChatContext);
+      expect(r.ok, JSON.stringify(assetIds)).toBe(false);
+      expect(r.message, JSON.stringify(assetIds)).toMatch(message);
+    };
+    await refused(['a_missing'], /no longer in Assets/);
+    await refused([font.id], /no longer in Assets/);
+    await refused([first.id, first.id], /attached twice/);
+    await refused([first.id, second.id, third.id, fourth.id, fifth.id], /up to 4 images/);
+    await refused('a_yca1j3rh', /could not be read/);
+    await refused([7], /could not be read/);
+    // A message that cannot be read at all.
+    expect((await (env.orch.send as (...a: unknown[]) => Promise<{ ok: boolean }>).call(env.orch, 'Hi', undefined)).ok).toBe(false);
+    expect((await (env.orch.send as (...a: unknown[]) => Promise<{ ok: boolean }>).call(env.orch, ['Hi'], base(env))).ok).toBe(false);
+    expect((await (env.orch.send as (...a: unknown[]) => Promise<{ ok: boolean }>).call(env.orch, 'Hi', [base(env)])).ok).toBe(false);
+    // A selection that names no element would start a run that cannot say what it may change.
+    expect((await env.orch.send('Hi', { ...base(env), selection: {} as never })).ok).toBe(false);
+    expect((await env.orch.send('Hi', { ...base(env), selection: { owner: { kind: 'page', id: 'pg_x' }, instancePath: [7], nodeId: 'n' } as never })).ok).toBe(false);
+    expect(env.orch.busy).toBe(false);
+    expect(env.orch.conversation?.messages ?? []).toHaveLength(0);
+    expect(env.adapter.requests).toHaveLength(0);
+    // Four images is a full message.
+    expect((await env.orch.send('Use these', { ...base(env), assetIds: [first.id, second.id, third.id, fourth.id] })).ok).toBe(true);
+    await settle(env);
+    expect(env.orch.conversation!.messages[0].context?.assetIds).toEqual([first.id, second.id, third.id, fourth.id]);
+  });
+
+  it('never replays anything but text from a saved request', async () => {
+    const env = await setup([() => finish('Sure.')]);
+    const dir = env.session.local('sessions', 'chat');
+    mkdirSync(dir, { recursive: true });
+    const broken = {
+      id: 'c_pixels1',
+      title: 'Broken',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      messages: [
+        { id: 'm_u', role: 'user', text: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }], time: '2026-01-01T00:00:00.000Z', images: [{ assetId: 7 }] },
+        { id: 'm_a', role: 'assistant', text: 'Done.', time: '2026-01-01T00:00:01.000Z' }
+      ]
+    };
+    writeFileSync(join(dir, 'c_pixels1.json'), JSON.stringify(broken));
+    await env.orch.openConversation('c_pixels1');
+    await env.run('Carry on');
+    expect(JSON.stringify(env.adapter.requests[0].items)).not.toContain('data:image');
+    expect(env.adapter.requests[0].items.slice(0, -1).map((i) => [i.kind, textOf(i)])).toEqual([['assistant', 'Done.']]);
+  });
+
+  it('lists only images when the assistant searches the library, before the limit', async () => {
+    const env = await setup([() => [call('s1', 'search_assets', { limit: 2 })], () => finish('Found them.')]);
+    await withLibrary(env);
+    await env.run('What photos do I have?');
+    const listed = toolResult(env.adapter.requests[1], 's1').assets;
+    expect(listed.map((a: { assetId: string }) => a.assetId)).toEqual([first.id, second.id]);
+  });
+
+  it('never takes a library record filed under another ID for that image', () => {
+    const state = createStarterState('business', 'Test', false);
+    state.assets.assets[first.id] = { ...second };
+    state.assets.assets[second.id] = second;
+    expect(libraryImage(state, first.id)).toBeNull();
+    expect(libraryImage(state, second.id)).toBe(second);
+    expect(libraryImage(state, 'constructor')).toBeNull();
+    expect(libraryImage(state, '__proto__')).toBeNull();
+    // A name that is not text still gives the image a readable one.
+    state.assets.assets.a_numbered = { ...second, id: 'a_numbered', name: 42 as never };
+    expect(imageRef(libraryImage(state, 'a_numbered')!)).toEqual({ assetId: 'a_numbered', name: 'Untitled image' });
   });
 });
 

@@ -1,4 +1,4 @@
-import { turnQuestions, type ChatMessage, type ChatQuestion, type Conversation, type RunStatus } from '@shared/api';
+import { turnQuestions, type ChatImageRef, type ChatMessage, type ChatQuestion, type Conversation, type RunStatus } from '@shared/api';
 
 /** The question the running request is waiting on, which the composer answers. */
 export interface WaitingQuestion {
@@ -56,4 +56,36 @@ export function isPaused(asking: WaitingQuestion | null, messageId: string, live
  */
 export function isStarting(m: { text?: string; result?: unknown; activities?: unknown[] }, live: boolean, waitingHere: boolean): boolean {
   return live && !waitingHere && !m.result && !m.text && !(m.activities?.length ?? 0);
+}
+
+/**
+ * Images shown together, each with the label that tells it apart: its name, and its asset ID as well when another
+ * image shown with it, or in the `library`, has the same name (two imports both called "hero"), so the author can
+ * match the one they mean.
+ */
+export function imageLabels<T extends ChatImageRef>(images: T[], library: ChatImageRef[] = []): Array<T & { label: string; sharedName: boolean }> {
+  // A hand-edited library can hold a name that is not text: it matches nothing.
+  const key = (n: unknown) => (typeof n === 'string' ? n.trim().toLowerCase() : '');
+  const ids = new Map<string, Set<string>>();
+  for (const i of [...images, ...library]) {
+    if (!ids.has(key(i.name))) ids.set(key(i.name), new Set());
+    ids.get(key(i.name))!.add(i.assetId);
+  }
+  return images.map((i) => {
+    const sharedName = (ids.get(key(i.name))?.size ?? 0) > 1;
+    return { ...i, sharedName: sharedName && !!key(i.name), label: sharedName && key(i.name) ? `${i.name.trim()} (${i.assetId})` : i.name };
+  });
+}
+
+/** The images a saved question offered, in order: anything malformed in an older transcript is left out. */
+export function offeredImages(q: Pick<ChatQuestion, 'images'>): ChatImageRef[] {
+  return Array.isArray(q.images) ? q.images.filter((i) => !!i && typeof i.assetId === 'string' && typeof i.name === 'string') : [];
+}
+
+/** What the hint under a waiting question says the author can do. */
+export function questionHint(q: Pick<ChatQuestion, 'choices' | 'widen' | 'images'>): string {
+  if (q.widen) return 'Choose an option, or type a reply below. Only the first option, or a plain “yes”, allows changes beyond the selection.';
+  const images = offeredImages(q).length;
+  if (images) return `Choose a picture${q.choices.length ? ' or an option' : ''}, or type your own answer below. Preview shows a picture larger before you choose.`;
+  return q.choices.length ? 'Choose an option, or type your own answer below.' : 'Type your answer below.';
 }

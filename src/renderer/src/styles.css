@@ -1062,6 +1062,35 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .question-hint { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
 /* On a short window the card scrolls before the conversation disappears. */
 .chat:has(> .question-card) .chat-log { min-height: 96px; }
+/* Library images in the chat: offered as choices, attached to a message, or shown in the log. The pictures load
+   from the local preview server; only their IDs and names go to the AI. */
+.image-choices { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
+.image-choice { position: relative; display: flex; min-width: 0; }
+.image-choice-pick { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 5px; border: 1px solid var(--border-control); border-radius: var(--r-md); background: var(--raised); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.image-choice-pick:hover:not(:disabled) { border-color: var(--accent); }
+.image-choice-pick:disabled { cursor: default; opacity: .6; }
+.image-choice-pick .asset-thumb { width: 100%; aspect-ratio: 4 / 3; }
+.image-choice-name { display: flex; flex-direction: column; min-width: 0; font-size: 12px; line-height: 1.35; }
+.image-choice-preview { position: absolute; top: 9px; right: 9px; background: color-mix(in srgb, var(--raised) 88%, transparent); box-shadow: var(--shadow-sm); }
+.asset-tile-id { margin-top: -4px; font-size: 10px; line-height: 1.3; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.image-chip-id { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.image-chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
+.msg-user .image-chips { padding: 6px 0 0; white-space: normal; }
+.image-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; height: 32px; padding: 0 2px 0 3px; border-radius: var(--r-sm); background: var(--active); font-size: 12px; color: var(--text); vertical-align: middle; }
+.image-chip .asset-thumb { width: 26px; border-radius: var(--r-xs); }
+.image-chip .asset-noimg { width: 14px; height: 14px; }
+.image-chip-text { display: flex; flex-direction: column; min-width: 0; max-width: 180px; line-height: 1.2; }
+.image-chip.missing .image-chip-text > .ellipsis { color: var(--text-2); text-decoration: line-through; }
+.image-chip button { width: 24px; height: 24px; flex: none; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); background: none; color: var(--text-2); padding: 0; }
+.image-chip button:hover { background: var(--hover); color: var(--text); }
+.image-chip button svg { width: 12px; height: 12px; }
+.answered-image { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.answered-image .image-chips { padding: 0; }
+.image-preview { display: flex; flex-direction: column; gap: 10px; }
+.image-preview-frame { position: relative; display: flex; align-items: center; justify-content: center; min-height: 160px; border-radius: var(--r-sm); background: var(--panel-2); overflow: hidden; }
+.image-preview-frame img { display: block; max-width: 100%; max-height: min(60vh, 560px); width: auto; height: auto; }
+.image-preview-frame .asset-noimg { width: 28px; height: 28px; }
+.image-preview-meta { margin: 0; font-size: 12px; color: var(--text-2); }
 .answered { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .answered strong { color: var(--text); font-weight: 600; }
 .answered.unanswered > span:last-child { color: var(--text-3); font-style: italic; }

@@ -68,7 +68,7 @@ async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, start
     inspectLayout: async () => ({ issues: [] }),
     onBusyChange: () => undefined
   });
-  const answers: string[] = [];
+  const answers: Array<string | { assetId: string }> = [];
   const run = async (text: string, selection: ElementRef | null = null) => {
     const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection, selectionLabel: selection ? 'the selection' : null, viewport: 1280 };
     const r = await orch.send(text, ctx);
@@ -607,6 +607,8 @@ describe('selection tools', () => {
     const local = { toolCalling: 'constrained-json' as const, contextWindowTokens: 16000 };
     const cloud = { toolCalling: 'native' as const, contextWindowTokens: 400000 };
     expect(names(toolsForRun({ ...base, selection: target, capabilities: local }).tools)).toEqual(['update_selected_props', 'edit_selected_list', 'style_selected_element', 'request_wider_scope']);
+    // A request that attached library images can look them up and ask which one, whatever is selected (#12).
+    expect(names(toolsForRun({ ...base, selection: target, capabilities: local, attachedImages: true }).tools)).toEqual(['update_selected_props', 'edit_selected_list', 'style_selected_element', 'request_wider_scope', 'search_assets', 'request_clarification']);
     const cloudTools = names(toolsForRun({ ...base, selection: target, capabilities: cloud }).tools);
     expect(cloudTools).toEqual(expect.arrayContaining(['update_selected_props', 'apply_operations']));
     const localSite = names(toolsForRun({ ...base, selection: null, capabilities: local }).tools);
@@ -639,13 +641,49 @@ describe('selection tools', () => {
     expect((hero.props.primaryLink as LinkValue).type).toBe('page');
     expect(hero.variants?.tone).toBe('muted');
     expect(nodeAt(session.state, 1).props).toEqual(before);
-    // The hero has an image, so it can also look up assets; it has no list.
-    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['update_selected_props', 'style_selected_element', 'request_wider_scope', 'search_assets']);
+    // The hero has an image, so it can also look up assets and ask which one to use; it has no list.
+    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['update_selected_props', 'style_selected_element', 'request_wider_scope', 'search_assets', 'request_clarification']);
+    expect(adapter.requests[0].system).toContain('request_clarification with assetIds lets the user choose between images by sight');
+  });
+
+  it('lets a focused run on the hero offer same-named photos and set the one the author picks (#12)', async () => {
+    const photo = (id: string, file: string) => ({ id, name: 'hero', file: `static/assets/${file}.jpg`, mime: 'image/jpeg', bytes: 1000, width: 1536, height: 1024, hash: id, kind: 'image' as const, createdAt: '2026-01-01T00:00:00Z' });
+    let offered: string[] = [];
+    const { session, adapter, run, answers } = await setup(
+      [
+        () => [call('s1', 'search_assets', { query: 'hero' })],
+        (req) => {
+          offered = lastResult(req).assets.map((a: { assetId: string }) => a.assetId);
+          return [call('q1', 'request_clarification', { question: 'Which hero photo?', assetIds: offered })];
+        },
+        (req) => {
+          const assetId = /assetId: ([\w-]+)/.exec(lastResult(req).answer)?.[1] ?? null;
+          return [call('p1', 'update_selected_props', { props: { image: { assetId, alt: 'Reading nook by the window' } } })];
+        },
+        () => finish('Set the hero photo.')
+      ],
+      focused,
+      'business',
+      (s) => {
+        s.assets.assets.a_yca1j3rh = photo('a_yca1j3rh', 'hero-1a2b3c4d');
+        s.assets.assets.a_kitchen1 = { ...photo('a_kitchen1', 'kitchen-1a2b3c4d'), name: 'Kitchen' };
+        s.assets.assets.a_hodln13r = photo('a_hodln13r', 'hero-5e6f7a8b');
+      }
+    );
+    answers.push({ assetId: 'a_hodln13r' });
+    const { result } = await run('Change the hero photo; ask me which one', heroRef(session.state));
+    expect(result?.status).toBe('completed');
+    expect(offered).toEqual(['a_yca1j3rh', 'a_hodln13r']);
+    expect((nodeAt(session.state, 0).props.image as { assetId: string }).assetId).toBe('a_hodln13r');
+    // The tool the local model filled in takes up to four asset IDs, optionally.
+    const params = adapter.requests[0].tools.find((t) => t.name === 'request_clarification')!.parameters as { properties: Record<string, unknown>; required?: string[] };
+    expect(params.properties.assetIds).toMatchObject({ type: 'array', items: { type: 'string' }, maxItems: 4 });
+    expect(params.required ?? []).not.toContain('assetIds');
   });
 
   it('edits list items one at a time', async () => {
     let added = '';
-    const { session, run } = await setup(
+    const { session, adapter, run } = await setup(
       [
         (req) => {
           void req;
@@ -667,6 +705,8 @@ describe('selection tools', () => {
     const items = nodeAt(session.state, 2).props.items as Array<ListItem & { title: string; description: string }>;
     expect(items.map((i) => i.id)).toEqual([original[1], added, original[2]]);
     expect(items[1]).toMatchObject({ title: 'Renamed', description: 'Added.' });
+    // Without an image to choose, a focused run is not told how to choose one (#12).
+    expect(adapter.requests[0].system).not.toContain('assetId');
   });
 
   it('styles one part at one screen size', async () => {

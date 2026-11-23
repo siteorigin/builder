@@ -101,4 +101,26 @@ describe('continuing an unfinished request (#88)', () => {
     expect(continueContext(reply('a'), state, 1280)).toEqual({ error: 'Choose what to change, then send "Continue".' });
     expect(continueContext(undefined, state, 1280)).toEqual({ error: 'Choose what to change, then send "Continue".' });
   });
+
+  it('continues with the images the request attached, and names one removed since (#12)', () => {
+    const state = createStarterState('business', 'Test', false);
+    const home = state.site.homePageId;
+    const photo = (id: string, name: string) => ({ id, name, file: `static/assets/${id.replace('_', '-')}.jpg`, mime: 'image/jpeg', bytes: 1000, width: 1536, height: 1024, hash: id, kind: 'image' as const, createdAt: '2026-01-01T00:00:00Z' });
+    const nook = photo('a_nook', 'Reading nook');
+    const kitchen = photo('a_kitchen', 'Kitchen');
+    const font = { id: 'a_font', name: 'Brand Sans', file: 'static/assets/brand-sans.woff2', mime: 'font/woff2', bytes: 1000, hash: 'f', kind: 'font' as const, createdAt: '2026-01-01T00:00:00Z', font: { family: 'Brand Sans', weight: '400', style: 'normal' as const } };
+    const { state: both } = applyOperations(state, [{ type: 'asset.add', asset: nook }, { type: 'asset.add', asset: kitchen }, { type: 'asset.add', asset: font }]);
+    const ctx = { pageId: home, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, assetIds: [nook.id, kitchen.id] };
+    const request = { ...user('u', ctx), images: [{ assetId: nook.id, name: 'Reading nook' }, { assetId: kitchen.id, name: 'Kitchen' }] };
+    expect(continueContext(request, both, 1280)).toEqual({ ctx });
+    // The second image has gone: the request is not continued without it, and the message names that one.
+    const { state: noKitchen } = applyOperations(both, [{ type: 'asset.remove', assetId: kitchen.id }]);
+    expect(continueContext(request, noKitchen, 1280)).toEqual({ error: 'The image “Kitchen” is no longer in Assets. Attach the images you want, then send "Continue".' });
+    // With both gone, the first is named.
+    const { state: neither } = applyOperations(noKitchen, [{ type: 'asset.remove', assetId: nook.id }]);
+    expect(continueContext(request, neither, 1280)).toEqual({ error: 'The image “Reading nook” is no longer in Assets. Attach the images you want, then send "Continue".' });
+    // A font, or an ID the library never had, is not an image either.
+    expect(continueContext(user('u', { ...ctx, assetIds: [nook.id, font.id] }), both, 1280)).toEqual({ error: 'An image attached to that request is no longer in Assets. Attach the images you want, then send "Continue".' });
+    expect(continueContext(user('u', { ...ctx, assetIds: ['a_unknown'] }), both, 1280)).toEqual({ error: 'An image attached to that request is no longer in Assets. Attach the images you want, then send "Continue".' });
+  });
 });

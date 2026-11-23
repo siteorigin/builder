@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, Conversation } from '@shared/api';
-import { composerAction, isPaused, isStarting, shownQuestions, waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
+import { composerAction, imageLabels, isPaused, isStarting, offeredImages, questionHint, shownQuestions, waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
 
 const t = '2026-11-20T09:00:00.000Z';
 const audience = { id: 'q_1', text: 'Who is the page for?', choices: ['New clients', 'Both equally'], answered: 'Both equally' };
@@ -94,5 +94,55 @@ describe('the "Getting started" spinner', () => {
     expect(isStarting(empty, false, false)).toBe(false);
     expect(isStarting(turn({ text: 'Looking' }), true, false)).toBe(false);
     expect(isStarting(turn({ activities: [{ id: 'a', label: 'Reading', status: 'done' }] }), true, false)).toBe(false);
+  });
+});
+
+describe('questions that offer library images (#12)', () => {
+  it('names each picture, and adds the asset ID only where another shown with it, or in the library, has the same name', () => {
+    expect(
+      imageLabels([
+        { assetId: 'a_yca1j3rh', name: 'hero' },
+        { assetId: 'a_hodln13r', name: 'Hero ' },
+        { assetId: 'a_kitchen', name: 'Kitchen' }
+      ])
+    ).toEqual([
+      { assetId: 'a_yca1j3rh', name: 'hero', label: 'hero (a_yca1j3rh)', sharedName: true },
+      { assetId: 'a_hodln13r', name: 'Hero ', label: 'Hero (a_hodln13r)', sharedName: true },
+      { assetId: 'a_kitchen', name: 'Kitchen', label: 'Kitchen', sharedName: false }
+    ]);
+    // One "hero" attached while another is in the library: still told apart. The same image listed twice is not a clash.
+    const library = [
+      { assetId: 'a_yca1j3rh', name: 'hero' },
+      { assetId: 'a_hodln13r', name: 'hero' },
+      { assetId: 'a_nook', name: 'Reading nook' }
+    ];
+    expect(imageLabels([{ assetId: 'a_hodln13r', name: 'hero' }], library)).toEqual([{ assetId: 'a_hodln13r', name: 'hero', label: 'hero (a_hodln13r)', sharedName: true }]);
+    expect(imageLabels([{ assetId: 'a_nook', name: 'Reading nook' }], library)).toEqual([{ assetId: 'a_nook', name: 'Reading nook', label: 'Reading nook', sharedName: false }]);
+    // A hand-edited library name that is not text clashes with nothing and breaks nothing.
+    expect(imageLabels([{ assetId: 'a_1', name: 'hero' }], [{ assetId: 'a_odd', name: 42 as never }, { assetId: 'a_odd2', name: 42 as never }])).toEqual([{ assetId: 'a_1', name: 'hero', label: 'hero', sharedName: false }]);
+  });
+
+  it('reads the offered pictures of a saved question in order, leaving out anything malformed', () => {
+    expect(offeredImages({ images: [{ assetId: 'a_1', name: 'hero' }, null, { assetId: 7, name: 'x' }, { assetId: 'a_x' }, { assetId: 'a_2', name: 'hero' }] as never })).toEqual([
+      { assetId: 'a_1', name: 'hero' },
+      { assetId: 'a_2', name: 'hero' }
+    ]);
+    expect(offeredImages({})).toEqual([]);
+    expect(offeredImages({ images: 'a_1' as never })).toEqual([]);
+  });
+
+  it('says how a picture question is answered, and keeps the other hints', () => {
+    const img = [{ assetId: 'a_1', name: 'hero' }];
+    expect(questionHint({ choices: [], images: img })).toBe('Choose a picture, or type your own answer below. Preview shows a picture larger before you choose.');
+    expect(questionHint({ choices: ['Keep it'], images: img })).toBe('Choose a picture or an option, or type your own answer below. Preview shows a picture larger before you choose.');
+    expect(questionHint({ choices: ['A'] })).toBe('Choose an option, or type your own answer below.');
+    expect(questionHint({ choices: [] })).toBe('Type your answer below.');
+    expect(questionHint({ choices: ['Yes', 'No'], widen: true })).toBe('Choose an option, or type a reply below. Only the first option, or a plain “yes”, allows changes beyond the selection.');
+  });
+
+  it('shows an answered picture question in the turn like any other', () => {
+    const asked = { id: 'q1', text: 'Which photo?', choices: ['Keep it'], images: [{ assetId: 'a_1', name: 'hero' }, { assetId: 'a_2', name: 'hero' }], answered: 'hero', answeredAssetId: 'a_2' };
+    const m: ChatMessage = { id: 'm1', role: 'assistant', text: '', time: '', questions: [asked] };
+    expect(shownQuestions(m, null)).toEqual([{ ...asked, key: 'q1' }]);
   });
 });

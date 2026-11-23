@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import type { ProjectState } from '@shared/types';
+import type { AssetRecord, ProjectState } from '@shared/types';
+import type { ChatImageRef } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import { EditOperationSchema, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
@@ -45,6 +46,11 @@ export const TOOL_ARGS = {
   request_clarification: z.object({
     question: z.string().min(1).max(300),
     choices: z.array(z.string().max(80)).max(4).optional(),
+    assetIds: z
+      .array(z.string())
+      .max(4)
+      .optional()
+      .describe('Library images to offer as choices, by the assetId search_assets returns. The user sees each picture and its name; the answer names the chosen assetId.'),
     widenScope: z.boolean().optional().describe('Set true to ask permission to change more than the selected element. The app shows yes/no choices; on yes, the run may change anything.')
   }),
   upsert_page_with_sections: UPSERT_ARGS,
@@ -60,7 +66,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   inspect_element: 'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree.',
   search_components: 'Search the theme catalogue by keywords. Returns componentIds you can insert with node.insert.',
   read_component: 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.',
-  search_assets: 'List imported images by name and description. You cannot see image contents.',
+  search_assets: 'List imported images by name and description, with the assetId that identifies each one (two images can share a name). You cannot see image contents.',
   apply_operations:
     'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
@@ -68,7 +74,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   inspect_layout: 'Measure a page in the live preview at a viewport width: horizontal overflow, elements outside the viewport, whether each image loaded (report.images: failed images are files that could not be loaded; unverified ones were still loading when the check ran out of time, which is not a problem with the site), missing alt text, heading structure and runtime errors. Structural evidence only; no screenshots.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
   request_clarification:
-    'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four short, concrete options in choices; the user can also type their own answer. One question per call: ask the next one after the answer comes back.',
+    'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four short, concrete options in choices; the user can also type their own answer. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
   ...SELECTION_DESCRIPTIONS
@@ -146,15 +152,16 @@ const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameter
  * them. A cloud model with room to spare also keeps the general tools for anything they cannot express, and a
  * selection they cannot cover (a layout element, a component's own definition) always uses the general tools.
  */
-export function toolsForRun(opts: { state: ProjectState; selection: SelectionTarget | null; capabilities: Pick<ModelCapabilities, 'toolCalling' | 'contextWindowTokens'>; codeEnabled: boolean; definitionOps: boolean }): RunTools {
+export function toolsForRun(opts: { state: ProjectState; selection: SelectionTarget | null; capabilities: Pick<ModelCapabilities, 'toolCalling' | 'contextWindowTokens'>; codeEnabled: boolean; definitionOps: boolean; attachedImages?: boolean }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const general = toolDefinitions({ codeEnabled, definitionOps });
   const focused = capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
   if (selection) {
     const micro = selectionTools(state, selection);
     if (!micro) return { tools: general, mode: 'general', focused: false };
-    // An image can only be chosen by its asset ID, so a selection with one can also look them up.
-    const assets = usesImage(micro) ? general.filter((t) => t.name === 'search_assets') : [];
+    // An image can only be chosen by its asset ID, so a selection with one, or a request that attached images, can
+    // also look them up and ask the user to choose between them by sight.
+    const assets = usesImage(micro) || opts.attachedImages ? general.filter((t) => t.name === 'search_assets' || t.name === 'request_clarification') : [];
     return { tools: focused ? [...micro, ...assets] : [...micro, ...general], mode: 'selection', focused };
   }
   const macros: ToolDefinition[] = [
@@ -164,6 +171,28 @@ export function toolsForRun(opts: { state: ProjectState; selection: SelectionTar
   return { tools: [...macros, ...(focused ? general.filter((t) => t.name !== 'apply_operations') : general)], mode: 'site', focused };
 }
 
+/** An image in the project's library, or null for an unknown ID or a font. */
+export function libraryImage(state: ProjectState, assetId: unknown): AssetRecord | null {
+  if (typeof assetId !== 'string' || !Object.hasOwn(state.assets.assets, assetId)) return null;
+  const a = state.assets.assets[assetId];
+  // A record filed under another ID (a hand-edited library) is not that image.
+  return a?.kind === 'image' && a.id === assetId ? a : null;
+}
+
+/** What the AI is told about a library image: its identity and text, never its pixels, file or location data. */
+export function assetSummary(a: AssetRecord) {
+  return { assetId: a.id, name: a.name, width: a.width, height: a.height, description: a.description, altSuggestion: a.altSuggestion };
+}
+
+/** How a conversation names an image: an empty name still reads as something. */
+export const imageRef = (a: AssetRecord): ChatImageRef => ({ assetId: a.id, name: (typeof a.name === 'string' && a.name.trim()) || 'Untitled image' });
+
+/** What the AI hears when the user picks an offered image, live and when the conversation is replayed. */
+export const imageAnswer = (img: ChatImageRef) => `I chose the image "${img.name}" (assetId: ${img.assetId}).`;
+
+/** A library image as it is listed for the AI among choices or attachments. */
+export const imageLabel = (img: ChatImageRef) => `image "${img.name}" (assetId: ${img.assetId})`;
+
 export interface ToolHost {
   state(): ProjectState;
   revision(): number;
@@ -171,7 +200,8 @@ export interface ToolHost {
   apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
   compileAll(): Promise<Diagnostic[]>;
   inspectLayout(pageId: string, width: number): Promise<unknown>;
-  ask(question: string, choices: string[], widenScope?: boolean): Promise<string>;
+  /** `images`: library images offered as choices, already checked to be in the project. */
+  ask(question: string, choices: string[], widenScope?: boolean, images?: ChatImageRef[]): Promise<string>;
   /** What the macro tools remember during a run. */
   macros?: MacroMemory;
   /** The element a selection-scoped run is working on. */
@@ -274,10 +304,11 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'search_assets': {
       const a = args as z.infer<(typeof TOOL_ARGS)['search_assets']>;
       const q = (a.query ?? '').toLowerCase();
+      // Fonts are assets too, but never images: they are left out before the limit.
       const list = Object.values(state.assets.assets)
-        .filter((x) => !q || `${x.name} ${x.description ?? ''} ${x.altSuggestion ?? ''}`.toLowerCase().includes(q))
+        .filter((x) => !!x && libraryImage(state, x.id) === x && (!q || `${x.name} ${x.description ?? ''} ${x.altSuggestion ?? ''}`.toLowerCase().includes(q)))
         .slice(0, a.limit ?? 20)
-        .map((x) => ({ assetId: x.id, name: x.name, width: x.width, height: x.height, description: x.description, altSuggestion: x.altSuggestion }));
+        .map(assetSummary);
       return { ok: true, content: { assets: list, note: 'Image contents are not available; rely on names and descriptions.' } };
     }
     case 'apply_operations': {
@@ -346,7 +377,13 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'request_clarification': {
       const a = args as z.infer<(typeof TOOL_ARGS)['request_clarification']>;
-      const answer = await host.ask(a.question, a.choices ?? [], a.widenScope);
+      // The whole offer is checked before the user is asked: a question never shows a picture that is not there.
+      const ids = [...new Set(a.assetIds ?? [])];
+      if (ids.length && a.widenScope) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'A widenScope question takes no assetIds: ask about the images in a separate question.' } };
+      const missing = ids.filter((id) => libraryImage(state, id) === null);
+      if (missing.length) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `No library image has the assetId ${missing.map((id) => `"${id}"`).join(', ')}. Use the assetIds search_assets returns.` } };
+      const images = ids.map((id) => imageRef(libraryImage(state, id)!));
+      const answer = await host.ask(a.question, a.choices ?? [], a.widenScope, images.length ? images : undefined);
       return { ok: true, content: { answer } };
     }
     case 'upsert_page_with_sections':
