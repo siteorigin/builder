@@ -698,6 +698,15 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .scope-note .link { border: 0; background: none; padding: 0; color: var(--accent-text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
 .scope-note svg { width: 14px; height: 14px; flex: none; margin-top: 1px; }
 .scope-note.instance { background: var(--panel-2); }
+
+/* Export dialog: what this opening of the project exported, newest first. */
+.export-history { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.export-history h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
+.export-history > p { margin: 0; font-size: 12px; }
+.export-history ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.export-history li { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; }
+.export-history-head strong { font-size: 13px; font-weight: 600; }
+.export-history-path { word-break: break-all; user-select: text; color: var(--text-2); }
 .scope-note.instance > svg { color: var(--text-2); }
 .scope-note.shared { background: var(--green-soft); }
 .scope-note.shared > svg { color: var(--green); }

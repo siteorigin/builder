@@ -1,12 +1,23 @@
 import { useState } from 'react';
 import { ChevronRight, CircleCheck, Cloud, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
-import type { ExportFormat, ExportResult } from '@shared/api';
+import type { ExportFormat, ExportResult, RecentExport } from '@shared/api';
 import { api, setState, useStore } from '../store';
 import { Modal, Segmented, Spinner } from '../components/ui';
+
+const NO_EXPORTS: RecentExport[] = [];
+
+/** When an export finished: the time today, or the date and time on an earlier day. */
+function finishedAt(iso: string): string {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${time}`;
+}
 
 export function ExportModal() {
   const aiBusy = useStore((s) => !!s.runStatus);
   const conflicts = useStore((s) => s.snapshot?.conflicts.length ?? 0);
+  // Kept by the project, not this dialog: closing and reopening it still shows what was handed off.
+  const recent = useStore((s) => s.snapshot?.recentExports ?? NO_EXPORTS);
   const [busy, setBusy] = useState<'static' | 'source' | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [format, setFormat] = useState<ExportFormat>('folder');
@@ -84,23 +95,45 @@ export function ExportModal() {
               <strong>{result.message}</strong>
 
             </div>
-            {result.path && <span style={{ wordBreak: 'break-all', userSelect: 'text', color: 'var(--text-2)' }}>{result.path.replace(/^\/Users\/[^/]+/, '~')}</span>}
+            {result.path && <span style={{ wordBreak: 'break-all', userSelect: 'text', color: 'var(--text-2)' }}>{result.path}</span>}
             {result.warnings.map((w, i) => (
               <span key={i}>• {w}</span>
             ))}
-            {result.ok && (
-              <div className="row">
-                <button className="btn btn-sm" onClick={() => void api.projects.reveal(result.path)}>
-                  Show in folder
-                </button>
-                {result.previewUrl && (
-                  <button className="btn btn-sm" onClick={() => void api.app.openExternal(result.previewUrl!)}>
-                    Preview in browser
-                  </button>
-                )}
-              </div>
-            )}
           </div>
+        )}
+        {recent.length > 0 && (
+          <section className="export-history" aria-labelledby="export-history-title">
+            <h3 id="export-history-title">Recent exports</h3>
+            <p className="faint">Each website folder keeps its own preview running until you close this project, so you can compare them side by side.</p>
+            <ul>
+              {recent.map((e, i) => (
+                <li key={`${e.path}\n${e.exportedAt}`}>
+                  <div className="row export-history-head">
+                    <strong className="grow">
+                      {e.kind === 'site' ? 'Website' : 'Editable project'}
+                      {e.format === 'zip' ? ' (ZIP file)' : ''}
+                    </strong>
+                    <span className="faint">
+                      <time dateTime={e.exportedAt}>{finishedAt(e.exportedAt)}</time> · revision {e.revision}
+                    </span>
+                  </div>
+                  <span className="export-history-path" id={`export-history-path-${i}`}>
+                    {e.path}
+                  </span>
+                  <div className="row">
+                    <button className="btn btn-sm" aria-describedby={`export-history-path-${i}`} onClick={() => void api.projects.reveal(e.path)}>
+                      Show in folder
+                    </button>
+                    {e.previewUrl && (
+                      <button className="btn btn-sm" aria-describedby={`export-history-path-${i}`} title={e.previewUrl} onClick={() => void api.app.openExternal(e.previewUrl!)}>
+                        Preview in browser
+                      </button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
         )}
       </div>
     </Modal>

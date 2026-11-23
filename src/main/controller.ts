@@ -1,11 +1,9 @@
 import { app, BrowserWindow, dialog, shell } from 'electron';
-import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { watch, type FSWatcher } from 'node:fs';
-import { existsSync, lstatSync, mkdtempSync, promises as fs } from 'node:fs';
-import { basename, dirname, extname, isAbsolute, join, normalize, relative, sep } from 'node:path';
+import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
+import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RuntimeState } from '@shared/api';
+import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -15,6 +13,7 @@ import { themeUpdates } from '@engine/theme-updates';
 import { basePath, generateManagedComponent, generatePage, defFile } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
+import { StaticPreviews } from './static-preview';
 import { copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, sectionLinkWarnings, uniqueChild } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
 import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
@@ -90,7 +89,10 @@ export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
   private createAbort: AbortController | null = null;
-  private staticServer: Server | null = null;
+  /** Previews of the open project's exported websites, one per export. */
+  private previews = new StaticPreviews();
+  /** What the open project exported since it was opened, newest first. */
+  private recentExports: RecentExport[] = [];
   private localState: LocalWorkspaceState = {};
   /** Names this opening of the project in workspace saves; null while none is open or the open one is closing. */
   private workspaceKey: string | null = null;
@@ -151,7 +153,8 @@ export class Controller {
       readOnly: s.readOnly,
       themeUpdates: s.readOnly ? undefined : themeUpdates(s.state),
       localState: this.localState,
-      workspaceKey: this.workspaceKey ?? ''
+      workspaceKey: this.workspaceKey ?? '',
+      recentExports: this.recentExports
     };
   }
 
@@ -371,6 +374,8 @@ export class Controller {
 
   /** Make `session` the open project, with its own workspace state installed in the same step. */
   private async attach(session: ProjectSession, workspace: LocalWorkspaceState) {
+    // A new opening lists only its own exports, even if an earlier one was never closed.
+    this.endExports();
     this.session = session;
     this.localState = workspace;
     this.localDirty = false;
@@ -645,11 +650,8 @@ export class Controller {
     this.watchers = [];
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watchTimer = null;
-    // The exported-site preview belongs to the project that exported it.
-    this.staticServer?.close();
-    this.staticServer = null;
     const s = this.session;
-    if (!s) return;
+    if (!s) return this.endExports();
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
     await this.onSessionClosing?.();
@@ -662,6 +664,9 @@ export class Controller {
     // From here preview work still under way finds the project gone and starts nothing; an install into the folder is
     // cancelled. Close waits for that work (a copy being made, a removal) before letting the lock go.
     if (this.session === s) this.session = null;
+    // The exported websites' previews belong to the project that exported them. A close that failed before this
+    // point leaves the project open, and its previews with it.
+    this.endExports();
     this.prepareAbort?.abort();
     await this.stopPreview();
     await this.runtimeQueue;
@@ -944,6 +949,7 @@ export class Controller {
       const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
+      this.recordExport(s, { kind: 'source', format, path: dest, revision: snap.revision, exportedAt: new Date().toISOString() });
       return { ok: true, path: dest, message: format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.', warnings, revision: snap.revision };
     });
   }
@@ -1037,70 +1043,47 @@ export class Controller {
     const pages = state.site.pageOrder.length;
     const problem = await this.publish(s, out, dest, format);
     if (problem) return { ok: false, message: problem, warnings };
+    const exportedAt = new Date().toISOString();
+    this.exportPaths.add(dest);
     if (format === 'zip') {
-      this.exportPaths.add(dest);
+      this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt });
       return { ok: true, path: dest, message: `Exported ${pages} pages as a ZIP file.`, warnings, revision };
     }
-    this.exportPaths.add(dest);
     // The export is done either way; a preview that cannot start only loses the preview button.
-    const previewUrl = await this.serveStatic(dest, basePath(state)).catch(() => undefined);
+    const previewUrl = await this.previewAndRecord(s, { kind: 'site', format, path: dest, revision, exportedAt }, basePath(state));
     return { ok: true, path: dest, message: `Exported ${pages} pages.`, warnings, revision, previewUrl };
   }
 
   /**
-   * Serve an exported folder over loopback HTTP so it can be previewed as a real static site, under the
-   * site's base path when it is published in a sub-folder.
+   * Start a website folder's own preview, so one still open in a browser keeps serving its files while later exports
+   * finish, and list the export. A project that closed while the export was put in place gets neither; one that
+   * closes while the preview binds stops it.
    */
-  private async serveStatic(root: string, base = ''): Promise<string> {
-    this.staticServer?.close();
-    this.staticServer = null;
-    const types: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.txt': 'text/plain', '.xml': 'application/xml', '.gif': 'image/gif', '.avif': 'image/avif' };
-    const server = createServer(async (req, res) => {
-      try {
-        const url = new URL(req.url ?? '/', 'http://x');
-        const pathname = decodeURIComponent(url.pathname);
-        if (base && (pathname === '/' || pathname === base)) {
-          res.writeHead(301, { location: `${base}/${url.search}` });
-          return res.end();
-        }
-        if (base && !pathname.startsWith(`${base}/`)) throw new Error('outside base');
-        let p = base ? pathname.slice(base.length) : pathname;
-        const realRoot = await fs.realpath(root);
-        const contained = async (path: string) => {
-          const real = await fs.realpath(normalize(join(root, path)));
-          const rel = relative(realRoot, real);
-          if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('denied');
-          return real;
-        };
-        let real = await contained(p);
-        if ((await fs.stat(real)).isDirectory()) {
-          // Pages are folders with an index.html: "/about" redirects to "/about/" as static hosts do.
-          if (!p.endsWith('/')) {
-            res.writeHead(301, { location: `${url.pathname}/${url.search}` });
-            return res.end();
-          }
-          p += 'index.html';
-          real = await contained(p);
-        }
-        const data = await fs.readFile(real);
-        res.writeHead(200, { 'content-type': types[extname(real)] ?? 'application/octet-stream' });
-        res.end(data);
-      } catch {
-        const nfPath = join(root, '404.html');
-        const nf = existsSync(nfPath) && !lstatSync(nfPath).isSymbolicLink() ? await fs.readFile(nfPath).catch(() => null) : null;
-        res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
-        res.end(nf ?? 'Not found');
-      }
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => {
-        server.off('error', reject);
-        resolve();
-      });
-    });
-    this.staticServer = server;
-    return `http://127.0.0.1:${(server.address() as AddressInfo).port}${base}/`;
+  private async previewAndRecord(s: ProjectSession, record: RecentExport, base: string): Promise<string | undefined> {
+    const previewUrl = this.session === s ? await this.previews.serve(record.path, base).catch(() => undefined) : undefined;
+    return this.recordExport(s, { ...record, previewUrl }) ? previewUrl : undefined;
+  }
+
+  /**
+   * Remember an export of the open project so the export dialog can list it, newest first. A new export where an
+   * earlier one was (its folder deleted since, or a ZIP file replaced) supersedes it, and stops its preview, which
+   * would otherwise serve the new files under the old proof's address.
+   */
+  private recordExport(s: ProjectSession, record: RecentExport): boolean {
+    if (this.session !== s) {
+      if (record.previewUrl) this.previews.stop(record.previewUrl);
+      return false;
+    }
+    for (const old of this.recentExports) if (old.path === record.path && old.previewUrl) this.previews.stop(old.previewUrl);
+    this.recentExports = [record, ...this.recentExports.filter((old) => old.path !== record.path)];
+    this.broadcast();
+    return true;
+  }
+
+  /** Stop every exported-website preview and forget the exports: they belonged to the project that made them. */
+  private endExports() {
+    this.previews.stopAll();
+    this.recentExports = [];
   }
 
   /** Only the open project, files inside it, or folders this app exported can be revealed. */

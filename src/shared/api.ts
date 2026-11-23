@@ -86,6 +86,8 @@ export interface ProjectSnapshot {
   localState: LocalWorkspaceState;
   /** Names this opening of the project; workspace saves carry it, so one meant for another opening is dropped. */
   workspaceKey: string;
+  /** What this opening of the project exported, newest first. */
+  recentExports: RecentExport[];
 }
 
 export interface LocalWorkspaceState {
@@ -125,6 +127,21 @@ export interface ExportResult {
   message: string;
   warnings: string[];
   revision?: number;
+  previewUrl?: string;
+}
+
+/** An export the open project made since it was opened, so the author can find and compare what they handed off. */
+export interface RecentExport {
+  /** The finished website, or the editable project. */
+  kind: 'site' | 'source';
+  format: ExportFormat;
+  /** The folder or ZIP file that was written. */
+  path: string;
+  /** The project revision the export was made from. */
+  revision: number;
+  /** When the export finished (ISO 8601). */
+  exportedAt: string;
+  /** A website folder's loopback preview, while it runs; it stops when the project closes. */
   previewUrl?: string;
 }
 

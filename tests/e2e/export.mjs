@@ -4,9 +4,9 @@
 // `npm ci && npm run build`, as on a clean machine (slow, and needs the npm registry).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, delimiter, join, sep } from 'node:path';
-import { createProject, launch, scratch, step, withTimeout } from './harness.mjs';
+import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 const BUILD = process.argv.includes('--build');
 const { WORK, cleanup } = scratch('export');
@@ -59,6 +59,8 @@ step('export through the controller');
 // Folder exports ask for a parent folder and create a new folder inside it, so nothing is ever replaced.
 const exportsDir = join(WORK, 'exports');
 mkdirSync(join(exportsDir, 'harbour-lane-studio-site'), { recursive: true });
+// Somebody else's file in the folder that is already there: no export may touch it.
+writeFileSync(join(exportsDir, 'harbour-lane-studio-site', 'keep.txt'), 'not an export\n');
 const sourceOut = join(exportsDir, 'harbour-lane-studio-source');
 const staticOut = join(exportsDir, 'harbour-lane-studio-site-2');
 const sourceZip = join(exportsDir, 'source.zip');
@@ -69,6 +71,18 @@ await app.evaluate(({ dialog }, { parent, zips }) => {
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [parent] });
   dialog.showSaveDialog = async () => ({ canceled: false, filePath: queue.shift() });
 }, { parent: exportsDir, zips: [sourceZip, staticZip] });
+// Issue 212: each website proof carries its own visible title, so two successive previews can be told apart.
+const pageIds = Object.fromEntries(Object.values(after.pages).map((p) => [p.route, p.id]));
+assert.ok(pageIds['/'] && pageIds['/about/'], 'the starter has a home page and an About page');
+const titleProof = async (label) => {
+  const r = await win.evaluate(
+    ({ home, about, label }) =>
+      window.builder.project.apply({ operations: [{ type: 'page.update', pageId: home, seoTitle: label }, { type: 'page.update', pageId: about, seoTitle: `${label} · About` }] }, { label: 'Retitle' }),
+    { home: pageIds['/'], about: pageIds['/about/'], label }
+  );
+  assert.equal(r.ok, true, `the proof is retitled ${label}: ${r.error?.message}`);
+};
+await titleProof('Client proof 1');
 const src = await withTimeout(win.evaluate(() => window.builder.project.exportSource()), 120000, 'Source export');
 assert.equal(src.ok, true, `source export succeeds: ${src.message}`);
 assert.equal(src.path, sourceOut);
@@ -78,6 +92,26 @@ assert.equal(stat.path, staticOut, 'an existing folder is never replaced: the ex
 assert.ok(!stat.warnings.some((w) => /placeholder/.test(w)), `no placeholder warning when every visible image is chosen: ${stat.warnings.join(' ')}`);
 assert.ok(stat.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website export names the draft it left out: ${stat.warnings.join(' ')}`);
 
+// Issue 212: the first proof is opened in a browser tab now, before any later export, as the author did.
+assert.ok(stat.previewUrl, 'the first website export starts a preview');
+/** A browser tab on a proof: a hidden window (nothing may appear on screen) that never leaves the proof's address. */
+async function proofTab(url) {
+  const [tab] = await Promise.all([
+    app.waitForEvent('window'),
+    app.evaluate(({ BrowserWindow }, url) => {
+      const w = new BrowserWindow({ show: false, width: 1280, height: 900, webPreferences: { sandbox: true, contextIsolation: true } });
+      const origin = new URL(url).origin;
+      w.webContents.on('will-navigate', (e, to) => new URL(to).origin !== origin && e.preventDefault());
+      w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      void w.loadURL(url);
+    }, url)
+  ]);
+  await tab.waitForLoadState('load');
+  return tab;
+}
+const tab1 = await proofTab(stat.previewUrl);
+assert.equal(await tab1.title(), 'Client proof 1', 'the first proof opens with its own title');
+
 step('ZIP exports');
 const srcZip = await withTimeout(win.evaluate(() => window.builder.project.exportSource('zip')), 120000, 'Source ZIP export');
 assert.equal(srcZip.ok, true, `source ZIP export succeeds: ${srcZip.message}`);
@@ -86,6 +120,84 @@ const statZip = await withTimeout(win.evaluate(() => window.builder.project.expo
 assert.equal(statZip.ok, true, `static ZIP export succeeds: ${statZip.message}`);
 assert.equal(statZip.path, staticZip);
 assert.ok(statZip.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website ZIP export names the draft it left out: ${statZip.warnings.join(' ')}`);
+
+step('issue 212: a second website proof keeps the first one serving its own files');
+await titleProof('Client proof 2');
+const stat2 = await withTimeout(win.evaluate(() => window.builder.project.exportStatic()), 300000, 'Second static export');
+assert.equal(stat2.ok, true, `the second static export succeeds: ${stat2.message} ${stat2.warnings?.join(' ')}`);
+const staticOut2 = join(exportsDir, 'harbour-lane-studio-site-3');
+assert.equal(stat2.path, staticOut2, 'the second proof goes to the next free folder beside the first');
+assert.ok(stat2.previewUrl && stat2.previewUrl !== stat.previewUrl, 'the second proof has its own preview');
+const tab2 = await proofTab(stat2.previewUrl);
+// Refresh each tab after the second export finished, then follow its own About link.
+for (const [tab, label] of [[tab1, 'Client proof 1'], [tab2, 'Client proof 2']]) {
+  const reloaded = await tab.reload();
+  assert.equal(reloaded?.status(), 200, `${label} still serves its home page when refreshed after the later export`);
+  assert.equal(await tab.title(), label, `${label} shows its own home page`);
+  await Promise.all([tab.waitForURL(/\/about\/$/), tab.locator('a[href*="about"]').first().click()]);
+  assert.equal(await tab.title(), `${label} · About`, `${label} serves its own About page`);
+  await tab.reload();
+  assert.equal(await tab.title(), `${label} · About`, `${label} serves its own About page when refreshed`);
+  await tab.close();
+}
+
+step('issue 212: the export dialog still lists what was handed off after it is closed and reopened');
+const recent = (await win.evaluate(() => window.builder.project.snapshot())).recentExports;
+assert.deepEqual(
+  recent.map((e) => [e.kind, e.format, e.path]),
+  [['site', 'folder', staticOut2], ['site', 'zip', staticZip], ['source', 'zip', sourceZip], ['site', 'folder', staticOut], ['source', 'folder', sourceOut]],
+  'every export of this opening is listed, newest first'
+);
+assert.deepEqual(recent.map((e) => e.previewUrl), [stat2.previewUrl, undefined, undefined, stat.previewUrl, undefined], 'each website folder keeps its own preview');
+assert.ok(recent[0].revision > recent[3].revision, 'the proofs name the revisions they were made from');
+// Finder must not open during tests: Show in folder records what it would reveal instead.
+await app.evaluate(({ shell }) => {
+  globalThis.revealed = [];
+  shell.showItemInFolder = (p) => void globalThis.revealed.push(p);
+});
+const modal = win.locator('.modal');
+const history = modal.getByRole('region', { name: 'Recent exports' });
+const closeDialog = async () => {
+  await modal.getByRole('button', { name: 'Close', exact: true }).last().click();
+  await modal.waitFor({ state: 'detached' });
+};
+for (let open = 0; open < 2; open++) {
+  await win.getByRole('button', { name: 'Export', exact: true }).click();
+  const items = history.getByRole('listitem');
+  await items.first().waitFor();
+  assert.equal(await items.count(), recent.length, 'the dialog lists every export');
+  for (const [i, e] of recent.entries()) {
+    const item = items.nth(i);
+    const text = await item.innerText();
+    assert.ok(text.includes(e.path), `row ${i} shows where the export went: ${text}`);
+    assert.ok(text.includes(`revision ${e.revision}`), `row ${i} names its revision: ${text}`);
+    assert.match(text, e.kind === 'site' ? /^Website/ : /^Editable project/, `row ${i} says what was exported`);
+    assert.equal(text.includes('(ZIP file)'), e.format === 'zip', `row ${i} says whether it is a ZIP file`);
+    const preview = item.getByRole('button', { name: 'Preview in browser' });
+    assert.equal(await preview.count(), e.previewUrl ? 1 : 0, `row ${i} offers a preview only for a website folder`);
+    if (e.previewUrl) assert.equal(await preview.getAttribute('title'), e.previewUrl, `row ${i} previews its own proof`);
+    if (open) continue;
+    await item.getByRole('button', { name: 'Show in folder' }).click();
+    const shown = await eventually(async () => {
+      const r = await app.evaluate(() => globalThis.revealed.splice(0));
+      assert.equal(r.length, 1, 'Show in folder reveals one item');
+      return r[0];
+    });
+    assert.equal(shown, realpathSync(e.path), `row ${i} reveals its own export`);
+  }
+  await closeDialog();
+}
+
+step('issue 212: an export made in the dialog joins the list at once');
+await win.getByRole('button', { name: 'Export', exact: true }).click();
+await modal.getByRole('button', { name: /Editable project, for a developer/ }).click();
+await modal.getByRole('status').filter({ hasText: 'Source project exported.' }).waitFor({ timeout: 120000 });
+const sourceOut2 = join(exportsDir, 'harbour-lane-studio-source-2');
+assert.equal(await history.getByRole('listitem').count(), recent.length + 1, 'the new export is listed');
+assert.ok((await history.getByRole('listitem').first().innerText()).includes(sourceOut2), 'the newest export is listed first');
+await closeDialog();
+assert.deepEqual(readdirSync(join(exportsDir, 'harbour-lane-studio-site')), ['keep.txt'], 'the folder that was already there was never written into');
+assert.equal(readFileSync(join(exportsDir, 'harbour-lane-studio-site', 'keep.txt'), 'utf8'), 'not an export\n');
 for (const zip of [sourceZip, staticZip]) assert.equal(readFileSync(zip).subarray(0, 4).toString('hex'), '504b0304', `${basename(zip)} is a ZIP file`);
 const listing = (zip) => spawnSync('unzip', ['-Z1', zip], { encoding: 'utf8' });
 const siteList = listing(staticZip);
@@ -141,6 +253,7 @@ assert.match(readFileSync(join(sourceOut, 'README.md'), 'utf8'), /^# Harbour Lan
 
 step('I09: scan the static export');
 const staticFiles = scan(staticOut, 'static');
+scan(staticOut2, 'second static');
 assert.ok(staticFiles.includes('index.html') && staticFiles.includes('about/index.html'), 'static export has the prerendered pages');
 noDeletedImage(staticFiles, 'static');
 assert.deepEqual(staticFiles.filter((f) => draftNames.includes(basename(f))), [], 'the website has no files of the unused draft');
