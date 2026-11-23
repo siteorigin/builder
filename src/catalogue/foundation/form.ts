@@ -407,6 +407,15 @@ export interface FormField {
   label?: unknown;
 }
 
+/** `String(value)`, or '' for a stored value that has no text form (a hand-edited document can hold anything). */
+function text(value: unknown): string {
+  try {
+    return String(value);
+  } catch {
+    return '';
+  }
+}
+
 function slug(text: string): string {
   return text
     .toLowerCase()
@@ -416,7 +425,7 @@ function slug(text: string): string {
 
 /** The key the component sends one field's answer under: its `fieldName`, exactly. */
 export function formFieldKey(field: FormField, index: number): string {
-  const name = slug(String(field.name || field.label || '')) || `field-${index + 1}`;
+  const name = slug(text(field.name || field.label || '')) || `field-${index + 1}`;
   return RESERVED_KEYS.includes(name) ? `${name}-field` : name;
 }
 
@@ -446,7 +455,7 @@ export function formKeyClashes(fields: readonly FormField[]): Array<{ key: strin
  * field in `among` has the same one.
  */
 export function formFieldTitles(fields: readonly FormField[], indexes: readonly number[], among: readonly number[] = indexes): string {
-  const label = (i: number) => String(fields[i]?.label ?? '').trim();
+  const label = (i: number) => text(fields[i]?.label ?? '').trim();
   const names = indexes.map((i) => {
     const l = label(i);
     if (!l) return `field ${i + 1}`;

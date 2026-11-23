@@ -276,6 +276,15 @@ describe('keys stay distinct and stable through edits', () => {
     expect(fieldsOf(moved, nodeId).find((f) => f.id === 'a')!.name).toBe('field');
   });
 
+  it('still opens a hand-edited form whose label has no text form', () => {
+    const { s } = withForm([
+      { id: 'a', label: 'Email', name: 'email', type: 'email', required: true, placeholder: '' },
+      { id: 'b', label: 'Phone', name: 'email', type: 'tel', required: false, placeholder: '' },
+      { id: 'c', label: { toString: null }, name: 'backup', type: 'text', required: false, placeholder: '' }
+    ]);
+    expect(clashWarnings(s).map((d) => d.message)).toEqual([expect.stringContaining('“Email” and “Phone” fields are both sent as “email”')]);
+  });
+
   it('makes keys from long labels short enough to stay valid names', () => {
     const { s: s0, nodeId } = withForm();
     const label = 'Tell us about your project '.repeat(74).slice(0, 2000);

@@ -707,14 +707,17 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
                 <span className="ellipsis">{titleOf(it, i)}</span>
                 {/* A closed item still shows it needs attention. */}
                 {note?.error && (
-                  <span className="list-editor-flag" title={note.error}>
-                    <TriangleAlert aria-hidden="true" />
-                    <span className="sr-only" id={`list-flag-${it.id}`}>
-                      {note.error}
-                    </span>
+                  <span className="list-editor-flag" title={note.error} aria-hidden="true">
+                    <TriangleAlert />
                   </span>
                 )}
               </button>
+              {/* Outside the button, so the problem describes the row without becoming part of its name. */}
+              {note?.error && (
+                <span className="sr-only" id={`list-flag-${it.id}`}>
+                  {note.error}
+                </span>
+              )}
               <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} disabled={i === 0} onClick={() => L({ kind: 'move', itemId: it.id, index: i - 1 })}>
                 <ArrowUp />
               </button>
