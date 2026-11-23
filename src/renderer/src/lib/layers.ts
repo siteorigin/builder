@@ -137,16 +137,25 @@ function visibilityStyles(state: ProjectState, n: GraphNode, partId?: string): L
   if (n.kind !== 'instance') return partId ? [] : [{ styles: n.styles, tier: 0 }];
   const def = defOf(state, n);
   const pid = partId ?? 'root';
-  const nodeId = def?.parts[pid]?.nodeId ?? (pid === 'root' ? def?.tree?.rootIds[0] : undefined);
+  const declared = !!def && Object.hasOwn(def.parts, pid);
+  const nodeId = declared ? def!.parts[pid].nodeId : pid === 'root' ? def?.tree?.rootIds[0] : undefined;
   if (def && nodeId) return placedStyles(def, n, nodeId);
-  return def && (pid === 'root' || def.parts[pid]) ? [{ styles: n.overrides?.[pid], tier: 2, partId: pid }] : [];
+  return def && (pid === 'root' || declared) ? [{ styles: n.overrides?.[pid], tier: 2, partId: pid }] : [];
 }
 
 /** A display the generated CSS gives the layer at one size: `none`, or one that shows it. */
 type Decl = { tier: number; media: boolean; order: number; shown: boolean; by: 'base' | 'size' };
 
-/** Whether a rule's other values give the layer a display of its own (an arrangement, or custom CSS). */
-const setsDisplay = (props: ResponsiveStyles['base']) => props?.layout !== undefined || (typeof props?.customCss === 'string' && /(^|[;\s{])display\s*:/.test(props.customCss));
+/**
+ * The displays a rule's other values write, in the order the rule writes them (an arrangement, then custom
+ * CSS; its own `hidden` comes after both): true for one that shows the layer, false for `display: none`.
+ */
+function otherDisplays(props: ResponsiveStyles['base']): boolean[] {
+  const out: boolean[] = [];
+  if (props?.layout !== undefined) out.push(true);
+  if (typeof props?.customCss === 'string') for (const m of props.customCss.matchAll(/(?:^|[;\s{])display\s*:\s*([^;!}]+)/gi)) out.push(m[1].trim().toLowerCase() !== 'none');
+  return out;
+}
 
 /**
  * The display rules the generator writes for these records at one size (see addRules, resolveVisibility and
@@ -163,11 +172,11 @@ function displaysAt(layers: Layer[], size: Size): Decl[] {
     if (!input) continue;
     const weakerHides = !!l.weaker?.some((w) => w.base?.hidden === true || w[size]?.hidden === true);
     const split = SIZES.some((z) => input[z]?.hidden === false);
-    if (setsDisplay(input.base)) add(l, false, true, 'base');
+    for (const shown of otherDisplays(input.base)) add(l, false, shown, 'base');
     if (input.base?.hidden === true && !split) add(l, false, false, 'base');
     if (input.base?.hidden === false && input[size]?.hidden === undefined && weakerHides) add(l, true, true, 'base');
     if (input[size]?.hidden === false && weakerHides) add(l, true, true, 'size');
-    if (setsDisplay(input[size])) add(l, true, true, 'size');
+    for (const shown of otherDisplays(input[size])) add(l, true, shown, 'size');
     if (input[size]?.hidden === true) add(l, true, false, 'size');
     else if (split && input.base?.hidden === true && input[size]?.hidden !== false) add(l, true, false, 'base');
   }
@@ -227,43 +236,61 @@ function withEdits(n: GraphNode, edits: VisibilityEdit[]): GraphNode {
 }
 
 /**
- * Edits that make the layer hidden or shown at the given sizes, trying the smallest change first: settings that
- * work against the goal are taken away (on every record a change can write), then the every-size setting, then
- * a setting of its own for each size that still disagrees. Empty when it is already that way, or when nothing
- * a change can write would get it there.
+ * Edits that make the layer hidden or shown at the given sizes, leaving any other size as it was. The smallest
+ * change is tried first: settings that work against the goal are taken away (on every record a change can
+ * write), then the every-size setting, then a setting of its own for each size that still disagrees, on the
+ * record the inspector names first and then on the others. Empty when it is already that way, or when nothing
+ * a change can write gets it there.
  */
 function plan(state: ProjectState, n: GraphNode, partId: string | undefined, sizes: Size[], hide: boolean, everySize: boolean): VisibilityEdit[] {
-  const layers = visibilityStyles(state, n, partId);
-  const writable = layers.filter((l) => l.partId !== null);
-  // The record a new setting goes in: the one Layers and the inspector name ("root" for a placement).
+  const writable = visibilityStyles(state, n, partId).filter((l) => l.partId !== null);
+  // The record a new setting goes in first: the one Layers and the inspector name ("root" for a placement).
   const main = writable.find((l) => l.partId === (partId ?? (n.kind === 'instance' ? 'root' : undefined))) ?? writable[0];
   if (!main) return [];
+  const before = ownVisibility(state, n, partId).hiddenAt;
+  const after = (edits: VisibilityEdit[]) => ownVisibility(state, withEdits(n, edits), partId).hiddenAt;
   const reaches = (edits: VisibilityEdit[]) => {
-    const v = ownVisibility(state, withEdits(n, edits), partId).hiddenAt;
-    return sizes.every((z) => v.includes(z) === hide);
+    const v = after(edits);
+    return SIZES.every((z) => v.includes(z) === (sizes.includes(z) ? hide : before.includes(z)));
   };
   if (reaches([])) return [];
-  const edits: VisibilityEdit[] = [];
-  const target = (l: Layer) => (l.partId ? { partId: l.partId } : {});
-  const set = (l: Layer, scope: 'base' | Size, value: boolean | null) => {
-    const at = edits.findIndex((e) => e.scope === scope && e.partId === l.partId);
-    if (at >= 0) edits.splice(at, 1);
-    if ((l.styles?.[scope]?.hidden ?? null) !== value) edits.push({ ...target(l), scope, value });
+  type Set = (l: Layer, scope: 'base' | Size, value: boolean | null) => void;
+  const build = (...steps: Array<(set: Set, edits: VisibilityEdit[]) => void>) => {
+    const edits: VisibilityEdit[] = [];
+    const set: Set = (l, scope, value) => {
+      const at = edits.findIndex((e) => e.scope === scope && e.partId === l.partId);
+      if (at >= 0) edits.splice(at, 1);
+      if ((l.styles?.[scope]?.hidden ?? null) !== value) edits.push({ ...(l.partId ? { partId: l.partId } : {}), scope, value });
+    };
+    for (const step of steps) step(set, edits);
+    return edits;
   };
-  for (const l of writable) {
-    for (const z of sizes) if (l.styles?.[z]?.hidden === !hide) set(l, z, null);
-    if (everySize && l.styles?.base?.hidden === !hide) set(l, 'base', null);
+  const clearContrary = (set: Set) => {
+    for (const l of writable) {
+      for (const z of sizes) if (l.styles?.[z]?.hidden === !hide) set(l, z, null);
+      if (everySize && l.styles?.base?.hidden === !hide) set(l, 'base', null);
+    }
+    if (everySize && hide) set(main, 'base', true);
+  };
+  // Something no change can write hides it everywhere (the component's design): the placement shows it.
+  const showAll = (set: Set) => everySize && !hide && set(main, 'base', false);
+  const ownSizes = (l: Layer) => (set: Set, edits: VisibilityEdit[]) => {
+    const now = after(edits);
+    for (const z of sizes) if (now.includes(z) !== hide) set(l, z, hide);
+  };
+  const order = [main, ...writable.filter((l) => l !== main).reverse()];
+  const candidates = [
+    () => build(clearContrary),
+    () => build(clearContrary, showAll),
+    ...order.map((l) => () => build(clearContrary, showAll, ownSizes(l))),
+    // For one size, a setting of its own may be all it takes, where taking others away would move other sizes.
+    ...(everySize ? [] : order.map((l) => () => build(ownSizes(l))))
+  ];
+  for (const candidate of candidates) {
+    const edits = candidate();
+    if (edits.length && reaches(edits)) return edits;
   }
-  if (everySize && hide) set(main, 'base', true);
-  if (reaches(edits)) return edits;
-  // Something it cannot change hides it everywhere (the component's design): the placement shows it everywhere.
-  if (everySize && !hide) {
-    set(main, 'base', false);
-    if (reaches(edits)) return edits;
-  }
-  const now = ownVisibility(state, withEdits(n, edits), partId).hiddenAt;
-  for (const z of sizes) if (now.includes(z) !== hide) set(main, z, hide);
-  return reaches(edits) ? edits : [];
+  return [];
 }
 
 /** Show a layer again at one size only, leaving every other size as it is. */

@@ -319,6 +319,51 @@ describe('visibility at the previewed size', () => {
     expect(ownVisibility(s, s.pages[t.pageId].nodes[placed]).hiddenAt).toEqual([]);
   });
 
+  it('reads custom CSS that hides, and a display written in capitals', () => {
+    const t = nested();
+    hide(t, t.grid, 'base');
+    t.run([{ type: 'node.setStyle', owner: t.owner, nodeId: t.grid, scope: 'phone', property: 'customCss', value: 'DISPLAY: grid' }]);
+    expect(hiddenAt(t, t.grid)).toEqual(['tablet', 'desktop']);
+    t.run([{ type: 'node.setStyle', owner: t.owner, nodeId: t.grid, scope: 'phone', property: 'customCss', value: 'display: none' }]);
+    hide(t, t.grid, 'base', null);
+    expect(hiddenAt(t, t.grid)).toEqual(['phone']);
+  });
+
+  /** A component made from the paragraph, with a second part ("text", written after "root") on its root element. */
+  function sharedRoot() {
+    const t = nested();
+    const made = applyOperations(t.s, [{ type: 'component.createFromNode', owner: t.owner, nodeId: t.para, name: 'Intro text' }]);
+    const placed = made.results[0].nodeId as string;
+    const def = made.state.components[made.results[0].definitionId as string];
+    def.parts.text = { nodeId: def.tree!.rootIds[0], label: 'Text' };
+    let s = made.state;
+    const set = (partId: string, scope: Scope, property: string, value: unknown) =>
+      (s = applyOperations(s, [{ type: 'node.setStyle', owner: t.owner, nodeId: placed, partId, scope, property, value: value as never }]).state);
+    const node = () => s.pages[t.pageId].nodes[placed];
+    const apply = (edits: VisibilityEdit[]) => edits.forEach((e) => set(e.partId!, e.scope, 'hidden', e.value));
+    return { set, node, apply, get s() { return s; } };
+  }
+
+  it('hides on phone only without showing it on another size', () => {
+    const c = sharedRoot();
+    for (const pid of ['root', 'text']) (c.set(pid, 'base', 'hidden', true), c.set(pid, 'phone', 'hidden', false));
+    c.set('root', 'tablet', 'layout', 'row');
+    expect(ownVisibility(c.s, c.node()).hiddenAt).toEqual(['tablet', 'desktop']);
+    const edits = hideHereEdits(c.s, c.node(), 'phone');
+    expect(edits.length).toBeGreaterThan(0);
+    c.apply(edits);
+    expect(ownVisibility(c.s, c.node()).hiddenAt).toEqual(['phone', 'tablet', 'desktop']);
+  });
+
+  it('puts the hide on the override whose rule comes last when that is what it takes', () => {
+    const c = sharedRoot();
+    c.set('text', 'phone', 'layout', 'row');
+    const edits = hideHereEdits(c.s, c.node(), 'phone');
+    expect(edits).toEqual([{ partId: 'text', scope: 'phone', value: true }]);
+    c.apply(edits);
+    expect(ownVisibility(c.s, c.node()).hiddenAt).toEqual(['phone']);
+  });
+
   it('lets a later option show what an earlier one hides on phone, as its own display rule does', () => {
     const t = nested();
     const fg = t.insert('features.grid');
