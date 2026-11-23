@@ -20,12 +20,15 @@ export const CANVAS_DRAFT = 'canvas-text';
 export const PAGE_ADD_DRAFT = 'page-add';
 /** Unsaved code in a code editor dialog: only its own Save keeps it. */
 export const CODE_DRAFT = 'code-editor';
+/** Edits typed while the AI worked, kept until the author applies or discards them. */
+export const HELD_DRAFT = 'held-edits';
 
 /** What a draft still open after a settle means, by key; any other is a field still being typed in. */
 const LEFT_OPEN: Record<string, string> = {
   [CANVAS_DRAFT]: 'The text you are editing on the page has not been saved.',
   [PAGE_ADD_DRAFT]: 'The page you started adding has not been created yet.',
-  [CODE_DRAFT]: 'Your code changes have not been saved.'
+  [CODE_DRAFT]: 'Your code changes have not been saved.',
+  [HELD_DRAFT]: 'An edit you made while the AI was working has not been saved yet.'
 };
 
 /** Something that can take focus back: the field whose text was refused. */

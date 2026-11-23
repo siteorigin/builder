@@ -1,10 +1,12 @@
 import { isImeComposing } from '../lib/ime';
-import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
+import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, CircleAlert, CircleCheck, Info, X } from 'lucide-react';
-import { getConfirm, markDraft, onConfirmChange, useStore } from '../store';
+import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
+import { aiActivity, applyHeld, commitDraft, discardHeld, getConfirm, markDraft, onConfirmChange, useStore, type HeldEdit } from '../store';
 import { afterSettle, isSettling, reportRefused } from '../lib/pending';
+import { heldPrompt, type HeldAction } from '../lib/held';
+import type { ProjectSnapshot } from '@shared/api';
 
 const setToasts = (toasts: ReturnType<typeof useStore.getState>['toasts']) => useStore.setState({ toasts });
 
@@ -614,10 +616,42 @@ export function DraftInput({
   // A commit the project rejects (an empty title) leaves the stored value unchanged: show it again.
   const valueRef = useRef(value);
   valueRef.current = value;
+  // What the author started from, recorded at the first keystroke: the text, the project, and the commit
+  // as they were then. If the AI ran while they typed, the edit is built from exactly that and checked
+  // against it before it is applied (at once when the AI is idle), so it never lands on a field or value
+  // the AI changed meanwhile. Otherwise it is applied now, built from the field as it is now. A field
+  // nobody typed in commits nothing. Text the project refused stays a draft, start and all.
+  const startedAt = useRef<{ base: ProjectSnapshot | null; value: string; commit: (v: string) => unknown; ai: number } | null>(null);
+  const forget = () => (startedAt.current = null);
+  // A field follows the project until the author types in it, focused or not, so typing always starts
+  // from what the project holds.
   useEffect(() => {
-    if (!focused.current) setDraft(value);
+    if (!focused.current) forget();
+    if (!startedAt.current) setDraft(value);
   }, [value]);
-  const commit = () => (draft !== value ? onCommit(draft) : undefined);
+  const aiRan = (from: { ai: number }) => !!useStore.getState().snapshot?.aiBusy || aiActivity() !== from.ai;
+  /** Commit what was typed; returns what the commit returned (false: the project refused it). */
+  const commit = (): unknown => {
+    const from = startedAt.current;
+    if (!from || draft === from.value) return forget();
+    const result = aiRan(from) ? commitDraft(from.base, () => from.commit(draft), draft, { check: true }) : commitDraft(null, () => onCommit(draft), draft);
+    if (result !== false) forget();
+    return result;
+  };
+  // A field removed while the author is typing in it and the AI ran (it removed the page the field belongs
+  // to, so the panel moved on) keeps what was typed, checked before it is applied.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  useEffect(
+    () => () => {
+      const from = startedAt.current;
+      const text = draftRef.current;
+      if (!focused.current || !from || cancelled.current || text === from.value || !aiRan(from)) return;
+      const snap = useStore.getState().snapshot;
+      if (from.base && snap?.workspaceKey === from.base.workspaceKey) commitDraft(from.base, () => from.commit(text), text, { check: true });
+    },
+    []
+  );
   // Each focus or keystroke starts a new edit: putting the saved value back for an earlier one must not
   // overwrite it. And text held back while the project was being left (Keep editing) is still a draft.
   const edit = useRef(0);
@@ -636,6 +670,7 @@ export function DraftInput({
       edit.current++;
       // Back in a field whose text was refused, or held back while leaving (Keep editing): still a draft.
       if ((held.current || refusedLast.current) && draft !== valueRef.current) mark(true);
+      else forget();
     },
     onBlur: (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       focused.current = false;
@@ -662,12 +697,14 @@ export function DraftInput({
           if (focused.current || edit.current !== at) return;
           held.current = false;
           mark(false);
+          forget();
           setDraft(valueRef.current);
         }, 400)
       );
     },
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       edit.current++;
+      startedAt.current ??= { base: useStore.getState().snapshot, value: draft, commit: onCommit, ai: aiActivity() };
       setDraft(e.target.value);
       mark(e.target.value !== value);
       onLive?.(e.target.value);
@@ -677,6 +714,7 @@ export function DraftInput({
       if (e.key === 'Escape') {
         // Revert: blur must not commit the abandoned draft.
         cancelled.current = true;
+        forget();
         setDraft(value);
         (e.target as HTMLElement).blur();
       }
@@ -690,28 +728,110 @@ export function DraftInput({
   return multiline ? <textarea className={className === 'input' ? 'textarea' : className} rows={rows ?? 3} {...common} /> : <input className={className} {...common} />;
 }
 
+const HELD_LABELS: Record<HeldAction, string> = {
+  'stop-apply': 'Stop AI and apply my edit',
+  apply: 'Apply my edit',
+  replace: 'Replace with my edit',
+  copy: 'Copy text',
+  retry: 'Try again',
+  discard: 'Discard'
+};
+
+/** A typed edit made while the AI was working: kept, with what can be done with it now. */
+function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
+  const { message, actions } = heldPrompt(h, !!aiRunId);
+  const row = useRef<HTMLDivElement>(null);
+  // The buttons change with the edit's state and the AI's. Focus that was on one stays in the row, and a
+  // row that goes (saved or discarded) hands focus to the next one, never dropping it on the page.
+  const hadFocus = useRef(false);
+  const shown = actions.join();
+  useEffect(() => {
+    const el = row.current;
+    if (!el || !hadFocus.current || el.contains(document.activeElement)) return;
+    if (document.activeElement && document.activeElement !== document.body) return;
+    (el.querySelector<HTMLElement>('button') ?? el).focus();
+  }, [h.phase, h.writing, h.stopping, shown]);
+  useLayoutEffect(
+    () => () => {
+      const el = row.current;
+      if (!el?.contains(document.activeElement)) return;
+      const next = [...document.querySelectorAll<HTMLElement>('.toast.held')].find((r) => r !== el);
+      (next?.querySelector<HTMLElement>('button') ?? next)?.focus();
+    },
+    []
+  );
+  const run = (a: HeldAction) => {
+    if (a === 'discard') discardHeld(h.id);
+    else if (a === 'copy') void navigator.clipboard?.writeText(h.text ?? '').catch(() => undefined);
+    // Only "Stop AI and apply my edit" stops anything, and only the request the row showed.
+    else void applyHeld(h.id, { replace: a === 'replace', stopRunId: a === 'stop-apply' ? (aiRunId ?? undefined) : undefined });
+  };
+  return (
+    <div
+      ref={row}
+      className="toast held"
+      role="group"
+      tabIndex={-1}
+      aria-label={`Edit not saved: ${h.label}, ${h.place}`}
+      onFocus={() => (hadFocus.current = true)}
+      onBlur={(e) => {
+        // Moving out of the row on purpose; a button removed under focus moves nowhere.
+        if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget as Node)) hadFocus.current = false;
+      }}
+    >
+      <Pencil />
+      <div className="grow held-body">
+        <span className="held-where">
+          {h.label} · {h.place}
+        </span>
+        {h.text !== null && <q className="held-text">{h.text || '(empty)'}</q>}
+        {/* Only what this edit's state says is announced when it changes, not the whole row. */}
+        <span role="status">{message}</span>
+        <span className="held-actions">
+          {actions.map((a) => (
+            <button key={a} className="btn btn-sm btn-ghost" onClick={() => run(a)}>
+              {HELD_LABELS[a]}
+            </button>
+          ))}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
+  const held = useStore((s) => s.heldEdits);
+  const aiRunId = useStore((s) => (s.snapshot?.aiBusy ? (s.snapshot.aiRunId ?? null) : null));
   // Rendered outside the app root, so toasts stay readable (and actionable) while a dialog makes the root inert.
   return createPortal(
-    <div className="toasts" role="status" aria-live="polite">
-      {toasts.map((t) => (
-        <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'error' ? 'alert' : undefined}>
-          {t.kind === 'error' ? <CircleAlert /> : t.kind === 'success' ? <CircleCheck /> : <Info />}
-          <span className="grow">{t.text}</span>
-          {t.action && (
-            <button
-              className="btn btn-sm btn-ghost"
-              onClick={() => {
-                t.action!.run();
-                setToasts(useStore.getState().toasts.filter((x) => x.id !== t.id));
-              }}
-            >
-              {t.action.label}
-            </button>
-          )}
+    <div className="toasts">
+      {held.length > 0 && (
+        <div className="toast-group" role="region" aria-label="Edits not saved yet">
+          {held.map((h) => (
+            <HeldEditRow key={h.id} h={h} aiRunId={aiRunId} />
+          ))}
         </div>
-      ))}
+      )}
+      <div className="toast-group" role="status" aria-live="polite">
+        {toasts.map((t) => (
+          <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'error' ? 'alert' : undefined}>
+            {t.kind === 'error' ? <CircleAlert /> : t.kind === 'success' ? <CircleCheck /> : <Info />}
+            <span className="grow">{t.text}</span>
+            {t.action && (
+              <button
+                className="btn btn-sm btn-ghost"
+                onClick={() => {
+                  t.action!.run();
+                  setToasts(useStore.getState().toasts.filter((x) => x.id !== t.id));
+                }}
+              >
+                {t.action.label}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
     </div>,
     document.body
   );

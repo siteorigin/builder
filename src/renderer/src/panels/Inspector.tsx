@@ -172,7 +172,8 @@ export function Inspector() {
       </div>
     );
   }
-  if (!selection) return pageId ? <PageSettings page={st.pages[pageId]} state={st} /> : null;
+  // Keyed by page: fields being typed in belong to their page, never to the one shown after it.
+  if (!selection) return pageId ? <PageSettings key={pageId} page={st.pages[pageId]} state={st} /> : null;
   const r = resolveRef(st, selection);
   if (!r.node)
     return (
@@ -893,10 +894,10 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL}>
         <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>
-          <DraftInput value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v })} />
+          <DraftInput value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v }, 'Change browser title')} />
         </Field>
         <Field label="Description" hint="Shown by search engines. About 150 characters.">
-          <DraftInput multiline value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v })} />
+          <DraftInput multiline value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v }, 'Change page description')} />
         </Field>
         <SwitchRow checked={!!page.seo.noindex} onChange={(v) => upd({ noindex: v })} label="Hide from search engines" hint="Search engines are asked not to list this page." />
       </Section>

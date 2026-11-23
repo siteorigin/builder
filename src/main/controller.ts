@@ -120,6 +120,7 @@ export class Controller {
   /** Asks the editor to save what is still being typed before the project is unloaded; false keeps it open. */
   beforeLeave: (() => Promise<boolean>) | null = null;
   aiBusy = () => false;
+  aiRunId = (): string | null => null;
 
   constructor(private getWindow: () => BrowserWindow | null) {}
 
@@ -144,6 +145,7 @@ export class Controller {
       runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
+      aiRunId: this.aiRunId(),
       assetUsage: safeUsages(s),
       conflicts: s.conflicts,
       readOnly: s.readOnly,
@@ -744,6 +746,8 @@ export class Controller {
     // Made in an opening of a project that has since started closing, closed or been switched away from (even
     // one reopened at the same folder): never applied to this one.
     if (opts.opening !== undefined && opts.opening !== this.workspaceKey) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
+    // The AI owns the project from the moment it starts, before its run takes the session's write lock.
+    if (this.aiBusy()) return { ok: false, revision: session.revision, error: { code: 'BUSY', message: 'The AI is making changes. Stop it before editing.', recoverable: true } };
     const codeOps = new Set(['component.createCode', 'component.updateSource', 'component.convertToCode']);
     const state = session.state;
     const copiesCode = (o: { type: string; definitionId?: string; owner?: { kind: string; id: string }; nodeId?: string }) => {

@@ -6,12 +6,13 @@ import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { api, confirmDialog, getState, markDraft, saveLocal, setState, toast, useStore, type Rect } from '../store';
+import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, moveIndex } from '../lib/reorder';
 import { externalLink } from '@shared/links';
+import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateSelection, moveSelection, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
@@ -59,7 +60,8 @@ export function Canvas() {
   const [dragging, setDragging] = useState(false);
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
-  const pendingEdits = useRef(new Map<string, { ref: ElementRef; desc: string }>());
+  /** Inline text edits in progress, with the project and the AI's activity when each began. */
+  const pendingEdits = useRef(new Map<string, { ref: ElementRef; desc: string; base: ReturnType<typeof getState>['snapshot']; ai: number }>());
   /** The route the editor last asked the page to show; its acknowledgement is the one that counts. */
   const pendingNav = useRef<string | null>(null);
   /** The route the page last said it is showing, or null while a navigation the editor asked for is on its way. */
@@ -198,7 +200,7 @@ export function Canvas() {
           if (ref && desc) {
             setState({ selection: ref });
             const editId = Math.random().toString(36).slice(2);
-            pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]) });
+            pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]), base: getState().snapshot, ai: aiActivity() });
             inlineEdit.active = true;
             markDraft(CANVAS_DRAFT, true);
             post('beginTextEdit', { desc, editId });
@@ -235,7 +237,12 @@ export function Canvas() {
             reportRefused('That text change could not be saved. Try editing it in the inspector.');
             break;
           }
-          void commitText(edit.ref, value);
+          // Typed on the page, like any typed edit: if the AI ran meanwhile, it is the edit of the text as it was
+          // when editing began, checked before it is applied (held while the AI works).
+          const snap = getState().snapshot;
+          const typedText = typeof value === 'string' ? value : richTextToMarkdown(value, snap?.state.pages ?? {});
+          if (snap?.aiBusy || aiActivity() !== edit.ai) commitDraft(edit.base, () => void commitText(edit.ref, value, edit.base), typedText, { check: true });
+          else commitDraft(null, () => void commitText(edit.ref, value), typedText);
           break;
         }
         case 'linkDropped':

@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, Box, ChevronRight, Columns3, Component, Copy, Corne
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
-import { applyOps, markDraft, setState, useStore } from '../store';
+import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { askAiAbout, deleteSelection, duplicateSelection, moveSelection } from '../lib/actions';
@@ -393,6 +393,9 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   useEffect(() => {
     if (containsSel) setOpen(true);
   }, [containsSel]);
+  // The project, the name shown, and the AI's activity when renaming began: whether anything was typed is
+  // judged against that name, and if the AI ran meanwhile the new name is checked against that project.
+  const renameBase = useRef<{ snap: ReturnType<typeof getState>['snapshot']; shown: string; name: string; ai: number } | null>(null);
   useEffect(() => {
     markDraft(`layer-rename:${id}`, renaming);
     return () => markDraft(`layer-rename:${id}`, false);
@@ -408,6 +411,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   const canToggleHidden = owner.kind !== 'shell' && !isDefRoot && hideable(state, n);
   const startRename = () => {
     cancelRename.current = false;
+    renameBase.current = { snap: getState().snapshot, shown: name, name: n?.name ?? '', ai: aiActivity() };
     setRenaming(true);
   };
 
@@ -590,10 +594,16 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
               const value = e.target.value.trim();
               // Focus goes back to the row unless it moved somewhere on purpose (Tab, or a click on a control).
               if (!e.relatedTarget) requestAnimationFrame(() => rowFor(id)?.focus());
-              if (cancelRename.current || value === name) return;
+              const from = renameBase.current;
+              renameBase.current = null;
+              if (cancelRename.current || value === (from?.shown ?? name)) return;
+              // A typed name, like any typed edit: if the AI ran meanwhile, it is checked against the project as
+              // it was when renaming began before it is applied (held while the AI works).
+              const checked = !!from && (!!getState().snapshot?.aiBusy || aiActivity() !== from.ai);
+              const commit = (rename: () => void) => (checked ? commitDraft(from!.snap, rename, value, { check: true }) : commitDraft(null, rename, value));
               if (isDefRoot) {
-                if (value) void applyOps([{ type: 'component.rename', definitionId: owner.id, name: value }], 'Rename component');
-              } else if (value !== (n.name ?? '')) void applyOps([{ type: 'node.rename', owner, nodeId: id, name: value }], 'Rename layer');
+                if (value) commit(() => void applyOps([{ type: 'component.rename', definitionId: owner.id, name: value }], 'Rename component'));
+              } else if (value !== (from?.name ?? n.name ?? '')) commit(() => void applyOps([{ type: 'node.rename', owner, nodeId: id, name: value }], 'Rename layer'));
             }}
             onKeyDown={(e) => {
               e.stopPropagation();

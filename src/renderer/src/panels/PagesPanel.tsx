@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Copy, FileText, House, Menu, MoreHorizontal, Pencil, Plus, Settings2, Trash2, ArrowUp, ArrowDown, Code } from 'lucide-react';
 import { slugify, validateRoute } from '@shared/routes';
 import type { ProjectState } from '@shared/types';
-import { applyOps, markDraft, setState, toast, useStore } from '../store';
+import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
@@ -72,8 +72,12 @@ export function PagesPanel() {
     markDraft(PAGE_ADD_DRAFT, addPending);
     return () => markDraft(PAGE_ADD_DRAFT, false);
   }, [addPending]);
+  // The project and the AI's activity when renaming began: if the AI ran meanwhile, the new title is checked
+  // against that project before it is applied.
+  const renameBase = useRef<{ snap: ReturnType<typeof getState>['snapshot']; ai: number } | null>(null);
   useEffect(() => {
     markDraft('page-rename', !!renaming);
+    if (renaming) renameBase.current = { snap: getState().snapshot, ai: aiActivity() };
     return () => markDraft('page-rename', false);
   }, [renaming]);
   const openForm = () => {
@@ -170,7 +174,12 @@ export function PagesPanel() {
     setRenaming(null);
     refocus(`[data-page="${id}"]`);
     const v = value?.trim();
-    if (v && v !== st.pages[id]?.title) void applyOps([{ type: 'page.update', pageId: id, title: v }], 'Rename page');
+    const from = renameBase.current;
+    renameBase.current = null;
+    if (!v || v === (from?.snap?.state.pages[id]?.title ?? st.pages[id]?.title)) return;
+    const rename = () => void applyOps([{ type: 'page.update', pageId: id, title: v }], 'Rename page');
+    if (from && (getState().snapshot?.aiBusy || aiActivity() !== from.ai)) commitDraft(from.snap, rename, v, { check: true });
+    else commitDraft(null, rename, v);
   };
 
   const pageMenu = (el: HTMLElement | { x: number; y: number; row: HTMLElement }, id: string) => {

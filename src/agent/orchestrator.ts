@@ -170,12 +170,19 @@ export class Orchestrator {
   private clearing = 0;
   /** The last finished request's transcript write; reading or removing transcripts waits for it. */
   private saving: Promise<void> = Promise.resolve();
+  /** Settles once the current run has ended: rolled back or committed, and the app told it is idle. */
+  private runEnded: Promise<void> = Promise.resolve();
   conversation: Conversation | null = null;
 
   constructor(private deps: OrchestratorDeps) {}
 
   get busy() {
     return !!this.run;
+  }
+
+  /** The request being worked on, so a caller can stop exactly that one. */
+  get runId() {
+    return this.run?.id ?? null;
   }
 
   // -------------------------------------------------------------------------
@@ -332,13 +339,21 @@ export class Orchestrator {
     this.deps.onBusyChange(true);
     this.emitMessage(userMsg, runId);
     this.emitMessage(assistant, runId);
-    void this.execute(runId, userMsg, assistant, history).finally(async () => {
-      this.run = null;
-      this.deps.onBusyChange(false);
-      // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
-      this.saving = this.saveConversation().catch(() => undefined);
-      await this.saving;
-    });
+    this.runEnded = this.execute(runId, userMsg, assistant, history)
+      .catch((e: Error) => console.error('AI request failed', e))
+      .finally(async () => {
+        // A request that ended without a result (its rollback threw) still ends: nothing may wait on it.
+        if (!assistant.result) {
+          assistant.result = { status: 'failed', summary: 'Something went wrong while ending this request. Check the project before going on.', changes: [], validation: [], canUndo: false };
+          this.setStatus('failed');
+          this.emitMessage(assistant, runId);
+        }
+        this.run = null;
+        this.deps.onBusyChange(false);
+        // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
+        this.saving = this.saveConversation().catch(() => undefined);
+        await this.saving;
+      });
     return { ok: true, runId };
   }
 
@@ -347,6 +362,20 @@ export class Orchestrator {
     this.setStatus('stopping');
     this.run.abort.abort();
     this.run.pendingQuestion?.('(The user stopped the request.)');
+  }
+
+  /**
+   * Stop request `runId` and resolve once it has ended: its changes rolled back (or kept, when a file
+   * changed outside the app) and the app told the AI is idle. A request that already ended, or another
+   * one, is left alone: `stopped` is false and nothing was stopped.
+   */
+  async stopRun(runId: string): Promise<{ stopped: boolean; status?: RunStatus }> {
+    const run = this.run;
+    if (!run || run.id !== runId) return { stopped: false };
+    const ended = this.runEnded;
+    this.stop();
+    await ended;
+    return { stopped: true, status: run.message.result?.status ?? 'failed' };
   }
 
   answer(runId: string, answer: string) {
@@ -398,7 +427,8 @@ export class Orchestrator {
     }
     const startState = structuredClone(session.state);
     let authority: Authority = authorityFor(userMsg.context?.selection ?? null, userMsg.context?.selectionLabel ?? null);
-    this.setStatus('running');
+    // Stopped while preparing: the run is ending, not running.
+    if (!signal.aborted) this.setStatus('running');
     // Problems the project already had (including components that already fail to build) are not the run's.
     const baseline = new Set([...session.diagnostics(), ...(await this.deps.compileAll().catch(() => []))].filter((d) => d.severity === 'error').map((d) => d.message));
 
@@ -512,7 +542,8 @@ export class Orchestrator {
           this.emitMessage(msg, runId);
           run.pendingQuestion = (a) => {
             lastResume = Date.now();
-            this.setStatus('running');
+            // Stopping answers the question to release it: the run is ending, not running again.
+            if (!signal.aborted) this.setStatus('running');
             if (widen && (a === WIDEN_YES || TYPED_YES.test(a))) {
               authority = { kind: 'site' };
               resolve(`${a}. You may now change anything needed for this request.`);
@@ -532,7 +563,15 @@ export class Orchestrator {
     };
 
     const revertAndFinish = async (status: RunStatus, summary: string, error?: string) => {
-      const r = await session.abortRun();
+      let r: Awaited<ReturnType<typeof session.abortRun>>;
+      try {
+        r = await session.abortRun();
+      } catch (e) {
+        // The rollback itself failed: never reported as stopped or as a clean failure, whatever ended the run.
+        const why = (e as Error).message;
+        await finish('failed', `${summary} Its changes could not all be undone (${why}). Check the project before going on.`, { error: why, usage });
+        return;
+      }
       if (r.conflict) {
         // The AI's edits stay in place, so list them: the card is where the user goes to review them.
         await finish('conflicted', `${summary} A file was changed outside the app, so the AI changes were kept for you to review.`, { error, changes: describeOps(executedOps, startState, session.state, opResults) });

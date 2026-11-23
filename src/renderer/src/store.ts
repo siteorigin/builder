@@ -4,7 +4,8 @@ import type { EditOperation } from '@shared/ops';
 import type { ElementRef, ResponsiveScope } from '@shared/types';
 import { chatStatePatch, draftFor, withDraft, type ChatDrafts } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
-import { draftCount, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
+import { draftCount, HELD_DRAFT, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
+import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText } from './lib/held';
 
 export const api = window.builder;
 
@@ -18,6 +19,58 @@ export interface Rect {
   width: number;
   height: number;
 }
+
+/**
+ * A typed edit made while the AI was working. It is kept until the author applies or discards it.
+ * waiting: the AI is (or was) working; the author can stop it and apply the edit.
+ * applying: the AI is being stopped and the edit is applied once its changes are undone.
+ * changed: a field it writes holds something else now (shown in `current`); the author decides.
+ * gone: what it was for no longer exists. failed: the project refused it (`note` says why).
+ */
+export interface HeldEdit {
+  id: number;
+  /** The fields it writes: a newer edit of the same fields replaces it. */
+  key: string;
+  /** The opening of the project it was made in (its snapshot's workspaceKey). */
+  workspace: string;
+  operations: EditOperation[];
+  label: string;
+  /** What each field held when the author made the edit. */
+  base: unknown[];
+  /** Where the edit is (a page title, "Header"), for the author. */
+  place: string;
+  /** What the author typed, when it is plain text. */
+  text: string | null;
+  phase: 'waiting' | 'applying' | 'changed' | 'gone' | 'failed';
+  /** Commit order: a newer commit of the same fields replaces it, never an older one. */
+  seq: number;
+  /** While applying: the AI is being stopped first. */
+  stopping?: boolean;
+  /** While applying: the save is on its way and can no longer be called back. */
+  writing?: boolean;
+  /** For "changed": what the fields hold now; checked again before the author's edit replaces it. */
+  current?: unknown[];
+  currentText?: string | null;
+  /** For "gone": what no longer exists. For "failed" or "waiting": why. */
+  note?: string;
+  /** The handoff in progress; a reply for any other is ignored. */
+  attempt?: number;
+}
+
+/**
+ * How the last AI request ended, for the toolbar: `run` is its final status (null when a held edit was
+ * applied after the request had already ended), `edit` what happened to a held edit applied after it.
+ */
+export interface AiOutcome {
+  run: RunStatus | null;
+  /** The request `run` is the ending of. */
+  runId?: string;
+  edit?: 'saved' | 'held';
+}
+
+/** Counts AI activity (every status the AI reports). An edit typed while it changed knows the AI ran meanwhile. */
+let aiEpoch = 0;
+export const aiActivity = () => aiEpoch;
 
 export interface Toast {
   id: number;
@@ -68,6 +121,9 @@ interface State {
   /** Unsent messages per conversation of the open project (see lib/chatDrafts). */
   chatDrafts: ChatDrafts;
   chatContextEnabled: { page: boolean; selection: boolean };
+  /** Typed edits made while the AI was working (see HeldEdit). */
+  heldEdits: HeldEdit[];
+  aiOutcome: AiOutcome | null;
   setState: (p: Partial<State>) => void;
 }
 
@@ -104,6 +160,8 @@ export const useStore = create<State>((set) => ({
   activeRunId: null,
   chatDrafts: {},
   chatContextEnabled: { page: true, selection: true },
+  heldEdits: [],
+  aiOutcome: null,
   setState: (p) => set(p)
 }));
 
@@ -149,6 +207,31 @@ export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast
   setTimeout(() => setState({ toasts: getState().toasts.filter((t) => t.id !== id) }), kind === 'error' ? 7000 : 4000);
 }
 
+/** The typed edit being committed (see commitDraft). */
+let draft: { base: ProjectSnapshot | null; text: string | null; check: boolean } | null = null;
+
+/**
+ * Commit a typed edit: `commit` calls applyOps. `base` is the project as the author saw it when editing
+ * began and `text` what was typed. Only edits committed this way are held while the AI works (gestures
+ * are not): one held is checked against `base` before it is applied. `check` says the AI ran while the
+ * author typed: the edit is then never applied blindly, but held and checked, at once when the AI is idle.
+ */
+export function commitDraft<T>(base: ProjectSnapshot | null, commit: () => T, text: string | null = null, opts: { check?: boolean } = {}): T {
+  const prev = draft;
+  draft = { base, text, check: !!opts.check };
+  try {
+    return commit();
+  } finally {
+    draft = prev;
+  }
+}
+
+/** Orders commits, so a late reply for an older one never replaces a newer edit of the same field. */
+let commitSeq = 0;
+/** The newest commit of each field, by opening and field key, held or not, discarded or not. */
+const newestCommit = new Map<string, number>();
+const fieldOf = (workspace: string | undefined, operations: EditOperation[]) => `${workspace ?? ''}\n${fieldKey(operations)}`;
+
 /** Edits a change needs first, saved in the same batch: a section's new ID before the link that jumps to it. */
 export interface PendingEdit {
   operations: EditOperation[];
@@ -165,19 +248,31 @@ export async function applyOps(operations: EditOperation[], label: string, coale
   let landed!: (o: ApplyOutcome) => void;
   trackApply(new Promise<ApplyOutcome>((r) => (landed = r)));
   const s = getState();
+  const typed = draft ? { base: draft.base ?? s.snapshot, text: draft.text, seq: ++commitSeq, check: draft.check } : null;
+  if (typed) newestCommit.set(fieldOf(typed.base?.workspaceKey, operations), typed.seq);
   if (s.snapshot?.aiBusy) {
-    const message = 'The AI is making changes. Stop it to edit manually.';
-    toast(message, 'error', { label: 'Stop AI', run: () => void api.ai.stop() });
-    landed({ ok: false, message });
+    landed({ ok: false, message: refuseWhileAiBusy(typed, operations, label) });
     return null;
+  }
+  // Typed while the AI ran: checked against what the author saw before it is applied, never blindly.
+  if (typed?.check && typed.base) {
+    const held = holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq });
+    if (held) {
+      const id = held.id;
+      if (id === null) landed({ ok: true });
+      else void applyHeld(id).then(() => landed(heldById(id) ? { ok: false, message: HELD_MESSAGE } : { ok: true }));
+      return null;
+    }
   }
   setState({ pendingSave: s.pendingSave + 1 });
   try {
     // Named by the opening of its project, so a change sent just as that project closes never lands in the next.
     const r = await api.project.apply(expectedRevision === undefined ? { operations } : { operations, expectedRevision }, { label, coalesceKey, opening: s.snapshot?.workspaceKey });
     if (!r.ok) {
-      const message = r.error?.code === 'STALE_REVISION' ? 'The project changed while you were choosing. Choose again.' : (r.error?.message ?? 'That change could not be applied.');
-      toast(message, 'error');
+      // The AI started between the last snapshot and this edit.
+      const message =
+        r.error?.code === 'BUSY' ? refuseWhileAiBusy(typed, operations, label) : r.error?.code === 'STALE_REVISION' ? 'The project changed while you were choosing. Choose again.' : (r.error?.message ?? 'That change could not be applied.');
+      if (r.error?.code !== 'BUSY') toast(message, 'error');
       landed({ ok: false, message });
       return null;
     }
@@ -190,6 +285,153 @@ export async function applyOps(operations: EditOperation[], label: string, coale
     return null;
   } finally {
     setState({ pendingSave: Math.max(0, getState().pendingSave - 1) });
+  }
+}
+
+const HELD_MESSAGE = 'An edit you made while the AI was working has not been saved yet.';
+
+/** A typed field edit is held for the author to apply once the AI stops; anything else is refused. Returns
+ *  what became of it, for a save or a leave that is waiting on it. */
+function refuseWhileAiBusy(typed: { base: ProjectSnapshot | null; text: string | null; seq: number } | null, operations: EditOperation[], label: string): string {
+  if (typed?.base && holdEdit(typed.base, operations, label, { text: typed.text, seq: typed.seq })) return HELD_MESSAGE;
+  const message = 'The AI is making changes. Stop it to edit manually.';
+  toast(message, 'error', { label: 'Stop AI', run: () => void api.ai.stop() });
+  return message;
+}
+
+let heldSeq = 0;
+let attemptSeq = 0;
+
+/**
+ * Hold a typed edit made against `base`. Returns null when it is not a field edit that can be checked
+ * later, otherwise the held edit's ID, or null as the ID when there is nothing to hold: its project has
+ * closed, or the author has committed the same fields since (`seq` orders commits), even if that newer
+ * edit was saved or discarded meanwhile.
+ */
+export function holdEdit(base: ProjectSnapshot, operations: EditOperation[], label: string, opts: { text?: string | null; seq?: number } = {}): { id: number | null } | null {
+  // A reply that arrives after its project closed has nothing to be held in.
+  if (getState().snapshot?.workspaceKey !== base.workspaceKey) return { id: null };
+  const reads = readFields(base.state, operations);
+  if (!reads || reads.some((r) => !r.found)) return null;
+  const key = fieldKey(operations);
+  const seq = opts.seq ?? ++commitSeq;
+  if ((newestCommit.get(fieldOf(base.workspaceKey, operations)) ?? -1) > seq) return { id: null };
+  const held = getState().heldEdits;
+  const edit: HeldEdit = {
+    id: ++heldSeq,
+    seq,
+    key,
+    workspace: base.workspaceKey,
+    operations,
+    label,
+    base: reads.map((r) => (r.found ? r.value : undefined)),
+    place: placeOf(base.state, operations[0]),
+    text: opts.text !== undefined && opts.text !== null ? opts.text : typedText(operations[0]),
+    phase: 'waiting'
+  };
+  // A newer edit of the same fields replaces the older one (and any handoff still running for it).
+  // One already being written cannot be called back: it stays until its save answers.
+  setState({ heldEdits: [...held.filter((h) => h.key !== key || h.workspace !== base.workspaceKey || h.writing), edit] });
+  return { id: edit.id };
+}
+
+const heldById = (id: number) => getState().heldEdits.find((h) => h.id === id);
+function patchHeld(id: number, patch: Partial<HeldEdit>, extra: Partial<State> = {}) {
+  setState({ heldEdits: getState().heldEdits.map((h) => (h.id === id ? { ...h, ...patch } : h)), ...extra });
+}
+const removeHeld = (id: number) => getState().heldEdits.filter((h) => h.id !== id);
+
+/** Discard a held edit. One whose save is already on its way cannot be called back. */
+export function discardHeld(id: number) {
+  if (heldById(id)?.writing) return;
+  // Nothing was saved: the toolbar must not announce an earlier save as this one's.
+  const outcome = getState().aiOutcome;
+  setState({ heldEdits: removeHeld(id), aiOutcome: outcome ? { run: outcome.run, runId: outcome.runId } : null });
+}
+
+/**
+ * Apply a held edit: "Stop AI and apply my edit" (`stopRunId`: the request the author chose to stop),
+ * "Apply my edit" after the AI ended, or with `replace`, the author's choice to replace what a changed
+ * field holds now. Only the named request is stopped, and the edit applies after its changes are rolled
+ * back, and only while every field it writes still holds what the author edited (or, with `replace`,
+ * what the author reviewed).
+ */
+export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId?: string } = {}): Promise<void> {
+  const held = heldById(id);
+  if (!held || held.phase === 'applying' || (opts.replace && held.phase !== 'changed')) return;
+  const attempt = ++attemptSeq;
+  const expected = opts.replace ? held.current! : held.base;
+  patchHeld(id, { phase: 'applying', attempt, stopping: !!opts.stopRunId, writing: false, note: undefined });
+  const live = () => {
+    const h = heldById(id);
+    return h && h.attempt === attempt ? h : null;
+  };
+  const settle = (patch: Partial<HeldEdit>, extra: Partial<State> = {}) => patchHeld(id, { attempt: undefined, stopping: false, writing: false, ...patch }, extra);
+  // How the request this stopped ended; null when it stopped none.
+  let run: RunStatus | null = null;
+  if (opts.stopRunId) {
+    // Resolves once that request has ended and its changes are rolled back. Another request is left alone.
+    let stopped: Awaited<ReturnType<typeof api.ai.stop>> | null = null;
+    try {
+      stopped = await api.ai.stop(opts.stopRunId);
+    } catch {
+      /* The snapshot below says whether it ended. */
+    }
+    if (stopped?.stopped) run = stopped.status ?? 'cancelled';
+    else {
+      // It had already ended on its own: that is how it ended, if its last status was for that request.
+      const last = getState().aiOutcome;
+      run = last?.runId === opts.stopRunId ? last.run : null;
+    }
+    if (!live()) return;
+    // Only a request that ended cleanly (rolled back, or finished before the stop reached it) leaves a
+    // project the edit can be checked against. One whose rollback failed or kept changes for review does not.
+    if (run !== null && run !== 'cancelled' && run !== 'completed' && run !== 'no-changes')
+      return settle({ phase: 'failed', note: 'The AI request did not end cleanly, so your edit was not applied. Check the page, then try again.' }, { aiOutcome: { run, edit: 'held' } });
+    patchHeld(id, { stopping: false });
+  }
+  const outcome = (edit: AiOutcome['edit']): AiOutcome => ({ run, ...(run && opts.stopRunId ? { runId: opts.stopRunId } : {}), edit });
+  for (let tries = 0; ; tries++) {
+    let snap: ProjectSnapshot | null;
+    try {
+      snap = await api.project.snapshot();
+    } catch (e) {
+      if (live()) settle({ phase: 'failed', note: (e as Error).message });
+      return;
+    }
+    const h = live();
+    // Discarded, replaced by a newer edit, or the project closed meanwhile.
+    if (!h) return;
+    // The edit belongs to a project that is no longer open.
+    if (!snap || snap.workspaceKey !== h.workspace) return setState({ heldEdits: removeHeld(id) });
+    if (snap.aiBusy) return settle({ phase: 'waiting', note: 'The AI is working on another request.' });
+    const check = checkHeld(snap.state, h.operations, expected);
+    if (check.kind === 'gone') return settle({ phase: 'gone', note: check.what }, { aiOutcome: outcome('held') });
+    if (check.kind === 'changed') return settle({ phase: 'changed', current: check.current, currentText: shownField(h.operations[0], check.current[0]) }, { aiOutcome: outcome('held') });
+    patchHeld(id, { stopping: false, writing: true });
+    setState({ pendingSave: getState().pendingSave + 1 });
+    const writing = api.project
+      .apply({ operations: h.operations, expectedRevision: snap.revision }, { label: h.label, opening: h.workspace })
+      .catch((e: Error) => ({ ok: false as const, revision: 0, error: { code: 'FAILED', message: e.message } }));
+    // Followed like any change on its way, so saving or leaving the project waits for it.
+    trackApply(writing.then((x) => ({ ok: x.ok, message: x.error?.message })));
+    const r = await writing;
+    const pendingSave = Math.max(0, getState().pendingSave - 1);
+    // The project closed while the save was on its way.
+    if (!live()) return setState({ pendingSave });
+    // In one update, so the toolbar goes straight from the AI to "your edit was saved".
+    if (r.ok) return setState({ pendingSave, heldEdits: removeHeld(id), aiOutcome: outcome('saved') });
+    setState({ pendingSave });
+    // Something else changed the project between the check and the write: check again.
+    if (r.error?.code === 'STALE_REVISION' && tries < 2) {
+      patchHeld(id, { writing: false });
+      continue;
+    }
+    if (r.error?.code === 'BUSY')
+      return getState().snapshot?.aiBusy
+        ? settle({ phase: 'waiting', note: 'The AI is working on another request.' })
+        : settle({ phase: 'failed', note: 'The project is still locked by an AI request that did not end cleanly. Reopen the project, then try again.' }, { aiOutcome: outcome('held') });
+    return settle({ phase: 'failed', note: r.error?.message ?? 'That change could not be applied.' }, { aiOutcome: outcome('held') });
   }
 }
 
@@ -206,7 +448,8 @@ export function applyAiEvent(e: AiEvent) {
   const s = getState();
   if (e.kind === 'status') {
     const terminal = ['completed', 'no-changes', 'cancelled', 'failed', 'conflicted'].includes(e.status!);
-    setState({ runStatus: terminal ? null : e.status!, activeRunId: terminal ? null : e.runId });
+    aiEpoch++;
+    setState(terminal ? { runStatus: null, activeRunId: null, aiOutcome: { run: e.status!, runId: e.runId } } : { runStatus: e.status!, activeRunId: e.runId });
     return;
   }
   const conv = s.conversation;
@@ -224,6 +467,11 @@ export function applyAiEvent(e: AiEvent) {
 }
 
 /** Mark or clear an uncommitted edit (a field, an inline rename, canvas text) so the toolbar says "Editing…". */
+// Held edits are unsaved work: saving or leaving the project says so, as it does for any open draft.
+useStore.subscribe((s, prev) => {
+  if (s.heldEdits !== prev.heldEdits) markDraft(HELD_DRAFT, s.heldEdits.length > 0);
+});
+
 export function markDraft(key: string, on: boolean) {
   if (!setDraft(key, on)) return;
   useStore.setState({ drafting: draftCount() });
