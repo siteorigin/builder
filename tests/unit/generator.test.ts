@@ -6,7 +6,7 @@ import { installComponent, makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
 import { validateStyleValue } from '@shared/styles';
 import { applyOperations } from '@engine/apply';
-import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, generateManagedComponent, generateProject, js, propLocals, resolveLink } from '@generator/index';
+import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, generateProject, js, propLocals, resolveLink } from '@generator/index';
 import { externalLink } from '@shared/links';
 import { usedIcons } from '@generator/runtime-files';
 import { placeholderImageCount } from '@generator/checks';
@@ -367,5 +367,65 @@ describe('contact form', () => {
     expect(src).toContain('role="status"');
     expect(src).toContain('role="alert"');
     expect(src).toContain('aria-busy');
+  });
+});
+
+describe('editor variants and hot updates', () => {
+  // #14: hydrated markup that starts with a component lost track of its own DOM once that component was
+  // hot-updated alone, so the next update of the file left the old copy above the new one.
+  /** The local name a generated file imports another generated file under. */
+  const importOf = (source: string, file: string) => source.match(new RegExp(`import (\\w+) from "[^"]*/${file.split('/').pop()!.replace(/[.]/g, '\\.')}";`))?.[1];
+
+  it('puts a page that starts with a component between boundaries of its own, in editor variants only', () => {
+    const s = fresh();
+    const hero = home(s).nodes[home(s).rootIds[0]] as InstanceNode;
+    expect(s.components[hero.definitionId].componentId).toBe('hero.split');
+    const dev = generateProject(s, { instrument: true });
+    const page = dev.get('src/routes/+page.svelte')!;
+    const heroName = importOf(page, defFile(s.components[hero.definitionId]));
+    expect(heroName).toBeTruthy();
+    // The head stays outside; the boundary holds every section, starting with the hero.
+    expect(page).toMatch(new RegExp(`</svelte:head>\\n\\n\\{#key 'siteorigin'\\}\\n<${heroName}\\n[\\s\\S]*\\n\\{/key\\}\\n$`));
+    expect(page.match(/\{#key /g)).toHaveLength(1);
+    expect(page.slice(0, page.indexOf('{#key'))).not.toMatch(/<C_/);
+    // The layout starts and ends with markup of its own, and the exported files never carry the boundary.
+    expect(dev.get('src/routes/+layout.svelte')).not.toContain('{#key');
+    for (const [path, source] of generateProject(s)) if (path.endsWith('.svelte')) expect(source, path).not.toContain('{#key');
+    expect(compileAll(dev)).toEqual([]);
+  });
+
+  it('leaves a component that is one native element as it is', () => {
+    const s = fresh();
+    const def = defOf(s, 'hero.split');
+    const source = generateProject(s, { instrument: true }).get(defFile(def))!;
+    expect(source).toMatch(/<\/script>\n\n<section [\s\S]*<\/section>\n$/);
+    expect(source).not.toContain('{#key');
+  });
+
+  it('puts a component that starts with another component between boundaries of its own', () => {
+    const base = fresh();
+    const page = home(base);
+    const applied = applyOperations(base, [{ type: 'component.createFromNode', owner: { kind: 'page', id: page.id }, nodeId: page.rootIds[0], name: 'Hero band' }]);
+    const s = applied.state;
+    const created = applied.results[0] as { definitionId: string };
+    const outer = s.components[created.definitionId];
+    const inner = outer.tree!.nodes[outer.tree!.rootIds[0]] as InstanceNode;
+    expect(inner.kind).toBe('instance');
+    const dev = generateProject(s, { instrument: true });
+    const source = dev.get(defFile(outer))!;
+    const innerName = importOf(source, defFile(s.components[inner.definitionId]));
+    expect(innerName).toBeTruthy();
+    expect(source).toMatch(new RegExp(`</script>\\n\\n\\{#key 'siteorigin'\\}\\n<${innerName}\\n[\\s\\S]*\\n\\{/key\\}\\n$`));
+    expect(generateProject(s).get(defFile(outer))).not.toContain('{#key');
+    expect(compileAll(dev)).toEqual([]);
+  });
+
+  it('keeps an empty page valid', () => {
+    const s = fresh();
+    home(s).rootIds = [];
+    home(s).nodes = {};
+    const page = generateProject(s, { instrument: true }).get('src/routes/+page.svelte')!;
+    expect(page).toMatch(/\{#key 'siteorigin'\}\n\n\{\/key\}\n$/);
+    expect(compileAll(new Map([['src/routes/+page.svelte', page]]))).toEqual([]);
   });
 });
