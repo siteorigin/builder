@@ -69,7 +69,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       visited.add(id);
       const bindings: unknown[] = [n.when, n.unless];
       if (n.kind === 'text') bindings.push(n.text);
-      if (n.kind === 'image') bindings.push(n.image);
+      if (n.kind === 'image') bindings.push(n.image, n.fallbackAlt);
       if (n.kind === 'link') bindings.push(n.link, n.label, n.appearance);
       if (n.kind === 'icon') bindings.push(n.icon);
       if (n.kind === 'repeat') bindings.push(n.list);

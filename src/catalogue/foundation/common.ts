@@ -88,7 +88,7 @@ export function headingBlock(
 ): string {
   const kids: string[] = [];
   if (opts.eyebrow !== false) kids.push(b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }));
-  kids.push(b.text('heading', opts.level ?? 'h2', { $prop: 'heading' }, { name: 'Heading', styles: { textStyle: tok(opts.style ?? 'text.h2') } }));
+  kids.push(b.text('heading', opts.level ?? 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok(opts.style ?? 'text.h2') } }));
   if (opts.lead !== false)
     kids.push(b.text('lead', 'p', { $prop: 'lead' }, { name: 'Lead', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles } }));
   return b.el(
@@ -96,6 +96,8 @@ export function headingBlock(
     'div',
     {
       name: 'Heading group',
+      // Cleared eyebrow, heading and lead leave no empty box (and no extra gap) behind.
+      collapseEmpty: true,
       styles: {
         base: {
           layout: 'stack',

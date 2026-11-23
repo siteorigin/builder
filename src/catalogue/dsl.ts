@@ -53,8 +53,8 @@ export class TreeBuilder {
     return node.id;
   }
 
-  el(id: string, tag: ElementTag, opts: NodeOpts, children: string[]): string {
-    return this.add({ id, kind: 'element', tag, children }, opts);
+  el(id: string, tag: ElementTag, opts: NodeOpts & { collapseEmpty?: boolean }, children: string[]): string {
+    return this.add({ id, kind: 'element', tag, children, ...(opts.collapseEmpty ? { collapseEmpty: true } : {}) }, opts);
   }
   text(id: string, tag: TextTag, text: string | Binding, opts: NodeOpts = {}): string {
     return this.add({ id, kind: 'text', tag, text }, opts);
@@ -62,8 +62,8 @@ export class TreeBuilder {
   rich(id: string, text: string[] | Binding, opts: NodeOpts = {}): string {
     return this.add({ id, kind: 'text', tag: 'div', text: isBinding(text) ? text : toRichText(text), rich: true }, opts);
   }
-  image(id: string, image: ImageValue | Binding, opts: NodeOpts = {}): string {
-    return this.add({ id, kind: 'image', image }, opts);
+  image(id: string, image: ImageValue | Binding, opts: NodeOpts & { fallbackAlt?: string | Binding } = {}): string {
+    return this.add({ id, kind: 'image', image, ...(opts.fallbackAlt !== undefined ? { fallbackAlt: opts.fallbackAlt } : {}) }, opts);
   }
   link(id: string, link: LinkValue | Binding, label: string | Binding, appearance: ButtonAppearance | Binding, opts: NodeOpts = {}): string {
     return this.add({ id, kind: 'link', link, label, appearance }, opts);

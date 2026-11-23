@@ -1393,7 +1393,10 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
       if (n.when) n.when = fix(n.when);
       if (n.unless) n.unless = fix(n.unless);
       if (n.kind === 'text') n.text = fix(n.text);
-      else if (n.kind === 'image') n.image = fix(n.image);
+      else if (n.kind === 'image') {
+        n.image = fix(n.image);
+        if (n.fallbackAlt !== undefined) n.fallbackAlt = fix(n.fallbackAlt);
+      }
       else if (n.kind === 'link') {
         n.link = fix(n.link);
         n.label = fix(n.label);

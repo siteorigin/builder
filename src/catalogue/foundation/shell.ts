@@ -30,6 +30,11 @@ const HEADER_SOURCE = `<script>
 	let toggle = $state();
 	// Route IDs ("/about") do not depend on the base path the site is published under.
 	const current = $derived(page.route.id);
+	// The visible name, when there is one to show. Beside it the logo is decorative, so the brand is announced once.
+	const name = $derived(typeof siteName === 'string' ? siteName.trim() : '');
+	const nameShown = $derived(!!name && (showSiteName || !logo?.src));
+	// A logo shown alone names the link by its own alternative text, which matches what it visibly says.
+	const logoAlt = $derived(logo?.src && !logo.decorative && typeof logo.alt === 'string' ? logo.alt.trim() : '');
 
 	/** Site-relative links go through resolve() so the site works under a sub-path. */
 	const href = (link) => (link?.href?.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link?.href);
@@ -57,12 +62,12 @@ const HEADER_SOURCE = `<script>
 <header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', open && 'so-header--open', className]} bind:this={header}>
 	<div class="so-header__inner">
 		<!-- Without the visible name, the link is still named for screen readers. -->
-		<a class="so-header__brand" href={resolve('/')} aria-label={logo?.src && !showSiteName ? siteName?.trim() || logo?.alt || 'Home' : undefined}>
+		<a class="so-header__brand" href={resolve('/')} aria-label={nameShown || logoAlt ? undefined : name || 'Home'}>
 			{#if logo?.src}
-				<SoImage image={logo} class="so-header__logo" eager />
+				<SoImage image={nameShown ? { ...logo, decorative: true } : logo} class="so-header__logo" eager />
 			{/if}
-			{#if showSiteName || !logo?.src}
-				<span>{siteName}</span>
+			{#if nameShown}
+				<span>{name}</span>
 			{/if}
 		</a>
 
@@ -351,8 +356,9 @@ export const footer = managed({
   },
   build: (b) => {
     const linkGroup = (id: string, headingProp: string, listProp: string) =>
-      b.el(`${id}-group`, 'nav', { name: 'Link group', styles: { layout: 'stack', gap: tok('space.md') } }, [
-        b.text(`${id}-heading`, 'h2', { $prop: headingProp }, { name: 'Group heading', styles: { textStyle: tok('text.eyebrow'), opacity: 0.7 } }),
+      // A group without links would be an empty landmark: it is left out.
+      b.el(`${id}-group`, 'nav', { name: 'Link group', when: { $prop: listProp }, styles: { layout: 'stack', gap: tok('space.md') } }, [
+        b.text(`${id}-heading`, 'h2', { $prop: headingProp }, { name: 'Group heading', when: { $prop: headingProp }, styles: { textStyle: tok('text.eyebrow'), opacity: 0.7 } }),
         b.el(`${id}-list`, 'ul', { name: 'Links', styles: { layout: 'stack', gap: tok('space.sm') } }, [
           b.repeat(`${id}-items`, listProp, [
             b.el(`${id}-item`, 'li', { name: 'Link item' }, [

@@ -158,9 +158,9 @@ export const cta = managed({
   build: (b) =>
     sectionShell(b, [
       b.el('panel', 'div', { name: 'Panel', styles: { base: { layout: 'stack', align: 'center', textAlign: 'center', gap: tok('space.lg'), paddingBlock: 'clamp(3rem, 2rem + 4vw, 5.5rem)', paddingInline: tok('space.xl'), background: tok('color.brand'), color: tok('color.on-brand'), radius: tok('radius.lg') } } }, [
-        b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', styles: { textStyle: tok('text.h2'), maxWidth: '760px' } }),
+        b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2'), maxWidth: '760px' } }),
         b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), maxWidth: '620px', opacity: 0.85 } }),
-        b.el('actions', 'div', { name: 'Actions', styles: { layout: 'row', wrap: true, justify: 'center', gap: tok('space.sm'), marginBlockStart: tok('space.xs') } }, [
+        b.el('actions', 'div', { name: 'Actions', collapseEmpty: true, styles: { layout: 'row', wrap: true, justify: 'center', gap: tok('space.sm'), marginBlockStart: tok('space.xs') } }, [
           b.link('primary', { $prop: 'primaryLink' }, { $prop: 'primaryLabel' }, 'light', { name: 'Primary button', when: { $prop: 'primaryLabel' } }),
           b.link('secondary', { $prop: 'secondaryLink' }, { $prop: 'secondaryLabel' }, 'secondary', { name: 'Secondary button', when: { $prop: 'secondaryLabel' } })
         ])
@@ -204,7 +204,7 @@ export const contact = managed({
   build: (b) =>
     sectionShell(b, [
       b.el('grid', 'div', { name: 'Layout', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.2xl') }, desktop: { columns: 2, gap: tok('space.3xl') } } }, [
-        b.el('content', 'div', { name: 'Content', styles: { layout: 'stack', gap: tok('space.lg'), align: 'start' } }, [
+        b.el('content', 'div', { name: 'Content', collapseEmpty: true, styles: { layout: 'stack', gap: tok('space.lg'), align: 'start' } }, [
           headingBlock(b),
           b.link('action', { $prop: 'actionLink' }, { $prop: 'actionLabel' }, 'primary', { name: 'Action', when: { $prop: 'actionLabel' } })
         ]),

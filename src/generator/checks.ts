@@ -30,6 +30,7 @@ function evaluate(v: unknown, scope: Scope): unknown {
 
 /** Mirrors the generated `has()` helper, on unresolved values. */
 function shown(v: unknown, state: ProjectState): boolean {
+  if (typeof v === 'string') return v.trim().length > 0;
   if (Array.isArray(v)) return v.length > 0;
   if (v && typeof v === 'object') {
     const o = v as Record<string, unknown>;
@@ -90,6 +91,22 @@ function effectiveProps(def: ComponentDefinition, n: GraphNode & { kind: 'instan
  */
 const SO_ID_ATTR = /\bid=\{\s*so_id\b/;
 
+/** Mirrors the generator's render conditions inside a definition: a node's own conditions, a repeat's list, a collapsing element's children. */
+function nodeRenders(state: ProjectState, frame: Frame, n: GraphNode, seen: Set<string>): boolean {
+  if (n.when && !shown(evaluate(n.when, frame.scope), state)) return false;
+  if (n.unless && shown(evaluate(n.unless, frame.scope), state)) return false;
+  if (n.kind === 'repeat') return shown(evaluate(n.list, frame.scope), state);
+  return n.kind !== 'element' || !n.collapseEmpty || childRenders(state, frame, n, seen);
+}
+
+/** A collapsing element renders while any child does; with no children it stays. */
+function childRenders(state: ProjectState, frame: Frame, n: GraphNode & { kind: 'element' }, seen: Set<string>): boolean {
+  if (seen.has(n.id)) return true;
+  seen.add(n.id);
+  const kids = n.children.map((id) => frame.tree.nodes[id]).filter((k): k is GraphNode => !!k);
+  return !kids.length || kids.some((k) => nodeRenders(state, frame, k, seen));
+}
+
 function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
   let frames = 0;
   // A slot a definition renders once per list item shows the same content, in the same frame, each time: it is
@@ -101,6 +118,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     if (!n || path.has(key)) return;
     if (frame.def && n.when && !shown(evaluate(n.when, frame.scope), state)) return;
     if (frame.def && n.unless && shown(evaluate(n.unless, frame.scope), state)) return;
+    if (frame.def && n.kind === 'element' && n.collapseEmpty && !childRenders(state, frame, n, new Set())) return;
     const inner = new Set(path).add(key);
     const reportId = frame.reportId ?? n.id;
     const page = !frame.def;
