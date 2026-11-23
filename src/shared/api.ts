@@ -110,12 +110,16 @@ export interface CreateProjectOptions {
   parentDir: string;
   starter: 'business' | 'blank';
   sampleImages: boolean;
+  /** Names this attempt in its progress events, so a dialog follows only its own (another may still be running). */
+  attempt?: string;
 }
 
 export interface ProgressEvent {
   step: 'files' | 'dependencies' | 'preview' | 'done' | 'error';
   message: string;
   detail?: string;
+  /** The attempt this is about, as its create call named it. */
+  attempt?: string;
 }
 
 /** Exports are written as a new folder or a single ZIP file. */

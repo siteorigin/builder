@@ -140,17 +140,22 @@ await expectEditorFor('Harbour Bakery', dirA);
 await expectOnePicker('from Welcome');
 await expectProjectItems(true, 'after Open Project');
 
-step('a project: Open Project switches to the chosen project, New Project leaves for Welcome and its dialog');
+step('a project: Open Project switches to the chosen project, New Project asks over it and keeps it open (#80)');
 await answerPicker(dirB);
 await choose('Open Project…');
 await expectEditorFor('Quay Books', dirB);
 await expectOnePicker('from the editor');
+const beforeNew = await opening();
 await choose('New Project…');
-await win.waitForSelector('.welcome');
 await newProjectDialog().waitFor();
-assert.equal(await openDir(), null, 'the project was closed');
+assert.equal(await win.locator('.welcome').count(), 0, 'Welcome never appeared');
+assert.equal(await opening(), beforeNew, 'the same opening of the project is still open');
 await dismiss(newProjectDialog());
-await expectProjectItems(false, 'after leaving for a new project');
+await expectEditorFor('Quay Books', dirB);
+await expectProjectItems(true, 'after cancelling a new project');
+await choose('Close Project');
+await win.waitForSelector('.welcome');
+await expectProjectItems(false, 'after closing the project');
 
 if (process.platform === 'darwin') {
   step('no window (macOS): New Project brings up a window with its dialog');
@@ -194,13 +199,14 @@ if (process.platform === 'darwin') {
   await expectOnePicker('that came up for it');
   assert.equal(await opening(), kept, 'the same opening of the project is still open');
 
-  step('no window with a project open (macOS): New Project closes the project, then shows its dialog');
+  step('no window with a project open (macOS): New Project brings the editor back with its dialog over the project');
+  const keptForNew = await opening();
   await closeWindow();
   await chooseWithNoWindow('New Project…');
-  await win.waitForSelector('.welcome', { timeout: 60000 });
+  await expectEditorFor('Quay Books', dirB);
   await newProjectDialog().waitFor();
-  assert.equal(await openDir(), null, 'the project was closed');
-  await expectProjectItems(false, 'after leaving the project for a new one');
+  assert.equal(await opening(), keptForNew, 'the project stayed open');
+  await expectProjectItems(true, 'with the New project dialog over the project');
   await dismiss(newProjectDialog());
 
   step('no window with a project open (macOS): Close Project brings up the window and closes the project');

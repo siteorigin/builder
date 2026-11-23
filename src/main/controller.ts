@@ -117,6 +117,12 @@ export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
   private createAbort: AbortController | null = null;
+  /** Set from a switch's close until its replacement is attached. */
+  private handingOver = false;
+  /** Set once the app is quitting: no project replaces the one being closed for it. */
+  quitting = false;
+  /** New projects being made, each until it is shown or has gone again. */
+  private creations = new Map<Promise<unknown>, AbortController>();
   /** Previews of the open project's exported websites, one per export. */
   private previews = new StaticPreviews();
   /** What the open project exported since it was opened, newest first. */
@@ -125,6 +131,8 @@ export class Controller {
   /** Names this opening of the project in workspace saves; null while none is open or the open one is closing. */
   private workspaceKey: string | null = null;
   private openings = 0;
+  /** Counts projects closed, so a replacement prepared meanwhile can tell that the project it replaces has gone. */
+  private closings = 0;
   private localDirty = false;
   private localTimer: NodeJS.Timeout | null = null;
   private localWrites: Promise<void> = Promise.resolve();
@@ -215,22 +223,39 @@ export class Controller {
   }
 
   async create(opts: CreateProjectOptions): Promise<{ ok: boolean; message?: string }> {
-    // Cancel is offered from the moment Create is pressed, so it works from then on. A later creation (the window was
-    // closed and opened again meanwhile) has its own, which this one never clears.
+    // Cancel is offered from the moment Create is pressed, so it works from then on, up to the switch. A later creation
+    // (the window was closed and opened again meanwhile) has its own, which this one never clears.
     const abort = new AbortController();
     this.createAbort = abort;
+    const run = this.createProject(opts, abort);
+    this.creations.set(run, abort);
     try {
-      return await this.createProject(opts, abort.signal);
+      return await run;
     } finally {
+      this.creations.delete(run);
       if (this.createAbort === abort) this.createAbort = null;
     }
   }
 
-  private async createProject(opts: CreateProjectOptions, signal: AbortSignal): Promise<{ ok: boolean; message?: string }> {
+  get isCreating(): boolean {
+    return this.creations.size > 0;
+  }
+
+  /** Call off every new project being made and wait until each has gone (quitting): nothing half made is left. */
+  async stopCreating(): Promise<void> {
+    for (const abort of this.creations.values()) abort.abort();
+    await Promise.all([...this.creations.keys()].map((run) => run.catch(() => undefined)));
+  }
+
+  private async createProject(opts: CreateProjectOptions, abort: AbortController): Promise<{ ok: boolean; message?: string }> {
+    const signal = abort.signal;
+    const progress = (p: ProgressEvent) => this.progress({ ...p, attempt: opts.attempt });
     const name = opts.name.trim();
     if (!name) return { ok: false, message: 'Enter a project name.' };
     let dir = join(opts.parentDir, slugify(name) || 'website');
     if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
+    // Asked before the new project is made, so keeping editing costs no setup, and again at the switch, for anything
+    // typed meanwhile (on macOS a window reopened during setup shows the open project without this dialog).
     if (!(await this.mayLeave())) return { ok: false };
     // Cancelled before anything happened: the open project stays open.
     if (signal.aborted) return { ok: false, message: 'Cancelled.' };
@@ -243,14 +268,23 @@ export class Controller {
     const own = (...names: string[]) => {
       for (const n of names) if (!wrote.has(n) && !existsSync(join(dir, n))) wrote.add(n);
     };
+    // The new project is built beside the one open now, which closes only once the new one is ready to show: a
+    // creation that is cancelled or fails leaves the author in the project they were working on.
     let session: ProjectSession | null = null;
     // Set once this attempt starts writing the project's own documents, and once it holds the new project's lock.
     let sessionStarted = false;
     let locked = false;
-    await this.close();
+    const since = this.closings;
+    // Why the switch did not happen, when the new project was ready but the open one stayed (Keep editing, quitting).
+    let refused: { message?: string } | null = null;
+    // Set when another app took the new project over while it was set up.
+    let takenOver = false;
+    // Set once the open project closed for this one, and once this one was handed to the editor.
+    let committed = false;
+    let attached = false;
     try {
       if (signal.aborted) throw new Error('Cancelled');
-      this.progress({ step: 'files', message: 'Preparing project files…' });
+      progress({ step: 'files', message: 'Preparing project files…' });
       await fs.mkdir(dirname(dir), { recursive: true });
       try {
         await fs.mkdir(dir);
@@ -320,21 +354,43 @@ export class Controller {
         throw lockErr;
       }
       locked = true;
+      const staged = session;
+      // Taken over by another app while it is set up: the install into its folder stops at once.
+      const stop = () => {
+        takenOver = true;
+        abort.abort();
+      };
+      staged.on('lock-lost', stop);
       await trust(dir, await configHash(dir));
-      this.progress({ step: 'dependencies', message: 'Setting up website tools…', detail: 'Installing the tools that build and preview your site.' });
+      progress({ step: 'dependencies', message: 'Setting up website tools…', detail: 'Installing the tools that build and preview your site.' });
       own('node_modules');
-      await prepareDependencies(dir, (line) => this.progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal);
+      await prepareDependencies(dir, (line) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner());
       if (signal.aborted) throw new Error('Cancelled');
-      this.progress({ step: 'preview', message: 'Starting preview…' });
+      // From the moment the open project starts closing, the new one is replacing it: there is nothing left to cancel.
+      const way = await this.makeWay(since, signal, () => progress({ step: 'preview', message: 'Starting preview…' }));
+      if (!way.ok) {
+        refused = way;
+        throw new Error(way.message ?? 'The open project was kept.');
+      }
+      committed = true;
+      staged.off('lock-lost', stop);
+      // Its lock lost while the open project was closing for it: it is not shown, but rolled back. A Cancel or a quit
+      // arriving now is too late to undo the switch, which finishes.
+      if (takenOver) throw new Error('Cancelled');
       // The preview writes its own output into the folder.
       own('.svelte-kit');
-      await this.attach(session, {});
+      attached = true;
+      await this.attach(staged, {});
       // The project is open and working: a recent-projects list that cannot be saved must not undo it.
       await addRecent(dir, name).catch(() => undefined);
-      this.progress({ step: 'done', message: 'Ready' });
+      progress({ step: 'done', message: 'Ready' });
       return { ok: true };
     } catch (e) {
-      let msg = friendlyError((e as Error).message);
+      // Keeping editing (or quitting) at the switch is no failure to explain: the dialog just makes way.
+      // A handover that never reached the editor ends here, so later switches are not held up by it.
+      if (committed && !attached) this.handingOver = false;
+      let msg = refused ? (refused.message ?? '') : takenOver ? 'The new project’s lock was taken or removed while it was being set up, so it was not opened.' : friendlyError((e as Error).message);
+      const note = (more: string) => (msg = msg ? `${msg} ${more}` : more);
       // Once the project's own documents are being written it may be another app's: it opened the project before this
       // attempt had the lock (a lock file this attempt never made), or took it over since (Unlock in another window).
       // Then nothing here may remove it. Otherwise the manifest goes first, so no other app can open what is left as a
@@ -349,21 +405,26 @@ export class Controller {
       let ours = true;
       if (sessionStarted && locked) ours = await session!.whileOwner(dropManifest).catch(() => false);
       else if (sessionStarted && (ours = !existsSync(join(dir, LOCAL_DIR, 'lock.json')))) await dropManifest().catch(() => undefined);
-      // A project that could not be closed is still open in the editor: it gets its manifest back, and none of it goes.
-      const closed = await this.close().then(
-        () => true,
-        () => false
-      );
+      // The new project closes, if it was shown; one still open from before stays open, and a new one that was never
+      // shown is closed with its files below. A project that could not be closed is still open in the editor: it gets
+      // its manifest back, and none of it goes.
+      const closed =
+        !session || this.session !== session
+          ? true
+          : await this.close().then(
+              () => true,
+              () => false
+            );
       const kept = dropped.manifest;
       if (!closed && kept) await session!.whileOwner(() => atomicWrite(manifestPath, kept)).catch(() => false);
       if (!ours || !closed) {
-        if (wrote.size) msg = `${msg} The new project’s files were left in ${dir}.`;
+        if (wrote.size) note(`The new project’s files were left in ${dir}.`);
         wrote.clear();
         createdDir = false;
       }
-      if (!(await removeCreatedProject(dir, closed ? session : null, wrote, createdDir))) msg = `${msg} Some of the new project’s files could not be removed from ${dir}.`;
-      this.progress({ step: 'error', message: msg === 'Cancelled' ? 'Project creation was cancelled.' : 'The project could not be created.', detail: msg });
-      return { ok: false, message: msg };
+      if (!(await removeCreatedProject(dir, closed ? session : null, wrote, createdDir))) note(`Some of the new project’s files could not be removed from ${dir}.`);
+      progress({ step: 'error', message: msg === 'Cancelled' ? 'Project creation was cancelled.' : 'The project could not be created.', detail: msg });
+      return msg ? { ok: false, message: msg } : { ok: false };
     }
   }
 
@@ -399,15 +460,12 @@ export class Controller {
       if (!manifest.ok) return { ok: false, message: manifest.message };
       return { ok: false, needsTrust: { dir, name: manifest.name } };
     }
-    // Switching projects: the one open now is left only once what is being typed in it is saved.
-    if (!(await this.mayLeave())) return { ok: false };
     return this.openTrusted(dir);
   }
 
   async trustAndOpen(opened: string): Promise<{ ok: boolean; message?: string }> {
     try {
       const dir = canonicalDir(opened);
-      if (!(await this.mayLeave())) return { ok: false };
       await trust(dir, await configHash(dir));
       return await this.openTrusted(dir);
     } catch (e) {
@@ -416,7 +474,18 @@ export class Controller {
   }
 
   private async openTrusted(dir: string, opts: { force?: boolean | string } = {}): Promise<{ ok: boolean; message?: string }> {
-    await this.close();
+    // Opening the folder that is open now (an unlock, say) reopens it: this app holds a folder's lock only once, so it
+    // is left (what is being typed in it saved first) and closed before it opens again.
+    if (this.session?.dir === dir) {
+      // Its manifest is read first, so a damaged one is explained with the project still open.
+      const manifest = await readManifestSummary(dir);
+      if (!manifest.ok) return { ok: false, message: manifest.message };
+      if (!(await this.mayLeave())) return { ok: false };
+      await this.close();
+    }
+    // Any other project opens beside the one open now, which stays open, locked and previewing until the replacement
+    // has opened: one that cannot be read leaves the author where they were.
+    const since = this.closings;
     let session: ProjectSession;
     try {
       session = await ProjectSession.open(dir, INSTANCE_ID, opts);
@@ -445,12 +514,19 @@ export class Controller {
     } catch {
       workspace = {};
     }
-    if (!session.readOnly) await addRecent(dir, session.state.site.name).catch(() => undefined);
+    const way = await this.makeWay(since);
+    if (!way.ok) {
+      await session.close().catch(() => undefined);
+      return way;
+    }
+    // Attached in the same turn as the switch (attach makes it the open project before it waits on anything), so no
+    // other switch can come between the two.
     void this.attach(session, workspace).catch(async (e) => {
       if (this.session === session) await this.close();
       else await session.close();
       this.send('runtime:status', { state: 'error', message: `The project could not be opened: ${(e as Error).message}` });
     });
+    if (!session.readOnly) await addRecent(dir, session.state.site.name).catch(() => undefined);
     return { ok: true };
   }
 
@@ -458,8 +534,7 @@ export class Controller {
   async unlock(): Promise<{ ok: boolean; message?: string }> {
     const s = this.session;
     if (!s?.readOnly?.canUnlock) return { ok: false, message: 'This project is not locked.' };
-    // Reopening closes this read-only session: a page being added in it is settled (or kept) first.
-    if (!(await this.mayLeave())) return { ok: false };
+    // Reopening closes this read-only session: a page being added in it is settled (or kept) first (see openTrusted).
     // Only the owner the user was shown is displaced: if another app took the project since, it is shown instead.
     return this.openTrusted(s.dir, { force: s.readOnly.lockToken ?? NO_LOCK });
   }
@@ -476,6 +551,8 @@ export class Controller {
 
   /** Make `session` the open project, with its own workspace state installed in the same step. */
   private async attach(session: ProjectSession, workspace: LocalWorkspaceState) {
+    // The handover that closed the open project for this one ends here, as this one becomes the open project.
+    this.handingOver = false;
     // A new opening lists only its own exports, even if an earlier one was never closed.
     this.endExports();
     this.session = session;
@@ -721,6 +798,32 @@ export class Controller {
     });
   }
 
+  /**
+   * The switch to a project opened or created beside the open one: what is being typed in the open project is saved,
+   * then it closes. Not ok, with the open project still open, when the author keeps editing, when its close fails, or
+   * when it was closed meanwhile by something else (quitting, say), which the replacement must not undo.
+   */
+  private async makeWay(since: number, signal?: AbortSignal, committing?: () => void): Promise<{ ok: boolean; message?: string }> {
+    if (!(await this.mayLeave())) return { ok: false };
+    if (signal?.aborted) return { ok: false, message: friendlyError('Cancelled') };
+    // An ordinary close already under way when this switch began is joined below; one since then, or quitting, wins.
+    if (this.quitting || this.closings !== since) return { ok: false };
+    // One handover at a time: from the close until the replacement is attached, no other switch may close anything.
+    if (this.handingOver) return { ok: false, message: 'Another project is opening. Try again once it is open.' };
+    committing?.();
+    this.handingOver = true;
+    try {
+      await this.close();
+    } catch (e) {
+      // A close that failed part way, with the project already gone, leaves nothing to go back to.
+      if (this.session) {
+        this.handingOver = false;
+        return { ok: false, message: `The open project could not be closed: ${(e as Error).message}` };
+      }
+    }
+    return { ok: true };
+  }
+
   /** Whether the open project may be unloaded: the editor saves what is still being typed first, or the author
    *  chooses to keep editing a change that cannot be saved. */
   async mayLeave(): Promise<boolean> {
@@ -755,6 +858,7 @@ export class Controller {
     this.watchTimer = null;
     const s = this.session;
     if (!s) return this.endExports();
+    this.closings++;
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
     this.onOpeningChange?.();
@@ -768,17 +872,24 @@ export class Controller {
     // From here preview work still under way finds the project gone and starts nothing; an install into the folder is
     // cancelled. Close waits for that work (a copy being made, a removal) before letting the lock go.
     if (this.session === s) this.session = null;
-    // The exported websites' previews belong to the project that exported them. A close that failed before this
-    // point leaves the project open, and its previews with it.
-    this.endExports();
-    this.prepareAbort?.abort();
-    await this.stopPreview();
-    await this.runtimeQueue;
-    await this.stopPreview();
-    await s.close();
-    // The next project loads its own workspace state, or starts empty.
-    this.localState = {};
-    this.send('project:closed');
+    // From here the project is gone, whatever fails while it is put away, so the editor is always told: a project
+    // opened next must never be shown over what is left of this one.
+    try {
+      // The exported websites' previews belong to the project that exported them. A close that failed before this
+      // point leaves the project open, and its previews with it.
+      this.endExports();
+      this.prepareAbort?.abort();
+      // The editor lets go of the preview before its server stops, so a page still loading there never finds it gone.
+      this.send('runtime:status', { state: 'idle' });
+      await this.stopPreview();
+      await this.runtimeQueue;
+      await this.stopPreview();
+      await s.close();
+    } finally {
+      // The next project loads its own workspace state, or starts empty.
+      this.localState = {};
+      this.send('project:closed');
+    }
   }
 
   async duplicate(): Promise<{ ok: boolean; message?: string; dir?: string }> {

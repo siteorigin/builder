@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useWindowWidth } from './components/ui';
@@ -18,6 +18,7 @@ import { ExportModal } from './panels/ExportModal';
 import { CommandMenu } from './panels/CommandMenu';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, SetHomeModal } from './panels/Dialogs';
+import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
 import { refLabel } from './lib/model';
 import { focusedSurface } from './lib/history';
@@ -293,6 +294,9 @@ export function Editor() {
   const shown = fitPanels(windowWidth, prefs);
   const aiBusy = useStore((s) => !!s.runStatus);
   const leaving = useStore((s) => s.leaving);
+  // New project, or a project to trust, chosen from here: asked over this project, which stays open until the new
+  // one has opened (#80).
+  const [switching, setSwitching] = useState<null | { kind: 'new' } | { kind: 'trust'; dir: string; name: string }>(null);
   // Joined, so each new snapshot (a fresh array over IPC) does not repeat the same notes.
   const recovery = useStore((s) => s.snapshot?.recoveryNotes.join('\n') ?? '');
 
@@ -325,31 +329,42 @@ export function Editor() {
       }
       if (handleShortcut(e.key, mod, e.shiftKey)) e.preventDefault();
     };
+    // A project being opened from here takes no second Open or New project until it has answered: its reply (a
+    // trust prompt, the switch itself) must not land over a dialog started meanwhile.
+    let opening = false;
     const onCmd = (e: Event) => {
       if (openDialogs.length || openMenus.count || getState().leaving) return;
       const cmd = (e as CustomEvent).detail;
+      if (opening && (cmd === 'open-project' || cmd === 'new-project')) return;
       if (cmd === 'export') setState({ modal: { kind: 'export' } });
       // Leaving the project saves what is being typed first (the main process asks; see lib/leave.ts).
       if (cmd === 'close-project') void closeProject();
-      // Switching projects from the editor uses the same New project and Trust dialogs as Welcome. The intent
-      // is dropped again if the author keeps editing instead, so a later close does not act on it.
-      const closeFor = (intent: NonNullable<ReturnType<typeof getState>['welcomeIntent']>) => {
-        setState({ welcomeIntent: intent });
-        void closeProject().then((r) => !r.ok && getState().welcomeIntent === intent && setState({ welcomeIntent: null }));
-      };
-      if (cmd === 'open-project')
-        void api.projects.open().then(
+      // Switching projects from the editor uses the same New project and Trust dialogs as Welcome, shown over
+      // this project: cancelling them, or a project that cannot be made or opened, leaves it as it is.
+      if (cmd === 'open-project') {
+        opening = true;
+        void api.projects
+          .open()
+          .then(
           (r) => {
-            if (r.needsTrust) closeFor({ kind: 'trust', ...r.needsTrust });
-            else if (!r.ok && r.message) toast(r.message, 'error');
+            if (r.needsTrust) setSwitching({ kind: 'trust', ...r.needsTrust });
+            else if (!r.ok) {
+              // Leaving was agreed but the switch did not happen: this project takes input again.
+              endEditingHold();
+              if (r.message) toast(r.message, 'error');
+            }
           },
           (e: unknown) => {
             endEditingHold();
             toast(`Could not open the project: ${errorText(e)}`, 'error');
           }
-        );
-      if (cmd === 'new-project') closeFor({ kind: 'new' });
+          )
+          .finally(() => (opening = false));
+      }
+      if (cmd === 'new-project') setSwitching({ kind: 'new' });
     };
+    // The project behind a switch dialog has closed (the switch happened): the dialog was about it, so it goes too.
+    const offClosed = api.on('project:closed', () => setSwitching(null));
     window.addEventListener('keydown', onKey);
     window.addEventListener('builder-command', onCmd);
     // A File menu command chosen while there was no window (macOS) is sent now that the editor can act on it.
@@ -357,6 +372,7 @@ export function Editor() {
     return () => {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('builder-command', onCmd);
+      offClosed();
     };
   }, []);
 
@@ -479,6 +495,8 @@ export function Editor() {
       {modal?.kind === 'edit-definition' && <EditDefinitionModal target={modal.ref} />}
       {modal?.kind === 'history' && <HistoryModal />}
       {modal?.kind === 'health' && <HealthModal />}
+      {switching?.kind === 'new' && <NewProjectModal onClose={() => setSwitching(null)} />}
+      {switching?.kind === 'trust' && <TrustProjectModal project={switching} onClose={() => setSwitching(null)} />}
     </div>
   );
 }
