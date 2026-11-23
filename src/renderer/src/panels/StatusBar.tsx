@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { ChevronRight, CircleAlert, CircleCheck, Ellipsis, Lock, RefreshCw, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
+import { ChevronRight, CircleAlert, CircleCheck, Component, Ellipsis, Lock, RefreshCw, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
 import type { RuntimeState } from '@shared/api';
 import { api, applyOps, confirmDialog, setState, toast, useStore } from '../store';
-import { breadcrumb } from '../lib/model';
+import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
 import { openAsset } from '../lib/actions';
 import { Modal, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
@@ -48,16 +48,28 @@ export function StatusBar() {
   const { dot, label, broken } = runtimeInfo(runtime, pageIssue, frameReady);
   const errors = snap.diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0);
   const warnings = snap.diagnostics.filter((d) => d.severity === 'warning').length;
-  // While editing a component everywhere, the path starts at the component (plum), never at a page.
+  // While editing a component everywhere, the path starts at the component (plum), never at a page: its
+  // overview, then the design's own layers down to the selection.
   const def = definitionMode ? snap.state.components[definitionMode.definitionId] : undefined;
-  const crumbs = def
-    ? [{ label: def.name, ref: null as null | NonNullable<typeof selection>, def: true }, ...(selection && selection.nodeId !== def.tree?.rootIds[0] ? [{ label: selection.partId ? def.parts[selection.partId]?.label ?? 'Part' : 'Element', ref: selection, def: false }] : [])]
+  const crumbs: Array<Crumb & { def?: boolean }> = def
+    ? selection && inDefinition(selection, def.id)
+      ? breadcrumb(snap.state, selection).map((c, i) => (i ? c : { ...c, def: true }))
+      : [{ label: def.name, full: def.name, ref: null, def: true }]
     : selection && !stylesOpen
-      ? breadcrumb(snap.state, selection).map((c) => ({ ...c, def: false }))
+      ? breadcrumb(snap.state, selection)
       : [];
-  // A deep path keeps its first item and the last two; the ones between collapse into one menu button.
+  // A deep path keeps its first item and the last two (the selection and its parent); the ones between
+  // collapse into one menu button.
   const hidden = crumbs.length > 4 ? crumbs.slice(1, -2) : [];
   const shown = hidden.length ? [crumbs[0], null, ...crumbs.slice(-2)] : crumbs;
+  // Selecting a crumb can shorten the path under the focused button: keep focus on the path's current item.
+  const select = (ref: Crumb['ref'], nav: HTMLElement | null) => {
+    setState({ selection: ref });
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (nav && (nav.contains(active) || !active || active === document.body)) nav.querySelector<HTMLElement>('[aria-current]')?.focus();
+    });
+  };
   const problemText = errors ? `${errors} problem${errors === 1 ? '' : 's'}` : warnings ? `${warnings} warning${warnings === 1 ? '' : 's'}` : 'No problems';
   return (
     <footer className="status-bar">
@@ -82,7 +94,15 @@ export function StatusBar() {
               <li key={i}>
                 {i > 0 && <ChevronRight aria-hidden="true" />}
                 {c ? (
-                  <button className={c.def ? 'def' : undefined} aria-current={i === shown.length - 1 ? 'location' : undefined} title={c.label} onClick={() => setState({ selection: c.ref })}>
+                  <button
+                    className={[c.def && 'def', c.component && 'component', c.component === 'custom' && 'custom'].filter(Boolean).join(' ') || undefined}
+                    aria-current={i === shown.length - 1 ? 'location' : undefined}
+                    aria-label={c.full !== c.label ? c.full : undefined}
+                    title={c.full}
+                    onClick={(e) => select(c.ref, e.currentTarget.closest('nav'))}
+                  >
+                    {/* A placed component's boundary, plum when it was made in this project. */}
+                    {c.component && <Component className="crumb-mark" aria-hidden="true" />}
                     {c.label}
                   </button>
                 ) : (
@@ -92,7 +112,10 @@ export function StatusBar() {
                     aria-expanded={false}
                     aria-label={`${hidden.length} more parent elements`}
                     title={hidden.map((h) => h.label).join(' › ')}
-                    onClick={(e) => menu.openAt(e.currentTarget, hidden.map((h) => ({ label: h.label, onSelect: () => setState({ selection: h.ref }) })), 'Parent elements')}
+                    onClick={(e) => {
+                      const nav = e.currentTarget.closest('nav');
+                      menu.openAt(e.currentTarget, hidden.map((h) => ({ label: h.label, icon: h.component ? <Component /> : undefined, onSelect: () => select(h.ref, nav) })), 'Parent elements');
+                    }}
                   >
                     <Ellipsis />
                   </button>
