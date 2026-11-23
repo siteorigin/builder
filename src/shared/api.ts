@@ -123,6 +123,12 @@ export interface CreateProjectOptions {
   attempt?: string;
 }
 
+/**
+ * What creating a project does about its website tools: install them from copies already on this computer, download
+ * some of them, or (without a lock to check) possibly download some.
+ */
+export type WebsiteTools = 'local' | 'download' | 'unknown';
+
 export interface ProgressEvent {
   step: 'files' | 'dependencies' | 'preview' | 'done' | 'error';
   message: string;
@@ -298,6 +304,8 @@ export interface BuilderApi {
     removeRecent(dir: string): Promise<void>;
     create(opts: CreateProjectOptions): Promise<{ ok: boolean; message?: string }>;
     cancelCreate(): Promise<void>;
+    /** Whether creating a project downloads website tools, checked the way setup checks it. */
+    websiteTools(): Promise<WebsiteTools>;
     open(dir?: string): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }>;
     trustAndOpen(dir: string): Promise<{ ok: boolean; message?: string }>;
     /** ok is false when the author chose to keep editing a change that could not be saved. */

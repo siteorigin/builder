@@ -1,0 +1,112 @@
+/**
+ * Whether creating a project downloads anything: the packages npm would install are worked out by npm itself, and
+ * looked up in the npm caches the way npm finds them, so the New project dialog and setup agree on it.
+ */
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { cacheCoverage, contentPaths, lockedPackages, npmErrorCode } from '../../src/main/runtime/availability';
+
+const require = createRequire(import.meta.url);
+const npmDir = dirname(require.resolve('npm/package.json'));
+/** npm's own cache layout, from the npm the app installs with. */
+const cacachePath: (cache: string, integrity: string) => string = require(join(npmDir, 'node_modules', 'cacache', 'lib', 'content', 'path.js'));
+const starter = join(__dirname, '../../templates/sveltekit-brochure/files');
+
+const dirs: string[] = [];
+afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+const tempDir = () => {
+  const d = mkdtempSync(join(tmpdir(), 'so-npm-cache-'));
+  dirs.push(d);
+  return d;
+};
+
+/** Put a package's content where npm's cache keeps it (as `npm ci --cache` leaves it). */
+const store = (cache: string, integrity: string) => {
+  const p = cacachePath(join(cache, '_cacache'), integrity);
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, 'tarball');
+};
+const sri = (text: string, algorithm = 'sha512') => `${algorithm}-${createHash(algorithm).update(text).digest('base64')}`;
+
+const macArm = { os: 'darwin', cpu: 'arm64' };
+
+describe('the website tools setup installs', () => {
+  it('are the starter packages npm installs on this platform, without another platform’s native tools or what only they need', async () => {
+    const mac = (await lockedPackages(npmDir, starter, macArm)).map((p) => p.location);
+    expect(mac).toContain('node_modules/@sveltejs/kit');
+    expect(mac).toContain('node_modules/@rolldown/binding-darwin-arm64');
+    expect(mac).not.toContain('node_modules/@rolldown/binding-linux-x64-gnu');
+    // The WebAssembly binding is optional and for another CPU; its own dependencies have no platform of their own but
+    // are needed by nothing else, so npm skips them too.
+    expect(mac).not.toContain('node_modules/@rolldown/binding-wasm32-wasi');
+    expect(mac).not.toContain('node_modules/@emnapi/core');
+    expect(mac).not.toContain('node_modules/tslib');
+
+    const linux = (await lockedPackages(npmDir, starter, { os: 'linux', cpu: 'x64', libc: 'glibc' })).map((p) => p.location);
+    expect(linux).toContain('node_modules/@rolldown/binding-linux-x64-gnu');
+    expect(linux).not.toContain('node_modules/@rolldown/binding-linux-x64-musl');
+    expect(linux).not.toContain('node_modules/@rolldown/binding-darwin-arm64');
+    expect(new Set(linux).size).toBe(linux.length);
+  });
+
+  it('are the same for a new project, whose lock carries its own name', async () => {
+    const dir = tempDir();
+    const pkg = JSON.parse(readFileSync(join(starter, 'package.json'), 'utf8'));
+    const lock = JSON.parse(readFileSync(join(starter, 'package-lock.json'), 'utf8'));
+    pkg.name = lock.name = lock.packages[''].name = 'meadow-studio';
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg));
+    writeFileSync(join(dir, 'package-lock.json'), JSON.stringify(lock));
+    expect(await lockedPackages(npmDir, dir, macArm)).toEqual(await lockedPackages(npmDir, starter, macArm));
+  });
+
+  it('cannot be told from a project whose lock does not settle them, without asking the registry', async () => {
+    const dir = tempDir();
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.3.0' } }));
+    writeFileSync(join(dir, 'package-lock.json'), JSON.stringify({ name: 'x', lockfileVersion: 3, requires: true, packages: { '': { name: 'x', dependencies: { 'left-pad': '1.3.0' } } } }));
+    await expect(lockedPackages(npmDir, dir, macArm)).rejects.toThrow();
+  });
+});
+
+describe('website tools availability', () => {
+  it('finds a package where npm’s own cache keeps it', () => {
+    const integrity = sri('svelte');
+    expect(contentPaths('/c', integrity)).toEqual([cacachePath('/c/_cacache', integrity)]);
+    // Several digests: npm reads the strongest algorithm only.
+    expect(contentPaths('/c', `${sri('svelte', 'sha1')} ${integrity}`)).toEqual([cacachePath('/c/_cacache', integrity)]);
+  });
+
+  it('says nothing is downloaded when every package this computer needs is in the cache, and counts what is not', async () => {
+    const cache = tempDir();
+    const needed = await lockedPackages(npmDir, starter, macArm);
+    expect(cacheCoverage(needed, [cache])).toEqual({ offline: false, missing: needed.length, needed: needed.length });
+    for (const p of needed) store(cache, p.integrity!);
+    expect(cacheCoverage(needed, [cache])).toEqual({ offline: true, missing: 0, needed: needed.length });
+    // Another computer's native tools are not in this cache: there, setup downloads them.
+    const linux = cacheCoverage(await lockedPackages(npmDir, starter, { os: 'linux', cpu: 'x64', libc: 'glibc' }), [cache]);
+    expect(linux.offline).toBe(false);
+    expect(linux.missing).toBeGreaterThan(0);
+  });
+
+  it('finds packages in either the shipped or the user cache, and treats one with no integrity as a download', () => {
+    const [shipped, user] = [tempDir(), tempDir()];
+    const packages = [
+      { location: 'node_modules/a', integrity: sri('a') },
+      { location: 'node_modules/b', integrity: sri('b') }
+    ];
+    store(shipped, sri('a'));
+    expect(cacheCoverage(packages, [shipped, user])).toEqual({ offline: false, missing: 1, needed: 2 });
+    store(user, sri('b'));
+    expect(cacheCoverage(packages, [shipped, user])).toEqual({ offline: true, missing: 0, needed: 2 });
+    expect(cacheCoverage([...packages, { location: 'node_modules/from-git' }], [shipped, user])).toEqual({ offline: false, missing: 1, needed: 3 });
+  });
+
+  it('reads the code npm reports a failure with', () => {
+    expect(npmErrorCode('npm error code ENOTFOUND\nnpm error network request failed')).toBe('ENOTFOUND');
+    expect(npmErrorCode('npm WARN x\nnpm ERR! code ENOTCACHED\n')).toBe('ENOTCACHED');
+    expect(npmErrorCode('Segmentation fault')).toBeUndefined();
+  });
+});

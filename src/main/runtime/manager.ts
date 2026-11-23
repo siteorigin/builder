@@ -5,9 +5,11 @@ import { createRequire } from 'node:module';
 import { existsSync, promises as fs } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { WebsiteTools } from '@shared/api';
 import { sha } from '../project/fsutil';
 import { statesFailure, type BuildErrorInfo } from '../../runtime/build-diagnostics';
 import { LineTail } from './line-tail';
+import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, npmErrorCode, type ToolsAvailability } from './availability';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -69,11 +71,49 @@ export async function dependenciesReady(dir: string): Promise<boolean> {
   return prepared?.lockHash === (await lockHash(dir));
 }
 
+/** The npm that installs the website tools: the complete copy shipped with the app, run on Electron's own Node. */
+function npmDir(): string {
+  return app.isPackaged ? join(process.resourcesPath, 'npm') : dirname(nodeRequire.resolve('npm/package.json'));
+}
+
+/** The npm cache installs use, in the app's data folder; packaged builds seed it from the cache shipped with the app. */
+const userCache = () => join(app.getPath('userData'), 'npm-cache');
+const bundledCache = () => (app.isPackaged ? join(process.resourcesPath, 'npm-cache') : null);
+
+/**
+ * Whether installing the website tools into `dir` (a project, or the starter it is made from) downloads anything:
+ * `null` when that cannot be told, such as without a lock. The caches are the ones npm will read.
+ */
+export async function toolsAvailability(dir: string, caches: string[]): Promise<ToolsAvailability | null> {
+  if (!existsSync(join(dir, 'package-lock.json'))) return null;
+  try {
+    return cacheCoverage(await lockedPackages(npmDir(), dir), caches);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What creating a project from the starter in `dir` will do about its website tools, told before anything is
+ * created and with the same check setup makes: the shipped cache counts, because setup seeds the user cache from it.
+ */
+export async function starterTools(dir: string): Promise<WebsiteTools> {
+  const bundled = bundledCache();
+  const tools = await toolsAvailability(dir, bundled && existsSync(bundled) ? [userCache(), bundled] : [userCache()]);
+  return !tools ? 'unknown' : tools.offline ? 'local' : 'download';
+}
+
+/** npm failures an install from the cache alone can have that a fresh download may fix. */
+const CACHE_PROBLEMS = new Set(['ENOTCACHED', 'EINTEGRITY']);
+
 /**
  * Install the project's locked dependencies with the npm bundled inside the app, running on Electron's own Node.
  * Package lifecycle scripts are disabled; the template's dependencies do not need them.
- */
-/**
+ *
+ * Whether anything is downloaded is decided up front, by the check the New project dialog uses: when every package is
+ * already in the cache npm runs offline, so it cannot download; otherwise it says so before it downloads. A download
+ * that cannot reach the registry fails with a `ToolsDownloadError`.
+ *
  * `mayWrite` is asked before each step that writes into the project (each npm run, the marker), so a project taken
  * over meanwhile gets nothing more.
  */
@@ -81,19 +121,41 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
   const stillMine = async () => {
     if (signal?.aborted || !(await mayWrite()) || signal?.aborted) throw new Error('Cancelled');
   };
-  const npmCli = app.isPackaged ? join(process.resourcesPath, "npm", "bin", "npm-cli.js") : join(dirname(nodeRequire.resolve("npm/package.json")), "bin", "npm-cli.js");
-  const cache = await seedCache();
+  const npmCli = join(npmDir(), 'bin', 'npm-cli.js');
+  let cache = await seedCache();
+  let tools = await toolsAvailability(dir, [cache]);
+  // The shipped cache may have what the user cache lost since it was seeded (a cleared or damaged file): seed it again.
+  const bundled = bundledCache();
+  if (tools && !tools.offline && bundled && existsSync(bundled)) {
+    cache = await seedCache(true);
+    tools = await toolsAvailability(dir, [cache]);
+  }
   const base = [npmCli, existsSync(join(dir, 'package-lock.json')) ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error', `--cache=${cache}`];
-  // Try the packages bundled with the app first (works offline); fall back to downloading what is missing.
-  try {
-    await stillMine();
-    await runNpm([...base, '--offline'], dir, onLine, signal);
-    onLine('Installed from the tools bundled with SiteOrigin Builder.');
-  } catch (e) {
-    if (signal?.aborted || (e as Error).message === 'Cancelled') throw e;
-    onLine('Some website tools are not bundled for this system; downloading them…');
-    await stillMine();
-    await runNpm([...base, '--prefer-offline'], dir, onLine, signal);
+  const download = async () => {
+    try {
+      await runNpm([...base, '--prefer-offline'], dir, onLine, signal);
+    } catch (e) {
+      const code = (e as NpmError).code;
+      if (!signal?.aborted && code && NETWORK_CODES.includes(code)) throw new ToolsDownloadError(`Downloading the website tools failed (${code}). ${(e as Error).message}`, code);
+      throw e;
+    }
+  };
+  await stillMine();
+  if (tools?.offline) {
+    onLine('Setting up the website tools from copies on this computer…');
+    try {
+      // Offline: npm cannot download anything, so the dialog's "nothing is downloaded" holds.
+      await runNpm([...base, '--offline'], dir, onLine, signal);
+      onLine('Installed the website tools from this computer. Nothing was downloaded.');
+    } catch (e) {
+      if (signal?.aborted || (e as Error).message === 'Cancelled' || !CACHE_PROBLEMS.has((e as NpmError).code ?? '')) throw e;
+      onLine('A saved copy of the website tools could not be used, so it is being downloaded again…');
+      await stillMine();
+      await download();
+    }
+  } else {
+    onLine(tools ? 'Downloading the website tools that are not included for this computer…' : 'Setting up the website tools. Some may need to be downloaded…');
+    await download();
   }
   const marker = JSON.stringify({ lockHash: await lockHash(dir), preparedAt: new Date().toISOString() });
   // Cancelled or taken over as the install finished: the project may belong to someone else now.
@@ -102,17 +164,23 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
   await fs.writeFile(join(dir, '.siteorigin', 'cache', 'deps.json'), marker);
 }
 
-/** The npm cache lives in the app's data folder; packaged builds seed it from the bundled cache once. */
-async function seedCache(): Promise<string> {
-  const cache = join(app.getPath('userData'), 'npm-cache');
-  const bundled = app.isPackaged ? join(process.resourcesPath, 'npm-cache') : null;
+/**
+ * The npm cache lives in the app's data folder; packaged builds seed it from the bundled cache once per version, or
+ * again when `refill` is set. Seeding only adds files, so what the cache already holds is kept.
+ */
+async function seedCache(refill = false): Promise<string> {
+  const cache = userCache();
+  const bundled = bundledCache();
   const marker = join(cache, '.siteorigin-seeded');
-  if (bundled && existsSync(bundled) && (await fs.readFile(marker, 'utf8').catch(() => '')) !== app.getVersion()) {
+  if (bundled && existsSync(bundled) && (refill || (await fs.readFile(marker, 'utf8').catch(() => '')) !== app.getVersion())) {
     await fs.cp(bundled, cache, { recursive: true, force: false, errorOnExist: false });
     await fs.writeFile(marker, app.getVersion());
   }
   return cache;
 }
+
+/** A failed npm run, with the code npm printed for it (`ENOTCACHED`, `ENOTFOUND`, …). */
+type NpmError = Error & { code?: string };
 
 function runNpm(args: string[], dir: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -136,7 +204,7 @@ function runNpm(args: string[], dir: string, onLine: (line: string) => void, sig
       signal?.removeEventListener('abort', onAbort);
       if (signal?.aborted) reject(new Error('Cancelled'));
       else if (code === 0) resolve();
-      else reject(new Error(`Installing dependencies failed (exit ${code}). ${err.trim().split('\n').slice(-6).join(' ')}`));
+      else reject(Object.assign(new Error(`Installing dependencies failed (exit ${code}). ${err.trim().split('\n').slice(-6).join(' ')}`), { code: npmErrorCode(err) }));
     });
   });
 }
