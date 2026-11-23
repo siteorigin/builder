@@ -61,6 +61,8 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body><div
 interface Post {
   path: string;
   body: Record<string, string>;
+  /** Every submitted entry in order, so a key sent twice is seen twice. */
+  entries: Array<[string, string]>;
   respond: (status: number) => Promise<void>;
 }
 
@@ -107,16 +109,18 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         return route.fulfill({ contentType: 'text/html; charset=utf-8', body: PAGE });
       }
       held.push(route);
-      let body: Record<string, string>;
+      let entries: Array<[string, string]>;
       try {
         const data = await new Response(request.postDataBuffer(), { headers: { 'content-type': request.headers()['content-type'] ?? '' } }).formData();
-        body = Object.fromEntries([...data].map(([k, v]) => [k, String(v)]));
+        entries = [...data].map(([k, v]) => [k, String(v)]);
       } catch {
-        body = { unparsed: request.postData() ?? '' };
+        entries = [['unparsed', request.postData() ?? '']];
       }
+      const body = Object.fromEntries(entries);
       const post: Post = {
         path: url.pathname,
         body,
+        entries,
         respond: async (status) => {
           held.splice(held.indexOf(route), 1);
           await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ ok: status < 400 }) });
@@ -234,6 +238,29 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       await expect.poll(status).toBe(SENT);
       expect(await alert()).toBe('');
       expect(await values()).toEqual(['', '', '']);
+    });
+  }, 20_000);
+
+  it('never sends two answers under one key, even when two field names normalise to the same key', async () => {
+    // The stock form with "EMAIL" typed into Phone's field name, as in issue #198.
+    const fields = [
+      { id: 'item-1', label: 'Name', name: 'name', type: 'text', required: true, placeholder: '' },
+      { id: 'item-2', label: 'Email', name: 'email', type: 'email', required: true, placeholder: '' },
+      { id: 'item-3', label: 'Phone', name: 'EMAIL', type: 'tel', required: false, placeholder: '' },
+      { id: 'item-4', label: 'Message', name: 'message', type: 'textarea', required: true, placeholder: '' }
+    ];
+    await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ field, button, nextPost }) => {
+      await field('Name').fill('Ada');
+      await field('Email').fill('ada@example.com');
+      await field('Phone').fill('+44 20 7946 0000');
+      await field('Message').fill('Hello');
+      await button.click();
+      const post = await nextPost();
+      const keys = post.entries.map(([k]) => k);
+      expect(new Set(keys).size).toBe(keys.length);
+      expect(post.entries.filter(([k]) => k === 'email')).toEqual([['email', 'ada@example.com']]);
+      expect(post.entries.filter(([, v]) => v === '+44 20 7946 0000')).toHaveLength(1);
+      await post.respond(200);
     });
   }, 20_000);
 });
