@@ -6,7 +6,7 @@ import { uniqueCopyName } from '@engine/definitions';
 import { pageIds, shellPageLinks } from '@generator/checks';
 import { EngineError, instancesOf } from '@engine/tree';
 import { validateState } from '@engine/validate';
-import { generateProject } from '@generator/index';
+import { effectiveTokens, generateProject } from '@generator/index';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -725,6 +725,102 @@ describe('custom site styles (§2.5, spec §7.2)', () => {
     expect((home(s).nodes[hero.id] as InstanceNode).overrides?.root?.base?.background).toEqual({ token: 'color.brand' });
     expect(s.tokens.custom.find((t) => t.id === follower)?.value).toEqual({ token: 'color.brand' });
     expect(errors(s)).toEqual([]);
+  });
+});
+
+describe('site styles that follow other styles (#201)', () => {
+  const css = (s: ProjectState) => generateProject(s).get('src/lib/siteorigin/styles/tokens.css')!;
+  const create = (s: ProjectState, group: 'space' | 'container' | 'radius' | 'shadow' | 'border' | 'font' | 'color', label: string, value: unknown) => {
+    const r = applyOperations(s, [{ type: 'token.create', group, label, value }]);
+    return { state: r.state, id: r.results[0].tokenId as string };
+  };
+  const set = (s: ProjectState, tokenId: string, value: unknown) => applyOperations(s, [{ type: 'token.set', tokenId, value }]).state;
+
+  it('links a custom style of every non-text kind to another of its kind, and unlinks it again', () => {
+    const cases = [
+      ['space', '20px', 'space.md'],
+      ['container', '900px', 'container.reading'],
+      ['radius', '10px', 'radius.lg'],
+      ['shadow', '0 1px 2px rgb(0 0 0 / 0.1)', 'shadow.md'],
+      ['border', '2px solid var(--so-color-brand)', 'border.default'],
+      ['font', 'Georgia, serif', 'font.body']
+    ] as const;
+    for (const [group, literal, target] of cases) {
+      const made = create(fresh(), group, 'Mine', literal);
+      const linked = set(made.state, made.id, { token: target });
+      expect(linked.tokens.custom[0].value, group).toEqual({ token: target });
+      expect(linked.tokens.overrides[made.id], group).toBeUndefined();
+      expect(css(linked), group).toContain(`--so-${made.id.replace('.', '-')}: var(--so-${target.replace('.', '-')});`);
+      expect(errors(linked), group).toEqual([]);
+      const own = set(linked, made.id, literal);
+      expect(own.tokens.custom[0].value, group).toBe(literal);
+    }
+  });
+
+  it('creates a custom style that follows another from the start, and lets theme styles follow too', () => {
+    const made = create(fresh(), 'space', 'Gutter', { token: 'space.lg' });
+    expect(made.state.tokens.custom[0].value).toEqual({ token: 'space.lg' });
+    const theme = set(made.state, 'radius.sm', { token: 'radius.md' });
+    expect(theme.tokens.overrides['radius.sm']).toEqual({ token: 'radius.md' });
+    expect(css(theme)).toContain('--so-radius-sm: var(--so-radius-md);');
+    expect(errors(theme)).toEqual([]);
+  });
+
+  it('refuses links to missing styles, to another kind of style and in a loop', () => {
+    const made = create(fresh(), 'space', 'Gutter', '20px');
+    expect(() => set(made.state, made.id, { token: 'space.nope' })).toThrow(/does not exist/);
+    expect(() => set(made.state, 'color.brand', { token: 'color.nope' })).toThrow(/does not exist/);
+    expect(() => set(made.state, made.id, { token: 'color.brand' })).toThrow(/spacing style|space style/);
+    expect(() => set(made.state, 'font.body', { token: 'space.md' })).toThrow(/font style/);
+    expect(() => set(made.state, made.id, { token: 'space.md', extra: 1 })).toThrow(/must be \{ "token"/);
+    const chain = set(made.state, 'space.md', { token: made.id });
+    expect(() => set(chain, made.id, { token: 'space.md' })).toThrow(/loop/);
+    expect(() => create(fresh(), 'radius', 'Bad', { token: 'radius.nope' })).toThrow(/does not exist/);
+  });
+
+  it('refuses a text style following another text style, and leaves the style and its CSS whole', () => {
+    const s = fresh();
+    expect(() => set(s, 'text.h1', { token: 'text.h2' })).toThrow(/text style/i);
+    const custom = applyOperations(s, [{ type: 'token.create', group: 'text', label: 'Callout', value: { family: { token: 'font.body' }, size: '1rem', lineHeight: '1.5', weight: 400, tracking: '0' } }]);
+    const id = custom.results[0].tokenId as string;
+    expect(() => set(custom.state, id, { token: 'text.h2' })).toThrow(/text style/i);
+    expect(() => applyOperations(s, [{ type: 'token.create', group: 'text', label: 'Alias', value: { token: 'text.h2' } }])).toThrow();
+    const out = css(custom.state);
+    const name = `--so-${id.replace('.', '-')}`;
+    for (const k of ['family', 'size', 'line-height', 'weight', 'tracking']) expect(out).toContain(`${name}-${k}:`);
+    expect(out).toContain('--so-text-h1-size:');
+  });
+
+  it('checks spacing, page width and corner values are CSS lengths', () => {
+    const made = create(fresh(), 'space', 'Gutter', '20px');
+    for (const bad of ['red', '12px solid', '1 2', 'url(x)', '#fff'])
+      expect(() => set(made.state, made.id, bad), bad).toThrow(/length/);
+    for (const good of ['0', '1.5rem', '-8px', 'clamp(1rem, 2vw + 1rem, 3rem)', 'calc(100% - 2rem)', 'min(90vw, 1200px)'])
+      expect(set(made.state, made.id, good).tokens.custom[0].value, good).toBe(good);
+    expect(() => set(fresh(), 'container.content', 'wide')).toThrow(/length/);
+    expect(set(fresh(), 'container.content', '100%').tokens.overrides['container.content']).toBe('100%');
+    expect(() => set(fresh(), 'radius.md', 'round')).toThrow(/length/);
+    expect(() => create(fresh(), 'radius', 'Soft', 'soft')).toThrow(/length/);
+    // The theme's own values all pass the same check.
+    for (const t of effectiveTokens(fresh()).filter((x) => ['space', 'container', 'radius'].includes(x.group)))
+      expect(set(fresh(), t.id, t.value).tokens.overrides[t.id], t.id).toBe(t.value);
+  });
+
+  it('says a custom style has no theme default to go back to', () => {
+    const made = create(fresh(), 'color', 'Sea', '#2e8b57');
+    expect(() => set(made.state, made.id, null)).toThrow(/no theme default/);
+    // A theme style still goes back to the theme's value.
+    const changed = set(made.state, 'color.brand', '#123456');
+    expect(set(changed, 'color.brand', null).tokens.overrides['color.brand']).toBeUndefined();
+  });
+
+  it('keeps a followed font working for a text style family', () => {
+    const made = create(fresh(), 'font', 'Accent', { token: 'font.display' });
+    const s = set(made.state, 'text.h1', { family: { token: made.id } });
+    expect(errors(s)).toEqual([]);
+    const out = css(s);
+    expect(out).toContain(`--so-${made.id.replace('.', '-')}: var(--so-font-display);`);
+    expect(out).toContain(`--so-text-h1-family: var(--so-${made.id.replace('.', '-')});`);
   });
 });
 
