@@ -42,9 +42,13 @@ export function compositeOver(top: Rgba, under: Rgba): Rgba {
   return { r: top.r * a + under.r * (1 - a), g: top.g * a + under.g * (1 - a), b: top.b * a + under.b * (1 - a), a: 1 };
 }
 
-/** A ratio as shown: cut to two decimals, so it never reads as more than it is. */
+/**
+ * A ratio as shown: cut to two decimals, so it never reads as more than it is (a pair that fails never shows the
+ * minimum). The tiny allowance is for the representation of the hundredths, so 4.52 does not read 4.51; no colour
+ * pair is within it of a minimum without being on it.
+ */
 export function formatRatio(ratio: number): string {
-  return (Math.floor(ratio * 100 + 1e-9) / 100).toFixed(2);
+  return (Math.floor(ratio * 100 + 1e-11) / 100).toFixed(2);
 }
 
 /**
@@ -66,6 +70,8 @@ export interface ContrastPair {
   group: string;
   /** False when the foreground is itself the colour the author is choosing (brand text on the page), so changing it is no fix. */
   fixable?: boolean;
+  /** The token a translucent background is painted over (the brand panel a light button sits on). The page background when absent. */
+  over?: string;
   /** Defaults to the text minimum. */
   min?: number;
 }
@@ -84,7 +90,7 @@ export type PairResult = (Measured & { status: 'pass' }) | FailingPair | { statu
 
 export const isFailing = (r: PairResult): r is FailingPair => r.status === 'fail';
 
-/** Where translucent colours land: the page background, itself painted over white. */
+/** Where translucent colours land unless a pair says otherwise: the page background, itself painted over white. */
 const BACKDROP = 'color.background';
 
 /** The token graph: ids to values, with `overrides` standing in for tokens being tried. */
@@ -103,33 +109,33 @@ function tokenGraph(tokens: TokenDef[], overrides: Record<string, string> = {}) 
       else return typeof v === 'string' && v.trim() ? v.trim() : null;
     }
   };
-  return { css };
-}
-
-/** The opaque colour a token paints: a translucent one over the backdrop. Null when it cannot be known. */
-function paint(css: string, read: ColorReader, backdrop: Rgba): Rgba | null {
-  const c = read(css);
-  return c ? (c.a < 1 ? compositeOver(c, backdrop) : c) : null;
+  return { css, has: (id: string) => byId.has(id) };
 }
 
 /** The pairs' results for these tokens. `overrides` evaluates the pairs as if those tokens had those values. */
 export function evaluatePairs(tokens: TokenDef[], pairs: readonly ContrastPair[], read: ColorReader = parseColor, overrides: Record<string, string> = {}): PairResult[] {
   const graph = tokenGraph(tokens, overrides);
   const white: Rgba = { r: 255, g: 255, b: 255, a: 1 };
-  const page = graph.css(BACKDROP);
-  const pageColor = page ? read(page) : null;
-  const backdrop = pageColor ? compositeOver(pageColor, white) : white;
-  const token = (id: string) => {
+  const pageCss = graph.css(BACKDROP);
+  const pageColor = pageCss ? read(pageCss) : null;
+  // A theme with no page colour paints on white; one whose page colour cannot be known leaves every translucent colour unknown.
+  const page = pageColor ? compositeOver(pageColor, white) : graph.has(BACKDROP) ? null : white;
+  /** A token's colour as the site shows it: opaque, a translucent one painted over `under`; null when that cannot be known. */
+  const solid = (id: string, under: Rgba | null): Rgba | null => {
+    if (id === BACKDROP) return page;
     const css = graph.css(id);
-    return css ? paint(css, read, backdrop) : null;
-  };
-  const colorOf = (c: PairColor): Rgba | null => {
-    if (typeof c === 'string') return token(c);
-    const [a, pa, b] = [token(c.mix[0]), c.mix[1] / 100, token(c.mix[2])];
-    // Premultiplied sRGB, as `color-mix(in srgb, ...)` does; the tokens are already opaque here.
-    return a && b ? { r: a.r * pa + b.r * (1 - pa), g: a.g * pa + b.g * (1 - pa), b: a.b * pa + b.b * (1 - pa), a: 1 } : null;
+    const c = css ? read(css) : null;
+    return !c ? null : c.a >= 1 ? c : under ? compositeOver(c, under) : null;
   };
   return pairs.map((pair): PairResult => {
+    // What a translucent background lands on: the pair's own ground, else the page.
+    const under = pair.over ? solid(pair.over, page) : page;
+    const colorOf = (c: PairColor): Rgba | null => {
+      if (typeof c === 'string') return solid(c, under);
+      const [a, pa, b] = [solid(c.mix[0], under), c.mix[1] / 100, solid(c.mix[2], under)];
+      // The two ends are opaque once painted over the same ground, so the mix is a plain weighted average.
+      return a && b ? { r: a.r * pa + b.r * (1 - pa), g: a.g * pa + b.g * (1 - pa), b: a.b * pa + b.b * (1 - pa), a: 1 } : null;
+    };
     const fg = graph.css(pair.fg);
     const fgRead = fg ? read(fg) : null;
     const bg = colorOf(pair.bg);
@@ -143,36 +149,60 @@ export function evaluatePairs(tokens: TokenDef[], pairs: readonly ContrastPair[]
   });
 }
 
-/** A foreground the author can choose for a failing pair, and what the pairs of its group read as after it. */
+/** A foreground the author can choose for a failing pair, and what it would leave hard to read. */
 export interface ForegroundSuggestion {
   token: string;
   value: string;
-  /** The group's results with the suggestion applied: what else it changes. */
+  /** The pair's group with the suggestion applied. */
   after: PairResult[];
-  /** False when another pair of the group (a hover colour) would not be readable with it. */
+  /** True when every pair of the group is readable with it; false when a resting state is fixed at the cost of another (a hover colour). */
   everyState: boolean;
+  /** Pairs that read well now and would not with it, anywhere in the theme (a light button on the same colour), most to least. */
+  breaks: FailingPair[];
 }
 
 /**
- * A white, ink or black foreground that makes `failing` readable. One that keeps every pair of its group
- * readable wins (the first of white, ink, black). Failing that, a resting state still gets one that fixes
- * the resting colours, saying what it costs (`everyState: false`); a hover state gets none, because fixing it
- * alone would only undo the resting one. Null when no choice helps, and for a pair whose foreground is not
- * the author's to change.
+ * A white, ink or black foreground that makes `failing` readable. One that keeps every pair of its group readable
+ * wins, and among those the one that spoils the fewest other pairs (white, then ink, then black on a tie). Failing
+ * that, a group with a single resting state still gets one that fixes it, saying what it costs (`everyState: false`).
+ * A hover state gets none, and neither does a text color on several grounds with no choice for all of them: fixing
+ * one ground would only undo another, and the offers would trade places. Null for a pair whose foreground is not
+ * the author's to change, and when no choice helps.
  */
 export function suggestForeground(tokens: TokenDef[], pairs: readonly ContrastPair[], failing: FailingPair, read: ColorReader = parseColor): ForegroundSuggestion | null {
   const { pair } = failing;
   if (pair.fixable === false) return null;
-  const group = pairs.filter((p) => p.group === pair.group && p.fg === pair.fg && p.fixable !== false);
+  const group = pairs.filter((p) => p.group === pair.group && p.fg === pair.fg);
+  const before = new Map(evaluatePairs(tokens, pairs, read).map((r) => [r.pair.id, r.status]));
   const tries = READABLE_TEXT_COLORS.map((value) => {
-    const after = evaluatePairs(tokens, group, read, { [pair.fg]: value });
-    return { value, after, fixed: after.find((r) => r.pair.id === pair.id)?.status === 'pass', everyState: after.every((r) => r.status !== 'fail') };
+    const overrides = { [pair.fg]: value };
+    const after = evaluatePairs(tokens, group, read, overrides);
+    const breaks = evaluatePairs(tokens, pairs, read, overrides)
+      .filter(isFailing)
+      .filter((r) => before.get(r.pair.id) !== 'fail')
+      .sort((a, b) => a.ratio - b.ratio);
+    return { value, after, breaks, fixed: after.find((r) => r.pair.id === pair.id)?.status === 'pass', everyState: after.every((r) => r.status === 'pass') };
   });
-  const best = tries.find((t) => t.fixed && t.everyState) ?? (pair.state === 'rest' ? tries.find((t) => t.fixed) : undefined);
-  return best ? { token: pair.fg, value: best.value, after: best.after, everyState: best.everyState } : null;
+  const fewest = <T extends { breaks: unknown[] }>(list: T[]): T | undefined => list.reduce<T | undefined>((best, t) => (!best || t.breaks.length < best.breaks.length ? t : best), undefined);
+  const lone = pair.state === 'rest' && group.filter((p) => p.state === 'rest').length === 1;
+  const best = fewest(tries.filter((t) => t.everyState)) ?? (lone ? fewest(tries.filter((t) => t.fixed)) : undefined);
+  return best ? { token: pair.fg, value: best.value, after: best.after, everyState: best.everyState, breaks: best.breaks } : null;
 }
 
-/** The pairs that involve a token, as foreground or background. */
-export function pairsOf(pairs: readonly ContrastPair[], tokenId: string): ContrastPair[] {
-  return pairs.filter((p) => p.fg === tokenId || (typeof p.bg === 'string' ? p.bg === tokenId : p.bg.mix[0] === tokenId || p.bg.mix[2] === tokenId));
+/**
+ * The pairs that involve a token, as foreground or background, hover mixes included. Given the project's tokens, also
+ * the pairs whose colours follow it (Brand set to follow Accent: changing Accent changes the button).
+ */
+export function pairsOf(pairs: readonly ContrastPair[], tokenId: string, tokens: readonly TokenDef[] = []): ContrastPair[] {
+  const affects = new Set([tokenId]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const t of tokens) {
+      const v = t.value;
+      const ref = v && typeof v === 'object' && 'token' in v ? String((v as { token: unknown }).token) : null;
+      if (ref && affects.has(ref) && !affects.has(t.id)) (affects.add(t.id), (grew = true));
+    }
+  }
+  const ends = (p: ContrastPair) => [p.fg, ...(typeof p.bg === 'string' ? [p.bg] : [p.bg.mix[0], p.bg.mix[2]]), ...(p.over ? [p.over] : [])];
+  return pairs.filter((p) => ends(p).some((id) => affects.has(id)));
 }

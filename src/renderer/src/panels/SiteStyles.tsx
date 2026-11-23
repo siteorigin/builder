@@ -11,8 +11,7 @@ import { api, applyOps, getState, toast, useStore } from '../store';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection } from '../components/ui';
 import { CustomTokens } from './CustomTokens';
-import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, failingKey } from './ContrastNotes';
-import { useTransitionAnnouncement } from '../lib/announce';
+import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, useContrastStatus } from './ContrastNotes';
 import type { ForegroundSuggestion } from '@shared/contrast';
 import { fontFamilies, installedFonts } from '@catalogue/fonts';
 
@@ -365,7 +364,7 @@ export function SiteStyles() {
   const uid = useId();
   // Which paired colours the theme sets against each other, and whether they are readable as they stand.
   const contrast = useMemo(() => buildContrastModel(tokens, snap ? getTheme(snap.state.site.themeId).contrastPairs : []), [tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
-  const contrastStatus = useTransitionAnnouncement(failingKey(contrast), (_, next) => (next ? `Low contrast: ${next.split('|').join(', ')}` : 'Colors are readable again'));
+  const contrastStatus = useContrastStatus(contrast);
   if (!snap) return null;
   const st = snap.state;
   const theme = getTheme(st.site.themeId);
@@ -388,9 +387,13 @@ export function SiteStyles() {
     return n ? `${n} changed` : undefined;
   };
   /** Take a suggested text color: one change of its own, refused if the project moved on while the author chose. */
-  const chooseReadable = (s: ForegroundSuggestion) => {
+  const chooseReadable = (s: ForegroundSuggestion, trigger: HTMLElement) => {
     const label = byId(s.token)?.label ?? s.token;
+    // The offer goes once it is taken, so focus moves to the colour's own row, or to Brand in Basics.
+    const row = trigger.closest('[data-ss-row]');
+    const panel = trigger.closest('.ss');
     void applyOps([{ type: 'token.set', tokenId: s.token, value: s.value }], `Use a readable ${label}`, undefined, snap.revision);
+    refocus(trigger, row, null, () => panel?.querySelector<HTMLElement>('.ss-color.compact input.ss-hex') ?? null);
   };
   const site = st.site;
   const updSite = (patch: Record<string, unknown>) => void applyOps([{ type: 'site.update', ...patch }], 'Update site settings');

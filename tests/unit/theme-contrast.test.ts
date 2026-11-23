@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { TokenDef } from '@shared/types';
+import { parseColor } from '@shared/color';
 import { evaluatePairs, formatRatio, isFailing, pairsOf, suggestForeground, type ContrastPair, type PairResult } from '@shared/contrast';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
@@ -35,12 +36,16 @@ describe('the issue: a white brand color under white button text', () => {
     const hover = byId(results, 'button-hover');
     expect(hover.status).toBe('pass');
     expect(ratioOf(hover)).toBeCloseTo(10.925771, 5);
+    // The sample shows white text on the strong brand, not the other way round.
+    expect(hover).toMatchObject({ fg: '#ffffff', bg: '#16443a' });
   });
 
-  it('flags brand-colored links on the page too', () => {
+  it('flags brand-colored links on the page, cards and alternate sections', () => {
     const links = byId(results, 'brand-text-background');
     expect(links.status).toBe('fail');
     expect(ratioOf(links)).toBeCloseTo(1.043781, 5);
+    expect(byId(results, 'brand-text-surface').status).toBe('fail');
+    expect(byId(results, 'brand-text-surface-alt').status).toBe('fail');
   });
 
   it('offers dark ink for the button, and says what it does to the hover state', () => {
@@ -49,6 +54,15 @@ describe('the issue: a white brand color under white button text', () => {
     const hover = byId(offer!.after, 'button-hover');
     expect(hover.status).toBe('fail');
     expect(ratioOf(hover)).toBeCloseTo(1.635359, 5);
+    // The group's passing result is there too, not only the ones that fail.
+    expect(byId(offer!.after, 'button').status).toBe('pass');
+  });
+
+  it('says every pair the offer would spoil, the light button on the brand panel included', () => {
+    const offer = suggestForeground(tokens, PAIRS, byId(results, 'button') as never)!;
+    expect(offer.breaks.map((r) => r.pair.id).sort()).toEqual(['button-hover', 'light-button', 'light-button-hover']);
+    // Worst first: ink on the strong brand, and the light button's text on an ink button on a white brand panel.
+    expect(offer.breaks[0].ratio).toBeLessThan(offer.breaks[offer.breaks.length - 1].ratio + 1e-9);
   });
 
   it('offers nothing for the hover state alone once ink is chosen: white would only undo the resting state', () => {
@@ -90,6 +104,80 @@ describe('offers', () => {
     expect(offer!.after.map((r) => r.pair.id).sort()).toEqual(['text-background', 'text-surface', 'text-surface-alt']);
   });
 
+  it('offers a joint fix for a failing hover state when one exists', () => {
+    const tokens = business({ 'color.brand': '#ffffff', 'color.brand-strong': '#ffffff' });
+    const hover = byId(evaluatePairs(tokens, PAIRS), 'button-hover');
+    expect(hover.status).toBe('fail');
+    expect(suggestForeground(tokens, PAIRS, hover as never)).toMatchObject({ token: 'color.on-brand', value: '#14181a', everyState: true });
+  });
+
+  it('prefers the choice that keeps every state readable over the first one that fixes the resting state', () => {
+    // Ink fixes the button at rest alone; black fixes it on a mid-grey hover too.
+    const tokens = business({ 'color.brand': '#ffffff', 'color.brand-strong': '#777777' });
+    const failing = byId(evaluatePairs(tokens, PAIRS), 'button');
+    expect(suggestForeground(tokens, PAIRS, failing as never)).toMatchObject({ value: '#000000', everyState: true });
+  });
+
+  it('marks a fix for the resting state as costing the hover state when no choice keeps both', () => {
+    const tokens = business({ 'color.brand': '#777777' });
+    const offer = suggestForeground(tokens, PAIRS, byId(evaluatePairs(tokens, PAIRS), 'button') as never);
+    expect(offer).toMatchObject({ value: '#000000', everyState: false });
+    expect(byId(offer!.after, 'button-hover').status).toBe('fail');
+  });
+
+  it('offers a fix for a pair only when its declaration says the foreground is the author’s to change', () => {
+    const asLink: ContrastPair = { id: 'link', use: 'Link', fg: 'color.brand', bg: 'color.background', state: 'rest', group: 'link' };
+    const tokens = business({ 'color.brand': '#ffffff' });
+    const failing = byId(evaluatePairs(tokens, [asLink]), 'link');
+    expect(suggestForeground(tokens, [asLink], failing as never)).toMatchObject({ token: 'color.brand', value: '#14181a' });
+    const unfixable = [{ ...asLink, fixable: false }];
+    expect(suggestForeground(tokens, unfixable, byId(evaluatePairs(tokens, unfixable), 'link') as never)).toBeNull();
+  });
+
+  it('judges a choice only against its own group, but against every sibling in it, fixable or not', () => {
+    const tokens = business({ 'color.text': '#ffffff' });
+    const other: ContrastPair = { id: 'other', use: 'Other', fg: 'color.text', bg: 'color.inverse', state: 'rest', group: 'other' };
+    const failing = byId(evaluatePairs(tokens, PAIRS), 'text-background');
+    const offer = suggestForeground(tokens, [...PAIRS, other], failing as never)!;
+    expect(offer.after.map((r) => r.pair.id).sort()).toEqual(['text-background', 'text-surface', 'text-surface-alt']);
+    // A sibling that is not the author's to fix still counts against a choice: white hover on white, black rest on black.
+    const sibling = { id: 'rest', use: 'Rest', fg: 'color.text', bg: 'color.inverse', state: 'rest' as const, group: 'text', fixable: false };
+    const hover = { id: 'hov', use: 'Hover', fg: 'color.text', bg: 'color.background', state: 'hover' as const, group: 'text' };
+    const dark = business({ 'color.text': '#ffffff', 'color.background': '#ffffff', 'color.inverse': '#000000' });
+    const failingHover = byId(evaluatePairs(dark, [sibling, hover]), 'hov');
+    expect(suggestForeground(dark, [sibling, hover], failingHover as never)).toBeNull();
+  });
+
+  it('never trades one ground for another: text on a white page and black cards gets no offer', () => {
+    const tokens = business({ 'color.background': '#ffffff', 'color.surface': '#000000', 'color.surface-alt': '#ffffff', 'color.text': '#ffffff' });
+    const results = evaluatePairs(tokens, PAIRS);
+    const page = byId(results, 'text-background');
+    const cards = byId(results, 'text-surface');
+    expect([page.status, cards.status]).toEqual(['fail', 'pass']);
+    expect(suggestForeground(tokens, PAIRS, page as never)).toBeNull();
+    // And once ink is chosen the cards fail with no offer to switch back.
+    const inked = business({ 'color.background': '#ffffff', 'color.surface': '#000000', 'color.surface-alt': '#ffffff', 'color.text': '#14181a' });
+    const failingCards = byId(evaluatePairs(inked, PAIRS), 'text-surface');
+    expect(failingCards.status).toBe('fail');
+    expect(suggestForeground(inked, PAIRS, failingCards as never)).toBeNull();
+  });
+
+  it('offers nothing for a hover state whose resting state cannot be checked', () => {
+    const tokens = business({ 'color.brand': 'currentcolor', 'color.brand-strong': '#ffffff', 'color.on-brand': '#ffffff' });
+    const results = evaluatePairs(tokens, PAIRS);
+    expect(byId(results, 'button').status).toBe('unknown');
+    const hover = byId(results, 'button-hover');
+    expect(hover.status).toBe('fail');
+    expect(suggestForeground(tokens, PAIRS, hover as never)).toBeNull();
+  });
+
+  it('offers a choice for a brand linked to an independent color', () => {
+    const tokens = business({ 'color.brand': { token: 'color.surface' } });
+    const failing = byId(evaluatePairs(tokens, PAIRS), 'button');
+    expect(failing.status).toBe('fail');
+    expect(suggestForeground(tokens, PAIRS, failing as never)).toMatchObject({ token: 'color.on-brand', value: '#14181a' });
+  });
+
   it('judges the choice with the colors that follow the token, not the old ones', () => {
     // The button's background follows its text color: no foreground can fix a pair that moves with it.
     const tokens = business({ 'color.brand': { token: 'color.on-brand' } });
@@ -106,8 +194,23 @@ describe('what a ratio says', () => {
     expect(failing.status).toBe('fail');
     expect(formatRatio(ratioOf(failing))).toBe('4.47');
     expect(formatRatio(4.4999999)).toBe('4.49');
+    expect(formatRatio(4.499999999999)).toBe('4.49');
     expect(formatRatio(4.5)).toBe('4.50');
+    expect(formatRatio(4.52)).toBe('4.52');
     expect(formatRatio(21)).toBe('21.00');
+  });
+
+  it('compares the ratio unrounded: 4.49913 fails though it would round to 4.50', () => {
+    const tokens = business({ 'color.brand': 'rgb(118.67 118.67 118.67)', 'color.on-brand': '#ffffff' });
+    const r = byId(evaluatePairs(tokens, PAIRS), 'button');
+    expect(ratioOf(r)).toBeGreaterThan(4.499);
+    expect(ratioOf(r)).toBeLessThan(4.5);
+    expect(r.status).toBe('fail');
+  });
+
+  it('passes a pair that sits exactly on its minimum', () => {
+    const pair: ContrastPair = { id: 'p', use: 'Sample', fg: 'color.text', bg: 'color.background', state: 'rest', group: 'p', min: 21 };
+    expect(byId(evaluatePairs(business({ 'color.text': '#000000', 'color.background': '#ffffff' }), [pair]), 'p').status).toBe('pass');
   });
 
   it('is exact at the extremes', () => {
@@ -120,6 +223,42 @@ describe('what a ratio says', () => {
     const r = byId(evaluatePairs(tokens, PAIRS), 'text-background');
     expect(r.status).toBe('fail');
     expect(ratioOf(r)).toBeCloseTo(3.976653, 5);
+  });
+
+  it('paints translucent text over the ground it sits on, not over the page', () => {
+    const tokens = business({ 'color.background': '#ffffff', 'color.surface': '#000000', 'color.text': 'rgb(0 0 0 / 50%)' });
+    const r = byId(evaluatePairs(tokens, PAIRS), 'text-surface');
+    expect(ratioOf(r)).toBeCloseTo(1, 6);
+  });
+
+  it('paints a translucent page color once, not over itself', () => {
+    // 50% black over white is (127.5, 127.5, 127.5); white brand text on it is 3.9767, not the 10.4 of a page painted twice.
+    const tokens = business({ 'color.background': 'rgb(0 0 0 / 50%)', 'color.brand': '#ffffff' });
+    const r = byId(evaluatePairs(tokens, PAIRS), 'brand-text-background');
+    expect(r.status).toBe('fail');
+    expect(ratioOf(r)).toBeCloseTo(3.976653, 5);
+  });
+
+  it('paints a translucent surface over a black page', () => {
+    const tokens = business({ 'color.background': '#000000', 'color.surface': 'rgb(0 0 0 / 50%)', 'color.text': '#000000' });
+    expect(ratioOf(byId(evaluatePairs(tokens, PAIRS), 'text-surface'))).toBeCloseTo(1, 6);
+  });
+
+  it('leaves a translucent color unknown when the page color is, but still measures opaque ones', () => {
+    const tokens = business({ 'color.background': 'currentcolor', 'color.surface': 'rgb(0 0 0 / 50%)', 'color.surface-alt': '#ffffff', 'color.text': '#000000' });
+    const results = evaluatePairs(tokens, PAIRS);
+    expect(byId(results, 'text-surface').status).toBe('unknown');
+    expect(byId(results, 'text-background').status).toBe('unknown');
+    expect(ratioOf(byId(results, 'text-surface-alt'))).toBeCloseTo(21, 9);
+  });
+
+  it('paints a light button over the brand panel it sits on, not over the page', () => {
+    // Text on brand color is clear, so the light button is the brand panel's colour: strong brand text on a black panel.
+    const tokens = business({ 'color.brand': '#000000', 'color.brand-strong': '#000000', 'color.on-brand': 'rgb(255 255 255 / 0%)' });
+    const results = evaluatePairs(tokens, PAIRS);
+    expect(byId(results, 'light-button')).toMatchObject({ status: 'fail', bg: '#000000' });
+    expect(ratioOf(byId(results, 'light-button'))).toBeCloseTo(1, 6);
+    expect(byId(results, 'light-button-hover')).toMatchObject({ status: 'fail', bg: '#000000' });
   });
 
   it('reads a light button on its hover mix of the two colors', () => {
@@ -137,13 +276,15 @@ describe('values that cannot be known', () => {
   const pair: ContrastPair = { id: 'p', use: 'Sample', fg: 'color.fg', bg: 'color.bg', state: 'rest', group: 'p' };
 
   it('follows a chain of references longer than any limit', () => {
-    const links: Array<[string, unknown]> = Array.from({ length: 12 }, (_, i) => [`color.l${i}`, { token: `color.l${i + 1}` }]);
-    const tokens = mini([...links, ['color.l12', '#000000'], ['color.fg', { token: 'color.l0' }], ['color.bg', '#ffffff']]);
+    const links: Array<[string, unknown]> = Array.from({ length: 40 }, (_, i) => [`color.l${i}`, { token: `color.l${i + 1}` }]);
+    const tokens = mini([...links, ['color.l40', '#000000'], ['color.fg', { token: 'color.l0' }], ['color.bg', '#ffffff']]);
     expect(ratioOf(evaluatePairs(tokens, [pair])[0])).toBeCloseTo(21, 9);
   });
 
   it.each([
-    ['a missing token', [['color.bg', '#ffffff']] as Array<[string, unknown]>],
+    ['a missing foreground', [['color.bg', '#ffffff']] as Array<[string, unknown]>],
+    ['a missing background', [['color.fg', '#000000']] as Array<[string, unknown]>],
+    ['a cycle that does not return to where it started', [['color.fg', { token: 'color.a' }], ['color.a', { token: 'color.b' }], ['color.b', { token: 'color.a' }], ['color.bg', '#ffffff']] as Array<[string, unknown]>],
     ['a dangling reference', [['color.fg', { token: 'color.nope' }], ['color.bg', '#ffffff']] as Array<[string, unknown]>],
     ['a circular reference', [['color.fg', { token: 'color.other' }], ['color.other', { token: 'color.fg' }], ['color.bg', '#ffffff']] as Array<[string, unknown]>],
     ['a value that depends on where it is used', [['color.fg', 'var(--theme)'], ['color.bg', '#ffffff']] as Array<[string, unknown]>],
@@ -151,6 +292,14 @@ describe('values that cannot be known', () => {
     ['an empty value', [['color.fg', '  '], ['color.bg', '#ffffff']] as Array<[string, unknown]>]
   ])('reports %s as unknown, never as a pass or a fail', (_, list) => {
     expect(evaluatePairs(mini(list), [pair])[0].status).toBe('unknown');
+  });
+
+  it('reads colors through the reader it is given, and keeps a bare keyword and padded values', () => {
+    const tokens = mini([['color.fg', 'color-mix(in srgb, #000 100%, #000)'], ['color.bg', ' white ']]);
+    expect(evaluatePairs(tokens, [pair])[0].status).toBe('unknown');
+    const reader = (css: string) => (css.startsWith('color-mix') ? { r: 0, g: 0, b: 0, a: 1 } : parseColor(css));
+    expect(ratioOf(evaluatePairs(tokens, [pair], reader)[0])).toBeCloseTo(21, 9);
+    expect(ratioOf(evaluatePairs(mini([['color.fg', 'black'], ['color.bg', ' #ffffff ']]), [pair])[0])).toBeCloseTo(21, 9);
   });
 
   it('paints a translucent background over the page color', () => {
@@ -162,7 +311,9 @@ describe('values that cannot be known', () => {
 
 describe('what ships', () => {
   it('declares only tokens its theme has, with unique ids', () => {
-    for (const theme of listThemes().filter((t) => t.contrastPairs)) {
+    const declaring = listThemes().filter((t) => t.contrastPairs);
+    expect(declaring.map((t) => t.id).sort()).toEqual(['foundation', 'foundation-alt']);
+    for (const theme of declaring) {
       const ids = new Set(theme.tokens.map((t) => t.id));
       const pairs = theme.contrastPairs!;
       expect(new Set(pairs.map((p) => p.id)).size).toBe(pairs.length);
@@ -178,6 +329,7 @@ describe('what ships', () => {
     expect(themes.length).toBeGreaterThanOrEqual(2);
     for (const theme of themes) {
       const results = evaluatePairs(theme.tokens, theme.contrastPairs!);
+      expect(results.map((r) => r.pair.id)).toEqual(expect.arrayContaining(['button', 'button-hover', 'dark-text', 'dark-accent', 'text-background', 'muted-surface-alt']));
       expect(results.filter((r) => r.status !== 'pass').map((r) => r.pair.id), theme.id).toEqual([]);
     }
     for (const starter of STARTERS) {
@@ -189,8 +341,16 @@ describe('what ships', () => {
 
   it('lists the pairs that involve a token as foreground or background, hover mixes included', () => {
     expect(pairsOf(PAIRS, 'color.on-brand').map((p) => p.id)).toEqual(expect.arrayContaining(['button', 'button-hover', 'light-button', 'light-button-hover']));
-    expect(pairsOf(PAIRS, 'color.brand').map((p) => p.id)).toEqual(expect.arrayContaining(['button', 'light-button-hover', 'brand-text-background']));
+    expect(pairsOf(PAIRS, 'color.brand').map((p) => p.id).sort()).toEqual(['brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'light-button', 'light-button-hover']);
     expect(pairsOf(PAIRS, 'color.border')).toEqual([]);
+  });
+
+  it('follows the colors that follow a token, so editing the one a brand follows shows the button', () => {
+    const tokens = business({ 'color.brand': { token: 'color.accent' } });
+    expect(pairsOf(PAIRS, 'color.accent').map((p) => p.id)).not.toContain('button');
+    expect(pairsOf(PAIRS, 'color.accent', tokens).map((p) => p.id)).toEqual(expect.arrayContaining(['button', 'brand-text-background', 'dark-accent']));
+    const chained = business({ 'color.brand': { token: 'color.accent' }, 'color.accent': { token: 'color.border' } });
+    expect(pairsOf(PAIRS, 'color.border', chained).map((p) => p.id)).toContain('button');
   });
 
   it('agrees with the AI brand tool: the colors it derives for any brand keep the button readable at rest and on hover', () => {
@@ -201,5 +361,13 @@ describe('what ships', () => {
       expect(byId(results, 'button').status, `${brand} button`).toBe('pass');
       expect(byId(results, 'button-hover').status, `${brand} hover`).toBe('pass');
     }
+  });
+
+  it('keeps the brand tool choosing white, then ink, then black', () => {
+    expect(derivedBrandTokens('#000000', '#ffffff')['color.on-brand']).toBe('#ffffff');
+    expect(derivedBrandTokens('#1f5a4c', '#ffffff')['color.on-brand']).toBe('#ffffff');
+    expect(derivedBrandTokens('#ffffff', '#ffffff')['color.on-brand']).toBe('#14181a');
+    expect(derivedBrandTokens('#f5c518', '#ffffff')['color.on-brand']).toBe('#14181a');
+    expect(derivedBrandTokens('#777777', '#ffffff')['color.on-brand']).toBe('#000000');
   });
 });
