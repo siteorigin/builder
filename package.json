@@ -8,8 +8,9 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "dev": "npm run build:packs && electron-vite dev",
+    "build": "npm run build:packs && electron-vite build",
+    "build:packs": "tsx --tsconfig tsconfig.node.json scripts/build-packs.ts",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "typecheck:changed": "npm run typecheck",
@@ -18,8 +19,8 @@
     "test:export-build": "node tests/e2e/export.mjs --build",
     "test:ai": "node tests/e2e/ai.mjs",
     "eval:agent": "tsx --tsconfig tsconfig.node.json scripts/eval-agent.ts",
-    "pack": "electron-vite build && electron-builder --dir",
-    "dist": "electron-vite build && electron-builder",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
     "test:packaged": "node tests/e2e/packaged.mjs"
   },
   "devDependencies": {

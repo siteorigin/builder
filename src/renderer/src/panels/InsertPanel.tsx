@@ -1,14 +1,15 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component } from 'lucide-react';
+import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component, SwatchBook } from 'lucide-react';
 import type { ComponentDefinition, OwnerRef, ProjectState } from '@shared/types';
 import { placementCounts, placesOf } from '@engine/tree';
 import { dependentsOf } from '@engine/definitions';
-import { catalogueEntries, CATEGORY_LABELS } from '@catalogue/index';
+import { catalogueComponent, catalogueEntries, CATEGORY_LABELS, getTheme } from '@catalogue/index';
 import { commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { elementWhere, insert, insertionPoint, nodeBefore, nodeLabel, selectPage, type Primitive, type Where } from '../lib/actions';
 import { ownerLabel } from '../lib/model';
 import { gridKeys, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 import { pageShowing, partName } from '@shared/page-shell';
+import { usePackPreview } from '../components/PackPreview';
 
 export function LucideIcon({ name, size = 15 }: { name?: string; size?: number }) {
   const key = (name ?? 'box')
@@ -187,7 +188,11 @@ interface Item {
   description: string;
   hay: string;
   group: string;
-  spec: { componentId?: string; definitionId?: string; primitive?: Primitive };
+  spec: { componentId?: string; definitionId?: string; primitive?: Primitive; variants?: Record<string, string> };
+  /** A section's thumbnail, drawn when its theme pack was built. */
+  preview?: { pack: string; file: string };
+  /** A section shown in one of its variants: the option's name ("Dark"), and its axis ("Tone"). */
+  variant?: { option: string; axis: string };
   icon?: string;
   code?: boolean;
   /** Project components: how many times it is placed. */
@@ -224,6 +229,22 @@ function ItemIcon({ it }: { it: Item }) {
       <LucideIcon name={it.icon} />
     </span>
   );
+}
+
+/** A section's thumbnail from its theme pack, or a sketch of its layout while that loads or when there is none. */
+function SectionThumb({ it }: { it: Item }) {
+  const url = usePackPreview(it.preview?.pack, it.preview?.file);
+  return url ? <img className="insert-shot" src={url} alt="" draggable={false} /> : <SectionSketch id={it.spec.componentId!} />;
+}
+
+/** Whether the Insert panel lists every variant of a section, remembered on this computer. */
+const VARIANTS_KEY = 'insert.variants';
+function readShowVariants(): boolean {
+  try {
+    return localStorage.getItem(VARIANTS_KEY) === '1';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -290,6 +311,16 @@ export function InsertPanel() {
   const [scrolled, setScrolled] = useState<Kind | null>(null);
   const [allMine, setAllMine] = useState(false);
   const [narrow, setNarrow] = useState(false);
+  const [showVariants, setShowVariants] = useState(readShowVariants);
+  const toggleVariants = () => {
+    const next = !showVariants;
+    setShowVariants(next);
+    try {
+      localStorage.setItem(VARIANTS_KEY, next ? '1' : '0');
+    } catch {
+      // Not remembered, but shown.
+    }
+  };
   const browseTop = useRef(0);
   const [added, setAdded] = useState<{ name: string; where: Where; n: number; selection: unknown } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -353,15 +384,39 @@ export function InsertPanel() {
   if (!snap) return null;
   const st = snap.state;
 
-  const sections: Item[] = entries.map((e) => ({
-    key: `s:${e.componentId}`,
-    kind: 'section',
-    name: e.name,
-    description: e.description,
-    hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} section`.toLowerCase(),
-    group: CATEGORY_LABELS[e.category] ?? e.category,
-    spec: { componentId: e.componentId }
-  }));
+  const theme = getTheme(st.site.themeId);
+  // Each section, then (when asked for) each variant option on its own, pictured as it inserts.
+  const sections: Item[] = entries.flatMap((e) => {
+    const shots = theme.previews?.[e.componentId];
+    const base: Item = {
+      key: `s:${e.componentId}`,
+      kind: 'section',
+      name: e.name,
+      description: e.description,
+      hay: `${e.name} ${e.description} ${e.tags.join(' ')} ${CATEGORY_LABELS[e.category] ?? e.category} section`.toLowerCase(),
+      group: CATEGORY_LABELS[e.category] ?? e.category,
+      spec: { componentId: e.componentId },
+      ...(shots ? { preview: { pack: theme.id, file: shots.default } } : {})
+    };
+    if (!showVariants) return [base];
+    const axes = catalogueComponent(st.site.themeId, e.componentId)?.variantAxes ?? {};
+    const options = Object.entries(axes).flatMap(([axis, a]) =>
+      Object.entries(a.options)
+        .filter(([option]) => option !== a.default)
+        .map(([option, o]): Item => {
+          const file = shots?.variants?.[axis]?.[option];
+          return {
+            ...base,
+            key: `s:${e.componentId}~${axis}=${option}`,
+            hay: `${base.hay} ${a.label} ${o.label} variant`.toLowerCase(),
+            spec: { componentId: e.componentId, variants: { [axis]: option } },
+            variant: { option: o.label, axis: a.label },
+            preview: file ? { pack: theme.id, file } : undefined
+          };
+        })
+    );
+    return [base, ...options];
+  });
   const elements: Item[] = BASICS.map((b) => ({ key: `e:${b.id}`, kind: 'element', name: b.name, description: '', hay: `${b.name} ${b.tags} element`.toLowerCase(), group: 'Basic elements', spec: { primitive: b.id }, icon: b.icon }));
   // Code components show only in Developer mode, as its setting promises.
   const mine: Item[] = Object.values(st.components)
@@ -394,9 +449,10 @@ export function InsertPanel() {
   const add = async (it: Item) => {
     const to = where[it.kind];
     const before = getState().selection;
-    await insert(it.spec, it.name);
+    const name = it.variant ? `${it.name} (${it.variant.option})` : it.name;
+    await insert(it.spec, name);
     const after = getState().selection;
-    if (after && after !== before) setAdded((a) => ({ name: it.name, where: to, n: (a?.n ?? 0) + 1, selection: after }));
+    if (after && after !== before) setAdded((a) => ({ name, where: to, n: (a?.n ?? 0) + 1, selection: after }));
   };
   const clear = () => {
     setQ('');
@@ -592,6 +648,9 @@ export function InsertPanel() {
       {menu.node}
       <div className="panel-head">
         <h3>Insert</h3>
+        <button className="btn btn-sm btn-ghost insert-variants" aria-pressed={showVariants} title="List each section's variants (tone, layout) as their own items" onClick={toggleVariants}>
+          <SwatchBook aria-hidden="true" /> Variants
+        </button>
         {!query && (
           <button className="btn btn-sm btn-ghost insert-jump" onClick={jumpToElements}>
             <ArrowDown aria-hidden="true" /> Elements
@@ -672,14 +731,14 @@ export function InsertPanel() {
                 >
                   {it.kind === 'section' ? (
                     <span className="insert-thumb" aria-hidden="true">
-                      <SectionSketch id={it.spec.componentId!} />
+                      <SectionThumb it={it} />
                     </span>
                   ) : (
                     <ItemIcon it={it} />
                   )}
                   <span className="txt">
-                    <strong>{it.name}</strong>
-                    <small>{it.kind === 'section' ? `Section · ${it.group}` : it.kind === 'element' ? 'Basic element' : it.code ? 'Your code component' : 'Your component'}</small>
+                    <strong>{it.variant ? `${it.name} · ${it.variant.option}` : it.name}</strong>
+                    <small>{it.kind === 'section' ? `Section · ${it.variant ? `${it.variant.axis} variant` : it.group}` : it.kind === 'element' ? 'Basic element' : it.code ? 'Your code component' : 'Your component'}</small>
                   </span>
                   {it === current && (
                     <kbd className="kbd" aria-hidden="true">
@@ -711,9 +770,10 @@ export function InsertPanel() {
                   items={list}
                   labelledBy={`${id}-g${gi}`}
                   render={(it) => (
-                    <button className="insert-tile section" title={it.description} {...tileProps(it)}>
-                      <SectionSketch id={it.spec.componentId!} />
+                    <button className="insert-tile section" title={it.variant ? `${it.name}, ${it.variant.axis.toLowerCase()}: ${it.variant.option}` : it.description} {...tileProps(it)}>
+                      <SectionThumb it={it} />
                       <strong>{it.name}</strong>
+                      {it.variant && <small className="insert-variant">{it.variant.option}</small>}
                       {plus}
                     </button>
                   )}

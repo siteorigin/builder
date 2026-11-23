@@ -83,3 +83,7 @@ dist/
 *.tmp
 /prs-merge-bg/
 .claude/worktrees/
+
+# Theme pack releases, built from src/catalogue by `npm run build:packs`
+/resources/packs/
+/resources/packs-dev/

@@ -18,6 +18,9 @@ extraResources:
     to: templates
   - from: resources/starter-assets
     to: resources/starter-assets
+  # Theme pack releases built by `npm run build:packs` (development fixtures in resources/packs-dev are not shipped).
+  - from: resources/packs
+    to: resources/packs
 
 mac:
   category: public.app-category.developer-tools

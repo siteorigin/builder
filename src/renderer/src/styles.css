@@ -941,6 +941,15 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .ss-theme-desc { font-size: 12px; line-height: 1.4; color: var(--text-2); }
 .ss-theme-switch { margin-top: 6px; }
 .ss-theme-hint { margin-top: 3px; font-size: 12px; color: var(--text-3); }
+.welcome-packs { margin: 0 12px 10px; font-size: 12px; color: var(--text-2); }
+.welcome-packs summary { cursor: pointer; color: var(--red); }
+.welcome-packs ul { margin: 4px 0 0; padding-left: 16px; max-height: 160px; overflow: auto; }
+.welcome-packs li { margin: 2px 0; overflow-wrap: anywhere; }
+.ss-packs-refused { margin-top: 6px; font-size: 12px; color: var(--text-2); }
+.ss-packs-refused summary { cursor: pointer; color: var(--red); }
+.ss-packs-refused ul { margin: 4px 0; padding-left: 16px; }
+.ss-packs-refused li { margin: 2px 0; overflow-wrap: anywhere; }
+.ss-packs-refused p { margin: 4px 0 0; overflow-wrap: anywhere; }
 .ss-theme { align-items: flex-start; }
 .ss .section-body { gap: 14px; }
 .ss-group { display: flex; flex-direction: column; gap: 2px; }
@@ -1322,6 +1331,13 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .insert-search .insert-clear:hover { color: var(--text); }
 .insert-panel .panel-head .insert-jump { flex: none; color: var(--text-2); }
 .insert-panel .panel-head .insert-jump svg { width: 13px; height: 13px; }
+.insert-panel .panel-head .insert-variants { flex: none; color: var(--text-2); }
+.insert-panel .panel-head .insert-variants svg { width: 13px; height: 13px; }
+.insert-panel .panel-head .insert-variants[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent-text); }
+/* A section's thumbnail, drawn from its real implementation when the theme pack was built: the top of the section at desktop width. */
+.insert-shot { display: block; width: 100%; aspect-ratio: 16 / 10; object-fit: cover; object-position: top; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: 0 0 0 1px var(--border); }
+.insert-thumb .insert-shot { width: 56px; height: 36px; aspect-ratio: auto; border-radius: var(--r-xs); }
+.insert-tile .insert-variant { margin-top: -5px; padding: 0 4px; font-size: 11px; color: var(--text-3); }
 /* Room for two lines at all times, so the list never moves when the line's wording changes. */
 .insert-where { display: flex; align-items: center; gap: 7px; margin: 0 21px 8px 10px; padding: 5px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.4; color: var(--text-2); min-height: 44px; }
 .insert-where > span { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }

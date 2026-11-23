@@ -84,7 +84,7 @@ const component = z
     tags: z.array(text(60)).max(40),
     icon: text(60).optional(),
     properties: z.record(z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,59}$/), z.object({ type: z.string(), label: z.string() }).loose()),
-    parts: z.record(ID, z.object({ nodeId: z.string(), label: z.string() }).loose()),
+    parts: z.record(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,59}$/), z.object({ nodeId: z.string(), label: z.string() }).loose()),
     slots: z.record(z.string(), z.object({ label: z.string() })).optional(),
     variantAxes: z.record(z.string(), z.object({ label: z.string(), default: z.string(), options: z.record(z.string(), z.object({ label: z.string() }).loose()) }).loose()).optional(),
     tree: z.object({ rootIds: z.array(z.string()).min(1), nodes: z.record(z.string(), z.object({ id: z.string(), kind: z.string() }).loose()) }).optional(),
@@ -119,7 +119,7 @@ const manifestSchema = z.strictObject({
 /** CSS a pack writes into every site unchanged: no other stylesheets, no remote or local resources, no markup. */
 function checkCss(css: string, where: string) {
   if (/@import/i.test(css)) refuse(`${where} imports another stylesheet (@import), which packs may not do.`);
-  if (/url\s*\(|image-set\s*\(|expression\s*\(|javascript:|behavior\s*:|-moz-binding/i.test(css)) refuse(`${where} loads a resource (url() or similar), which packs may not do.`);
+  if (/url\s*\(|image-set\s*\(|expression\s*\(|javascript:|(?<![\w-])behavior\s*:|-moz-binding/i.test(css)) refuse(`${where} loads a resource (url() or similar), which packs may not do.`);
   if (/<\/?\s*(style|script)/i.test(css)) refuse(`${where} contains markup.`);
 }
 

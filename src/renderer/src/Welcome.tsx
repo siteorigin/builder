@@ -29,6 +29,7 @@ const pickerTakesFolders = api.platform === 'darwin';
 export function Welcome() {
   // null until the first load, so returning users never see a flash of the first-run screen.
   const [recents, setRecents] = useState<RecentProject[] | null>(null);
+  const refusedPacks = useStore((st) => st.packs.refused);
   const [creating, setCreating] = useState(false);
   const [trust, setTrust] = useState<{ dir: string; name: string } | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
@@ -115,6 +116,18 @@ export function Welcome() {
           )}
         </div>
         <div className="spacer" />
+        {refusedPacks.length > 0 && (
+          <details className="welcome-packs no-drag">
+            <summary>{refusedPacks.length === 1 ? '1 theme pack' : `${refusedPacks.length} theme packs`} could not be loaded</summary>
+            <ul>
+              {refusedPacks.map((r) => (
+                <li key={r.dir}>
+                  <strong>{r.packId ?? r.dir.split(/[\\/]/).pop()}</strong>: {r.reason}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
         <div className="col no-drag" style={{ gap: 4 }}>
           <button className="btn btn-ghost" style={{ justifyContent: 'flex-start' }} onClick={() => setState({ modal: { kind: 'settings' } })}>
             <Settings /> Settings
