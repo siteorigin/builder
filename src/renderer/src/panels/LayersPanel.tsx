@@ -288,7 +288,12 @@ export function LayersPanel() {
             {page.rootIds.length > 0 ? (
               <TreeList state={st} owner={{ kind: 'page', id: pageId }} tree={page} ids={page.rootIds} depth={0} onMenu={openMenu} path={[]} labelledBy="layers-sec-page" />
             ) : (
-              <div className="layers-empty" role="none" onKeyDown={(e) => e.stopPropagation()}>
+              <div
+                className="layers-empty"
+                role="none"
+                // Keys here are the button's, not the tree's; Undo and Redo still reach the editor, as from anywhere in Layers.
+                onKeyDown={(e) => !((e.metaKey || e.ctrlKey) && ['z', 'y'].includes(e.key.toLowerCase())) && e.stopPropagation()}
+              >
                 <p>No page content yet</p>
                 <button
                   className="btn btn-sm"

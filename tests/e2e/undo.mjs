@@ -224,6 +224,28 @@ await headingField.pressSequentially('!');
 await textHistory('inspector field', () => value(headingField), 'Committed heading!', 'Committed heading');
 await headingField.press('Escape');
 
+step('Undo from the empty Layers panel undoes the project');
+const sections = () => win.evaluate(async () => {
+  const s = await window.builder.project.snapshot();
+  return s.state.pages[s.state.site.homePageId].rootIds.length;
+});
+const before = await sections();
+const cleared = await win.evaluate(async () => {
+  const s = await window.builder.project.snapshot();
+  const owner = { kind: 'page', id: s.state.site.homePageId };
+  return window.builder.project.apply({ operations: s.state.pages[owner.id].rootIds.map((nodeId) => ({ type: 'node.remove', owner, nodeId })) }, { label: 'Clear the page' });
+});
+assert.ok(cleared.ok, 'the page is cleared');
+const addSections = win.locator('.layers-empty button');
+await addSections.waitFor();
+await addSections.focus();
+let emptyRev = await revision();
+await undoKey();
+await eventually(async () => assert.equal(await sections(), before, 'Undo from the empty Layers panel brings the sections back'));
+await settle();
+assert.equal(await revision(), ++emptyRev, 'Undo from the empty Layers panel takes exactly one step');
+assert.equal(await win.locator('.toast.error').count(), 0, 'Undo from the empty Layers panel reports no error');
+
 step('a dialog’s text field keeps its own history');
 await row.focus();
 await chord('k');

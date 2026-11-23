@@ -17,8 +17,10 @@ describe('undo and redo routing', () => {
   });
 
   it('never lets a visitor’s keys edit the project in Preview, but keeps the editor-wide shortcuts', () => {
-    for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(visitor, key, false)).toBe(false);
-    for (const key of ['d', 'c', 'v', 'ArrowUp', 'ArrowDown']) expect(forwardedKeyRuns(visitor, key, true)).toBe(false);
+    for (const page of [visitor, { ...visitor, frameText: true }]) {
+      for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(page, key, false)).toBe(false);
+      for (const key of ['z', 'd', 'c', 'v', 'ArrowUp', 'ArrowDown']) expect(forwardedKeyRuns(page, key, true)).toBe(false);
+    }
     for (const key of ['k', 'K', 's', 'S', 'e', 'j', '\\', '|']) expect(forwardedKeyRuns(visitor, key, true)).toBe(true);
     expect(forwardedKeyRuns(visitor, 'Escape', false)).toBe(true);
   });
@@ -26,14 +28,14 @@ describe('undo and redo routing', () => {
   it('undoes the project from the canvas in Edit mode exactly once', () => {
     const canvas = ctx({ focus: 'canvas' });
     for (const key of ['z', 'y']) expect(forwardedKeyRuns(canvas, key, true)).toBe(true);
-    expect(forwardedKeyRuns(canvas, 'Delete', false)).toBe(true);
+    for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(canvas, key, false)).toBe(true);
     // The forwarded key undoes the project; the menu's copy of that key press must not undo a second step.
     expect(menu(canvas)).toEqual({ click: 'project', key: 'none' });
   });
 
   it('keeps inline site copy’s own history while it is being edited', () => {
     const inline = ctx({ focus: 'canvas', inlineEdit: true });
-    for (const key of ['z', 'y']) expect(forwardedKeyRuns(inline, key, true)).toBe(false);
+    for (const key of ['z', 'y', 'c', 'v', 'd']) expect(forwardedKeyRuns(inline, key, true)).toBe(false);
     for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(inline, key, false)).toBe(false);
     expect(menu(inline)).toEqual({ click: 'text', key: 'text' });
   });
@@ -54,6 +56,8 @@ describe('undo and redo routing', () => {
     for (const mode of ['edit', 'preview'] as const) {
       // Cmd+Z there is handled by the editor's keydown handler, so the menu's copy of a key press does nothing more.
       expect(menu(ctx({ mode }))).toEqual({ click: 'project', key: 'none' });
+      // A field on the page reported earlier has no say once the canvas has lost focus.
+      expect(menu(ctx({ mode, frameText: true }))).toEqual({ click: 'project', key: 'none' });
     }
   });
 
@@ -69,7 +73,7 @@ describe('undo and redo routing', () => {
 
   it('keeps an open editor menu or dialog in charge of keys forwarded from the canvas', () => {
     const covered = ctx({ focus: 'canvas', overlay: true });
-    for (const key of ['z', 'y', 'd', 'v']) expect(forwardedKeyRuns(covered, key, true)).toBe(false);
+    for (const key of ['z', 'y', 'd', 'v', 'ArrowUp']) expect(forwardedKeyRuns(covered, key, true)).toBe(false);
     expect(forwardedKeyRuns(covered, 'Backspace', false)).toBe(false);
     expect(forwardedKeyRuns(covered, 'k', true)).toBe(true);
     expect(forwardedKeyRuns(covered, 'Escape', false)).toBe(true);
@@ -79,7 +83,7 @@ describe('undo and redo routing', () => {
     const el = (tagName: string, extra: Record<string, unknown> = {}) => ({ tagName, ...extra });
     expect(focusedSurface(null)).toBe('other');
     expect(focusedSurface(undefined)).toBe('other');
-    for (const type of ['text', 'search', 'email', 'number', undefined]) expect(focusedSurface(el('INPUT', { type }))).toBe('text');
+    for (const type of ['text', 'search', 'email', 'url', 'tel', 'password', 'number', undefined]) expect(focusedSurface(el('INPUT', { type }))).toBe('text');
     expect(focusedSurface(el('TEXTAREA'))).toBe('text');
     expect(focusedSurface(el('DIV', { isContentEditable: true }))).toBe('text');
     // A select, a checkbox or a colour well is an authoring control: Undo there is the project's.

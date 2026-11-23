@@ -309,7 +309,7 @@ export function Editor() {
       if (document.activeElement instanceof HTMLIFrameElement) return;
       if (openDialogs.length && !(mod && e.key.toLowerCase() === 'k' && getState().modal?.kind === 'cmdk')) return;
       // Undo and Redo from a control without text history of its own (a select, a checkbox) undo the project.
-      const history = mod && ['z', 'y'].includes(e.key.toLowerCase()) && focusedSurface(e.target as HTMLElement) !== 'text';
+      const history = mod && !e.altKey && ['z', 'y'].includes(e.key.toLowerCase()) && focusedSurface(e.target as HTMLElement) !== 'text';
       if (isTyping(e) && !history && !(mod && ['k', 'e', 'j', 's'].includes(e.key.toLowerCase()))) return;
       // Delete removes the canvas selection only when the canvas or Layers has the focus, never from a
       // button or row in another panel (an Assets tile, a page row).
