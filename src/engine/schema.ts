@@ -1,8 +1,9 @@
 /**
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
-import type { Binding, ComponentDefinition, GraphNode, ListProp, NodeTree, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import type { Binding, ComponentDefinition, GraphNode, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
 
@@ -38,6 +39,32 @@ const count = (v: unknown, label: string): number | undefined => {
   if (n !== undefined && (!Number.isInteger(n) || n < 0 || n > 1000)) fail(`${label} must be a whole number from 0 to 1000.`);
   return n;
 };
+
+/**
+ * A page list's mapping: a link field, and distinct fields of the right type for the page's title, description and
+ * image. Deleting a page removes the items linked to it, so the list must be allowed to have none.
+ */
+function pageTeaserSchema(raw: unknown, fields: Record<string, ScalarPropSchema>, min: number | undefined, label: string): PageTeaser {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(`${label}: pageTeaser needs an object naming the item's link field and the fields the page fills.`);
+  const r = raw as Record<string, unknown>;
+  if (min) fail(`${label}: a page list cannot have a minimum, since deleting a page removes its items.`);
+  const used = new Set<string>();
+  const pick = (key: 'link' | PageTeaserValue, type: ScalarPropSchema['type'], required: boolean): string | undefined => {
+    if (r[key] === undefined && !required) return undefined;
+    const f = typeof r[key] === 'string' ? (r[key] as string) : '';
+    if (!Object.hasOwn(fields, f)) fail(`${label}: pageTeaser.${key} "${f}" is not one of its fields.`);
+    if (fields[f].type !== type) fail(`${label}: pageTeaser.${key} "${f}" must be a ${type} field.`);
+    if (used.has(f)) fail(`${label}: pageTeaser uses the field "${f}" more than once.`);
+    used.add(f);
+    return f;
+  };
+  const out: PageTeaser = { link: pick('link', 'link', true)!, title: pick('title', PAGE_TEASER_TYPES.title, true)! };
+  for (const what of ['description', 'image'] as const) {
+    const f = pick(what, PAGE_TEASER_TYPES[what], false);
+    if (f) out[what] = f;
+  }
+  return out;
+}
 
 /**
  * Validate and normalize a full property schema supplied by a person or the AI. Unknown keys are dropped;
@@ -128,6 +155,7 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
       if (min !== undefined && max !== undefined && min > max) fail(`${label}: min is greater than max.`);
       if (min !== undefined) out.min = min;
       if (max !== undefined) out.max = max;
+      if (r.pageTeaser !== undefined) out.pageTeaser = pageTeaserSchema(r.pageTeaser, fields, min, label);
       out.default = [];
       break;
     }

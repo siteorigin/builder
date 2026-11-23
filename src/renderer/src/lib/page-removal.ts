@@ -15,20 +15,25 @@ export interface MissingSection {
 export interface PageRemovalReview {
   /** Every link from the rest of the site that moves to the replacement page. */
   uses: PageLinkUse[];
+  /** Cards for the page in page lists: they are removed from their lists with the page. */
+  cards: PageLinkUse[];
   /** Sections those links jump to that the replacement page lacks: each needs a section there, or the top. */
   missing: MissingSection[];
 }
 
 /**
- * What deleting a page with `replacementId` changes: the links that move to the replacement page, and the sections
- * they jump to that it has no ID for. Sections it does have are kept without asking.
+ * What deleting a page with `replacementId` changes: the links that move to the replacement page, the page lists'
+ * cards that go with the page, and the sections those links jump to that the replacement has no ID for. Sections it
+ * does have are kept without asking.
  */
 export function reviewPageRemoval(state: ProjectState, pageId: string, replacementId: string | undefined): PageRemovalReview {
-  const uses = pageLinkUses(state, pageId);
+  const all = pageLinkUses(state, pageId);
+  const uses = all.filter((u) => !u.card);
+  const cards = all.filter((u) => u.card);
   const ids = replacementId && Object.hasOwn(state.pages, replacementId) ? pageIds(state, replacementId) : new Set<string>();
   const missing = new Map<string, PageLinkUse[]>();
   for (const u of uses) if (u.link.anchor && !ids.has(u.link.anchor)) missing.set(u.link.anchor, [...(missing.get(u.link.anchor) ?? []), u]);
-  return { uses, missing: [...missing].map(([fragment, list]) => ({ fragment, uses: list })) };
+  return { uses, cards, missing: [...missing].map(([fragment, list]) => ({ fragment, uses: list })) };
 }
 
 export interface PageRemovalPlan {

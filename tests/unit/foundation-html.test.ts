@@ -30,7 +30,8 @@ const COMPONENTS = [
   'hero.split',
   'intro.page',
   'content.media',
-  'cta.banner'
+  'cta.banner',
+  'content.pages'
 ] as const;
 type ComponentId = (typeof COMPONENTS)[number];
 
@@ -385,5 +386,33 @@ describe('shell.header', () => {
       expect(empty).toMatch(/^<a\b[^>]*aria-label="Home"/);
       expect(empty).not.toContain('<span');
     }
+  });
+});
+
+describe('content.pages', () => {
+  it('links every card to its page, named by the page title unless the card has its own, and leaves out a card whose page has gone', () => {
+    const s = bundle.state;
+    s.pages.pg_kitchens = { ...structuredClone(s.pages[s.site.homePageId]), id: 'pg_kitchens', title: 'Kitchen renovations', route: '/projects/kitchens/', seo: { description: 'Three kitchens.' }, rootIds: [], nodes: {} };
+    s.pages.pg_gardens = { ...structuredClone(s.pages[s.site.homePageId]), id: 'pg_gardens', title: 'Gardens', route: '/work/gardens/', seo: {}, rootIds: [], nodes: {} };
+    const out = authoredHtml('content.pages', {
+      heading: 'Projects',
+      items: [
+        { id: 'i_1', pageLink: { type: 'page', target: 'pg_kitchens' }, title: '', description: '' },
+        { id: 'i_2', pageLink: { type: 'page', target: 'pg_gardens' }, title: 'Garden rooms', description: 'Our own words.' },
+        { id: 'i_3', pageLink: { type: 'page', target: 'pg_gone' }, title: 'Old project', description: 'Gone.' }
+      ]
+    });
+    const links = [...out.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([^<]*)<\/a>/g)].map((m) => [m[1], m[2]]);
+    expect(links).toEqual([
+      ['/projects/kitchens/', 'Kitchen renovations'],
+      ['/work/gardens/', 'Garden rooms']
+    ]);
+    expect(tags(out, 'li')).toHaveLength(2);
+    expect(out).toContain('>Three kitchens.<');
+    expect(out).toContain('>Our own words.<');
+    expect(out).not.toContain('Old project');
+    expect(out).not.toMatch(EMPTY_HEADING);
+    // With no pages chosen yet the section is its heading alone: no empty list.
+    expect(authoredHtml('content.pages', { heading: 'Projects', items: [] })).not.toContain('<ul');
   });
 });

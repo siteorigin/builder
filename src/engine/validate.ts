@@ -1,4 +1,5 @@
-import type { ProjectState, ResponsiveStyles } from '@shared/types';
+import type { ImageValue, ProjectState, ResponsiveStyles } from '@shared/types';
+import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, TEXT_TAGS, isBinding } from '@shared/types';
 import { validateRoute } from '@shared/routes';
 import { variantIdsValid, variantOptions } from '@shared/variants';
@@ -143,6 +144,23 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       Object.values(o).forEach((x) => walk(x, nodeId));
     };
     for (const n of Object.values(tree.nodes)) walk(n, n.id);
+    // A page list's card with no image of its own shows its page's sharing image, which needs a description too.
+    if (owner.kind !== 'component')
+      for (const n of Object.values(tree.nodes)) {
+        if (n.kind !== 'instance') continue;
+        for (const [prop, schema] of Object.entries(state.components[n.definitionId]?.properties ?? {})) {
+          const field = schema.type === 'list' ? schema.pageTeaser?.image : undefined;
+          const items = Object.hasOwn(n.props, prop) ? n.props[prop] : schema.default;
+          if (!field || schema.type !== 'list' || !Array.isArray(items)) continue;
+          for (const item of items as Array<Record<string, unknown>>) {
+            const shown = item && typeof item === 'object' ? effectiveItem(state, schema, item) : item;
+            const image = shown === item ? undefined : (shown[field] as ImageValue | undefined);
+            if (!image?.assetId || image.alt.trim() || !followsPage(item[field])) continue;
+            const title = String(shown[schema.pageTeaser!.title] ?? '').trim() || schema.itemLabel;
+            out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: the “${title}” card shows its page’s sharing image, which has no description. Add one to the image in the library, or choose an image for the card.`, owner, nodeId: n.id });
+          }
+        }
+      }
     if (owner.kind !== 'component')
       for (const b of unlinkedButtons(state, tree))
         out.push({ severity: 'warning', code: 'BUTTON_UNLINKED', message: `${label}: the “${b.label}” button has no link, so visitors won’t see it. Choose where it goes, or hide the button.`, owner, nodeId: b.nodeId });

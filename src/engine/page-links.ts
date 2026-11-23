@@ -1,6 +1,7 @@
 import type { LinkValue, OwnerRef, PropSchema, ProjectState } from '@shared/types';
 import { labelKeyFor } from '@generator/checks';
 import { allTrees } from './tree';
+import { effectiveItem } from '@shared/page-teasers';
 
 /** A stored link to a page: what it is called and where it lives, for reviewing what a change to that page moves. */
 export interface PageLinkUse {
@@ -12,6 +13,11 @@ export interface PageLinkUse {
   where: string;
   /** The link's text, its paired label, its list item's title, or else the name of the field that holds it. */
   label: string;
+  /**
+   * For a card in a page list (a list item that stands for this page): the list that holds it. Deleting the page
+   * takes the card out of that list rather than pointing it at another page.
+   */
+  card?: { items: unknown[]; item: object };
 }
 
 const text = (v: unknown) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim() : '');
@@ -25,10 +31,10 @@ export function pageLinkUses(state: ProjectState, pageId: string): PageLinkUse[]
   const out: PageLinkUse[] = [];
   const seen = new Set<object>();
   const isTarget = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && (v as LinkValue).type === 'page' && (v as LinkValue).target === pageId;
-  const add = (link: LinkValue, owner: OwnerRef, where: string, label: string) => {
+  const add = (link: LinkValue, owner: OwnerRef, where: string, label: string, card?: PageLinkUse['card']) => {
     if (seen.has(link)) return;
     seen.add(link);
-    out.push({ link, owner, where, label });
+    out.push(card ? { link, owner, where, label, card } : { link, owner, where, label });
   };
   /** Every link in a value; one inside rich text is named by its own text. */
   const collect = (v: unknown, owner: OwnerRef, where: string, label: string) => {
@@ -53,7 +59,11 @@ export function pageLinkUses(state: ProjectState, pageId: string): PageLinkUse[]
       }
       for (const item of value as Array<Record<string, unknown>>) {
         if (!item || typeof item !== 'object') continue;
-        const title = text(item[schema.titleField ?? 'label']) || schema.itemLabel || name;
+        // A page list's card is named by the title it shows, its page's own when it has none.
+        const shown = effectiveItem(state, schema, item);
+        const title = text(shown[schema.titleField ?? 'label']) || schema.itemLabel || name;
+        const teaser = schema.pageTeaser;
+        if (teaser && isTarget(item[teaser.link])) add(item[teaser.link] as LinkValue, owner, where, title, { items: value as unknown[], item });
         // A field's own label ("Book a visit" for a card's link) names it before the item's title does.
         for (const f of Object.keys(schema.fields)) {
           const fieldLabel = labelKeyFor(f);

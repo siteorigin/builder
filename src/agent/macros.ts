@@ -360,7 +360,8 @@ export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, 
     used.add(id);
     return byId.get(id);
   });
-  const field = schema.titleField;
+  // A page list's cards are told apart by the page they stand for, not by a title that may be the page's own.
+  const field = schema.pageTeaser ? undefined : schema.titleField;
   if (field) {
     const titleOf = (it: unknown) => {
       const t = isRow(it) ? it[field] : undefined;

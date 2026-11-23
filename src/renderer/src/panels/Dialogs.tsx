@@ -189,7 +189,7 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
 function RemovedPageLink({ use }: { use: PageLinkUse }) {
   return (
     <li>
-      <span className="delete-page-link-label">“{use.label}”</span> <span className="muted">in {use.where}</span>
+      <span className="delete-page-link-label">“{use.label}”</span> <span className="muted">{use.card ? 'card ' : ''}in {use.where}</span>
       {use.link.anchor && <span className="delete-page-route"> #{use.link.anchor}</span>}
     </li>
   );
@@ -310,6 +310,18 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
               <RemovedPageLink key={i} use={u} />
             ))}
           </ul>
+        )}
+        {review.cards.length > 0 && (
+          <div className="col" style={{ gap: 6 }}>
+            <p className="delete-page-note" id="delete-page-cards" style={{ margin: 0 }}>
+              {review.cards.length === 1 ? 'Its card is removed from the page list it is in:' : `Its ${review.cards.length} cards are removed from the page lists they are in:`}
+            </p>
+            <ul className="delete-page-links" aria-labelledby="delete-page-cards">
+              {review.cards.map((u, i) => (
+                <RemovedPageLink key={i} use={u} />
+              ))}
+            </ul>
+          </div>
         )}
         {target &&
           review.missing.map((m) => {

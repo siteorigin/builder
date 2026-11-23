@@ -33,6 +33,7 @@ import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
+import { effectiveItem } from '@shared/page-teasers';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -219,7 +220,9 @@ export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx
         : resolveRichText(value ?? schema.default, ctx, schema.plainAs);
     case 'list': {
       const items = Array.isArray(value) ? value : schema.default;
-      return items.map((it: Record<string, unknown>) => {
+      return items.map((raw: Record<string, unknown>) => {
+        // A page list's empty fields show the linked page's own values, as they are when the site is generated.
+        const it = effectiveItem(ctx.state, schema, raw);
         const out: Record<string, unknown> = { id: it.id };
         for (const [k, f] of Object.entries(schema.fields)) out[k] = resolveValue(f, it[k] ?? f.default, ctx);
         return out;

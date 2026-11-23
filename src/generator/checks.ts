@@ -8,6 +8,7 @@ import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { anchorCapable, anchorsInUse } from '@engine/tree';
 import { resolveLink, takesParagraphs } from './index';
+import { effectiveItem, teaserFields } from '@shared/page-teasers';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
@@ -170,7 +171,9 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         const fields = schema?.type === 'list' ? schema.fields : undefined;
         const list = schema?.type === 'list' && isBinding(n.list) && '$prop' in n.list ? n.list.$prop : undefined;
         const repeats = (frame.scope.repeats ?? 0) + 1;
-        for (const item of Array.isArray(items) ? (items as Array<Record<string, unknown>>) : []) {
+        for (const raw of Array.isArray(items) ? (items as Array<Record<string, unknown>>) : []) {
+          // A page list's empty fields show the linked page's values, as the generated component is given them.
+          const item = schema?.type === 'list' ? effectiveItem(state, schema, raw) : raw;
           const occurrence = repeats === 1 && typeof item?.id === 'string' ? item.id : frame.scope.occurrence;
           const path = [...(frame.scope.path ?? []), String(item?.id ?? '')];
           for (const c of n.children) walk({ ...frame, scope: { ...frame.scope, item, fields, list, repeats, occurrence, path } }, c, inner);
@@ -272,6 +275,13 @@ function fieldSchema(state: ProjectState, tree: NodeTree, placementId: string, f
   return schema?.type === 'list' && f.field ? schema.fields[f.field] : undefined;
 }
 
+/** Whether a placement's list field is one a page list fills from the linked page while it is empty. */
+function followsPageField(state: ProjectState, tree: NodeTree, placementId: string, f: PlacementField): boolean {
+  if (!f.itemId || !f.field) return false;
+  const list = fieldSchema(state, tree, placementId, { prop: f.prop });
+  return list?.type === 'list' && !!list.pageTeaser && teaserFields(list.pageTeaser).some(([field]) => field === f.field);
+}
+
 const sameBinding = (a: unknown, b: unknown) => isBinding(a) && isBinding(b) && ('$prop' in a ? '$prop' in b && a.$prop === b.$prop : '$item' in b && a.$item === b.$item);
 
 /**
@@ -314,7 +324,8 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
       const repeats = scope.repeats ?? 0;
       // A button carrying an id may be what another link goes to: hiding it would take that target away.
       const own = hide && !scope.multiple && !ownId && (hide.itemId ? repeats === 1 && hide.itemId === scope.occurrence : repeats === 0);
-      if (hide && own && fieldSchema(state, tree, reportId, hide)?.type === 'string') found.hide = hide;
+      // A page list's field left empty shows its page's value again, so clearing it hides nothing.
+      if (hide && own && fieldSchema(state, tree, reportId, hide)?.type === 'string' && !followsPageField(state, tree, reportId, hide)) found.hide = hide;
       if (scope.slots?.length) through.set(found, scope.slots);
       out.push(found);
     }

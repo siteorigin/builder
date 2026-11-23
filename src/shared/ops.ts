@@ -64,7 +64,7 @@ export const OPERATION_SCHEMAS = {
   'page.remove': z.object({
     type: z.literal('page.remove'),
     pageId: z.string(),
-    replacementPageId: z.string().optional().describe('Links to the removed page are pointed here. Required when other content links to it.'),
+    replacementPageId: z.string().optional().describe('Links to the removed page are pointed here. Required when other content links to it. Cards for the page in page lists are removed with it, not pointed here.'),
     sectionReplacements: z
       .array(z.object({ from: z.string().describe('A section ID on the removed page that links jump to.'), to: z.string().describe('The section ID on the replacement page they jump to instead, or "" for the top of the page.') }))
       .optional()

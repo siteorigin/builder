@@ -238,6 +238,64 @@ export const gallery = managed({
     ])
 });
 
+/**
+ * A curated list of the site's own pages: a portfolio, case studies, a project index or a directory of services.
+ * Each card links to its page by ID, so it follows the page's renames and address changes, and shows the page's
+ * title, description and sharing image while its own fields are empty. Typed copy on a card is kept as it is.
+ * The whole title is the card's link, so every link reads as the page it opens.
+ */
+export const pageList = managed({
+  componentId: 'content.pages',
+  name: 'Page list',
+  description: "Cards linking to pages of this site in the order you choose. Each card shows its page's title, description and sharing image unless you give it its own. Use for a portfolio, case studies, a project index or a directory of services.",
+  category: 'content',
+  tags: ['portfolio', 'projects', 'case study', 'case studies', 'directory', 'index', 'page list', 'pages', 'work', 'teasers', 'listing'],
+  icon: 'layout-list',
+  properties: {
+    eyebrow: P.str('Eyebrow', ''),
+    heading: P.str('Heading', 'Selected work'),
+    lead: P.text('Supporting text', ''),
+    items: P.list(
+      'Pages',
+      'Page',
+      { pageLink: P.link('Page'), title: P.str('Title', ''), description: P.text('Description', ''), image: P.image('Image') },
+      [],
+      { titleField: 'title', min: 0, max: 24, pageTeaser: { link: 'pageLink', title: 'title', description: 'description', image: 'image' } }
+    )
+  },
+  parts: {
+    root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
+    heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
+    grid: { nodeId: 'grid', label: 'Card grid', styleControls: ['columns', 'gap'] },
+    card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow', 'paddingBlock', 'paddingInline', 'gap'] },
+    cardImage: { nodeId: 'card-image', label: 'Card image', styleControls: ['aspectRatio', 'radius'] },
+    cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] },
+    cardText: { nodeId: 'card-text', label: 'Card description', styleControls: ['textStyle', 'color'] }
+  },
+  variantAxes: {
+    tone: toneAxis(['lead', 'card-text']),
+    layout: layoutAxis({
+      default: { label: 'Three columns' },
+      'two-columns': { label: 'Two columns', styles: { grid: { desktop: { columns: 2 } } } }
+    })
+  },
+  build: (b) =>
+    sectionShell(b, [
+      headingBlock(b),
+      // An empty list leaves no empty <ul> behind.
+      b.el('grid', 'ul', { name: 'Card grid', collapseEmpty: true, styles: { base: { layout: 'grid', columns: 1, gap: tok('space.xl') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
+        b.repeat('cards', 'items', [
+          // A card whose page has gone (or that links nowhere) is left out rather than shown without a destination.
+          b.el('card', 'li', { name: 'Card', when: { $item: 'pageLink' }, styles: { layout: 'stack', gap: tok('space.sm') } }, [
+            b.image('card-image', { $item: 'image' }, { name: 'Image', when: { $item: 'image' }, styles: { aspectRatio: '4/3', radius: tok('radius.md'), objectFit: 'cover', marginBlockEnd: tok('space.xs') } }),
+            b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title', when: { $item: 'title' }, styles: { textStyle: tok('text.h3') } }),
+            b.text('card-text', 'p', { $item: 'description' }, { name: 'Description', when: { $item: 'description' }, styles: mutedStyles })
+          ])
+        ])
+      ])
+    ])
+});
+
 export const container = managed({
   componentId: 'layout.section',
   name: 'Section',

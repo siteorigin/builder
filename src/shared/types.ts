@@ -113,6 +113,19 @@ export interface ListProp extends PropBase {
   default: ListItem[];
   min?: number;
   max?: number;
+  /** Items are cards for pages of the site: fields left empty show the linked page's own values (see shared/page-teasers.ts). */
+  pageTeaser?: PageTeaser;
+}
+/**
+ * Which item fields of a page list follow the linked page. `link` names the item's link field; `title` (a text
+ * field) shows the page's title, `description` (a text field) its description and `image` (an image field) its
+ * sharing image, each only while the item's own value is empty. Deleting a page removes the items that link to it.
+ */
+export interface PageTeaser {
+  link: string;
+  title: string;
+  description?: string;
+  image?: string;
 }
 export type PropSchema = ScalarPropSchema | ListProp;
 export type ListItem = { id: string } & Record<string, unknown>;

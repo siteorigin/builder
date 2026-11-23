@@ -8,6 +8,7 @@ import { declaredTokens } from '@engine/tokens';
 import { displayName, getTree } from '@engine/tree';
 import type { HomeChange } from '@engine/apply';
 import { shellPageLinks } from '@generator/checks';
+import { pageLinkUses } from '@engine/page-links';
 
 // ---------------------------------------------------------------------------
 // Changes: what the run did, in words an author can act on
@@ -129,8 +130,13 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Duplicated page ${where({ kind: 'page', id: op.pageId })}`, res.pageId && after.pages[res.pageId] ? { owner: { kind: 'page', id: res.pageId }, pageId: res.pageId } : {});
       case 'page.reorder':
         return plain(op, 'Reordered the pages');
-      case 'page.remove':
-        return plain(op, `Removed page ${quoted(before.pages[op.pageId]?.title ?? 'page')}`);
+      case 'page.remove': {
+        // Its cards in page lists went with it: name the pages those lists are on.
+        const cards = Object.hasOwn(before.pages, op.pageId) ? pageLinkUses(before, op.pageId).filter((u) => u.card) : [];
+        const on = [...new Set(cards.map((u) => quoted(u.where)))];
+        const also = on.length ? ` and its card${cards.length === 1 ? '' : 's'} on ${joinWords(on)}` : '';
+        return plain(op, `Removed page ${quoted(before.pages[op.pageId]?.title ?? 'page')}${also}`);
+      }
       case 'page.setHome': {
         // The addresses this promotion moved, from its own result: a later edit in the run may move them again.
         const change = (results[i] ?? {}) as Partial<HomeChange>;
@@ -396,7 +402,10 @@ export function pagesTouched(ops: EditOperation[]): Set<string> | 'all' {
     } else if (op.type === 'page.setHome') {
       // Header and footer links change destination on every page, and a page can be styled by where its links go.
       return 'all';
-    } else if (op.type === 'page.update' || op.type === 'page.remove') pages.add(op.pageId);
+    } else if (op.type === 'page.remove' || (op.type === 'page.update' && (op.title !== undefined || op.description !== undefined || op.socialImage !== undefined))) {
+      // Page lists elsewhere show a page's title, description and sharing image, and drop its card when it goes.
+      return 'all';
+    } else if (op.type === 'page.update') pages.add(op.pageId);
     else if (op.type !== 'page.duplicate' && op.type !== 'page.reorder') return 'all';
   }
   return pages;

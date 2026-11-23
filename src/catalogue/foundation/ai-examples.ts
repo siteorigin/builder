@@ -145,6 +145,13 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     }
   },
   {
+    id: 'pages-portfolio',
+    componentId: 'content.pages',
+    keywords: ['portfolio', 'projects', 'case', 'studies', 'study', 'directory', 'index', 'pages', 'work', 'list'],
+    description: "A portfolio index of the site's own project pages: leave a card's title, description and image empty to show the page's own; type them only to override",
+    props: { eyebrow: 'Our work', heading: 'Selected projects', items: [{ pageLink: '/about/' }, { pageLink: '/contact/', description: 'Tell us about your project and we will reply within two days.' }] }
+  },
+  {
     id: 'gallery-work',
     componentId: 'media.gallery',
     keywords: ['gallery', 'portfolio', 'work', 'photos', 'images', 'projects'],

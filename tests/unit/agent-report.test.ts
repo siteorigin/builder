@@ -263,7 +263,9 @@ describe('check results', () => {
     // A new Home moves header and footer links on every page.
     expect(pagesTouched([{ type: 'page.setHome', pageId: home }])).toBe('all');
     expect(pagesTouched([{ type: 'page.update', pageId: about, seoTitle: 'x' }, { type: 'page.setHome', pageId: home }])).toBe('all');
-    expect(pagesTouched([{ type: 'page.remove', pageId: about }, { type: 'page.reorder', pageIds: [about, home] }])).toEqual(new Set([about]));
+    // A removed page's card leaves page lists on other pages.
+    expect(pagesTouched([{ type: 'page.remove', pageId: about }, { type: 'page.reorder', pageIds: [about, home] }])).toBe('all');
+    expect(pagesTouched([{ type: 'page.update', pageId: about, seoTitle: 'x' }, { type: 'page.reorder', pageIds: [about, home] }])).toEqual(new Set([about]));
     expect(pagesTouched([{ type: 'page.create', title: 'New' }])).toEqual(new Set());
     expect(pagesTouched([{ type: 'page.create', title: 'New', addToNavigation: true }])).toBe('all');
     expect(pagesTouched([{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: 'n', prop: 'x', value: 1 }])).toBe('all');

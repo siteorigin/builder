@@ -406,9 +406,9 @@ function batchAssetUsages(state: ProjectState, ctx: ApplyContext): Record<string
   return held.counts!;
 }
 
-/** How many links from the rest of the site go to a page: the links deleting it would move to a replacement. */
+/** How many links from the rest of the site go to a page: the links deleting it would move to a replacement (page lists' cards for it go with it). */
 export function pageLinkReferences(state: ProjectState, pageId: string): number {
-  return pageLinkUses(state, pageId).length;
+  return pageLinkUses(state, pageId).filter((u) => !u.card).length;
 }
 
 function routeTaken(state: ProjectState, route: string, exceptPageId?: string): boolean {
@@ -597,7 +597,10 @@ function sectionsOnReplacement(state: ProjectState, page: PageDoc, replacementId
 function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   const page = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
   if (state.site.pageOrder.length <= 1) fail('A site needs at least one page.');
-  const uses = pageLinkUses(state, page.id);
+  const all = pageLinkUses(state, page.id);
+  // Page lists' cards for this page go with it; every other link is pointed at the replacement.
+  const cards = all.filter((u) => u.card);
+  const uses = all.filter((u) => !u.card);
   const refs = uses.length;
   if (op.replacementPageId && !own(state.pages, op.replacementPageId)) fail('The replacement page does not exist.');
   if (op.replacementPageId === page.id) fail('The replacement must be a different page.');
@@ -619,6 +622,10 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
       if (anchor) link.anchor = anchor;
       else delete link.anchor;
     }
+  for (const { card } of cards) {
+    const at = card!.items.indexOf(card!.item);
+    if (at >= 0) card!.items.splice(at, 1);
+  }
   // Old addresses kept for the removed page follow its links to the replacement, or go with it.
   if (Array.isArray(state.site.redirects)) {
     state.site.redirects = state.site.redirects.flatMap((r) => (r.pageId !== page.id ? [r] : op.replacementPageId ? [{ ...r, pageId: op.replacementPageId }] : []));

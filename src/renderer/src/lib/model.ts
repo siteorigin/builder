@@ -2,6 +2,7 @@
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
+import { effectiveItem } from '@shared/page-teasers';
 import { layerLabel } from './layers';
 
 export interface BridgeDesc {
@@ -348,6 +349,23 @@ export function placementsOn(state: ProjectState, definitionId: string, pageId: 
 export function listPropFor(def: ComponentDefinition, nodeId: string): string | undefined {
   const prop = enclosingRepeatProp(def, nodeId);
   return prop && own(def.properties, prop)?.type === 'list' ? prop : undefined;
+}
+
+/** The value a reference's inline-editable field shows in `state`: a bound field shows its placement's value,
+ *  or the property's default when the placement has none. A page list's card shows its page's title (and so on)
+ *  while it has none of its own, so leaving that text as it was writes nothing. */
+export function shownValue(state: ProjectState, ref: ElementRef, bound: unknown): unknown {
+  if (!isBinding(bound)) return bound;
+  const r = resolveRef(state, ref);
+  const props = (r.instance?.props ?? {}) as Record<string, unknown>;
+  if ('$prop' in bound) return props[bound.$prop] ?? (r.def?.properties[bound.$prop] as { default?: unknown } | undefined)?.default;
+  const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
+  const schema = list ? r.def!.properties[list] : undefined;
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  const items = list ? (Object.hasOwn(props, list) ? props[list] : schema?.default) : undefined;
+  const item = Array.isArray(items) ? items.find((it) => (it as { id?: unknown } | null)?.id === itemId) : undefined;
+  if (!item || typeof item !== 'object') return undefined;
+  return (schema?.type === 'list' ? effectiveItem(state, schema, item as Record<string, unknown>) : (item as Record<string, unknown>))[bound.$item];
 }
 
 /** A component's own reference as the page shows it, through one placement. */
