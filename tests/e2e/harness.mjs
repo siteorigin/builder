@@ -31,8 +31,9 @@ export function withTimeout(promise, ms, what) {
   return Promise.race([promise, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms / 1000}s`)), ms)))]).finally(() => clearTimeout(timer));
 }
 
-/** Launch the built app (out/) with its own settings folder and no AI provider keys unless given. */
-export async function launch(WORK, env = {}) {
+/** Launch the built app (out/) with its own settings folder and no AI provider keys unless given. The page
+ *  gets an emulated 1440×900 viewport, unless `viewport` is null: then it follows the (hidden) native window. */
+export async function launch(WORK, env = {}, { viewport = { width: 1440, height: 900 } } = {}) {
   const app = await electron.launch({
     args: ['.'],
     env: { ...process.env, SITEORIGIN_USER_DATA: join(WORK, 'userdata'), OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', ...env }
@@ -40,7 +41,7 @@ export async function launch(WORK, env = {}) {
   const win = await app.firstWindow();
   const errors = [];
   win.on('pageerror', (e) => errors.push(String(e)));
-  await win.setViewportSize({ width: 1440, height: 900 });
+  if (viewport) await win.setViewportSize(viewport);
   await win.waitForSelector('.welcome', { timeout: 60000 });
   return { app, win, errors };
 }

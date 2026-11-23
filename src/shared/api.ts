@@ -90,6 +90,9 @@ export interface LocalWorkspaceState {
   zoom?: number | 'fit';
   leftTab?: string;
   rightTab?: string;
+  /** The widths the sidebar and right panel were last given; a small window draws them narrower. */
+  leftWidth?: number;
+  rightWidth?: number;
   /** Unsent AI messages, keyed by the conversation they were written in. */
   chatDrafts?: Record<string, string>;
   /** The AI conversation that was open, shown again (with its draft) when the project reopens. */

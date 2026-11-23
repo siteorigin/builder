@@ -210,10 +210,10 @@ function gridKeys(e: React.KeyboardEvent<HTMLElement>) {
   tiles[Math.max(0, Math.min(tiles.length - 1, to))].focus();
 }
 
-export function AssetsPanel() {
+/** `narrow`: the sidebar is drawn under 240px wide, so the header drops the image count. */
+export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const snap = useStore((s) => s.snapshot);
   const runtime = useStore((s) => s.runtime);
-  const narrow = useStore((s) => s.leftWidth < 240);
   const [over, setOver] = useState(false);
   const dragDepth = useRef(0);
   const [selected, setSelected] = useState<string | null>(null);

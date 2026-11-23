@@ -5,6 +5,7 @@ import { Welcome } from './Welcome';
 import { Editor } from './Editor';
 import { ConfirmHost, Toasts } from './components/ui';
 import { runInspection } from './lib/inspect';
+import { restorePanelWidth } from './lib/layout';
 import { forgetCopy, handleShortcut } from './Editor';
 import { inlineEdit } from './panels/Canvas';
 
@@ -67,6 +68,9 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     zoom: local.zoom ?? 'fit',
     leftTab: (local.leftTab as never) ?? 'pages',
     rightTab: (local.rightTab as never) ?? 'inspect',
+    // Every project opens with its own panel widths (or the defaults), never the last project's.
+    leftWidth: restorePanelWidth('left', local.leftWidth),
+    rightWidth: restorePanelWidth('right', local.rightWidth),
     // Drafts and the open conversation are this project's own; the conversation follows once it is loaded.
     chatDrafts: cleanDrafts(local.chatDrafts),
     conversation: null,

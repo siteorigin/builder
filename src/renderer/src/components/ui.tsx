@@ -1,4 +1,4 @@
-import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, X } from 'lucide-react';
@@ -322,6 +322,13 @@ function stepTab(from: HTMLElement, dir: 1 | -1) {
 
 let menuKey = 0;
 
+const onWindowResize = (fn: () => void) => {
+  window.addEventListener('resize', fn);
+  return () => window.removeEventListener('resize', fn);
+};
+/** The window's width in CSS pixels (the editor fills the window), kept current as it is resized. */
+export const useWindowWidth = () => useSyncExternalStore(onWindowResize, () => window.innerWidth);
+
 /** Hook that shows a menu at a position, or below its trigger (which gets aria-expanded while open). */
 export function useMenu() {
   const [menu, setMenu] = useState<{ key: number; x: number; y: number; items: MenuItem[]; label?: string; trigger?: HTMLElement; alignEnd?: boolean; returnTo?: HTMLElement | null; focusLast?: boolean } | null>(null);
@@ -332,6 +339,8 @@ export function useMenu() {
     return () => t.setAttribute('aria-expanded', 'false');
   }, [menu]);
   const close = useCallback(() => setMenu(null), []);
+  /** Close the menu if its trigger has left the page (a toolbar control that moved into another menu). */
+  const closeIfTriggerGone = useCallback(() => setMenu((m) => (m?.trigger && !m.trigger.isConnected ? null : m)), []);
   const node = menu ? (() => {
     const { key, ...props } = menu;
     return <Menu key={key} {...props} returnTo={menu.trigger ?? menu.returnTo} onClose={close} />;
@@ -339,6 +348,7 @@ export function useMenu() {
   return {
     node,
     isOpen: !!menu,
+    closeIfTriggerGone,
     /** Open at a point (right-click); focus returns to `returnTo` (the row) on close. */
     open: (x: number, y: number, items: MenuItem[], label?: string, returnTo?: HTMLElement | null) => setMenu({ key: ++menuKey, x, y, items, label, returnTo }),
     /** Open below a trigger button; small icon triggers align the menu's right edge with theirs. With

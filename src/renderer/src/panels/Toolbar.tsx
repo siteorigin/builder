@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Plus, Eye, FolderOpen, History, House, LogOut, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, History, House, LogOut, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { api, saveLocal, setState, toast, useStore } from '../store';
-import { useMenu, sendCommand } from '../components/ui';
+import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
 import { useTransitionAnnouncement } from '../lib/announce';
+import { toolbarTier } from '../lib/layout';
 
 const ZOOMS = [0.5, 0.75, 1, 1.25];
 
@@ -45,6 +46,33 @@ export function Toolbar() {
   // An invalid entry explained after Enter is not explained again when the field is left; any edit resets it.
   const reported = useRef<string | null>(null);
   const [widthError, setWidthError] = useState(false);
+  const isMac = api.platform === 'darwin';
+  // In a narrow window the Edit and Preview labels go first, then Zoom and Settings move into a More menu,
+  // so the page switcher, Undo, Redo, the panel toggles and Export always fit.
+  const tier = toolbarTier(useWindowWidth(), isMac);
+  // A tier change swaps Zoom and Settings for More (or back). A menu open from one of them closes, and a
+  // keyboard user on the control that left (or in its menu) lands on the one that took its place: at once,
+  // or as soon as that menu has closed, before the menu's own focus return looks for somewhere to go.
+  const header = useRef<HTMLElement>(null);
+  const focused = useRef<HTMLElement | null>(null);
+  const focusAfterMenu = useRef(false);
+  const closeIfTriggerGone = menu.closeIfTriggerGone;
+  const replacement = () => header.current?.querySelector<HTMLElement>(tier === 'overflow' ? '.toolbar-more' : '.toolbar-settings');
+  useLayoutEffect(() => {
+    const was = focused.current;
+    const active = document.activeElement;
+    focusAfterMenu.current = false;
+    if (was && !was.isConnected) {
+      if (!active || active === document.body) replacement()?.focus();
+      else if (active.closest('[role="menu"]')) focusAfterMenu.current = true;
+    }
+    closeIfTriggerGone();
+  }, [tier, closeIfTriggerGone]); // eslint-disable-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => {
+    if (menu.isOpen || !focusAfterMenu.current) return;
+    focusAfterMenu.current = false;
+    replacement()?.focus();
+  }, [menu.isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!snap) return null;
   const state = snap.state;
   const page = pageId ? state.pages[pageId] : null;
@@ -53,7 +81,6 @@ export function Toolbar() {
     setState({ viewport: w });
     saveLocal({ viewport: w });
   };
-  const isMac = api.platform === 'darwin';
   // Shortcut hints name the keys of this platform.
   const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
   const conflicts = snap.conflicts.length > 0;
@@ -77,6 +104,11 @@ export function Toolbar() {
     const v = Number(raw.trim());
     return raw.trim() !== '' && Number.isInteger(v) && v >= 240 && v <= 2560 ? v : null;
   };
+  const zoomItems: MenuItem[] = [
+    { label: 'Fit to window', checked: zoom === 'fit', onSelect: () => setState({ zoom: 'fit' }) },
+    ...ZOOMS.map((z) => ({ label: `${Math.round(z * 100)}%`, checked: zoom === z, onSelect: () => setState({ zoom: z }) }))
+  ];
+  const openSettings = () => setState({ modal: { kind: 'settings' } });
   const commitWidth = (fromEnter: boolean, el: HTMLInputElement) => {
     const v = validWidth(widthDraft);
     if (v !== null) {
@@ -102,7 +134,7 @@ export function Toolbar() {
   };
 
   return (
-    <header className={`toolbar drag${isMac ? ' mac' : ''}`}>
+    <header ref={header} className={`toolbar drag${isMac ? ' mac' : ''}`} data-tier={tier} onFocus={(e) => e.currentTarget.contains(e.target) && (focused.current = e.target)}>
       <div className="toolbar-start">
         <span className="toolbar-mark" title="SiteOrigin Builder">
           <AppMark size={26} />
@@ -214,33 +246,29 @@ export function Toolbar() {
             </span>
           )}
         </label>
-        <button
-          className="btn btn-sm btn-ghost zoom-btn"
-          aria-haspopup="menu"
-          aria-expanded={false}
-          title="Zoom"
-          aria-label={`Zoom: ${zoom === 'fit' ? 'fit to window' : `${Math.round(zoom * 100)}%`}`}
-          onClick={(e) =>
-            menu.openAt(
-              e.currentTarget,
-              [
-                { label: 'Fit to window', checked: zoom === 'fit', onSelect: () => setState({ zoom: 'fit' }) },
-                ...ZOOMS.map((z) => ({ label: `${Math.round(z * 100)}%`, checked: zoom === z, onSelect: () => setState({ zoom: z }) }))
-              ],
-              'Zoom'
-            )
-          }
-        >
-          <span>{zoom === 'fit' ? 'Fit' : `${Math.round(zoom * 100)}%`}</span>
-          <ChevronDown size={12} aria-hidden="true" />
-        </button>
-        <div className="toolbar-divider" role="presentation" />
-        <div className="segmented" role="group" aria-label="Mode">
-          <button aria-pressed={mode === 'edit'} onClick={() => setMode('edit')} title="Edit: click things on the page to select and change them">
-            <MousePointer2 /> Edit
+        {tier !== 'overflow' && (
+          <button
+            className="btn btn-sm btn-ghost zoom-btn"
+            aria-haspopup="menu"
+            aria-expanded={false}
+            title="Zoom"
+            aria-label={`Zoom: ${zoom === 'fit' ? 'fit to window' : `${Math.round(zoom * 100)}%`}`}
+            onClick={(e) => menu.openAt(e.currentTarget, zoomItems, 'Zoom')}
+          >
+            <span>{zoom === 'fit' ? 'Fit' : `${Math.round(zoom * 100)}%`}</span>
+            <ChevronDown size={12} aria-hidden="true" />
           </button>
-          <button aria-pressed={mode === 'preview'} onClick={() => setMode('preview')} title="Preview: use the site as a visitor would">
-            <Eye /> Preview
+        )}
+        <div className="toolbar-divider" role="presentation" />
+        {/* Named by aria-label, so the buttons keep their names when a narrow window shows only the icons. */}
+        <div className="segmented" role="group" aria-label="Mode">
+          <button aria-pressed={mode === 'edit'} onClick={() => setMode('edit')} title="Edit: click things on the page to select and change them" aria-label="Edit">
+            <MousePointer2 aria-hidden="true" />
+            {tier === 'full' && 'Edit'}
+          </button>
+          <button aria-pressed={mode === 'preview'} onClick={() => setMode('preview')} title="Preview: use the site as a visitor would" aria-label="Preview">
+            <Eye aria-hidden="true" />
+            {tier === 'full' && 'Preview'}
           </button>
         </div>
       </div>
@@ -256,9 +284,23 @@ export function Toolbar() {
         <button className="icon-btn" aria-pressed={dockOpen} title={`Show or hide the right panel (${keys('⇧⌘\\')})`} aria-label="Right panel" onClick={() => setState({ dockOpen: !dockOpen })}>
           <PanelRight />
         </button>
-        <button className="icon-btn" title="Settings" aria-label="Settings" onClick={() => setState({ modal: { kind: 'settings' } })}>
-          <Settings />
-        </button>
+        {tier === 'overflow' ? (
+          <button
+            key="more"
+            className="icon-btn toolbar-more"
+            aria-haspopup="menu"
+            aria-expanded={false}
+            title="More: zoom and settings"
+            aria-label="More"
+            onClick={(e) => menu.openAt(e.currentTarget, [{ heading: 'Zoom' }, ...zoomItems, { separator: true }, { label: 'Settings…', icon: <Settings />, onSelect: openSettings }], 'More')}
+          >
+            <Ellipsis />
+          </button>
+        ) : (
+          <button key="settings" className="icon-btn toolbar-settings" title="Settings" aria-label="Settings" onClick={openSettings}>
+            <Settings />
+          </button>
+        )}
         <button className="btn btn-primary btn-sm export-btn" title={`Export your website (${keys('⌘E')})`} onClick={() => setState({ modal: { kind: 'export' } })}>
           <Upload /> Export
         </button>
