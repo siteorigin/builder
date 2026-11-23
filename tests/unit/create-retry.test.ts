@@ -26,10 +26,11 @@ vi.mock('../../src/main/settings', () => ({
 }));
 // The website tools install stands in for npm: by default it finishes at once; a test can make it wait for Cancel,
 // fail, or write into the folder while it runs.
-const deps = vi.hoisted(() => ({ run: null as null | ((dir: string, signal?: AbortSignal) => Promise<void>), previewFails: false }));
+const deps = vi.hoisted(() => ({ run: null as null | ((dir: string, signal?: AbortSignal) => Promise<void>), previewFails: false, ready: true, installs: 0, starts: 0 }));
 vi.mock('../../src/main/runtime/manager', () => ({
-  dependenciesReady: async () => true,
+  dependenciesReady: async () => deps.ready,
   prepareDependencies: async (dir: string, _onLine: (l: string) => void, signal?: AbortSignal) => {
+    deps.installs++;
     const run = deps.run;
     deps.run = null;
     await run?.(dir, signal);
@@ -41,6 +42,7 @@ vi.mock('../../src/main/runtime/manager', () => ({
     onStatus() {}
     notifyRevision() {}
     async start() {
+      deps.starts++;
       if (!deps.previewFails) return;
       // It got as far as writing its own output into the project.
       const { mkdirSync, writeFileSync } = await import('node:fs');
@@ -53,6 +55,7 @@ vi.mock('../../src/main/runtime/manager', () => ({
 }));
 
 const { Controller } = await import('../../src/main/controller');
+const { ToolsDownloadError } = await import('../../src/main/runtime/availability');
 const { ProjectLockedError, ProjectSession } = await import('../../src/main/project/session');
 
 type Step = 'files' | 'dependencies' | 'preview';
@@ -63,6 +66,9 @@ const controllers: InstanceType<typeof Controller>[] = [];
 afterEach(async () => {
   deps.run = null;
   deps.previewFails = false;
+  deps.ready = true;
+  deps.installs = 0;
+  deps.starts = 0;
   settings.recentsFail = false;
   settings.recents = 0;
   vi.restoreAllMocks();
@@ -74,12 +80,13 @@ afterEach(async () => {
 function setup() {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'so-create-retry-')));
   dirs.push(parent);
-  const hooks = { cancelAt: null as Step | null };
+  const hooks = { cancelAt: null as Step | null, sent: [] as Array<{ channel: string; payload: unknown }> };
   let c!: InstanceType<typeof Controller>;
   const win = {
     isDestroyed: () => false,
     webContents: {
       send: (channel: string, p: { step: string }) => {
+        hooks.sent.push({ channel, payload: p });
         if (channel !== 'create:progress') return;
         if (p.step === hooks.cancelAt) {
           hooks.cancelAt = null;
@@ -236,6 +243,80 @@ describe('New project after a recoverable failure', () => {
     expect(r.ok).toBe(false);
     expect(readdirSync(dir)).toEqual([]);
     expect(await c.create(opts(parent))).toEqual({ ok: true });
+  });
+});
+
+describe('New project when the website tools cannot be downloaded', () => {
+  /** The tools needed a download and the registry could not be reached, after npm had made a start. */
+  const offline = async (d: string) => {
+    mkdirSync(join(d, 'node_modules', 'vite'), { recursive: true });
+    throw new ToolsDownloadError('Downloading the website tools failed (ENOTFOUND). npm error code ENOTFOUND', 'ENOTFOUND');
+  };
+
+  it('opens the new project for editing with its preview saying what is missing, and Try again sets the tools up', async () => {
+    const { c, parent, hooks } = setup();
+    const dir = join(parent, 'meadow-studio');
+    deps.ready = false;
+    deps.run = offline;
+    expect(await c.create(opts(parent))).toEqual({ ok: true });
+    expect(c.session!.dir).toBe(dir);
+    expect(c.session!.readOnly).toBeFalsy();
+    expect(existsSync(join(dir, 'siteorigin.project.json'))).toBe(true);
+    expect(settings.recents).toBe(1);
+    // One install, and no preview started without its tools.
+    expect(deps.installs).toBe(1);
+    expect(deps.starts).toBe(0);
+    const error = { state: 'error', message: 'The website tools could not be downloaded. Check your internet connection and try again. A connection is only needed once.' };
+    expect(c.snapshot()!.runtime).toMatchObject(error);
+    // The editor opens with it: the first snapshot it gets already says so.
+    const first = hooks.sent.find((m) => m.channel === 'project:changed')?.payload as { runtime: unknown };
+    expect(first.runtime).toMatchObject(error);
+    expect(hooks.sent.filter((m) => m.channel === 'runtime:status').map((m) => m.payload)).toEqual([expect.objectContaining(error)]);
+    // The switch to it is told as opening the project, not as starting a preview that waits for its tools.
+    const steps = hooks.sent.filter((m) => m.channel === 'create:progress').map((m) => m.payload as { step: string; message: string });
+    expect(steps.filter((p) => p.step === 'preview').map((p) => p.message)).toEqual(['Opening the project…']);
+
+    // Back online, Try again installs the tools and starts the preview.
+    await c.startRuntime();
+    expect(deps.installs).toBe(2);
+    expect(deps.starts).toBe(1);
+  });
+
+  it('removes the project as before when Cancel lands as the download fails', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    deps.run = async (d) => {
+      c.cancelCreate();
+      return offline(d);
+    };
+    expect((await c.create(opts(parent))).ok).toBe(false);
+    expect(readdirSync(dir)).toEqual([]);
+    expect(c.session).toBeNull();
+  });
+
+  it('does not open the project when its lock is no longer this app’s as the download fails', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    deps.run = async (d) => {
+      vi.spyOn(ProjectSession.prototype, 'stillOwner').mockResolvedValue(false);
+      return offline(d);
+    };
+    expect((await c.create(opts(parent))).ok).toBe(false);
+    expect(c.session).toBeNull();
+    expect(deps.starts).toBe(0);
+  });
+
+  it('does not open the project when its lock stopped being this app’s while the open project closed for it', async () => {
+    const { c, parent } = setup();
+    deps.run = offline;
+    // Still this app's when the download fails; another app's by the time the switch is made.
+    vi.spyOn(ProjectSession.prototype, 'stillOwner').mockResolvedValueOnce(true).mockResolvedValue(false);
+    const r = await c.create(opts(parent));
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/lock was taken or removed/);
+    expect(c.session).toBeNull();
   });
 });
 

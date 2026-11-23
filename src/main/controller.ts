@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState } from '@shared/api';
+import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -23,7 +23,8 @@ import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind, locateAs
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { photoMetadata } from './project/photo-metadata';
-import { DevServer, buildProject, dependenciesReady, prepareDependencies } from './runtime/manager';
+import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools } from './runtime/manager';
+import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, trust } from './settings';
@@ -382,23 +383,37 @@ export class Controller {
       await trust(dir, await configHash(dir));
       progress({ step: 'dependencies', message: 'Setting up website tools…', detail: 'Installing the tools that build and preview your site.' });
       own('node_modules');
-      await prepareDependencies(dir, (line) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner());
+      let toolsMissing: RuntimeState | null = null;
+      try {
+        await prepareDependencies(dir, (line) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner());
+      } catch (e) {
+        // The tools needed a download and the registry could not be reached (offline, say). The project itself is
+        // complete and this app's, so it opens for editing, its preview saying what is missing, with Try again. A
+        // cancel, a takeover or any other failure removes it as before.
+        if (!(e instanceof ToolsDownloadError) || signal.aborted || takenOver || !(await staged.stillOwner()) || signal.aborted) throw e;
+        toolsMissing = { state: 'error', message: friendlyError(e.message), detail: e.message };
+      }
       if (signal.aborted) throw new Error('Cancelled');
       // From the moment the open project starts closing, the new one is replacing it: there is nothing left to cancel.
-      const way = await this.makeWay(since, signal, () => progress({ step: 'preview', message: 'Starting preview…' }));
+      const way = await this.makeWay(since, signal, () =>
+        progress(toolsMissing ? { step: 'preview', message: 'Opening the project…', detail: 'The website tools could not be downloaded, so the preview waits until you are back online.' } : { step: 'preview', message: 'Starting preview…' })
+      );
       if (!way.ok) {
         refused = way;
         throw new Error(way.message ?? 'The open project was kept.');
       }
       committed = true;
       staged.off('lock-lost', stop);
+      // Opened without its preview, nothing reads its lock again before the editor has it: read it now, since another
+      // app may have taken it while the open project was closing, before the heartbeat noticed.
+      if (toolsMissing && !takenOver && !(await staged.stillOwner())) takenOver = true;
       // Its lock lost while the open project was closing for it: it is not shown, but rolled back. A Cancel or a quit
       // arriving now is too late to undo the switch, which finishes.
       if (takenOver) throw new Error('Cancelled');
       // The preview writes its own output into the folder.
-      own('.svelte-kit');
+      if (!toolsMissing) own('.svelte-kit');
       attached = true;
-      await this.attach(staged, {});
+      await this.attach(staged, {}, toolsMissing);
       // The project is open and working: a recent-projects list that cannot be saved must not undo it.
       await addRecent(dir, name).catch(() => undefined);
       progress({ step: 'done', message: 'Ready' });
@@ -448,6 +463,11 @@ export class Controller {
 
   cancelCreate() {
     this.createAbort?.abort();
+  }
+
+  /** Whether creating a project downloads website tools, decided by the same check setup makes. */
+  websiteTools(): Promise<WebsiteTools> {
+    return starterTools(templateFiles());
   }
 
   async open(dirArg?: string): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }> {
@@ -567,13 +587,18 @@ export class Controller {
     return s.resolveConflict(path, choice);
   }
 
-  /** Make `session` the open project, with its own workspace state installed in the same step. */
-  private async attach(session: ProjectSession, workspace: LocalWorkspaceState) {
+  /**
+   * Make `session` the open project, with its own workspace state installed in the same step. With `runtimeError` the
+   * preview is not started: the project opens showing that error, and Try again starts it.
+   */
+  private async attach(session: ProjectSession, workspace: LocalWorkspaceState, runtimeError: RuntimeState | null = null) {
     // The handover that closed the open project for this one ends here, as this one becomes the open project.
     this.handingOver = false;
     // A new opening lists only its own exports, even if an earlier one was never closed.
     this.endExports();
     this.session = session;
+    // In place before the first snapshot, so the editor opens with it.
+    if (runtimeError) this.pendingStatus = runtimeError;
     this.localState = workspace;
     this.localDirty = false;
     this.workspaceKey = `${session.dir}#${++this.openings}`;
@@ -600,7 +625,8 @@ export class Controller {
     // Project health lists missing image files from the first moment the project shows.
     await session.refreshAssetFiles().catch(() => false);
     this.broadcast();
-    await this.startRuntime();
+    if (runtimeError) this.send('runtime:status', runtimeError);
+    else await this.startRuntime();
   }
 
   private runtimeQueue: Promise<unknown> = Promise.resolve();
@@ -1566,7 +1592,7 @@ function safeUsages(s: ProjectSession): Record<string, number> {
 
 /** Plain-language explanations for setup failures; the technical detail stays available in diagnostics. */
 export function friendlyError(msg: string): string {
-  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|network|offline|ENOTCACHED/i.test(msg))
+  if (/Downloading the website tools failed|network|offline|ENOTCACHED/i.test(msg) || NETWORK_CODES.some((code) => msg.includes(code)))
     return 'The website tools could not be downloaded. Check your internet connection and try again. A connection is only needed once.';
   if (/ENOSPC/i.test(msg)) return 'Your disk is full. Free up some space and try again.';
   if (/EACCES|EPERM/i.test(msg)) return 'SiteOrigin Builder does not have permission to write to that folder. Choose a folder in your Documents and try again.';

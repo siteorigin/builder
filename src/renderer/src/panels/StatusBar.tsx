@@ -201,7 +201,7 @@ export function HealthModal() {
           <div className="scope-note info" style={{ marginBottom: 12, alignItems: 'center' }}>
             <Wrench />
             <span className="grow">
-              <strong>Website tools: {label.toLowerCase()}.</strong> They come with SiteOrigin Builder and are set up inside this project folder. Reinstall them if the preview will not start.
+              <strong>Website tools: {label.toLowerCase()}.</strong> They are set up inside this project folder. Reinstall them if the preview will not start.
             </span>
             {!snap.readOnly && (
               <button className="btn btn-sm" disabled={runtime.state === 'preparing'} onClick={() => void api.project.repairDependencies()}>

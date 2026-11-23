@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, FolderOpen, LayoutTemplate, ShieldAlert } from 'lucide-react';
-import type { ProgressEvent } from '@shared/api';
+import { Check, CloudDownload, FolderOpen, LayoutTemplate, ShieldAlert } from 'lucide-react';
+import type { ProgressEvent, WebsiteTools } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
 import { endEditingHold } from '../lib/leave';
 import { api, errorText, toast } from '../store';
@@ -85,6 +85,8 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const [images, setImages] = useState(true);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Whether setup will download anything, known before Create is pressed (null while it is being checked).
+  const [tools, setTools] = useState<WebsiteTools | null>(null);
   // Progress belongs to this dialog's own attempt, named in its create call: another attempt still running (from a
   // window closed meanwhile, or one that replaced the open project and is starting its preview) reports nothing
   // here. Once this dialog has gone, its attempt's answer is only told as a notice.
@@ -93,6 +95,10 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     live.current = true;
     void api.dialogs.defaultProjectsFolder().then(setParent);
+    void api.projects.websiteTools().then(
+      (t) => live.current && setTools(t),
+      () => live.current && setTools('unknown')
+    );
     const off = api.on('create:progress', (p) => !!attempt.current && p.attempt === attempt.current && setProgress(p));
     return () => {
       live.current = false;
@@ -100,10 +106,12 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
     };
   }, []);
   const running = !!progress && progress.step !== 'error' && progress.step !== 'done';
+  // The author learns whether anything is downloaded before committing to it, by the button or by Enter.
+  const canCreate = !!name.trim() && !!parent && tools !== null;
   const slug = name.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, ' and ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'website';
 
   const create = async () => {
-    if (attempt.current) return;
+    if (attempt.current || !canCreate) return;
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     attempt.current = id;
     setError(null);
@@ -170,7 +178,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn-primary" disabled={!name.trim() || !parent} onClick={() => void create()}>
+          <button className="btn btn-primary" disabled={!canCreate} aria-describedby="new-project-tools" onClick={() => void create()}>
             Create project
           </button>
         </>
@@ -178,7 +186,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
     >
       <div className="col" style={{ gap: 16 }}>
         <Field label="Project name">
-          <input className="input" autoFocus placeholder="For example, Harbour Lane Studio" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && name.trim() && void create()} />
+          <input className="input" autoFocus placeholder="For example, Harbour Lane Studio" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void create()} />
         </Field>
         <Field label="Location" hint={parent ? `Saved in ${shortPath(parent)}/${slug}` : undefined}>
           <div className="row">
@@ -257,9 +265,23 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
         {starter === 'business' && (
           <SwitchRow checked={images} onChange={setImages} label="Include sample images" hint="Placeholder photos you can replace any time." />
         )}
-        <p className="faint" style={{ margin: 0, fontSize: 12 }}>
-          Everything needed is included, and nothing is downloaded. Your website is saved as a normal folder that you own.
-        </p>
+        {/* Read out as it settles, and describes Create, so nobody creates a project without hearing it. */}
+        <div id="new-project-tools" className="col tools-note" data-tools={tools ?? 'checking'} role="status" style={{ gap: 8 }}>
+          {tools === 'download' || tools === 'unknown' ? (
+            <div className="scope-note info">
+              <CloudDownload aria-hidden="true" />
+              <span>
+                <strong>{tools === 'download' ? 'Setup downloads some website tools.' : 'Setup may download some website tools.'}</strong>{' '}
+                {tools === 'download' ? 'Some of the tools that build and preview your site are not included for this computer, so creating the project downloads them from the npm registry.' : 'Creating the project may download some of the tools that build and preview your site from the npm registry.'}{' '}
+                If the download cannot connect, the project still opens for editing: choose Try again in its preview once you are back online.
+              </span>
+            </div>
+          ) : null}
+          <p className="faint" style={{ margin: 0, fontSize: 12 }}>
+            {tools === 'local' ? 'The website tools are already on this computer, so setup works offline. A saved copy that turns out to be damaged is downloaded again. ' : tools === null ? 'Checking which website tools are on this computer… ' : ''}
+            Your website is saved as a normal folder that you own.
+          </p>
+        </div>
         {error && (
           <div className="scope-note danger" role="alert" ref={(el) => el?.scrollIntoView({ block: 'nearest' })}>
             <ShieldAlert />

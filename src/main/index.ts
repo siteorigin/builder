@@ -219,6 +219,7 @@ function registerIpc() {
   handle('projects:removeRecent', (dir: string) => removeRecent(dir));
   handle('projects:create', (opts) => controller.create(opts));
   handle('projects:cancelCreate', () => controller.cancelCreate());
+  handle('projects:websiteTools', () => controller.websiteTools());
   handle('projects:open', (dir?: string) => controller.open(dir));
   handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
   handle('projects:close', () => controller.closeProject());
