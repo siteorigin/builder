@@ -78,6 +78,8 @@ playwright-report/
 dist/
 *.tsbuildinfo
 
-# Local working notes and stabilize state
-.tmp/
+# Local working files: stabilize state, /merge-prs state, check results and worktree pool
+.tmp
+*.tmp
+/prs-merge-bg/
 .claude/worktrees/
