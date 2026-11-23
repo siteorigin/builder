@@ -58,6 +58,9 @@ describe('which forms the editor reads keys for', () => {
     // Custom code that names fields some other way gets no inferred keys.
     const custom = { ...contactForm, source: contactForm.source!.replace("'subject', ", '') };
     expect(namesFormFields(custom)).toBe(false);
+    const otherFallback = { ...contactForm, source: contactForm.source!.replace("'field-' + (i + 1)", "'answer-' + (i + 1)") };
+    expect(otherFallback.source).not.toBe(contactForm.source);
+    expect(namesFormFields(otherFallback)).toBe(false);
   });
 });
 
@@ -99,12 +102,15 @@ describe('the editor computes the keys the exported form sends', () => {
     ],
     [{ label: 'Email', name: 'email' }, { label: 'Phone', name: 'EMAIL' }],
     [{ label: 'Subject', name: '' }, { label: 'Other', name: 'subject-field' }],
-    [{ label: '名前' }, { label: 'Email' }, { label: 'X', name: 'field-1' }]
+    [{ label: '名前' }, { label: 'Email' }, { label: 'X', name: 'field-1' }],
+    ['_gotcha', 'botcheck', 'bot-field', 'form-name', 'access_key', 'subject', 'from_name', 'redirect'].map((name) => ({ label: 'R', name })),
+    [{ label: 'Your Message!', name: '', type: 'textarea' }, { label: 'Note', name: 'REDIRECT', type: 'textarea' }]
   ];
 
   it('gives every field the same key in TypeScript as in the exported Svelte, old and new', () => {
     for (const vector of VECTORS) {
       const fields = vector.map((f, i) => ({ id: `f${i}`, type: 'text', required: false, placeholder: '', ...f }));
+      expect(fields).toHaveLength(vector.length);
       const expected = fields.map((f, i) => formFieldKey(f, i));
       expect(rendered('current', fields).names).toEqual(expected);
       expect(rendered('legacy', fields).names).toEqual(expected);
@@ -160,6 +166,10 @@ describe('keys stay distinct and stable through edits', () => {
     expect(keysOf(s2, nodeId)[a.id]).toBe('field');
     const s3 = edit(s2, nodeId, { type: 'instance.setProp', itemId: a.id, field: 'name', value: '' });
     expect(keysOf(s3, nodeId)[a.id]).toBe('company');
+    // Clearing a name whose label makes a key already in use numbers it past that key.
+    const phone = idOf(s3, nodeId, 'Phone');
+    const relabelled = edit(s3, nodeId, { type: 'instance.setProp', itemId: phone, field: 'label', value: 'Email' }, { type: 'instance.setProp', itemId: phone, field: 'name', value: '' });
+    expect(fieldsOf(relabelled, nodeId).find((f) => f.id === phone)!.name).toBe('email-2');
     // A field the agent adds with a label gets its key from it, numbered past keys already in use.
     const s4 = edit(s3, nodeId, { type: 'instance.listInsert', index: 0, item: { label: 'Email', type: 'email' } });
     expect(fieldsOf(s4, nodeId)[0].name).toBe('email-2');
@@ -176,7 +186,12 @@ describe('keys stay distinct and stable through edits', () => {
     const before = keysOf(s0, nodeId);
     const s = edit(s0, nodeId, { type: 'instance.setProp', itemId: idOf(s0, nodeId, 'Phone'), field: 'label', value: 'Téléphone' }, { type: 'instance.setProp', itemId: idOf(s0, nodeId, 'Email'), field: 'label', value: 'メール' });
     expect(keysOf(s, nodeId)).toEqual(before);
-    expect(fieldsOf(s, nodeId).map((f) => f.name)).toEqual(['name', 'email', 'phone', 'message']);
+    expect(fieldsOf(s, nodeId).map((f) => [f.label, f.name])).toEqual([
+      ['Name', 'name'],
+      ['メール', 'email'],
+      ['Téléphone', 'phone'],
+      ['Message', 'message']
+    ]);
   });
 
   it('pins keys that came from a label or a position before a move, a removal or a translation could change them', () => {
@@ -194,6 +209,11 @@ describe('keys stay distinct and stable through edits', () => {
     expect(keysOf(moved, nodeId)).toEqual(sent);
     const translated = edit(moved, nodeId, { type: 'instance.setProp', itemId: 'c', field: 'label', value: 'Courriel' });
     expect(keysOf(translated, nodeId)).toEqual(sent);
+    // Translating a field of a form nobody has edited yet pins its key first.
+    const { s: untouched, nodeId: n0 } = withForm(legacy, LEGACY);
+    const relabelled = edit(untouched, n0, { type: 'instance.setProp', itemId: 'c', field: 'label', value: 'Courriel' });
+    expect(fieldsOf(relabelled, n0).find((f) => f.id === 'c')).toMatchObject({ label: 'Courriel', name: 'email' });
+    expect(keysOf(relabelled, n0)).toEqual(sent);
     const { s: s1, nodeId: n1 } = withForm(legacy, LEGACY);
     const removed = edit(s1, n1, { type: 'instance.listRemove', itemId: 'a' });
     expect(keysOf(removed, n1)).toEqual({ b: 'field-2', c: 'email', d: 'field-4' });
@@ -243,6 +263,54 @@ describe('keys stay distinct and stable through edits', () => {
     expect(clashWarnings(r.state)).toHaveLength(1);
   });
 
+  it('reads a stored field without a label the way the export does, with the default label', () => {
+    const stored = [
+      { id: 'a', name: '', type: 'text', required: false, placeholder: '' },
+      { id: 'b', label: 'Other', name: 'field', type: 'text', required: false, placeholder: '' }
+    ];
+    const { s: s0, nodeId } = withForm(stored, LEGACY);
+    // The export fills in "Field", so both are sent as "field".
+    expect(clashWarnings(s0)).toHaveLength(1);
+    expect(clashWarnings(s0)[0].message).toContain('“Field” and “Other” fields are both sent as “field”');
+    const moved = edit(s0, nodeId, { type: 'instance.listMove', itemId: 'b', index: 0 });
+    expect(fieldsOf(moved, nodeId).find((f) => f.id === 'a')!.name).toBe('field');
+  });
+
+  it('makes keys from long labels short enough to stay valid names', () => {
+    const { s: s0, nodeId } = withForm();
+    const label = 'Tell us about your project '.repeat(74).slice(0, 2000);
+    const s1 = edit(s0, nodeId, { type: 'instance.listInsert', item: { label } }, { type: 'instance.listInsert', item: { label } });
+    const [a, b] = fieldsOf(s1, nodeId).slice(-2);
+    expect(String(a.name).length).toBeLessThanOrEqual(60);
+    expect(b.name).toBe(`${a.name}-2`);
+    // The generated name passes the field's own checks when the field is edited again.
+    const s2 = edit(s1, nodeId, { type: 'instance.setProp', itemId: b.id, field: 'placeholder', value: 'More' });
+    expect(fieldsOf(s2, nodeId).at(-1)!.name).toBe(b.name);
+  });
+
+  it('names a clashing field by position when another field of the form has its label', () => {
+    const { s, nodeId } = withForm([
+      { id: 'a', label: 'Email', name: 'email', type: 'email', required: true, placeholder: '' },
+      { id: 'b', label: 'Phone', name: 'email', type: 'tel', required: false, placeholder: '' },
+      { id: 'c', label: 'Email', name: 'backup', type: 'email', required: false, placeholder: '' }
+    ]);
+    expect(clashWarnings(s)[0].message).toContain('“Email” (field 1) and “Phone” fields are both sent as “email”');
+    const fields = fieldsOf(s, nodeId);
+    expect(formKeyNote(fields, 1).error).toBe('“Email” (field 1) is also sent as “email”. Give each field its own name.');
+  });
+
+  it('warns about a form inside a project component', () => {
+    const { s: s0, nodeId } = withForm();
+    const made = applyOperations(s0, [{ type: 'component.createFromNode', owner: owner(s0), nodeId, name: 'Enquiry' } as EditOperation]);
+    const def = Object.values(made.state.components).find((d) => d.name === 'Enquiry')!;
+    const form = Object.values(def.tree!.nodes).find((n) => n.kind === 'instance' && made.state.components[n.definitionId]?.componentId === 'contact.form') as InstanceNode;
+    const phone = (form.props.fields as ListItem[]).find((f) => f.label === 'Phone')!.id;
+    const s = applyOperations(made.state, [{ type: 'instance.setProp', owner: { kind: 'component', id: def.id }, nodeId: form.id, prop: 'fields', itemId: phone, field: 'name', value: 'EMAIL' } as EditOperation]).state;
+    const [warning, ...rest] = clashWarnings(s);
+    expect(rest).toEqual([]);
+    expect(warning).toMatchObject({ owner: { kind: 'component', id: def.id }, nodeId: form.id });
+  });
+
   it('leaves forms with custom key code alone', () => {
     const custom = { ...contactForm, owner: 'project' as const, source: contactForm.source!.replace("'subject', ", '') };
     const legacy = [
@@ -270,8 +338,8 @@ describe('keys survive save, reopen and export', () => {
     const added = await session.apply({ operations: [op({ type: 'instance.listInsert', item: { label: 'Company' } })] }, { label: 'Add field' });
     expect(added.ok).toBe(true);
     const company = idOf(session.state, nodeId, 'Company');
-    await session.apply({ operations: [op({ type: 'instance.setProp', itemId: company, field: 'label', value: 'Entreprise' })] }, { label: 'Rename' });
-    await session.apply({ operations: [op({ type: 'instance.listMove', itemId: company, index: 0 })] }, { label: 'Move' });
+    expect((await session.apply({ operations: [op({ type: 'instance.setProp', itemId: company, field: 'label', value: 'Entreprise' })] }, { label: 'Rename' })).ok).toBe(true);
+    expect((await session.apply({ operations: [op({ type: 'instance.listMove', itemId: company, index: 0 })] }, { label: 'Move' })).ok).toBe(true);
     const before = keysOf(session.state, nodeId);
     expect(before[company]).toBe('company');
     await session.close();
@@ -279,6 +347,7 @@ describe('keys survive save, reopen and export', () => {
     const again = await ProjectSession.open(dir, 'test');
     try {
       expect(keysOf(again.state, nodeId)).toEqual(before);
+      expect(fieldsOf(again.state, nodeId)[0]).toMatchObject({ id: company, label: 'Entreprise', name: 'company' });
       expect(clashWarnings(again.state)).toEqual([]);
       const page = generateProject(again.state).get('src/routes/+page.svelte')!;
       for (const key of Object.values(before)) expect(page).toContain(JSON.stringify(key));

@@ -19,25 +19,37 @@ import { formFieldKey, formKeyFrom, formNameDecides, type FormField } from '@cat
  * The fields after an edit, with keys settled. `before` is the list as it was, `after` the list the edit made,
  * and `cleared` the fields whose name the edit itself emptied, which get a fresh key from their label.
  */
-export function settleFormKeys(before: readonly FormField[], after: ListItem[], cleared: ReadonlySet<string> = new Set()): ListItem[] {
+export function settleFormKeys(before: readonly FormField[], after: ListItem[], cleared: ReadonlySet<string> = new Set(), defaults: FormDefaults = {}): ListItem[] {
+  // Each field as the export sends it: a missing name or label is its default.
+  const sent = (f: FormField): FormField => ({ name: f?.name ?? defaults.name, label: f?.label ?? defaults.label });
   const was = new Map<string, string>();
   before.forEach((f, i) => {
-    if (f && typeof f.id === 'string') was.set(f.id, formFieldKey(f, i));
+    if (f && typeof f.id === 'string') was.set(f.id, formFieldKey(sent(f), i));
   });
   const out = after.map((f) => ({ ...f }));
   const fresh: number[] = [];
   out.forEach((f, i) => {
-    if (formNameDecides(f)) return;
+    if (formNameDecides(sent(f))) return;
     const kept = was.get(f.id);
     if (kept !== undefined && !cleared.has(f.id)) f.name = kept;
     else fresh.push(i);
   });
   for (const i of fresh) {
-    const taken = new Set(out.flatMap((f, j) => (j === i || (fresh.includes(j) && !formNameDecides(f)) ? [] : [formFieldKey(f, j)])));
-    const base = formKeyFrom(String(out[i].label ?? '')) || 'field';
+    const taken = new Set(out.flatMap((f, j) => (j === i || (fresh.includes(j) && !formNameDecides(sent(f))) ? [] : [formFieldKey(sent(f), j)])));
+    // A long label makes a key of its first words, short enough to stay a valid name once numbered.
+    const base = formKeyFrom(String(sent(out[i]).label ?? '').slice(0, KEY_LENGTH)) || 'field';
     let key = base;
     for (let n = 2; taken.has(key); n++) key = `${base}-${n}`;
     out[i].name = key;
   }
   return out;
+}
+
+/** The longest label text a generated key is made from. */
+const KEY_LENGTH = 60;
+
+/** The name and label a field without its own has: the list schema's field defaults. */
+export interface FormDefaults {
+  name?: unknown;
+  label?: unknown;
 }

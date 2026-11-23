@@ -614,7 +614,7 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
         inst.props[k] = normalizeProp(schema, v, state, `${def.name} → ${schema.label}`);
       }
       // Every field of a new form is new, so each gets a key of its own unless its name already decides one.
-      if (Array.isArray(inst.props.fields) && 'fields' in op.props && namesFormFields(def)) inst.props.fields = settleFormKeys([], inst.props.fields as ListItem[]);
+      if (Array.isArray(inst.props.fields) && 'fields' in op.props && namesFormFields(def)) inst.props.fields = settleFormKeys([], inst.props.fields as ListItem[], new Set(), formDefaults(def));
     }
     nodes = [inst];
   }
@@ -1017,9 +1017,15 @@ function keepingFormKeys(state: ProjectState, op: Op<'instance.setProp' | 'insta
   const after = node.props.fields;
   if (Array.isArray(after)) {
     const cleared = op.type === 'instance.setProp' && op.itemId && op.field === 'name' ? [op.itemId] : [];
-    node.props.fields = settleFormKeys(before, after as ListItem[], new Set(cleared));
+    node.props.fields = settleFormKeys(before, after as ListItem[], new Set(cleared), formDefaults(def));
   }
   return result;
+}
+
+/** The name and label a form field without its own gets on export. */
+function formDefaults(def: ComponentDefinition): { name?: unknown; label?: unknown } {
+  const schema = def.properties.fields;
+  return schema?.type === 'list' ? { name: schema.fields.name?.default, label: schema.fields.label?.default } : {};
 }
 
 function listInsert(state: ProjectState, op: Op<'instance.listInsert'>): OpResult {

@@ -35,7 +35,7 @@ import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
-import { formKeyNote, namesFormFields, type FormField } from '@catalogue/foundation/form';
+import { formFieldsAsSent, formKeyNote, namesFormFields } from '@catalogue/foundation/form';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf } from '@engine/tree';
 import { applyOps, applyWith, setState, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
@@ -52,9 +52,10 @@ type Tone = 'local' | 'shared' | 'definition';
 const LEVEL = 4;
 
 /** Under each contact form field's name: the key its answer is sent under, or the other fields sent under it too. */
-function formKeyNotes(value: unknown): ((item: ListItem, index: number) => ListItemNote | undefined) | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return (_item, i) => ({ field: 'name', ...formKeyNote(value as FormField[], i) });
+function formKeyNotes(def: ComponentDefinition, value: unknown): ((item: ListItem, index: number) => ListItemNote | undefined) | undefined {
+  if (value !== undefined && !Array.isArray(value)) return undefined;
+  const fields = formFieldsAsSent(def, value);
+  return (_item, i) => ({ field: 'name', ...formKeyNote(fields, i) });
 }
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): EditOperation {
@@ -382,7 +383,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               onChange={(v, edit) => set(key, v, edit)}
               onList={(op) => void applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, node.id, key, op)], `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
               state={state}
-              annotate={key === 'fields' && namesFormFields(def) ? formKeyNotes(node.props.fields ?? schema.default) : undefined}
+              annotate={key === 'fields' && namesFormFields(def) ? formKeyNotes(def, node.props.fields) : undefined}
             />
           )}
         />

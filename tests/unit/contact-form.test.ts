@@ -13,6 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { defFile, generateProject } from '@generator/index';
+import { validateState } from '@engine/validate';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { ProjectSession } from '../../src/main/project/session';
@@ -223,6 +224,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       const first = await nextPost();
       expect(first.path).toBe('/f/abc');
       expect(first.body).toMatchObject({ name: 'Ada', message: 'First request' });
+      expect(first.entries.map(([k]) => k)).toEqual(['name', 'email', 'message', '_gotcha']);
       expect(await editable()).toEqual([false, false, false]);
 
       await first.respond(500);
@@ -255,6 +257,9 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       { id: 'item-4', label: 'Message', name: 'message', type: 'textarea', required: true, placeholder: '' }
     ];
     await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, field, button, status, posts, fetches }) => {
+      // Any POST, a native one included, is counted the moment it starts.
+      let sends = 0;
+      page.on('request', (r) => void (r.method() === 'POST' && sends++));
       await field('Name').fill('Ada');
       await field('Email').fill('ada@example.com');
       await field('Phone').fill('+44 20 7946 0000');
@@ -266,6 +271,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       await page.evaluate(`document.querySelector('form').requestSubmit()`);
       await page.waitForTimeout(250);
       expect(await fetches()).toBe(0);
+      expect(sends).toBe(0);
       expect(posts).toHaveLength(0);
     });
   }, 20_000);
@@ -288,6 +294,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       };
       await edit({ type: 'instance.listInsert', item: { label: 'Company' } });
       await edit({ type: 'instance.setProp', itemId: idOf('Phone'), field: 'name', value: 'EMAIL' });
+      expect(validateState(session.state).filter((d) => d.code === 'FORM_FIELD_KEYS').map((d) => d.message)).toEqual([expect.stringContaining('“Email” and “Phone” fields are both sent as “email”')]);
       await edit({ type: 'instance.setProp', itemId: idOf('Phone'), field: 'name', value: '' });
       await edit({ type: 'instance.setProp', itemId: idOf('Email'), field: 'label', value: 'Courriel' });
       await edit({ type: 'instance.listMove', itemId: idOf('Company'), index: 0 });
@@ -296,8 +303,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       const again = await ProjectSession.open(dir, 'test');
       let fields: ListItem[];
       try {
-        fields = fieldsIn(again.state);
-        expect(fields.map((f) => [f.label, f.name])).toEqual([
+        expect(fieldsIn(again.state).map((f) => [f.label, f.name])).toEqual([
           ['Company', 'company'],
           ['Name', 'name'],
           ['Courriel', 'email'],
@@ -305,9 +311,12 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
           ['Message', 'message']
         ]);
         const files = generateProject(again.state);
-        // The export ships the component this suite runs, and these fields on the page.
+        // The export ships the component this suite runs; the form is mounted with the fields its page passes.
         expect(files.get(defFile(again.state.components[defId]))).toBe(exportedFormSource());
-        for (const f of fields) expect(files.get('src/routes/+page.svelte')).toContain(JSON.stringify(f.name));
+        const emitted = /^\tfields=\{(.*)\}$/m.exec(files.get('src/routes/+page.svelte')!);
+        if (!emitted) throw new Error('The exported page passes the form no fields');
+        fields = JSON.parse(emitted[1]);
+        expect(fields.map((f) => f.name)).toEqual(['company', 'name', 'email', 'phone', 'message']);
       } finally {
         await again.close();
       }

@@ -497,9 +497,9 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
  * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
  * its hint; without, it names itself with aria-label.
  */
-export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; id?: string; describedBy?: string }) {
+export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean }) {
   const name = id ? undefined : (label ?? schema.label);
-  const wired = { id, 'aria-describedby': describedBy };
+  const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
     case 'string':
       return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} ariaLabel={name} />;
@@ -561,7 +561,7 @@ export function ScalarField({ schema, value, onChange, state, label, hint, error
     );
   return (
     <Field label={shown} hint={note} error={error} controlId={id}>
-      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} />
+      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} />
     </Field>
   );
 }
@@ -702,14 +702,16 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
           <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}`}>
             <div className="list-editor-head">
               {/* The chevron and title are one disclosure button, so the whole leading area opens the item. */}
-              <button className="title" id={`list-head-${it.id}`} aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} onClick={() => setOpen(openId === it.id ? null : it.id)}>
+              <button className="title" id={`list-head-${it.id}`} aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} aria-describedby={note?.error ? `list-flag-${it.id}` : undefined} onClick={() => setOpen(openId === it.id ? null : it.id)}>
                 <ChevronRight size={12} className="faint" style={{ transform: openId === it.id ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
                 <span className="ellipsis">{titleOf(it, i)}</span>
                 {/* A closed item still shows it needs attention. */}
                 {note?.error && (
                   <span className="list-editor-flag" title={note.error}>
                     <TriangleAlert aria-hidden="true" />
-                    <span className="sr-only">, needs attention</span>
+                    <span className="sr-only" id={`list-flag-${it.id}`}>
+                      {note.error}
+                    </span>
                   </span>
                 )}
               </button>

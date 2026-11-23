@@ -462,8 +462,19 @@ export function formKeyNote(fields: readonly FormField[], index: number): { hint
   const others = clash?.indexes.filter((j) => j !== index) ?? [];
   return {
     hint: `Sent as “${key}”. Changing the label keeps it; clear it to make a new one from the label.`,
-    error: others.length ? `${formFieldTitles(fields, others, clash!.indexes)} ${others.length === 1 ? 'is' : 'are'} also sent as “${key}”. Give each field its own name.` : undefined
+    error: others.length ? `${formFieldTitles(fields, others, fields.map((_, j) => j))} ${others.length === 1 ? 'is' : 'are'} also sent as “${key}”. Give each field its own name.` : undefined
   };
+}
+
+/**
+ * A form's fields as the export hands them to the component: a missing list is the definition's, and a missing
+ * name or label is the field's default, exactly as the generator's `resolveValue` fills them in.
+ */
+export function formFieldsAsSent(def: ComponentDefinition, value: unknown): FormField[] {
+  const schema = def.properties.fields;
+  if (schema?.type !== 'list') return [];
+  const items = (Array.isArray(value) ? value : schema.default) as Array<Record<string, unknown> | null | undefined>;
+  return items.map((it) => ({ id: it?.id, name: it?.name ?? schema.fields.name?.default, label: it?.label ?? schema.fields.label?.default }));
 }
 
 /**
