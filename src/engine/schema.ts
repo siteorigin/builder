@@ -154,7 +154,7 @@ export function normalizeProperties(raw: Record<string, unknown> | undefined, st
 // Binding sites
 // ---------------------------------------------------------------------------
 
-export type BindField = 'text' | 'image' | 'link' | 'label' | 'appearance' | 'icon' | 'when' | 'unless' | 'list' | 'prop';
+export type BindField = 'text' | 'image' | 'fallbackAlt' | 'link' | 'label' | 'appearance' | 'icon' | 'when' | 'unless' | 'list' | 'prop';
 
 /** Property types each bindable node field accepts. `null` means any type (visibility conditions). */
 export function acceptedTypes(node: GraphNode, field: BindField, nested?: PropSchema): readonly string[] | null {
@@ -165,6 +165,7 @@ export function acceptedTypes(node: GraphNode, field: BindField, nested?: PropSc
     case 'text':
       return node.kind === 'text' && node.rich ? ['richtext'] : ['string', 'number', 'enum'];
     case 'label':
+    case 'fallbackAlt':
       return ['string', 'number', 'enum'];
     case 'appearance':
       return ['enum', 'string'];
@@ -196,7 +197,7 @@ export function bindingSites(def: ComponentDefinition): BindingSite[] {
     add('when', n.when);
     add('unless', n.unless);
     if (n.kind === 'text') add('text', n.text);
-    if (n.kind === 'image') add('image', n.image);
+    if (n.kind === 'image') (add('image', n.image), add('fallbackAlt', n.fallbackAlt));
     if (n.kind === 'link') (add('link', n.link), add('label', n.label), add('appearance', n.appearance));
     if (n.kind === 'icon') add('icon', n.icon);
     if (n.kind === 'repeat') add('list', n.list);

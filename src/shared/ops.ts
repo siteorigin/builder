@@ -141,7 +141,7 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('node.setBinding'),
     owner,
     nodeId: z.string(),
-    field: z.enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'when', 'unless', 'list', 'prop']),
+    field: z.enum(['text', 'image', 'fallbackAlt', 'link', 'label', 'appearance', 'icon', 'when', 'unless', 'list', 'prop']),
     prop: z.string().optional().describe('For field "prop": the nested instance property to bind.'),
     binding: binding.nullable().describe('{"$prop": name} or {"$item": field}; null unbinds, keeping the current default.')
   }),

@@ -41,7 +41,8 @@ export const logoStrip = managed({
         b.el('row', 'ul', { name: 'Logo row', styles: { base: { layout: 'row', wrap: true, justify: 'center', align: 'center', gap: tok('space.xl') }, desktop: { justify: 'space-between' } } }, [
           b.repeat('logo-items', 'logos', [
             b.el('logo-item', 'li', { name: 'Logo', styles: { layout: 'row', align: 'center' } }, [
-              b.image('logo-image', { $item: 'logo' }, { name: 'Logo image', when: { $item: 'logo' }, styles: { width: 'auto', maxWidth: '140px', minHeight: '0', opacity: 0.75 } }),
+              // A logo without alternative text is named by the company name its wordmark would show.
+              b.image('logo-image', { $item: 'logo' }, { name: 'Logo image', when: { $item: 'logo' }, fallbackAlt: { $item: 'name' }, styles: { width: 'auto', maxWidth: '140px', maxHeight: '48px', minHeight: '0', objectFit: 'contain', opacity: 0.75 } }),
               b.text('wordmark', 'span', { $item: 'name' }, { name: 'Wordmark', unless: { $item: 'logo' }, styles: { fontFamily: tok('font.display'), fontSize: '1.4rem', fontWeight: '500', letterSpacing: '-0.02em', color: tok('color.muted') } })
             ])
           ])
@@ -119,7 +120,7 @@ export const team = managed({
     people: P.list(
       'People',
       'Person',
-      { portrait: P.image('Portrait'), name: P.str('Name', 'Name'), role: P.str('Role', 'Role'), bio: P.text('Bio', '') },
+      { portrait: P.image('Portrait'), name: P.str('Name', 'Name'), role: P.str('Role', ''), bio: P.text('Bio', '') },
       [
         { portrait: img, name: 'Hannah Wells', role: 'Founder & lead designer', bio: 'Fifteen years designing homes and small workplaces.' },
         { portrait: img, name: 'Marcus Lee', role: 'Project manager', bio: 'Keeps every schedule, budget and contractor on track.' },
@@ -142,7 +143,8 @@ export const team = managed({
       b.el('grid', 'ul', { name: 'Grid', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.xl') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
         b.repeat('members', 'people', [
           b.el('member', 'li', { name: 'Person', styles: { layout: 'stack', gap: tok('space.xs') } }, [
-            b.image('portrait', { $item: 'portrait' }, { name: 'Portrait', styles: { aspectRatio: '4/5', radius: tok('radius.lg'), objectFit: 'cover', marginBlockEnd: tok('space.sm') } }),
+            // People without a portrait show no empty image box.
+            b.image('portrait', { $item: 'portrait' }, { name: 'Portrait', when: { $item: 'portrait' }, styles: { aspectRatio: '4/5', radius: tok('radius.lg'), objectFit: 'cover', marginBlockEnd: tok('space.sm') } }),
             b.text('name', 'h3', { $item: 'name' }, { name: 'Name', styles: { textStyle: tok('text.h3') } }),
             b.text('role', 'p', { $item: 'role' }, { name: 'Role', when: { $item: 'role' }, styles: { color: tok('color.brand'), fontWeight: '500', fontSize: '0.95rem' } }),
             b.text('bio', 'p', { $item: 'bio' }, { name: 'Bio', when: { $item: 'bio' }, styles: { ...mutedStyles, textStyle: tok('text.small') } })

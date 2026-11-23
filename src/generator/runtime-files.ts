@@ -38,10 +38,12 @@ export const IMAGE_SVELTE = `<script>
 	/**
 	 * Renders a resolved image, or a neutral placeholder when no image is chosen.
 	 * Images in the first section of a page load eagerly with high priority (they are usually the
-	 * largest thing on screen); everything else is lazy.
+	 * largest thing on screen); everything else is lazy. \`fallbackAlt\` names what the image stands for when it
+	 * has no alternative text of its own; a decorative image keeps an empty alt and says it as hidden text.
 	 */
 	import { asset } from '$app/paths';
-	let { image = null, class: className = '', eager = false, sizes = '100vw', ...rest } = $props();
+	let { image = null, class: className = '', eager = false, sizes = '100vw', fallbackAlt = '', ...rest } = $props();
+	const fallback = $derived(String(fallbackAlt ?? '').trim());
 	const url = (path) => (path.startsWith('/') && !path.startsWith('//') ? asset(path.slice(1)) : path);
 	const srcset = $derived(
 		image?.srcset
@@ -61,7 +63,7 @@ export const IMAGE_SVELTE = `<script>
 		src={url(image.src)}
 		{srcset}
 		sizes={srcset ? sizes : undefined}
-		alt={image.decorative ? '' : image.alt || ''}
+		alt={image.decorative ? '' : String(image.alt ?? '').trim() || fallback}
 		width={image.width}
 		height={image.height}
 		loading={eager ? 'eager' : 'lazy'}
@@ -70,6 +72,7 @@ export const IMAGE_SVELTE = `<script>
 		class={['so-img', className]}
 		{...rest}
 	/>
+	{#if image.decorative && fallback}<span class="so-visually-hidden">{fallback}</span>{/if}
 {:else}
 	<div
 		class={['so-img', 'so-img--placeholder', className]}

@@ -294,6 +294,7 @@ export function removeSlot(state: ProjectState, op: Op<'component.removeSlot'>):
 const FIELD_KINDS: Record<BindField, GraphNode['kind'][] | null> = {
   text: ['text'],
   image: ['image'],
+  fallbackAlt: ['image'],
   link: ['link'],
   label: ['link'],
   appearance: ['link'],
@@ -347,7 +348,7 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
   const key = field === 'prop' ? op.prop! : field;
   const current = holder[key];
   if (op.binding === null) {
-    if (field === 'when' || field === 'unless') delete holder[key];
+    if (field === 'when' || field === 'unless' || field === 'fallbackAlt') delete holder[key];
     else if (field === 'list') fail('Repeated items always come from a list property. Remove the repeat instead.');
     else if (isBinding(current)) holder[key] = literalFor(field, node, boundSchema(def, node.id, current), nested);
     return {};

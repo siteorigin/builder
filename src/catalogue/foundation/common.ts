@@ -96,6 +96,8 @@ export function headingBlock(
     'div',
     {
       name: 'Heading group',
+      // Cleared eyebrow, heading and lead leave no empty box (and no extra gap) behind.
+      collapseEmpty: true,
       styles: {
         base: {
           layout: 'stack',

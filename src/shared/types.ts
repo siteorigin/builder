@@ -145,6 +145,11 @@ export interface ElementNode extends NodeBase {
   kind: 'element';
   tag: ElementTag;
   children: string[];
+  /**
+   * Render only when at least one child renders, judged from the children's own conditions (a nested
+   * collapsing element by its children, a repeat by its list). A child that always renders keeps this one.
+   */
+  collapseEmpty?: boolean;
 }
 export interface TextNode extends NodeBase {
   kind: 'text';
@@ -156,6 +161,8 @@ export interface TextNode extends NodeBase {
 export interface ImageNode extends NodeBase {
   kind: 'image';
   image: Bindable<ImageValue>;
+  /** What the image stands for, used as its alternative text when it has none (shown as hidden text when decorative). */
+  fallbackAlt?: Bindable<string>;
 }
 export type ButtonAppearance = 'primary' | 'secondary' | 'text' | 'light' | 'link' | 'plain';
 export interface LinkNode extends NodeBase {

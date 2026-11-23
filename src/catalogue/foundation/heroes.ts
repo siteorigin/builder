@@ -2,7 +2,7 @@ import { P, managed, tok } from '../dsl';
 import { eyebrowStyles, mutedStyles, layoutAxis, sectionShell, toneAxis } from './common';
 
 const actions = (b: import('../dsl').TreeBuilder, align: 'start' | 'center') =>
-  b.el('actions', 'div', { name: 'Actions', styles: { base: { layout: 'row', wrap: true, gap: tok('space.sm'), justify: align, marginBlockStart: tok('space.sm') } } }, [
+  b.el('actions', 'div', { name: 'Actions', collapseEmpty: true, styles: { base: { layout: 'row', wrap: true, gap: tok('space.sm'), justify: align, marginBlockStart: tok('space.sm') } } }, [
     b.link('primary', { $prop: 'primaryLink' }, { $prop: 'primaryLabel' }, 'primary', { name: 'Primary button', when: { $prop: 'primaryLabel' } }),
     b.link('secondary', { $prop: 'secondaryLink' }, { $prop: 'secondaryLabel' }, 'secondary', { name: 'Secondary button', when: { $prop: 'secondaryLabel' } })
   ]);

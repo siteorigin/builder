@@ -641,6 +641,11 @@ function emitNode(ctx: EmitCtx, id: string): string {
   if (!node) return '';
   const p = pad(ctx);
   let out = emitNodeInner(ctx, node);
+  const children = node.kind === 'element' && node.collapseEmpty && ctx.def ? childrenCondition(ctx, node, new Set()) : null;
+  if (children) {
+    useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+    out = `${p}{#if ${children}}\n${indentBlock(out)}\n${p}{/if}`;
+  }
   if (node.when && ctx.def) {
     useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
     out = `${p}{#if has(${bindExpr(ctx, node.when)})}\n${indentBlock(out)}\n${p}{/if}`;
@@ -657,13 +662,63 @@ function indentBlock(s: string): string {
 }
 
 /**
- * A navigation landmark whose first child is a heading is labelled by that heading, so screen readers can
- * tell several navigation regions apart. Only outside repeats, where the generated ID stays unique.
+ * The condition under which a node renders, from its own `when`/`unless`, a repeat's list and a collapsing
+ * element's children; null when it always renders. Definitions only, in the scope the node is emitted in.
  */
-function labellingHeading(ctx: EmitCtx, node: GraphNode): GraphNode | null {
+function renderCondition(ctx: EmitCtx, node: GraphNode, seen: Set<string>): string | null {
+  const parts: string[] = [];
+  if (node.when) parts.push(`has(${bindExpr(ctx, node.when)})`);
+  if (node.unless) parts.push(`!has(${bindExpr(ctx, node.unless)})`);
+  if (node.kind === 'repeat') parts.push(`has(${bindExpr(ctx, node.list)})`);
+  const inner = node.kind === 'element' && node.collapseEmpty ? childrenCondition(ctx, node, seen) : null;
+  if (inner) parts.push(`(${inner})`);
+  return parts.length ? parts.join(' && ') : null;
+}
+
+/** A collapsing element renders while any child does; a child that always renders (or no children) keeps it. */
+function childrenCondition(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, seen: Set<string>): string | null {
+  if (seen.has(node.id)) return null;
+  seen.add(node.id);
+  const conds: string[] = [];
+  for (const id of node.children) {
+    const child = ctx.tree.nodes[id];
+    if (!child) continue;
+    const cond = renderCondition(ctx, child, seen);
+    if (cond === null) return null;
+    conds.push(cond);
+  }
+  return conds.length ? conds.join(' || ') : null;
+}
+
+/**
+ * A navigation landmark whose first child is a heading is labelled by that heading, so screen readers can
+ * tell several navigation regions apart. Only outside repeats, where the generated ID stays unique. A heading
+ * shown only while its own text is set still labels the landmark whenever it is there.
+ */
+function labellingHeading(ctx: EmitCtx, node: GraphNode): (GraphNode & { kind: 'text' }) | null {
   if (!ctx.def || ctx.items.length || node.kind !== 'element' || node.tag !== 'nav') return null;
   const first = ctx.tree.nodes[node.children[0]];
-  return first?.kind === 'text' && !first.rich && /^h[2-6]$/.test(first.tag) && !first.when && !first.unless ? first : null;
+  if (first?.kind !== 'text' || first.rich || !/^h[2-6]$/.test(first.tag) || first.unless) return null;
+  return !first.when || headingGuardedByOwnText(first) ? first : null;
+}
+
+/** A heading whose condition is its own bound text: it renders exactly when that text is set. */
+function headingGuardedByOwnText(heading: GraphNode & { kind: 'text' }): boolean {
+  return !!heading.when && isBinding(heading.text) && JSON.stringify(heading.when) === JSON.stringify(heading.text);
+}
+
+/**
+ * The landmark's name: its heading, and while a conditional heading is not shown, the heading property's
+ * default text (so several landmarks stay distinguishable), or no name when that default is blank.
+ */
+function landmarkLabelAttrs(ctx: EmitCtx, heading: GraphNode & { kind: 'text' }): string {
+  const ref = headingIdExpr(ctx, heading);
+  if (!heading.when) return ` aria-labelledby={${ref}}`;
+  useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+  const shown = `has(${bindExpr(ctx, heading.when)})`;
+  const def = propSchemaFor(ctx, heading.text)?.default;
+  const fallback = typeof def === 'string' && def.trim() ? ` aria-label={${shown} ? undefined : ${js(def.trim())}}` : '';
+  return ` aria-labelledby={${shown} ? ${ref} : undefined}${fallback}`;
 }
 
 function headingIdExpr(ctx: EmitCtx, heading: GraphNode): string {
@@ -726,7 +781,7 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
       const heading = labellingHeading(ctx, node);
-      const label = heading ? ` aria-labelledby={${headingIdExpr(ctx, heading)}}` : '';
+      const label = heading ? landmarkLabelAttrs(ctx, heading) : '';
       return `${p}<${node.tag} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${label}${ids}>${children ? `\n${children}\n${p}` : ''}</${node.tag}>`;
     }
     case 'text': {
@@ -748,7 +803,8 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       // The first section's images (outside lists) are usually the largest content: load them eagerly.
       const eager = ctx.def ? (ctx.items.length ? '' : ' eager={so_eager}') : ctx.firstSection ? ' eager' : '';
       const sizes = imageSizes(ctx, node);
-      return `${p}<SoImage image={${val}}${eager}${sizes ? ` sizes=${js(sizes)}` : ''} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
+      const fallback = node.fallbackAlt !== undefined ? ` fallbackAlt={${bindExpr(ctx, node.fallbackAlt)}}` : '';
+      return `${p}<SoImage image={${val}}${eager}${sizes ? ` sizes=${js(sizes)}` : ''}${fallback} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
     }
     case 'link': {
       useImport(ctx, 'SoLink', `${RUNTIME_DIR}/Link.svelte`);
