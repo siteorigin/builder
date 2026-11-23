@@ -127,19 +127,25 @@ assert.equal(await sendButton().isDisabled(), true, 'Send is not enabled with th
 
 step('starters name the pages this site has, whatever they are called (#54)');
 const starterTexts = async () => (await suggestions().locator('.suggestion').allTextContents()).map((x) => x.trim());
-const only = await starterTexts();
-assert.ok(only.length > 0, 'a one-page site has starters');
-assert.ok(only.some((x) => /^Create a new Contact page/.test(x)), 'a missing Contact page is offered as one to create');
+const create = (page, about) => `Create a new ${page} page with ${about}, and link it from the header menu`;
+const contactAbout = 'a short note, how to get in touch and a simple way to send a message';
+// A one-page site: its own page, the page it is missing, and one thing that needs no page.
+assert.deepEqual(await starterTexts(), ['Build out the “Home” page: it is mostly empty, so add the sections and content it needs', create('Contact', contactAbout), 'Make the brand color a deep navy blue across the whole site']);
 await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'page.create', title: 'お問い合わせ', starter: 'intro', addToNavigation: true }] }, { label: 'Add page' }));
 await win.locator('.pages-list [role="option"]', { hasText: 'お問い合わせ' }).click();
 await eventually(async () => assert.match(await win.locator('.toolbar .project-title').innerText(), /お問い合わせ/, 'the second page is open'));
-await eventually(async () => assert.ok((await starterTexts()).some((x) => x.includes('“お問い合わせ”'))));
-const forSecond = await starterTexts();
-assert.match(forSecond[0], /“お問い合わせ”/, 'the open page comes first');
-assert.ok(forSecond.some((x) => /^On another page, “Home”: /.test(x)), 'the other page is labelled as another page');
-assert.ok(!forSecond.some((x) => /Contact|FAQ/.test(x)), 'no starter names a page this site does not have');
+// The open page comes first, Home is labelled as another page, and お問い合わせ is the contact page, so About is the page offered.
+const forSecond = [
+  'Build out the “お問い合わせ” page: it is mostly empty, so add the sections and content it needs',
+  'On another page, “Home”: build out its content, it is mostly empty',
+  create('About', 'who is behind the site, what it stands for and a call to action')
+];
+await eventually(async () => assert.deepEqual(await starterTexts(), forSecond));
+// Renaming the open page renames its starters.
+await win.evaluate((id) => window.builder.project.apply({ operations: [{ type: 'page.update', pageId: id, title: 'Say hello' }] }, { label: 'Rename page' }), (await win.evaluate(() => window.builder.project.snapshot())).state.site.pageOrder[1]);
+await eventually(async () => assert.match((await starterTexts())[0], /^Build out the “Say hello” page/));
 await suggestions().locator('.suggestion', { hasText: 'On another page' }).click();
-await composerIs(forSecond.find((x) => x.startsWith('On another page')));
+await composerIs(forSecond[1]);
 await message().fill('');
 await suggestions().waitFor();
 await type('Lantern light');
