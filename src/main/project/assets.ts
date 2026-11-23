@@ -1,12 +1,14 @@
 import { promises as fs } from 'node:fs';
-import { nativeImage } from 'electron';
-import { basename, extname, join } from 'node:path';
+import { utilityProcess } from 'electron';
+import { basename, dirname, extname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AssetRecord } from '@shared/types';
 import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
 import { atomicWrite, sha } from './fsutil';
 import { sanitizeSvg } from './svg';
-import { fontInfo, imageInfo, orientPixels } from './media';
+import { fontInfo, imageInfo } from './media';
+import { createVariantClient, MAX_VARIANT_PIXELS } from './media-client';
 
 export { imageSize } from './media';
 
@@ -22,7 +24,6 @@ const MIME: Record<string, string> = {
   '.woff': 'font/woff'
 };
 const MAX_BYTES = 25 * 1024 * 1024;
-const MAX_VARIANT_PIXELS = 100_000_000;
 /** File extensions the importer accepts (for file pickers). */
 export const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'svg'];
 export const FONT_EXTENSIONS = ['woff2', 'woff'];
@@ -64,7 +65,7 @@ export async function importAsset(projectDir: string, sourcePath: string, existi
   let font: AssetRecord['font'];
   if (isFont) {
     try {
-      font = fontInfo(buf);
+      font = await fontInfo(buf);
     } catch (e) {
       throw new Error(`${basename(sourcePath)} was not imported because ${(e as Error).message}. Use a WOFF2 or WOFF web font.`);
     }
@@ -79,7 +80,7 @@ export async function importAsset(projectDir: string, sourcePath: string, existi
   const info = isFont ? null : imageInfo(buf, mime);
   // Decoding allocates by pixel count, which a small file can inflate: very large pictures keep only the original.
   const decodable = !!info && info.width * info.height <= MAX_VARIANT_PIXELS;
-  const variants = decodable ? await makeVariants(projectDir, buf, mime, info.width, info.orientation, `static/assets/${base}-${hash.slice(0, 8)}`) : [];
+  const variants = decodable ? await makeVariants(projectDir, buf, mime, info.width, `static/assets/${base}-${hash.slice(0, 8)}`) : [];
   const record: AssetRecord = {
     id: newId('a'),
     name: isFont ? fontName(font!) : basename(sourcePath, ext).replace(/[-_]+/g, ' ').trim() || 'Image',
@@ -103,34 +104,34 @@ function fontName(f: NonNullable<AssetRecord['font']>): string {
   return [f.family, weight === 'Regular' && f.style === 'italic' ? '' : weight, f.style === 'italic' ? 'Italic' : ''].filter(Boolean).join(' ');
 }
 
-const VARIANT_WIDTHS = [480, 960, 1440];
-/** Let the event loop breathe between resizes, so a large import does not freeze the editor in one block. */
-const yieldToLoop = () => new Promise<void>((r) => setImmediate(r));
+/** Only the editor's own code runs in the media worker, but it decodes files from anywhere: it gets no secrets. */
+function workerEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const k of ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR']) if (process.env[k]) env[k] = process.env[k]!;
+  return env;
+}
+
+/** Decoding and resizing happen in a utility process: on the main process a large photo freezes the window. */
+const mediaWorker = createVariantClient(() =>
+  utilityProcess.fork(join(dirname(fileURLToPath(import.meta.url)), 'media-worker.js'), [], { serviceName: 'SiteOrigin media', env: workerEnv() })
+);
+
+/** Stop the media worker (when the app quits). */
+export const stopMediaWorker = () => mediaWorker.stop();
 
 /**
  * Deterministic smaller copies for responsive images (JPEG and PNG); originals are preserved. `width` is the
- * displayed width; a JPEG's EXIF orientation is applied to the copies, which are written without EXIF.
+ * displayed width; a JPEG's EXIF orientation is applied to the copies, which are written without EXIF. A
+ * picture the worker cannot resize keeps only its original.
  */
-async function makeVariants(projectDir: string, buf: Buffer, mime: string, width: number, orientation: number, stem: string): Promise<Array<{ width: number; file: string }>> {
+async function makeVariants(projectDir: string, buf: Buffer, mime: string, width: number, stem: string): Promise<Array<{ width: number; file: string }>> {
   if (mime !== 'image/jpeg' && mime !== 'image/png') return [];
-  const img = nativeImage.createFromBuffer(buf);
-  if (img.isEmpty()) return [];
-  const turned = orientation >= 5;
+  const ext = mime === 'image/png' ? 'png' : 'jpg';
   const out: Array<{ width: number; file: string }> = [];
-  for (const w of VARIANT_WIDTHS) {
-    if (w >= width * 0.9) continue;
-    await yieldToLoop();
-    // A turned image is stored on its side: its displayed width is its stored height.
-    let resized = img.resize(turned ? { height: w, quality: 'best' } : { width: w, quality: 'best' });
-    if (orientation > 1) {
-      const size = resized.getSize();
-      const o = orientPixels(resized.toBitmap(), size.width, size.height, orientation);
-      resized = nativeImage.createFromBitmap(o.data, { width: o.width, height: o.height });
-    }
-    const ext = mime === 'image/png' ? 'png' : 'jpg';
-    const file = `${stem}-${w}w.${ext}`;
-    await atomicWrite(join(projectDir, file), ext === 'png' ? resized.toPNG() : resized.toJPEG(82));
-    out.push({ width: w, file });
+  for (const v of await mediaWorker.variants(buf, mime, width)) {
+    const file = `${stem}-${v.width}w.${ext}`;
+    await atomicWrite(join(projectDir, file), v.data);
+    out.push({ width: v.width, file });
   }
   return out;
 }

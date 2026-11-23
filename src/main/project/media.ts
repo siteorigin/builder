@@ -1,8 +1,13 @@
 /**
  * Reading what an imported file is without decoding it: image dimensions and orientation, and the family,
  * weight and style a web font declares. Pure functions over bytes, so they are tested without Electron.
+ * Font tables are unpacked on Node's thread pool, never on the editor's main thread.
  */
-import { brotliDecompressSync, inflateSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { brotliDecompress, inflate } from 'node:zlib';
+
+const inflateAsync = promisify(inflate);
+const brotliDecompressAsync = promisify(brotliDecompress);
 
 export interface ImageInfo {
   /** Dimensions as the image is displayed (after EXIF orientation or AVIF rotation). */
@@ -169,36 +174,6 @@ function avifInfo(buf: Buffer): ImageInfo | null {
   return quarterTurns % 2 ? { width: height, height: width, orientation: 1 } : { width, height, orientation: 1 };
 }
 
-/**
- * Apply an EXIF orientation to raw 4-byte pixels (the stored image), returning pixels as the image is meant to
- * be seen. Used for responsive copies, which are re-encoded without the EXIF tag.
- */
-export function orientPixels(data: Buffer, width: number, height: number, orientation: number): { data: Buffer; width: number; height: number } {
-  if (orientation <= 1 || orientation > 8) return { data, width, height };
-  const swap = orientation >= 5;
-  const w = swap ? height : width;
-  const h = swap ? width : height;
-  const out = Buffer.alloc(data.length);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      // Where stored pixel (x, y) appears in the displayed image.
-      let dx: number;
-      let dy: number;
-      switch (orientation) {
-        case 2: [dx, dy] = [width - 1 - x, y]; break;
-        case 3: [dx, dy] = [width - 1 - x, height - 1 - y]; break;
-        case 4: [dx, dy] = [x, height - 1 - y]; break;
-        case 5: [dx, dy] = [y, x]; break;
-        case 6: [dx, dy] = [height - 1 - y, x]; break;
-        case 7: [dx, dy] = [height - 1 - y, width - 1 - x]; break;
-        default: [dx, dy] = [y, width - 1 - x]; break; // 8
-      }
-      data.copy(out, (dy * w + dx) * 4, (y * width + x) * 4, (y * width + x) * 4 + 4);
-    }
-  }
-  return { data: out, width: w, height: h };
-}
-
 // ---------------------------------------------------------------------------
 // Web fonts
 // ---------------------------------------------------------------------------
@@ -226,7 +201,7 @@ const MAX_WOFF2_OUTPUT = 64 * 1024 * 1024;
 class FontFileError extends Error {}
 
 /** The sfnt tables a font's metadata comes from, out of a WOFF or WOFF2 file. */
-function fontTables(buf: Buffer): Map<string, Buffer> {
+async function fontTables(buf: Buffer): Promise<Map<string, Buffer>> {
   const want = new Set(['name', 'OS/2', 'fvar']);
   const tables = new Map<string, Buffer>();
   const sig = buf.toString('ascii', 0, 4);
@@ -243,7 +218,7 @@ function fontTables(buf: Buffer): Map<string, Buffer> {
       const orig = buf.readUInt32BE(e + 12);
       if (orig > MAX_META_TABLE || comp > orig || offset + comp > buf.length) throw new FontFileError('it is damaged');
       const raw = buf.subarray(offset, offset + comp);
-      const table = comp < orig ? inflateSync(raw, { maxOutputLength: orig }) : raw;
+      const table = comp < orig ? await inflateAsync(raw, { maxOutputLength: orig }) : raw;
       if (table.length !== orig) throw new FontFileError('it is damaged');
       tables.set(tag, table);
     }
@@ -280,7 +255,7 @@ function fontTables(buf: Buffer): Map<string, Buffer> {
     dir.push({ tag, length });
   }
   if (p + compressed > buf.length) throw new FontFileError('it is damaged');
-  const data = brotliDecompressSync(buf.subarray(p, p + compressed), { maxOutputLength: MAX_WOFF2_OUTPUT });
+  const data = await brotliDecompressAsync(buf.subarray(p, p + compressed), { maxOutputLength: MAX_WOFF2_OUTPUT });
   let at = 0;
   for (const t of dir) {
     if (at + t.length > data.length) throw new FontFileError('it is damaged');
@@ -319,9 +294,9 @@ function nameString(name: Buffer, ids: number[]): string | null {
 }
 
 /** Family, weight and style declared by a WOFF or WOFF2 font. Throws with a user-facing reason. */
-export function fontInfo(buf: Buffer): FontInfo {
+export async function fontInfo(buf: Buffer): Promise<FontInfo> {
   try {
-    return readFontInfo(buf);
+    return await readFontInfo(buf);
   } catch (e) {
     if (e instanceof FontFileError) throw e;
     if ((e as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') throw new FontFileError('it is too large once unpacked');
@@ -330,8 +305,8 @@ export function fontInfo(buf: Buffer): FontInfo {
   }
 }
 
-function readFontInfo(buf: Buffer): FontInfo {
-  const tables = fontTables(buf);
+async function readFontInfo(buf: Buffer): Promise<FontInfo> {
+  const tables = await fontTables(buf);
   const name = tables.get('name');
   // Typographic family (16) first: "Inter", not "Inter Bold".
   const family = name ? nameString(name, [16, 1]) : null;

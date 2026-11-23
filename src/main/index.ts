@@ -13,6 +13,7 @@ import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
 import { LocalAdapter, listLocalModels, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource } from './codecheck';
+import { stopMediaWorker } from './project/assets';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 
@@ -421,6 +422,9 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+
+// The media worker would be ended with the app anyway; stopping it first settles any import still waiting on it.
+app.on('will-quit', () => stopMediaWorker());
 
 let quitting = false;
 let closedForQuit = false;
