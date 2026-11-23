@@ -11,6 +11,9 @@ import { api, applyOps, getState, toast, useStore } from '../store';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection } from '../components/ui';
 import { CustomTokens } from './CustomTokens';
+import { BrandContrast, ContrastDetail, ContrastFlags, buildContrastModel, failingKey } from './ContrastNotes';
+import { useTransitionAnnouncement } from '../lib/announce';
+import type { ForegroundSuggestion } from '@shared/contrast';
 import { fontFamilies, installedFonts } from '@catalogue/fonts';
 
 /** The font menu's "Import a font…" entry; never saved as a value. */
@@ -360,6 +363,9 @@ export function SiteStyles() {
   const [openText, setOpenText] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState(false);
   const uid = useId();
+  // Which paired colours the theme sets against each other, and whether they are readable as they stand.
+  const contrast = useMemo(() => buildContrastModel(tokens, snap ? getTheme(snap.state.site.themeId).contrastPairs : []), [tokens, snap?.state.site.themeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const contrastStatus = useTransitionAnnouncement(failingKey(contrast), (_, next) => (next ? `Low contrast: ${next.split('|').join(', ')}` : 'Colors are readable again'));
   if (!snap) return null;
   const st = snap.state;
   const theme = getTheme(st.site.themeId);
@@ -380,6 +386,11 @@ export function SiteStyles() {
   const changedNote = (ids: string[]) => {
     const n = ids.filter(changed).length;
     return n ? `${n} changed` : undefined;
+  };
+  /** Take a suggested text color: one change of its own, refused if the project moved on while the author chose. */
+  const chooseReadable = (s: ForegroundSuggestion) => {
+    const label = byId(s.token)?.label ?? s.token;
+    void applyOps([{ type: 'token.set', tokenId: s.token, value: s.value }], `Use a readable ${label}`, undefined, snap.revision);
   };
   const site = st.site;
   const updSite = (patch: Record<string, unknown>) => void applyOps([{ type: 'site.update', ...patch }], 'Update site settings');
@@ -497,6 +508,7 @@ export function SiteStyles() {
             <NameWithReset label={compact ? `${t.label} color` : t.label} reset={changed(t.id) && <ResetDot label={t.label} theme={`color, ${themeHex(t.id)}`} onReset={() => set(t.id, null)} />} />
           </div>
           <div className="ss-desc">{desc}</div>
+          {!compact && <ContrastFlags model={contrast} tokenId={t.id} onUse={chooseReadable} />}
           {follows && (
             <div className="ss-follows">
               <Link2 aria-hidden="true" />
@@ -538,6 +550,7 @@ export function SiteStyles() {
                       ))}
                   </select>
                 </Field>
+                <ContrastDetail model={contrast} tokenId={t.id} />
                 {usesBlock(t.id)}
               </>
             )}
@@ -798,6 +811,9 @@ export function SiteStyles() {
 
   return (
     <div className="panel-body ss">
+      <div className="sr-only" role="status" aria-live="polite">
+        {contrastStatus}
+      </div>
       <div className="insp-head ss-head">
         <div className="insp-title">
           <span className="layer-kind" aria-hidden="true">
@@ -896,6 +912,7 @@ export function SiteStyles() {
       <Section title="Basics" id="tok-basics" scope="Shortcuts">
         <div className="ss-group">
           {brand && colorRow(brand, true)}
+          {brand?.id === 'color.brand' && <BrandContrast model={contrast} onUse={chooseReadable} />}
           {fontsOrdered.map(fontRow)}
         </div>
       </Section>

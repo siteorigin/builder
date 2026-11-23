@@ -1,6 +1,8 @@
 import type { ComponentDefinition, TokenDef } from '@shared/types';
+import type { ContrastPair } from '@shared/contrast';
 import { FOUNDATION_TOKENS } from './foundation/tokens';
 import { FOUNDATION_BASE_CSS } from './foundation/base.css';
+import { FOUNDATION_CONTRAST_PAIRS } from './foundation/contrast';
 import { heroCentered, heroSplit, pageIntro } from './foundation/heroes';
 import { container, featuresGrid, gallery, mediaSplit, stats, textSection } from './foundation/content';
 import { logoStrip, team, testimonials } from './foundation/people';
@@ -18,6 +20,8 @@ export interface ThemePack {
   version: string;
   description: string;
   tokens: TokenDef[];
+  /** The colour tokens the theme sets against each other, so Site styles can say when a pair stops being readable. */
+  contrastPairs?: ContrastPair[];
   baseCss: string;
   /** Font packages the website template installs. The generated layout imports the ones a site uses. */
   fontImports: string[];
@@ -33,6 +37,7 @@ const FOUNDATION: ThemePack = {
   version: PACK_VERSION,
   description: 'Clean and restrained, for service businesses, studios and personal sites.',
   tokens: FOUNDATION_TOKENS,
+  contrastPairs: FOUNDATION_CONTRAST_PAIRS,
   baseCss: FOUNDATION_BASE_CSS,
   fontImports: BUNDLED_FONTS.map((f) => f.package),
   components: [

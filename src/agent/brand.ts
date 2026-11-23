@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { importedFontStack, projectFontFamilies } from '@shared/fonts';
+import { READABLE_TEXT_COLORS, contrastBetween } from '@shared/contrast';
 import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
 import { normalizeLink } from '@engine/values';
@@ -88,22 +89,14 @@ function parseHex(v: string): RGB | null {
 const toHex = (c: RGB) => `#${c.map((x) => Math.round(x).toString(16).padStart(2, '0')).join('')}`;
 const mix = (a: RGB, b: RGB, amount: number): RGB => [a[0] + (b[0] - a[0]) * amount, a[1] + (b[1] - a[1]) * amount, a[2] + (b[2] - a[2]) * amount];
 
-function luminance(c: RGB): number {
-  const ch = (v: number) => {
-    const s = v / 255;
-    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
-  };
-  return 0.2126 * ch(c[0]) + 0.7152 * ch(c[1]) + 0.0722 * ch(c[2]);
-}
+const asRgb = (c: RGB) => ({ r: c[0], g: c[1], b: c[2] });
 
 export function contrastRatio(a: RGB, b: RGB): number {
-  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
+  return contrastBetween(asRgb(a), asRgb(b));
 }
 
-const WHITE: RGB = [255, 255, 255];
-const INK: RGB = [20, 24, 26];
-const BLACK: RGB = [0, 0, 0];
+// The choices Site styles offers for unreadable text (src/shared/contrast.ts): white, the site's ink, black.
+const [WHITE, INK, BLACK] = READABLE_TEXT_COLORS.map((h) => parseHex(h)!) as [RGB, RGB, RGB];
 
 /**
  * The tokens that follow the brand color. Text on the brand takes whichever of white or ink reads better, and
