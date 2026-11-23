@@ -167,6 +167,15 @@ describe('site search index', () => {
     expect(buildSearchIndex(s).map((e) => e.route)).toContain('/portfolio/workshop-commission-1/');
   });
 
+  it('never lists a draft, which is not a page of the website', () => {
+    let s = withSearch();
+    s = project(s, 1);
+    s = apply(s, [{ type: 'page.update', pageId: 'pg_project1', draft: true }]);
+    expect(buildSearchIndex(s).map((e) => e.route)).not.toContain('/portfolio/workshop-commission-1/');
+    s = apply(s, [{ type: 'page.update', pageId: 'pg_project1', draft: false }]);
+    expect(buildSearchIndex(s).map((e) => e.route)).toContain('/portfolio/workshop-commission-1/');
+  });
+
   it('follows renamed and removed pages in the next generation, never listing an old address', async () => {
     let s = withSearch();
     for (const n of [1, 2, 3]) s = project(s, n);
