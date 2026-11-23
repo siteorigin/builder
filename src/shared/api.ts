@@ -90,6 +90,8 @@ export interface LocalWorkspaceState {
   rightTab?: string;
   /** Unsent AI messages, keyed by the conversation they were written in. */
   chatDrafts?: Record<string, string>;
+  /** The AI conversation that was open, shown again (with its draft) when the project reopens. */
+  chatConversation?: string;
 }
 
 export interface CreateProjectOptions {
@@ -242,7 +244,8 @@ export interface BuilderApi {
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;
     clearHistory(): Promise<Conversation>;
-    send(text: string, context: ChatContext): Promise<{ ok: boolean; runId?: string; message?: string }>;
+    /** `conversationId` is the conversation the message was written in; main refuses it if another one is open. */
+    send(text: string, context: ChatContext, conversationId?: string): Promise<{ ok: boolean; runId?: string; message?: string }>;
     stop(): Promise<void>;
     answer(runId: string, answer: string): Promise<void>;
     undoTurn(runId: string): Promise<{ ok: boolean; message?: string }>;

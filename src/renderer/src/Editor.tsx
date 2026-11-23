@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { Check, Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs } from './components/ui';
-import { api, applyOps, getState, setState, toast, useStore } from './store';
+import { api, applyOps, getState, saveLocal, setState, toast, useStore } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas } from './panels/Canvas';
 import { HealthModal, StatusBar } from './panels/StatusBar';
@@ -303,7 +303,7 @@ export function Editor() {
 
   useEffect(() => {
     const unsub = useStore.subscribe((s, prev) => {
-      if (s.leftTab !== prev.leftTab || s.rightTab !== prev.rightTab) void api.project.saveLocalState({ leftTab: s.leftTab ?? undefined, rightTab: s.rightTab });
+      if (s.leftTab !== prev.leftTab || s.rightTab !== prev.rightTab) saveLocal({ leftTab: s.leftTab ?? undefined, rightTab: s.rightTab });
     });
     return unsub;
   }, []);

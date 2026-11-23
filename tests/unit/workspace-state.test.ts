@@ -64,26 +64,30 @@ describe('workspace state per project', () => {
   it('a new project does not inherit the previous project’s unsent AI draft', async () => {
     const { c, parent } = setup();
     const a = await create(c, parent, 'Kloof Light Studio');
-    await c.saveLocalState({ chatDrafts: { c_kloof: 'Calm and understated' }, rightTab: 'chat' }, a);
+    c.saveLocalState({ chatDrafts: { c_kloof: 'Calm and understated' }, rightTab: 'chat' }, a);
     expect(c.snapshot()!.localState.chatDrafts).toEqual({ c_kloof: 'Calm and understated' });
 
     const b = await create(c, parent, '灯台');
     expect(b).not.toBe(a);
     expect(c.snapshot()!.localState).toEqual({});
     // The first save in the new project writes only that project's state.
-    await c.saveLocalState({ pageId: 'p_home' }, b);
+    c.saveLocalState({ pageId: 'p_home' }, b);
+    await c.flushLocalState();
     expect(onDisk(b)).toEqual({ pageId: 'p_home' });
+    expect(onDisk(a)).toEqual({ chatDrafts: { c_kloof: 'Calm and understated' }, rightTab: 'chat' });
   });
 
-  it('closing to the welcome screen and opening another project starts from that project’s own state', async () => {
+  it('writes a draft typed just before closing, and reopening restores each project’s own state', async () => {
     const { c, parent } = setup();
     const a = await create(c, parent, 'Alpha');
-    await c.saveLocalState({ chatDrafts: { c_alpha: 'Alpha draft' } }, a);
+    // No wait for the write: closing right after typing still keeps it.
+    c.saveLocalState({ chatDrafts: { c_alpha: 'Alpha draft' } }, a);
     const b = await create(c, parent, 'Beta');
-    await c.saveLocalState({ chatDrafts: { c_beta: 'Beta draft' } }, b);
+    c.saveLocalState({ chatDrafts: { c_beta: 'Beta draft' } }, b);
 
     await c.close();
     expect(c.snapshot()).toBeNull();
+    expect(onDisk(b).chatDrafts).toEqual({ c_beta: 'Beta draft' });
     expect(await c.open(a)).toEqual({ ok: true });
     expect(c.snapshot()!.localState.chatDrafts).toEqual({ c_alpha: 'Alpha draft' });
     expect(await c.open(b)).toEqual({ ok: true });
@@ -91,21 +95,28 @@ describe('workspace state per project', () => {
     expect(onDisk(a).chatDrafts).toEqual({ c_alpha: 'Alpha draft' });
   });
 
-  it('drops a save meant for a project that is no longer open', async () => {
+  it('drops a save meant for a project that is closing or no longer open', async () => {
     const { c, parent } = setup();
     const a = await create(c, parent, 'Alpha');
-    await c.saveLocalState({ chatDrafts: { c_alpha: 'Alpha draft' } }, a);
-    const b = await create(c, parent, 'Beta');
+    c.saveLocalState({ chatDrafts: { c_alpha: 'Alpha draft' } }, a);
 
-    // A debounced save from the previous project arrives after the switch.
-    await c.saveLocalState({ chatDrafts: { c_alpha: 'Typed just before switching' } }, a);
+    // A save that reaches the project after it started closing is not written, and not carried over.
+    const closing = c.close();
+    c.saveLocalState({ chatDrafts: { c_alpha: 'Typed while closing' } }, a);
+    await closing;
+    const b = await create(c, parent, 'Beta');
     expect(c.snapshot()!.localState).toEqual({});
+
+    // A late save from the previous project arrives after the switch.
+    c.saveLocalState({ chatDrafts: { c_alpha: 'Typed just before switching' } }, a);
+    expect(c.snapshot()!.localState).toEqual({});
+    await c.flushLocalState();
     expect(onDisk(b)).toEqual({});
     expect(onDisk(a).chatDrafts).toEqual({ c_alpha: 'Alpha draft' });
 
     // With no project open at all, a late save is dropped too, and never reaches the next project.
     await c.close();
-    await c.saveLocalState({ chatDrafts: { c_alpha: 'Typed while closing' } }, a);
+    c.saveLocalState({ chatDrafts: { c_alpha: 'Typed after closing' } }, a);
     expect(await c.open(b)).toEqual({ ok: true });
     expect(c.snapshot()!.localState).toEqual({});
     expect(await c.open(a)).toEqual({ ok: true });

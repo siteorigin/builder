@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import type { AiEvent, AppSettings, ChatMessage, Conversation, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, ChatMessage, Conversation, LocalWorkspaceState, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, ResponsiveScope } from '@shared/types';
+import { chatStatePatch, draftFor, withDraft, type ChatDrafts } from './lib/chatDrafts';
 
 export const api = window.builder;
 
@@ -59,7 +60,8 @@ interface State {
   conversation: Conversation | null;
   runStatus: RunStatus | null;
   activeRunId: string | null;
-  chatDraft: string;
+  /** Unsent messages per conversation of the open project (see lib/chatDrafts). */
+  chatDrafts: ChatDrafts;
   chatContextEnabled: { page: boolean; selection: boolean };
   setState: (p: Partial<State>) => void;
 }
@@ -94,13 +96,39 @@ export const useStore = create<State>((set) => ({
   conversation: null,
   runStatus: null,
   activeRunId: null,
-  chatDraft: '',
+  chatDrafts: {},
   chatContextEnabled: { page: true, selection: true },
   setState: (p) => set(p)
 }));
 
 export const getState = () => useStore.getState();
 export const setState = (p: Partial<State>) => useStore.setState(p);
+
+/** Save workspace state (open page, viewport, tabs) to the project that is open now. */
+export function saveLocal(state: LocalWorkspaceState) {
+  const dir = getState().snapshot?.dir;
+  if (dir) void api.project.saveLocalState(state, dir);
+}
+
+/** The unsent message of the open conversation. */
+export const selectChatDraft = (s: State) => draftFor(s.chatDrafts, s.conversation?.id);
+
+/** Set the unsent message of one conversation (an edit while no conversation is shown has nowhere to go). */
+export function setChatDraft(conversationId: string | null | undefined, text: string) {
+  if (!conversationId) return;
+  const drafts = getState().chatDrafts;
+  const next = withDraft(drafts, conversationId, text);
+  if (next !== drafts) setState({ chatDrafts: next });
+}
+
+/** Save drafts and the open conversation to the project they belong to, as they change. */
+export function persistChatState(s: State, prev: State) {
+  const out = chatStatePatch(
+    { dir: prev.snapshot?.dir ?? null, drafts: prev.chatDrafts, conversationId: prev.conversation?.id ?? null },
+    { dir: s.snapshot?.dir ?? null, drafts: s.chatDrafts, conversationId: s.conversation?.id ?? null }
+  );
+  if (out) void api.project.saveLocalState(out.patch, out.dir);
+}
 
 let toastId = 0;
 export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast['action']) {

@@ -240,7 +240,7 @@ function registerIpc() {
   handle('ai:openConversation', (id: string) => orchestrator.openConversation(id));
   // Chat history belongs to the app editing the project; a read-only view never clears it.
   handle('ai:clearHistory', async () => (readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory()));
-  handle('ai:send', (text: string, ctx) => (readOnlyReason() ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx)));
+  handle('ai:send', (text: string, ctx, conversationId?: string) => (readOnlyReason() ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined)));
   handle('ai:stop', () => orchestrator.stop());
   handle('ai:answer', (runId: string, answer: string) => orchestrator.answer(runId, answer));
   handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));

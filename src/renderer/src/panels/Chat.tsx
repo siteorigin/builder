@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom';
 import { ArrowUp, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, FileText, Globe, History, Info, KeyRound, MousePointerClick, Plus, RotateCcw, Settings2, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChatActivity, ChatContext, ChatMessage } from '@shared/api';
 import { refKey } from '@shared/types';
-import { api, getState, setState, toast, useStore, confirmDialog } from '../store';
+import { api, getState, setState, toast, useStore, confirmDialog, selectChatDraft, setChatDraft } from '../store';
+import { afterSend, draftFor, moveDraft, unsentDrafts, withDraft } from '../lib/chatDrafts';
 import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
 import { Segmented, Spinner, useMenu } from '../components/ui';
@@ -71,7 +72,8 @@ export function Chat() {
   const conversation = useStore((s) => s.conversation);
   const runStatus = useStore((s) => s.runStatus);
   const activeRunId = useStore((s) => s.activeRunId);
-  const draft = useStore((s) => s.chatDraft);
+  // Each conversation keeps its own unsent message.
+  const draft = useStore(selectChatDraft);
   const selection = useStore((s) => s.selection);
   const pageId = useStore((s) => s.pageId);
   const snap = useStore((s) => s.snapshot);
@@ -129,13 +131,8 @@ export function Chat() {
     if (el && nearBottom.current) el.scrollTop = el.scrollHeight;
   }, [conversation]);
 
-  // A restored draft (after a restart or a retry) gets its full height back.
-  useLayoutEffect(() => sizeToFit(taRef.current), [configured, rightTab]);
-
-  useEffect(() => {
-    const t = setTimeout(() => void api.project.saveLocalState({ chatDraft: draft }), 400);
-    return () => clearTimeout(t);
-  }, [draft]);
+  // A restored draft (after a restart, a retry, or returning to its conversation) gets its full height back.
+  useLayoutEffect(() => sizeToFit(taRef.current), [configured, rightTab, conversation?.id]);
 
   // One polite status message per phase change, kept outside the (sometimes hidden) dock panel so it is
   // announced wherever focus is. Streamed text is never read out piece by piece. The outcome is announced
@@ -150,7 +147,7 @@ export function Chat() {
           announcedRun.current = key;
           setAnnounce(`The AI needs your answer to continue: ${working?.question?.text ?? ''}`);
           // If you were waiting in an empty composer, go straight to the question; never take focus from elsewhere.
-          if (document.activeElement === taRef.current && !getState().chatDraft.trim()) requestAnimationFrame(showQuestion);
+          if (document.activeElement === taRef.current && !selectChatDraft(getState()).trim()) requestAnimationFrame(showQuestion);
         }
       } else if (runStatus === 'preparing' && announcedRun.current !== `${activeRunId}:start`) {
         announcedRun.current = `${activeRunId}:start`;
@@ -192,8 +189,11 @@ export function Chat() {
   const focusComposer = () => requestAnimationFrame(() => taRef.current?.focus());
 
   const send = async (text = draft) => {
-    if (!text.trim() || running || sending) return;
+    if (!text.trim() || running || sending || !conversation) return;
     if (!configured) return openSettings();
+    // The message belongs to the conversation (and project) it was written in.
+    const conversationId = conversation.id;
+    const dir = snap.dir;
     // Freeze the exact context at send time.
     const ctx: ChatContext = {
       pageId: ctxOn.page && page ? page.id : st.site.homePageId,
@@ -206,19 +206,34 @@ export function Chat() {
     taRef.current?.focus();
     setSending(true);
     nearBottom.current = true;
-    const r = await api.ai.send(text.trim(), ctx);
+    const r = await api.ai.send(text.trim(), ctx, conversationId);
     setSending(false);
-    if (!r.ok) toast(r.message ?? 'Could not start the request.', 'error');
+    if (!r.ok) return toast(r.message ?? 'Could not start the request.', 'error');
     // Clear what was sent, but never text typed while the request was starting.
-    else if (getState().chatDraft === text) {
-      setState({ chatDraft: '' });
-      if (taRef.current) taRef.current.style.height = '';
-    }
+    const s = getState();
+    if (s.snapshot?.dir !== dir) return;
+    const drafts = afterSend(s.chatDrafts, conversationId, text);
+    if (drafts === s.chatDrafts) return;
+    setState({ chatDrafts: drafts });
+    if (taRef.current && s.conversation?.id === conversationId) taRef.current.style.height = '';
   };
+
+  // Switching conversations shows that conversation's own draft; a failed switch stays where it was.
+  const show = (pending: Promise<NonNullable<typeof conversation>>, drafts?: (c: NonNullable<typeof conversation>) => Record<string, string>) =>
+    void pending.then(
+      (c) => {
+        if (getState().snapshot?.dir !== snap.dir) return;
+        setState({ conversation: c, ...(drafts ? { chatDrafts: drafts(c) } : {}) });
+        focusComposer();
+      },
+      (e: Error) => toast(e.message || 'Could not open that conversation.', 'error')
+    );
 
   const openHistory = async (el: HTMLElement) => {
     const { list } = await api.ai.conversations();
-    if (!list.length) return toast('No earlier conversations yet.', 'info');
+    // A new conversation left before anything was sent is not saved, so its draft is offered here instead.
+    const unsent = unsentDrafts(getState().chatDrafts, list.map((c) => c.id), getState().conversation?.id);
+    if (!list.length && !unsent.length) return toast('No earlier conversations yet.', 'info');
     const day = (iso: string) => {
       const d = new Date(iso);
       const days = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(d).setHours(0, 0, 0, 0)) / 86400000);
@@ -227,10 +242,16 @@ export function Chat() {
     menu.openAt(
       el,
       [
-        { heading: 'Recent conversations' },
-        ...list.map((c) => ({ label: c.title, hint: day(c.createdAt), checked: c.id === conversation?.id, onSelect: () => void api.ai.openConversation(c.id).then((conv) => setState({ conversation: conv })) })),
+        ...(unsent.length
+          ? [
+              { heading: 'Not sent yet' },
+              ...unsent.map((d) => ({ label: d.text.trim().split('\n')[0].slice(0, 60), hint: 'Draft', onSelect: () => show(api.ai.newConversation(), (c) => moveDraft(getState().chatDrafts, d.id, c.id)) }))
+            ]
+          : []),
+        ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: day(c.createdAt), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
         { separator: true },
-        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'All AI conversations in this project, including this one, will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && void api.ai.clearHistory().then((conv) => setState({ conversation: conv }))) }
+        // Unsent drafts belong to the conversations being removed, so they go with them.
+        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'All AI conversations in this project, including this one, will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && show(api.ai.clearHistory(), () => ({}))) }
       ],
       'Conversations'
     );
@@ -244,10 +265,10 @@ export function Chat() {
           <span className="chat-title" title={title}>
             {title}
           </span>
-          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" aria-haspopup="menu" aria-expanded={menu.isOpen} onClick={(e) => void openHistory(e.currentTarget)} disabled={running}>
+          <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" aria-haspopup="menu" aria-expanded={menu.isOpen} onClick={(e) => void openHistory(e.currentTarget)} disabled={running || sending}>
             <History />
           </button>
-          <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={running || msgs.length === 0 || !configured} onClick={() => void api.ai.newConversation().then((c) => (setState({ conversation: c }), focusComposer()))}>
+          <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={running || sending || msgs.length === 0 || !configured} onClick={() => show(api.ai.newConversation())}>
             <Plus />
           </button>
         </div>
@@ -278,6 +299,7 @@ export function Chat() {
               </button>
             ) : (
               // Starters prefill an empty composer; once you have written something they step aside rather than replace it.
+              conversation &&
               !draft.trim() && (
                 <div className="suggestions" role="group" aria-label="Suggestions">
                   {suggestions.map((s) => (
@@ -285,7 +307,7 @@ export function Chat() {
                       key={s}
                       className="suggestion"
                       onClick={() => {
-                        setState({ chatDraft: s });
+                        setChatDraft(conversation.id, s);
                         requestAnimationFrame(() => {
                           sizeToFit(taRef.current);
                           taRef.current?.focus();
@@ -387,8 +409,10 @@ export function Chat() {
             placeholder={waiting ? 'Answer the question above to continue…' : running ? 'Draft your next message…' : selLabel && ctxOn.selection ? `Ask about the ${sel}…` : 'Describe a change…'}
             aria-label="Message"
             rows={1}
+            // Until the project's conversation has loaded, there is no thread to write in.
+            readOnly={!conversation}
             onChange={(e) => {
-              setState({ chatDraft: e.target.value });
+              setChatDraft(conversation?.id, e.target.value);
               sizeToFit(e.target);
             }}
             onKeyDown={(e) => {
@@ -568,15 +592,17 @@ function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
   const [showPasses, setShowPasses] = useState(false);
   const retry = async () => {
     const conv = getState().conversation;
-    const typed = getState().chatDraft.trim();
-    const original = conv?.messages[(conv?.messages.findIndex((x) => x.id === m.id) ?? 0) - 1]?.text;
+    if (!conv) return;
+    const typed = draftFor(getState().chatDrafts, conv.id).trim();
+    const original = conv.messages[conv.messages.findIndex((x) => x.id === m.id) - 1]?.text;
     // Never discard something the user is writing without asking.
     if (typed && typed !== original?.trim()) {
       const ok = await confirmDialog({ title: 'Replace your draft?', body: 'The message you are writing will be replaced by the original request, so you can edit it and try again.', confirmLabel: 'Replace draft' });
-      if (ok !== true) return;
+      // The request goes back into the conversation it came from, and only while that one is still open.
+      if (ok !== true || getState().conversation?.id !== conv.id) return;
     }
-    const i = conv?.messages.findIndex((x) => x.id === m.id) ?? -1;
-    const user = conv?.messages[i - 1];
+    const i = conv.messages.findIndex((x) => x.id === m.id);
+    const user = conv.messages[i - 1];
     if (user) {
       // Retry with the original target: same page and same selection, not whatever is selected now.
       // Both are checked against the project as it is now; a target that has since been deleted is
@@ -592,7 +618,7 @@ function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
         }
       })();
       setState({
-        chatDraft: user.text,
+        chatDrafts: withDraft(getState().chatDrafts, conv.id, user.text),
         ...(pageOk ? { pageId: ctx!.pageId } : {}),
         selection: selOk ? ctx!.selection : null,
         chatContextEnabled: { page: true, selection: selOk }
