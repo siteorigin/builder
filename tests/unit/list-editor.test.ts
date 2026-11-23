@@ -8,24 +8,27 @@ describe('list capacity', () => {
     expect(countText(4)).toBe('4');
     expect(countLabel(4, 'Contact method', 8)).toBe('4 of 8 items');
     expect(countLabel(1, 'Card')).toBe('1 card');
+    expect(countLabel(1, 'Card', 1)).toBe('1 of 1 card');
     expect(countLabel(3, 'Card')).toBe('3 items');
   });
 
   it('explains Add only once the maximum is reached', () => {
     expect(addLimitNote(7, 'Contact method', 8)).toBeNull();
+    expect(addLimitNote(9, 'Contact method', 8)).not.toBeNull();
     expect(addLimitNote(8, 'Contact method', 8)).toContain('at most 8 items');
     expect(addLimitNote(200, 'Card')).toBeNull();
   });
 
   it('explains Remove only once the minimum is reached', () => {
     expect(removeLimitNote(2, 'Card', 1)).toBeNull();
+    expect(removeLimitNote(0, 'Card', 1)).not.toBeNull();
     expect(removeLimitNote(1, 'Card', 1)).toContain('at least 1 card');
     expect(removeLimitNote(0, 'Card')).toBeNull();
   });
 
   it('gives one reason for a fixed-size list', () => {
     expect(addLimitNote(2, 'Card', 2, 2)).toBe(removeLimitNote(2, 'Card', 2, 2));
-    expect(addLimitNote(2, 'Card', 2, 2)).toContain('fixed at 2 items');
+    expect(addLimitNote(2, 'Card', 2, 2)).toBe("This list is fixed at 2 items, so items can't be added or removed.");
     expect(addLimitNote(1, 'Card', 3, 1)).toBeNull();
   });
 
@@ -42,6 +45,8 @@ describe('focus after a move', () => {
   it('stays on the button while it still works', () => {
     expect(moveFocusTarget('up', 2, 5)).toBe('up');
     expect(moveFocusTarget('down', 2, 5)).toBe('down');
+    expect(moveFocusTarget('up', 1, 5)).toBe('up');
+    expect(moveFocusTarget('down', 3, 5)).toBe('down');
   });
   it('goes to the disclosure at either boundary, in either direction', () => {
     expect(moveFocusTarget('up', 0, 5)).toBe('head');
@@ -51,5 +56,6 @@ describe('focus after a move', () => {
   });
   it('announces the new position', () => {
     expect(moveAnnouncement('Materials & colour', 0, 4)).toBe('Materials & colour moved to position 1 of 4');
+    expect(moveAnnouncement('Planning', 2, 4)).toBe('Planning moved to position 3 of 4');
   });
 });

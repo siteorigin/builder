@@ -271,7 +271,7 @@ await win.screenshot({ path: join(OUT, '13-styles.png') });
 await win.locator('.dock-tab', { hasText: 'AI' }).click();
 await win.locator('.chat-empty').waitFor(); // No provider is connected in this run.
 await win.screenshot({ path: join(OUT, '14-chat.png') });
-await win.locator('.rail [aria-label="Layers"]').click();
+if (!(await win.locator('[role="tree"]').first().isVisible())) await win.locator('.rail [aria-label="Layers"]').click();
 await win.waitForTimeout(300);
 await win.screenshot({ path: join(OUT, '15-layers.png') });
 
