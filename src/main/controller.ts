@@ -14,11 +14,12 @@ import { basePath, generateManagedComponent, generatePage, defFile, liveRedirect
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
 import { StaticPreviews } from './static-preview';
-import { copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, sectionLinkWarnings, uniqueChild } from './export';
+import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
 import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
+import { photoMetadata } from './project/photo-metadata';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies } from './runtime/manager';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { canonicalDir } from '../runtime/policy';
@@ -781,6 +782,14 @@ export class Controller {
     return this.session.undoEntry(entryId);
   }
 
+  /** What private metadata an image asset's original carries. Only a library file inside the project is read. */
+  async photoMetadata(assetId: string): Promise<{ location: boolean; device: boolean } | null> {
+    const s = this.session;
+    const a = s?.state.assets.assets[assetId];
+    const buf = s && a ? await readLibraryImage(s.dir, a) : null;
+    return buf ? photoMetadata(buf) : null;
+  }
+
   /** Import files. `only` limits a picker that can only use one kind, before anything is written to the project. */
   async importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }> {
     const s = this.session;
@@ -946,6 +955,8 @@ export class Controller {
       const snap = await this.snapshotSource(s, folder);
       if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
       warnings.push(...sectionLinkWarnings(snap.state));
+      const kept = locationKeptNote(await locatedPhotos(folder, snap.state));
+      if (kept) warnings.push(kept);
       const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
@@ -1011,7 +1022,12 @@ export class Controller {
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
     const { revision, state } = snap;
     // The snapshot keeps the whole library, as the editable project does; visitors get only the files the site uses.
+    // Credits are read first: a page can use a responsive copy whose original is pruned.
+    const credits = await variantCredits(project, state);
     const omitted = await pruneWebsiteAssets(project, state);
+    // What visitors download carries no location or device metadata; the project's own photos keep theirs.
+    const photos = await cleanWebsitePhotos(project, state, credits);
+    if (photos.failed.length) return { ok: false, message: uncleanablePhotosMessage(photos.failed), warnings: [] };
     // The build gets its own copy of the tools: what they write must not land in the project, which may have been
     // taken over by the time the build starts.
     try {
@@ -1040,12 +1056,17 @@ export class Controller {
     for (const f of await listFiles(out)) {
       if (/\.js$/.test(f) && /siteorigin-bridge|data-so-ctx/.test(await fs.readFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings };
     }
+    // Images the build brought in from somewhere other than the cleaned sources (a package, generated code).
+    const unchecked = await cleanBuiltSite(out);
+    if (unchecked.length) return { ok: false, message: builtPhotosMessage(unchecked), warnings };
     if (!state.site.baseUrl) warnings.push('No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.');
     const placeholders = placeholderImageCount(state);
     if (placeholders) warnings.push(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
     for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a)) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
     const left = omittedAssetsWarning(omitted);
     if (left) warnings.push(left);
+    const located = locationRemovedNote(photos.located);
+    if (located) warnings.push(located);
     const pages = state.site.pageOrder.length;
     const problem = await this.publish(s, out, dest, format);
     if (problem) return { ok: false, message: problem, warnings };

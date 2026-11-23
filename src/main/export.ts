@@ -8,7 +8,9 @@ import { basename, join, relative, sep } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
-import { readIfExists, sha } from './project/fsutil';
+import { brotliCompressSync, gzipSync } from 'node:zlib';
+import { atomicWrite, readIfExists, sha } from './project/fsutil';
+import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 
 const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'build', '.git', '.DS_Store']);
 
@@ -129,6 +131,219 @@ export function omittedAssetsWarning(omitted: AssetRecord[]): string | undefined
   return names.length === 1
     ? `Left out of the website because no page or code refers to it: ${names[0]}. It stays in the project's assets.`
     : `Left out of the website because no page or code refers to them: ${names.join(', ')}. They stay in the project's assets.`;
+}
+
+// ---------------------------------------------------------------------------
+// Private photo metadata
+// ---------------------------------------------------------------------------
+
+/** File names that promise a raster image, whatever their bytes turn out to be. */
+const RASTER_NAME = /\.(jpe?g|jfif|png|apng|webp|gif|avif|heic|heif|tiff?)$/i;
+
+/** Raster images under `dirs` of `root`, found by name or by their first bytes, as root-relative paths. */
+async function rasterFiles(root: string, dirs: string[]): Promise<Array<{ rel: string; named: boolean }>> {
+  const out: Array<{ rel: string; named: boolean }> = [];
+  for (const dir of dirs) {
+    for (const f of await listFiles(join(root, dir))) {
+      const rel = (dir ? `${dir}/` : '') + f.split(sep).join('/');
+      if (RASTER_NAME.test(rel)) {
+        out.push({ rel, named: true });
+        continue;
+      }
+      // A file that cannot even be opened is listed, so that reading it fails by name rather than here.
+      const handle = await fs.open(join(root, rel), 'r').catch(() => null);
+      if (!handle) {
+        out.push({ rel, named: false });
+        continue;
+      }
+      try {
+        const head = Buffer.alloc(64);
+        const { bytesRead } = await handle.read(head, 0, 64, 0);
+        if (sniffImageType(head.subarray(0, bytesRead))) out.push({ rel, named: false });
+      } catch {
+        out.push({ rel, named: false });
+      } finally {
+        await handle.close();
+      }
+    }
+  }
+  return out;
+}
+
+/** Library assets by every project file they own: the original and each responsive copy. */
+function assetsByFile(state: ProjectState): Map<string, AssetRecord> {
+  const out = new Map<string, AssetRecord>();
+  for (const a of Object.values(state.assets.assets)) {
+    out.set(a.file, a);
+    for (const v of a.variants ?? []) out.set(v.file, a);
+  }
+  return out;
+}
+
+/** The largest library file read for its metadata: well past the importer's 25 MB limit. */
+const MAX_LIBRARY_FILE = 64 * 1024 * 1024;
+const LIBRARY_FILE = /^static\/assets\/[^/\\]+$/;
+
+/**
+ * A library image's bytes, or null. The path comes from the project's documents, which can be edited by hand, so
+ * only a regular file directly in static/assets/ is read: no other folder, no link, nothing implausibly large.
+ */
+export async function readLibraryImage(root: string, a: AssetRecord): Promise<Buffer | null> {
+  if (a.kind !== 'image' || !LIBRARY_FILE.test(a.file) || a.file.includes('..')) return null;
+  const path = join(root, a.file);
+  try {
+    const st = await fs.lstat(path);
+    if (!st.isFile() || st.size > MAX_LIBRARY_FILE) return null;
+    return await fs.readFile(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The credits of each library photo, keyed by the project path of each of its responsive copies. Read from the
+ * staged originals before pruneWebsiteAssets runs, because a page can use a copy without its original.
+ */
+export async function variantCredits(project: string, state: ProjectState): Promise<Map<string, PhotoCredits>> {
+  const out = new Map<string, PhotoCredits>();
+  for (const a of Object.values(state.assets.assets)) {
+    if (a.kind !== 'image' || !a.variants?.length) continue;
+    const buf = await readLibraryImage(project, a);
+    const r = buf && cleanPhoto(buf);
+    if (r && hasCredits(r.credits)) for (const v of a.variants) out.set(v.file, r.credits);
+  }
+  return out;
+}
+
+export interface PhotoCleanup {
+  /** Names of the photos whose recorded location was left out, one per asset. */
+  located: string[];
+  /** Files that could not be cleaned: asset names, or project paths for files outside the library. */
+  failed: string[];
+}
+
+/**
+ * Rewrite every raster image a visitor could download from a staged website copy without its location, device
+ * and other private metadata: static/ files are published as they are, and images under src/ are emitted or
+ * inlined by the build. Responsive copies get their original's credits. The project's own files are never
+ * touched; this runs on the staging copy only.
+ */
+export async function cleanWebsitePhotos(project: string, state: ProjectState, credits: Map<string, PhotoCredits>): Promise<PhotoCleanup> {
+  const owners = assetsByFile(state);
+  const located = new Set<string>();
+  const failed = new Set<string>();
+  for (const { rel } of await rasterFiles(project, ['static', 'src'])) {
+    const path = join(project, rel);
+    const buf = await fs.readFile(path).catch(() => null);
+    const owner = owners.get(rel);
+    const r = buf && cleanPhoto(buf);
+    if (!r) {
+      failed.add(owner?.name ?? rel);
+      continue;
+    }
+    if (r.location) located.add(owner?.name ?? rel);
+    const inherited = credits.get(rel);
+    const data = inherited ? addCredits(r.data, inherited) : r.data;
+    // A new file renamed into place: a hard link back into the project is replaced, never written through.
+    if (data !== buf) await atomicWrite(path, data);
+  }
+  return { located: [...located].sort(), failed: [...failed].sort() };
+}
+
+/** Built files that can carry an image inline, as a data: URL. */
+const INLINE_HOST = /\.(html?|css|[cm]?js|json|svg|xml|webmanifest)$/i;
+/**
+ * A raster data: URL, with its colon and slash also accepted as HTML character references. It ends at the first
+ * character a URL cannot hold, so base64 broken over lines reads as a damaged image and stops the export.
+ */
+const INLINE_IMAGE = /data(?::|&#0*58;|&#x0*3a;|&colon;)image(?:\/|&#0*47;|&#x0*2f;|&sol;)(jpeg|jpg|png|webp|gif|avif|heic|heif|tiff?)([^,"'()\s]*),([A-Za-z0-9+/=%._~!$&*:;@-]+)/gi;
+
+/** Rewrite a built file, and any precompressed copy beside it, so no copy keeps the old bytes. */
+async function rewriteBuilt(path: string, bytes: Buffer) {
+  await atomicWrite(path, bytes);
+  for (const [ext, zip] of [['.br', brotliCompressSync], ['.gz', gzipSync]] as const) if (existsSync(path + ext)) await atomicWrite(path + ext, zip(bytes));
+}
+
+/** The bytes of a data: URL's payload: percent-decoded, then base64-decoded when it says so. */
+function inlineBytes(params: string, payload: string): Buffer {
+  const raw = Buffer.from(payload.replace(/%([0-9a-f]{2})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16))), 'latin1');
+  return /;base64$/i.test(params) ? Buffer.from(raw.toString('latin1'), 'base64') : raw;
+}
+
+/**
+ * The last pass over a finished build, before anything is published. Every raster file is cleaned again in
+ * place: those that came from the cleaned sources are left exactly as they are, and any the build brought in
+ * from elsewhere (a package, generated code) is cleaned now. Images inlined as data: URLs in HTML, CSS and
+ * scripts are cleaned the same way and written back as base64. Returns the paths holding an image that could
+ * not be read or cleaned; the export must stop if there are any.
+ */
+export async function cleanBuiltSite(dir: string): Promise<string[]> {
+  const failed: string[] = [];
+  for (const { rel } of await rasterFiles(dir, [''])) {
+    const buf = await fs.readFile(join(dir, rel)).catch(() => null);
+    const r = buf && cleanPhoto(buf);
+    if (!r) failed.push(rel);
+    // Renamed into place, so a file the build linked from elsewhere is replaced rather than written through.
+    else if (r.changed) await rewriteBuilt(join(dir, rel), r.data);
+  }
+  for (const rel of (await listFiles(dir)).map((f) => f.split(sep).join('/'))) {
+    if (!INLINE_HOST.test(rel)) continue;
+    const text = await fs.readFile(join(dir, rel), 'latin1').catch(() => null);
+    if (text === null) {
+      failed.push(rel);
+      continue;
+    }
+    if (!/data(?::|&#0*58;|&#x0*3a;|&colon;)image/i.test(text)) continue;
+    let bad = false;
+    const cleaned = text.replace(INLINE_IMAGE, (match, type: string, params: string, payload: string) => {
+      const r = cleanPhoto(inlineBytes(params, payload));
+      if (!r) {
+        bad = true;
+        return match;
+      }
+      return r.changed ? `data:image/${type.toLowerCase()};base64,${r.data.toString('base64')}` : match;
+    });
+    if (bad) failed.push(rel);
+    else if (cleaned !== text) await rewriteBuilt(join(dir, rel), Buffer.from(cleaned, 'latin1'));
+  }
+  return failed;
+}
+
+/** Names of the library photos in a project copy that record where they were taken. */
+export async function locatedPhotos(project: string, state: ProjectState): Promise<string[]> {
+  const out: string[] = [];
+  for (const a of Object.values(state.assets.assets)) {
+    if (a.kind !== 'image') continue;
+    const buf = await readLibraryImage(project, a);
+    if (buf && photoMetadata(buf)?.location) out.push(a.name);
+  }
+  return out.sort();
+}
+
+const listNames = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]);
+
+/** Why a website export stopped: built files with photo metadata that could not be taken out. */
+export function builtPhotosMessage(failed: string[]): string {
+  return `${listNames(failed)} in the built website couldn’t be checked for photo location and camera details, so the website was not exported.`;
+}
+
+/** Why a website export stopped: images whose metadata could not be taken out. */
+export function uncleanablePhotosMessage(failed: string[]): string {
+  return `Photo location and camera details couldn’t be removed from ${listNames(failed)}, so the website was not exported. Replace ${failed.length === 1 ? 'it' : 'them'} with a JPEG, PNG or WebP copy and export again.`;
+}
+
+/** The export note naming photos whose location was left out of the website, if any. */
+export function locationRemovedNote(located: string[]): string | undefined {
+  if (!located.length) return undefined;
+  return located.length === 1
+    ? `The website leaves out where ${located[0]} was taken. The original in your project keeps its location.`
+    : `The website leaves out where these photos were taken: ${listNames(located)}. The originals in your project keep their locations.`;
+}
+
+/** The source-export note naming photos that still record a location, if any. */
+export function locationKeptNote(located: string[]): string | undefined {
+  if (!located.length) return undefined;
+  return `${listNames(located)} still ${located.length === 1 ? 'records' : 'record'} where ${located.length === 1 ? 'it was' : 'they were'} taken. The editable project keeps photos exactly as imported; export Website files to leave locations out.`;
 }
 
 /**

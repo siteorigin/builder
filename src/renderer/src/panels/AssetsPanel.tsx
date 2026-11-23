@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, Component, FileText, Globe, ImageIcon, ImagePlus, Info, PanelTop, Replace, Search, Trash2, Upload } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Component, FileText, Globe, ImageIcon, ImagePlus, Info, MapPin, PanelTop, Replace, Search, Trash2, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
@@ -206,6 +206,28 @@ function gridKeys(e: React.KeyboardEvent<HTMLElement>) {
   tiles[Math.max(0, Math.min(tiles.length - 1, to))].focus();
 }
 
+/**
+ * Whether the photo shown records where it was taken, asked for each time a photo is shown or its file changes.
+ * An answer that arrives after another photo is shown is dropped.
+ */
+function useRecordsLocation(a: AssetRecord | null): boolean {
+  const [answer, setAnswer] = useState<{ key: string; location: boolean } | null>(null);
+  const id = a?.kind === 'image' ? a.id : null;
+  const key = id && `${id}:${a!.file}`;
+  useEffect(() => {
+    if (!id || !key) return;
+    let live = true;
+    api.project
+      .photoMetadata(id)
+      .then((r) => live && setAnswer({ key, location: !!r?.location }))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [id, key]);
+  return !!key && answer?.key === key && answer.location;
+}
+
 /** `narrow`: the sidebar is drawn under 240px wide, so the header drops the image count. */
 export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const snap = useStore((s) => s.snapshot);
@@ -227,6 +249,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const assets = useMemo(() => Object.values(assetsDoc ?? {}).filter((a) => a?.kind === 'image').sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [assetsDoc]);
   const fonts = useMemo(() => Object.values(assetsDoc ?? {}).filter(isValidFontAsset).sort((a, b) => fontLabel(a).localeCompare(fontLabel(b))), [assetsDoc]);
   const sel = selected && assetsDoc ? (assetsDoc[selected] ?? null) : null;
+  const recordsLocation = useRecordsLocation(sel);
   const places = useMemo(() => (snap && sel ? placesOf(snap.state, sel.id) : []), [snap, sel]);
   useEffect(() => {
     setNameError(null);
@@ -554,6 +577,14 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               {sel.variants?.length
                 ? `Pages load smaller copies, but the ${formatBytes(sel.bytes)} original is still part of the site. A copy under 1.5 MB keeps it light.`
                 : `At ${formatBytes(sel.bytes)} it will slow pages down. Export a copy under 1.5 MB and use it with Replace everywhere.`}
+            </span>
+          </p>
+        )}
+        {recordsLocation && (
+          <p className="asset-note" data-testid="asset-location-note">
+            <MapPin aria-hidden="true" />
+            <span>
+              <b>Records where it was taken.</b> Exported website files leave the location out, along with any camera details. This original keeps them, and so does an editable project export.
             </span>
           </p>
         )}
