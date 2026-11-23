@@ -115,15 +115,17 @@ export function FocusEditor({
   storedRef.current = stored;
   const revisionRef = useRef(revision);
   revisionRef.current = revision;
-  const newCommits = () => new FocusCommits(() => ({ point: storedRef.current, revision: revisionRef.current }));
+  const newCommits = (t: string) => new FocusCommits(() => (targetRef.current === t ? { point: storedRef.current, revision: revisionRef.current } : null));
   const commits = useRef<FocusCommits | null>(null);
-  commits.current ??= newCommits();
   const target = `${scope}|${src ?? ''}|${label}`;
+  const targetRef = useRef(target);
+  targetRef.current = target;
+  commits.current ??= newCommits(target);
   // Another size, picture or element ends a drag in progress without committing it, and starts afresh.
   useEffect(() => {
     end();
     setPending(null);
-    commits.current = newCommits();
+    commits.current = newCommits(target);
   }, [target]);
   useEffect(() => stopEscape, []);
   useEffect(() => {

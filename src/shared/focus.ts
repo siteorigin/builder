@@ -160,33 +160,38 @@ export interface FocusState {
  */
 export class FocusCommits {
   private queue: Promise<void> = Promise.resolve();
+  private waiting = 0;
   private accepted: { text: string; until: number } | null = null;
 
-  constructor(private readonly read: () => FocusState) {}
+  constructor(private readonly read: () => FocusState | null) {}
 
-  /** The point a new change builds on, and the revision the project is at once it holds that point. */
-  base(): FocusState {
+  /** The point a new change builds on and the revision that is at; null once the editor has moved on (send nothing). */
+  base(): FocusState | null {
     const now = this.read();
     const a = this.accepted;
-    if (a && now.revision < a.until) return { point: parseFocus(a.text) ?? now.point, revision: a.until };
+    if (now && a && now.revision < a.until) return { point: parseFocus(a.text) ?? now.point, revision: a.until };
     return now;
   }
 
   /**
    * Queue a change: `make` builds the value from the point it builds on; `apply` sends it and resolves to the
    * project's answer (an object with the `revision` the change made, or null when refused). Resolves to what was
-   * sent and the revision it made (undefined when refused).
+   * sent and the revision it made (undefined when refused). Sent at once when nothing is on its way, so the save
+   * keeps the context it was made in (a typed edit's check against an AI run).
    */
   send(make: (base: FocalPoint) => string, apply: (text: string, expectedRevision?: number) => unknown, guard?: 'base' | number): Promise<{ text: string; made?: number }> {
-    const run = this.queue.then(async () => {
+    const go = async () => {
       const b = this.base();
+      if (!b) return { text: '', made: undefined };
       const text = make(b.point);
       const result = await Promise.resolve(apply(text, guard === 'base' ? b.revision : guard)).catch(() => null);
       const made = result && typeof result === 'object' && typeof (result as { revision?: unknown }).revision === 'number' ? (result as { revision: number }).revision : undefined;
       if (made !== undefined) this.accepted = { text, until: made };
       return { text, made };
-    });
-    this.queue = run.then(() => undefined);
+    };
+    const run = this.waiting === 0 ? go() : this.queue.then(go);
+    this.waiting++;
+    this.queue = run.then(() => void this.waiting--);
     return run;
   }
 }

@@ -207,13 +207,36 @@ describe('sending focal point changes one after another', () => {
     expect(sent.slice(2)).toEqual([['10% 10%', 5], ['50% 50%', undefined]]);
   });
 
+  it('sends at once when nothing is on its way, so a typed edit keeps the context it was made in', () => {
+    const commits = new FocusCommits(() => ({ point: { x: 50, y: 50 }, revision: 2 }));
+    const sent: string[] = [];
+    void commits.send((b) => formatFocus({ ...b, x: 10 }), (text) => (sent.push(text), new Promise(() => undefined)), 'base');
+    expect(sent).toEqual(['10% 50%']);
+    // The next waits for that one's answer.
+    void commits.send(() => '20% 20%', (text) => sent.push(text));
+    expect(sent).toEqual(['10% 50%']);
+  });
+
+  it('sends nothing still queued once the editor has moved on to another element or size', async () => {
+    let here = true;
+    const commits = new FocusCommits(() => (here ? { point: { x: 50, y: 50 }, revision: 1 } : null));
+    const sent: string[] = [];
+    let answer!: (r: unknown) => void;
+    void commits.send(() => '10% 10%', (text) => (sent.push(text), new Promise((r) => (answer = r))));
+    const queued = commits.send((b) => formatFocus({ ...b, y: 90 }), (text) => sent.push(text), 'base');
+    here = false;
+    answer({ revision: 2 });
+    expect(await queued).toEqual({ text: '', made: undefined });
+    expect(sent).toEqual(['10% 10%']);
+  });
+
   it('treats a failed send as refused, and carries on with the next', async () => {
     const project: FocusState = { point: { x: 50, y: 50 }, revision: 1 };
     const commits = new FocusCommits(() => project);
     expect(await commits.send(() => '1% 1%', () => Promise.reject(new Error('closed')))).toEqual({ text: '1% 1%', made: undefined });
     expect(commits.base()).toEqual(project);
     expect(await commits.send(() => '30% 30%', () => ({ revision: 2 }))).toEqual({ text: '30% 30%', made: 2 });
-    expect(commits.base().point).toEqual({ x: 30, y: 30 });
+    expect(commits.base()?.point).toEqual({ x: 30, y: 30 });
   });
 });
 
