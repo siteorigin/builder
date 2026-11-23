@@ -152,7 +152,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
       if (inTheme || n.kind !== 'instance' || def?.componentId !== 'contact.form' || def.kind !== 'code') continue;
       const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
-      const problem = owner.kind !== 'component' ? formConnectionProblem(def, n.props) : undefined;
+      // A binding outside a component has nothing to bind to and is exported empty, so the default decides.
+      const problem = owner.kind !== 'component' ? formConnectionProblem(def, Object.fromEntries(Object.entries(n.props).filter(([, v]) => !isBinding(v)))) : undefined;
       if (problem) out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. ${problem}`, owner, nodeId: n.id });
       // A list bound from outside is only known where it is placed.
       if (namesFormFields(def) && !isBinding(props.fields)) {

@@ -436,17 +436,23 @@ const SERVICE_SETTINGS = Object.values(FORM_SERVICES).map((s) => s.prop);
 
 /**
  * Whether a definition reads its form service settings the way the theme's contact form does: any version of it, or
- * a project copy whose code still does. Code that reads them some other way keeps the ordinary inspector.
+ * a project copy of it whose code still does. Code that reads them some other way keeps the ordinary inspector.
  */
 function readsFormServices(def: ComponentDefinition | undefined): def is ComponentDefinition {
   if (!def || def.kind !== 'code' || def.properties.provider?.type !== 'enum') return false;
+  // A copy made unique takes a project component ID; its provenance still names the form it came from.
+  if (def.componentId !== 'contact.form' && def.provenance?.componentId !== 'contact.form') return false;
   if (SERVICE_SETTINGS.some((p) => def.properties[p]?.type !== 'string')) return false;
   return !!def.source?.includes(SERVICE_SOURCE) && def.source.includes(CONNECTED_SOURCE);
 }
 
-/** The value a placed form is exported with: its own, else the schema default (a stored null included). */
+/**
+ * The value a placed form is exported with: its own, else the schema default (a stored null included). A value the
+ * schema does not declare is not exported at all.
+ */
 function exported(def: ComponentDefinition, props: Record<string, unknown>, key: string): unknown {
-  return props[key] ?? def.properties[key]?.default;
+  const schema = Object.hasOwn(def.properties, key) ? def.properties[key] : undefined;
+  return schema ? (props[key] ?? schema.default) : undefined;
 }
 
 /**
