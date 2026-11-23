@@ -10,7 +10,7 @@ import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { assetUsages, sourceHash } from '@engine/apply';
 import { generateManagedComponent, generatePage, defFile } from '@generator/index';
-import { ProjectSession } from './project/session';
+import { ProjectLockedError, ProjectSession } from './project/session';
 import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { importAsset } from './project/assets';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
@@ -70,8 +70,9 @@ export class Controller {
       runtime: (this.dev?.status ?? { state: 'idle' }) as RuntimeState,
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
-      assetUsage: assetUsages(s.state),
+      assetUsage: safeUsages(s),
       conflicts: s.conflicts,
+      readOnly: s.readOnly,
       localState: this.localState
     };
   }
@@ -177,19 +178,58 @@ export class Controller {
     return this.openTrusted(dir);
   }
 
-  private async openTrusted(dir: string): Promise<{ ok: boolean; message?: string }> {
+  private async openTrusted(dir: string, opts: { force?: boolean } = {}): Promise<{ ok: boolean; message?: string }> {
     await this.close();
     let session: ProjectSession;
     try {
-      session = await ProjectSession.open(dir, INSTANCE_ID);
+      session = await ProjectSession.open(dir, INSTANCE_ID, opts);
     } catch (e) {
-      if (e instanceof ProjectFormatError) return { ok: false, message: e.message };
-      return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
+      // A newer format, or a project another app is editing, opens for inspection instead (spec 16.6, 18.1).
+      const locked = e instanceof ProjectLockedError;
+      if (locked || (e instanceof ProjectFormatError && e.readOnly)) {
+        try {
+          session = await ProjectSession.openReadOnly(dir, {
+            reason: locked
+              ? `${e.message} It is open read-only here. If that app is no longer running, unlock the project to edit it.`
+              : `${e.message} It is open read-only.`,
+            canUnlock: locked
+          });
+        } catch {
+          return { ok: false, message: e.message };
+        }
+      } else if (e instanceof ProjectFormatError) return { ok: false, message: e.message };
+      else return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
     }
-    this.localState = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
-    await addRecent(dir, session.state.site.name);
-    void this.attach(session);
+    // Workspace layout and recents are conveniences: a broken file or a failed save never blocks opening.
+    try {
+      this.localState = JSON.parse((await readIfExists(session.local('workspace.json'))) ?? '{}');
+    } catch {
+      this.localState = {};
+    }
+    if (!session.readOnly) await addRecent(dir, session.state.site.name).catch(() => undefined);
+    void this.attach(session).catch(async (e) => {
+      if (this.session === session) await this.close();
+      else await session.close();
+      this.send('runtime:status', { state: 'error', message: `The project could not be opened: ${(e as Error).message}` });
+    });
     return { ok: true };
+  }
+
+  /** Take over a project another app holds (the user confirmed it is not running) and reopen it for editing. */
+  async unlock(): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s?.readOnly?.canUnlock) return { ok: false, message: 'This project is not locked.' };
+    return this.openTrusted(s.dir, { force: true });
+  }
+
+  /** Settle a file conflict: keep the version changed outside the app, or restore SiteOrigin Builder's version. */
+  async resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false, message: 'No project is open.' };
+    if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish first.' };
+    // Only an exact choice is acted on: a missing or mistyped one must never overwrite a file.
+    if (typeof path !== 'string' || (choice !== 'keep' && choice !== 'restore')) return { ok: false, message: 'Choose which version to keep.' };
+    return s.resolveConflict(path, choice);
   }
 
   private async attach(session: ProjectSession) {
@@ -224,6 +264,10 @@ export class Controller {
       return;
     }
     if (!(await dependenciesReady(session.dir))) {
+      if (session.readOnly) {
+        this.send('runtime:status', { state: 'error', message: 'The preview is not available while this project is read-only, because its website tools are not set up.' });
+        return;
+      }
       const status: RuntimeState = { state: 'preparing', message: 'Setting up website tools…' };
       this.send('runtime:status', status);
       try {
@@ -273,7 +317,7 @@ export class Controller {
   /** Reinstall the website's tools from scratch (the dependency manager's repair action). */
   async repairDependencies() {
     const s = this.session;
-    if (!s) return;
+    if (!s || s.readOnly) return;
     await this.dev?.stop();
     this.dev = null;
     this.send('runtime:status', { state: 'preparing', message: 'Reinstalling website tools…' });
@@ -318,7 +362,7 @@ export class Controller {
 
   saveLocalState(state: LocalWorkspaceState) {
     this.localState = { ...this.localState, ...state };
-    if (this.session) void atomicWrite(this.session.local('workspace.json'), JSON.stringify(this.localState));
+    if (this.session && !this.session.readOnly) void atomicWrite(this.session.local('workspace.json'), JSON.stringify(this.localState));
   }
 
   // -------------------------------------------------------------------------
@@ -346,29 +390,39 @@ export class Controller {
   async importAssets(paths?: string[]): Promise<{ ok: boolean; assetIds: string[]; message?: string }> {
     const s = this.session;
     if (!s) return { ok: false, assetIds: [] };
+    if (s.readOnly) return { ok: false, assetIds: [], message: s.readOnly.reason };
     let files = paths;
     if (!files?.length) {
       const r = await dialog.showOpenDialog(this.getWindow()!, { title: 'Import images', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'svg'] }] });
       if (r.canceled) return { ok: false, assetIds: [] };
       files = r.filePaths;
     }
-    const ids: string[] = [];
-    const errors: string[] = [];
-    const ops = [];
-    for (const f of files) {
-      try {
-        const { record, existing } = await importAsset(s.dir, f, Object.values(s.state.assets.assets));
-        ids.push(record.id);
-        if (!existing) ops.push({ type: 'asset.add' as const, asset: record });
-      } catch (e) {
-        errors.push((e as Error).message);
+    const picked = files;
+    // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile.
+    return s.withImport(async () => {
+      const ids: string[] = [];
+      const errors: string[] = [];
+      const ops = [];
+      // Files imported earlier in this batch count as existing too: the same picture dropped twice is one asset.
+      const known = Object.values(s.state.assets.assets);
+      for (const f of picked) {
+        try {
+          const { record, existing } = await importAsset(s.dir, f, known);
+          if (!ids.includes(record.id)) ids.push(record.id);
+          if (!existing) {
+            ops.push({ type: 'asset.add' as const, asset: record });
+            known.push(record);
+          }
+        } catch (e) {
+          errors.push((e as Error).message);
+        }
       }
-    }
-    if (ops.length) {
-      const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? 'Import image' : `Import ${ops.length} images`, source: 'user' });
-      if (!r.ok) return { ok: false, assetIds: [], message: r.error?.message };
-    }
-    return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined };
+      if (ops.length) {
+        const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? 'Import image' : `Import ${ops.length} images`, source: 'user' });
+        if (!r.ok) return { ok: false, assetIds: [], message: r.error?.message };
+      }
+      return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined };
+    });
   }
 
   readSource(definitionId: string) {
@@ -511,6 +565,16 @@ export class Controller {
     void fs.realpath(p).then((real) => {
       if (this.exportPaths.has(p) || (dir && inside(dir) && (() => { const r = relative(dir, real); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); })())) shell.showItemInFolder(real);
     }, () => undefined);
+  }
+}
+
+/** Asset usage counts; a project from a newer version (read-only) may not have shapes this version can count. */
+function safeUsages(s: ProjectSession): Record<string, number> {
+  try {
+    return assetUsages(s.state);
+  } catch (e) {
+    if (s.readOnly) return {};
+    throw e;
   }
 }
 

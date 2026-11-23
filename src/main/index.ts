@@ -85,7 +85,13 @@ const orchestrator = new Orchestrator({
   codeEnabled: async () => (await loadSettings()).settings.developerMode
 });
 controller.aiBusy = () => orchestrator.busy;
-controller.onSessionOpened = async () => orchestrator.reset();
+controller.onSessionOpened = async (s) => {
+  orchestrator.reset();
+  // Another app took the project over: stop the assistant (the session already refuses its writes).
+  s.on('lock-lost', () => orchestrator.stop());
+};
+/** A read-only project (newer format, or another app is editing it) refuses anything that writes to it. */
+const readOnlyReason = () => controller.session?.readOnly?.reason ?? null;
 controller.onSessionClosing = async () => {
   orchestrator.stop();
   // Let a running request finish reverting before the project lock is released.
@@ -160,13 +166,16 @@ function registerIpc() {
   handle('project:undo', () => controller.session?.undo());
   handle('project:redo', () => controller.session?.redo());
   handle('project:importAssets', (paths?: string[]) => controller.importAssets(paths));
-  handle('project:exportSource', () => controller.exportSource());
-  handle('project:exportStatic', () => controller.exportStatic());
+  // Export builds from the project folder and needs the writer lock (spec 20).
+  handle('project:exportSource', () => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportSource()));
+  handle('project:exportStatic', () => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportStatic()));
   handle('project:retryPreview', () => controller.startRuntime());
   handle('project:repairDependencies', () => controller.repairDependencies());
   handle('project:readSource', (id: string) => controller.readSource(id));
   handle('project:generatedSource', (kind: 'component' | 'page', id: string) => controller.generatedSource(kind, id));
   handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
+  handle('project:resolveConflict', (p: string, choice: 'keep' | 'restore') => controller.resolveConflict(p, choice));
+  handle('project:unlock', () => controller.unlock());
   handle('project:saveLocalState', (s) => controller.saveLocalState(s));
   handle('project:validateSource', async (source: string) => {
     const problems = await checkSvelteSource(String(source));
@@ -197,8 +206,9 @@ function registerIpc() {
   handle('ai:conversations', () => orchestrator.loadConversations());
   handle('ai:newConversation', () => orchestrator.newConversation());
   handle('ai:openConversation', (id: string) => orchestrator.openConversation(id));
-  handle('ai:clearHistory', () => orchestrator.clearHistory());
-  handle('ai:send', (text: string, ctx) => orchestrator.send(text, ctx));
+  // Chat history belongs to the app editing the project; a read-only view never clears it.
+  handle('ai:clearHistory', async () => (readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory()));
+  handle('ai:send', (text: string, ctx) => (readOnlyReason() ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx)));
   handle('ai:stop', () => orchestrator.stop());
   handle('ai:answer', (runId: string, answer: string) => orchestrator.answer(runId, answer));
   handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));

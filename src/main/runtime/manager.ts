@@ -221,22 +221,42 @@ export class DevServer {
   }
 }
 
-/** Run a production build of the project in a one-shot worker. */
+/** How long a build may take, and how long a build that reported an error may still finish on its own. */
+export const BUILD_LIMITS = { timeoutMs: 10 * 60_000, errorGraceMs: 5_000 };
+
+/**
+ * Run a production build of the project in a one-shot worker. It always settles: on the build's result, the
+ * worker exiting, an error the worker reports without exiting, or a time limit. The worker never outlives it.
+ */
 export function buildProject(dir: string): Promise<{ ok: boolean; error?: string; logs: string[] }> {
   return new Promise((resolve) => {
     const proc = utilityProcess.fork(workerPath(), [], { cwd: dir, env: projectEnv({ NODE_ENV: 'production' }), serviceName: 'SiteOrigin project build', stdio: 'pipe' });
     let done = false;
     const errLines: string[] = [];
+    const timers: NodeJS.Timeout[] = [];
+    const finish = (result: { ok: boolean; error?: string; logs: string[] }) => {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
+      resolve(result);
+      try {
+        proc.kill();
+      } catch {
+        /* already gone */
+      }
+    };
     proc.stderr?.on('data', (d) => errLines.push(String(d)));
-    proc.on('message', (m: { type: string; ok?: boolean; error?: string; logs?: string[] }) => {
-      if (m.type === 'built') {
-        done = true;
-        resolve({ ok: !!m.ok, error: m.error, logs: m.logs ?? [] });
+    proc.on('message', (m: { type: string; ok?: boolean; error?: string; message?: string; logs?: string[] }) => {
+      if (m.type === 'built') finish({ ok: !!m.ok, error: m.error, logs: m.logs ?? [] });
+      else if (m.type === 'error') {
+        // The worker hit an error it could not hand back as a result (an uncaught exception, a failed plugin).
+        // Give the build a moment in case it still completes, then stop waiting for it.
+        const detail = String(m.message ?? '').split('\n').slice(0, 6).join('\n');
+        timers.push(setTimeout(() => finish({ ok: false, error: `The build stopped with an error: ${detail}`, logs: [] }), BUILD_LIMITS.errorGraceMs));
       }
     });
-    proc.on('exit', (code) => {
-      if (!done) resolve({ ok: false, error: `Build process exited (${code}). ${errLines.join('').slice(-800)}`, logs: [] });
-    });
+    proc.on('exit', (code) => finish({ ok: false, error: `Build process exited (${code}). ${errLines.join('').slice(-800)}`, logs: [] }));
+    timers.push(setTimeout(() => finish({ ok: false, error: 'The build took too long and was stopped.', logs: [] }), BUILD_LIMITS.timeoutMs));
     proc.postMessage({ type: 'build', dir });
   });
 }

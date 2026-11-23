@@ -32,6 +32,8 @@ const api: BuilderApi = {
     readSource: invoke('project:readSource'),
     generatedSource: invoke('project:generatedSource'),
     restoreGenerated: invoke('project:restoreGenerated'),
+    resolveConflict: invoke('project:resolveConflict'),
+    unlock: invoke('project:unlock'),
     saveLocalState: invoke('project:saveLocalState'),
     validateSource: invoke('project:validateSource'),
     flush: invoke('project:flush')

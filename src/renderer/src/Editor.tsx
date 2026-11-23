@@ -204,7 +204,8 @@ export function Editor() {
   const modal = useStore((s) => s.modal);
   const dockOpen = useStore((s) => s.dockOpen);
   const aiBusy = useStore((s) => !!s.runStatus);
-  const recovery = useStore((s) => s.snapshot?.recoveryNotes);
+  // Joined, so each new snapshot (a fresh array over IPC) does not repeat the same notes.
+  const recovery = useStore((s) => s.snapshot?.recoveryNotes.join('\n') ?? '');
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -258,7 +259,7 @@ export function Editor() {
   }, []);
 
   useEffect(() => {
-    if (recovery?.length) recovery.forEach((n) => toast(n));
+    if (recovery) recovery.split('\n').forEach((n) => toast(n));
   }, [recovery]);
 
   // In a small window, starting an edit gives the canvas the Pages list's width (the rail stays, and an

@@ -68,7 +68,10 @@ export interface ProjectSnapshot {
   recoveryNotes: string[];
   aiBusy: boolean;
   assetUsage: Record<string, number>;
-  conflicts: Array<{ path: string; reason: string }>;
+  /** Files changed outside the app. canonical: a project document (keep or restore); generated: a derived file (restore). */
+  conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated' }>;
+  /** Set when the project is open for inspection only (a newer format, or another app is editing it). */
+  readOnly?: { reason: string; canUnlock: boolean } | null;
   localState: LocalWorkspaceState;
 }
 
@@ -208,6 +211,8 @@ export interface BuilderApi {
     readSource(definitionId: string): Promise<{ source: string; hash: string; path: string; editable: boolean }>;
     generatedSource(kind: 'component' | 'page', id: string): Promise<string>;
     restoreGenerated(path: string): Promise<void>;
+    resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }>;
+    unlock(): Promise<{ ok: boolean; message?: string }>;
     saveLocalState(state: LocalWorkspaceState): Promise<void>;
     validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
     flush(): Promise<void>;

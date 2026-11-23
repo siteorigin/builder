@@ -1,6 +1,7 @@
-import { ChevronRight, CircleAlert, CircleCheck, Ellipsis, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronRight, CircleAlert, CircleCheck, Ellipsis, Lock, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
 import type { RuntimeState } from '@shared/api';
-import { api, setState, useStore } from '../store';
+import { api, confirmDialog, setState, toast, useStore } from '../store';
 import { breadcrumb } from '../lib/model';
 import { Modal, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
@@ -63,6 +64,15 @@ export function StatusBar() {
         {broken ? <CircleAlert aria-hidden="true" /> : <span className={`status-dot ${dot}`} aria-hidden="true" />}
         {label}
       </button>
+      {snap.readOnly && (
+        <>
+          <span className="status-sep" aria-hidden="true" />
+          <button className="read-only" title={snap.readOnly.reason} onClick={() => setState({ modal: { kind: 'health' } })}>
+            <Lock aria-hidden="true" />
+            Read-only
+          </button>
+        </>
+      )}
       {crumbs.length > 0 && <span className="status-sep" aria-hidden="true" />}
       <nav className="crumbs grow" aria-label="Selected element">
         {crumbs.length > 0 && (
@@ -115,6 +125,31 @@ export function HealthModal() {
   const { label } = runtimeInfo(runtime, null, true);
   void frameReady;
   const close = () => setState({ modal: null });
+  const [busy, setBusy] = useState<string | null>(null);
+  const resolve = async (path: string, choice: 'keep' | 'restore') => {
+    setBusy(path);
+    try {
+      const r = await api.project.resolveConflict(path, choice);
+      if (!r.ok && r.message) toast(r.message, 'error');
+    } catch (e) {
+      toast(`The conflict could not be resolved: ${(e as Error).message}`, 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+  const unlock = async () => {
+    const ok = await confirmDialog({
+      title: 'Unlock this project?',
+      body: 'Only unlock it if SiteOrigin Builder is no longer running on the other computer or account. Two apps editing the same project can overwrite each other’s changes.',
+      confirmLabel: 'Unlock and edit',
+      cancelLabel: 'Keep read-only',
+      danger: true
+    });
+    if (ok !== true) return;
+    const r = await api.project.unlock().catch((e: Error) => ({ ok: false, message: e.message }));
+    if (!r.ok && r.message) toast(r.message, 'error');
+    else close();
+  };
   return (
    <Modal
           title="Project health"
@@ -147,6 +182,19 @@ export function HealthModal() {
               </span>
             </div>
           )}
+          {snap.readOnly && (
+            <div className="scope-note info" style={{ marginBottom: 12, alignItems: 'center' }}>
+              <Lock />
+              <span className="grow">
+                <strong>Read-only.</strong> {snap.readOnly.reason}
+              </span>
+              {snap.readOnly.canUnlock && (
+                <button className="btn btn-sm" onClick={() => void unlock()}>
+                  Unlock…
+                </button>
+              )}
+            </div>
+          )}
           {snap.diagnostics.length === 0 && snap.conflicts.length === 0 && !pageIssue && runtime.state !== 'error' && (
             <div className="scope-note shared">
               <CircleCheck />
@@ -167,8 +215,18 @@ export function HealthModal() {
                 <span className="grow">
                   <strong>{c.path}</strong>: {c.reason}
                 </span>
-                {c.reason.startsWith('Generated') && (
-                  <button className="btn btn-sm" onClick={() => void api.project.restoreGenerated(c.path)}>
+                {/* An older snapshot without a kind: generated conflicts were the ones whose reason says so. */}
+                {(c.kind ?? (c.reason.startsWith('Generated') ? 'generated' : 'canonical')) === 'canonical' ? (
+                  <>
+                    <button className="btn btn-sm" disabled={!!busy} title="Use the file as it is now on disk" onClick={() => void resolve(c.path, 'keep')}>
+                      Keep external changes
+                    </button>
+                    <button className="btn btn-sm" disabled={!!busy} title="Put back SiteOrigin Builder’s version. The external file is saved in the project’s recovery folder." onClick={() => void resolve(c.path, 'restore')}>
+                      Restore Builder version
+                    </button>
+                  </>
+                ) : (
+                  <button className="btn btn-sm" disabled={!!busy} onClick={() => void resolve(c.path, 'restore')}>
                     Restore
                   </button>
                 )}

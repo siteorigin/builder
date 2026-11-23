@@ -2,7 +2,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AssetsDoc, ComponentDefinition, PageDoc, ProjectManifest, ProjectState, SiteDoc, ThemeLock, TokensDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
-import { readIfExists, readJson, safeJoin, toJson } from './fsutil';
+import { readIfExists, safeJoin, toJson } from './fsutil';
 
 export const MANIFEST_FILE = 'siteorigin.project.json';
 export const DOC_DIR = 'siteorigin';
@@ -64,8 +64,30 @@ export async function isBuilderProject(dir: string): Promise<boolean> {
   return existsSync(join(dir, MANIFEST_FILE));
 }
 
-export async function readState(dir: string): Promise<ProjectState> {
-  const manifestText = await readIfExists(join(dir, MANIFEST_FILE));
+export interface ReadOptions {
+  /**
+   * Documents to use instead of what is on disk (null = absent). A file in conflict is read as the
+   * version SiteOrigin Builder holds, while the external version stays untouched on disk.
+   */
+  overlay?: Map<string, string | null>;
+  /** Read a project written by a newer version (for read-only inspection only). */
+  allowNewer?: boolean;
+}
+
+export async function readState(dir: string, opts: ReadOptions = {}): Promise<ProjectState> {
+  const overlay = opts.overlay ?? new Map<string, string | null>();
+  const text = async (rel: string): Promise<string | null> => (overlay.has(rel) ? overlay.get(rel)! : readIfExists(safeJoin(dir, rel)));
+  const exists = (rel: string) => (overlay.has(rel) ? overlay.get(rel) !== null : existsSync(join(dir, rel)));
+  /** Directory entries on disk, plus overlay documents in that folder, minus overlay deletions. */
+  const list = async (rel: string, pick: (overlayPath: string) => string | null): Promise<string[]> => {
+    const names = new Set(existsSync(join(dir, rel)) ? await fs.readdir(join(dir, rel)) : []);
+    for (const [p, c] of overlay) {
+      const name = pick(p);
+      if (name !== null && c !== null) names.add(name);
+    }
+    return [...names].sort();
+  };
+  const manifestText = await text(MANIFEST_FILE);
   if (!manifestText) throw new ProjectFormatError('This folder is not a SiteOrigin Builder project (siteorigin.project.json is missing).');
   let manifest: ProjectManifest;
   try {
@@ -74,12 +96,14 @@ export async function readState(dir: string): Promise<ProjectState> {
     throw new ProjectFormatError('siteorigin.project.json is not valid JSON.');
   }
   if (typeof manifest.schemaVersion !== 'number') throw new ProjectFormatError('siteorigin.project.json has no schema version.');
-  if (manifest.schemaVersion > SCHEMA_VERSION)
+  if (manifest.schemaVersion > SCHEMA_VERSION && !opts.allowNewer)
     throw new ProjectFormatError(`This project was created by a newer version of SiteOrigin Builder (format ${manifest.schemaVersion}). Update the app to edit it.`, true);
   if (!isSafeId(manifest.projectId)) throw new ProjectFormatError('siteorigin.project.json has an invalid project ID.');
   const load = async <T>(rel: string): Promise<T> => {
     try {
-      return await readJson<T>(join(dir, rel));
+      const t = await text(rel);
+      if (t === null) throw new Error('the file is missing');
+      return JSON.parse(t) as T;
     } catch (e) {
       throw new ProjectFormatError(`Could not read ${rel}: ${(e as Error).message}`);
     }
@@ -87,32 +111,29 @@ export async function readState(dir: string): Promise<ProjectState> {
   const site = await load<SiteDoc>(`${DOC_DIR}/site.json`);
   const tokens = await load<TokensDoc>(`${DOC_DIR}/tokens.json`);
   const assets = await load<AssetsDoc>(`${DOC_DIR}/assets.json`);
-  const themeLock = existsSync(join(dir, `${DOC_DIR}/theme-lock.json`))
+  const themeLock = exists(`${DOC_DIR}/theme-lock.json`)
     ? await load<ThemeLock>(`${DOC_DIR}/theme-lock.json`)
     : { schemaVersion: SCHEMA_VERSION, theme: { id: site.themeId, version: '0.0.0' }, components: {} };
   const pages: Record<string, PageDoc> = {};
-  const pageDir = join(dir, DOC_DIR, 'pages');
-  for (const f of existsSync(pageDir) ? await fs.readdir(pageDir) : []) {
-    if (!f.endsWith('.json')) continue;
+  for (const f of await list(`${DOC_DIR}/pages`, (p) => p.match(/^siteorigin\/pages\/([^/]+\.json)$/)?.[1] ?? null)) {
+    if (!f.endsWith('.json') || !exists(`${DOC_DIR}/pages/${f}`)) continue;
     const p = await load<PageDoc>(`${DOC_DIR}/pages/${f}`);
     if (!/^[A-Za-z0-9_-]+$/.test(String(p.id)) || p.id !== f.slice(0, -5)) throw new ProjectFormatError(`${DOC_DIR}/pages/${f} has a mismatched id "${p.id}".`);
     pages[p.id] = p;
   }
   const components: Record<string, ComponentDefinition> = {};
-  const compDir = join(dir, DOC_DIR, 'components');
   const sourcePaths = new Set<string>();
-  for (const d of existsSync(compDir) ? await fs.readdir(compDir) : []) {
+  for (const d of await list(`${DOC_DIR}/components`, (p) => p.match(/^siteorigin\/components\/([^/]+)\/component\.json$/)?.[1] ?? null)) {
     if (d.startsWith('.')) continue;
     // A folder left behind by an interrupted delete is not a component.
-    if (!existsSync(join(compDir, d, 'component.json'))) continue;
+    if (!exists(`${DOC_DIR}/components/${d}/component.json`)) continue;
     const def = await load<ComponentDefinition>(`${DOC_DIR}/components/${d}/component.json`);
     if (!isSafeId(def.id) || def.id !== d) throw new ProjectFormatError(`${DOC_DIR}/components/${d} has a mismatched id "${def.id}".`);
     if (def.sourcePath !== undefined) {
       if (def.kind !== 'code' || def.owner !== 'project' || !CUSTOM_SOURCE_RE.test(def.sourcePath) || sourcePaths.has(def.sourcePath))
         throw new ProjectFormatError(`Component "${def.name}" points to a source file outside src/lib/siteorigin/custom/ or shared with another component.`);
       sourcePaths.add(def.sourcePath);
-      const src = await readIfExists(safeJoin(dir, def.sourcePath));
-      def.source = src ?? '';
+      def.source = (await text(def.sourcePath)) ?? '';
     }
     components[def.id] = def;
   }

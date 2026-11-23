@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { promises as fs, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
@@ -15,6 +16,27 @@ import { isCanonicalPath, ProjectFormatError, readState, stateToAuthoredSources,
 
 export const LOCAL_DIR = '.siteorigin';
 const HISTORY_LIMIT = 100;
+/** How often an open project refreshes its lock, and how long an unrefreshed lock is still trusted. */
+export const LOCK_HEARTBEAT_MS = 30_000;
+export const LOCK_STALE_MS = 2 * 60_000;
+/** Files written by the asset importer: name-hash8.ext, plus -480w style responsive copies. */
+const IMPORTED_ASSET_RE = /^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}(-\d+w)?\.(jpg|png|webp|gif|avif|svg|woff2?)$/;
+/** An imported file is never collected this soon after it was written (its asset may still be on its way in). */
+const ASSET_GRACE_MS = 10 * 60_000;
+
+/** The project is open in another live SiteOrigin Builder (on this or another computer). */
+export class ProjectLockedError extends ProjectFormatError {
+  constructor(message: string, public readonly owner: { host: string; since?: string }) {
+    super(message);
+  }
+}
+
+/** Why a project is open read-only. */
+export interface ReadOnlyInfo {
+  reason: string;
+  /** The lock may belong to a crashed or unreachable app; the user can take it over. */
+  canUnlock: boolean;
+}
 
 export interface HistoryEntry {
   id: string;
@@ -69,6 +91,8 @@ const FATAL_CODES = new Set(['HOME_MISSING', 'PAGE_MISSING', 'PAGE_ORPHAN', 'ROU
 export interface Conflict {
   path: string;
   reason: string;
+  /** canonical: a project document changed outside the app; generated: a derived source file was edited. */
+  kind: 'canonical' | 'generated';
 }
 
 /**
@@ -82,9 +106,20 @@ export class ProjectSession extends EventEmitter {
   private history: HistoryFile = { entries: [], cursor: 0 };
   private generated: GeneratedManifest = { generator: GENERATOR_VERSION, files: {} };
   conflicts: Conflict[] = [];
+  /**
+   * For each canonical document in conflict, the version SiteOrigin Builder holds (null = the document should not
+   * exist). The in-memory state uses these versions; the external version stays on disk until the user chooses.
+   */
+  private pending = new Map<string, string | null>();
   recoveryNotes: string[] = [];
+  /** Set when the project is open for inspection only: nothing is ever written. */
+  readOnly: ReadOnlyInfo | null = null;
+  /** History retention: the oldest groups are pruned past this many bytes of history blobs (spec 18.4). */
+  historyByteLimit = 512 * 1024 * 1024;
+  private gcCountdown = 0;
+  private heartbeat: NodeJS.Timeout | null = null;
   /** Run currently holding the writer lock. */
-  activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number } | null = null;
+  activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>> } | null = null;
   private writing: Promise<unknown> = Promise.resolve();
   private idempotency = new Map<string, { fingerprint: string; result: ApplyResult }>();
 
@@ -110,12 +145,14 @@ export class ProjectSession extends EventEmitter {
     return s;
   }
 
-  static async open(dir: string, instanceId: string): Promise<ProjectSession> {
+  static async open(dir: string, instanceId: string, opts: { force?: boolean } = {}): Promise<ProjectSession> {
     const s = new ProjectSession(dir);
+    // A project from a newer version is never written to, not even its local folders.
+    await assertKnownFormat(dir);
     await s.ensureLocalDirs();
     // The lock comes first: recovery must never touch a project another window is editing.
-    const lockErr = await s.acquireLock(instanceId);
-    if (lockErr) throw new ProjectFormatError(lockErr);
+    const lockErr = await s.acquireLock(instanceId, opts.force);
+    if (lockErr) throw lockErr;
     try {
       await s.openLocked();
     } catch (e) {
@@ -125,21 +162,39 @@ export class ProjectSession extends EventEmitter {
     return s;
   }
 
+  /**
+   * Open a project for inspection only (a newer format, or another app holds its lock). No lock is taken,
+   * nothing is recovered or generated, and every command that would write is refused.
+   */
+  static async openReadOnly(dir: string, info: ReadOnlyInfo): Promise<ProjectSession> {
+    const s = new ProjectSession(dir);
+    s.readOnly = info;
+    s.state = await readState(dir, { allowNewer: true });
+    s.docs = stateToDocs(s.state);
+    s.history = (await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)).catch(() => null)) ?? { entries: [], cursor: 0 };
+    const local = await readIfExists(s.local('state.json'));
+    if (local) s.revision = JSON.parse(local).revision ?? 0;
+    return s;
+  }
+
   private async openLocked() {
     const s = this;
     const dir = this.dir;
+    await s.loadConflicts();
+    // Both recoveries run before the documents are first read: a file a crash left broken may be one they restore.
     await s.recoverJournal();
-    s.state = await readState(dir);
+    await s.recoverInterruptedRun();
+    s.state = await readState(dir, { overlay: s.pending });
     s.docs = stateToDocs(s.state);
     s.history = (await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null))) ?? { entries: [], cursor: 0 };
     s.generated = (await readIfExists(join(dir, 'siteorigin', 'generated-manifest.json')).then((t) => (t ? JSON.parse(t) : null))) ?? s.generated;
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
-    await s.recoverInterruptedRun();
     // Validate the final state (after any rollback) before generating anything from it.
     const fatal = validateState(s.state).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
     if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not opened to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
     await s.publishGenerated(false);
+    await s.sweep();
   }
 
   private async ensureLocalDirs() {
@@ -149,23 +204,33 @@ export class ProjectSession extends EventEmitter {
   /** Acquire the per-project process lock. Returns an error message when another live process owns it. */
   private lockOwner: string | null = null;
 
-  async acquireLock(instanceId: string): Promise<string | null> {
+  /**
+   * The owner refreshes the lock every 30 seconds, so a lock left by a crash, by another computer or under an old
+   * host name expires on its own; `force` takes it over at once (the user's "Unlock").
+   */
+  async acquireLock(instanceId: string, force = false): Promise<ProjectLockedError | null> {
     const lockPath = this.local('lock.json');
     const body = toJson({ pid: process.pid, host: hostname(), instance: instanceId, started: new Date().toISOString() });
+    let owner: { host: string; since?: string } = { host: 'another computer' };
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         // Exclusive create: two openers cannot both win.
         await fs.writeFile(lockPath, body, { flag: 'wx' });
         this.lockOwner = instanceId;
+        this.startHeartbeat();
         return null;
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
       }
       const existing = await readIfExists(lockPath);
+      const age = Date.now() - ((await fs.stat(lockPath).catch(() => null))?.mtimeMs ?? 0);
       let stale = true;
       try {
-        const l = JSON.parse(existing ?? '{}') as { pid: number; host: string; instance: string };
-        if (l.instance === instanceId) stale = true;
+        const l = JSON.parse(existing ?? '{}') as { pid: number; host: string; instance: string; started?: string };
+        owner = { host: l.host === hostname() ? 'this computer' : String(l.host || 'another computer'), since: l.started };
+        if (force || l.instance === instanceId) stale = true;
+        // Not refreshed for a while: the owner crashed, is asleep or is gone. A PID alone is never trusted.
+        else if (age > LOCK_STALE_MS) stale = true;
         else if (l.host === hostname()) {
           try {
             process.kill(l.pid, 0);
@@ -175,15 +240,69 @@ export class ProjectSession extends EventEmitter {
           }
         } else stale = false;
       } catch {
-        stale = true;
+        // Unreadable: possibly another opener between creating the file and writing it, so only an old one is stale.
+        stale = force || age > 10_000;
       }
-      if (!stale) return 'This project is already open in another SiteOrigin Builder window.';
-      await fs.rm(lockPath, { force: true });
+      if (!stale) return new ProjectLockedError(`This project is already open in SiteOrigin Builder on ${owner.host}.`, owner);
+      // Move the stale lock aside atomically: of two openers that both judged it stale, only one can move it.
+      const aside = `${lockPath}.${randomBytes(4).toString('hex')}.stale`;
+      try {
+        await fs.rename(lockPath, aside);
+      } catch {
+        continue;
+      }
+      // If it changed after it was judged, it is another opener's fresh lock: put it back.
+      if ((await readIfExists(aside)) !== existing) await fs.link(aside, lockPath).catch(() => undefined);
+      await fs.rm(aside, { force: true });
     }
-    return 'The project lock could not be acquired. Try again.';
+    return new ProjectLockedError('The project lock could not be acquired. Try again.', owner);
+  }
+
+  /** Before a write: is this session still the lock's owner? A takeover found here makes it read-only at once. */
+  private async stillOwner(): Promise<boolean> {
+    if (this.readOnly) return false;
+    if (!this.lockOwner) return true; // a session that never took a lock (project creation, tests)
+    await this.refreshLock();
+    return !this.readOnly;
+  }
+
+  /** Keep the lock fresh, and notice when another app has taken it over (it was unlocked from elsewhere). */
+  private startHeartbeat() {
+    this.stopHeartbeat();
+    this.heartbeat = setInterval(() => void this.refreshLock(), LOCK_HEARTBEAT_MS);
+    this.heartbeat.unref?.();
+  }
+
+  /** Refresh the lock's timestamp; if another app now owns it, stop writing and become read-only. */
+  async refreshLock() {
+    if (!this.lockOwner) return;
+    const lockPath = this.local('lock.json');
+    const existing = await readIfExists(lockPath);
+    let mine = false;
+    try {
+      mine = !!existing && JSON.parse(existing).instance === this.lockOwner;
+    } catch {
+      mine = false;
+    }
+    if (!mine) {
+      this.stopHeartbeat();
+      this.lockOwner = null;
+      this.readOnly = { reason: 'Another SiteOrigin Builder took over this project, so it is read-only here. Close and reopen it to edit.', canUnlock: true };
+      this.emit('lock-lost');
+      this.emit('history');
+      return;
+    }
+    const now = new Date();
+    await fs.utimes(lockPath, now, now).catch(() => undefined);
+  }
+
+  private stopHeartbeat() {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = null;
   }
 
   async releaseLock() {
+    this.stopHeartbeat();
     if (!this.lockOwner) return;
     const lockPath = this.local('lock.json');
     const existing = await readIfExists(lockPath);
@@ -224,6 +343,121 @@ export class ProjectSession extends EventEmitter {
     await removeEmptyDirs(dirname(abs), join(this.dir, path.startsWith('src/') ? 'src' : 'siteorigin'));
   }
 
+  // -------------------------------------------------------------------------
+  // Canonical conflicts
+  // -------------------------------------------------------------------------
+
+  /** Hold Builder's version of a document whose file was changed outside the app, replacing any earlier hold. */
+  private holdConflict(path: string, builder: string | null, reason: string) {
+    this.pending.set(path, builder);
+    this.conflicts = this.conflicts.filter((c) => c.path !== path);
+    this.conflicts.push({ path, reason, kind: 'canonical' });
+  }
+
+  private releaseConflict(path: string) {
+    this.pending.delete(path);
+    this.conflicts = this.conflicts.filter((c) => c.path !== path);
+  }
+
+  /** Canonical conflicts outlive a restart, so a reopened project never silently takes the external version. */
+  private async saveConflicts() {
+    const file = this.local('conflicts.json');
+    if (!this.pending.size) return void (await fs.rm(file, { force: true }));
+    const list = [];
+    for (const [path, builder] of this.pending) {
+      const reason = this.conflicts.find((c) => c.path === path)?.reason ?? 'Changed outside SiteOrigin Builder.';
+      list.push({ path, reason, builder: builder === null ? null : await this.putBlob(builder) });
+    }
+    await atomicWrite(file, toJson({ conflicts: list }));
+  }
+
+  private async loadConflicts() {
+    const text = await readIfExists(this.local('conflicts.json'));
+    if (!text) return;
+    let list: Array<{ path: string; reason: string; builder: string | null }> = [];
+    try {
+      list = JSON.parse(text).conflicts ?? [];
+    } catch {
+      return;
+    }
+    for (const c of list) {
+      if (typeof c?.path !== 'string' || !isCanonicalPath(c.path)) continue;
+      const builder = c.builder === null ? null : await this.getBlob(String(c.builder)).catch(() => undefined);
+      if (builder === undefined) continue;
+      // Already settled outside the app (the file was put back): nothing to choose.
+      if (settledOnDisk(c.path, await this.diskContent(c.path), builder)) continue;
+      this.holdConflict(c.path, builder, String(c.reason ?? 'Changed outside SiteOrigin Builder.'));
+    }
+  }
+
+  /**
+   * Settle one conflict. "restore" puts Builder's version back (the external file is copied to the recovery
+   * folder first); "keep" accepts the external file, but only when the project is still valid with it.
+   */
+  resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }> {
+    return this.serialize(async () => {
+      if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? 'This project is read-only.' };
+      if (this.activeRun) return { ok: false, message: 'Stop the AI before resolving conflicts.' };
+      const conflict = this.conflicts.find((c) => c.path === path);
+      if (!conflict) return { ok: true };
+      if (conflict.kind === 'generated') {
+        if (choice !== 'restore') return { ok: false, message: 'A generated file can only be restored. Move your edits into the page or a code component.' };
+        await this.restoreGeneratedLocked(path);
+        return { ok: true };
+      }
+      const builder = this.pending.get(path) ?? null;
+      const disk = await this.diskContent(path);
+      const stamp = `${Date.now()}-${path.replace(/[\\/]/g, '__')}`;
+      let changed: HistoryEntry['docs'] = {};
+      if (choice === 'restore') {
+        if (disk !== null) await atomicWrite(this.local('recovery', `${stamp}.external`), disk);
+        if (builder === null) await this.removeCanonical(path);
+        else await atomicWrite(safeJoin(this.dir, path), builder);
+        this.releaseConflict(path);
+      } else {
+        const overlay = new Map(this.pending);
+        overlay.delete(path);
+        let next: ProjectState;
+        try {
+          next = await readState(this.dir, { overlay });
+        } catch (e) {
+          return { ok: false, message: `The external version of ${path} could not be read, so it was not kept: ${(e as Error).message}` };
+        }
+        const errors = validateState(next).filter((d) => d.severity === 'error');
+        if (errors.length) return { ok: false, message: `Keeping the external version of ${path} would leave the site inconsistent: ${errors.slice(0, 3).map((d) => d.message).join(' ')} Restore SiteOrigin Builder's version instead, or fix the file.` };
+        for (const def of Object.values(next.components)) {
+          if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
+          const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
+          if (bad.length) return { ok: false, message: `The external code for "${def.name}" has problems, so it was not kept: ${bad[0].message}` };
+        }
+        if (builder !== null) await atomicWrite(this.local('recovery', `${stamp}.builder`), builder);
+        changed = await this.diffDocs(this.docs, stateToDocs(next));
+        this.state = next;
+        this.docs = stateToDocs(next);
+        this.releaseConflict(path);
+      }
+      await this.saveConflicts();
+      const changedFiles = await this.publishGenerated(false);
+      this.revision++;
+      if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'Keep external change', source: 'system' });
+      await this.saveLocalState();
+      this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'Resolve conflict', source: 'user' } satisfies SessionEvent);
+      return { ok: true };
+    });
+  }
+
+  /** Before/after blobs for every document that differs between two document maps. */
+  private async diffDocs(prev: Map<string, string>, next: Map<string, string>): Promise<HistoryEntry['docs']> {
+    const changed: HistoryEntry['docs'] = {};
+    for (const p of new Set([...prev.keys(), ...next.keys()])) {
+      const b = prev.get(p);
+      const a = next.get(p);
+      if (b === a) continue;
+      changed[p] = { before: b === undefined ? null : await this.putBlob(b), after: a === undefined ? null : await this.putBlob(a) };
+    }
+    return changed;
+  }
+
   /** Roll forward an interrupted publication: every intended write is stored as a blob before any file is replaced. */
   private async recoverJournal() {
     const j = await readIfExists(this.local('journal.json'));
@@ -256,8 +490,11 @@ export class ProjectSession extends EventEmitter {
       const h = disk === null ? null : sha(disk);
       if (h === w.blob) continue; // already applied
       if (h !== w.before) {
+        // Changed by someone else since: keep their file, and hold this batch's version so the documents
+        // the project is opened with stay consistent with the rest of the batch until the user chooses.
         conflicts++;
-        continue; // changed by someone else since: keep their version
+        this.holdConflict(w.path, contents.get(w.path)!, 'Changed outside SiteOrigin Builder while a save was interrupted.');
+        continue;
       }
       await atomicWrite(safeJoin(this.dir, w.path), contents.get(w.path)!);
     }
@@ -266,14 +503,17 @@ export class ProjectSession extends EventEmitter {
       if (disk === null) continue;
       if (sha(disk) !== d.before) {
         conflicts++;
+        this.holdConflict(d.path, null, 'Changed outside SiteOrigin Builder while a save was interrupted.');
         continue;
       }
       await this.removeCanonical(d.path);
     }
+    // Held versions are recorded before the journal goes, so a second crash cannot lose them.
+    await this.saveConflicts();
     await fs.rm(this.local('journal.json'), { force: true });
     this.recoveryNotes.push(
       conflicts
-        ? `Finished an interrupted save. ${conflicts} file(s) had been changed outside the app and were kept as they are.`
+        ? `Finished an interrupted save. ${conflicts} file(s) had been changed outside the app and were kept as they are; choose which version to keep in Project health.`
         : `Finished an interrupted save (${journal.writes.length + journal.deletes.length} file(s)).`
     );
   }
@@ -285,7 +525,7 @@ export class ProjectSession extends EventEmitter {
   private async recoverInterruptedRun() {
     const marker = await readIfExists(this.local('sessions', 'active-run.json'));
     if (!marker) return;
-    let run: { id: string; paths: Record<string, { before: string | null; after: string | null }> };
+    let run: { id: string; paths: Record<string, { before: string | null; after: string | null; written?: Array<string | null> }> };
     try {
       run = JSON.parse(marker);
     } catch {
@@ -298,27 +538,29 @@ export class ProjectSession extends EventEmitter {
       if (!isCanonicalPath(path)) continue;
       const disk = await this.diskContent(path);
       const h = disk === null ? null : sha(disk);
-      if (h === d.before) continue; // never written, or already restored
-      if (h !== d.after) {
-        conflicts.push(path);
+      // Never written, or already restored. The run is being undone, so a version an interrupted save of
+      // the run was holding no longer applies.
+      if (h === d.before) {
+        this.releaseConflict(path);
         continue;
       }
       const before = d.before === null ? null : await this.getBlob(d.before).catch(() => undefined);
-      if (before === undefined) {
+      // Any version the run itself wrote (an earlier batch, if it stopped between batches) is the run's to undo.
+      const runWrote = h === d.after || (Array.isArray(d.written) && d.written.includes(h));
+      if (!runWrote || before === undefined) {
         conflicts.push(path);
+        // The pre-run version is what the project is restored to, so it is the version held for the user.
+        if (before !== undefined) this.holdConflict(path, before, 'Changed outside SiteOrigin Builder during an interrupted AI run.');
         continue;
       }
       if (before === null) await this.removeCanonical(path);
       else await atomicWrite(safeJoin(this.dir, path), before);
+      this.releaseConflict(path);
       restored++;
     }
-    if (restored) {
-      this.state = await readState(this.dir);
-      this.docs = stateToDocs(this.state);
-    }
+    await this.saveConflicts();
     if (conflicts.length) {
-      this.recoveryNotes.push(`An interrupted AI change was only partly reverted: ${conflicts.length} file(s) were changed outside the app and were kept.`);
-      this.conflicts.push(...conflicts.map((p) => ({ path: p, reason: 'Changed outside SiteOrigin Builder during an interrupted AI run.' })));
+      this.recoveryNotes.push(`An interrupted AI change was only partly reverted: ${conflicts.length} file(s) were changed outside the app. Choose which version to keep in Project health.`);
     } else if (restored) {
       this.recoveryNotes.push('An AI change was interrupted before it finished. The project was restored to how it was before that request.');
     }
@@ -385,15 +627,9 @@ export class ProjectSession extends EventEmitter {
     const prev = this.generated.files;
     const nextFiles: Record<string, string> = {};
     const authored = new Set(stateToAuthoredSources(this.state).keys());
-    this.conflicts = this.conflicts.filter((c) => !c.reason.startsWith('Generated file'));
-    // Dev variants are written first so the dev server never loads a stale instrumented file.
-    // Dev variants with editor identity attributes (never part of the portable source).
-    for (const [path, content] of dev) {
-      if (authored.has(path)) continue;
-      const abs = safeJoin(devRoot, path);
-      const disk = await readIfExists(abs);
-      if (disk !== content) await atomicWrite(abs, content);
-    }
+    this.conflicts = this.conflicts.filter((c) => c.kind !== 'generated');
+    // Decide first which project files are someone else's now, so no editor variant shadows them in the preview.
+    const plan: Array<{ path: string; content: string; abs: string }> = [];
     for (const [path, content] of clean) {
       if (authored.has(path)) continue;
       const h = sha(content);
@@ -405,15 +641,37 @@ export class ProjectSession extends EventEmitter {
       if (!initial && disk !== null && prev[path] && diskHash !== prev[path]) {
         // Edited outside the app: keep the external version.
         nextFiles[path] = prev[path];
-        this.conflicts.push({ path, reason: 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.' });
+        this.conflicts.push({ path, reason: 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
         continue;
       }
       if (!initial && disk !== null && !prev[path]) {
         // A file we never wrote already lives here: never overwrite someone's own work.
         delete nextFiles[path];
-        this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.' });
+        this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
         continue;
       }
+      plan.push({ path, content, abs });
+    }
+    const keptExternal = new Set(this.conflicts.filter((c) => c.kind === 'generated').map((c) => c.path));
+    // Dev variants (with editor identity attributes, never part of the portable source) are written before the
+    // project files, so the dev server never loads a stale instrumented file. A file kept as edited outside the
+    // app has no variant: the preview shows the external version, as the exported site would.
+    for (const [path, content] of dev) {
+      if (authored.has(path)) continue;
+      const abs = safeJoin(devRoot, path);
+      if (keptExternal.has(path)) {
+        if (existsSync(abs)) {
+          await fs.rm(abs, { force: true });
+          // The preview may have cached the variant; touching the real file makes it load that file instead.
+          const now = new Date();
+          await fs.utimes(safeJoin(this.dir, path), now, now).catch(() => undefined);
+        }
+        continue;
+      }
+      const disk = await readIfExists(abs);
+      if (disk !== content) await atomicWrite(abs, content);
+    }
+    for (const { path, content, abs } of plan) {
       await atomicWrite(abs, content);
       changedFiles.push(path);
     }
@@ -437,7 +695,18 @@ export class ProjectSession extends EventEmitter {
 
   /** Restore a generated file from the managed documents, discarding the external edit. */
   restoreGeneratedFile(path: string): Promise<void> {
-    return this.serialize(() => this.restoreGeneratedLocked(path));
+    return this.serialize(async () => {
+      if (this.readOnly) throw new Error(this.readOnly.reason);
+      await this.restoreGeneratedLocked(path);
+    });
+  }
+
+  /** Writes are refused while the project is read-only or a project document is in conflict. */
+  private async writeBlocked(): Promise<ApplyResult | null> {
+    await this.stillOwner();
+    if (this.readOnly) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: this.readOnly.reason, recoverable: false } };
+    if (this.pending.size) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Resolve the file conflicts in Project health before making more changes.', recoverable: false } };
+    return null;
   }
 
   private async restoreGeneratedLocked(path: string) {
@@ -486,8 +755,8 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'BUSY', message: 'The AI is making changes. Stop it before editing.', recoverable: true } };
       if (batch.expectedRevision !== undefined && batch.expectedRevision !== this.revision)
         return { ok: false, revision: this.revision, error: { code: 'STALE_REVISION', message: `Expected revision ${batch.expectedRevision} but the project is at ${this.revision}. Read the latest state and try again.`, recoverable: true } };
-      if (this.conflicts.some((c) => c.reason.startsWith('Changed outside')))
-        return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Resolve the file conflicts before making more changes.', recoverable: false } };
+      const blocked = await this.writeBlocked();
+      if (blocked) return blocked;
       const ops = [];
       for (const raw of batch.operations) {
         const v = validateOperation(raw);
@@ -527,10 +796,15 @@ export class ProjectSession extends EventEmitter {
     });
   }
 
+  /** Document problems. File conflicts are reported separately (`conflicts`), with their actions, never twice. */
   diagnostics(): Diagnostic[] {
-    const out = validateState(this.state);
-    for (const c of this.conflicts) out.push({ severity: 'error', code: 'CONFLICT', message: `${c.path}: ${c.reason}` });
-    return out;
+    try {
+      return validateState(this.state);
+    } catch (e) {
+      // A project from a newer version may not follow this version's shapes; it is open read-only anyway.
+      if (this.readOnly) return [];
+      throw e;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -560,9 +834,140 @@ export class ProjectSession extends EventEmitter {
         runId: opts.runId
       });
     }
-    if (h.entries.length > HISTORY_LIMIT) h.entries = h.entries.slice(h.entries.length - HISTORY_LIMIT);
+    const pruned = h.entries.length > HISTORY_LIMIT;
+    if (pruned) h.entries = h.entries.slice(h.entries.length - HISTORY_LIMIT);
     h.cursor = h.entries.length;
     await atomicWrite(this.local('history', 'history.json'), toJson(h));
+    // Collect when history was pruned, and every so often for blobs left by provisional AI batches and undo.
+    if (pruned || --this.gcCountdown <= 0) await this.sweep();
+  }
+
+  /** Asset imports in progress: their files are written before their asset records, so no sweep runs meanwhile. */
+  private importing = 0;
+  async withImport<T>(fn: () => Promise<T>): Promise<T> {
+    this.importing++;
+    try {
+      return await fn();
+    } finally {
+      this.importing--;
+    }
+  }
+
+  /**
+   * History retention (spec 18.4): keep at most 100 groups and 512 MiB of history blobs, pruning the oldest
+   * groups first, then delete blobs nothing references and imported asset files that neither the project,
+   * its retained history, an active run nor a held conflict can still need. Never fails a save.
+   */
+  collectGarbage(): Promise<void> {
+    // Queued behind any save, so a blob is never swept between being written and being recorded.
+    return this.serialize(() => this.sweep());
+  }
+
+  private async sweep(): Promise<void> {
+    if (this.readOnly) return;
+    this.gcCountdown = 25;
+    try {
+      await this.collectGarbageNow();
+    } catch {
+      /* best effort: a failed sweep is retried next time */
+    }
+  }
+
+  private async collectGarbageNow() {
+    const blobDir = this.local('history', 'blobs');
+    const names = await fs.readdir(blobDir).catch(() => [] as string[]);
+    const sizes = new Map<string, number>();
+    for (const n of names) {
+      const m = n.match(/^([a-f0-9]{64})\.json$/);
+      if (m) sizes.set(m[1], (await fs.stat(join(blobDir, n)).catch(() => null))?.size ?? 0);
+    }
+    // Recovery material that is never pruned: the active run's pre-run documents and held conflict versions.
+    const pinned = new Set<string>();
+    for (const c of this.activeRun?.before.values() ?? []) pinned.add(sha(c));
+    for (const c of this.pending.values()) if (c !== null) pinned.add(sha(c));
+    const entryBlobs = (e: HistoryEntry) => Object.values(e.docs).flatMap((d) => [d.before, d.after]).filter((x): x is string => !!x);
+    const total = () => {
+      const all = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs)]);
+      let bytes = 0;
+      for (const b of all) bytes += sizes.get(b) ?? 0;
+      return bytes;
+    };
+    let dropped = 0;
+    while (this.history.entries.length > 1 && total() > this.historyByteLimit) {
+      // The oldest applied group goes first. With nothing applied, trim redo from its far end instead:
+      // dropping the first redo group would leave the next one expecting documents that never return.
+      if (this.history.cursor > 0) {
+        this.history.entries.shift();
+        this.history.cursor--;
+      } else this.history.entries.pop();
+      dropped++;
+    }
+    if (dropped) {
+      await atomicWrite(this.local('history', 'history.json'), toJson(this.history));
+      this.emit('history');
+    }
+    const keep = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs)]);
+    // A journal, a run marker or a conflict list on disk may name blobs too (written by this session or a crash).
+    for (const f of [this.local('journal.json'), this.local('sessions', 'active-run.json'), this.local('conflicts.json')]) {
+      const t = await readIfExists(f);
+      if (t) for (const m of t.matchAll(/[a-f0-9]{64}/g)) keep.add(m[0]);
+    }
+    for (const b of sizes.keys()) if (!keep.has(b)) await fs.rm(join(blobDir, `${b}.json`), { force: true });
+    if (!this.importing) await this.collectAssets(keep);
+  }
+
+  /** Delete imported files in static/assets/ that no retained version of assets.json and no code refers to. */
+  private async collectAssets(blobs: Set<string>) {
+    const assetsDir = join(this.dir, 'static', 'assets');
+    // Only a real folder inside the project is ever swept, never one a link points elsewhere.
+    if (!(await fs.lstat(assetsDir).catch(() => null))?.isDirectory()) return;
+    const files = await fs.readdir(assetsDir).catch(() => [] as string[]);
+    if (!files.length) return;
+    const referenced = new Set<string>();
+    const addDoc = (text: string | null | undefined) => {
+      if (!text) return;
+      try {
+        const doc = JSON.parse(text) as ProjectState['assets'];
+        for (const a of Object.values(doc.assets ?? {})) {
+          if (typeof a?.file === 'string') referenced.add(a.file);
+          for (const v of a?.variants ?? []) if (typeof v?.file === 'string') referenced.add(v.file);
+        }
+      } catch {
+        /* not an assets document */
+      }
+    };
+    const ASSETS_DOC = 'siteorigin/assets.json';
+    addDoc(toJson(this.state.assets));
+    addDoc(await this.diskContent(ASSETS_DOC));
+    addDoc(this.activeRun?.before.get(ASSETS_DOC));
+    addDoc(this.pending.get(ASSETS_DOC));
+    // Code components may point at a file by URL; any mention in any version that can come back keeps it.
+    const code = Object.values(this.state.components).map((d) => d.source ?? '');
+    for (const [p, c] of [...(this.activeRun?.before ?? []), ...this.pending]) if (p.endsWith('.svelte') && c) code.push(c);
+    for (const e of this.history.entries) {
+      for (const [p, d] of Object.entries(e.docs)) {
+        if (p !== ASSETS_DOC && !p.endsWith('.svelte')) continue;
+        for (const h of [d.before, d.after]) {
+          if (!h || !blobs.has(h)) continue;
+          const text = await this.getBlob(h).catch(() => null);
+          if (p === ASSETS_DOC) addDoc(text);
+          else if (text) code.push(text);
+        }
+      }
+    }
+    // A conflict list or run marker on disk may name an assets.json version too.
+    for (const f of [this.local('sessions', 'active-run.json'), this.local('conflicts.json')]) {
+      const t = await readIfExists(f);
+      if (t) for (const m of t.matchAll(/[a-f0-9]{64}/g)) if (blobs.has(m[0])) addDoc(await this.getBlob(m[0]).catch(() => null));
+    }
+    const allCode = code.join('\n');
+    for (const f of files) {
+      if (!IMPORTED_ASSET_RE.test(f) || referenced.has(`static/assets/${f}`) || allCode.includes(f)) continue;
+      const abs = join(assetsDir, f);
+      const st = await fs.lstat(abs).catch(() => null);
+      if (!st?.isFile() || Date.now() - st.mtimeMs < ASSET_GRACE_MS) continue;
+      await fs.rm(abs, { force: true });
+    }
   }
 
   historyInfo() {
@@ -609,6 +1014,8 @@ export class ProjectSession extends EventEmitter {
   undo(): Promise<ApplyResult> {
     return this.serialize(async () => {
       if (this.activeRun) return { ok: false, revision: this.revision, error: { code: 'BUSY', message: 'Stop the AI before undoing.', recoverable: true } };
+      const blocked = await this.writeBlocked();
+      if (blocked) return blocked;
       const entry = this.history.entries[this.history.cursor - 1];
       if (!entry) return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: true } };
       return this.travel(entry, 'undo');
@@ -618,6 +1025,8 @@ export class ProjectSession extends EventEmitter {
   redo(): Promise<ApplyResult> {
     return this.serialize(async () => {
       if (this.activeRun) return { ok: false, revision: this.revision, error: { code: 'BUSY', message: 'Stop the AI before redoing.', recoverable: true } };
+      const blocked = await this.writeBlocked();
+      if (blocked) return blocked;
       const entry = this.history.entries[this.history.cursor];
       if (!entry) return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to redo.', recoverable: true } };
       return this.travel(entry, 'redo');
@@ -628,6 +1037,8 @@ export class ProjectSession extends EventEmitter {
   undoGroup(runId: string): Promise<ApplyResult> {
     return this.serialize(async () => {
       if (this.activeRun) return { ok: false, revision: this.revision, error: { code: 'BUSY', message: 'Stop the AI before undoing.', recoverable: true } };
+      const blocked = await this.writeBlocked();
+      if (blocked) return blocked;
       const latest = this.history.entries[this.history.cursor - 1];
       if (!latest || latest.runId !== runId)
         return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Later changes were made after this AI turn. Undo those first from the history.', recoverable: false } };
@@ -642,25 +1053,36 @@ export class ProjectSession extends EventEmitter {
   beginRun(runId: string): Promise<string | null> {
     return this.serialize(async () => {
       if (this.activeRun) return 'Another AI request is already running.';
+      if (!(await this.stillOwner())) return this.readOnly?.reason ?? 'This project is read-only.';
+      if (this.pending.size) return 'A project file was changed outside SiteOrigin Builder. Resolve it in Project health first.';
       const before = new Map(this.docs);
-      this.activeRun = { id: runId, before, beforeState: structuredClone(this.state), startRevision: this.revision };
+      this.activeRun = { id: runId, before, beforeState: structuredClone(this.state), startRevision: this.revision, written: new Map() };
       await this.writeRunMarker();
       return null;
     });
   }
 
-  /** Record exactly which files the run has changed (or is about to change), with before and after hashes. */
+  /**
+   * Record exactly which files the run has changed (or is about to change), with before and after hashes.
+   * `written` lists every version the run has put in each file, so a crash between writing this marker and
+   * publishing the batch (the file still holds the previous batch) is still recognised as the run's own work.
+   */
   private async writeRunMarker(docs: Map<string, string> = this.docs) {
     if (!this.activeRun) return;
-    const paths: Record<string, { before: string | null; after: string | null }> = {};
-    const all = new Set([...this.activeRun.before.keys(), ...docs.keys()]);
+    const run = this.activeRun;
+    const paths: Record<string, { before: string | null; after: string | null; written: Array<string | null> }> = {};
+    const all = new Set([...run.before.keys(), ...docs.keys(), ...run.written.keys()]);
     for (const path of all) {
-      const b = this.activeRun.before.get(path);
+      const b = run.before.get(path);
       const a = docs.get(path);
-      if (b === a) continue;
-      paths[path] = { before: b === undefined ? null : await this.putBlob(b), after: a === undefined ? null : sha(a) };
+      const after = a === undefined ? null : sha(a);
+      const written = run.written.get(path) ?? new Set<string | null>();
+      if (b !== a) written.add(after);
+      if (written.size) run.written.set(path, written);
+      if (b === a && !written.size) continue;
+      paths[path] = { before: b === undefined ? null : await this.putBlob(b), after, written: [...written] };
     }
-    await atomicWrite(this.local('sessions', 'active-run.json'), toJson({ id: this.activeRun.id, paths }));
+    await atomicWrite(this.local('sessions', 'active-run.json'), toJson({ id: run.id, paths }));
   }
 
   /** Did the active run change anything? */
@@ -676,6 +1098,11 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(async () => {
       const run = this.activeRun;
       if (!run) return false;
+      // Another app took the project over: its own recovery decides what happens to this run's files.
+      if (this.readOnly) {
+        this.activeRun = null;
+        return false;
+      }
       const changed: HistoryEntry['docs'] = {};
       const paths = new Set([...run.before.keys(), ...this.docs.keys()]);
       for (const p of paths) {
@@ -698,33 +1125,55 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(async () => {
       const run = this.activeRun;
       if (!run) return { restored: false };
-      // Verify, byte for byte, that every file the run touched still holds what the run wrote.
-      const touched = new Set([...run.before.keys(), ...this.docs.keys()].filter((p) => run.before.get(p) !== this.docs.get(p)));
-      for (const p of touched) {
-        const disk = await this.diskContent(p);
-        if (disk !== (this.docs.get(p) ?? null)) {
-          this.activeRun = null;
-          this.conflicts.push({ path: p, reason: 'Changed outside SiteOrigin Builder during an AI run.' });
-          await fs.rm(this.local('sessions', 'active-run.json'), { force: true });
-          this.emit('history');
-          return { restored: false, conflict: p };
-        }
+      if (this.readOnly) {
+        this.activeRun = null;
+        return { restored: false };
       }
+      // Verify, byte for byte, that every file the run touched still holds what the run wrote.
+      const touched = [...new Set([...run.before.keys(), ...this.docs.keys()])].filter((p) => run.before.get(p) !== this.docs.get(p));
+      const changedOutside: string[] = [];
+      for (const p of touched) if ((await this.diskContent(p)) !== (this.docs.get(p) ?? null)) changedOutside.push(p);
       this.activeRun = null;
-      if (touched.size) {
+      if (touched.length && !changedOutside.length) {
         try {
           await this.persist(run.beforeState, { label: 'Revert AI changes', history: false, source: 'system' });
         } catch (e) {
           if (!(e instanceof DiskConflictError)) throw e;
-          this.conflicts.push({ path: e.path, reason: 'Changed outside SiteOrigin Builder during an AI run.' });
-          await fs.rm(this.local('sessions', 'active-run.json'), { force: true });
-          return { restored: false, conflict: e.path };
+          changedOutside.push(e.path);
         }
       }
+      if (changedOutside.length) await this.revertAroundConflicts(run, touched, changedOutside);
       await fs.rm(this.local('sessions', 'active-run.json'), { force: true });
       this.emit('history');
-      return { restored: true };
+      return changedOutside.length ? { restored: false, conflict: changedOutside[0] } : { restored: true };
     });
+  }
+
+  /**
+   * Some files a cancelled run touched were changed outside the app. Every other file goes back to its pre-run
+   * version; each changed file keeps its external version on disk, with the pre-run version held for the user to
+   * choose (spec 18.5). The project's documents in memory are the pre-run state, which is always consistent.
+   */
+  private async revertAroundConflicts(run: NonNullable<ProjectSession['activeRun']>, touched: string[], changedOutside: string[]) {
+    for (const p of touched) {
+      const before = run.before.get(p) ?? null;
+      const disk = await this.diskContent(p);
+      // Checked again right before replacing it: a file saved elsewhere since the first check is held too.
+      if (changedOutside.includes(p) || (disk !== before && disk !== (this.docs.get(p) ?? null))) {
+        this.holdConflict(p, before, 'Changed outside SiteOrigin Builder during an AI run.');
+        continue;
+      }
+      if (disk === before) continue;
+      if (before === null) await this.removeCanonical(p);
+      else await atomicWrite(safeJoin(this.dir, p), before);
+    }
+    this.state = run.beforeState;
+    this.docs = new Map(run.before);
+    await this.saveConflicts();
+    const changedFiles = await this.publishGenerated(false);
+    this.revision++;
+    await this.saveLocalState();
+    this.emit('changed', { revision: this.revision, changedDocs: touched, changedFiles, label: 'Revert AI changes', source: 'system' } satisfies SessionEvent);
   }
 
   // -------------------------------------------------------------------------
@@ -735,10 +1184,21 @@ export class ProjectSession extends EventEmitter {
   async reloadFromDisk(): Promise<{ ok: boolean; message?: string }> {
     return this.serialize(async () => {
       if (this.activeRun) return { ok: false, message: 'Busy' };
+      if (this.readOnly || !(await this.stillOwner())) return this.reloadReadOnly();
+      // A held conflict is settled outside the app when its file is put back to SiteOrigin Builder's version.
+      let settled = false;
+      for (const [p, builder] of [...this.pending]) {
+        if (!settledOnDisk(p, await this.diskContent(p), builder)) continue;
+        this.releaseConflict(p);
+        settled = true;
+      }
+      if (settled) await this.saveConflicts();
       let next: ProjectState;
       try {
-        next = await readState(this.dir);
+        // Files still in conflict are read as SiteOrigin Builder's version until the user chooses.
+        next = await readState(this.dir, { overlay: this.pending });
       } catch (e) {
+        if (settled) this.emit('history');
         return { ok: false, message: (e as Error).message };
       }
       const errors = validateState(next).filter((d) => d.severity === 'error');
@@ -752,7 +1212,10 @@ export class ProjectSession extends EventEmitter {
       let same = nextDocs.size === this.docs.size;
       if (same) for (const [p, c] of nextDocs) if (this.docs.get(p) !== c) same = false;
       const srcSame = JSON.stringify([...stateToAuthoredSources(next)]) === JSON.stringify([...stateToAuthoredSources(this.state)]);
-      if (same && srcSame) return { ok: true };
+      if (same && srcSame) {
+        if (settled) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [], label: 'Conflict resolved', source: 'system' } satisfies SessionEvent);
+        return { ok: true };
+      }
       // Treat the external change as a normal committed edit.
       // Accept the external change as a normal committed edit. The cache is updated to what is on disk
       // so the history entry records the correct before and after.
@@ -769,18 +1232,49 @@ export class ProjectSession extends EventEmitter {
       const changedFiles = await this.publishGenerated(false);
       this.revision++;
       if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'External change', source: 'system' });
-      // A validated reload resolves earlier "changed outside" conflicts.
-      this.conflicts = this.conflicts.filter((c) => !c.reason.startsWith('Changed outside'));
       await this.saveLocalState();
       this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'External change', source: 'system' } satisfies SessionEvent);
       return { ok: true };
     });
   }
 
+  /** Read-only inspection follows the owner's edits without writing anything. */
+  private async reloadReadOnly(): Promise<{ ok: boolean; message?: string }> {
+    let next: ProjectState;
+    try {
+      next = await readState(this.dir, { allowNewer: true });
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
+    const nextDocs = stateToDocs(next);
+    if (nextDocs.size === this.docs.size && [...nextDocs].every(([p, c]) => this.docs.get(p) === c)) return { ok: true };
+    const changedDocs = [...new Set([...nextDocs.keys(), ...this.docs.keys()])].filter((p) => nextDocs.get(p) !== this.docs.get(p));
+    this.state = next;
+    this.docs = nextDocs;
+    this.revision++;
+    this.emit('changed', { revision: this.revision, changedDocs, changedFiles: [], label: 'External change', source: 'system' } satisfies SessionEvent);
+    return { ok: true };
+  }
+
   async close() {
     await this.writing.catch(() => undefined);
     await this.releaseLock();
     this.removeAllListeners();
+  }
+}
+
+/** A held conflict is settled when the file on disk is Builder's version again: present or absent alike. */
+function settledOnDisk(path: string, disk: string | null, builder: string | null): boolean {
+  return (disk === null) === (builder === null) && sameContent(path, disk, builder);
+}
+
+/** Refuse to open a project written by a newer version for editing (it can still be opened read-only). */
+async function assertKnownFormat(dir: string) {
+  try {
+    await readState(dir);
+  } catch (e) {
+    if (e instanceof ProjectFormatError && e.readOnly) throw e;
+    // Anything else is reported by the normal open, after recovery has had its chance.
   }
 }
 
