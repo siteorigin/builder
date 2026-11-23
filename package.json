@@ -16,6 +16,7 @@
     "test:e2e": "node tests/e2e/smoke.mjs && node tests/e2e/flows.mjs && node tests/e2e/code.mjs && node tests/e2e/tour.mjs && node tests/e2e/export.mjs",
     "test:export-build": "node tests/e2e/export.mjs --build",
     "test:ai": "node tests/e2e/ai.mjs",
+    "eval:agent": "tsx --tsconfig tsconfig.node.json scripts/eval-agent.ts",
     "pack": "electron-vite build && electron-builder --dir",
     "dist": "electron-vite build && electron-builder",
     "test:packaged": "node tests/e2e/packaged.mjs"
