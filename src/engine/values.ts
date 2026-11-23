@@ -138,9 +138,11 @@ export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: Pro
       if (!schema.options.some((o) => o.value === v)) fail(`${label}: must be one of ${schema.options.map((o) => o.value).join(', ')}.`);
       return v;
     case 'link':
-      return normalizeLink(v, state, label);
     case 'image':
-      return normalizeImage(v, state, label);
+      // A link or image whose page or asset has gone missing stays while it is not being changed, so editing
+      // another field of the same item never fails on it.
+      if (stored !== undefined && v && typeof v === 'object' && JSON.stringify(v) === JSON.stringify(stored)) return v;
+      return schema.type === 'link' ? normalizeLink(v, state, label) : normalizeImage(v, state, label);
     case 'icon':
       // An unknown name would silently render a fallback icon, so a new one is refused with the valid names.
       if (typeof v === 'string' && v === stored && /^[a-z0-9-]{1,40}$/.test(v)) return v;

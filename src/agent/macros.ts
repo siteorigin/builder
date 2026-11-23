@@ -39,7 +39,7 @@ export const UPSERT_ARGS = z.object({
 export type UpsertArgs = z.infer<typeof UPSERT_ARGS>;
 
 export const UPSERT_DESCRIPTION =
-  'Create or update a whole page in one call, top to bottom, and wire navigation. No page IDs or revisions needed. On an existing page, a section with the same componentId is updated in place (props you omit keep their value; a list you send sets its items and their order, and an item keeps the fields you omit when it has its id from read_page or the same name or title as before); other existing sections stay unless removeOtherSections is true. Internal links may use the route of a page you have not built yet; they connect when that page is created. If a section is invalid, nothing is applied and the error names the section and field: call again with repair: true and only that section, with its index.';
+  'Create or update a whole page in one call, top to bottom, and wire navigation. No page IDs or revisions needed. On an existing page, a section with the same componentId is updated in place (props you omit keep their value; a list you send sets its items and their order, and an item keeps the fields you omit when it has its id from read_page, or no id and the same name or title as exactly one existing item); other existing sections stay unless removeOtherSections is true. Internal links may use the route of a page you have not built yet; they connect when that page is created. If a section is invalid, nothing is applied and the error names the section and field: call again with repair: true and only that section, with its index.';
 
 /** A link whose page does not exist yet. It connects as soon as a page takes that route. */
 export interface PendingLink {
@@ -221,7 +221,8 @@ function pendingSlot(state: ProjectState, p: PendingLink): { value: unknown } | 
   const node = Object.hasOwn(state.pages, p.pageId) ? state.pages[p.pageId].nodes[p.nodeId] : undefined;
   if (node?.kind !== 'instance') return undefined;
   if (!p.itemId) return { value: node.props[p.prop] };
-  const item = ((node.props[p.prop] as ListItem[] | undefined) ?? []).find((i) => i.id === p.itemId);
+  const list = node.props[p.prop];
+  const item = Array.isArray(list) ? (list as ListItem[]).find((i) => i?.id === p.itemId) : undefined;
   return item ? { value: item[p.field!] } : undefined;
 }
 
@@ -231,11 +232,12 @@ const stillWaiting = (state: ProjectState, p: PendingLink) => {
   return !!slot && (slot.value as LinkValue | undefined)?.type === 'none';
 };
 
-function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string, pageId: string): { ops: EditOperation[]; filled: PendingLink[] } {
+/** `skip` names links this call replaces with a value of its own: they are neither filled nor kept. */
+function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string, pageId: string, skip?: (p: PendingLink) => boolean): { ops: EditOperation[]; filled: PendingLink[] } {
   const ops: EditOperation[] = [];
   const filled: PendingLink[] = [];
   for (const p of memory.pendingLinks) {
-    if (p.route !== route) continue;
+    if (p.route !== route || skip?.(p)) continue;
     filled.push(p);
     if (!stillWaiting(state, p)) continue;
     ops.push({
@@ -313,16 +315,19 @@ function expressible(state: ProjectState, page: PageDoc, id: string): boolean {
  * A list sent for an existing section sets which items there are and their order, but an item keeps the stored
  * fields it leaves out. It is the stored item with its id or, when it has no id, the one item with the same
  * title (the list's titleField). Never by position: a reordered or replaced list must not move a portrait or
- * link to another item. An unmatched item is new and starts from the field defaults.
+ * link to another item. An unmatched item is new: it starts from the field defaults with a fresh id, so it never
+ * takes over a removed item's id or a link still waiting there. Returns the stored id each item kept, if any.
  */
-function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, sent: unknown[], stored: ListItem[]): unknown[] {
-  const items = stored.filter((i): i is ListItem => !!i && typeof i === 'object' && typeof i.id === 'string');
+export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, sent: unknown[], stored: unknown[]): { items: unknown[]; ids: Array<string | undefined> } {
+  const all = stored.filter((i): i is ListItem => !!i && typeof i === 'object' && typeof (i as ListItem).id === 'string');
+  // An id two stored items share names neither of them.
+  const items = all.filter((i) => all.filter((x) => x.id === i.id).length === 1);
   const byId = new Map(items.map((i) => [i.id, i]));
-  const sentId = (it: unknown) => (it && typeof it === 'object' && typeof (it as ListItem).id === 'string' ? (it as ListItem).id : undefined);
+  const isRow = (it: unknown): it is Record<string, unknown> => !!it && typeof it === 'object' && !Array.isArray(it);
   const used = new Set<string>();
   // Items that name their id claim it first, so a title can never take an item another one asked for.
   const matched = sent.map((it) => {
-    const id = sentId(it);
+    const id = isRow(it) && typeof it.id === 'string' ? it.id : undefined;
     if (id === undefined || !byId.has(id) || used.has(id)) return undefined;
     used.add(id);
     return byId.get(id);
@@ -330,20 +335,27 @@ function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, sent: u
   const field = schema.titleField;
   if (field) {
     const titleOf = (it: unknown) => {
-      const t = it && typeof it === 'object' ? (it as Record<string, unknown>)[field] : undefined;
+      const t = isRow(it) ? it[field] : undefined;
       return typeof t === 'string' && t.trim() ? t : undefined;
     };
     const count = (list: unknown[], t: string) => list.filter((x) => titleOf(x) === t).length;
     sent.forEach((it, i) => {
       const t = titleOf(it);
-      if (matched[i] || sentId(it) !== undefined || t === undefined || count(sent, t) !== 1 || count(items, t) !== 1) return;
-      const old = items.find((x) => titleOf(x) === t)!;
-      if (used.has(old.id)) return;
+      if (matched[i] || !isRow(it) || typeof it.id === 'string' || t === undefined || count(sent, t) !== 1 || count(all, t) !== 1) return;
+      const old = items.find((x) => titleOf(x) === t);
+      if (!old || used.has(old.id)) return;
       used.add(old.id);
       matched[i] = old;
     });
   }
-  return sent.map((it, i) => (matched[i] ? { ...matched[i], ...(it as Record<string, unknown>), id: matched[i]!.id } : it));
+  return {
+    items: sent.map((it, i) => {
+      if (!isRow(it)) return it;
+      const { id: _id, ...fields } = it;
+      return matched[i] ? { ...structuredClone(matched[i]), ...fields, id: matched[i]!.id } : fields;
+    }),
+    ids: matched.map((m) => m?.id)
+  };
 }
 
 type Slot = { kind: 'keep'; id: string; section?: number } | { kind: 'new'; section: number };
@@ -485,6 +497,11 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
   const plan = planSections(scratch, page, good, !!args.removeOtherSections && !!args.sections);
   for (const id of plan.removed) push({ type: 'node.remove', owner, nodeId: id });
   const order = (page?.rootIds ?? []).filter((id) => !plan.removed.includes(id));
+  // Places this call gives a value of its own. A link still waiting there is replaced by that value, never
+  // filled later; an item field left out keeps its waiting link.
+  const written = new Set<string>();
+  const slotKey = (nodeId: string, prop: string, itemId = '', field = '') => JSON.stringify([nodeId, prop, itemId, field]);
+  const superseded = (p: PendingLink) => p.pageId === pageId && written.has(slotKey(p.nodeId, p.prop, p.itemId, p.field));
   const insertAt = new Map<number, number>();
   if (args.sections) {
     plan.slots.forEach((slot, position) => {
@@ -507,8 +524,16 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
       for (const [prop, value] of Object.entries(c.props)) {
         const schema = Object.hasOwn(props, prop) ? props[prop] : undefined;
         const stored = node.props[prop];
-        const merged = schema?.type === 'list' && Array.isArray(value) && Array.isArray(stored) ? withStoredFields(schema, value, stored as ListItem[]) : value;
-        push({ type: 'instance.setProp', owner, nodeId: slot.id, prop, value: merged }, slot.section);
+        if (schema?.type === 'list' && Array.isArray(value) && Array.isArray(stored)) {
+          const merged = withStoredFields(schema, value, stored);
+          merged.ids.forEach((id, i) => {
+            if (id) for (const f of Object.keys(value[i] as object)) if (f !== 'id') written.add(slotKey(slot.id, prop, id, f));
+          });
+          push({ type: 'instance.setProp', owner, nodeId: slot.id, prop, value: merged.items }, slot.section);
+          continue;
+        }
+        written.add(slotKey(slot.id, prop));
+        push({ type: 'instance.setProp', owner, nodeId: slot.id, prop, value }, slot.section);
       }
       if (c.variant) push({ type: 'instance.setVariant', owner, nodeId: slot.id, variant: c.variant }, slot.section);
     });
@@ -541,7 +566,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
       push(op);
     }
   }
-  const pending = pendingLinkOps(scratch, memory, route, pageId);
+  const pending = pendingLinkOps(scratch, memory, route, pageId, superseded);
   for (const op of pending.ops) push(op);
 
   if (!ops.length) return { ok: true, content: { ok: true, pageId, route, created: false, revision: host.revision(), note: 'Nothing needed to change.' } };
@@ -559,19 +584,10 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     if (slot.kind === 'keep' && slot.section !== undefined) nodeFor.set(slot.section, slot.id);
   });
   for (const [opIndex, section] of insertAt) if (results[opIndex]?.nodeId) nodeFor.set(section, results[opIndex].nodeId!);
-  const saved = host.state().pages[pageId];
-  // A value sent in this call replaces a link still waiting in the same place; an item field left out keeps it.
-  const sectionOf = new Map([...nodeFor].map(([section, nodeId]) => [nodeId, section]));
-  const superseded = (p: PendingLink) => {
-    const section = p.pageId === pageId ? sectionOf.get(p.nodeId) : undefined;
-    if (section === undefined || !Object.hasOwn(good[section].props, p.prop)) return false;
-    if (!p.itemId) return true;
-    const sent = good[section].props[p.prop];
-    const at = ((saved?.nodes[p.nodeId] as InstanceNode | undefined)?.props[p.prop] as ListItem[] | undefined)?.findIndex((it) => it.id === p.itemId) ?? -1;
-    const row = Array.isArray(sent) && at >= 0 ? sent[at] : undefined;
-    return !!row && typeof row === 'object' && Object.hasOwn(row, p.field!);
-  };
-  memory.pendingLinks = memory.pendingLinks.filter((p) => !pending.filled.includes(p) && !superseded(p));
+  const after = host.state();
+  const saved = after.pages[pageId];
+  // Links this call replaced, and any on this page whose place is gone or holds a value now, wait no longer.
+  memory.pendingLinks = memory.pendingLinks.filter((p) => !pending.filled.includes(p) && !superseded(p) && (p.pageId !== pageId || stillWaiting(after, p)));
   good.forEach((c, i) => {
     const nodeId = nodeFor.get(i);
     if (!nodeId) return;
