@@ -1,11 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, existsSync } from 'node:fs';
+import { promises as fs, existsSync, type Dirent } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { PageDoc, ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
+import type { StorageInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { applyOperations, captureClipboard, type Clipboard } from '@engine/apply';
 import { listThemes } from '@catalogue/index';
@@ -30,6 +31,77 @@ export const LOCK_STALE_MS = 2 * 60_000;
 const IMPORTED_ASSET_RE = /^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}(-\d+w)?\.(jpg|png|webp|gif|avif|svg|woff2?)$/;
 /** An imported file is never collected this soon after it was written (its asset may still be on its way in). */
 const ASSET_GRACE_MS = 10 * 60_000;
+const ASSETS_DOC = `${DOC_DIR}/assets.json`;
+/** How many stored versions the session remembers the file names of before starting over. */
+const MENTION_CACHE_LIMIT = 20_000;
+/** Text files that may name an imported file: source, styles, documents and other public files. */
+const TEXT_FILE = /\.(svelte|svx|[cm]?[jt]sx?|css|s[ac]ss|less|html?|json|webmanifest|xml|txt|svg|mdx?|csv|tsv|ya?ml|toml)$/i;
+/** A text file this large is not read; it is assumed to name every file. */
+const TEXT_LIMIT = 8 * 1024 * 1024;
+
+/** The files in static/assets/ a project's files can name, with what still needs each (see assetInventory). */
+interface AssetInventory {
+  /** The static/assets/ folder. */
+  dir: string;
+  /** Regular files directly in it. */
+  files: Array<{ name: string; bytes: number; mtimeMs: number }>;
+  /** Files the project uses now. */
+  current: Set<string>;
+  /** Imported files nothing current names that recovery material (an active run, a held conflict) does. */
+  pinned: Set<string>;
+  /** For each history entry, the imported files nothing current names that its versions do. */
+  byEntry: Array<Set<string>>;
+  /** An imported file nothing names: the project, recovery material and history all do without it. */
+  unneeded(name: string): boolean;
+}
+
+/** Every stored version a history entry restores or expects. */
+const entryBlobs = (e: HistoryEntry) => Object.values(e.docs).flatMap((d) => [d.before, d.after]).filter((x): x is string => !!x);
+
+/** The project files (static/assets/…) an assets document lists, with their responsive copies. */
+function libraryFiles(text: string | null | undefined): string[] {
+  if (!text) return [];
+  try {
+    const doc = JSON.parse(text) as ProjectState['assets'];
+    return Object.values(doc.assets ?? {}).flatMap((a) => [a?.file, ...(a?.variants ?? []).map((v) => v?.file)]).filter((f): f is string => typeof f === 'string');
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Show `look` each text file in the project's documents (siteorigin/), source (src/) and public files (static/,
+ * leaving out imported files themselves), until `done`. Links are not followed. False when a file could not be read,
+ * so the caller can assume it names anything.
+ */
+async function readProjectTexts(dir: string, look: (text: string) => void, done: () => boolean): Promise<boolean> {
+  let complete = true;
+  const walk = async (rel: string): Promise<void> => {
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(join(dir, rel), { withFileTypes: true });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') complete = false;
+      return;
+    }
+    for (const e of entries) {
+      if (done() || !complete) return;
+      const child = `${rel}/${e.name}`;
+      if (e.isDirectory()) await walk(child);
+      else if (e.isFile() && TEXT_FILE.test(e.name) && !(rel === 'static/assets' && IMPORTED_ASSET_RE.test(e.name))) {
+        try {
+          const st = await fs.stat(join(dir, child));
+          if (st.size > TEXT_LIMIT) complete = false;
+          else look(await fs.readFile(join(dir, child), 'utf8'));
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') complete = false;
+        }
+      }
+    }
+  };
+  for (const root of [DOC_DIR, 'src', 'static']) if (!done() && complete) await walk(root);
+  return complete;
+}
 const UNSETTLED = 'A save did not finish. Close and reopen the project to recover it.';
 const LOCK_UNCHECKED = 'The project lock could not be checked, so nothing was changed. Try again.';
 
@@ -1290,14 +1362,31 @@ export class ProjectSession extends EventEmitter {
     if (planned.pruned || --this.gcCountdown <= 0) await this.sweep();
   }
 
-  /** Asset imports in progress: their files are written before their asset records, so no sweep runs meanwhile. */
+  /** Asset imports in progress: their files are written before their asset records, so no asset sweep runs meanwhile. */
   private importing = 0;
+  /** Set while a sweep or a reclaim decides which files in static/assets/ to delete: imports wait for it. */
+  private assetGate: Promise<void> | null = null;
   async withImport<T>(fn: () => Promise<T>): Promise<T> {
+    // An import can write a file under the very name a sweep has found unused, so it waits for the sweep to finish.
+    while (this.assetGate) await this.assetGate;
     this.importing++;
     try {
       return await fn();
     } finally {
       this.importing--;
+    }
+  }
+
+  /** Run `fn` with imports held off. While an import is in progress nothing runs, and the result is null. */
+  private async gateAssets<T>(fn: () => Promise<T>): Promise<T | null> {
+    if (this.importing || this.assetGate) return null;
+    let open!: () => void;
+    this.assetGate = new Promise<void>((r) => (open = r));
+    try {
+      return await fn();
+    } finally {
+      this.assetGate = null;
+      open();
     }
   }
 
@@ -1322,19 +1411,39 @@ export class ProjectSession extends EventEmitter {
     }
   }
 
-  private async collectGarbageNow() {
+  /** The size of every stored history version, by hash. */
+  private async blobSizes(): Promise<Map<string, number>> {
     const blobDir = this.local('history', 'blobs');
-    const names = await fs.readdir(blobDir).catch(() => [] as string[]);
     const sizes = new Map<string, number>();
-    for (const n of names) {
+    for (const n of await fs.readdir(blobDir).catch(() => [] as string[])) {
       const m = n.match(/^([a-f0-9]{64})\.json$/);
       if (m) sizes.set(m[1], (await fs.stat(join(blobDir, n)).catch(() => null))?.size ?? 0);
     }
-    // Recovery material that is never pruned: the active run's pre-run documents and held conflict versions.
+    return sizes;
+  }
+
+  /** Recovery material that is never pruned: the active run's pre-run documents and held conflict versions. */
+  private pinnedBlobs(): Set<string> {
     const pinned = new Set<string>();
     for (const c of this.activeRun?.before.values() ?? []) pinned.add(sha(c));
     for (const c of this.pending.values()) if (c !== null) pinned.add(sha(c));
-    const entryBlobs = (e: HistoryEntry) => Object.values(e.docs).flatMap((d) => [d.before, d.after]).filter((x): x is string => !!x);
+    return pinned;
+  }
+
+  /** Blobs a journal, a run marker or a conflict list on disk names (written by this session or a crash). */
+  private async blobsNamedOnDisk(files = [this.local('journal.json'), this.local('sessions', 'active-run.json'), this.local('conflicts.json')]): Promise<Set<string>> {
+    const named = new Set<string>();
+    for (const f of files) {
+      const t = await readIfExists(f);
+      if (t) for (const m of t.matchAll(/[a-f0-9]{64}/g)) named.add(m[0]);
+    }
+    return named;
+  }
+
+  private async collectGarbageNow() {
+    const blobDir = this.local('history', 'blobs');
+    const sizes = await this.blobSizes();
+    const pinned = this.pinnedBlobs();
     const total = () => {
       const all = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs)]);
       let bytes = 0;
@@ -1355,75 +1464,207 @@ export class ProjectSession extends EventEmitter {
       await atomicWrite(this.local('history', 'history.json'), toJson(this.history));
       this.emit('history');
     }
-    const keep = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs)]);
-    // A journal, a run marker or a conflict list on disk may name blobs too (written by this session or a crash).
-    for (const f of [this.local('journal.json'), this.local('sessions', 'active-run.json'), this.local('conflicts.json')]) {
-      const t = await readIfExists(f);
-      if (t) for (const m of t.matchAll(/[a-f0-9]{64}/g)) keep.add(m[0]);
-    }
+    const keep = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs), ...(await this.blobsNamedOnDisk())]);
     for (const b of sizes.keys()) if (!keep.has(b)) await fs.rm(join(blobDir, `${b}.json`), { force: true });
-    if (!this.importing) await this.collectAssets(keep);
+    await this.gateAssets(() => this.collectAssets());
   }
 
-  /** Delete imported files in static/assets/ that no retained version of assets.json and no code refers to. */
-  private async collectAssets(blobs: Set<string>) {
-    // Only a real folder inside the project is ever swept, never one a link (at any level) points elsewhere.
-    let assetsDir: string;
-    try {
-      assetsDir = safeJoin(this.dir, 'static/assets');
-    } catch {
-      return;
+  /** Delete imported files in static/assets/ that nothing in the project, its retained history or recovery names. */
+  private async collectAssets() {
+    const inv = await this.assetInventory();
+    if (!inv) return;
+    for (const f of inv.files) {
+      if (!inv.unneeded(f.name) || Date.now() - f.mtimeMs < ASSET_GRACE_MS) continue;
+      await fs.rm(join(inv.dir, f.name), { force: true });
     }
-    if (!(await fs.lstat(assetsDir).catch(() => null))?.isDirectory()) return;
-    const files = await fs.readdir(assetsDir).catch(() => [] as string[]);
-    if (!files.length) return;
-    const referenced = new Set<string>();
-    const addDoc = (text: string | null | undefined) => {
-      if (!text) return;
+  }
+
+  /** What each stored version names, by hash and file name. Versions never change, so the answers are kept. */
+  private mentions = new Map<string, Map<string, boolean>>();
+
+  /**
+   * Which of `names` the stored version `hash` names. A version that is gone names nothing (nothing can restore it);
+   * one that cannot be read is taken to name them all, so that a file it might need is never deleted.
+   */
+  private async namedIn(hash: string, names: string[]): Promise<string[]> {
+    let known = this.mentions.get(hash);
+    const unknown = names.filter((n) => !known?.has(n));
+    if (unknown.length) {
+      let text: string;
       try {
-        const doc = JSON.parse(text) as ProjectState['assets'];
-        for (const a of Object.values(doc.assets ?? {})) {
-          if (typeof a?.file === 'string') referenced.add(a.file);
-          for (const v of a?.variants ?? []) if (typeof v?.file === 'string') referenced.add(v.file);
-        }
-      } catch {
-        /* not an assets document */
+        text = await this.getBlob(hash);
+      } catch (e) {
+        return (e as NodeJS.ErrnoException).code === 'ENOENT' ? names.filter((n) => known?.get(n)) : names;
       }
+      if (!known) {
+        if (this.mentions.size >= MENTION_CACHE_LIMIT) this.mentions.clear();
+        known = new Map();
+        this.mentions.set(hash, known);
+      }
+      for (const n of unknown) known.set(n, text.includes(n));
+    }
+    return names.filter((n) => known!.get(n));
+  }
+
+  /**
+   * What still needs each file in static/assets/. The project as it is now comes first: its library, any of its
+   * documents in memory or on disk, and any source, style or other text file in it that names the file. Then
+   * recovery material (an active run's starting point, held conflict versions), then each history entry, by
+   * either side of every document it changed. A file counts as named wherever its file name appears, the way
+   * code, styles and documents refer to it, so a text that cannot be read keeps every file it might name.
+   */
+  private async assetInventory(): Promise<AssetInventory | null> {
+    // Only a real folder inside the project is ever looked at, never one a link (at any level) points elsewhere.
+    let dir: string;
+    try {
+      dir = safeJoin(this.dir, 'static/assets');
+    } catch {
+      return null;
+    }
+    if (!(await fs.lstat(dir).catch(() => null))?.isDirectory()) return null;
+    const files: AssetInventory['files'] = [];
+    for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
+      const st = await fs.lstat(join(dir, name)).catch(() => null);
+      if (st?.isFile()) files.push({ name, bytes: st.size, mtimeMs: st.mtimeMs });
+    }
+    // The library names its files outright; only the other imported files need a closer look.
+    const library = new Set([...libraryFiles(this.docs.get(ASSETS_DOC)), ...libraryFiles(await this.diskContent(ASSETS_DOC))]);
+    const current = new Set(files.filter((f) => library.has(`static/assets/${f.name}`)).map((f) => f.name));
+    let open = files.map((f) => f.name).filter((n) => !current.has(n) && IMPORTED_ASSET_RE.test(n));
+    const pinned = new Set<string>();
+    const byEntry = this.history.entries.map(() => new Set<string>());
+    if (open.length) {
+      const look = (text: string | null | undefined) => {
+        if (!text) return;
+        for (const n of open) if (text.includes(n)) current.add(n);
+        open = open.filter((n) => !current.has(n));
+      };
+      for (const text of this.docs.values()) look(text);
+      if (!(await readProjectTexts(this.dir, look, () => !open.length))) for (const n of open) current.add(n);
+      open = open.filter((n) => !current.has(n));
+    }
+    if (open.length) {
+      for (const text of [...(this.activeRun?.before.values() ?? []), ...this.pending.values()]) if (text) for (const n of open) if (text.includes(n)) pinned.add(n);
+      // A conflict list or run marker on disk may name versions too.
+      for (const h of await this.blobsNamedOnDisk([this.local('sessions', 'active-run.json'), this.local('conflicts.json')])) for (const n of await this.namedIn(h, open)) pinned.add(n);
+      for (const [i, e] of this.history.entries.entries())
+        for (const h of entryBlobs(e)) for (const n of await this.namedIn(h, open)) byEntry[i].add(n);
+    }
+    const inHistory = (n: string) => byEntry.some((s) => s.has(n));
+    return { dir, files, current, pinned, byEntry, unneeded: (n) => IMPORTED_ASSET_RE.test(n) && !current.has(n) && !pinned.has(n) && !inHistory(n) };
+  }
+
+  /** Why space cannot be freed now, if so. */
+  private reclaimBlocked(): string | undefined {
+    if (this.readOnly) return this.readOnly.reason;
+    if (this.unsettled || this.migrationFailed) return UNSETTLED;
+    if (this.activeRun) return 'Wait for the AI to finish, then try again.';
+    if (this.pending.size) return 'Resolve the file conflicts in Project health first.';
+    if (this.importing) return 'Wait for the files being added to finish, then try again.';
+    return undefined;
+  }
+
+  /**
+   * What the project's media and history take on disk, and what freeing up space would do. Removed files kept only
+   * for history can go once the history steps that name them are dropped. Steps are dropped from the ends only (the
+   * oldest undo steps up to the newest one naming such a file, and the furthest redo steps back to the nearest one),
+   * as the byte cap prunes, so every step that stays still undoes and redoes as before.
+   */
+  private async storagePlan(): Promise<{ info: StorageInfo; drop: { dir: string; from: number; to: number; files: Map<string, number>; blobs: Map<string, number> } | null }> {
+    const inv = await this.assetInventory();
+    const sizes = await this.blobSizes();
+    const media = { files: 0, bytes: 0 };
+    const kept = { files: 0, bytes: 0 };
+    const freeable = new Map<string, number>();
+    for (const f of inv?.files ?? []) {
+      if (inv!.current.has(f.name)) {
+        media.files++;
+        media.bytes += f.bytes;
+        continue;
+      }
+      const inHistory = inv!.byEntry.some((s) => s.has(f.name));
+      if (!inHistory && !inv!.pinned.has(f.name)) continue;
+      kept.files++;
+      kept.bytes += f.bytes;
+      if (inHistory && !inv!.pinned.has(f.name)) freeable.set(f.name, f.bytes);
+    }
+    const h = this.history;
+    const sum = (blobs: Iterable<string>) => [...new Set(blobs)].reduce((n, b) => n + (sizes.get(b) ?? 0), 0);
+    const info: StorageInfo = { media, kept, history: { steps: h.entries.length, bytes: sum(h.entries.flatMap(entryBlobs)) }, reclaim: null, blocked: this.reclaimBlocked() };
+    if (!inv || !freeable.size) return { info, drop: null };
+    const names = (i: number) => [...freeable.keys()].some((n) => inv.byEntry[i].has(n));
+    let from = 0;
+    for (let i = h.cursor - 1; i >= 0; i--)
+      if (names(i)) {
+        from = i + 1;
+        break;
+      }
+    let to = h.entries.length;
+    for (let i = h.cursor; i < h.entries.length; i++)
+      if (names(i)) {
+        to = i;
+        break;
+      }
+    const stays = new Set([...this.pinnedBlobs(), ...h.entries.slice(from, to).flatMap(entryBlobs), ...(await this.blobsNamedOnDisk())]);
+    const blobs = new Map<string, number>();
+    for (const e of [...h.entries.slice(0, from), ...h.entries.slice(to)]) for (const b of entryBlobs(e)) if (!stays.has(b) && sizes.has(b)) blobs.set(b, sizes.get(b)!);
+    const undo = h.entries.slice(0, from);
+    const redo = h.entries.slice(to);
+    // Everything the author is shown, so a reclaim confirmed for one plan never carries out another.
+    const key = sha(JSON.stringify({ cursor: h.cursor, undo: undo.map((e) => [e.id, e.docs]), redo: redo.map((e) => [e.id, e.docs]), files: [...freeable].sort(), blobs: [...blobs].sort() }));
+    info.reclaim = {
+      key,
+      files: { files: freeable.size, bytes: [...freeable.values()].reduce((a, b) => a + b, 0) },
+      historyBytes: [...blobs.values()].reduce((a, b) => a + b, 0),
+      undo: undo.map((e) => e.label),
+      redo: redo.map((e) => e.label),
+      keptUndo: h.cursor - from,
+      keptRedo: to - h.cursor
     };
-    const ASSETS_DOC = 'siteorigin/assets.json';
-    addDoc(toJson(this.state.assets));
-    addDoc(await this.diskContent(ASSETS_DOC));
-    addDoc(this.activeRun?.before.get(ASSETS_DOC));
-    addDoc(this.pending.get(ASSETS_DOC));
-    // Code components may point at a file by URL; any mention in any version that can come back keeps it.
-    const code = Object.values(this.state.components).map((d) => d.source ?? '');
-    for (const [p, c] of [...(this.activeRun?.before ?? []), ...this.pending]) if (p.endsWith('.svelte') && c) code.push(c);
-    for (const e of this.history.entries) {
-      for (const [p, d] of Object.entries(e.docs)) {
-        if (p !== ASSETS_DOC && !p.endsWith('.svelte')) continue;
-        for (const h of [d.before, d.after]) {
-          if (!h || !blobs.has(h)) continue;
-          const text = await this.getBlob(h).catch(() => null);
-          if (p === ASSETS_DOC) addDoc(text);
-          else if (text) code.push(text);
-        }
-      }
-    }
-    // A conflict list or run marker on disk may name an assets.json version too.
-    for (const f of [this.local('sessions', 'active-run.json'), this.local('conflicts.json')]) {
-      const t = await readIfExists(f);
-      if (t) for (const m of t.matchAll(/[a-f0-9]{64}/g)) if (blobs.has(m[0])) addDoc(await this.getBlob(m[0]).catch(() => null));
-    }
-    // Both sides of a held conflict: the file on disk may be kept.
-    for (const p of this.pending.keys()) if (p.endsWith('.svelte')) code.push((await this.diskContent(p)) ?? '');
-    const allCode = code.join('\n');
-    for (const f of files) {
-      if (!IMPORTED_ASSET_RE.test(f) || referenced.has(`static/assets/${f}`) || allCode.includes(f)) continue;
-      const abs = join(assetsDir, f);
-      const st = await fs.lstat(abs).catch(() => null);
-      if (!st?.isFile() || Date.now() - st.mtimeMs < ASSET_GRACE_MS) continue;
-      await fs.rm(abs, { force: true });
-    }
+    return { info, drop: { dir: inv.dir, from, to, files: freeable, blobs } };
+  }
+
+  /** What the project's media and history take on disk (see storagePlan). Reads only. */
+  storageInfo(): Promise<StorageInfo> {
+    return this.serialize(async () => (await this.storagePlan()).info, false);
+  }
+
+  /**
+   * Free the space storageInfo offered under `key`: drop the history steps it named, then delete the removed files
+   * and history versions only they used. The shorter history is saved before anything is deleted, so a step that
+   * stays never needs a file that is gone. Refused, changing nothing, when the plan no longer matches the project.
+   */
+  reclaimStorage(key: string): Promise<{ ok: boolean; message?: string; freed?: number }> {
+    return this.serialize(async () => {
+      const blocked = await this.writeBlocked();
+      if (blocked) return { ok: false, message: blocked.error?.message };
+      const why = this.reclaimBlocked();
+      if (why) return { ok: false, message: why };
+      const done = await this.gateAssets(async () => {
+        const { drop, info } = await this.storagePlan();
+        if (!drop || info.reclaim?.key !== key) return { ok: false, message: 'The project changed since the space was worked out. Check what will be freed, then try again.' };
+        const h = this.history;
+        const next: HistoryFile = { ...h, entries: h.entries.slice(drop.from, drop.to), cursor: h.cursor - drop.from };
+        await atomicWrite(this.local('history', 'history.json'), toJson(next));
+        this.history = next;
+        this.emit('history');
+        let freed = 0;
+        let failed = 0;
+        const remove = async (path: string, bytes: number) => {
+          try {
+            await fs.rm(path);
+            freed += bytes;
+          } catch (e) {
+            // Gone already is as good as deleted; anything else is left for a later sweep, which finds it unneeded.
+            if ((e as NodeJS.ErrnoException).code !== 'ENOENT') failed++;
+          }
+        };
+        for (const [name, bytes] of drop.files) await remove(join(drop.dir, name), bytes);
+        for (const [b, bytes] of drop.blobs) await remove(this.local('history', 'blobs', `${b}.json`), bytes);
+        return { ok: true, freed, ...(failed ? { message: `${failed === 1 ? 'One file' : `${failed} files`} could not be deleted yet. ${failed === 1 ? 'It is' : 'They are'} removed automatically later.` } : {}) };
+      });
+      return done ?? { ok: false, message: 'Wait for the files being added to finish, then try again.' };
+    });
   }
 
   historyInfo() {
