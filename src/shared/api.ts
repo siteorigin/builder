@@ -110,6 +110,8 @@ export interface LocalWorkspaceState {
   rightWidth?: number;
   /** Unsent AI messages, keyed by the conversation they were written in. */
   chatDrafts?: Record<string, string>;
+  /** Library images attached to those unsent messages, by asset ID, keyed the same way. */
+  chatImages?: Record<string, string[]>;
   /** The AI conversation that was open, shown again (with its draft) when the project reopens. */
   chatConversation?: string;
 }
@@ -180,6 +182,14 @@ export interface ChatContext {
   selection: ElementRef | null;
   selectionLabel: string | null;
   viewport: number;
+  /** Library images the author attached to the request, by asset ID. The AI is told their IDs and what the library says about them (name, size, description, alt text), never the pictures or their files. */
+  assetIds?: string[];
+}
+
+/** A library image named in a conversation, as it was then: its asset ID tells same-named images apart. */
+export interface ChatImageRef {
+  assetId: string;
+  name: string;
 }
 
 export interface ChatActivity {
@@ -245,6 +255,8 @@ export interface ChatMessage {
   questions?: ChatQuestion[];
   /** The only question of a turn stored before `questions` existed; read through `turnQuestions`. */
   question?: ChatQuestion;
+  /** A request's attached library images, as they were when it was sent (its context holds their IDs). */
+  images?: ChatImageRef[];
 }
 
 /** One question the assistant asked, and the user's answer once given. */
@@ -256,6 +268,10 @@ export interface ChatQuestion {
   answered?: string;
   /** Only its choices grant it: a scope-widening question. */
   widen?: boolean;
+  /** Library images offered as choices, shown as pictures before the text choices. */
+  images?: ChatImageRef[];
+  /** The offered image the user chose; `answered` is then its name. */
+  answeredAssetId?: string;
 }
 
 /** A turn's questions in order, including one stored by an earlier version as `question`. */
@@ -366,8 +382,11 @@ export interface BuilderApi {
      *  rolled back; `stopped` is false when it had already ended (or another request is running). */
     stop(): Promise<void>;
     stop(runId: string): Promise<{ stopped: boolean; status?: RunStatus }>;
-    /** Answer the run's waiting question; false when that question is no longer waiting or the answer is blank. */
-    answer(runId: string, questionId: string, answer: string): Promise<boolean>;
+    /**
+     * Answer the run's waiting question with text, or with one of the images it offered; false when that question is
+     * no longer waiting, the answer is blank, or the image was not offered or is no longer in the project.
+     */
+    answer(runId: string, questionId: string, answer: string | { assetId: string }): Promise<boolean>;
     undoTurn(runId: string): Promise<{ ok: boolean; message?: string }>;
     fixCode(source: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string; cancelled?: boolean }>;
     /** Cancel an in-flight fixCode request. */

@@ -12,7 +12,7 @@ import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
-import { afterSend, chatStatePatch, cleanDrafts, draftFor, moveDraft, restorePlan, unsentDrafts, withDraft, type ChatDrafts } from '../../src/renderer/src/lib/chatDrafts';
+import { afterSend, afterSendMessage, attachImage, chatStatePatch, cleanDrafts, cleanImages, draftFor, imagesFor, moveDraft, moveImages, restorePlan, unsentDrafts, withDraft, withImages, type ChatDrafts, type ChatImages } from '../../src/renderer/src/lib/chatDrafts';
 
 describe('drafts per conversation', () => {
   it('a new conversation starts empty, and returning to the first restores its draft', () => {
@@ -286,5 +286,78 @@ describe('conversations in the assistant', () => {
     swap(other);
     await expect(clearing).rejects.toThrow(/project changed/);
     expect(orch.conversation!.id).toBe(before);
+  });
+});
+
+describe('images attached to an unsent message (#12)', () => {
+  it('attaches an image once per message, up to four, and takes one out again', () => {
+    let images: ChatImages = {};
+    const add = (id: string) => {
+      const r = attachImage(images, 'c_one', id);
+      images = r.images;
+      return r.outcome;
+    };
+    expect(add('a_yca1j3rh')).toBe('added');
+    expect(add('a_hodln13r')).toBe('added');
+    // The same image twice is one attachment, wherever it is in the list.
+    expect(add('a_hodln13r')).toBe('already');
+    expect(add('a_yca1j3rh')).toBe('already');
+    expect(imagesFor(images, 'c_one')).toEqual(['a_yca1j3rh', 'a_hodln13r']);
+    expect(add('a_3')).toBe('added');
+    expect(add('a_4')).toBe('added');
+    expect(add('a_5')).toBe('full');
+    expect(imagesFor(images, 'c_one')).toEqual(['a_yca1j3rh', 'a_hodln13r', 'a_3', 'a_4']);
+    // Each conversation keeps its own; another has none, and reading none is always the same empty list.
+    expect(imagesFor(images, 'c_two')).toEqual([]);
+    expect(imagesFor(images, 'c_two')).toBe(imagesFor({}, 'c_three'));
+    images = withImages(images, 'c_one', ['a_hodln13r']);
+    expect(imagesFor(images, 'c_one')).toEqual(['a_hodln13r']);
+    expect(withImages(images, 'c_one', ['a_hodln13r'])).toBe(images);
+    expect(withImages(images, 'c_one', [])).toEqual({});
+  });
+
+  it('takes the sent images out of the message, and clears its text only while it is what was sent', () => {
+    const drafts: ChatDrafts = { c_one: 'Use this photo', c_two: 'Other' };
+    const images: ChatImages = { c_one: ['a_hodln13r'], c_two: ['a_yca1j3rh'] };
+    expect(afterSendMessage(drafts, images, 'c_one', 'Use this photo', ['a_hodln13r'])).toEqual({ drafts: { c_two: 'Other' }, images: { c_two: ['a_yca1j3rh'] } });
+    // A new request typed while this one started stays, without the image that already went.
+    expect(afterSendMessage({ ...drafts, c_one: 'Now the footer' }, images, 'c_one', 'Use this photo', ['a_hodln13r'])).toEqual({ drafts: { ...drafts, c_one: 'Now the footer' }, images: { c_two: ['a_yca1j3rh'] } });
+    // An image attached meanwhile stays for the next message; the sent one and the sent text go.
+    expect(afterSendMessage(drafts, { ...images, c_one: ['a_hodln13r', 'a_yca1j3rh'] }, 'c_one', 'Use this photo', ['a_hodln13r'])).toEqual({ drafts: { c_two: 'Other' }, images: { c_one: ['a_yca1j3rh'], c_two: ['a_yca1j3rh'] } });
+    // Every image that went is taken out, wherever it sits now.
+    expect(afterSendMessage({}, { c_one: ['a_2', 'a_new', 'a_1'] }, 'c_one', '', ['a_1', 'a_2']).images).toEqual({ c_one: ['a_new'] });
+    // One image swapped for another meanwhile: the new one stays.
+    expect(afterSendMessage(drafts, { ...images, c_one: ['a_kitchen1'] }, 'c_one', 'Use this photo', ['a_hodln13r']).images).toEqual({ c_one: ['a_kitchen1'], c_two: ['a_yca1j3rh'] });
+    // A message sent without images clears its text as before, and leaves the images alone.
+    const plain = afterSendMessage({ c_one: 'Hi' }, { c_two: ['a_1'] }, 'c_one', 'Hi', []);
+    expect(plain).toEqual({ drafts: {}, images: { c_two: ['a_1'] } });
+  });
+
+  it('keeps a message that has only images as a draft: listed, restored and moved with its conversation', () => {
+    expect(unsentDrafts({ c_typed: 'Hello' }, [], null, { c_pics: ['a_1', 'a_2'], c_typed: ['a_3'] })).toEqual([
+      { id: 'c_typed', text: 'Hello', images: 1 },
+      { id: 'c_pics', text: '', images: 2 }
+    ]);
+    // The open conversation and saved ones are not "not sent yet".
+    expect(unsentDrafts({}, ['c_saved'], 'c_open', { c_saved: ['a_1'], c_open: ['a_2'] })).toEqual([]);
+    expect(restorePlan('c_pics', 'c_newest', ['c_newest'], {}, { c_pics: ['a_1'] })).toEqual({ kind: 'fresh', from: 'c_pics' });
+    expect(restorePlan('c_none', 'c_newest', ['c_newest'], {}, {})).toEqual({ kind: 'active' });
+    expect(moveImages({ c_old: ['a_1'] }, 'c_old', 'c_new')).toEqual({ c_new: ['a_1'] });
+    const same = { c_old: ['a_1'] };
+    expect(moveImages(same, 'c_old', 'c_old')).toBe(same);
+    expect(moveImages(same, 'c_none', 'c_new')).toBe(same);
+  });
+
+  it('saves with the drafts, and reads back only clean lists', () => {
+    expect(cleanImages({ c_one: ['a_1', 'a_1', 7, '', 'a_2', 'a_3', 'a_4', 'a_5'], c_two: ['a_9'], 'not-a-conversation': ['a_1'], c_three: 'a_1', c_four: [] })).toEqual({ c_one: ['a_1', 'a_2', 'a_3', 'a_4'], c_two: ['a_9'] });
+    expect(cleanImages(null)).toEqual({});
+    expect(cleanImages(['a_1'])).toEqual({});
+    const prev = { key: 'k1', drafts: {}, images: {}, conversationId: 'c_one' };
+    expect(chatStatePatch(prev, { ...prev, images: { c_one: ['a_1'] } })).toEqual({ key: 'k1', patch: { chatImages: { c_one: ['a_1'] } } });
+    // Taking the last image out is saved too.
+    expect(chatStatePatch({ ...prev, images: { c_one: ['a_1'] } }, { ...prev, images: {} })).toEqual({ key: 'k1', patch: { chatImages: {} } });
+    // Another opening, or no change, saves nothing.
+    expect(chatStatePatch(prev, { ...prev, key: 'k2', images: { c_one: ['a_1'] } })).toBeNull();
+    expect(chatStatePatch(prev, prev)).toBeNull();
   });
 });

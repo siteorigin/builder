@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { AiEvent, AppSettings, ChatMessage, Conversation, LocalWorkspaceState, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ResponsiveScope } from '@shared/types';
-import { chatStatePatch, draftFor, withDraft, type ChatDrafts } from './lib/chatDrafts';
+import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
 import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText, whereOf } from './lib/held';
@@ -126,6 +126,8 @@ interface State {
   activeRunId: string | null;
   /** Unsent messages per conversation of the open project (see lib/chatDrafts). */
   chatDrafts: ChatDrafts;
+  /** Library images attached to those unsent messages, by asset ID (see lib/chatDrafts). */
+  chatImages: ChatImages;
   chatContextEnabled: { page: boolean; selection: boolean };
   /** Typed edits made while the AI was working (see HeldEdit). */
   heldEdits: HeldEdit[];
@@ -164,6 +166,7 @@ export const useStore = create<State>((set) => ({
   runStatus: null,
   activeRunId: null,
   chatDrafts: {},
+  chatImages: {},
   chatContextEnabled: { page: true, selection: true },
   heldEdits: [],
   aiOutcome: null,
@@ -190,11 +193,31 @@ export function setChatDraft(conversationId: string | null | undefined, text: st
   if (next !== drafts) setState({ chatDrafts: next });
 }
 
+/** The images attached to the open conversation's unsent message. */
+export const selectChatImages = (s: State) => imagesFor(s.chatImages, s.conversation?.id);
+
+/**
+ * Attach a library image to the AI message being written, and show it there. It goes to the open conversation of
+ * the project it was chosen in; while a question waits, the message (and its images) waits beside it.
+ */
+export function attachToChat(opening: string, assetId: string) {
+  const s = getState();
+  if (s.snapshot?.workspaceKey !== opening) return;
+  const asset = s.snapshot.state.assets.assets[assetId];
+  if (asset?.kind !== 'image') return toast('That image is no longer in Assets.', 'info');
+  if (!s.conversation) return toast('The AI conversation is still loading. Try again in a moment.', 'info');
+  const r = attachImage(s.chatImages, s.conversation.id, assetId);
+  if (r.outcome === 'full') toast('A message can carry up to 4 images. Remove one from the message first.', 'info');
+  else if (r.outcome === 'already') toast(`${(typeof asset.name === 'string' && asset.name.trim()) || 'This image'} is already in your message.`, 'info');
+  setState({ chatImages: r.images, rightTab: 'chat', dockOpen: true });
+  requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus());
+}
+
 /** Save drafts and the open conversation to the project they belong to, as they change. */
 export function persistChatState(s: State, prev: State) {
   const out = chatStatePatch(
-    { key: prev.snapshot?.workspaceKey ?? null, drafts: prev.chatDrafts, conversationId: prev.conversation?.id ?? null },
-    { key: s.snapshot?.workspaceKey ?? null, drafts: s.chatDrafts, conversationId: s.conversation?.id ?? null }
+    { key: prev.snapshot?.workspaceKey ?? null, drafts: prev.chatDrafts, images: prev.chatImages, conversationId: prev.conversation?.id ?? null },
+    { key: s.snapshot?.workspaceKey ?? null, drafts: s.chatDrafts, images: s.chatImages, conversationId: s.conversation?.id ?? null }
   );
   if (out) void api.project.saveLocalState(out.patch, out.key);
 }

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, Component, FileSearch, FileText, Globe, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Trash2, TriangleAlert, Upload } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Component, FileSearch, FileText, Globe, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
-import { api, applyOps, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
+import { api, applyOps, attachToChat, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
-import { assetUrl } from '../lib/model';
+import { Picture, Thumb } from '../components/AssetPicture';
 import { openSiteStyles, selectPage } from '../lib/actions';
 import { SHOW_ASSET_EVENT } from '../lib/place';
 
@@ -23,13 +23,6 @@ function formatBytes(b: number): string {
 function formatType(mime: string): string {
   if (mime === 'image/svg+xml') return 'SVG';
   return mime.replace(/^image\//, '').toUpperCase();
-}
-
-/** Logos, banners and extreme shapes are shown whole; ordinary photos fill the tile. Formats that can be
- *  transparent get a checker behind the picture itself, so it shows only through transparent pixels. */
-function fitFor(a: AssetRecord): { contain: boolean; alpha: boolean } {
-  const ratio = a.width && a.height ? a.width / a.height : 1;
-  return { contain: a.mime === 'image/svg+xml' || ratio > 1.8 || ratio < 0.56, alpha: /svg|png|webp|gif|avif/.test(a.mime) };
 }
 
 const nameOf = (a: AssetRecord) => a.name.trim() || 'Untitled image';
@@ -177,23 +170,6 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
 
 const PLACE_ICON = { page: FileText, shell: PanelTop, component: Component, site: Globe };
 
-/** The picture, once it has loaded: the transparency checker waits for it, and a file that will not load shows a glyph. */
-function Picture({ a, devUrl, lazy }: { a: AssetRecord; devUrl: string | null; lazy?: boolean }) {
-  const src = devUrl ? assetUrl(devUrl, a.file) : null;
-  const [load, setLoad] = useState<'wait' | 'ok' | 'error'>('wait');
-  useEffect(() => setLoad('wait'), [src]);
-  if (!src || load === 'error') return <ImageIcon className="asset-noimg" aria-hidden="true" />;
-  return <img className={fitFor(a).alpha && load === 'ok' ? 'alpha' : undefined} src={src} alt="" loading={lazy ? 'lazy' : undefined} draggable={false} onLoad={() => setLoad('ok')} onError={() => setLoad('error')} />;
-}
-
-function Thumb({ a, devUrl }: { a: AssetRecord; devUrl: string | null }) {
-  return (
-    <span className={`asset-thumb${fitFor(a).contain ? ' contain' : ''}`}>
-      <Picture a={a} devUrl={devUrl} lazy />
-    </span>
-  );
-}
-
 /** Arrow keys, Home and End move between tiles by row and column; Tab still walks them in order. */
 function gridKeys(e: React.KeyboardEvent<HTMLElement>) {
   const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-asset]')];
@@ -251,6 +227,18 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const missingOf = useMemo(() => new Map((missingAssets ?? []).map((m) => [m.assetId, m])), [missingAssets]);
   // Images and fonts are listed apart: a font is never shown, picked or replaced as a picture.
   const assets = useMemo(() => Object.values(assetsDoc ?? {}).filter((a) => a?.kind === 'image').sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [assetsDoc]);
+  /** Names more than one image has, compared as the AI chat compares them. */
+  const sharedNames = useMemo(() => {
+    const seen = new Set<string>();
+    const shared = new Set<string>();
+    for (const a of assets) {
+      if (typeof a.name !== 'string') continue;
+      const n = nameOf(a).toLowerCase();
+      if (seen.has(n)) shared.add(n);
+      seen.add(n);
+    }
+    return shared;
+  }, [assets]);
   const fonts = useMemo(() => Object.values(assetsDoc ?? {}).filter(isValidFontAsset).sort((a, b) => fontLabel(a).localeCompare(fontLabel(b))), [assetsDoc]);
   const sel = selected && assetsDoc ? (assetsDoc[selected] ?? null) : null;
   const recordsLocation = useRecordsLocation(sel);
@@ -447,9 +435,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const grid = (onPick: (a: AssetRecord) => void, label: string) => (
     <div className="asset-grid" role="group" aria-label={label} onKeyDown={gridKeys}>
       {shown.map((a) => {
+        // Two imports can share a name ("hero"): the asset ID tells them apart, as the AI chat names them.
         const gone = missingOf.get(a.id);
         const big = a.bytes > LARGE && !gone;
-        const name = nameOf(a);
+        const shared = typeof a.name === 'string' && sharedNames.has(nameOf(a).toLowerCase());
+        const name = shared ? `${nameOf(a)} (${a.id})` : nameOf(a);
         const missingLabel = gone ? (gone.original ? 'file missing' : 'smaller copies missing') : '';
         return (
           <button
@@ -473,7 +463,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                 {formatBytes(a.bytes)}
               </span>
             )}
-            <span className="asset-name">{shortName(name)}</span>
+            <span className="asset-name">{shortName(nameOf(a))}</span>
+            {shared && <span className="asset-tile-id">{a.id}</span>}
           </button>
         );
       })}
@@ -579,6 +570,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     );
   } else if (sel) {
     const used = usage[sel.id] ?? 0;
+    // Two imports can share a name ("hero"): the asset ID is what tells them apart, here and in the AI chat.
+    const sameName = typeof sel.name === 'string' && sharedNames.has(nameOf(sel).toLowerCase());
     const shownPlaces = allPlaces ? places : places.slice(0, 4);
     const gone = missingOf.get(sel.id);
     const copies = gone?.variants.length ?? 0;
@@ -602,6 +595,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         <div className="asset-ident">
           <h4>{nameOf(sel)}</h4>
           <p className="asset-meta">{[sel.width && sel.height ? `${sel.width} × ${sel.height}` : '', formatBytes(sel.bytes), formatType(sel.mime)].filter(Boolean).join(' · ')}</p>
+          {sameName && (
+            <p className="asset-meta" data-testid="asset-id">
+              Another image has this name. This one is <code>{sel.id}</code>.
+            </p>
+          )}
         </div>
         {gone && (
           <div className="asset-note asset-missing" role="note">
@@ -692,6 +690,10 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             </button>
           )}
           <div className="asset-actions">
+            {/* Only the image's ID and name go to the AI; the picture stays on this computer. */}
+            <button className="btn btn-sm asset-to-chat" title="Attach this image to your next AI message" onClick={() => attachToChat(snap.workspaceKey, sel.id)}>
+              <Sparkles /> Use in AI chat
+            </button>
             {used ? (
               <>
                 <button className="btn btn-sm asset-replace-open" onClick={openReplace}>

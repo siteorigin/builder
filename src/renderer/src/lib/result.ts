@@ -83,5 +83,11 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
     }
     if (!found) return { error: `${ctx.selectionLabel ?? 'The selected element'} is no longer in the site. ${choose}` };
   }
+  // The images the request was about go with it; one removed since cannot.
+  const gone = (Array.isArray(ctx.assetIds) ? ctx.assetIds : []).filter((id) => typeof id !== 'string' || state.assets.assets[id]?.kind !== 'image');
+  if (gone.length) {
+    const name = user.images?.find((i) => i.assetId === gone[0])?.name;
+    return { error: `${name ? `The image “${name}”` : 'An image attached to that request'} is no longer in Assets. Attach the images you want, then send "Continue".` };
+  }
   return { ctx: structuredClone(ctx) };
 }
