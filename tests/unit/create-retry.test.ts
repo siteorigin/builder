@@ -136,6 +136,52 @@ describe('New project after Cancel', () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
+  it('takes the manifest away while the lock is still held, and the claim on the folder last', async () => {
+    const { c, parent, hooks } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    const atClose: string[][] = [];
+    const close = ProjectSession.prototype.close;
+    vi.spyOn(ProjectSession.prototype, 'close').mockImplementation(async function (this: InstanceType<typeof ProjectSession>) {
+      atClose.push(readdirSync(dir).sort());
+      return close.call(this);
+    });
+    hooks.cancelAt = 'dependencies';
+    deps.run = untilCancelled;
+    expect((await c.create(opts(parent))).ok).toBe(false);
+    // Until the lock goes no other app can open the folder as a project, and once it goes there is none to open.
+    expect(atClose).toEqual([['.siteorigin']]);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('cancels a Cancel pressed straight after Create, before anything is written', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    const pending = c.create(opts(parent));
+    c.cancelCreate();
+    expect(await pending).toEqual({ ok: false, message: 'Cancelled.' });
+    expect(readdirSync(dir)).toEqual([]);
+    expect(c.session).toBeNull();
+    expect(await c.create(opts(parent))).toEqual({ ok: true });
+  });
+
+  it('a creation that ends while a later one runs leaves that later one cancellable', async () => {
+    const { c, parent } = setup();
+    let failFirst!: () => void;
+    deps.run = () => new Promise<void>((_resolve, reject) => (failFirst = () => reject(new Error('Installing dependencies failed (exit 1).'))));
+    const first = c.create({ ...opts(parent), name: 'First Light' });
+    await vi.waitFor(() => expect(failFirst).toBeTypeOf('function'));
+    deps.run = untilCancelled;
+    const second = c.create(opts(parent));
+    await vi.waitFor(() => expect(existsSync(join(parent, 'meadow-studio', 'node_modules'))).toBe(true));
+    failFirst();
+    expect((await first).ok).toBe(false);
+    c.cancelCreate();
+    expect(await second).toEqual({ ok: false, message: 'Cancelled.' });
+    expect(readdirSync(parent)).toEqual([]);
+  });
+
   it('leaves nothing behind when Cancel lands just as the website tools finish, the last moment it can stop', async () => {
     const { c, parent } = setup();
     const dir = join(parent, 'meadow-studio');
@@ -210,6 +256,24 @@ describe('protecting what was already there', () => {
     expect(r.message).toContain('already exists and is not empty');
     expect(readdirSync(dir)).toEqual(['.siteorigin']);
     expect(readdirSync(join(dir, '.siteorigin'))).toEqual(['sessions']);
+  });
+
+  it('lets go of a folder that something else wrote into just before the claim, untouched', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    const readdir = fs.readdir.bind(fs);
+    let looks = 0;
+    vi.spyOn(fs, 'readdir').mockImplementation((async (p: string, ...rest: unknown[]) => {
+      const seen = await (readdir as (...a: unknown[]) => Promise<string[]>)(p, ...rest);
+      if (p === dir && ++looks === 2) writeFileSync(join(dir, '.DS_Store'), 'finder');
+      return seen;
+    }) as never);
+    const r = await c.create(opts(parent));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('already exists and is not empty');
+    expect(readdirSync(dir)).toEqual(['.DS_Store']);
+    expect(readFileSync(join(dir, '.DS_Store'), 'utf8')).toBe('finder');
   });
 
   it('removes nothing once another app has opened the new project and holds its lock', async () => {

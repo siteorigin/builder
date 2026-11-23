@@ -70,14 +70,21 @@ const CREATED_ENTRIES = ['README.md', 'NOTICE.md', MANIFEST_FILE, DOC_DIR, LOCAL
  * Undo a creation that stopped part way, so the same name and folder can be used again. Only entries a creation
  * writes are removed, and only from a folder it claimed while it was empty: anything else that turned up there stays,
  * and so does the folder itself unless the creation made it.
+ *
+ * The manifest goes first, while a session that never reached the editor still holds the project's lock, so no other
+ * app can open what is left as a project. The local folder goes last: it is the claim, and while it stands no other
+ * creation can start writing into the folder.
  */
-async function removeCreatedProject(dir: string, claimed: boolean, madeFolder: boolean): Promise<void> {
+async function removeCreatedProject(dir: string, session: ProjectSession | null, claimed: boolean, madeFolder: boolean): Promise<void> {
   if (claimed) {
     const ours = new Set([...(await fs.readdir(templateFiles()).catch(() => [] as string[])), ...CREATED_ENTRIES]);
-    for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
-      if (ours.has(name)) await fs.rm(join(dir, name), { recursive: true, force: true }).catch(() => undefined);
-    }
+    const present = (await fs.readdir(dir).catch(() => [] as string[])).filter((n) => ours.has(n) && n !== MANIFEST_FILE && n !== LOCAL_DIR);
+    for (const name of [MANIFEST_FILE, ...present]) await fs.rm(join(dir, name), { recursive: true, force: true }).catch(() => undefined);
   }
+  // Closing the editor's project does not close a session that never reached it: its lock and heartbeat go here.
+  // Closing one that was attached (and so already closed) again does nothing.
+  await session?.close().catch(() => undefined);
+  if (claimed) await fs.rm(join(dir, LOCAL_DIR), { recursive: true, force: true }).catch(() => undefined);
   // Never recursive: a folder that still holds something it did not write is left as it is.
   if (madeFolder) await fs.rmdir(dir).catch(() => undefined);
 }
@@ -214,20 +221,33 @@ export class Controller {
   }
 
   async create(opts: CreateProjectOptions): Promise<{ ok: boolean; message?: string }> {
+    // Cancel is offered from the moment Create is pressed, so it works from then on. A later creation (the window was
+    // closed and opened again meanwhile) has its own, which this one never clears.
+    const abort = new AbortController();
+    this.createAbort = abort;
+    try {
+      return await this.createProject(opts, abort.signal);
+    } finally {
+      if (this.createAbort === abort) this.createAbort = null;
+    }
+  }
+
+  private async createProject(opts: CreateProjectOptions, signal: AbortSignal): Promise<{ ok: boolean; message?: string }> {
     const name = opts.name.trim();
     if (!name) return { ok: false, message: 'Enter a project name.' };
     let dir = join(opts.parentDir, slugify(name) || 'website');
     if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
     if (!(await this.mayLeave())) return { ok: false };
+    // Cancelled before anything happened: the open project stays open.
+    if (signal.aborted) return { ok: false, message: 'Cancelled.' };
     // Set only once this attempt has created the folder itself: only then may it remove the folder on failure.
     let createdDir = false;
     // Set once this attempt has claimed the empty folder: only then are the project files in it its own to remove.
     let claimed = false;
     let session: ProjectSession | null = null;
-    this.createAbort = new AbortController();
-    const signal = this.createAbort.signal;
     await this.close();
     try {
+      if (signal.aborted) throw new Error('Cancelled');
       this.progress({ step: 'files', message: 'Preparing project files…' });
       await fs.mkdir(dirname(dir), { recursive: true });
       try {
@@ -245,6 +265,11 @@ export class Controller {
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`${dir} already exists and is not empty. Choose another name or folder.`);
         throw e;
+      }
+      // Anything that arrived before the claim makes the folder no longer empty after all: let it go untouched.
+      if ((await fs.readdir(dir)).some((n) => n !== LOCAL_DIR)) {
+        await fs.rmdir(join(dir, LOCAL_DIR)).catch(() => undefined);
+        throw new Error(`${dir} already exists and is not empty. Choose another name or folder.`);
       }
       claimed = true;
       // One name for the folder from here on: the build tools resolve links and must agree with the session.
@@ -298,14 +323,9 @@ export class Controller {
     } catch (e) {
       const msg = friendlyError((e as Error).message);
       await this.close();
-      // A session that never reached the editor is not closed with the editor's project: its lock and heartbeat go
-      // here, before its files do. Closing one that was attached (and closed above) again does nothing.
-      await session?.close().catch(() => undefined);
-      await removeCreatedProject(dir, claimed, createdDir);
+      await removeCreatedProject(dir, session, claimed, createdDir);
       this.progress({ step: 'error', message: msg === 'Cancelled' ? 'Project creation was cancelled.' : 'The project could not be created.', detail: msg });
       return { ok: false, message: msg };
-    } finally {
-      this.createAbort = null;
     }
   }
 
