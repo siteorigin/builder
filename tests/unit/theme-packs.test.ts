@@ -167,6 +167,24 @@ describe('pinning an installed pack', () => {
   });
 });
 
+describe('switching to a pack with other fonts', () => {
+  const onlyInter = () => ({ fonts: FOUNDATION_PACK.fonts.filter((f) => f.name === 'Inter') });
+  it('takes the new theme’s fonts where the site kept the defaults', () => {
+    withInstalled('d1', onlyInter());
+    const next = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'theme.apply', themeId: 'studio' }]).state;
+    expect(packFileCopies(next).every((c) => c.pack === 'studio' && c.file.startsWith('fonts/inter-'))).toBe(true);
+  });
+
+  it('refuses, naming the font, when the site chose a font the new theme does not ship', () => {
+    withInstalled('d1', onlyInter());
+    const chose = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'token.set', tokenId: 'font.display', value: 'Lora' }]).state;
+    expect(() => applyOperations(chose, [{ type: 'theme.apply', themeId: 'studio' }])).toThrow(/Lora: your site uses this font, which Studio does not include/);
+    // Back on a font the new theme has, the switch goes ahead.
+    const back = applyOperations(chose, [{ type: 'token.set', tokenId: 'font.display', value: 'Inter' }]).state;
+    expect(applyOperations(back, [{ type: 'theme.apply', themeId: 'studio' }]).state.site.themeId).toBe('studio');
+  });
+});
+
 describe("a site's theme fonts", () => {
   const fontPaths = (d: string, state: ProjectState) => packFileCopies(state).map((c) => join(d, c.path));
 
