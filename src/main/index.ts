@@ -272,6 +272,8 @@ function buildMenu() {
 }
 
 app.whenReady().then(async () => {
+  // Packaged builds carry the icon in the bundle; in development the dock would otherwise show Electron's.
+  if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(join(here, '../../build/icon.png'));
   // Serve the packaged editor from an app-controlled secure origin.
   protocol.handle('app', (req) => {
     const url = new URL(req.url);

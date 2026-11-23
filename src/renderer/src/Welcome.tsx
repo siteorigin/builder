@@ -1,17 +1,15 @@
 import { useEffect, useState } from 'react';
-import { Check, FolderOpen, Globe, LayoutTemplate, Plus, Settings, ShieldAlert, Trash2, X } from 'lucide-react';
+import { Check, FolderOpen, LayoutTemplate, Plus, Settings, ShieldAlert, Trash2, X } from 'lucide-react';
 import type { ProgressEvent, RecentProject } from '@shared/api';
 import { api, setState, toast, useStore } from './store';
 import { Field, Modal, Spinner, Switch } from './components/ui';
 import { SettingsModal } from './panels/SettingsModal';
+import { AppMark } from './components/AppMark';
 
 export function BrandMark() {
   return (
     <div className="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z" />
-        <path d="M12 12 4 7.5M12 12l8-4.5M12 12v9" />
-      </svg>
+      <AppMark size={44} />
     </div>
   );
 }
@@ -99,7 +97,7 @@ export function Welcome() {
         {recents.length === 0 ? (
           <div className="empty-state">
             <span className="empty-icon">
-              <Globe />
+              <AppMark size={64} />
             </span>
             <strong>No projects yet</strong>
             <span>Create your first website from a starter. It takes about a minute.</span>

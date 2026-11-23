@@ -2,6 +2,7 @@ import { ChevronDown, Cloud, CloudAlert, Eye, Laptop, Monitor, MousePointer2, Pa
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { api, setState, toast, useStore } from '../store';
 import { useMenu } from '../components/ui';
+import { AppMark } from '../components/AppMark';
 import { selectPage } from '../lib/actions';
 
 const ZOOMS = [0.5, 0.75, 1, 1.25];
@@ -37,6 +38,9 @@ export function Toolbar() {
 
   return (
     <header className={`toolbar drag${isMac ? ' mac' : ''}`}>
+      <span className="toolbar-mark" title="SiteOrigin Builder">
+        <AppMark size={26} />
+      </span>
       <div className="toolbar-group no-drag">
         <button className="icon-btn" aria-pressed={!!leftTab} title="Toggle sidebar (⌘\)" aria-label="Toggle sidebar" onClick={() => setState({ leftTab: leftTab ? null : 'pages' })}>
           <PanelLeft />
