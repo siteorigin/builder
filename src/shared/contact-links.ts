@@ -88,8 +88,12 @@ export function sameContact(a: Contact, b: Contact): boolean {
   return [a.digits, a.alt].some((x) => x && [b.digits, b.alt].some((y) => y && same(x, y)));
 }
 
-/** Text that shows the linked number and more (a second number, an extension) is not a different number. */
-const extendsLink = (shown: Contact, opens: Contact) => shown.kind === 'tel' && opens.kind === 'tel' && national(shown.digits).length > national(opens.digits).length && national(shown.digits).includes(national(opens.digits));
+/** Text that starts with the linked number and goes on (an extension, a second number) still shows that number. */
+function extendsLink(shown: Contact, opens: Contact): boolean {
+  if (shown.kind !== 'tel' || opens.kind !== 'tel') return false;
+  for (let k = shown.digits.length - 1; k >= MIN_DIGITS; k--) if (sameContact({ kind: 'tel', digits: shown.digits.slice(0, k) }, opens)) return true;
+  return false;
+}
 
 /** An email link's ?subject=…, kept as a valid target: what an older document stored raw (a space, an @) is escaped. */
 const queryOf = (target: string) => {

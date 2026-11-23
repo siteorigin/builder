@@ -95,6 +95,7 @@ describe('contact text and links', () => {
     // A second number added beside the first is not one number to dial.
     expect(followText('021 555 0142', '021 555 0142 / 082 555 0199', tel('+27215550142'))).toBeNull();
     expect(followText('555-0142', '555-0142 555-0199', tel('5550142'))).toBeNull();
+    expect(followText('020 7946 0018', '020 7946 0018 / 123', tel('+442079460018'))).toBeNull();
     // An existing mismatch on a phone stays too.
     expect(followText('+1 202 555 0199', '+1 202 555 0123', tel('+15550134'))).toBeNull();
     expect(followText('hello@example.com', 'Hello@Example.com', email('hello@example.com'))).toBeNull();
@@ -157,6 +158,7 @@ describe('contact text and links', () => {
       ['+225 (0) 7 00 26 96 25', tel('+2250700269625')],
       // Text that shows the linked number and another one is a list, not a different number.
       ['555-0142 555-0199', tel('5550142')],
+      ['020 7946 0018 / 123', tel('+442079460018')],
       ['hello@example.com', { type: 'none', target: '' }],
       ['hello@example.com', { type: 'page', target: 'p_home' }]
     ] as Array<[string, LinkValue]>)
