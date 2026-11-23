@@ -78,6 +78,13 @@ export interface ApplyContext {
   clipboards?: readonly Clipboard[];
   /** List item fields the batch sets itself (see explicitItemFields). applyOperations fills it. */
   explicitItemFields?: ReadonlySet<string>;
+  /**
+   * The batch's asset use counts (assetUsages), shared by a run of removals so a bulk cleanup walks the site once.
+   * Deleting an image record changes no count; any other edit may, so applyOperations forgets the counts before
+   * every operation that is not a removal, and a font removal forgets them after it. The counts are kept only for
+   * the draft they were made from. applyOperations fills it.
+   */
+  assetUses?: { state?: ProjectState; counts?: Record<string, number> };
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
@@ -271,9 +278,11 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       if (!removing) fail(`Asset "${op.assetId}" does not exist.`);
       // One face of a family can go while another still provides the family its styles name.
       const otherFace = removing!.kind === 'font' && Object.values(state.assets.assets).some((x) => x?.id !== op.assetId && sameFontFamily(x, removing!));
-      const uses = otherFace ? 0 : (assetUsages(state)[op.assetId] ?? 0);
+      const uses = otherFace ? 0 : (batchAssetUsages(state, ctx)[op.assetId] ?? 0);
       if (uses) fail(`This ${state.assets.assets[op.assetId].kind === 'font' ? 'font' : 'image'} is used ${uses} time${uses === 1 ? '' : 's'}. Replace or remove those uses first.`);
       delete state.assets.assets[op.assetId];
+      // Fonts are counted by family, from the records themselves: count again once one has gone.
+      if (removing!.kind === 'font' && ctx.assetUses) ctx.assetUses.counts = undefined;
       return {};
     }
     case 'asset.replace': {
@@ -372,6 +381,14 @@ export function assetUsages(state: ProjectState): Record<string, number> {
   // An imported font is in use while a token or style names its family.
   for (const [id, n] of Object.entries(fontAssetUsages(state))) out[id] = (out[id] ?? 0) + n;
   return out;
+}
+
+/** assetUsages, kept for the rest of a run of removals when the batch holds the counts (ApplyContext.assetUses). */
+function batchAssetUsages(state: ProjectState, ctx: ApplyContext): Record<string, number> {
+  const held = ctx.assetUses;
+  if (!held) return assetUsages(state);
+  if (!held.counts || held.state !== state) Object.assign(held, { state, counts: assetUsages(state) });
+  return held.counts!;
 }
 
 /** How many links from the rest of the site go to a page: the links deleting it would move to a replacement. */
@@ -1789,8 +1806,11 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
 export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): { state: ProjectState; results: OpResult[] } {
   const draft = clone(state);
   const results: OpResult[] = [];
-  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops) };
+  const assetUses: NonNullable<ApplyContext['assetUses']> = {};
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops), assetUses };
   for (const [i, op] of ops.entries()) {
+    // Any edit but a removal may move an asset's uses: the next removal counts them again.
+    if (op.type !== 'asset.remove') assetUses.counts = undefined;
     try {
       results.push(applyOperation(draft, op, batch));
     } catch (e) {
