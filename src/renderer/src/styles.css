@@ -352,27 +352,58 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 
 /* ---------- Editor shell ---------- */
 .editor { display: grid; grid-template-rows: var(--toolbar-h) 1fr 28px; height: 100%; }
-.toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: 20; }
-.toolbar.mac { padding-left: 80px; }
+.toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 12px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: 20; }
+.toolbar.mac .toolbar-start { padding-left: 70px; }
+/* The centre group is centred on the window when there is room. In a narrow window the start column
+   (identity and save state) keeps a floor and borrows from the empty space on the right instead. */
+.toolbar.mac { grid-template-columns: minmax(min(500px, 40vw), 1fr) auto minmax(max-content, 1fr); }
+/* Title-bar icon buttons match the 26–28px rhythm of the fields, segments and Export beside them. */
+.toolbar .icon-btn { flex: none; width: 28px; height: 28px; }
+/* At the narrowest start column (1280–1600px windows) a long page name is capped, so a long name, a long
+   project name and "File conflict" still fit beside each other instead of running into the centre group. */
+.toolbar-start { container: chrome-start / inline-size; }
+@container chrome-start (max-width: 520px) { .project-title .page { max-width: 116px; } }
+.toolbar .segmented button { transition: background 120ms, color 120ms, box-shadow 120ms; }
+.toolbar .icon-btn[aria-pressed='true']:hover:not(:disabled), .rail .icon-btn.shortcut[aria-pressed='true']:hover { background: color-mix(in srgb, var(--text) 5%, var(--raised)); }
 .toolbar-start, .toolbar-end { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .toolbar-end { justify-content: flex-end; }
 .toolbar-group { display: flex; align-items: center; gap: 2px; }
-.toolbar-mark { display: grid; place-items: center; margin: 0 8px 0 2px; }
+.toolbar-mark { display: grid; place-items: center; flex: none; margin: 0 8px 0 2px; }
 .toolbar-mark svg { display: block; }
 .toolbar-center { display: flex; align-items: center; gap: 8px; }
 .toolbar-divider { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
-.project-title { display: flex; align-items: center; gap: 4px; min-width: 0; height: 30px; padding: 0 8px; border-radius: var(--r-sm); border: 0; background: transparent; max-width: 320px; }
-.project-title:hover { background: var(--hover); }
-.project-title strong { font-weight: 600; }
-.project-title .page { color: var(--text-2); }
-.project-title .sep { color: var(--text-3); }
-.save-state { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-3); padding: 0 6px; white-space: nowrap; }
-.save-state svg { width: 13px; height: 13px; }
+.project-title { display: flex; align-items: center; gap: 5px; min-width: 0; height: 30px; padding: 0 6px 0 8px; border-radius: var(--r-sm); border: 0; background: transparent; max-width: 360px; transition: background 120ms; }
+.project-title:hover, .project-title[aria-expanded='true'] { background: var(--hover); }
+/* The project name gives way first; the page (the answer to "where am I") keeps its name until the project is short. */
+.project-title .site { font-weight: 600; flex: 0 1 auto; min-width: 56px; }
+.project-title .sep { color: var(--text-3); flex: none; }
+.project-title .page { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px; flex: none; color: var(--text-2); }
+.project-title .page svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
+.project-title .page.def { color: var(--plum); font-weight: 600; }
+.project-title .page.def svg { color: var(--plum); }
+.project-title .chev { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+/* The save state sits after the title, so its changing width never moves the title. */
+.save-state { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 26px; font-size: 12px; color: var(--text-3); padding: 0 6px; white-space: nowrap; }
+.save-state svg { width: 13px; height: 13px; flex: none; }
 .save-state.pending { color: var(--text-2); }
 .save-state.saved svg { color: var(--green); }
-.save-state.error { color: var(--red); }
-.width-input { width: 64px; height: 26px; text-align: right; padding: 0 6px; font-variant-numeric: tabular-nums; }
-.zoom-btn { min-width: 52px; font-variant-numeric: tabular-nums; }
+.save-state.error { margin-left: 4px; border: 1px solid color-mix(in srgb, var(--red) 70%, transparent); border-radius: var(--r-sm); background: var(--red-soft); color: var(--red); font-weight: 600; transition: background 120ms; }
+.save-state.error:hover { background: color-mix(in srgb, var(--red) 12%, var(--raised)); border-color: var(--red); }
+.save-state .go { width: 12px; height: 12px; margin-left: -1px; }
+.width-field { display: inline-flex; align-items: center; height: 26px; padding: 0 8px 0 4px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); font-size: 12px; transition: border-color 120ms; }
+.width-field:hover { border-color: var(--text-3); }
+.width-field:focus-within { border-color: var(--accent); outline: 2px solid var(--focus); outline-offset: -1px; }
+.width-input { width: 40px; height: 24px; padding: 0 3px 0 0; border: 0; background: transparent; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; outline: none; user-select: text; appearance: textfield; }
+.width-input:focus-visible { outline: none; }
+.width-input::-webkit-inner-spin-button, .width-input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.width-field .unit { color: var(--text-3); }
+/* A fixed width, so the centre group stays put as the zoom label changes ("Fit", "125%"). */
+.zoom-btn { min-width: 60px; gap: 3px; padding: 0 6px 0 8px; font-variant-numeric: tabular-nums; }
+.zoom-btn[aria-expanded='true'] { background: var(--hover); }
+/* Pressed panel toggles in the title bar use the toolbar's own selected treatment (the segmented controls'
+   raised fill and 3:1 ring), so blue stays for focus and Export. */
+.toolbar .icon-btn[aria-pressed='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+.toolbar .export-btn { margin-left: 4px; }
 
 .workspace { display: flex; min-height: 0; }
 .rail { width: 48px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; background: var(--panel); border-right: 1px solid var(--border); }
@@ -402,19 +433,39 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .dock-tab .live { position: absolute; top: 6px; right: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--accent-fill); }
 .dock-tabs .spacer + .icon-btn { margin-left: auto; }
 
-.status-bar { display: flex; align-items: center; gap: 12px; padding: 0 12px; font-size: 12px; color: var(--text-2); background: var(--panel); border-top: 1px solid var(--border); }
-.status-bar > button, .status-bar .crumbs button { border: 0; background: transparent; color: inherit; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 6px; border-radius: var(--r-xs); font-size: 12px; }
+.status-bar { display: flex; align-items: center; gap: 12px; padding: 0 12px 0 14px; font-size: 12px; color: var(--text-2); background: var(--panel); border-top: 1px solid var(--border); }
+.status-bar > button, .status-bar .crumbs button { border: 0; background: transparent; color: inherit; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 6px; border-radius: var(--r-sm); font-size: 12px; transition: background 120ms, color 120ms; }
 .status-bar > button:hover, .status-bar .crumbs button:hover { background: var(--hover); color: var(--text); }
 .status-bar > button svg, .status-bar .crumbs svg, .status-bar > .row svg { width: 13px; height: 13px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
 .status-dot.ready { background: var(--green); }
 .status-dot.stopped { background: var(--text-3); }
-.status-dot.busy { background: var(--amber); animation: pulse 1s infinite; }
+/* Busy is a ring, ready and broken are solid: the dots differ in shape as well as hue. */
+.status-dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--amber); }
 .status-dot.error { background: var(--red); }
-.crumbs { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
+.crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; }
+.crumbs ol { display: flex; align-items: center; gap: 2px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+/* Ancestors shorten first; the selected element (the last item) keeps its full name. */
+.crumbs li { display: flex; align-items: center; gap: 2px; min-width: 0; flex: 0 1 auto; }
+.crumbs li:last-child { flex: none; max-width: 360px; }
 .crumbs svg { width: 11px; height: 11px; color: var(--text-3); flex: none; }
-.crumbs button:last-child { color: var(--text); font-weight: 500; }
-.crumbs button { white-space: nowrap; }
+.status-bar .crumbs button { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 24px; color: var(--text-2); }
+.status-bar .crumbs button:hover { color: var(--text); }
+.status-bar .crumbs button[aria-current] { color: var(--text); font-weight: 600; }
+.status-bar .problems svg { color: var(--green); }
+.status-bar .problems.error, .status-bar .problems.error svg { color: var(--red); font-weight: 600; }
+.status-bar .problems.warn, .status-bar .problems.warn svg { color: var(--amber); font-weight: 600; }
+.status-bar .problems.error:hover { background: var(--red-soft); color: var(--red); }
+.status-bar .problems.warn:hover { background: var(--amber-soft); color: var(--amber); }
+.status-bar .problems .go { width: 11px; height: 11px; margin-left: -2px; }
+.status-bar .problems:not(.error):not(.warn) .go { color: var(--text-3); }
+.status-sep { flex: none; width: 1px; height: 14px; background: var(--border-strong); }
+.status-bar .crumbs button.more { display: inline-grid; place-items: center; width: 26px; padding: 0; }
+.crumbs li:has(> .more) { flex: none; }
+.status-bar .preview-status.error, .status-bar .preview-status.error svg { color: var(--red); font-weight: 600; }
+.status-bar .preview-status.error:hover { background: var(--red-soft); color: var(--red); }
+.width-field:has([aria-invalid='true']) { border-color: var(--red); }
+.status-bar .crumbs button.more svg { width: 14px; height: 14px; color: var(--text-2); }
 
 /* ---------- Canvas ---------- */
 .canvas { flex: 1; min-width: 0; position: relative; overflow: hidden; background-color: var(--canvas); background-image: radial-gradient(var(--canvas-dots) 1px, transparent 1px); background-size: 16px 16px; }
@@ -930,10 +981,14 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .tab[aria-selected='true']::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
 
 /* ---------- Mode band (component definition editing) ---------- */
-.mode-band { display: flex; align-items: center; gap: 10px; height: 38px; padding: 0 10px 0 14px; background: var(--plum-soft); border-bottom: 1px solid color-mix(in srgb, var(--plum) 30%, transparent); color: var(--text); font-size: 13px; }
-.mode-band > svg { width: 15px; height: 15px; color: var(--plum); flex: none; }
-.mode-band strong { font-weight: 600; }
-.editor.defining { grid-template-rows: var(--toolbar-h) 38px 1fr 28px; }
+.mode-band { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 6px 10px 6px 16px; background: color-mix(in srgb, var(--plum) 11%, var(--panel)); border-bottom: 1px solid color-mix(in srgb, var(--plum) 40%, transparent); color: var(--text); font-size: 13px; }
+.mode-band > svg { width: 16px; height: 16px; color: var(--plum); flex: none; }
+.mode-band-text { flex: 1; min-width: 0; margin: 0; display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 10px; row-gap: 2px; }
+.mode-band-text strong { font-weight: 600; color: var(--plum); }
+.mode-band-text span { color: var(--text-2); }
+.mode-band-done { flex: none; border-color: var(--plum); color: var(--plum); font-weight: 600; }
+.mode-band-done:hover:not(:disabled) { background: color-mix(in srgb, var(--plum) 12%, var(--raised)); }
+.editor.defining { grid-template-rows: var(--toolbar-h) auto 1fr 28px; }
 /* While editing a component everywhere, selection, the selected layer and set values use plum, so every
    cue agrees with the band. The page frame stays neutral: only the component is being edited. */
 .editor.defining { --select: #6a45c8; }
@@ -1091,7 +1146,9 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .list-item.selected.shared { background: var(--green-soft); color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
 /* Colour swatches keep a visible edge on both themes, even for near-black and near-white colours. */
 .swatch-lg, .token-chip .swatch, .color-input input[type='color'] { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border-control); }
-.rail .icon-btn.shortcut[aria-pressed='true'] { box-shadow: none; }
+/* The Site styles shortcut opens the right dock, so when on it takes the neutral pressed look, never the
+   sidebar's blue: one rail item is ever blue, the open sidebar panel. */
+.rail .icon-btn.shortcut[aria-pressed='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
 .first-steps li b svg { width: 22px; height: 22px; padding: 4px; border-radius: var(--r-sm); background: var(--accent-soft); }
 .recent-item.missing .recent-thumb { filter: grayscale(1); opacity: 0.6; }
 .recent-item.missing .where, .recent-item.missing .where span { color: var(--amber); }

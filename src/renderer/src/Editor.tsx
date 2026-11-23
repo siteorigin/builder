@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
+import { Check, Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs } from './components/ui';
 import { api, getState, setState, toast, useStore } from './store';
@@ -19,6 +19,7 @@ import { CommandMenu } from './panels/CommandMenu';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal } from './panels/Dialogs';
 import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles } from './lib/actions';
+import { useTransitionAnnouncement } from './lib/announce';
 
 const LEFT_TABS = [
   { id: 'pages', label: 'Pages', icon: <FileText /> },
@@ -26,6 +27,16 @@ const LEFT_TABS = [
   { id: 'insert', label: 'Insert', icon: <Plus /> },
   { id: 'assets', label: 'Assets', icon: <Images /> }
 ] as const;
+
+/** Leave "editing everywhere" for the page it was entered from. When the focused control leaves with the
+ *  band (Done editing), focus lands on the page switcher, where the page is named. */
+function leaveDefinitionMode() {
+  const d = getState().definitionMode;
+  if (!d) return;
+  const hadFocus = !!document.activeElement?.closest('.mode-band');
+  setState({ definitionMode: null, pageId: d.returnPageId, selection: null });
+  if (hadFocus) requestAnimationFrame(() => document.querySelector<HTMLElement>('.toolbar .project-title')?.focus());
+}
 
 function isTyping(e: KeyboardEvent) {
   const t = e.target as HTMLElement | null;
@@ -88,7 +99,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
       const sel = s.selection;
       setState({ selection: { owner: sel.owner, instancePath: sel.instancePath.slice(0, -1), nodeId: sel.instancePath[sel.instancePath.length - 1] } });
     } else if (s.selection) setState({ selection: null });
-    else if (s.definitionMode) setState({ definitionMode: null, pageId: s.definitionMode.returnPageId });
+    else if (s.definitionMode) leaveDefinitionMode();
     return true;
   }
   if (mod && shift && (key === 'ArrowUp' || key === 'ArrowDown')) {
@@ -213,24 +224,42 @@ export function Editor() {
   // The page row is outlined only while the page itself is what the inspector shows.
   const pageInspected = useStore((s) => s.mode === 'edit' && !s.selection && s.rightTab === 'inspect');
   const defName = useStore((s) => (s.definitionMode ? s.snapshot?.state.components[s.definitionMode.definitionId]?.name ?? 'component' : null));
-  const defPlaces = useStore((s) => (s.definitionMode && s.snapshot ? [...new Set(instancesOf(s.snapshot.state, s.definitionMode.definitionId).map((u) => u.label))].join(', ') : ''));
+  // Where the component is used, by page name, bounded so the band stays one line: "Home and About", "4 pages".
+  const defPlaces = useStore((s) => {
+    if (!s.definitionMode || !s.snapshot) return '';
+    const names = [...new Set(instancesOf(s.snapshot.state, s.definitionMode.definitionId).map((u) => u.label))];
+    return names.length > 3 ? `${names.length} pages` : names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? '');
+  });
   const defUses = useStore((s) => (s.definitionMode && s.snapshot ? instancesOf(s.snapshot.state, s.definitionMode.definitionId).length : 0));
   const defInfo = defName ? { name: defName, uses: defUses, places: defPlaces } : null;
+  // Entering and leaving the mode is announced from a region that is always mounted, so it is heard.
+  const modeAnnouncement = useTransitionAnnouncement(defName, (prev, next) => (next ? `Editing ${next} everywhere. Layout and style changes apply wherever it is used.` : prev ? `Finished editing ${prev} everywhere` : null));
 
   return (
     <div className={`editor${defining ? ' defining' : ''}${pageInspected ? '' : ' page-quiet'}`}>
       <Toolbar />
       {defining && defInfo && (
-        <div className="mode-band" role="status">
-          <Component />
-          <span className="grow">
-            <strong>Editing {defInfo.name} everywhere</strong> · used {defInfo.uses === 1 ? 'once' : `${defInfo.uses} times`}, on {defInfo.places || 'no pages yet'}. Placements keep their own text and any changes made to them directly.
-          </span>
-          <button className="btn btn-sm" onClick={() => setState({ definitionMode: null, pageId: defining.returnPageId, selection: null })}>
+        <div className="mode-band" role="region" aria-label="Editing a component everywhere">
+          <Component aria-hidden="true" />
+          <p className="mode-band-text">
+            <strong>Editing {defInfo.name} everywhere</strong>
+            <span>
+              {defInfo.uses === 0
+                ? 'Layout and style changes apply wherever you add it.'
+                : defInfo.uses === 1
+                  ? `Layout and style changes apply to this component on ${defInfo.places}. Its text stays the same.`
+                  : `Layout and style changes apply to all ${defInfo.uses} uses, on ${defInfo.places}. Each keeps its own text.`}
+            </span>
+          </p>
+          <button className="btn btn-sm mode-band-done" title="Finish editing everywhere. Esc also finishes once nothing is selected." onClick={leaveDefinitionMode}>
+            <Check aria-hidden="true" />
             Done editing
           </button>
         </div>
       )}
+      <span className="sr-only" role="status">
+        {modeAnnouncement}
+      </span>
       <div className="workspace">
         <nav className="rail" aria-label="Sidebar">
           {LEFT_TABS.map((t) => (
