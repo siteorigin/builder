@@ -69,6 +69,18 @@ await app.evaluate(({ dialog }, { parent, zips }) => {
   dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [parent] });
   dialog.showSaveDialog = async () => ({ canceled: false, filePath: queue.shift() });
 }, { parent: exportsDir, zips: [sourceZip, staticZip] });
+// Issue 212: each website proof carries its own visible title, so two successive previews can be told apart.
+const pageIds = Object.fromEntries(Object.values(after.pages).map((p) => [p.route, p.id]));
+assert.ok(pageIds['/'] && pageIds['/about/'], 'the starter has a home page and an About page');
+const titleProof = async (label) => {
+  const r = await win.evaluate(
+    ({ home, about, label }) =>
+      window.builder.project.apply({ operations: [{ type: 'page.update', pageId: home, seoTitle: label }, { type: 'page.update', pageId: about, seoTitle: `${label} · About` }] }, { label: 'Retitle' }),
+    { home: pageIds['/'], about: pageIds['/about/'], label }
+  );
+  assert.equal(r.ok, true, `the proof is retitled ${label}: ${r.error?.message}`);
+};
+await titleProof('Client proof 1');
 const src = await withTimeout(win.evaluate(() => window.builder.project.exportSource()), 120000, 'Source export');
 assert.equal(src.ok, true, `source export succeeds: ${src.message}`);
 assert.equal(src.path, sourceOut);
@@ -86,6 +98,51 @@ const statZip = await withTimeout(win.evaluate(() => window.builder.project.expo
 assert.equal(statZip.ok, true, `static ZIP export succeeds: ${statZip.message}`);
 assert.equal(statZip.path, staticZip);
 assert.ok(statZip.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website ZIP export names the draft it left out: ${statZip.warnings.join(' ')}`);
+
+step('issue 212: a second website proof keeps the first one serving its own files');
+assert.ok(stat.previewUrl, 'the first website export starts a preview');
+await titleProof('Client proof 2');
+const stat2 = await withTimeout(win.evaluate(() => window.builder.project.exportStatic()), 300000, 'Second static export');
+assert.equal(stat2.ok, true, `the second static export succeeds: ${stat2.message} ${stat2.warnings?.join(' ')}`);
+const staticOut2 = join(exportsDir, 'harbour-lane-studio-site-3');
+assert.equal(stat2.path, staticOut2, 'the second proof goes to the next free folder beside the first');
+assert.ok(stat2.previewUrl && stat2.previewUrl !== stat.previewUrl, 'the second proof has its own preview');
+const titleOf = (html) => html.match(/<title>([^<]*)<\/title>/)?.[1].replace(/&amp;/g, '&');
+// Refresh each proof after the second export finished, then follow its nested About link, as a browser tab would.
+for (const [url, label] of [[stat.previewUrl, 'Client proof 1'], [stat2.previewUrl, 'Client proof 2']]) {
+  const home = await fetch(url);
+  assert.equal(home.status, 200, `${label} still serves its home page after the later export (${url})`);
+  const html = await home.text();
+  assert.equal(titleOf(html), label, `${label} serves its own home page`);
+  const href = [...html.matchAll(/href="([^"]*about\/?)"/g)].map((m) => m[1])[0];
+  assert.ok(href, `${label} links to its About page`);
+  const about = await fetch(new URL(href, url));
+  assert.equal(about.status, 200, `${label} serves the About page it links to (${href})`);
+  assert.equal(titleOf(await about.text()), `${label} · About`, `${label} serves its own About page`);
+}
+
+step('issue 212: the export dialog still lists what was handed off after it is closed and reopened');
+const recent = (await win.evaluate(() => window.builder.project.snapshot())).recentExports;
+assert.deepEqual(
+  recent.map((e) => [e.kind, e.format, e.path]),
+  [['site', 'folder', staticOut2], ['site', 'zip', staticZip], ['source', 'zip', sourceZip], ['site', 'folder', staticOut], ['source', 'folder', sourceOut]],
+  'every export of this opening is listed, newest first'
+);
+assert.deepEqual(recent.map((e) => e.previewUrl), [stat2.previewUrl, undefined, undefined, stat.previewUrl, undefined], 'each website folder keeps its own preview');
+assert.ok(recent[0].revision > recent[3].revision, 'the proofs name the revisions they were made from');
+for (let open = 0; open < 2; open++) {
+  await win.getByRole('button', { name: 'Export', exact: true }).click();
+  const items = win.locator('.modal .export-history li');
+  await items.first().waitFor();
+  assert.equal(await items.count(), 5, 'the dialog lists every export');
+  const shown = await items.allInnerTexts();
+  assert.ok(shown[0].includes(staticOut2) && shown[3].includes(staticOut), `the dialog shows both proofs' folders: ${shown.join(' | ')}`);
+  assert.ok(shown.every((t) => /revision \d+/.test(t)), 'each export names its revision');
+  assert.equal(await win.locator('.modal .export-history li button', { hasText: 'Preview in browser' }).count(), 2, 'both website folders offer their preview');
+  assert.equal(await win.locator('.modal .export-history li button', { hasText: 'Show in folder' }).count(), 5, 'every export can be found on disk');
+  await win.locator('.modal').getByRole('button', { name: 'Close', exact: true }).last().click();
+  await win.locator('.modal').waitFor({ state: 'detached' });
+}
 for (const zip of [sourceZip, staticZip]) assert.equal(readFileSync(zip).subarray(0, 4).toString('hex'), '504b0304', `${basename(zip)} is a ZIP file`);
 const listing = (zip) => spawnSync('unzip', ['-Z1', zip], { encoding: 'utf8' });
 const siteList = listing(staticZip);
