@@ -361,7 +361,10 @@ export interface BuilderApi {
     cancelCreate(): Promise<void>;
     /** Whether creating a project downloads website tools, checked the way setup checks it. */
     websiteTools(): Promise<WebsiteTools>;
-    open(dir?: string): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }>;
+    /** Open a project folder or project ZIP file; with no path the author chooses one (`folder`: a folder, on Windows and Linux). */
+    open(dir?: string, opts?: { folder?: boolean }): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }>;
+    /** Call off a project ZIP file being unpacked: the open then answers { ok: false } and nothing is left behind. */
+    cancelOpen(): Promise<void>;
     trustAndOpen(dir: string): Promise<{ ok: boolean; message?: string }>;
     /** ok is false when the author chose to keep editing a change that could not be saved. */
     close(): Promise<{ ok: boolean }>;
@@ -438,6 +441,8 @@ export interface BuilderApi {
   on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;
   on(channel: 'project:closed', cb: () => void): () => void;
   on(channel: 'create:progress', cb: (p: ProgressEvent) => void): () => void;
+  /** A project ZIP file is being unpacked into a new folder in `dir` (null: it finished, failed or was called off). */
+  on(channel: 'projects:unpacking', cb: (u: { name: string; dir: string } | null) => void): () => void;
   on(channel: 'runtime:status', cb: (s: RuntimeState) => void): () => void;
   on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
   on(channel: 'appearance', cb: (dark: boolean) => void): () => void;

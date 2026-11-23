@@ -221,7 +221,11 @@ function registerIpc() {
   handle('projects:create', (opts) => controller.create(opts));
   handle('projects:cancelCreate', () => controller.cancelCreate());
   handle('projects:websiteTools', () => controller.websiteTools());
-  handle('projects:open', (dir?: string) => controller.open(dir));
+  handle('projects:open', (dir?: unknown, opts?: unknown) => {
+    if (dir != null && typeof dir !== 'string') return { ok: false, message: 'Could not open the project: no folder or file was named.' };
+    return controller.open(dir ?? undefined, { folder: (opts as { folder?: unknown } | null | undefined)?.folder === true });
+  });
+  handle('projects:cancelOpen', () => controller.cancelUnpacking());
   handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
   handle('projects:close', () => controller.closeProject());
   handle('projects:duplicate', () => controller.duplicate());
@@ -451,6 +455,8 @@ async function createWindow() {
   self.webContents.on('render-process-gone', () => {
     menuCommands.unready(self);
     leaveGate.editorGone();
+    // A project ZIP file being unpacked for this editor is called off: no one is left to answer its trust prompt.
+    controller.cancelOpen();
   });
   // A right-click in text that takes typing offers its spelling suggestions and the editing actions, natively:
   // a native menu leaves focus where it is, so a word being edited on the canvas stays in its edit. The canvas
@@ -487,11 +493,16 @@ async function createWindow() {
   });
   // A new page has replaced the editor (it committed): only it may say it is ready for menu commands from here on.
   // A navigation the editor refuses never commits, so it leaves the editor ready.
-  self.webContents.on('did-navigate', () => menuCommands.unready(self));
+  // A project ZIP file being opened for the replaced editor is called off too: its trust prompt has no one to answer it.
+  self.webContents.on('did-navigate', () => {
+    menuCommands.unready(self);
+    controller.cancelOpen();
+  });
   self.on('closed', () => {
     if (win === self) win = null;
     menuCommands.closed(self);
     leaveGate.editorGone();
+    controller.cancelOpen();
   });
   if (DEV_URL) await win.loadURL(DEV_URL);
   else await win.loadURL('app://editor/index.html');
@@ -561,6 +572,8 @@ function buildMenu() {
         submenu: [
           { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: send('new-project') },
           { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: send('open-project') },
+          // Open Project's picker takes a file or ZIP file here; a project folder has its own.
+          ...(isMac ? [] : [{ label: 'Open Project Folder…', click: send('open-project-folder') }]),
           { type: 'separator' },
           { id: 'export', label: 'Export…', accelerator: 'CmdOrCtrl+E', enabled: projectOpen, click: send('export') },
           { type: 'separator' },

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, CloudDownload, FolderOpen, LayoutTemplate, ShieldAlert } from 'lucide-react';
+import { Check, CloudDownload, FileArchive, FolderOpen, LayoutTemplate, ShieldAlert } from 'lucide-react';
 import type { ProgressEvent, WebsiteTools } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
 import { endEditingHold } from '../lib/leave';
@@ -67,6 +67,52 @@ export function TrustProjectModal({ project, onClose }: { project: { dir: string
       <p className="trust-path">
         <FolderOpen size={14} />
         <span>{shortPath(project.dir)}</span>
+      </p>
+    </Modal>
+  );
+}
+
+/**
+ * A project ZIP file being unpacked into a new folder (#263), over Welcome or the open project, from the moment its
+ * folder is chosen until the copy is ready (then Trust this project follows) or has gone. Cancel, or Esc, calls it
+ * off: nothing it wrote is left, and the ZIP file was only read.
+ */
+export function UnpackingModal() {
+  const [unpacking, setUnpacking] = useState<{ name: string; dir: string } | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  useEffect(
+    () =>
+      api.on('projects:unpacking', (u) => {
+        setUnpacking(u);
+        setCancelling(false);
+      }),
+    []
+  );
+  if (!unpacking) return null;
+  const cancel = () => {
+    setCancelling(true);
+    void api.projects.cancelOpen().catch(() => undefined);
+  };
+  return (
+    <Modal
+      title={`Unpacking ${unpacking.name}`}
+      describedBy="unpack-body"
+      icon={<FileArchive />}
+      onClose={cancel}
+      busy={cancelling}
+      footer={
+        <button className="btn" data-autofocus disabled={cancelling} onClick={cancel}>
+          {cancelling ? 'Cancelling…' : 'Cancel'}
+        </button>
+      }
+    >
+      <p id="unpack-body" className="row" style={{ marginTop: 0, gap: 8 }}>
+        <Spinner decorative />
+        <span>Making a working copy from the ZIP file. The ZIP file is not changed.</span>
+      </p>
+      <p className="trust-path">
+        <FolderOpen size={14} />
+        <span>{shortPath(unpacking.dir)}</span>
       </p>
     </Modal>
   );

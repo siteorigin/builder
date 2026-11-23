@@ -337,16 +337,16 @@ export function Editor() {
     const onCmd = (e: Event) => {
       if (openDialogs.length || openMenus.count || getState().leaving) return;
       const cmd = (e as CustomEvent).detail;
-      if (opening && (cmd === 'open-project' || cmd === 'new-project')) return;
+      if (opening && (cmd === 'open-project' || cmd === 'open-project-folder' || cmd === 'new-project')) return;
       if (cmd === 'export') setState({ modal: { kind: 'export' } });
       // Leaving the project saves what is being typed first (the main process asks; see lib/leave.ts).
       if (cmd === 'close-project') void closeProject();
       // Switching projects from the editor uses the same New project and Trust dialogs as Welcome, shown over
       // this project: cancelling them, or a project that cannot be made or opened, leaves it as it is.
-      if (cmd === 'open-project') {
+      if (cmd === 'open-project' || cmd === 'open-project-folder') {
         opening = true;
         void api.projects
-          .open()
+          .open(undefined, cmd === 'open-project-folder' ? { folder: true } : undefined)
           .then(
           (r) => {
             if (r.needsTrust) setSwitching({ kind: 'trust', ...r.needsTrust });

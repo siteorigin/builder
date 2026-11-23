@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { BuilderApi } from '@shared/api';
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking']);
 
 const api: BuilderApi = {
   platform: process.platform,
@@ -16,6 +16,7 @@ const api: BuilderApi = {
     cancelCreate: invoke('projects:cancelCreate'),
     websiteTools: invoke('projects:websiteTools'),
     open: invoke('projects:open'),
+    cancelOpen: invoke('projects:cancelOpen'),
     trustAndOpen: invoke('projects:trustAndOpen'),
     close: invoke('projects:close'),
     duplicate: invoke('projects:duplicate'),

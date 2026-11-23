@@ -32,6 +32,8 @@ const DEFAULTS: SettingsFile = {
 };
 
 let cache: SettingsFile | null = null;
+/** The settings file was there but could not be read at start: what is in memory may not be what is on disk. */
+let unread = false;
 const file = () => join(app.getPath('userData'), 'settings.json');
 
 export async function loadSettings(): Promise<SettingsFile> {
@@ -43,7 +45,8 @@ export async function loadSettings(): Promise<SettingsFile> {
       recents: raw.recents ?? [],
       trusted: raw.trusted ?? {}
     };
-  } catch {
+  } catch (e) {
+    unread = (e as NodeJS.ErrnoException).code !== 'ENOENT';
     cache = structuredClone(DEFAULTS);
   }
   return cache;
@@ -95,6 +98,25 @@ export async function trust(dir: string, configHash: string) {
   const s = await loadSettings();
   s.trusted[dir] = configHash;
   await saveSettings();
+}
+
+/** Folders whose trust was forgotten in memory but not yet on disk (the save failed). */
+const unsavedUntrust = new Set<string>();
+
+/**
+ * Forget any trust given to `dir`: a new folder there (a project just unpacked) asks again before its tools run. The
+ * settings are saved when a record goes, and again for a removal whose save failed earlier, so the old record cannot
+ * come back after a restart. Settings that could not be read at start are neither overwritten nor trusted to hold no
+ * record: that is refused.
+ */
+export async function untrust(dir: string) {
+  const s = await loadSettings();
+  if (unread) throw new Error('SiteOrigin Builder could not read its settings when it started. Restart it, then try again.');
+  if (!(dir in s.trusted) && !unsavedUntrust.has(dir)) return;
+  delete s.trusted[dir];
+  unsavedUntrust.add(dir);
+  await saveSettings();
+  unsavedUntrust.delete(dir);
 }
 
 // ---------------------------------------------------------------------------

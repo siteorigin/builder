@@ -3,6 +3,7 @@ import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, toa
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
+import { UnpackingModal } from './components/ProjectDialogs';
 import { ConfirmHost, Toasts, openDialogs, openMenus } from './components/ui';
 import { runInspection } from './lib/inspect';
 import { restorePanelWidth } from './lib/layout';
@@ -103,6 +104,7 @@ export function App() {
   return (
     <>
       {booted && (screen === 'welcome' ? <Welcome /> : <Editor />)}
+      <UnpackingModal />
       <Toasts />
       <ConfirmHost />
     </>
