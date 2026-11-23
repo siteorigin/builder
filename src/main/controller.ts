@@ -14,7 +14,7 @@ import { basePath, generateManagedComponent, generatePage, defFile, liveRedirect
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, variantCredits } from './export';
+import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
@@ -1057,7 +1057,7 @@ export class Controller {
       const folder = join(staging, 'project');
       const snap = await this.snapshotSource(s, folder);
       if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
-      warnings.push(...sectionLinkWarnings(snap.state));
+      warnings.push(...sectionLinkWarnings(snap.state), ...unlinkedButtonWarnings(snap.state));
       const kept = locationKeptNote(await locatedPhotos(folder, snap.state));
       if (kept) warnings.push(kept);
       const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
@@ -1165,6 +1165,7 @@ export class Controller {
     if (!state.site.baseUrl) warnings.push('No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.');
     const placeholders = placeholderImageCount(state);
     if (placeholders) warnings.push(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
+    warnings.push(...unlinkedButtonWarnings(state));
     for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a)) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
     const left = omittedAssetsWarning(omitted);
     if (left) warnings.push(left);

@@ -97,7 +97,9 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const schema = has(has(state.components, node.definitionId)?.properties, op.prop);
       const value = has(node.props, op.prop);
       if (!op.itemId) return withRoutes(state, op.value, { definitionId: node.definitionId, schema, value });
-      const item = Array.isArray(value) ? value.find((i) => i && typeof i === 'object' && (i as { id?: unknown }).id === op.itemId) : undefined;
+      // A placement without its own list shows (and edits) the definition's items.
+      const items = value === undefined && schema?.type === 'list' ? schema.default : value;
+      const item = Array.isArray(items) ? items.find((i) => i && typeof i === 'object' && (i as { id?: unknown }).id === op.itemId) : undefined;
       if (!item) return gone('list item');
       return withRoutes(state, op.value, { definitionId: node.definitionId, schema, value: op.field ? (item as Record<string, unknown>)[op.field] : item });
     }

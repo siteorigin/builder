@@ -27,7 +27,7 @@ import { GENERATOR_VERSION, isBinding } from '@shared/types';
 import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
-import { DRAFTS_JS, IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs } from './runtime-files';
+import { DRAFTS_JS, IMAGE_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, validateRoute } from '@shared/routes';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
@@ -1333,7 +1333,7 @@ export function generatePathsJson(state: ProjectState): string {
 export function generateProject(state: ProjectState, opts: GenerateOptions = {}): FileMap {
   const files: FileMap = new Map();
   const theme = getTheme(state.site.themeId);
-  files.set(`${RUNTIME_DIR}/Link.svelte`, LINK_SVELTE);
+  files.set(`${RUNTIME_DIR}/Link.svelte`, linkSvelte(!!opts.instrument));
   files.set(`${RUNTIME_DIR}/Image.svelte`, IMAGE_SVELTE);
   files.set(`${RUNTIME_DIR}/RichText.svelte`, RICHTEXT_SVELTE);
   files.set(`${RUNTIME_DIR}/Icon.svelte`, iconSvelte());

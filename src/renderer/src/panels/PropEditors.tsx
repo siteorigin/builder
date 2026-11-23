@@ -100,7 +100,11 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { s
  * ("Primary button"), so each control has a name that still makes sense out of context. Choosing a section that
  * has no ID yet passes the edit that gives it one, to be saved with the link.
  */
-export function LinkEditor({ value, onChange, state, label }: { value: LinkValue; onChange: (v: LinkValue, edit?: PendingEdit) => void; state: ProjectState; label?: string }) {
+/**
+ * A link's kind and destination. `everywhere` is for a link in a component's design, which shows on every page that
+ * places it: it offers no section "on this page", since one page's section is not on the others.
+ */
+export function LinkEditor({ value, onChange, state, label, everywhere }: { value: LinkValue; onChange: (v: LinkValue, edit?: PendingEdit) => void; state: ProjectState; label?: string; everywhere?: boolean }) {
   const v = value ?? { type: 'none', target: '' };
   const currentPageId = useStore((s) => s.pageId);
   // A link in the shared header or footer shows on every page that has them.
@@ -147,7 +151,7 @@ export function LinkEditor({ value, onChange, state, label }: { value: LinkValue
           <option value="url">Web address</option>
           <option value="email">Email</option>
           <option value="tel">Phone</option>
-          <option value="anchor">On this page</option>
+          {(!everywhere || type === 'anchor') && <option value="anchor">On this page</option>}
         </select>
         {type === 'page' ? (
           <select className="select sm grow" value={v.target} aria-label={named('Page')} onChange={(e) => onChange(withAnchor({ ...v, target: e.target.value }, e.target.value === v.target ? v.anchor : undefined))}>
@@ -157,6 +161,9 @@ export function LinkEditor({ value, onChange, state, label }: { value: LinkValue
               </option>
             ))}
           </select>
+        ) : type === 'anchor' && everywhere ? (
+          // A design's section "on this page" is one every page placing it must have: shown, not re-picked here.
+          <span className="faint ellipsis grow">#{target}</span>
         ) : type === 'anchor' ? (
           <SectionPicker state={state} pageId={currentPageId} value={target} label={named('Section')} shared={shared} onPick={(a, edit) => a && onChange({ type: 'anchor', target: a }, edit)} />
         ) : type !== 'none' ? (
@@ -564,11 +571,18 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
   }
 }
 
+/** A one-click fix offered under a field's problem, such as hiding a button that has no link. */
+export interface FieldAction {
+  label: string;
+  run: () => void;
+}
+
 /**
  * One scalar field with its visible label wired to its control. Booleans sit on one line; images are their own
- * titled card. `hint` replaces the schema's description and `error` replaces both, for text fields.
+ * titled card. `hint` replaces the schema's description and `error` replaces both, for text and link fields; a
+ * link can also offer an `action` that fixes its problem.
  */
-export function ScalarField({ schema, value, onChange, state, label, hint, error }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; hint?: ReactNode; error?: string }) {
+export function ScalarField({ schema, value, onChange, state, label, hint, error, action }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction }) {
   const id = useId();
   const shown = label ?? schema.label;
   const note = hint ?? schema.description;
@@ -577,12 +591,25 @@ export function ScalarField({ schema, value, onChange, state, label, hint, error
   // A link is two controls (kind and destination) that name themselves; the label names the pair.
   if (schema.type === 'link')
     return (
-      <div className="field" role="group" aria-labelledby={`${id}-l`}>
+      <div className="field" role="group" aria-labelledby={`${id}-l`} aria-describedby={error || note ? `${id}-note` : undefined}>
         <div className="field-label" id={`${id}-l`}>
           {shown}
         </div>
         <LinkEditor value={value as LinkValue} onChange={onChange} state={state} label={schema.label} />
-        {schema.description && <div className="field-hint">{schema.description}</div>}
+        {error ? (
+          <div className="field-error" id={`${id}-note`}>
+            {error}
+          </div>
+        ) : note ? (
+          <div className="field-hint" id={`${id}-note`}>
+            {note}
+          </div>
+        ) : null}
+        {action && (
+          <button className="btn btn-sm insp-inline-btn" onClick={action.run}>
+            {action.label}
+          </button>
+        )}
       </div>
     );
   return (
@@ -597,6 +624,8 @@ export interface ListItemNote {
   field: string;
   hint?: ReactNode;
   error?: string;
+  /** A fix for the problem, offered under the field. */
+  action?: FieldAction;
 }
 
 /** An edit to a list: `repair` is an explicit fix the inspector offers, its own undo step under `label`. */
@@ -610,7 +639,7 @@ export type ListOp =
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, hint, annotate, linkPairs }: {
+export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, hint, annotate, linkPairs, error, action }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -625,9 +654,12 @@ export function PropField({ name, schema, value, onChange, onList, state, focusI
   /** For a list: what to say about each item, such as the key a form field is sent under. */
   annotate?: (item: ListItem, index: number) => ListItemNote | undefined;
   linkPairs?: LinkPairs;
+  /** For a single field: a problem to show under it, and a fix for it. */
+  error?: string;
+  action?: FieldAction;
 }) {
   if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} annotate={annotate} linkPairs={linkPairs} />;
-  return <ScalarField schema={schema} value={value} onChange={onChange} state={state} label={label} hint={hint} />;
+  return <ScalarField schema={schema} value={value} onChange={onChange} state={state} label={label} hint={hint} error={error} action={action} />;
   void name;
 }
 
@@ -846,6 +878,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
                         state={state}
                         hint={note?.field === key ? note.hint : undefined}
                         error={note?.field === key ? note.error : undefined}
+                        action={note?.field === key ? note.action : undefined}
                       />
                     )}
                   />

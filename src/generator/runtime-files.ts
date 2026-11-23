@@ -6,11 +6,22 @@ import { ICONS } from '@catalogue/foundation/icons';
  * They are part of the portable source and contain no editor instrumentation.
  */
 
-export const LINK_SVELTE = `<script>
+/**
+ * The Link helper. Visitors never see a button without a destination: it would look clickable and do nothing.
+ * Only its anchor ID stays, so links to it still land. The editor's preview variant (`instrument`) shows such a
+ * button instead, marked for the bridge to flag in Edit and hide in Preview. That includes a button a code
+ * component places, which a click selects through its placement.
+ */
+export function linkSvelte(instrument = false): string {
+  const unlinked = instrument
+    ? `<span class={[kind, className]} data-so-unlinked="" title="No link yet. Visitors won’t see this button until it goes somewhere." {...rest}>{@render children?.()}</span>`
+    : '{#if rest.id}<span id={rest.id}></span>{/if}';
+  return `<script>
 	/**
 	 * Renders a resolved link. Site-relative links go through SvelteKit's resolve(), so the site also
-	 * works when it is published under a sub-path. A button without a destination renders as plain,
-	 * non-interactive text.
+	 * works when it is published under a sub-path. A button without a destination but with a click handler
+	 * (from your own code) is a real button; one with neither is left out (keeping only its id, so links to
+	 * it still land). Other links without a destination render as their text.
 	 */
 	import { resolve } from '$app/paths';
 	let { link = null, appearance = '', class: className = '', children, ...rest } = $props();
@@ -29,10 +40,18 @@ export const LINK_SVELTE = `<script>
 		rel={link?.newTab ? 'noopener noreferrer' : undefined}
 		{...rest}>{@render children?.()}</a
 	>
+{:else if button && typeof rest.onclick === 'function'}
+	<button class={[kind, className]} {...rest} type={['submit', 'reset'].includes(String(rest.type ?? '').toLowerCase()) ? rest.type : 'button'}>{@render children?.()}</button>
+{:else if button}
+	${unlinked}
 {:else}
-	<span class={[button && kind, button && 'so-btn--static', className]} {...rest}>{@render children?.()}</span>
+	<span class={className} {...rest}>{@render children?.()}</span>
 {/if}
 `;
+}
+
+/** The Link helper as visitors get it. */
+export const LINK_SVELTE = linkSvelte();
 
 export const IMAGE_SVELTE = `<script>
 	/**

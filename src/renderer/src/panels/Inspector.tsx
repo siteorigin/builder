@@ -28,12 +28,13 @@ import {
   Trash2,
   Users
 } from 'lucide-react';
-import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, ListItem, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
+import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
+import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, type FormServiceSetup } from '@catalogue/foundation/form';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
@@ -43,6 +44,7 @@ import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, Pro
 import { StyleControls } from './StyleControls';
 import { ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
+import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 
 type Tokens = ReturnType<typeof effectiveTokens>;
 type Tone = 'local' | 'shared' | 'definition';
@@ -370,6 +372,22 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       .filter(([key]) => !service?.hidden.includes(key))
       .map(([key, schema]) => ({ key, schema, data: null }))
   );
+  // Buttons with no link are left out of the site: flag each at the field that sets its link. Hide is offered there
+  // only when that field and the label belong to the same one button (not a link or label every item shares).
+  const unlinked = unlinkedAt(state, owner, node.id);
+  const hideAction = (b: UnlinkedButton | undefined) => (b?.hide ? { label: 'Hide button', run: () => void applyOps([hideButtonOp(owner, node.id, b.hide!)], 'Hide button') } : undefined);
+  const formNotes = (key: string) => (key === 'fields' && namesFormFields(def) ? formKeyNotes(def, node.props.fields) : undefined);
+  const notes = (key: string) => {
+    const form = formNotes(key);
+    if (!unlinked.some((b) => b.link?.prop === key && b.link.itemId)) return form;
+    return (item: ListItem, i: number): ListItemNote | undefined => {
+      const b = unlinked.find((x) => x.link?.prop === key && x.link.itemId === item.id);
+      const own = hideAt(b, item.id);
+      return form?.(item, i) ?? (b?.link?.field ? { field: b.link.field, error: unlinkedNote({ hide: own?.hide }), action: hideAction(own) } : undefined);
+    };
+  };
+  // Buttons whose link this placement cannot set (it comes from the design or a component inside it).
+  const fixedUnlinked = unlinked.filter((b) => !b.link);
   return (
     <>
       <Header
@@ -397,23 +415,34 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
       </Header>
       <Section title="Content" id="content" level={LEVEL}>
         {fields.length === 0 && <p className="faint insp-note">This section has no content of its own. Add elements inside it from Insert.</p>}
+        {fixedUnlinked.map((b, i) => (
+          <p key={i} className="field-error insp-note">
+            “{b.label}” has no link, so visitors won’t see it. Its link is set in the section’s design: choose Edit everywhere and select the button, or the component it belongs to, to give it one.
+          </p>
+        ))}
         <FieldGroups
           groups={fields}
-          render={({ key, schema, label }) => (
-            <PropField
-              key={key}
-              name={key}
-              schema={schema}
-              label={label}
-              hint={service && key === service.prop ? formServiceHint(service) : undefined}
-              value={node.props[key] ?? schema.default}
-              onChange={(v, edit) => set(key, v, edit)}
-              onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
-              state={state}
-              annotate={key === 'fields' && namesFormFields(def) ? formKeyNotes(def, node.props.fields) : undefined}
-              linkPairs={schema.type === 'list' ? itemLinkPairs(def, key) : undefined}
-            />
-          )}
+          render={({ key, schema, label }) => {
+            const found = unlinkedField(unlinked, key);
+            const own = hideAt(found);
+            return (
+              <PropField
+                key={key}
+                name={key}
+                schema={schema}
+                label={label}
+                hint={service && key === service.prop ? formServiceHint(service) : undefined}
+                value={node.props[key] ?? schema.default}
+                onChange={(v, edit) => set(key, v, edit)}
+                onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+                state={state}
+                annotate={notes(key)}
+                linkPairs={schema.type === 'list' ? itemLinkPairs(def, key) : undefined}
+                error={found ? unlinkedNote({ hide: own?.hide }) : undefined}
+                action={hideAction(own)}
+              />
+            );
+          }}
         />
       </Section>
       {axes.length > 0 && (
@@ -585,6 +614,19 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   const linkField = node.kind === 'link' && isBinding(node.link) && '$item' in node.link ? node.link.$item : undefined;
   const linkPair = !nested && listProp && textField && linkField ? itemLinkPairs(def, listProp).find((p) => p.text === textField && p.link === linkField) : undefined;
   const pairedItem = linkPair && itemId ? listItems.find((x) => x.id === itemId) : undefined;
+  // A clicked button with no link (the one rendered for this item): flag its link field and offer to hide it, then
+  // select the section, since the button is gone.
+  const at = (selection.itemPath ?? []).join(',');
+  const unlinked = node.kind === 'link' && !nested ? unlinkedAt(state, instOwner, instNodeId).find((b) => b.defNodeId === node.id && (b.itemPath ?? []).join(',') === at) : undefined;
+  const hideAction = unlinked?.hide
+    ? {
+        label: 'Hide button',
+        run: async () => {
+          if (await applyOps([hideButtonOp(instOwner, instNodeId, unlinked.hide!)], 'Hide button')) selectAndFocus(parent);
+        }
+      }
+    : undefined;
+  const flagged = (kind: string) => (kind === 'link' && unlinked?.link ? { error: unlinkedNote(unlinked), action: hideAction } : {});
   // Content reach comes from the binding: an item field is per item, a section property is shared by every item.
   const perItem = bindings.some((b) => b.item);
   const contentReach = !hasContent || !listSchema ? '' : perItem ? (itemId ? `This ${itemLabel} only${itemIndex >= 0 ? ` (${itemIndex + 1} of ${n})` : ''}` : `Each ${itemLabel} has its own`) : `Same in every ${itemLabel}`;
@@ -625,6 +667,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
                   onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${instNodeId}:${b.prop}`)}
                   onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
                   linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
+                  {...flagged(b.kind)}
                 />
               );
             }
@@ -633,7 +676,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
               const item = listItems.find((x) => x.id === itemId);
               if (!field || !item) return null;
               const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${instNodeId}:${listProp}:${itemId}:${b.item}`);
-              return <ScalarField key={i} schema={field} value={item[b.item!]} state={state} onChange={edit} />;
+              return <ScalarField key={i} schema={field} value={item[b.item!]} state={state} onChange={edit} {...flagged(b.kind)} />;
             }
             return null;
           })}
@@ -675,6 +718,10 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
   const title = refLabel(state, selection);
   const kind = elementKind(node);
   const iconId = useId();
+  // A button with no link is left out of the site: say so under its link, and offer to remove it.
+  const unlinked = node.kind === 'link' && unlinkedAt(state, owner, node.id).some((b) => !b.defNodeId);
+  // A button with an anchor may be where another link goes: removing it would take that target away.
+  const removable = !!t && owner.kind !== 'shell' && !node.anchor;
   const items: MenuItem[] =
     t && owner.kind !== 'shell'
       ? [
@@ -718,11 +765,23 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
               <DraftInput value={isBinding(node.label) ? '' : String(node.label)} onCommit={(v) => content('label', v)} />
             </Field>
             {!isBinding(node.link) && (
-              <div className="field" role="group" aria-labelledby={`${node.id}-dest`}>
+              <div className="field" role="group" aria-labelledby={`${node.id}-dest`} aria-describedby={unlinked ? `${node.id}-dest-note` : undefined}>
                 <div className="field-label" id={`${node.id}-dest`}>
                   Link
                 </div>
                 <LinkEditor value={node.link} onChange={(v, edit) => content('link', v, edit)} state={state} label={kind.name} />
+                {unlinked && (
+                  <>
+                    <div className="field-error" id={`${node.id}-dest-note`}>
+                      {removable ? 'No link yet, so visitors won’t see this button. Choose where it goes, or remove it.' : 'No link yet, so visitors won’t see this button. Choose where it goes.'}
+                    </div>
+                    {removable && (
+                      <button className="btn btn-sm insp-inline-btn" onClick={() => void deleteSelection()}>
+                        <Trash2 /> Remove button
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
             )}
             <Field label="Appearance">
@@ -825,6 +884,8 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
     : node.styles;
   // A part inside a repeat is styled once for every item, in every placement.
   const repeated = enclosingRepeat(def, node.id);
+  const placedDef = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
+  const designLinks = node.kind === 'instance' && placedDef ? Object.entries(placedDef.properties).filter(([prop, schema]) => schema.type === 'link' && !isBinding(node.props[prop])) : [];
   const itemWord = repeated ? (def.properties[repeated] as { itemLabel?: string } | undefined)?.itemLabel?.toLowerCase() : undefined;
   const placements = uses === 1 ? '1 placement' : `${uses} placements`;
   const rootRef: ElementRef | null = def.tree?.rootIds[0] ? { owner, instancePath: [], nodeId: def.tree.rootIds[0] } : null;
@@ -859,11 +920,41 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         </Section>
       )}
       {/* A button's own label (not one each placement fills in), as the canvas edits it in place. */}
-      {node.kind === 'link' && !isBinding(node.label) && (
+      {node.kind === 'link' && (!isBinding(node.label) || !isBinding(node.link)) && (
         <Section title="Content" id="def-label" level={LEVEL} scope="Same in every placement">
-          <Field label="Button text">
-            <DraftInput value={String(node.label)} onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'label', value: v }], 'Edit button text everywhere')} />
-          </Field>
+          {!isBinding(node.label) && (
+            <Field label="Button text">
+              <DraftInput value={String(node.label)} onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'label', value: v }], 'Edit button text everywhere')} />
+            </Field>
+          )}
+          {/* A destination fixed in the design (not one each placement chooses): a button without one is left out. */}
+          {!isBinding(node.link) && (
+            <div className="field" role="group" aria-labelledby={`${node.id}-def-dest`}>
+              <div className="field-label" id={`${node.id}-def-dest`}>
+                Link
+              </div>
+              <LinkEditor value={node.link} onChange={(v, edit) => void applyWith(edit, [{ type: 'node.setContent', owner, nodeId: node.id, field: 'link', value: v }], 'Edit button link everywhere', `${def.id}:${node.id}:link`)} state={state} label="Button" everywhere />
+            </div>
+          )}
+        </Section>
+      )}
+      {/* A component placed in the design: the links it is given here (not ones each placement chooses). */}
+      {node.kind === 'instance' && designLinks.length > 0 && (
+        <Section title="Content" id="def-links" level={LEVEL} scope="Same in every placement">
+          {designLinks.map(([prop, schema]) => (
+            <div key={prop} className="field" role="group" aria-labelledby={`${node.id}-${prop}-dest`}>
+              <div className="field-label" id={`${node.id}-${prop}-dest`}>
+                {schema.label}
+              </div>
+              <LinkEditor
+                value={(node.props[prop] ?? schema.default) as LinkValue}
+                onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${prop}`)}
+                state={state}
+                label={schema.label}
+                everywhere
+              />
+            </div>
+          ))}
         </Section>
       )}
       <Section title="Style" id="def-style" level={LEVEL} scope={repeated ? `Every ${itemWord ?? 'item'} · ${placements}` : placements}>

@@ -168,6 +168,18 @@ describe('recent exports', () => {
     previewAndRecord(s: unknown, r: object, base: string): Promise<string | undefined>;
   };
 
+  it('warns that an exported source project leaves out buttons without a link', async () => {
+    const { c } = await openProject();
+    const home = { kind: 'page' as const, id: c.snapshot()!.state.site.homePageId };
+    expect((await c.apply({ operations: [{ type: 'node.insert', owner: home, parentId: null, index: 0, componentId: 'pricing.plans' }] })).ok).toBe(true);
+    const r = await c.exportSourceTo(join(temp('out'), 'with-pricing'));
+    expect(r.ok).toBe(true);
+    const at = r.warnings.findIndex((w) => w.startsWith('3 buttons have no link'));
+    expect(at).toBeGreaterThan(-1);
+    expect(r.warnings.filter((w) => w.includes('have no link'))).toHaveLength(1);
+    expect(r.warnings.slice(at + 1, at + 4)).toEqual(['Home · Pricing: “Book a session”', 'Home · Pricing: “Start a project”', 'Home · Pricing: “Talk to us”']);
+  });
+
   it('lists what this opening exported, newest first, and keeps the overwrite protection', async () => {
     const { c, sent } = await openProject();
     expect(c.snapshot()!.recentExports).toEqual([]);

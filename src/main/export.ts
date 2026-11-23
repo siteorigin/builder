@@ -9,6 +9,8 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
+import { displayName } from '@engine/tree';
+import { unlinkedButtons } from '@generator/checks';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 
@@ -545,6 +547,38 @@ export function sectionLinkWarnings(state: ProjectState): string[] {
   if (!broken.length) return [];
   const lead = broken.length === 1 ? 'Project health found a link to a section its page does not have. Fix it before building the exported project:' : `Project health found ${broken.length} links to sections their pages do not have. Fix them before building the exported project:`;
   return [lead, ...broken];
+}
+
+/** How many unlinked buttons an export warning names before it sums up the rest. */
+const UNLINKED_LISTED = 6;
+
+/**
+ * Warnings for buttons the site leaves out because they have no destination: the pages (and the shared header and
+ * footer, when a page shows them) in site order, each button named by where it is and its label.
+ */
+export function unlinkedButtonWarnings(state: ProjectState): string[] {
+  const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
+  const shell = pages.some((p) => p.shell !== 'none')
+    ? [
+        { tree: state.site.shell.header, label: 'Header' },
+        { tree: state.site.shell.footer, label: 'Footer' }
+      ]
+    : [];
+  const found: string[] = [];
+  for (const { tree, label } of [...pages.map((p) => ({ tree: p, label: p.title })), ...shell]) {
+    for (const b of unlinkedButtons(state, tree)) {
+      const node = tree.nodes[b.nodeId];
+      const where = node && node.kind === 'instance' ? `${label} · ${displayName(state, node)}` : label;
+      found.push(`${where}: “${b.label}”`);
+    }
+  }
+  if (!found.length) return [];
+  const lead =
+    found.length === 1
+      ? 'A button has no link, so it was left out of the site. Choose where it goes in the editor, or hide it:'
+      : `${found.length} buttons have no link, so they were left out of the site. Choose where each one goes in the editor, or hide it:`;
+  const more = found.length - UNLINKED_LISTED;
+  return [lead, ...(more > 1 ? [...found.slice(0, UNLINKED_LISTED), `…and ${more} more.`] : found)];
 }
 
 /**
