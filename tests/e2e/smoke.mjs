@@ -20,6 +20,12 @@ win.on('pageerror', (e) => logs.push(`[pageerror] ${e}`));
 await win.setViewportSize({ width: 1440, height: 900 });
 await win.waitForSelector('.welcome');
 await win.screenshot({ path: join(OUT, '01-welcome.png') });
+// API keys are stored in a user-only local file, never the OS keychain.
+const saved = await win.evaluate(async () => (await window.builder.ai.setKey('anthropic', 'sk-ant-test')).find((p) => p.id === 'anthropic'));
+console.log('key saved:', saved.configured, saved.source, saved.storage);
+const { statSync } = await import('node:fs');
+console.log('key file mode:', (statSync(join(WORK, 'userdata', 'api-keys.json')).mode & 0o777).toString(8));
+await win.evaluate(() => window.builder.ai.setKey('anthropic', null));
 
 await win.getByRole('button', { name: /New project/ }).first().click();
 await win.waitForSelector('.modal');

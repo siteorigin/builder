@@ -5,6 +5,7 @@ import type { AssetRecord } from '@shared/types';
 import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
 import { atomicWrite, sha } from './fsutil';
+import { sanitizeSvg } from './svg';
 
 const MIME: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -71,10 +72,14 @@ export async function importAsset(projectDir: string, sourcePath: string, existi
   if (!mime) throw new Error(`${basename(sourcePath)}: only JPEG, PNG, WebP, GIF, AVIF and SVG images can be imported.`);
   const stat = await fs.stat(sourcePath);
   if (stat.size > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
-  const buf = await fs.readFile(sourcePath);
+  let buf = await fs.readFile(sourcePath);
   if (mime === 'image/svg+xml') {
-    const problem = svgProblem(buf.toString('utf8'));
-    if (problem) throw new Error(`${basename(sourcePath)} was not imported because ${problem}. Export a plain SVG or use a PNG instead.`);
+    // Save a rebuilt, allowlisted SVG rather than the original bytes.
+    try {
+      buf = Buffer.from(sanitizeSvg(buf), 'utf8');
+    } catch (e) {
+      throw new Error(`${basename(sourcePath)} was not imported because ${(e as Error).message}. Export a plain SVG or use a PNG instead.`);
+    }
   }
   const hash = sha(buf);
   const dup = existing.find((a) => a.hash === hash);

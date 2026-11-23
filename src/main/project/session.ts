@@ -505,7 +505,8 @@ export class ProjectSession extends EventEmitter {
       // Any authored code that is new or changed must pass the safety checks before it can be saved.
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
-        const errors = (await checkSvelteSource(def.source)).filter((p) => p.severity === 'error');
+        // Code the AI writes is held to a stricter policy than code a developer writes.
+        const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai' })).filter((p) => p.severity === 'error');
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }

@@ -33,4 +33,11 @@ exports.default = async function afterPack(context) {
   }
   rmSync(work, { recursive: true, force: true });
   if (!existsSync(cache)) throw new Error('Bundled dependency cache was not created.');
+
+  // macOS: give every build a valid (ad-hoc) signature, sealing the resources added above. When a
+  // Developer ID certificate is available, electron-builder signs again afterwards with the real identity.
+  if (context.electronPlatformName === 'darwin' && process.platform === 'darwin') {
+    const app = join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`);
+    execFileSync('codesign', ['--force', '--deep', '--sign', '-', app], { stdio: 'inherit' });
+  }
 };

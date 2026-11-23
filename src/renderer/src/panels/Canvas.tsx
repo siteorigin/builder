@@ -12,6 +12,9 @@ import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateSelect
 import { handleShortcut } from '../Editor';
 import { Spinner, useMenu } from '../components/ui';
 
+/** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
+export const inlineEdit = { active: false };
+
 export function Canvas() {
   const runtime = useStore((s) => s.runtime);
   const snapshot = useStore((s) => s.snapshot);
@@ -100,6 +103,7 @@ export function Canvas() {
             setState({ selection: ref });
             const desc = descOf(st, ref);
             pendingEdit.current = { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]) };
+            inlineEdit.active = true;
             post('beginTextEdit', { desc });
           } else if (ref) {
             setState({ selection: ref, rightTab: 'inspect' });
@@ -111,6 +115,7 @@ export function Canvas() {
         case 'textCommit': {
           const edit = pendingEdit.current;
           pendingEdit.current = null;
+          inlineEdit.active = false;
           const d = p.desc as { ctx?: string; node?: string; items?: string } | undefined;
           const text = p.text;
           const validText = typeof text === 'string' ? text.length <= 20000 : Array.isArray(text) && text.length <= 500 && text.every((t) => typeof t === 'string' && t.length <= 20000);
@@ -120,11 +125,11 @@ export function Canvas() {
         }
         case 'textCancel':
           pendingEdit.current = null;
+          inlineEdit.active = false;
           break;
-        case 'key': {
-          handleShortcut(String(p.key), !!p.meta || !!p.ctrl, !!p.shift);
+        case 'key':
+          // Ignored: shortcuts are taken from trusted keyboard input (see App), never from the page.
           break;
-        }
         case 'contextmenu': {
           if (!st) return;
           const ref = selectionFromChain(st, p.chain as BridgeDesc[], s.selection, false);

@@ -30,7 +30,8 @@ export interface ProviderStatus {
   label: string;
   configured: boolean;
   source: 'stored' | 'session' | 'environment' | null;
-  storage: 'os' | 'session-only';
+  /** Keys live in a local file for this user account; the OS keychain is never used. */
+  storage: 'local-file';
   models: Array<{ id: string; label: string; note?: string }>;
 }
 
@@ -231,6 +232,7 @@ export interface BuilderApi {
   on(channel: 'appearance', cb: (dark: boolean) => void): () => void;
   on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number }) => void): () => void;
   on(channel: 'menu:command', cb: (cmd: string) => void): () => void;
+  on(channel: 'input:key', cb: (k: { key: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   pathForFile(file: File): string;
 }

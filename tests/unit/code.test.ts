@@ -51,3 +51,13 @@ describe('code-fixing agent', () => {
     expect(adapter.calls).toBe(2);
   });
 });
+
+describe('strict policy for AI-written code', () => {
+  it('rejects network, process and dynamic loading only in strict mode', async () => {
+    const src = `<script>\n\timport { onMount } from 'svelte';\n\tonMount(() => { fetch('https://example.com'); });\n</script>\n<p>x</p>\n`;
+    expect((await checkSvelteSource(src)).filter((p) => p.severity === 'error')).toEqual([]);
+    expect((await checkSvelteSource(src, { strict: true })).some((p) => p.message.includes('network'))).toBe(true);
+    expect((await checkSvelteSource(`<script>const m = import('./x.js');</script><p>x</p>`, { strict: true })).some((p) => p.message.includes('dynamic'))).toBe(true);
+    expect((await checkSvelteSource(GOOD, { strict: true })).filter((p) => p.severity === 'error')).toEqual([]);
+  });
+});

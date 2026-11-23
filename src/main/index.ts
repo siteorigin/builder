@@ -19,6 +19,9 @@ if (process.env.SITEORIGIN_USER_DATA) app.setPath('userData', process.env.SITEOR
 let win: BrowserWindow | null = null;
 const controller = new Controller(() => win);
 
+// Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
+app.commandLine.appendSwitch('use-mock-keychain');
+
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
 // ---------------------------------------------------------------------------
@@ -225,6 +228,15 @@ async function createWindow() {
     if (devUrl && target.startsWith(devUrl)) return;
     if (target.startsWith('about:')) return;
     e.preventDefault();
+  });
+  // Editor shortcuts come from real keyboard input (including while the preview frame has focus),
+  // so content inside the previewed site cannot fake them.
+  win.webContents.on('before-input-event', (_e, input) => {
+    if (input.type !== 'keyDown') return;
+    const mod = input.meta || input.control;
+    const k = input.key.toLowerCase();
+    const relevant = (mod && ['z', 'y', 'k', 'd', 'j', 's', 'e', '\\', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
+    if (relevant) controller.send('input:key', { key: input.key, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt });
   });
   nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
   win.on('closed', () => {

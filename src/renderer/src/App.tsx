@@ -4,6 +4,8 @@ import { Welcome } from './Welcome';
 import { Editor } from './Editor';
 import { Toasts } from './components/ui';
 import { runInspection } from './lib/inspect';
+import { handleShortcut } from './Editor';
+import { inlineEdit } from './panels/Canvas';
 
 export function App() {
   const screen = useStore((s) => s.screen);
@@ -26,7 +28,13 @@ export function App() {
       api.on('runtime:status', (runtime) => setState({ runtime })),
       api.on('ai:event', applyAiEvent),
       api.on('inspect:request', (req) => void runInspection(req)),
-      api.on('menu:command', (cmd) => window.dispatchEvent(new CustomEvent('builder-command', { detail: cmd })))
+      api.on('menu:command', (cmd) => window.dispatchEvent(new CustomEvent('builder-command', { detail: cmd }))),
+      // While the preview frame has focus, the editor's own keydown handler cannot see keys; the main
+      // process forwards the real key presses instead.
+      api.on('input:key', (k) => {
+        if (getState().screen !== 'editor' || inlineEdit.active || document.activeElement?.tagName !== 'IFRAME') return;
+        handleShortcut(k.key, k.meta || k.ctrl, k.shift);
+      })
     ];
     return () => offs.forEach((o) => o());
   }, []);

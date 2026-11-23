@@ -69,15 +69,9 @@ export function SettingsModal() {
               <Field
                 label={`${status.label} API key`}
                 hint={
-                  status.configured
-                    ? status.source === 'environment'
-                      ? 'Using the key from your environment (development build).'
-                      : status.source === 'session'
-                        ? 'Stored for this session only: no secure storage is available on this system.'
-                        : 'Stored securely with your operating system keychain.'
-                    : status.storage === 'session-only'
-                      ? 'No secure storage is available here, so the key is kept for this session only.'
-                      : 'Stored securely with your operating system keychain. Never saved in projects or exports.'
+                  status.configured && status.source === 'environment'
+                    ? 'Using the key from your environment (development build).'
+                    : 'Saved in a file on this computer that only your user account can read. It is never put in your projects, exports or logs.'
                 }
               >
                 <div className="row">

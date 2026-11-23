@@ -11,7 +11,16 @@ export interface CodeProblem {
 
 const ALLOWED_IMPORT = /^(\.{1,2}\/|svelte(\/|$)|\$app\/)/;
 
-export async function checkSvelteSource(source: string): Promise<CodeProblem[]> {
+/** Capabilities code written by the AI may not use: network access, the Node process, dynamic loading or global escapes. */
+const AI_FORBIDDEN: Array<[RegExp, string]> = [
+  [/\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon|\bimportScripts\b/, 'network requests'],
+  [/\bprocess\b|\brequire\s*\(|\b__dirname\b|\bBuffer\b/, 'Node.js features'],
+  [/\bimport\s*\(/, 'dynamic imports'],
+  [/\bglobalThis\b|\b(window|self|top|parent)\s*\[|\bFunction\s*\(|\bsetTimeout\s*\(\s*['"`]/, 'global object access'],
+  [/<iframe\b|<object\b|<embed\b|<script\b[^>]*\bsrc=/i, 'embedded external content']
+];
+
+export async function checkSvelteSource(source: string, opts: { strict?: boolean } = {}): Promise<CodeProblem[]> {
   const problems: CodeProblem[] = [];
   if (source.length > 60_000) return [{ severity: 'error', message: 'This component is too large. Split it into smaller components.' }];
   const { compile } = await import('svelte/compiler');
@@ -35,6 +44,9 @@ export async function checkSvelteSource(source: string): Promise<CodeProblem[]> 
     if (/<script[^>]*\scontext=["']module["']|<script[^>]*\smodule\b/.test(text)) problems.push({ severity: 'error', message: 'Module scripts are not supported in project components.', line: i + 1 });
     if (/\beval\s*\(|new\s+Function\s*\(/.test(text)) problems.push({ severity: 'error', message: 'eval and new Function are not allowed.', line: i + 1 });
   });
+  if (opts.strict) {
+    for (const [re, what] of AI_FORBIDDEN) if (re.test(source)) problems.push({ severity: 'error', message: `Code written by the assistant may not use ${what}.` });
+  }
   // Browser-only globals at the top of a component break prerendering.
   const script = source.match(/<script[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? '';
   if (/\b(window|document|localStorage|sessionStorage|navigator)\b/.test(script) && !/\b(onMount|\$effect|typeof window|browser)\b/.test(script)) {

@@ -53,7 +53,7 @@ npm run pack         # build an unpacked app into dist/
 npm run dist         # build installers
 ```
 
-In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the environment are used when no key is saved in Settings. Packaged builds only use keys stored with the operating system keychain. `SITEORIGIN_USER_DATA` points the app at a separate settings and cache folder, which the tests use.
+In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the environment are used when no key is saved in Settings. Packaged builds use keys saved in Settings, which are kept in `api-keys.json` in the app's data folder, readable only by your user account. The app never uses the operating system keychain, so it never asks for keychain access. `SITEORIGIN_USER_DATA` points the app at a separate settings and cache folder, which the tests use.
 
 macOS builds are signed and notarized automatically when a "Developer ID Application" certificate (or `CSC_LINK`) and Apple notarization credentials are available; otherwise they are unsigned.
 

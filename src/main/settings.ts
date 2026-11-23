@@ -1,4 +1,4 @@
-import { app, safeStorage } from 'electron';
+import { app } from 'electron';
 import { existsSync, promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import type { AppSettings, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
@@ -84,41 +84,27 @@ export async function trust(dir: string, configHash: string) {
 }
 
 // ---------------------------------------------------------------------------
-// Credentials: OS-protected storage, never written to projects, logs or exports.
+// Credentials: kept in a local file readable only by the current user account. The app never uses the
+// operating system keychain, so it never asks for keychain access. Never written to projects, logs or exports.
 // ---------------------------------------------------------------------------
 
-const credFile = () => join(app.getPath('userData'), 'credentials.bin');
-const sessionKeys: Partial<Record<ProviderId, string>> = {};
+const credFile = () => join(app.getPath('userData'), 'api-keys.json');
 const ENV_KEYS: Record<ProviderId, string> = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
 
-function osStorageAvailable(): boolean {
-  if (!safeStorage.isEncryptionAvailable()) return false;
-  if (process.platform === 'linux') {
-    const backend = (safeStorage as unknown as { getSelectedStorageBackend?: () => string }).getSelectedStorageBackend?.();
-    if (backend === 'basic_text' || backend === 'unknown') return false;
-  }
-  return true;
-}
-
 async function readStoredKeys(): Promise<Partial<Record<ProviderId, string>>> {
-  if (!osStorageAvailable() || !existsSync(credFile())) return {};
   try {
-    return JSON.parse(safeStorage.decryptString(await fs.readFile(credFile())));
+    return JSON.parse(await fs.readFile(credFile(), 'utf8'));
   } catch {
     return {};
   }
 }
 
 export async function setKey(provider: ProviderId, key: string | null) {
-  if (!osStorageAvailable()) {
-    if (key) sessionKeys[provider] = key.trim();
-    else delete sessionKeys[provider];
-    return;
-  }
   const keys = await readStoredKeys();
   if (key) keys[provider] = key.trim();
   else delete keys[provider];
-  await atomicWrite(credFile(), safeStorage.encryptString(JSON.stringify(keys)));
+  await atomicWrite(credFile(), JSON.stringify(keys));
+  await fs.chmod(credFile(), 0o600).catch(() => undefined);
 }
 
 /** Development builds may use provider keys from the environment as a documented override. */
@@ -130,7 +116,6 @@ function envKey(provider: ProviderId): string | undefined {
 export async function getKey(provider: ProviderId): Promise<{ key: string; source: ProviderStatus['source'] } | null> {
   const stored = (await readStoredKeys())[provider];
   if (stored) return { key: stored, source: 'stored' };
-  if (sessionKeys[provider]) return { key: sessionKeys[provider]!, source: 'session' };
   const env = envKey(provider);
   if (env) return { key: env, source: 'environment' };
   return null;
@@ -145,7 +130,7 @@ export async function providerStatuses(): Promise<ProviderStatus[]> {
       label: id === 'openai' ? 'OpenAI' : 'Anthropic',
       configured: !!k,
       source: k?.source ?? null,
-      storage: osStorageAvailable() ? 'os' : 'session-only',
+      storage: 'local-file',
       models: PROVIDER_MODELS[id]
     });
   }
