@@ -15,7 +15,7 @@ import { themeUpdates } from '@engine/theme-updates';
 import { basePath, generateManagedComponent, generatePage, defFile } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
-import { copyProjectSource, editedGeneratedFile, exportedAssetFilter, finishExportedSource, listFiles, projectFingerprint, projectReadme, publishFolder, uniqueChild } from './export';
+import { copyProjectSource, editedGeneratedFile, exportedAssetFilter, finishExportedSource, listFiles, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, uniqueChild } from './export';
 import { ProjectLockedError, ProjectSession } from './project/session';
 import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
@@ -616,6 +616,8 @@ export class Controller {
     const snap = await this.snapshotSource(s, project, { forBuild: true });
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
     const { revision, state } = snap;
+    // The snapshot keeps the whole library, as the editable project does; visitors get only the files the site uses.
+    const omitted = await pruneWebsiteAssets(project, state);
     await fs.symlink(join(s.dir, 'node_modules'), join(project, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
     const build = await buildProject(project);
     if (!build.ok) return { ok: false, message: 'The production build failed.', warnings: [stripAnsi(build.error ?? ''), ...build.logs.map(stripAnsi)].filter(Boolean).slice(0, 8) };
@@ -635,7 +637,9 @@ export class Controller {
     if (!state.site.baseUrl) warnings.push('No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.');
     const placeholders = placeholderImageCount(state);
     if (placeholders) warnings.push(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
-    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a)) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+    const left = omittedAssetsWarning(omitted);
+    if (left) warnings.push(left);
     const pages = state.site.pageOrder.length;
     if (format === 'zip') {
       await zipDirectory(out, dest);

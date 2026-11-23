@@ -4,7 +4,7 @@
  */
 import { existsSync, lstatSync, promises as fs } from 'node:fs';
 import { basename, join, relative, sep } from 'node:path';
-import type { ProjectState } from '@shared/types';
+import type { AssetRecord, ProjectState } from '@shared/types';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { readIfExists, sha } from './project/fsutil';
 
@@ -34,8 +34,8 @@ export async function copyProjectSource(src: string, dest: string, opts: { keepA
   });
 }
 
-/** Project files (static/assets/…) of every asset record and its responsive variants. */
-export function referencedAssetFiles(state: ProjectState): Set<string> {
+/** Project files (static/assets/…) of every asset record in the library and its responsive variants, used or not. */
+export function libraryAssetFiles(state: ProjectState): Set<string> {
   const out = new Set<string>();
   for (const a of Object.values(state.assets.assets)) {
     out.add(a.file);
@@ -48,17 +48,75 @@ export function referencedAssetFiles(state: ProjectState): Set<string> {
 const IMPORTED_ASSET = /^[^/]+-[0-9a-f]{8}(-\d+w)?\.[a-z0-9]+$/i;
 
 /**
- * Which project files an export carries. Imported images that no asset record or code component uses any
- * more (deleted images kept for undo) stay behind; anything else in static/ was put there on purpose.
+ * Which project files an export carries. Every library file stays, used or not, because the editable project
+ * keeps them for later; imported images that no asset record or code component uses any more (deleted images
+ * kept for undo) stay behind. Anything else in static/ was put there on purpose. The website build narrows
+ * this further with pruneWebsiteAssets.
  */
 export function exportedAssetFilter(state: ProjectState): (rel: string) => boolean {
-  const referenced = referencedAssetFiles(state);
+  const library = libraryAssetFiles(state);
   const code = Object.values(state.components).map((d) => d.source ?? '').join('\n');
   return (rel) => {
-    if (!rel.startsWith('static/assets/') || referenced.has(rel)) return true;
+    if (!rel.startsWith('static/assets/') || library.has(rel)) return true;
     const name = rel.slice('static/assets/'.length);
     return !IMPORTED_ASSET.test(name) || code.includes(name);
   };
+}
+
+/** Files the website build reads as text, searched for the asset file names they use. */
+const TEXT_FILE = /\.(svelte|svx|[cm]?[jt]sx?|css|html?|json|webmanifest|xml|txt|svg|mdx?|csv|tsv|ya?ml|toml)$/i;
+
+/** Does `text` name `file` as a whole file name, so that `a-1234abcd.svg` is not found inside `ba-1234abcd.svg`? */
+function namesFile(text: string, file: string): boolean {
+  for (let i = text.indexOf(file); i >= 0; i = text.indexOf(file, i + 1)) if (i === 0 || !/[\w.-]/.test(text[i - 1])) return true;
+  return false;
+}
+
+/**
+ * Remove the library files the public website does not use from a staged copy of the project, before it is
+ * built. A file in static/assets/ that belongs to an asset record, or is named like an imported file, ships
+ * only when something the build reads (src/ and static/) names it: generated pages (images and their srcset
+ * variants, the favicon, social images), the @font-face rules, code components, hand-written source and other
+ * public files. The authoring documents list the whole library, and the README is not part of the site, so
+ * neither counts. Returns the asset records none of whose files ship, so the export can say what it left out.
+ */
+export async function pruneWebsiteAssets(project: string, state: ProjectState): Promise<AssetRecord[]> {
+  const library = libraryAssetFiles(state);
+  const files = (await listFiles(project)).map((f) => f.split(sep).join('/'));
+  const candidate = (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length)));
+  const candidates = files.filter(candidate);
+  if (!candidates.length) return [];
+  const texts: string[] = [];
+  for (const rel of files) {
+    if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel)) continue;
+    texts.push(await fs.readFile(join(project, rel), 'utf8'));
+  }
+  const text = texts.join('\n');
+  const shipped = new Set<string>();
+  const removed = new Set<string>();
+  for (const rel of candidates) {
+    if (namesFile(text, basename(rel))) shipped.add(rel);
+    else {
+      await fs.rm(join(project, rel));
+      removed.add(rel);
+    }
+  }
+  return Object.values(state.assets.assets).filter((a) => {
+    const own = [a.file, ...(a.variants ?? []).map((v) => v.file)];
+    return own.some((f) => removed.has(f)) && !own.some((f) => shipped.has(f));
+  });
+}
+
+/**
+ * The export note listing every library asset a website export left out, if any. It says what was checked
+ * rather than claiming the asset is unused: code that builds an address at runtime cannot be followed.
+ */
+export function omittedAssetsWarning(omitted: AssetRecord[]): string | undefined {
+  const names = omitted.map((a) => a.name).sort();
+  if (!names.length) return undefined;
+  return names.length === 1
+    ? `Left out of the website because no page or code refers to it: ${names[0]}. It stays in the project's assets.`
+    : `Left out of the website because no page or code refers to them: ${names.join(', ')}. They stay in the project's assets.`;
 }
 
 /** Copy a finished export to `dest`, which must not exist yet. Only a folder created here is ever removed. */

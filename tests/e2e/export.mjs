@@ -1,6 +1,6 @@
 // Export integrity (spec I07, I09): export the static site and the source project through the real
-// controller (native save dialogs stubbed), then scan both for editor state, credentials, editor markup
-// and deleted images. With --build, the exported source is also installed and built with plain
+// controller (native save dialogs stubbed), then scan both for editor state, credentials, editor markup,
+// deleted images and library images kept for later (only the editable project carries those). With --build, the exported source is also installed and built with plain
 // `npm ci && npm run build`, as on a clean machine (slow, and needs the npm registry).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -38,6 +38,17 @@ const used = Object.values(after.assets.assets).find((a) => JSON.stringify(after
 assert.ok(used, 'the starter uses at least one image');
 const usedFile = basename(used.file);
 
+step('an image kept in the library for later, not placed anywhere');
+const draftPath = join(WORK, 'unpublished-sketch.svg');
+writeFileSync(draftPath, '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40"><circle cx="20" cy="20" r="18" fill="#2b8a5d"/></svg>\n');
+const draftImport = await win.evaluate((p) => window.builder.project.importAssets([p]), draftPath);
+assert.equal(draftImport.ok, true, `the draft imports: ${draftImport.message}`);
+const draftSnap = await win.evaluate(() => window.builder.project.snapshot());
+const draft = draftSnap.state.assets.assets[draftImport.assetIds[0]];
+assert.equal(draftSnap.assetUsage[draft.id] ?? 0, 0, 'the draft is not used anywhere yet');
+const draftFiles = [draft.file, ...(draft.variants ?? []).map((v) => v.file)];
+const draftNames = draftFiles.map((f) => basename(f));
+
 step('a bundled font chosen by name really ships');
 const font = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: 'Lora' }] }, { label: 'Change font' }));
 assert.equal(font.ok, true, `the bundled font is accepted: ${font.error?.message}`);
@@ -65,6 +76,7 @@ const stat = await withTimeout(win.evaluate(() => window.builder.project.exportS
 assert.equal(stat.ok, true, `static export succeeds: ${stat.message} ${stat.warnings?.join(' ')}`);
 assert.equal(stat.path, staticOut, 'an existing folder is never replaced: the export takes the next free name');
 assert.ok(!stat.warnings.some((w) => /placeholder/.test(w)), `no placeholder warning when every visible image is chosen: ${stat.warnings.join(' ')}`);
+assert.ok(stat.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website export names the draft it left out: ${stat.warnings.join(' ')}`);
 
 step('ZIP exports');
 const srcZip = await withTimeout(win.evaluate(() => window.builder.project.exportSource('zip')), 120000, 'Source ZIP export');
@@ -73,12 +85,19 @@ assert.equal(srcZip.path, sourceZip);
 const statZip = await withTimeout(win.evaluate(() => window.builder.project.exportStatic('zip')), 300000, 'Static ZIP export');
 assert.equal(statZip.ok, true, `static ZIP export succeeds: ${statZip.message}`);
 assert.equal(statZip.path, staticZip);
+assert.ok(statZip.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website ZIP export names the draft it left out: ${statZip.warnings.join(' ')}`);
 for (const zip of [sourceZip, staticZip]) assert.equal(readFileSync(zip).subarray(0, 4).toString('hex'), '504b0304', `${basename(zip)} is a ZIP file`);
 const listing = (zip) => spawnSync('unzip', ['-Z1', zip], { encoding: 'utf8' });
 const siteList = listing(staticZip);
 if (!siteList.error) {
   assert.ok(siteList.stdout.split('\n').includes('about/index.html'), 'the site ZIP holds the prerendered pages at its root');
-  assert.ok(listing(sourceZip).stdout.split('\n').includes('harbour-lane-studio-source/package.json'), 'the source ZIP holds the project in one named folder');
+  const sourceList = listing(sourceZip).stdout.split('\n');
+  assert.ok(sourceList.includes('harbour-lane-studio-source/package.json'), 'the source ZIP holds the project in one named folder');
+  const siteEntries = siteList.stdout.split('\n');
+  assert.deepEqual(siteEntries.filter((f) => draftNames.includes(basename(f))), [], 'the site ZIP has no files of the unused draft');
+  assert.deepEqual(siteEntries.filter((f) => deletedFiles.includes(basename(f))), [], 'the site ZIP has no files of the deleted image');
+  assert.ok(siteEntries.some((f) => basename(f) === usedFile), `the site ZIP keeps the image the site uses (${usedFile})`);
+  for (const f of draftFiles) assert.ok(sourceList.includes(`harbour-lane-studio-source/${f}`), `the source ZIP keeps the draft for later (${f})`);
 }
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
@@ -113,6 +132,7 @@ for (const f of ['package.json', 'package-lock.json', 'siteorigin.project.json',
 assert.ok(!srcFiles.some((f) => /^(node_modules|build|\.svelte-kit)\//.test(f)), 'source export has no installed packages or build output');
 assert.ok(!srcFiles.some((f) => /(^|\/)\.env(\.|$)/.test(f)), 'source export has no .env files');
 noDeletedImage(srcFiles, 'source');
+for (const f of draftFiles) assert.ok(srcFiles.includes(f), `the editable source export keeps the unused draft (${f})`);
 for (const f of ['jsconfig.json', 'NOTICE.md', 'src/lib/siteorigin/paths.json']) assert.ok(srcFiles.includes(f), `source export includes ${f}`);
 assert.ok(!srcFiles.includes('svelte.config.js'), 'no svelte.config.js: SvelteKit 3 reads its config from vite.config.js and rejects that file');
 assert.ok(!srcFiles.includes('.npmrc'), 'no engine-strict .npmrc in the export');
@@ -123,6 +143,10 @@ step('I09: scan the static export');
 const staticFiles = scan(staticOut, 'static');
 assert.ok(staticFiles.includes('index.html') && staticFiles.includes('about/index.html'), 'static export has the prerendered pages');
 noDeletedImage(staticFiles, 'static');
+assert.deepEqual(staticFiles.filter((f) => draftNames.includes(basename(f))), [], 'the website has no files of the unused draft');
+assert.ok(used.variants?.length, 'the starter image has responsive variants to check');
+for (const v of used.variants) assert.ok(staticFiles.some((f) => basename(f) === basename(v.file)), `the website keeps the responsive variants of an image it uses (${v.file})`);
+for (const f of draftFiles) assert.ok(existsSync(join(dir, f)), `the draft stays in the working project (${f})`);
 assert.ok(staticFiles.includes('favicon.svg'), 'static export has a favicon');
 assert.ok(staticFiles.some((f) => /lora.*\.woff2$/i.test(f)), 'the chosen font is built into the site');
 assert.ok(!staticFiles.some((f) => /fraunces.*\.woff2$/i.test(f)), 'the font it replaced is not');
