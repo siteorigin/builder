@@ -4,7 +4,7 @@ Electron + React desktop editor that builds portable SvelteKit 3 / Svelte 5 broc
 
 ## Where the project is
 
-This is a prototype. The goal right now is a good, usable builder that can make a real multi-page site, not release polish. Work lands straight on `develop`; there is no PR gate yet.
+This is a prototype. The goal right now is a good, usable builder that can make a real multi-page site, not release polish. Work lands straight on `develop`; there is no PR gate yet. The exception is a `/work-batch` run in Daintree (`.daintree/`), where each issue gets a `/work` PR and `/merge-prs` lands them on local checks.
 
 **CI is deliberately deferred.** There is no GitHub Actions CI and none should be added: no `.github/workflows`, no pushes that trigger runs. CI comes back when the project is open-sourced. Until then, the full test surface is owned by the local stabilize workflow (below).
 

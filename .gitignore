@@ -70,7 +70,7 @@ AGENTS.local.md
 .daintree/*.local.json
 
 # Build output
-node_modules/
+node_modules
 out/
 dist/
 test-results/

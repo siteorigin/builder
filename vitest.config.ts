@@ -12,5 +12,5 @@ export default defineConfig({
       '@runtime': resolve('src/runtime')
     }
   },
-  test: { include: ['tests/unit/**/*.test.ts'], environment: 'node' }
+  test: { include: ['tests/unit/**/*.test.ts', 'scripts/**/*.test.mjs'], environment: 'node' }
 });
