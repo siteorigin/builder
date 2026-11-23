@@ -1,9 +1,11 @@
 import type { ImportChoices, ImportReviewRow } from '@shared/api';
-import { api, getState, setState, useStore } from '../store';
+import { api, getState, setState, toast, useStore } from '../store';
 
 /** What the author decided to import: every chosen file that can be added, and the choices made for them. */
 export interface ReviewedImport {
   paths: string[];
+  /** How many files the author chose, those the review left out included. */
+  chosen: number;
   choices: ImportChoices;
   /** The author was shown the review (a photo to convert, a large photo, or one that can't be added). */
   reviewed: boolean;
@@ -68,12 +70,18 @@ export async function reviewImport(paths: string[] | undefined, only?: 'image' |
   const reviewed = rows.some(needsReview);
   // Only one review is shown at a time: one for a later import, already on screen, wins over this one.
   if (reviewed && pending && pending.request > request) return null;
+  // Another dialog opened while the files were being read (Find, say) keeps what the author typed in it.
+  const other = getState().modal;
+  if (reviewed && other && other.kind !== 'import-review') {
+    toast('The files were not added because another dialog is open. Add them again once it is closed.', 'info');
+    return null;
+  }
   const webCopies = reviewed ? await ask(rows, opening, request) : new Set<string>();
   if (!webCopies || !current()) return null;
   // A file the review showed can't be added is left out: the review already said why.
   const refused = new Set(reviewed ? rows.filter((r) => r.action === 'refuse').map((r) => r.path) : []);
   const files = rows.filter((r) => (r.action === 'convert' || r.action === 'offer') && r.fingerprint).map((r) => ({ path: r.path, fingerprint: r.fingerprint!, webCopy: r.action === 'convert' || !!r.copyOnly || webCopies.has(r.path) }));
-  return { paths: review.paths.filter((p) => !refused.has(p)), choices: { opening, files }, reviewed };
+  return { paths: review.paths.filter((p) => !refused.has(p)), chosen: review.paths.length, choices: { opening, files }, reviewed };
 }
 
 /** Wait (briefly) until this window's project lists `assetId`: a record added by main reaches it with the next snapshot. */

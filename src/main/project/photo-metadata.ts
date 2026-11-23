@@ -1229,12 +1229,35 @@ function itxtCredit(data: Buffer, nul: number): Buffer | null {
   return Buffer.concat([data.subarray(0, nul + 3), Buffer.from([0, 0]), data.subarray(translated + 1)]);
 }
 
+/** The Artist and Copyright values (with their closing NUL) of a credits TIFF block. */
+function tiffCreditValues(tiff: Buffer): Map<number, Buffer> {
+  const out = new Map<number, Buffer>();
+  try {
+    const le = tiff.toString('latin1', 0, 2) === 'II';
+    const u16 = (o: number) => (le ? tiff.readUInt16LE(o) : tiff.readUInt16BE(o));
+    const u32 = (o: number) => (le ? tiff.readUInt32LE(o) : tiff.readUInt32BE(o));
+    const ifd = u32(4);
+    for (let k = 0; k < u16(ifd); k++) {
+      const e = ifd + 2 + k * 12;
+      const tag = u16(e);
+      const count = u32(e + 4);
+      if ((tag !== TAG.artist && tag !== TAG.copyright) || u16(e + 2) !== 2 || count > MAX_TEXT) continue;
+      const at = count <= 4 ? e + 8 : u32(e + 8);
+      if (at + count <= tiff.length) out.set(tag, Buffer.from(tiff.subarray(at, at + count)));
+    }
+  } catch {
+    // Damaged: the text credits alone are carried.
+  }
+  return out;
+}
+
 /**
- * The Author and Copyright of a PNG's text chunks as a TIFF block (Artist, Copyright), for a JPEG made from that PNG:
- * a JPEG has no text chunks, so its credits go in EXIF. Null when there are none to carry.
+ * The credits of a PNG as a TIFF block (Artist, Copyright), for a JPEG made from that PNG: a JPEG has no text chunks,
+ * so its credits go in EXIF. Each field comes from the PNG's EXIF (`tiff`) when it has it there, and otherwise from its
+ * Author or Copyright text. Null when there are none to carry.
  */
-export function textCreditsAsTiff(text: Buffer[]): Buffer | null {
-  const values = new Map<number, Buffer>();
+export function textCreditsAsTiff(text: Buffer[], tiff?: Buffer): Buffer | null {
+  const values = tiff ? tiffCreditValues(tiff) : new Map<number, Buffer>();
   for (const c of text) {
     const type = c.toString('latin1', 0, 4);
     const data = c.subarray(4);

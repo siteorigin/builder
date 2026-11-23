@@ -33,8 +33,14 @@ const run: RunCommand = (file, args, timeoutMs) =>
 export function stopPhotoDecoders(): void {
   for (const child of running) child.kill('SIGKILL');
   running.clear();
-  for (const dir of folders) rmSync(dir, { recursive: true, force: true });
-  folders.clear();
+  for (const dir of folders) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      folders.delete(dir);
+    } catch {
+      // Left for the system's own clean-up of temporary files; the others are still removed.
+    }
+  }
 }
 
 /** Decodes a photo the image library cannot, through the platform's own converter. */

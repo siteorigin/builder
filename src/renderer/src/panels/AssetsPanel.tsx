@@ -362,7 +362,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     setImporting(true);
     try {
       const plan = await reviewImport(paths, only).catch((e: Error) => (toast(`The images couldn’t be added: ${e.message}`, 'error'), null));
-      if (!plan) return { ids: [], added: [], failed: false, reviewed: false };
+      if (!plan) return { ids: [], added: [], failed: false, reviewed: false, chosen: 0 };
       const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, only, plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The images couldn’t be added: ${e.message}` }));
       const added = r.assetIds.filter((id) => !before.has(id));
       const already = r.assetIds.length - added.length;
@@ -376,8 +376,9 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         r.note ?? '',
         r.message ?? ''
       ].filter(Boolean);
-      if (parts.length) toast(parts.join(' '), r.message && !added.length ? 'error' : 'info');
-      return { ids: r.assetIds, added, failed: !!r.message, reviewed: plan.reviewed };
+      // Nothing is said about a project that has been closed or opened again since.
+      if (parts.length && getState().snapshot?.workspaceKey === plan.choices.opening) toast(parts.join(' '), r.message && !added.length ? 'error' : 'info');
+      return { ids: r.assetIds, added, failed: !!r.message, reviewed: plan.reviewed, chosen: plan.chosen };
     } finally {
       setImporting(false);
     }
@@ -391,6 +392,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const wasEmpty = assets.length === 0;
     const session = replaceSession.current;
     const run = ++importRun.current;
+    const shownBefore = selectedNow.current;
     const opening = getState().snapshot?.workspaceKey;
     // While choosing a replacement picture, only pictures come in.
     const { ids, added, reviewed } = await importFiles(paths, replacing ? 'image' : undefined);
@@ -402,7 +404,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     }
     if (reviewed && ids.length && opening && !(await assetArrived(ids[ids.length - 1], opening))) return;
     // Only while the panel shows what it did when the import began: another import, a replacement, or the panel gone.
-    const still = run === importRun.current && replaceSession.current === session && getState().snapshot?.workspaceKey === opening;
+    const still = run === importRun.current && replaceSession.current === session && selectedNow.current === shownBefore && getState().snapshot?.workspaceKey === opening;
     const image = reviewed && still ? ids.find((id) => getState().snapshot?.state.assets.assets[id]?.kind === 'image') : undefined;
     if (image) {
       setSelected(image);
@@ -648,8 +650,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               const session = replaceSession.current;
               const r = await importFiles(undefined, 'image');
               if (replaceSession.current !== session) return;
-              // Applied only while the picker is still open for this image, and only for one file that came in cleanly.
-              if (r.ids.length === 1 && !r.failed) void replaceWith(r.ids[0]);
+              // Applied only while the picker is still open for this image, and only for the one file chosen, come in cleanly.
+              if (r.chosen === 1 && r.ids.length === 1 && !r.failed) void replaceWith(r.ids[0]);
               else if (r.added.length) {
                 setPickQ('');
                 focusTile(r.added[0]);

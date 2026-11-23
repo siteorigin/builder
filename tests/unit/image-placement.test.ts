@@ -891,6 +891,17 @@ describe('reviewing a phone photo before it is placed (issue #230)', () => {
     store.setState({ leaving: false } as Partial<StoreState>);
   });
 
+  it('never takes the place of another dialog opened while the files were read, and says to add them again', async () => {
+    const { a, field } = await setup();
+    reviewRow = heic;
+    const find = { kind: 'find' };
+    store.setState({ modal: find });
+    expect(await beginImport(field(a))).toEqual({ kind: 'none' });
+    expect(store.getState().modal).toBe(find);
+    expect(importing).toBeNull();
+    expect(lastToast()?.text).toBe('The files were not added because another dialog is open. Add them again once it is closed.');
+  });
+
   it('imports nothing when the project is closed or opened again while the review is open', async () => {
     const { a, field } = await setup();
     reviewRow = heic;

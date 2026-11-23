@@ -256,6 +256,15 @@ describe('a web-sized copy of a large photo', () => {
     const credits = cleanPhoto(readFileSync(join(project, record.file)))?.credits.tiff?.toString('latin1');
     expect(credits).toContain('Ana Field');
     expect(credits).toContain('Field Studio 2026');
+    // An artist in the PNG's EXIF and a copyright only in its text: both are carried, field by field.
+    const exifPng = await sharp(png).withExif({ IFD0: { Artist: 'Bo Lens' } }).png({ compressionLevel: 1 }).toBuffer();
+    const both = Buffer.concat([exifPng.subarray(0, end), text('Copyright', 'Lens & Co'), exifPng.subarray(end)]);
+    const mixedProject = temp('project');
+    const mixed = await importAsset(mixedProject, sourceFile('mixed.png', both), [], undefined, { webCopy: true });
+    expect(mixed.record.mime).toBe('image/jpeg');
+    const merged = cleanPhoto(readFileSync(join(mixedProject, mixed.record.file)))?.credits.tiff?.toString('latin1');
+    expect(merged).toContain('Bo Lens');
+    expect(merged).toContain('Lens & Co');
   });
 
   it('keeps the original, saying so, when a copy would be no smaller', async () => {

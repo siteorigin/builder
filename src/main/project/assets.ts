@@ -177,8 +177,8 @@ export interface ImportOptions {
 /** A web-sized copy as a file for the library, carrying the source's credits (author, copyright) and nothing else. */
 function preparedCopy(sourcePath: string, source: Buffer, copy: { data: Buffer; mime: 'image/jpeg' | 'image/png' }): PreparedFile {
   let credits = cleanPhoto(source)?.credits;
-  // A PNG's author and copyright text has no place in a JPEG but its EXIF.
-  if (credits?.text?.length && !credits.tiff && copy.mime === 'image/jpeg') credits = { ...credits, tiff: textCreditsAsTiff(credits.text) ?? undefined };
+  // A PNG's author and copyright text has no place in a JPEG but its EXIF, merged field by field with what is there.
+  if (credits?.text?.length && copy.mime === 'image/jpeg') credits = { ...credits, tiff: textCreditsAsTiff(credits.text, credits.tiff) ?? credits.tiff };
   const buf = credits && hasCredits(credits) ? addCredits(copy.data, credits) : copy.data;
   return { source: sourcePath, stem: basename(sourcePath, extname(sourcePath)), ext: copy.mime === 'image/png' ? '.png' : '.jpg', mime: copy.mime, buf, hash: sha(buf) };
 }
@@ -205,6 +205,8 @@ function classify(sourcePath: string, buf: Buffer, converter: boolean): Classifi
     if (!type) return { kind: 'refuse', reason: buf.length ? 'it is not a HEIC photo, although its name says it is. Open it in an image editor and save it as JPEG.' : 'the file is empty. Choose the original file, or save or download it again.' };
     if (type !== 'heic') {
       if (buf.length > MAX_BYTES) return { kind: 'refuse', reason: `${name} is larger than 25 MB.`, whole: true };
+      const problem = imageProblem(buf, type.stored);
+      if (problem) return { kind: 'refuse', reason: unusableReason(problem, type.stored) };
       return { kind: 'stored', mime: type.stored, ext: type.ext, info: null, offer: false };
     }
     const problem = imageProblem(buf, 'image/heic');
@@ -515,6 +517,7 @@ export async function storeLibraryWebCopy(
   if (!result.ok) throw refuse(result.unreadable ? unusableReason('damaged', record.mime) : 'the web-sized copy could not be made. Try again.');
   const p = { ...preparedCopy(`${name} web`, buf, result.copy), stem: `${name} web` };
   if (p.buf.length >= buf.length) return { smaller: false };
+  if (p.buf.length > MAX_BYTES) throw refuse('even its web-sized copy is larger than 25 MB.');
   const dup = existing.find((a) => a.hash === p.hash);
   if (dup) {
     // The same copy is already in the library: its files are put back first if they have left the project folder,
