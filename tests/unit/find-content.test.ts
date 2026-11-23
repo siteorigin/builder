@@ -76,6 +76,20 @@ describe('finding content', () => {
     expect(findContent(form, 'Send message').map((m) => m.field.label)).toEqual(['Button label']);
   });
 
+  it('lists only the words and destinations visitors see from the shipped code components', () => {
+    const s = fresh();
+    const contact = pageAt(s, '/contact/');
+    const added = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: contact.id }, componentId: 'contact.form', props: { provider: 'web3forms', accessKey: 'abc-123', formName: 'enquiries' } }]);
+    const st = added.state;
+    const named = (owner: string, nodeId: string) =>
+      [...new Set(contentFields(st).filter((f) => f.owner.id === owner && f.nodeId === nodeId).map((f) => (f.source?.kind === 'prop' ? [f.source.prop, f.source.field].filter(Boolean).join('.') : '?')))].sort();
+    expect(named(contact.id, added.results[0].nodeId as string)).toEqual(['errorMessage', 'eyebrow', 'fields.label', 'fields.placeholder', 'heading', 'lead', 'submitLabel', 'successMessage']);
+    const header = st.site.shell.header.rootIds[0];
+    expect(st.components[(st.site.shell.header.nodes[header] as InstanceNode).definitionId].kind).toBe('code');
+    expect(named('header', header).every((k) => ['siteName', 'links.label', 'links.link', 'ctaLabel', 'ctaLink'].includes(k))).toBe(true);
+    expect(named('header', header)).toContain('links.link');
+  });
+
   it('matches the words in order across spacing, case-insensitively unless asked, and never as a pattern', () => {
     const { s } = withParagraph([{ type: 'p', spans: [{ text: 'Reading group: the reading group meets at (7pm).' }] }]);
     expect(findContent(s, 'reading group').map((m) => m.start)).toEqual([0, 19]);
