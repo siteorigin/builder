@@ -1,0 +1,297 @@
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu } from 'electron';
+import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
+import type { ProviderId, SettingsPatch } from '@shared/api';
+import { Controller } from './controller';
+import { loadSettings, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
+import { Orchestrator } from '@agent/orchestrator';
+import { OpenAIAdapter, testOpenAI } from '@agent/openai';
+import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
+import { compileProject } from './compile';
+import { checkSvelteSource } from './codecheck';
+import { fixComponentSource } from '@agent/fixer';
+import type { Diagnostic } from '@engine/validate';
+
+const here = dirname(fileURLToPath(import.meta.url));
+// Tests and side-by-side development can isolate settings, credentials and caches.
+if (process.env.SITEORIGIN_USER_DATA) app.setPath('userData', process.env.SITEORIGIN_USER_DATA);
+let win: BrowserWindow | null = null;
+const controller = new Controller(() => win);
+
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+
+// ---------------------------------------------------------------------------
+// AI
+// ---------------------------------------------------------------------------
+
+const pendingInspections = new Map<string, (report: unknown) => void>();
+
+async function orchestratorAdapter() {
+  return orchestratorDeps.adapter();
+}
+
+const orchestratorDeps = {
+  adapter: async () => {
+    const s = (await loadSettings()).settings.ai;
+    const provider = s.provider;
+    if (!provider) return { error: 'Choose an AI provider in Settings to use the assistant.' };
+    const key = await getKey(provider);
+    if (!key) return { error: `Add your ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key in Settings to use the assistant.` };
+    const model = s.models[provider];
+    return { adapter: provider === 'openai' ? new OpenAIAdapter(key.key, model) : new AnthropicAdapter(key.key, model), model, provider };
+  }
+} as { adapter: () => Promise<{ adapter: import('@agent/types').AgentModelAdapter; model: string; provider: ProviderId } | { error: string }> };
+
+const orchestrator = new Orchestrator({
+  session: () => controller.session,
+  adapter: orchestratorDeps.adapter,
+  emit: (e) => controller.send('ai:event', e),
+  compileAll: async (): Promise<Diagnostic[]> => (controller.session ? compileProject(controller.session.state) : []),
+  inspectLayout: (pageId, width) =>
+    new Promise((resolve, reject) => {
+      const requestId = Math.random().toString(36).slice(2);
+      const timer = setTimeout(() => {
+        pendingInspections.delete(requestId);
+        reject(new Error('The preview did not respond in time.'));
+      }, 20000);
+      pendingInspections.set(requestId, (r) => {
+        clearTimeout(timer);
+        resolve(r);
+      });
+      controller.send('inspect:request', { requestId, pageId, width });
+    }),
+  onBusyChange: () => controller.broadcast(),
+  codeEnabled: async () => (await loadSettings()).settings.developerMode
+});
+controller.aiBusy = () => orchestrator.busy;
+controller.onSessionOpened = async () => orchestrator.reset();
+controller.onSessionClosing = async () => {
+  orchestrator.stop();
+  // Let a running request finish reverting before the project lock is released.
+  for (let i = 0; i < 100 && orchestrator.busy; i++) await new Promise((r) => setTimeout(r, 50));
+  orchestrator.reset();
+};
+
+// ---------------------------------------------------------------------------
+// IPC: every handler checks that the sender is our editor window.
+// ---------------------------------------------------------------------------
+
+/** The editor's own origin: the dev server only in unpackaged builds, otherwise app://editor. */
+const DEV_URL = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
+function isEditorUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'app:' && u.host === 'editor') return true;
+    return !!DEV_URL && u.origin === new URL(DEV_URL).origin;
+  } catch {
+    return false;
+  }
+}
+
+function handle(channel: string, fn: (...args: never[]) => unknown) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!win || event.sender !== win.webContents) throw new Error('Unauthorized sender');
+    // Only the editor's main frame may use privileged IPC (never the preview iframe).
+    if (event.senderFrame !== win.webContents.mainFrame || !isEditorUrl(event.senderFrame.url)) throw new Error('Unauthorized frame');
+    return (fn as (...a: unknown[]) => unknown)(...args);
+  });
+}
+
+function registerIpc() {
+  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, dev: !app.isPackaged }));
+  handle('app:getSettings', async () => (await loadSettings()).settings);
+  handle('app:setSettings', async (patch: SettingsPatch) => {
+    const s = await updateSettings(patch);
+    nativeTheme.themeSource = s.appearance;
+    return s;
+  });
+  handle('app:openExternal', async (url: string) => {
+    if (/^https?:\/\//.test(url)) await shell.openExternal(url);
+  });
+  handle('dialogs:chooseFolder', async (title: string, defaultPath?: string) => {
+    const r = await dialog.showOpenDialog(win!, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] });
+    return r.canceled ? null : r.filePaths[0];
+  });
+  handle('dialogs:defaultProjectsFolder', () => join(app.getPath('documents'), 'SiteOrigin Sites'));
+  handle('projects:recents', () => recents());
+  handle('projects:removeRecent', (dir: string) => removeRecent(dir));
+  handle('projects:create', (opts) => controller.create(opts));
+  handle('projects:cancelCreate', () => controller.cancelCreate());
+  handle('projects:open', (dir?: string) => controller.open(dir));
+  handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
+  handle('projects:close', () => controller.close());
+  handle('projects:duplicate', () => controller.duplicate());
+  handle('projects:reveal', (p?: string) => controller.revealInFinder(p));
+  handle('project:snapshot', () => controller.snapshot());
+  handle('project:apply', (batch, opts) => controller.apply(batch, opts));
+  handle('project:undo', () => controller.session?.undo());
+  handle('project:redo', () => controller.session?.redo());
+  handle('project:importAssets', (paths?: string[]) => controller.importAssets(paths));
+  handle('project:exportSource', () => controller.exportSource());
+  handle('project:exportStatic', () => controller.exportStatic());
+  handle('project:retryPreview', () => controller.startRuntime());
+  handle('project:repairDependencies', () => controller.repairDependencies());
+  handle('project:readSource', (id: string) => controller.readSource(id));
+  handle('project:generatedSource', (kind: 'component' | 'page', id: string) => controller.generatedSource(kind, id));
+  handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
+  handle('project:saveLocalState', (s) => controller.saveLocalState(s));
+  handle('project:validateSource', async (source: string) => {
+    const problems = await checkSvelteSource(String(source));
+    const errors = problems.filter((p) => p.severity === 'error');
+    return { ok: errors.length === 0, errors: errors.map((e) => (e.line ? `Line ${e.line}: ` : '') + e.message), diagnostics: problems };
+  });
+  handle('project:flush', async () => undefined);
+  // Development-only hooks used by the end-to-end tests in place of native save dialogs.
+  if (!app.isPackaged) {
+    handle('test:exportStatic', (dest: string) => controller.buildStaticTo(dest));
+  }
+  handle('ai:providers', () => providerStatuses());
+  handle('ai:setKey', async (p: ProviderId, key: string | null) => {
+    await setKey(p, key);
+    return providerStatuses();
+  });
+  handle('ai:test', async (p: ProviderId) => {
+    const key = await getKey(p);
+    if (!key) return { ok: false, message: 'No API key is set.' };
+    const model = (await loadSettings()).settings.ai.models[p];
+    return p === 'openai' ? testOpenAI(key.key, model) : testAnthropic(key.key, model);
+  });
+  handle('ai:conversations', () => orchestrator.loadConversations());
+  handle('ai:newConversation', () => orchestrator.newConversation());
+  handle('ai:openConversation', (id: string) => orchestrator.openConversation(id));
+  handle('ai:clearHistory', () => orchestrator.clearHistory());
+  handle('ai:send', (text: string, ctx) => orchestrator.send(text, ctx));
+  handle('ai:stop', () => orchestrator.stop());
+  handle('ai:answer', (runId: string, answer: string) => orchestrator.answer(runId, answer));
+  handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));
+  handle('ai:fixCode', async (source: string) => {
+    const ad = await orchestratorAdapter();
+    if ('error' in ad) return { ok: false, message: ad.error };
+    return fixComponentSource(ad.adapter, ad.model, String(source), checkSvelteSource, new AbortController().signal);
+  });
+  ipcMain.on('inspect:result', (event, requestId: string, report: unknown) => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
+    pendingInspections.get(requestId)?.(report);
+    pendingInspections.delete(requestId);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Window
+// ---------------------------------------------------------------------------
+
+function rendererRoot() {
+  return join(here, '../renderer');
+}
+
+async function createWindow() {
+  const settings = (await loadSettings()).settings;
+  nativeTheme.themeSource = settings.appearance;
+  win = new BrowserWindow({
+    width: 1480,
+    height: 920,
+    minWidth: 1100,
+    minHeight: 700,
+    show: false,
+    title: 'SiteOrigin Builder',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    trafficLightPosition: { x: 16, y: 17 },
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#151517' : '#f6f6f4',
+    webPreferences: {
+      preload: join(here, '../preload/index.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      spellcheck: true
+    }
+  });
+  win.once('ready-to-show', () => win?.show());
+  // Restrict navigation and new windows from the editor.
+  win.webContents.on('will-navigate', (e, url) => {
+    if (!isEditorUrl(url)) e.preventDefault();
+  });
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  // The preview iframe must not navigate away from the project origin or open popups.
+  win.webContents.on('did-attach-webview', (e) => e.preventDefault());
+  win.webContents.on('will-frame-navigate', (e) => {
+    if (e.isMainFrame) return;
+    const target = e.url;
+    const devUrl = controller.dev?.status.state === 'ready' ? (controller.dev.status as { url: string }).url : null;
+    if (devUrl && target.startsWith(devUrl)) return;
+    if (target.startsWith('about:')) return;
+    e.preventDefault();
+  });
+  nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
+  win.on('closed', () => {
+    win = null;
+  });
+  if (DEV_URL) await win.loadURL(DEV_URL);
+  else await win.loadURL('app://editor/index.html');
+}
+
+function buildMenu() {
+  const isMac = process.platform === 'darwin';
+  const send = (cmd: string) => () => controller.send('menu:command', cmd);
+  Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      ...(isMac ? [{ role: 'appMenu' as const }] : []),
+      {
+        label: 'File',
+        submenu: [
+          { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: send('new-project') },
+          { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: send('open-project') },
+          { type: 'separator' },
+          { label: 'Export…', accelerator: 'CmdOrCtrl+E', click: send('export') },
+          { type: 'separator' },
+          { label: 'Close Project', accelerator: 'CmdOrCtrl+Shift+W', click: send('close-project') },
+          isMac ? { role: 'close' as const } : { role: 'quit' as const }
+        ]
+      },
+      { role: 'editMenu' },
+      { role: 'viewMenu' },
+      { role: 'windowMenu' }
+    ])
+  );
+}
+
+app.whenReady().then(async () => {
+  // Serve the packaged editor from an app-controlled secure origin.
+  protocol.handle('app', (req) => {
+    const url = new URL(req.url);
+    const root = rendererRoot();
+    const file = normalize(join(root, decodeURIComponent(url.pathname)));
+    const rel = relative(root, file);
+    if (rel.startsWith('..') || isAbsolute(rel)) return new Response('Not found', { status: 404 });
+    return net.fetch(pathToFileURL(file).toString());
+  });
+  // Deny unsolicited permission requests (camera, notifications, etc.).
+  electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
+  electronSession.defaultSession.on('will-download', (e) => e.preventDefault());
+  registerIpc();
+  buildMenu();
+  await createWindow();
+  app.on('activate', () => {
+    if (!BrowserWindow.getAllWindows().length) void createWindow();
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+
+let quitting = false;
+app.on('before-quit', (e) => {
+  if (quitting) return;
+  if (controller.session) {
+    e.preventDefault();
+    quitting = true;
+    void controller.close().finally(() => app.quit());
+  }
+});
+
+void readFileSync;

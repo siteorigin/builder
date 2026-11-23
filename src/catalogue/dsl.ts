@@ -1,0 +1,175 @@
+/**
+ * Small authoring helpers for catalogue component definitions.
+ * The helpers only build plain static data; nothing here runs when a pack is loaded into a project.
+ */
+import type {
+  Binding,
+  ButtonAppearance,
+  ComponentCategory,
+  ComponentDefinition,
+  ElementTag,
+  GraphNode,
+  ImageValue,
+  LinkValue,
+  ListItem,
+  ListProp,
+  PartDef,
+  PropSchema,
+  ResponsiveStyles,
+  ScalarPropSchema,
+  StyleProps,
+  TextTag,
+  VariantDef
+} from '@shared/types';
+import { SCHEMA_VERSION } from '@shared/types';
+
+export const prop = (name: string): Binding => ({ $prop: name });
+export const item = (name: string): Binding => ({ $item: name });
+export const tok = (token: string) => ({ token });
+
+type NodeOpts = { styles?: ResponsiveStyles | StyleProps; when?: Binding; unless?: Binding; name?: string; anchor?: string };
+
+function normStyles(s?: ResponsiveStyles | StyleProps): ResponsiveStyles | undefined {
+  if (!s) return undefined;
+  const keys = Object.keys(s);
+  if (keys.length && keys.every((k) => ['base', 'phone', 'tablet', 'desktop'].includes(k))) return s as ResponsiveStyles;
+  return { base: s as StyleProps };
+}
+
+export class TreeBuilder {
+  nodes: Record<string, GraphNode> = {};
+
+  private add<T extends GraphNode>(node: T, opts?: NodeOpts): string {
+    if (this.nodes[node.id]) throw new Error(`Duplicate node id ${node.id}`);
+    const styles = normStyles(opts?.styles);
+    const n = { ...node } as GraphNode;
+    if (styles) n.styles = styles;
+    if (opts?.when) n.when = opts.when;
+    if (opts?.unless) n.unless = opts.unless;
+    if (opts?.name) n.name = opts.name;
+    if (opts?.anchor) n.anchor = opts.anchor;
+    this.nodes[node.id] = n;
+    return node.id;
+  }
+
+  el(id: string, tag: ElementTag, opts: NodeOpts, children: string[]): string {
+    return this.add({ id, kind: 'element', tag, children }, opts);
+  }
+  text(id: string, tag: TextTag, text: string | Binding, opts: NodeOpts = {}): string {
+    return this.add({ id, kind: 'text', tag, text }, opts);
+  }
+  rich(id: string, text: string[] | Binding, opts: NodeOpts = {}): string {
+    return this.add({ id, kind: 'text', tag: 'div', text, rich: true }, opts);
+  }
+  image(id: string, image: ImageValue | Binding, opts: NodeOpts = {}): string {
+    return this.add({ id, kind: 'image', image }, opts);
+  }
+  link(id: string, link: LinkValue | Binding, label: string | Binding, appearance: ButtonAppearance | Binding, opts: NodeOpts = {}): string {
+    return this.add({ id, kind: 'link', link, label, appearance }, opts);
+  }
+  icon(id: string, icon: string | Binding, opts: NodeOpts = {}): string {
+    return this.add({ id, kind: 'icon', icon }, opts);
+  }
+  divider(id: string, opts: NodeOpts = {}): string {
+    return this.add({ id, kind: 'divider' }, opts);
+  }
+  repeat(id: string, list: string, children: string[], opts: NodeOpts = {}): string {
+    return this.add({ id, kind: 'repeat', list: { $prop: list }, children }, opts);
+  }
+  slot(id: string, slot: string, opts: NodeOpts = {}): string {
+    return this.add({ id, kind: 'slot', slot }, opts);
+  }
+}
+
+export interface ComponentSpec {
+  componentId: string;
+  name: string;
+  description: string;
+  category: ComponentCategory;
+  tags: string[];
+  icon: string;
+  properties: Record<string, PropSchema>;
+  parts: Record<string, PartDef>;
+  variants?: Record<string, VariantDef>;
+  defaultVariant?: string;
+  slots?: Record<string, { label: string }>;
+  build: (b: TreeBuilder) => string;
+  examples?: ComponentDefinition['examples'];
+}
+
+export const PACK_ID = 'foundation';
+export const PACK_VERSION = '0.1.0';
+
+export function definitionIdFor(componentId: string): string {
+  return `${PACK_ID}.${componentId}`;
+}
+
+export function managed(spec: ComponentSpec): ComponentDefinition {
+  const b = new TreeBuilder();
+  const rootId = spec.build(b);
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    id: definitionIdFor(spec.componentId),
+    componentId: spec.componentId,
+    contractVersion: 1,
+    kind: 'managed',
+    owner: 'theme',
+    name: spec.name,
+    description: spec.description,
+    category: spec.category,
+    tags: spec.tags,
+    icon: spec.icon,
+    properties: spec.properties,
+    parts: spec.parts,
+    slots: spec.slots,
+    variants: spec.variants,
+    defaultVariant: spec.defaultVariant,
+    tree: { rootIds: [rootId], nodes: b.nodes },
+    provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: spec.componentId },
+    license: 'GPL-3.0-or-later',
+    examples: spec.examples
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Property helpers
+// ---------------------------------------------------------------------------
+
+export const P = {
+  str: (label: string, def: string, extra: Partial<ScalarPropSchema> = {}): ScalarPropSchema =>
+    ({ type: 'string', label, default: def, ...extra }) as ScalarPropSchema,
+  text: (label: string, def: string): ScalarPropSchema => ({ type: 'string', label, default: def, multiline: true }),
+  rich: (label: string, def: string[]): ScalarPropSchema => ({ type: 'richtext', label, default: def }),
+  bool: (label: string, def: boolean): ScalarPropSchema => ({ type: 'boolean', label, default: def }),
+  num: (label: string, def: number, min?: number, max?: number): ScalarPropSchema => ({ type: 'number', label, default: def, min, max }),
+  choice: (label: string, def: string, options: Array<[string, string]>): ScalarPropSchema => ({
+    type: 'enum',
+    label,
+    default: def,
+    options: options.map(([value, l]) => ({ value, label: l }))
+  }),
+  link: (label: string, def: Partial<LinkValue> = {}): ScalarPropSchema => ({
+    type: 'link',
+    label,
+    default: { type: 'none', target: '', ...def }
+  }),
+  image: (label: string, alt = ''): ScalarPropSchema => ({ type: 'image', label, default: { assetId: null, alt } }),
+  icon: (label: string, def: string): ScalarPropSchema => ({ type: 'icon', label, default: def }),
+  list: (
+    label: string,
+    itemLabel: string,
+    fields: Record<string, ScalarPropSchema>,
+    items: Array<Record<string, unknown>>,
+    extra: Partial<ListProp> = {}
+  ): ListProp => ({
+    type: 'list',
+    label,
+    itemLabel,
+    fields,
+    default: items.map((it, i) => ({ id: `item-${i + 1}`, ...it }) as ListItem),
+    max: 24,
+    ...extra
+  })
+};
+
+export const NO_LINK: LinkValue = { type: 'none', target: '' };

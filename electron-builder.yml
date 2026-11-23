@@ -1,0 +1,34 @@
+appId: com.siteorigin.builder
+productName: SiteOrigin Builder
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - "!**/*.map"
+# A complete, unmodified npm is copied into Resources/npm by build/after-pack.cjs.
+afterPack: build/after-pack.cjs
+extraResources:
+  - from: templates
+    to: templates
+  - from: resources/starter-assets
+    to: resources/starter-assets
+
+mac:
+  category: public.app-category.developer-tools
+  target: [dmg]
+  icon: build/icon.png
+  # Signing uses a "Developer ID Application" identity from the keychain when one is available
+  # (or CSC_LINK / CSC_KEY_PASSWORD in CI). Notarization runs when APPLE_ID credentials are set.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+win:
+  target: [nsis]
+  icon: build/icon.png
+linux:
+  target: [AppImage]
+  icon: build/icon.png
+  category: Development

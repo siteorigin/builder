@@ -1,0 +1,120 @@
+import { promises as fs, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import type { AssetsDoc, ComponentDefinition, PageDoc, ProjectManifest, ProjectState, SiteDoc, ThemeLock, TokensDoc } from '@shared/types';
+import { SCHEMA_VERSION } from '@shared/types';
+import { readIfExists, readJson, safeJoin, toJson } from './fsutil';
+
+export const MANIFEST_FILE = 'siteorigin.project.json';
+export const DOC_DIR = 'siteorigin';
+
+/** Only these project-relative paths are canonical documents; recovery and history may write nothing else. */
+export const CUSTOM_SOURCE_RE = /^src\/lib\/siteorigin\/custom\/[A-Za-z0-9_-]+\.svelte$/;
+const SAFE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
+export function isCanonicalPath(p: string): boolean {
+  return (
+    p === MANIFEST_FILE ||
+    /^siteorigin\/(site|tokens|assets|theme-lock)\.json$/.test(p) ||
+    /^siteorigin\/pages\/[A-Za-z0-9_-]+\.json$/.test(p) ||
+    /^siteorigin\/components\/[A-Za-z0-9][A-Za-z0-9._-]*\/component\.json$/.test(p) ||
+    CUSTOM_SOURCE_RE.test(p)
+  );
+}
+export function isSafeId(id: unknown): id is string {
+  return typeof id === 'string' && SAFE_ID_RE.test(id) && !id.includes('..');
+}
+
+export function componentDocPath(id: string): string {
+  return `${DOC_DIR}/components/${id}/component.json`;
+}
+
+/** Serialize the canonical documents. Keys are project-relative paths. */
+export function stateToDocs(state: ProjectState): Map<string, string> {
+  const docs = new Map<string, string>();
+  docs.set(MANIFEST_FILE, toJson(state.manifest));
+  docs.set(`${DOC_DIR}/site.json`, toJson(state.site));
+  docs.set(`${DOC_DIR}/tokens.json`, toJson(state.tokens));
+  docs.set(`${DOC_DIR}/assets.json`, toJson(state.assets));
+  docs.set(`${DOC_DIR}/theme-lock.json`, toJson(state.themeLock));
+  for (const id of Object.keys(state.pages).sort()) docs.set(`${DOC_DIR}/pages/${id}.json`, toJson(state.pages[id]));
+  for (const id of Object.keys(state.components).sort()) {
+    const def = state.components[id];
+    // Authored code components keep their source in the .svelte file; the manifest points to it.
+    const stored = def.sourcePath ? { ...def, source: undefined } : def;
+    docs.set(componentDocPath(id), toJson(stored));
+    // Authored code is canonical too, so it is journaled and part of undo history.
+    if (def.sourcePath && def.source !== undefined) docs.set(def.sourcePath, def.source);
+  }
+  return docs;
+}
+
+/** Source files authored by the user (project code components) also belong to the canonical state. */
+export function stateToAuthoredSources(state: ProjectState): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const def of Object.values(state.components)) if (def.sourcePath && def.source !== undefined) out.set(def.sourcePath, def.source);
+  return out;
+}
+
+export class ProjectFormatError extends Error {
+  constructor(message: string, public readonly readOnly = false) {
+    super(message);
+  }
+}
+
+export async function isBuilderProject(dir: string): Promise<boolean> {
+  return existsSync(join(dir, MANIFEST_FILE));
+}
+
+export async function readState(dir: string): Promise<ProjectState> {
+  const manifestText = await readIfExists(join(dir, MANIFEST_FILE));
+  if (!manifestText) throw new ProjectFormatError('This folder is not a SiteOrigin Builder project (siteorigin.project.json is missing).');
+  let manifest: ProjectManifest;
+  try {
+    manifest = JSON.parse(manifestText);
+  } catch {
+    throw new ProjectFormatError('siteorigin.project.json is not valid JSON.');
+  }
+  if (typeof manifest.schemaVersion !== 'number') throw new ProjectFormatError('siteorigin.project.json has no schema version.');
+  if (manifest.schemaVersion > SCHEMA_VERSION)
+    throw new ProjectFormatError(`This project was created by a newer version of SiteOrigin Builder (format ${manifest.schemaVersion}). Update the app to edit it.`, true);
+  if (!isSafeId(manifest.projectId)) throw new ProjectFormatError('siteorigin.project.json has an invalid project ID.');
+  const load = async <T>(rel: string): Promise<T> => {
+    try {
+      return await readJson<T>(join(dir, rel));
+    } catch (e) {
+      throw new ProjectFormatError(`Could not read ${rel}: ${(e as Error).message}`);
+    }
+  };
+  const site = await load<SiteDoc>(`${DOC_DIR}/site.json`);
+  const tokens = await load<TokensDoc>(`${DOC_DIR}/tokens.json`);
+  const assets = await load<AssetsDoc>(`${DOC_DIR}/assets.json`);
+  const themeLock = existsSync(join(dir, `${DOC_DIR}/theme-lock.json`))
+    ? await load<ThemeLock>(`${DOC_DIR}/theme-lock.json`)
+    : { schemaVersion: SCHEMA_VERSION, theme: { id: site.themeId, version: '0.0.0' }, components: {} };
+  const pages: Record<string, PageDoc> = {};
+  const pageDir = join(dir, DOC_DIR, 'pages');
+  for (const f of existsSync(pageDir) ? await fs.readdir(pageDir) : []) {
+    if (!f.endsWith('.json')) continue;
+    const p = await load<PageDoc>(`${DOC_DIR}/pages/${f}`);
+    if (!/^[A-Za-z0-9_-]+$/.test(String(p.id)) || p.id !== f.slice(0, -5)) throw new ProjectFormatError(`${DOC_DIR}/pages/${f} has a mismatched id "${p.id}".`);
+    pages[p.id] = p;
+  }
+  const components: Record<string, ComponentDefinition> = {};
+  const compDir = join(dir, DOC_DIR, 'components');
+  const sourcePaths = new Set<string>();
+  for (const d of existsSync(compDir) ? await fs.readdir(compDir) : []) {
+    if (d.startsWith('.')) continue;
+    // A folder left behind by an interrupted delete is not a component.
+    if (!existsSync(join(compDir, d, 'component.json'))) continue;
+    const def = await load<ComponentDefinition>(`${DOC_DIR}/components/${d}/component.json`);
+    if (!isSafeId(def.id) || def.id !== d) throw new ProjectFormatError(`${DOC_DIR}/components/${d} has a mismatched id "${def.id}".`);
+    if (def.sourcePath !== undefined) {
+      if (def.kind !== 'code' || def.owner !== 'project' || !CUSTOM_SOURCE_RE.test(def.sourcePath) || sourcePaths.has(def.sourcePath))
+        throw new ProjectFormatError(`Component "${def.name}" points to a source file outside src/lib/siteorigin/custom/ or shared with another component.`);
+      sourcePaths.add(def.sourcePath);
+      const src = await readIfExists(safeJoin(dir, def.sourcePath));
+      def.source = src ?? '';
+    }
+    components[def.id] = def;
+  }
+  return { manifest, site, tokens, assets, themeLock, pages, components };
+}

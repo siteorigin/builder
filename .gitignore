@@ -68,3 +68,12 @@ AGENTS.local.md
 
 # Daintree
 .daintree/*.local.json
+
+# Build output
+node_modules/
+out/
+dist/
+test-results/
+playwright-report/
+dist/
+*.tsbuildinfo

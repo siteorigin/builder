@@ -1,0 +1,52 @@
+// Code components: create in the editor, see compiler diagnostics, save, render, undo.
+import { _electron as electron } from 'playwright';
+import { mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+const OUT = process.env.SHOTS;
+const WORK = process.env.WORK;
+rmSync(WORK, { recursive: true, force: true });
+mkdirSync(OUT, { recursive: true });
+const app = await electron.launch({ args: ['.'], env: { ...process.env, SITEORIGIN_USER_DATA: join(WORK, 'u'), ANTHROPIC_API_KEY: '', ...(process.env.LIVE_FIX ? {} : { OPENAI_API_KEY: '' }) } });
+const win = await app.firstWindow();
+await win.setViewportSize({ width: 1440, height: 900 });
+await win.waitForSelector('.welcome');
+await win.evaluate((dir) => window.builder.projects.create({ name: 'Code Test', parentDir: dir, starter: 'blank', sampleImages: false }), join(WORK, 's'));
+const frame = win.frameLocator('.frame-box iframe');
+await frame.locator('h1').first().waitFor({ timeout: 60000 });
+await win.locator('[aria-label="Settings"]').click();
+await win.locator('[aria-label="Developer mode"]').click();
+await win.keyboard.press('Escape');
+await win.locator('.rail [aria-label="Insert"]').click();
+await win.getByRole('button', { name: 'New code component' }).click();
+await win.fill('input[placeholder="Booking widget"]', 'Counter');
+// Introduce a syntax error and wait for the diagnostic.
+await win.locator('.cm-content').click();
+await win.keyboard.press('Meta+End');
+await win.keyboard.type('\n<p>{oops</p>');
+await win.waitForSelector('.cm-lint-marker-error', { timeout: 5000 });
+console.log('diagnostic shown:', await win.locator('.cm-lint-marker-error').count() > 0);
+await win.screenshot({ path: join(OUT, '40-code-error.png') });
+if (!process.env.LIVE_FIX) {
+  await win.keyboard.press('Meta+End');
+  await win.keyboard.press('Shift+Home');
+  await win.keyboard.press('Backspace');
+  await win.keyboard.press('Backspace');
+  await win.waitForTimeout(900);
+  console.log('diagnostic cleared:', (await win.locator('.cm-lint-marker-error').count()) === 0);
+}
+const t0 = Date.now();
+await win.getByRole('button', { name: 'Create and insert' }).click();
+await win.waitForSelector('.modal', { state: 'detached', timeout: 120000 }).catch(() => {});
+await win.waitForTimeout(2000);
+console.log('save took', Date.now() - t0, 'ms; toasts:', await win.locator('.toast').allInnerTexts());
+console.log('rendered:', await frame.locator('text=Clicked 0 times').count());
+const dir = join(WORK, 's', 'code-test');
+const snap = await win.evaluate(() => window.builder.project.snapshot());
+const def = Object.values(snap.state.components).find((d) => d.name === 'Counter');
+console.log('source file:', def.sourcePath, existsSync(join(dir, def.sourcePath)));
+await win.evaluate(() => window.builder.project.undo());
+await win.evaluate(() => window.builder.project.undo());
+await win.waitForTimeout(800);
+console.log('after undo file exists:', existsSync(join(dir, def.sourcePath)));
+await win.screenshot({ path: join(OUT, '41-after-undo.png') });
+await app.close();

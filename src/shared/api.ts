@@ -1,0 +1,236 @@
+import type { ApplyResult, EditBatch } from './ops';
+import type { ElementRef, ProjectState } from './types';
+
+export type Appearance = 'system' | 'light' | 'dark';
+export type ProviderId = 'openai' | 'anthropic';
+
+export interface RecentProject {
+  dir: string;
+  name: string;
+  openedAt: string;
+  missing?: boolean;
+}
+
+export interface AppSettings {
+  appearance: Appearance;
+  /** Shows code components and source editing. Off by default: most users never need code. */
+  developerMode: boolean;
+  ai: {
+    provider: ProviderId | null;
+    models: Record<ProviderId, string>;
+    sendOnEnter: boolean;
+    setupAcknowledged: boolean;
+  };
+}
+
+export type SettingsPatch = Omit<Partial<AppSettings>, 'ai'> & { ai?: Partial<AppSettings['ai']> };
+
+export interface ProviderStatus {
+  id: ProviderId;
+  label: string;
+  configured: boolean;
+  source: 'stored' | 'session' | 'environment' | null;
+  storage: 'os' | 'session-only';
+  models: Array<{ id: string; label: string; note?: string }>;
+}
+
+export interface Diagnostic {
+  severity: 'error' | 'warning' | 'info';
+  code: string;
+  message: string;
+  owner?: { kind: string; id: string };
+  nodeId?: string;
+}
+
+export interface HistoryInfo {
+  canUndo: boolean;
+  canRedo: boolean;
+  undoLabel?: string;
+  redoLabel?: string;
+  entries: Array<{ id: string; label: string; source: string; time: string; applied: boolean; runId?: string }>;
+}
+
+export type RuntimeState =
+  | { state: 'idle' }
+  | { state: 'preparing'; message: string }
+  | { state: 'starting' }
+  | { state: 'ready'; url: string }
+  | { state: 'error'; message: string; detail?: string };
+
+export interface ProjectSnapshot {
+  dir: string;
+  state: ProjectState;
+  revision: number;
+  history: HistoryInfo;
+  diagnostics: Diagnostic[];
+  runtime: RuntimeState;
+  recoveryNotes: string[];
+  aiBusy: boolean;
+  assetUsage: Record<string, number>;
+  conflicts: Array<{ path: string; reason: string }>;
+  localState: LocalWorkspaceState;
+}
+
+export interface LocalWorkspaceState {
+  pageId?: string;
+  viewport?: number;
+  zoom?: number | 'fit';
+  leftTab?: string;
+  rightTab?: string;
+  chatDraft?: string;
+}
+
+export interface CreateProjectOptions {
+  name: string;
+  parentDir: string;
+  starter: 'business' | 'blank';
+  sampleImages: boolean;
+}
+
+export interface ProgressEvent {
+  step: 'files' | 'dependencies' | 'preview' | 'done' | 'error';
+  message: string;
+  detail?: string;
+}
+
+export interface ExportResult {
+  ok: boolean;
+  path?: string;
+  message: string;
+  warnings: string[];
+  revision?: number;
+  previewUrl?: string;
+}
+
+// ---------------------------------------------------------------------------
+// AI
+// ---------------------------------------------------------------------------
+
+export type RunStatus = 'preparing' | 'running' | 'awaiting-input' | 'validating' | 'repairing' | 'stopping' | 'completed' | 'no-changes' | 'cancelled' | 'failed' | 'conflicted';
+
+export interface ChatContext {
+  pageId: string;
+  pageTitle: string;
+  selection: ElementRef | null;
+  selectionLabel: string | null;
+  viewport: number;
+}
+
+export interface ChatActivity {
+  id: string;
+  label: string;
+  status: 'running' | 'done' | 'error';
+  detail?: string;
+  tool?: string;
+}
+
+export interface ChatChange {
+  label: string;
+  pageId?: string;
+  nodeId?: string;
+  definitionId?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  time: string;
+  context?: ChatContext;
+  runId?: string;
+  activities?: ChatActivity[];
+  result?: {
+    status: RunStatus;
+    summary: string;
+    changes: ChatChange[];
+    validation: string[];
+    canUndo: boolean;
+    error?: string;
+    usage?: { inputTokens: number; outputTokens: number };
+  };
+  question?: { text: string; choices: string[]; answered?: string };
+}
+
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: string;
+  messages: ChatMessage[];
+}
+
+export interface AiEvent {
+  runId: string;
+  conversationId: string;
+  kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message';
+  status?: RunStatus;
+  text?: string;
+  activity?: ChatActivity;
+  message?: ChatMessage;
+}
+
+export interface BuilderApi {
+  platform: string;
+  app: {
+    info(): Promise<{ version: string; platform: string; dev: boolean }>;
+    getSettings(): Promise<AppSettings>;
+    setSettings(patch: SettingsPatch): Promise<AppSettings>;
+    openExternal(url: string): Promise<void>;
+  };
+  dialogs: {
+    chooseFolder(title: string, defaultPath?: string): Promise<string | null>;
+    chooseImages(): Promise<string[]>;
+    defaultProjectsFolder(): Promise<string>;
+  };
+  projects: {
+    recents(): Promise<RecentProject[]>;
+    removeRecent(dir: string): Promise<void>;
+    create(opts: CreateProjectOptions): Promise<{ ok: boolean; message?: string }>;
+    cancelCreate(): Promise<void>;
+    open(dir?: string): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }>;
+    trustAndOpen(dir: string): Promise<{ ok: boolean; message?: string }>;
+    close(): Promise<void>;
+    duplicate(): Promise<{ ok: boolean; message?: string; dir?: string }>;
+    reveal(path?: string): Promise<void>;
+  };
+  project: {
+    snapshot(): Promise<ProjectSnapshot | null>;
+    apply(batch: EditBatch, opts?: { label?: string; coalesceKey?: string }): Promise<ApplyResult>;
+    undo(): Promise<ApplyResult>;
+    redo(): Promise<ApplyResult>;
+    importAssets(paths?: string[]): Promise<{ ok: boolean; assetIds: string[]; message?: string }>;
+    exportSource(): Promise<ExportResult>;
+    exportStatic(): Promise<ExportResult>;
+    retryPreview(): Promise<void>;
+    repairDependencies(): Promise<void>;
+    readSource(definitionId: string): Promise<{ source: string; hash: string; path: string; editable: boolean }>;
+    generatedSource(kind: 'component' | 'page', id: string): Promise<string>;
+    restoreGenerated(path: string): Promise<void>;
+    saveLocalState(state: LocalWorkspaceState): Promise<void>;
+    validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
+    flush(): Promise<void>;
+  };
+  ai: {
+    providers(): Promise<ProviderStatus[]>;
+    setKey(provider: ProviderId, key: string | null): Promise<ProviderStatus[]>;
+    testProvider(provider: ProviderId): Promise<{ ok: boolean; message: string }>;
+    conversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }>;
+    newConversation(): Promise<Conversation>;
+    openConversation(id: string): Promise<Conversation>;
+    clearHistory(): Promise<Conversation>;
+    send(text: string, context: ChatContext): Promise<{ ok: boolean; runId?: string; message?: string }>;
+    stop(): Promise<void>;
+    answer(runId: string, answer: string): Promise<void>;
+    undoTurn(runId: string): Promise<{ ok: boolean; message?: string }>;
+    fixCode(source: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string }>;
+  };
+  on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;
+  on(channel: 'project:closed', cb: () => void): () => void;
+  on(channel: 'create:progress', cb: (p: ProgressEvent) => void): () => void;
+  on(channel: 'runtime:status', cb: (s: RuntimeState) => void): () => void;
+  on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
+  on(channel: 'appearance', cb: (dark: boolean) => void): () => void;
+  on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number }) => void): () => void;
+  on(channel: 'menu:command', cb: (cmd: string) => void): () => void;
+  inspectResult(requestId: string, report: unknown): void;
+  pathForFile(file: File): string;
+}
