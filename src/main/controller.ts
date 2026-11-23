@@ -185,13 +185,22 @@ export class Controller {
     let dir = join(opts.parentDir, slugify(name) || 'website');
     if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
     if (!(await this.mayLeave())) return { ok: false };
-    let createdDir = !existsSync(dir);
+    // Set only once this attempt has created the folder itself: only then is it this attempt's to remove on failure.
+    let createdDir = false;
     this.createAbort = new AbortController();
     const signal = this.createAbort.signal;
     await this.close();
     try {
       this.progress({ step: 'files', message: 'Preparing project files…' });
-      await fs.mkdir(dir, { recursive: true });
+      await fs.mkdir(dirname(dir), { recursive: true });
+      try {
+        await fs.mkdir(dir);
+        createdDir = true;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+        // Another app may have made it meanwhile: never write into a folder that is no longer empty.
+        if ((await fs.readdir(dir)).length) throw new Error(`${dir} already exists and is not empty. Choose another name or folder.`);
+      }
       // One name for the folder from here on: the build tools resolve links and must agree with the session.
       dir = canonicalDir(dir);
       await fs.cp(join(resourcesDir(), 'templates', 'sveltekit-brochure', 'files'), dir, { recursive: true });
@@ -709,9 +718,12 @@ export class Controller {
     if (this.localDirty && s && !s.readOnly) {
       const file = s.local('workspace.json');
       const bytes = JSON.stringify(this.localState);
-      // A failed write (a full disk) is tried again with the next change, or when the project closes.
+      // A failed write (a full disk) is tried again with the next change, or when the project closes. Each write
+      // checks the lock first, so a project another app has taken over never gets this app's layout.
       this.localWrites = this.localWrites
-        .then(() => atomicWrite(file, bytes))
+        .then(async () => {
+          if (await s.stillOwner()) await atomicWrite(file, bytes, { durable: false });
+        })
         .catch(() => {
           if (this.session === s) this.localDirty = true;
         });

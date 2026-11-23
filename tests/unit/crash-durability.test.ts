@@ -95,6 +95,14 @@ async function eachCrashPoint(
 }
 
 const pageTitles = (s: ProjectSession) => Object.values(s.state.pages).map((p) => p.title);
+function filesContaining(dir: string, text: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { recursive: true, withFileTypes: true })
+    // A write's own temporary file (hidden, never served) can be left by a crash; it is not a published file.
+    .filter((e) => e.isFile() && !/^\.[0-9a-f]{12}\.tmp$/.test(e.name))
+    .map((e) => join(e.parentPath, e.name))
+    .filter((f) => readFileSync(f, 'utf8').includes(text));
+}
 
 describe('crash durability', { timeout: 300_000 }, () => {
   it('recovers an AI run interrupted while completing to the complete run or its checkpoint, never a mixture', async () => {
@@ -132,6 +140,30 @@ describe('crash durability', { timeout: 300_000 }, () => {
     });
     expect(points).toBeGreaterThan(0);
     expect(outcomes).toEqual(new Set(['complete', 'checkpoint']));
+  });
+
+  it('rolls an AI change interrupted at any point back to its checkpoint, generated files included', async () => {
+    const setup = {
+      build: async (s: ProjectSession) => {
+        expect((await s.apply({ operations: [{ type: 'site.update', name: 'Before run' }] }, { label: 'Rename' })).ok).toBe(true);
+      },
+      start: async (s: ProjectSession) => {
+        expect(await s.beginRun('run_b')).toBeNull();
+      }
+    };
+    await eachCrashPoint(
+      setup,
+      (s) => s.apply({ operations: [{ type: 'site.update', name: 'AI name' }, { type: 'page.create', title: 'Interrupted page' }] }, { label: 'AI', source: 'ai', runId: 'run_b', history: false }),
+      async (s) => {
+        expect(s.conflicts).toEqual([]);
+        expect(s.state.site.name).toBe('Before run');
+        expect(pageTitles(s)).not.toContain('Interrupted page');
+        // No route or other generated file is left behind from the interrupted batch.
+        expect(filesContaining(join(s.dir, 'src'), 'Interrupted page')).toEqual([]);
+        expect((await s.undo()).ok).toBe(true);
+        expect(s.state.site.name).toBe('Persist');
+      }
+    );
   });
 
   it('keeps the undo position across a crash at any point of an undo', async () => {
@@ -282,6 +314,25 @@ describe('crash durability', { timeout: 300_000 }, () => {
       expect(again.recoveryNotes.join(' ')).toMatch(/could not be finished/);
     });
 
+    it('never finishes a run from a completion whose step leaves out a file the run changed', async () => {
+      const { dir, s } = await make();
+      expect(await s.beginRun('run_p')).toBeNull();
+      expect((await s.apply({ operations: [{ type: 'site.update', name: 'AI name' }, { type: 'page.create', title: 'AI page' }] }, { label: 'AI', source: 'ai', runId: 'run_p', history: false })).ok).toBe(true);
+      crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('history/history.json'));
+      await s.completeRun('AI: test').catch(() => undefined);
+      disarm?.();
+      const journalPath = join(dir, '.siteorigin/journal.json');
+      const journal = JSON.parse(readFileSync(journalPath, 'utf8'));
+      const step = journal.history.entries.find((e: { runId?: string }) => e.runId === 'run_p');
+      const page = Object.keys(step.docs).find((p) => p.startsWith('siteorigin/pages/') && step.docs[p].before === null)!;
+      delete step.docs[page];
+      writeFileSync(journalPath, JSON.stringify(journal));
+      const again = await reopen(dir);
+      expect(again.state.site.name).toBe('Persist');
+      expect(pageTitles(again)).not.toContain('AI page');
+      expect(again.recoveryNotes.join(' ')).toMatch(/could not be finished/);
+    });
+
     it('never finishes a run from a completion with an empty or unapplied step, or beside an unreadable marker', async () => {
       const damage: Array<(j: { history: { cursor: number; entries: Array<{ runId?: string; docs: unknown }> } }, dir: string) => void> = [
         (j) => (j.history.entries.find((e) => e.runId === 'run_x')!.docs = {}),
@@ -355,6 +406,15 @@ describe('crash durability', { timeout: 300_000 }, () => {
       expect(c.crashed()).toBe(true);
       disarm?.();
       await expectReported(r);
+    });
+
+    it('can be undone after the deletion is kept', async () => {
+      const r = await interruptedRemoval((m, args) => m === 'rename' && String(args[1]).endsWith('journal.json'));
+      const again = await reopen(r.dir);
+      expect((await again.resolveConflict(r.meta, 'keep')).ok).toBe(true);
+      expect((await again.undo()).ok).toBe(true);
+      expect(again.state.components[r.def.id]?.source).toBe(r.sourceText);
+      expect(existsSync(join(r.dir, r.meta))).toBe(true);
     });
 
     it('can still be restored', async () => {
@@ -486,6 +546,24 @@ describe('flush order', () => {
       // The journal's removal is itself flushed before the change counts as done.
       from = durableRemove(journal, removed) + 1;
     }
+  });
+
+  it('flushes the folders a stopped save created before recovery retires its journal', async () => {
+    const { dir, s } = await make();
+    const c = crashBefore((m, args) => m === 'rename' && String(args[1]).endsWith('component.json'));
+    await s.apply({ operations: [{ type: 'component.createCode', name: 'Widget', source: '<p>Widget</p>' }] }, { label: 'Add widget' }).catch(() => undefined);
+    expect(c.crashed()).toBe(true);
+    disarm?.();
+    const journal = join(dir, '.siteorigin/journal.json');
+    const created = JSON.parse(readFileSync(journal, 'utf8')).writes.map((w: { path: string }) => w.path).find((p: string) => p.endsWith('component.json'))!;
+    const { violations, at } = await trace();
+    const again = await ProjectSession.open(dir, 'after', { force: true });
+    disarm?.();
+    expect(Object.values(again.state.components).some((d) => d.name === 'Widget')).toBe(true);
+    expect(violations).toEqual([]);
+    const retired = at((e) => e.op === 'rm' && e.path === journal);
+    for (const folder of [dirname(join(dir, created)), join(dir, 'siteorigin/components'), join(dir, 'siteorigin')]) expect(at((e) => e.op === 'sync' && e.path === folder)).toBeLessThan(retired);
+    await again.close();
   });
 
   it('records a finished AI run before clearing its marker, and clears the marker before the journal', async () => {

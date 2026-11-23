@@ -93,6 +93,8 @@ interface Journal {
 interface GeneratedManifest {
   generator: string;
   files: Record<string, string>;
+  /** Files a publication was writing when it stopped: each is this app's own if it holds that version. */
+  pending?: Record<string, string>;
 }
 
 /** How many recent copies a session keeps for Paste. */
@@ -301,7 +303,7 @@ export class ProjectSession extends EventEmitter {
     // Recorded durably: a journal written later relies on the blobs folder being there after a power loss. Each is
     // flushed even when it exists, since an app that stopped part way may have created it, or a file in it, without.
     for (const d of ['history/blobs', 'sessions', 'cache/dev', 'recovery']) await ensureDir(this.local(d));
-    for (const d of [this.local(), this.local('history'), this.local('history', 'blobs'), this.local('sessions')]) await syncDir(d);
+    for (const d of [this.dir, this.local(), this.local('history'), this.local('history', 'blobs'), this.local('sessions')]) await syncDir(d);
   }
 
   /** The instance and per-acquisition token of the lock this session holds. */
@@ -309,8 +311,10 @@ export class ProjectSession extends EventEmitter {
   private lockToken: string | null = null;
   /** none: never took a lock (project creation, tests); held; released: closed or taken over, so never writes again. */
   private lockState: 'none' | 'held' | 'released' = 'none';
-  /** While a serialized command runs: the claim on this lock's generation it holds (null: another app holds it). */
-  private fence: { claim: string | null } | null = null;
+  /** While a serialized command runs: whether it holds the claim on this lock's generation (no: another app does). */
+  private fence: { claimed: boolean } | null = null;
+  /** In this app, one user of this generation's claim at a time: commands, checks made from outside them, heartbeats. */
+  private claimMutex: Promise<void> = Promise.resolve();
   /** The last time written by the heartbeat; each beat writes a later one, whatever this computer's clock does. */
   private lastBeat = 0;
 
@@ -368,32 +372,46 @@ export class ProjectSession extends EventEmitter {
    * says yes. A takeover found here makes the session read-only at once; anything inconclusive says no.
    *
    * Inside a command (or while one runs), that command's claim on the lock generation covers the check. Called from
-   * outside one (the preview, an export, the closing workspace save), it holds the claim just for the check.
+   * outside one (the preview, an export, the workspace save), it holds the claim just for the check.
    */
   async stillOwner(): Promise<boolean> {
     if (this.readOnly) return false;
     if (this.lockState === 'none') return true;
-    if (this.fence) return (await this.checkLock(!!this.fence.claim)) === 'mine';
     if (this.lockState !== 'held') return false;
-    const claim = await claimLock(this.local('lock.json'), this.lockToken!, { holder: this.lockToken!, waitMs: 1000 });
+    // Only the command itself, or the heartbeat, moves the lock's time.
+    if (this.fence) return (await this.checkLock(this.fence.claimed, false)) === 'mine';
+    return (await this.withOwnClaim((claimed) => this.checkLock(claimed, false))) === 'mine';
+  }
+
+  /** Run `fn` holding this lock generation's claim (`claimed`: it could be had), one user in this app at a time. */
+  private async withOwnClaim<T>(fn: (claimed: boolean) => Promise<T>): Promise<T> {
+    const prior = this.claimMutex;
+    let release!: () => void;
+    this.claimMutex = new Promise<void>((r) => (release = r));
+    await prior;
     try {
-      return (await this.checkLock(!!claim)) === 'mine';
+      const claim = this.lockState === 'held' ? await claimLock(this.local('lock.json'), this.lockToken!, { holder: this.lockToken!, waitMs: 1000 }) : null;
+      try {
+        return await fn(!!claim);
+      } finally {
+        if (claim) await fs.rm(claim, { force: true }).catch(() => undefined);
+      }
     } finally {
-      if (claim) await fs.rm(claim, { force: true }).catch(() => undefined);
+      release();
     }
   }
 
   /** Run `fn` holding this lock generation's claim, so no takeover can land part way through it. */
   private async fenced<T>(fn: () => Promise<T>): Promise<T> {
     if (this.lockState !== 'held' || this.fence) return fn();
-    const claim = await claimLock(this.local('lock.json'), this.lockToken!, { holder: this.lockToken!, waitMs: 1000 });
-    this.fence = { claim };
-    try {
-      return await fn();
-    } finally {
-      this.fence = null;
-      if (claim) await fs.rm(claim, { force: true }).catch(() => undefined);
-    }
+    return this.withOwnClaim(async (claimed) => {
+      this.fence = { claimed };
+      try {
+        return await fn();
+      } finally {
+        this.fence = null;
+      }
+    });
   }
 
   /** Keep the lock fresh, and notice when another app has taken it over (it was unlocked from elsewhere). */
@@ -403,13 +421,19 @@ export class ProjectSession extends EventEmitter {
     this.heartbeat.unref?.();
   }
 
-  /** Refresh the lock's time; if another app now owns it, stop writing and become read-only. */
+  /**
+   * Refresh the lock's time; if another app now owns it, stop writing and become read-only. It waits for a command
+   * in progress (never for one that only reads, such as an export), so a long read never starves the heartbeat.
+   */
   refreshLock(): Promise<'mine' | 'lost' | 'unknown'> {
-    return this.serialize(() => this.checkLock());
+    return this.withOwnClaim((claimed) => this.checkLock(claimed, true));
   }
 
-  /** `claimed`: this generation's claim is held here, so no takeover can be part way through. */
-  private async checkLock(claimed = !!this.fence?.claim): Promise<'mine' | 'lost' | 'unknown'> {
+  /**
+   * `claimed`: this generation's claim is held here, so no takeover can be part way through. `beat`: also move the
+   * lock's time on, which is only safe while the claim is held by whoever is checking.
+   */
+  private async checkLock(claimed = !!this.fence?.claimed, beat = true): Promise<'mine' | 'lost' | 'unknown'> {
     if (this.lockState !== 'held') return 'unknown';
     // Another app holds this generation's claim: it is taking the lock over right now.
     if (!claimed) return 'unknown';
@@ -441,10 +465,13 @@ export class ProjectSession extends EventEmitter {
     }
     // Only the time changes, never the content, and only under the claim, so a heartbeat never touches a lock that
     // replaced this one. Each beat is later than the last even if this computer's clock steps back.
-    this.lastBeat = Math.max(Date.now(), this.lastBeat + 1000);
-    const t = new Date(this.lastBeat);
-    await fs.utimes(lockPath, t, t).catch(() => undefined);
-    return 'mine';
+    if (beat) {
+      this.lastBeat = Math.max(Date.now(), this.lastBeat + 1000);
+      const t = new Date(this.lastBeat);
+      await fs.utimes(lockPath, t, t).catch(() => undefined);
+    }
+    // Closed meanwhile: no longer this session's to use.
+    return this.lockState === 'held' ? 'mine' : 'unknown';
   }
 
   private stopHeartbeat() {
@@ -459,7 +486,7 @@ export class ProjectSession extends EventEmitter {
       // Nothing after this may refresh or re-create the lock: a closed session never writes again.
       this.lockState = 'released';
       // Without the claim, a takeover is part way through: it replaces the lock itself.
-      if (!this.fence?.claim) return;
+      if (!this.fence?.claimed) return;
       const lockPath = this.local('lock.json');
       const seen = await readLock(lockPath).catch(() => null);
       if (seen && parseLock(seen.text)?.token === this.lockToken) await removeIfUnchanged(lockPath, seen);
@@ -675,18 +702,25 @@ export class ProjectSession extends EventEmitter {
     if (typeof journal.finishRun === 'string') {
       // Finishing a run only records its step: the journal is only acted on when that step is whole and applied,
       // and belongs to the run still marked. Otherwise it is set aside and the marked run is rolled back.
-      let id: unknown;
+      let run: { id?: unknown; paths?: Record<string, { before?: unknown; after?: unknown }> } | null = null;
+      let readable = true;
       try {
-        id = markerText === null ? undefined : (JSON.parse(markerText) as { id?: unknown }).id;
+        run = markerText === null ? null : JSON.parse(markerText);
       } catch {
-        id = null; // unreadable: not known to be this run
+        readable = false;
       }
       const h = usableJournalHistory(journal.history) ? journal.history : null;
       const at = h ? h.entries.findIndex((e) => e?.runId === journal.finishRun) : -1;
       const docs = at >= 0 ? h!.entries[at].docs : null;
       const blobs = docs && typeof docs === 'object' && Object.keys(docs).length ? Object.values(docs).flatMap((d) => (d && typeof d === 'object' ? [d.before, d.after] : [undefined])) : null;
-      const whole = at >= 0 && at < h!.cursor && !!blobs && (await Promise.all(blobs.map((b) => (b === null ? true : this.getBlob(String(b)).then(() => true, () => false))))).every(Boolean);
-      if ((id !== undefined && id !== journal.finishRun) || !whole) return keepAside('An interrupted AI change could not be finished, so it was undone instead.');
+      let whole = at >= 0 && at < h!.cursor && !!blobs && (await Promise.all(blobs.map((b) => (b === null ? true : this.getBlob(String(b)).then(() => true, () => false))))).every(Boolean);
+      // The step must cover every file the marked run changed, from its checkpoint to what it left.
+      if (whole && run?.paths && typeof run.paths === 'object')
+        for (const [path, d] of Object.entries(run.paths)) if (d && d.before !== d.after && (docs![path]?.before !== d.before || docs![path]?.after !== d.after)) whole = false;
+      // A marker that is there must be this run's (one already cleared by an earlier recovery is fine).
+      const sameRun = markerText === null || (readable && run?.id === journal.finishRun);
+      if (!sameRun || !whole)
+        return keepAside(readable ? 'An interrupted AI change could not be finished, so it was undone instead.' : 'An interrupted AI change could not be finished or undone, so its changes were kept as they are.');
     }
     let conflicts = 0;
     for (const w of journal.writes) {
@@ -718,12 +752,16 @@ export class ProjectSession extends EventEmitter {
       if (source && journal.deletes.some((x) => x.path === source) && (await this.diskContent(source)) !== null) deletedOutside.push(d.path);
     }
     if (deletedOutside.length && markerText !== null) {
+      let run: { deletedOutside?: unknown } | null = null;
       try {
-        const run = JSON.parse(markerText) as { deletedOutside?: unknown };
-        const known = Array.isArray(run.deletedOutside) ? run.deletedOutside : [];
-        await atomicWrite(marker, toJson({ ...run, deletedOutside: [...new Set([...known, ...deletedOutside])] }));
+        run = JSON.parse(markerText);
       } catch {
         /* an unreadable marker is discarded by run recovery anyway */
+      }
+      // Written before the source goes; if it cannot be, recovery stops here and is tried again on the next open.
+      if (run) {
+        const known = Array.isArray(run.deletedOutside) ? run.deletedOutside : [];
+        await atomicWrite(marker, toJson({ ...run, deletedOutside: [...new Set([...known, ...deletedOutside])] }));
       }
     }
     for (const d of journal.deletes) {
@@ -818,9 +856,14 @@ export class ProjectSession extends EventEmitter {
     await removeDurable(this.local('sessions', 'active-run.json'));
   }
 
-  /** Flush the folders of these project files, so changes already made to them survive a power loss. */
+  /**
+   * Flush the folders of these project files, and every folder above them up to the project, so changes already
+   * made to them (by an attempt that stopped part way, perhaps creating the folders) survive a power loss.
+   */
   private async syncFoldersOf(paths: string[]) {
-    for (const dir of new Set(paths.map((p) => dirname(safeJoin(this.dir, p))))) if (existsSync(dir)) await syncDir(dir);
+    const dirs = new Set<string>();
+    for (const p of paths) for (let d = dirname(safeJoin(this.dir, p)); d.startsWith(this.dir) && !dirs.has(d); d = dirname(d)) dirs.add(d);
+    for (const dir of dirs) if (existsSync(dir)) await syncDir(dir);
   }
 
   // -------------------------------------------------------------------------
@@ -857,9 +900,12 @@ export class ProjectSession extends EventEmitter {
     // Authored sources go before the definitions that name them, so a component's definition is never missing
     // beside its source part way through a delete: recovery can then tell that from a definition deleted outside.
     deletes.sort((a, b) => Number(!CUSTOM_SOURCE_RE.test(a.path)) - Number(!CUSTOM_SOURCE_RE.test(b.path)));
-    // Never overwrite a newer version on disk (for example an edit the file watcher has not delivered yet).
+    // Never overwrite a newer version on disk (for example an edit the file watcher has not delivered yet). A file
+    // that already holds exactly what this change leaves there (a source kept when its definition was deleted
+    // outside the app, say) is not overwritten by it.
     for (const path of Object.keys(changed)) {
-      if (!sameContent(path, await this.diskContent(path), this.docs.get(path) ?? null)) throw new DiskConflictError(path);
+      const disk = await this.diskContent(path);
+      if (!sameContent(path, disk, this.docs.get(path) ?? null) && !settledOnDisk(path, disk, nextDocs.get(path) ?? null)) throw new DiskConflictError(path);
     }
     if (this.activeRun) await this.writeRunMarker(nextDocs);
     // The undo position is part of the change: planned now, journaled with the documents, installed with them.
@@ -905,6 +951,9 @@ export class ProjectSession extends EventEmitter {
     const devRoot = this.local('cache', 'dev');
     const changedFiles: string[] = [];
     const prev = this.generated.files;
+    const inflight = this.generated.pending ?? {};
+    const known = (path: string) => !!prev[path] || !!inflight[path];
+    const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
     const authored = new Set(stateToAuthoredSources(this.state).keys());
     this.conflicts = this.conflicts.filter((c) => c.kind !== 'generated');
@@ -918,13 +967,13 @@ export class ProjectSession extends EventEmitter {
       const disk = await readIfExists(abs);
       const diskHash = disk === null ? null : sha(disk);
       if (diskHash === h) continue;
-      if (!initial && disk !== null && prev[path] && diskHash !== prev[path]) {
+      if (!initial && disk !== null && known(path) && !ours(path, diskHash)) {
         // Edited outside the app: keep the external version.
-        nextFiles[path] = prev[path];
+        nextFiles[path] = prev[path] ?? inflight[path];
         this.conflicts.push({ path, reason: 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
         continue;
       }
-      if (!initial && disk !== null && !prev[path]) {
+      if (!initial && disk !== null && !known(path)) {
         // A file we never wrote already lives here: never overwrite someone's own work.
         delete nextFiles[path];
         this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
@@ -957,26 +1006,37 @@ export class ProjectSession extends EventEmitter {
     const cleanHashes: Record<string, string> = {};
     for (const [path, content] of clean) if (!authored.has(path)) cleanHashes[path] = sha(content);
     await atomicWrite(join(devRoot, CLEAN_HASHES), JSON.stringify(cleanHashes), { durable: false });
+    // Claimed before they are written: a publication that stops part way (a crash, an AI run being rolled back)
+    // leaves files the next one recognises as its own, to replace or remove, never as someone else's.
+    if (plan.length) await this.writeManifest(prev, { ...inflight, ...Object.fromEntries(plan.map((f) => [f.path, sha(f.content)])) });
     for (const { path, content, abs } of plan) {
       await atomicWrite(abs, content);
       changedFiles.push(path);
     }
     // Remove files that are no longer generated, for good before the manifest stops claiming them.
-    for (const path of Object.keys(prev)) {
+    for (const path of new Set([...Object.keys(prev), ...Object.keys(inflight)])) {
       if (path in nextFiles) continue;
       const abs = safeJoin(this.dir, path);
       const disk = await readIfExists(abs);
       await fs.rm(safeJoin(devRoot, path), { force: true });
       // An obsolete file that was edited outside the app is left alone and no longer owned.
-      if (disk !== null && sha(disk) === prev[path]) {
+      if (disk !== null && ours(path, sha(disk))) {
         await removeDurable(abs);
         await removeEmptyDirs(dirname(abs), join(this.dir, 'src'));
         changedFiles.push(path);
       }
     }
-    this.generated = { generator: GENERATOR_VERSION, files: nextFiles };
-    await atomicWrite(join(this.dir, 'siteorigin', 'generated-manifest.json'), toJson({ generator: GENERATOR_VERSION, note: 'Hashes of files generated by SiteOrigin Builder.', files: Object.fromEntries(Object.entries(nextFiles).sort()) }));
+    await this.writeManifest(nextFiles);
     return changedFiles;
+  }
+
+  private async writeManifest(files: Record<string, string>, pending?: Record<string, string>) {
+    this.generated = { generator: GENERATOR_VERSION, files, ...(pending ? { pending } : {}) };
+    const sorted = (r: Record<string, string>) => Object.fromEntries(Object.entries(r).sort());
+    await atomicWrite(
+      join(this.dir, 'siteorigin', 'generated-manifest.json'),
+      toJson({ generator: GENERATOR_VERSION, note: 'Hashes of files generated by SiteOrigin Builder.', files: sorted(files), ...(pending ? { pending: sorted(pending) } : {}) })
+    );
   }
 
   /** Restore a generated file from the managed documents, discarding the external edit. */
@@ -1045,6 +1105,7 @@ export class ProjectSession extends EventEmitter {
    * since (another window, a file edited outside the app) could make the copy differ from what was on screen.
    */
   copy(pageId: string, nodeId: string, expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }> {
+    // Reads the project and keeps the copy in memory: nothing is written, so no lock claim is needed.
     return this.serialize(async () => {
       if (expectedRevision !== this.revision) return { ok: false, message: 'The project changed while copying. Copy it again.' };
       try {
@@ -1055,7 +1116,7 @@ export class ProjectSession extends EventEmitter {
         if (e instanceof EngineError) return { ok: false, message: e.message };
         throw e;
       }
-    });
+    }, false);
   }
 
   /**
@@ -1512,12 +1573,12 @@ export class ProjectSession extends EventEmitter {
         if (!this.readOnly) this.unsettled = true;
         return { restored: false };
       }
-      // Verify, byte for byte, that every file the run touched still holds what the run wrote.
       const touched = [...new Set([...run.before.keys(), ...this.docs.keys()])].filter((p) => run.before.get(p) !== this.docs.get(p));
       const changedOutside: string[] = [];
-      for (const p of touched) if ((await this.diskContent(p)) !== (this.docs.get(p) ?? null)) changedOutside.push(p);
       this.activeRun = null;
       try {
+        // Verify, byte for byte, that every file the run touched still holds what the run wrote.
+        for (const p of touched) if ((await this.diskContent(p)) !== (this.docs.get(p) ?? null)) changedOutside.push(p);
         if (touched.length && !changedOutside.length) {
           try {
             await this.persist(run.beforeState, { label: 'Revert AI changes', history: false, source: 'system' });
@@ -1726,13 +1787,23 @@ async function readLock(path: string): Promise<LockSeen | null> {
 const sameLock = (a: LockSeen | null, b: LockSeen) => !!a && a.text === b.text && a.mtimeMs === b.mtimeMs;
 
 async function createExclusive(path: string, body: string): Promise<boolean> {
+  let handle: Awaited<ReturnType<typeof fs.open>>;
   try {
-    await fs.writeFile(path, body, { flag: 'wx' });
-    return true;
+    handle = await fs.open(path, 'wx');
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
     throw e;
   }
+  try {
+    await handle.writeFile(body);
+  } catch (e) {
+    // Never leave behind an empty file that others would take for a live lock or claim.
+    await handle.close().catch(() => undefined);
+    await fs.rm(path, { force: true }).catch(() => undefined);
+    throw e;
+  }
+  await handle.close();
+  return true;
 }
 
 /** Which acquisition of the lock this is: its token, or for a lock without one, its exact content. */

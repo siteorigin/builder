@@ -361,6 +361,22 @@ describe('project lock', () => {
     expect(readdirSync(join(dir, '.siteorigin')).filter((f) => f.startsWith('lock.json.'))).toEqual([]);
   });
 
+  it('moves its lock time only from the heartbeat, which a long read never holds up', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const a = await reopen(dir, 'a');
+    const t0 = statSync(lockFile(dir)).mtimeMs;
+    expect(await a.stillOwner()).toBe(true);
+    expect(statSync(lockFile(dir)).mtimeMs).toBe(t0);
+    // An export reads the project under exclusive(); the heartbeat still runs meanwhile.
+    let finish!: () => void;
+    const reading = a.exclusive(() => new Promise<void>((r) => (finish = r)));
+    expect(await a.refreshLock()).toBe('mine');
+    expect(statSync(lockFile(dir)).mtimeMs).toBeGreaterThan(t0);
+    finish();
+    await reading;
+  });
+
   it('keeps moving its lock time forward when its clock steps back', async () => {
     const { dir, s } = await make();
     await s.close();
