@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ChatMessage, Conversation } from '@shared/api';
-import { composerAction, shownQuestions, waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
+import { composerAction, isStarting, shownQuestions, waitingQuestion } from '../../src/renderer/src/lib/chatQuestions';
 
 const t = '2026-11-20T09:00:00.000Z';
 const audience = { id: 'q_1', text: 'Who is the page for?', choices: ['New clients', 'Both equally'], answered: 'Both equally' };
@@ -69,5 +69,17 @@ describe('a turn shows every question it asked', () => {
   it('shows a question stored by an earlier version', () => {
     const m = turn({ questions: undefined, question: { text: 'Which tone?', choices: ['Calm'], answered: 'Calm' } });
     expect(shownQuestions(m, null)).toEqual([{ text: 'Which tone?', choices: ['Calm'], answered: 'Calm', key: 'm_a:0' }]);
+  });
+});
+
+describe('the "Getting started" spinner', () => {
+  it('shows for a live turn with nothing yet, and never while that turn waits for the author', () => {
+    const empty = turn({ activities: [] });
+    expect(isStarting(empty, true, false)).toBe(true);
+    // A question with no activity rows is a turn waiting on the author: nothing may keep spinning.
+    expect(isStarting(empty, true, true)).toBe(false);
+    expect(isStarting(empty, false, false)).toBe(false);
+    expect(isStarting(turn({ text: 'Looking' }), true, false)).toBe(false);
+    expect(isStarting(turn({ activities: [{ id: 'a', label: 'Reading', status: 'done' }] }), true, false)).toBe(false);
   });
 });

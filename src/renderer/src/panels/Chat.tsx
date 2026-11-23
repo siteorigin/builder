@@ -8,7 +8,7 @@ import { afterSend, draftFor, moveDraft, unsentDrafts, withDraft } from '../lib/
 import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, resumableId } from '../lib/result';
-import { composerAction, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { composerAction, isStarting, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
 
@@ -628,14 +628,14 @@ function AssistantMessage({ m, live, undoable, asking, onContinue }: { m: ChatMe
   // Every question of the turn stays with it, in order, with its answer.
   const questions = shownQuestions(m, asking);
   return (
-    <div className="msg-ai" aria-busy={live || undefined}>
+    <div className="msg-ai" aria-busy={(live && !waitingHere) || undefined}>
       {!r && activities.length > 0 && <Steps items={activities} waiting={waitingHere} recent={4} />}
       {!r && m.text && (
         <div className="text">
           <Md text={m.text} />
         </div>
       )}
-      {live && !r && !m.text && !activities.length && (
+      {isStarting(m, live, waitingHere) && (
         <div className="activity-list chat-starting">
           <span className="activity running">
             <span className="activity-icon">

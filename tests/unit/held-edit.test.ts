@@ -5,7 +5,7 @@ import { createStarterState } from '@catalogue/starters';
 import { listThemes } from '@catalogue/index';
 import { applyOperations } from '@engine/apply';
 import { checkHeld, fieldKey, heldPrompt, readFields, shownField, typedText } from '../../src/renderer/src/lib/held';
-import { settledState } from '../../src/renderer/src/lib/savestate';
+import { runPhase, settledState } from '../../src/renderer/src/lib/savestate';
 import { saveStatusAnnouncement as saveAnnouncement } from '../../src/renderer/src/lib/announce';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -225,8 +225,8 @@ describe('toolbar save state', () => {
   const base = { conflict: false, runStatus: null, stopping: false, handoff: false, held: false, drafting: false, pending: false };
 
   it('treats stopping the AI for an edit as an AI step, saving it as a save, and a kept edit as its own state', () => {
-    expect(settledState({ ...base, runStatus: 'awaiting-input' })).toBe('ai');
-    expect(settledState({ ...base, stopping: true, handoff: true })).toBe('ai');
+    expect(settledState({ ...base, runStatus: 'awaiting-input' })).toBe('asking');
+    expect(settledState({ ...base, stopping: true, handoff: true })).toBe('working');
     expect(settledState({ ...base, handoff: true, pending: true })).toBe('busy');
     expect(settledState({ ...base, handoff: true, held: true })).toBe('busy');
     expect(settledState({ ...base, runStatus: 'running', conflict: true })).toBe('conflict');
@@ -237,17 +237,40 @@ describe('toolbar save state', () => {
     expect(settledState(base)).toBe('saved');
   });
 
+  it('tells an AI waiting for the author from one working and one checking its changes', () => {
+    for (const r of ['preparing', 'running', 'stopping'] as const) expect(settledState({ ...base, runStatus: r })).toBe('working');
+    expect(settledState({ ...base, runStatus: 'awaiting-input' })).toBe('asking');
+    for (const r of ['validating', 'repairing'] as const) expect(settledState({ ...base, runStatus: r })).toBe('checking');
+    expect(runPhase(null)).toBeNull();
+    expect(runPhase('awaiting-input')).toBe('asking');
+    // Stopping the AI for a held edit while it waits is work, not waiting.
+    expect(settledState({ ...base, runStatus: 'awaiting-input', stopping: true })).toBe('working');
+    expect(settledState({ ...base, runStatus: 'awaiting-input', conflict: true })).toBe('conflict');
+  });
+
+  it('says who has to act as the AI asks, resumes and checks', () => {
+    expect(saveAnnouncement('saved', 'working', null)).toBe('AI is working');
+    expect(saveAnnouncement('working', 'asking', null)).toBe('AI is waiting for your answer');
+    expect(saveAnnouncement('asking', 'working', null)).toBe('AI is working again');
+    expect(saveAnnouncement('working', 'checking', null)).toBe('AI is checking its changes');
+    expect(saveAnnouncement('asking', 'checking', null)).toBe('AI is checking its changes');
+    // A question that ends the request (Stop, or a failure) is announced as how it ended.
+    expect(saveAnnouncement('asking', 'saved', { run: 'cancelled' })).toBe('AI stopped');
+    expect(saveAnnouncement('checking', 'saved', { run: 'completed' })).toBe('AI changes saved');
+    expect(saveAnnouncement('asking', 'held', { run: 'cancelled', edit: 'held' })).toBe('AI stopped. Your edit was not applied. Review it below');
+  });
+
   it('announces how the request really ended, not "AI changes saved" for every ending', () => {
-    expect(saveAnnouncement('ai', 'saved', { run: 'cancelled' })).toBe('AI stopped');
-    expect(saveAnnouncement('ai', 'saved', { run: 'no-changes' })).toBe('AI finished without changing anything');
-    expect(saveAnnouncement('ai', 'saved', { run: 'failed' })).toBe('AI request failed');
-    expect(saveAnnouncement('ai', 'saved', { run: 'completed' })).toBe('AI changes saved');
-    expect(saveAnnouncement('ai', 'saved', { run: 'cancelled', edit: 'saved' })).toBe('AI stopped. Your edit was saved');
-    expect(saveAnnouncement('ai', 'held', { run: 'completed' })).toBe('AI changes saved. Your edit is not saved yet');
-    expect(saveAnnouncement('ai', 'held', { run: 'cancelled', edit: 'saved' })).toBe('AI stopped. Your edit was saved. Another edit is not saved yet');
-    expect(saveAnnouncement('ai', 'held', { run: null, edit: 'held' })).toBe('Your edit was not applied. Review it below');
-    expect(saveAnnouncement('ai', 'saved', { run: 'conflicted' })).toBe('AI stopped. A file changed outside SiteOrigin Builder, so its changes were kept for review');
-    expect(saveAnnouncement('saved', 'ai', null)).toBe('AI is checking its changes');
+    expect(saveAnnouncement('checking', 'saved', { run: 'cancelled' })).toBe('AI stopped');
+    expect(saveAnnouncement('checking', 'saved', { run: 'no-changes' })).toBe('AI finished without changing anything');
+    expect(saveAnnouncement('checking', 'saved', { run: 'failed' })).toBe('AI request failed');
+    expect(saveAnnouncement('checking', 'saved', { run: 'completed' })).toBe('AI changes saved');
+    expect(saveAnnouncement('checking', 'saved', { run: 'cancelled', edit: 'saved' })).toBe('AI stopped. Your edit was saved');
+    expect(saveAnnouncement('checking', 'held', { run: 'completed' })).toBe('AI changes saved. Your edit is not saved yet');
+    expect(saveAnnouncement('checking', 'held', { run: 'cancelled', edit: 'saved' })).toBe('AI stopped. Your edit was saved. Another edit is not saved yet');
+    expect(saveAnnouncement('checking', 'held', { run: null, edit: 'held' })).toBe('Your edit was not applied. Review it below');
+    expect(saveAnnouncement('checking', 'saved', { run: 'conflicted' })).toBe('AI stopped. A file changed outside SiteOrigin Builder, so its changes were kept for review');
+    expect(saveAnnouncement('saved', 'checking', null)).toBe('AI is checking its changes');
     // "Apply my edit" after the AI had finished: a save of the author's edit, not an AI check.
     expect(saveAnnouncement('held', 'saved', { run: null, edit: 'saved' })).toBe('Your edit was saved');
     expect(saveAnnouncement('held', 'saved', { run: 'completed' })).toBe('All changes saved');

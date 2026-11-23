@@ -41,3 +41,11 @@ export function composerAction(opts: { text: string; waiting: boolean; running: 
   if (opts.running) return 'hold';
   return (opts.sinceAnswerMs ?? Infinity) < ANSWER_ECHO_MS ? 'none' : 'send';
 }
+
+/**
+ * Whether a live turn with nothing to show yet says "Getting started…" with a spinner. A turn that holds the
+ * open question is not starting: it waits for the author, so it shows nothing that moves and is not busy.
+ */
+export function isStarting(m: { text?: string; result?: unknown; activities?: unknown[] }, live: boolean, waitingHere: boolean): boolean {
+  return live && !waitingHere && !m.result && !m.text && !(m.activities?.length ?? 0);
+}
