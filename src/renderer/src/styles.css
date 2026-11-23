@@ -819,7 +819,6 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 
 @media (prefers-color-scheme: dark) { .select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); } }
 .chip:not(:has(button)) { padding-right: 8px; }
-.list-item.adding { background: var(--hover); }
 .list-editor-head button.title { display: flex; align-items: center; gap: 6px; align-self: stretch; padding: 0 4px; }
 
 /* Focus rings sit inside clipped rows so they are never cut off. */
@@ -827,7 +826,43 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 /* While a dialog is open, toasts still announce, but their actions wait (they act on the page behind). */
 body.dialog-open .toast .btn { visibility: hidden; }
 .editor.page-quiet [role='listbox'][aria-label='Pages'] .list-item.selected { box-shadow: none; }
-.add-page-actions { display: flex; gap: 6px; padding: 4px 12px 6px 36px; }
+/* Pages panel. Each row is the page's title over its address, so long titles keep the full row width and
+   nested addresses stay readable (an address too long for the row shortens its parent folders first and
+   keeps the page's own segment, which is what tells nested pages apart). The current page is the filled row with a semibold title (plus the ring while
+   the page itself is inspected); its address stays secondary. The … shows on the current, hovered, focused
+   and menu-open rows only, in a slot every row reserves so text never shifts. */
+.pages-head-add { margin-right: -4px; color: var(--text-2); }
+.pages-head-add:hover:not(:disabled) { color: var(--text); }
+.pages-head-add[aria-expanded='true'] { color: var(--accent-text); }
+.pages-list-wrap { position: relative; }
+.pages-list .page-row { align-items: flex-start; min-height: 40px; padding: 4px 4px 4px 8px; }
+.pages-list .page-row.selected { font-weight: 400; }
+.pages-list .page-icon { margin-top: 2px; }
+.pages-list .page-row .actions { align-self: center; }
+.page-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.page-title { line-height: 18px; }
+.page-route { display: flex; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 11.5px; line-height: 15px; color: var(--text-3); }
+.page-route-dir { flex: 0 1 auto; min-width: 1.6em; overflow: hidden; text-overflow: ellipsis; }
+.page-route-leaf { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.page-route-dir + .page-route-leaf { max-width: calc(100% - 1.6em); }
+.pages-list .page-row.selected .page-title { font-weight: 600; }
+.pages-list .page-row.selected .page-route { color: var(--text-2); }
+.pages-list .page-row.selected .actions .icon-btn.hover-only,
+.pages-list .page-row.menu-open .actions .icon-btn.hover-only { opacity: 1; }
+/* The dragged row keeps its text at full contrast; a dashed ring marks it as the one moving. */
+.pages-list .page-row.dragging { box-shadow: none; background: var(--panel-2); outline: 1px dashed var(--border-control); outline-offset: -1px; }
+.pages-list .page-row.renaming { box-shadow: none; }
+.pages-list .page-row.renaming .page-title, .pages-list .page-row.renaming .actions, .pages-list .page-row.dragging .actions { visibility: hidden; }
+.pages-rename.inline-edit { position: absolute; z-index: 1; height: 22px; }
+/* While a component definition is edited the page row keeps its own blue, without the ring. */
+.editor.defining .pages-list .page-row.selected { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }
+.pages-add-form { display: flex; flex-direction: column; gap: 6px; margin: 0 6px 12px; padding: 8px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); scroll-margin-bottom: 12px; }
+.pages-add-form .input.inline-edit { height: 30px; padding: 0 9px; }
+.pages-add-route { font-size: 11.5px; line-height: 15px; color: var(--text-3); overflow-wrap: anywhere; padding: 0 2px; }
+.pages-add-route .value { color: var(--text); font-weight: 500; }
+.pages-add-route .value.empty { color: var(--text-3); font-weight: 400; }
+.pages-add-actions { display: flex; gap: 6px; }
+.delete-page-route { font-weight: 500; overflow-wrap: anywhere; }
 .asset-back { align-self: flex-start; margin: -4px 0 0 -6px; }
 .asset-preview { display: grid; place-items: center; height: 160px; border-radius: var(--r-sm); background: var(--canvas); overflow: hidden; }
 .asset-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
