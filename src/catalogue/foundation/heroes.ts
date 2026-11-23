@@ -42,7 +42,7 @@ export const heroCentered = managed({
     sectionShell(
       b,
       [
-        b.el('content', 'div', { name: 'Content', styles: { base: { layout: 'stack', gap: tok('space.lg'), align: 'center', textAlign: 'center', maxWidth: '880px', marginInline: 'auto' } } }, [
+        b.el('content', 'div', { name: 'Content', collapseEmpty: true, styles: { base: { layout: 'stack', gap: tok('space.lg'), align: 'center', textAlign: 'center', maxWidth: '880px', marginInline: 'auto' } } }, [
           b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
           b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.display') } }),
           b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles, maxWidth: '640px' } }),
@@ -86,7 +86,7 @@ export const heroSplit = managed({
           }
         },
         [
-          b.el('content', 'div', { name: 'Content', styles: { base: { layout: 'stack', gap: tok('space.lg'), align: 'start' } } }, [
+          b.el('content', 'div', { name: 'Content', collapseEmpty: true, styles: { base: { layout: 'stack', gap: tok('space.lg'), align: 'start' } } }, [
             b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
             b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h1') } }),
             b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles, maxWidth: '560px' } }),

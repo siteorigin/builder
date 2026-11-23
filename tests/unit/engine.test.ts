@@ -550,7 +550,15 @@ describe('definition editing operations (§2.5)', () => {
     expect(s.components[f.id].tree!.nodes['logo-image']).toMatchObject({ fallbackAlt: { $item: 'name' } });
     expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'logo-image', field: 'fallbackAlt', binding: { $item: 'logo' } }])).toThrow(/cannot be used as the fallbackAlt/);
     expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'wordmark', field: 'fallbackAlt', binding: { $item: 'name' } }])).toThrow(/has no "fallbackAlt" to bind/);
-    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: f.id, prop: 'logos', schema: { ...s.components[f.id].properties.logos, fields: { logo: { type: 'image', label: 'Logo', default: { assetId: null, alt: '' } } } } as never }])).toThrow(/"name"/);
+    // A property only the fallback shows is still in use: it can be bound, but not removed or retyped.
+    s = applyOperations(s, [
+      { type: 'component.setPropSchema', definitionId: f.id, prop: 'brand', schema: { type: 'string', label: 'Brand', default: 'Acme' } },
+      { type: 'node.setBinding', owner: own, nodeId: 'logo-image', field: 'fallbackAlt', binding: { $prop: 'brand' } }
+    ]).state;
+    expect(s.components[f.id].tree!.nodes['logo-image']).toMatchObject({ fallbackAlt: { $prop: 'brand' } });
+    expect(() => applyOperations(s, [{ type: 'component.removePropSchema', definitionId: f.id, prop: 'brand' }])).toThrow(/still shown/);
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: f.id, prop: 'brand', schema: { type: 'image', label: 'Brand' } }])).toThrow(/Unbind it first/);
+    s = applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'logo-image', field: 'fallbackAlt', binding: { $item: 'name' } }]).state;
 
     // A logo item made into its own component takes the name as a property, for its wordmark and its fallback alt.
     const styled = Object.entries(s.components[f.id].variantAxes!.tone.options).filter(([, v]) => v.styles?.wordmark);
@@ -568,6 +576,18 @@ describe('definition editing operations (§2.5)', () => {
     expect(errors(s)).toEqual([]);
     (s.components[f.id].tree!.nodes['logo-image'] as { fallbackAlt?: unknown }).fallbackAlt = { $prop: 'missing' };
     expect(errors(s).map((d) => d.code)).toContain('BINDING_INVALID');
+  });
+
+  it('keeps a selection root\'s conditions on its placement, so a collapsing row around it still collapses', () => {
+    const f = fork(fresh(), 'hero.split');
+    const own = { kind: 'component' as const, id: f.id };
+    const r = applyOperations(f.state, [{ type: 'component.createFromNode', owner: own, nodeId: 'primary', name: 'Primary action' }]);
+    const owner = r.state.components[f.id];
+    const placement = owner.tree!.nodes[r.results[0].nodeId as string] as InstanceNode;
+    expect(placement.when).toEqual({ $prop: 'primaryLabel' });
+    expect(errors(r.state)).toEqual([]);
+    const file = [...generateProject(r.state).entries()].find(([, src]) => src.includes(`siteorigin/components/${f.id}/`))![1];
+    expect(file).toContain('{#if has(primaryLabel) || has(secondaryLabel)}');
   });
 
   it('inserts rich text, repeats and slots only where they make sense', async () => {

@@ -225,6 +225,7 @@ describe('links and buttons', () => {
     // A cleared heading is not rendered, so the landmark falls back to the heading's default name.
     expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{has\(linksHeading\) \? `\$\{uid\}-explore-heading` : undefined\} aria-label=\{has\(linksHeading\) \? undefined : "Explore"\}/);
     expect(footer).toMatch(/<h2 [^>]*id=\{`\$\{uid\}-explore-heading`\}/);
+    expect(footer).toMatch(/<h2 [^>]*id=\{`\$\{uid\}-contact-heading`\}/);
     expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{has\(contactHeading\) \? `\$\{uid\}-contact-heading` : undefined\} aria-label=\{has\(contactHeading\) \? undefined : "Contact"\}/);
   });
 });
@@ -767,6 +768,28 @@ describe('section links', () => {
     expect(pageIds(s, s.site.homePageId).has('cta-actions')).toBe(false);
     const out = generateManagedComponent(s, def, {});
     expect(out).toContain('{#if has(primaryLabel) || has(secondaryLabel)}');
+  });
+
+  it('walks nested collapsing wrappers the way the export renders them', () => {
+    const s = fresh();
+    const instance = addToHome(s, 'contact.details', { eyebrow: '', heading: '', lead: '', actionLabel: '' });
+    const def = defOf(s, 'contact.details');
+    def.tree!.nodes['content'].anchor = 'contact-column';
+    def.tree!.nodes['intro'].anchor = 'contact-intro';
+    const ids = () => pageIds(s, s.site.homePageId);
+    expect(ids().has('contact-column')).toBe(false);
+    expect(ids().has('contact-intro')).toBe(false);
+    instance.props.actionLabel = 'Email us';
+    expect(ids().has('contact-column')).toBe(true);
+    expect(ids().has('contact-intro')).toBe(false);
+    instance.props.actionLabel = '';
+    instance.props.lead = 'Write to us';
+    expect(ids().has('contact-column')).toBe(true);
+    expect(ids().has('contact-intro')).toBe(true);
+    // Text of only spaces counts as empty, as it does in the generated `has()`.
+    instance.props.lead = '   ';
+    expect(ids().has('contact-column')).toBe(false);
+    expect(generateManagedComponent(s, def, {})).toContain('{#if (has(eyebrow) || has(heading) || has(lead)) || has(actionLabel)}');
   });
 
   it('walks a section placed inside another of the same kind', () => {

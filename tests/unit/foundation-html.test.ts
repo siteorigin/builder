@@ -131,52 +131,72 @@ function componentsCss(): string {
 
 const tags = (markup: string, tag: string) => [...markup.matchAll(new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, 'g'))].map((m) => m[1]);
 const EMPTY_HEADING = /<h[1-6]\b[^>]*>\s*<\/h[1-6]>/;
+/** Matches an element carrying this exact class (not just a class that starts with it). */
+const classed = (cls: string) => new RegExp(`class="(?:[^"]*\\s)?${cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:\\s[^"]*)?"`);
+const nodeClass = (componentId: string, nodeId: string) => `so-foundation-${componentId.replace('.', '-')}__${nodeId}`;
 
 describe('stats.row', () => {
   it('puts each label (dt) before its figure (dd), keeping the figure visually first', () => {
-    const out = html('stats.row');
-    const groups = [...out.matchAll(/<div class="[^"]*so-foundation-stats-row__figure[^"]*">([\s\S]*?)<\/div>/g)].map((m) => m[1]);
-    expect(groups).toHaveLength(4);
-    for (const group of groups) expect(group).toMatch(/^\s*<dt\b[^>]*>[^<]+<\/dt>\s*<dd\b[^>]*>[^<]+<\/dd>\s*$/);
+    const out = html('stats.row', { items: [{ id: 'a', value: '15', label: 'Years in practice' }, { id: 'b', value: '98%', label: 'Clients who return' }] });
+    const list = tags(out, 'dl');
+    expect(list).toHaveLength(1);
+    const groups = [...list[0].matchAll(/<div class="[^"]*so-foundation-stats-row__figure[^"]*">([\s\S]*?)<\/div>/g)].map((m) => m[1].replace(/\s+/g, ''));
+    expect(groups).toEqual([
+      expect.stringMatching(/^<dt[^>]*>Yearsinpractice<\/dt><dd[^>]*>15<\/dd>$/),
+      expect.stringMatching(/^<dt[^>]*>Clientswhoreturn<\/dt><dd[^>]*>98%<\/dd>$/)
+    ]);
+    // The figure is a column flex stack, so `order: -1` on the value shows it above its label.
     expect(componentsCss()).toMatch(/\.so-foundation-stats-row__value\s*\{[^}]*order:\s*-1/);
+    expect(componentsCss()).toMatch(/\.so-foundation-stats-row__figure\s*\{[^}]*display:\s*flex[^}]*flex-direction:\s*column/);
   });
 });
 
 describe('shell.footer', () => {
   const link = (label: string) => ({ id: label, label, link: { href: `/${label}/` } });
+  /** Each rendered nav with the heading its aria-labelledby points at (looked up inside that nav only). */
+  const navs = (out: string) =>
+    [...out.matchAll(/<nav\b([^>]*)>([\s\S]*?)<\/nav>/g)].map(([, attrs, inner]) => {
+      const ref = attrs.match(/aria-labelledby="([^"]+)"/)?.[1];
+      return {
+        label: attrs.match(/aria-label="([^"]+)"/)?.[1],
+        heading: ref ? inner.match(new RegExp(`<h2\\b[^>]*id="${ref}"[^>]*>([^<]*)</h2>`))?.[1] : undefined,
+        links: [...inner.matchAll(/<a\b[^>]*>([^<]*)<\/a>/g)].map((m) => m[1])
+      };
+    });
 
-  it('leaves out a link group whose list is empty', () => {
-    const out = html('shell.footer', { links: [], contact: [link('email')] });
-    expect(tags(out, 'nav')).toHaveLength(1);
-    expect(out).not.toContain('Explore');
-    expect(out).toContain('Contact');
+  it('renders a link group only while its list has links', () => {
+    expect(navs(html('shell.footer', { links: [], contact: [link('email')] }))).toEqual([{ label: undefined, heading: 'Contact', links: ['email'] }]);
+    expect(navs(html('shell.footer', { links: [link('about')], contact: [] }))).toEqual([{ label: undefined, heading: 'Explore', links: ['about'] }]);
+    const neither = html('shell.footer', { links: [], contact: [] });
+    expect(neither).not.toContain('<nav');
+    expect(neither).not.toContain('<h2');
+    expect(neither).toContain('© 2026 Studio');
   });
 
-  it('renders no navigation landmark when both lists are empty', () => {
-    const out = html('shell.footer', { links: [], contact: [] });
-    expect(out).not.toContain('<nav');
-    expect(out).not.toContain('<h2');
-  });
-
-  it('keeps both groups, each labelled by its heading, when both have links', () => {
+  it('labels each group by its own heading when both have links', () => {
     const out = html('shell.footer', { links: [link('about')], contact: [link('email')] });
-    const navs = [...out.matchAll(/<nav\b[^>]*aria-labelledby="([^"]+)"/g)].map((m) => m[1]);
-    expect(navs).toHaveLength(2);
-    for (const id of navs) expect(out).toMatch(new RegExp(`<h2\\b[^>]*id="${id}"[^>]*>[^<]+</h2>`));
-    expect(out).not.toMatch(/<nav\b[^>]*aria-label=/);
+    expect(navs(out)).toEqual([
+      { label: undefined, heading: 'Explore', links: ['about'] },
+      { label: undefined, heading: 'Contact', links: ['email'] }
+    ]);
+    const ids = [...out.matchAll(/aria-labelledby="([^"]+)"/g)].map((m) => m[1]);
+    expect(new Set(ids).size).toBe(2);
   });
 
-  it('keeps a group whose heading is cleared, named by the heading default instead of an empty heading', () => {
-    const out = html('shell.footer', { links: [link('about')], linksHeading: '', contact: [link('email')], contactHeading: 'Get in touch' });
-    const navs = [...out.matchAll(/<nav\b[^>]*>/g)].map((m) => m[0]);
-    expect(navs).toHaveLength(2);
-    expect(navs[0]).toContain('aria-label="Explore"');
-    expect(navs[0]).not.toContain('aria-labelledby');
-    expect(navs[1]).toMatch(/aria-labelledby="[^"]+"/);
-    expect(navs[1]).not.toContain('aria-label=');
-    expect(out).not.toMatch(EMPTY_HEADING);
-    expect(tags(out, 'h2')).toEqual(['Get in touch']);
-    expect(out).toContain('>about</a>');
+  it.each([
+    ['linksHeading', 0, 'Explore'],
+    ['contactHeading', 1, 'Contact']
+  ] as const)('keeps a group whose %s is cleared or blank, named by the heading default', (prop, index, fallback) => {
+    for (const cleared of ['', '   ']) {
+      const out = html('shell.footer', { links: [link('about')], contact: [link('email')], [prop]: cleared });
+      const groups = navs(out);
+      expect(groups).toHaveLength(2);
+      expect(groups[index]).toEqual({ label: fallback, heading: undefined, links: [index ? 'email' : 'about'] });
+      expect(groups[1 - index].heading).toBe(index ? 'Explore' : 'Contact');
+      expect(groups[1 - index].label).toBeUndefined();
+      expect(out).not.toMatch(EMPTY_HEADING);
+      expect(tags(out, 'h2')).toHaveLength(1);
+    }
   });
 });
 
@@ -197,43 +217,72 @@ describe('optional headings', () => {
   ];
 
   it.each(sections)('%s renders its heading when set and no empty heading when cleared', (componentId, tag) => {
-    expect(html(componentId, { heading: 'A heading' })).toMatch(new RegExp(`<${tag}\\b[^>]*>A heading</${tag}>`));
-    const cleared = html(componentId, { heading: '' });
-    expect(cleared).not.toMatch(EMPTY_HEADING);
-    expect(cleared).not.toMatch(new RegExp(`<${tag}\\b`));
+    const text = `Heading of ${componentId}`;
+    expect(tags(html(componentId, { heading: text }), tag)).toEqual([text]);
+    for (const cleared of ['', '  ']) {
+      const out = html(componentId, { heading: cleared });
+      expect(out).not.toMatch(EMPTY_HEADING);
+      expect(out).not.toMatch(new RegExp(`<${tag}\\b`));
+    }
   });
 });
 
 describe('empty wrappers', () => {
-  it.each(['features.grid', 'team.grid', 'media.gallery'] as const)('%s leaves out the heading group when eyebrow, heading and lead are all cleared', (componentId) => {
-    const intro = new RegExp(`class="[^"]*so-foundation-${componentId.replace('.', '-')}__intro`);
-    expect(html(componentId, { eyebrow: '', heading: '', lead: 'Only the lead' })).toMatch(intro);
-    expect(html(componentId, { eyebrow: '', heading: '', lead: '' })).not.toMatch(intro);
+  it.each(['features.grid', 'team.grid', 'media.gallery'] as const)('%s keeps the heading group for any one of its texts and drops it when all are cleared', (componentId) => {
+    const intro = classed(nodeClass(componentId, 'intro'));
+    const none = { eyebrow: '', heading: '', lead: '' };
+    for (const [field, value] of [['eyebrow', 'Eyebrow only'], ['heading', 'Heading only'], ['lead', 'Lead only']]) {
+      const out = html(componentId, { ...none, [field]: value });
+      expect(out).toMatch(intro);
+      expect(out).toContain(`>${value}<`);
+    }
+    expect(html(componentId, none)).not.toMatch(intro);
+    expect(html(componentId, { ...none, heading: '   ' })).not.toMatch(intro);
   });
 
-  it('contact.details keeps its content column for an action alone and drops it when everything is cleared', () => {
-    const content = /class="[^"]*so-foundation-contact-details__content/;
-    const intro = /class="[^"]*so-foundation-contact-details__intro/;
-    const actionOnly = html('contact.details', { eyebrow: '', heading: '', lead: '' });
+  it('contact.details keeps its content column for the heading group or the action alone, and drops it when both are cleared', () => {
+    const content = classed(nodeClass('contact.details', 'content'));
+    const intro = classed(nodeClass('contact.details', 'intro'));
+    const none = { eyebrow: '', heading: '', lead: '', actionLabel: '' };
+    const actionOnly = html('contact.details', { ...none, actionLabel: 'Email us' });
     expect(actionOnly).toMatch(content);
     expect(actionOnly).not.toMatch(intro);
-    expect(html('contact.details', { eyebrow: '', heading: '', lead: '', actionLabel: '' })).not.toMatch(content);
+    expect(actionOnly).toContain('>Email us</a>');
+    const leadOnly = html('contact.details', { ...none, lead: 'Write any time' });
+    expect(leadOnly).toMatch(content);
+    expect(leadOnly).toMatch(intro);
+    expect(html('contact.details', none)).not.toMatch(content);
+  });
+
+  it.each(['hero.centered', 'hero.split'] as const)('%s drops its content column when every text and action is cleared', (componentId) => {
+    const content = classed(nodeClass(componentId, 'content'));
+    const none = { eyebrow: '', heading: '', lead: '', primaryLabel: '', secondaryLabel: '' };
+    expect(html(componentId, { ...none, secondaryLabel: 'More' })).toMatch(content);
+    expect(html(componentId, { ...none, lead: 'Only a lead' })).toMatch(content);
+    expect(html(componentId, none)).not.toMatch(content);
   });
 });
 
 describe('empty action rows', () => {
-  it.each(['hero.centered', 'hero.split', 'cta.banner'] as const)('%s leaves out the actions row when both labels are cleared', (componentId) => {
-    const actions = new RegExp(`class="[^"]*so-foundation-${componentId.replace('.', '-')}__actions`);
-    expect(html(componentId, { primaryLabel: 'Go', secondaryLabel: '' })).toMatch(actions);
-    expect(html(componentId, { primaryLabel: '', secondaryLabel: 'More' })).toMatch(actions);
-    expect(html(componentId, { primaryLabel: '', secondaryLabel: '' })).not.toMatch(actions);
+  it.each(['hero.centered', 'hero.split', 'cta.banner'] as const)('%s renders the actions row for either label and leaves it out when both are cleared', (componentId) => {
+    const actions = classed(nodeClass(componentId, 'actions'));
+    const buttons = (out: string) => [...out.matchAll(/<(?:a|span)\b[^>]*class="[^"]*so-btn[^"]*"[^>]*>([^<]*)<\/(?:a|span)>/g)].map((m) => m[1]);
+    for (const [primaryLabel, secondaryLabel] of [['Go', ''], ['', 'More'], ['Go', 'More']]) {
+      const out = html(componentId, { primaryLabel, secondaryLabel });
+      expect(out).toMatch(actions);
+      expect(buttons(out)).toEqual([primaryLabel, secondaryLabel].filter(Boolean));
+    }
+    for (const blank of ['', '  ']) expect(html(componentId, { primaryLabel: blank, secondaryLabel: '' })).not.toMatch(actions);
   });
 });
 
 describe('testimonials.grid', () => {
   it('renders client names in <cite> upright by default', () => {
     expect(tags(html('testimonials.grid'), 'cite')).toContain('Amelia Hart');
-    expect(bundle.files.get(`${STYLES_DIR}/theme.css`)).toMatch(/(^|[\s,}])cite\s*\{[^}]*font-style:\s*normal/);
+    const theme = bundle.files.get(`${STYLES_DIR}/theme.css`)!;
+    expect(theme).toMatch(/(^|[\s,}])cite\s*\{\s*font-style:\s*normal;\s*\}/);
+    // A plain element selector, so a node's own fontStyle (a class rule) still wins.
+    expect(theme).not.toMatch(/cite[^{]*\{[^}]*!important/);
   });
 });
 
@@ -247,25 +296,27 @@ describe('team.grid', () => {
   });
 
   it('shows only the portraits people have, with no placeholder boxes, and no role an item leaves out', () => {
+    bundle.state.assets.assets['as_hannah'] = { id: 'as_hannah', name: 'Hannah', file: 'static/media/hannah.jpg', mime: 'image/jpeg', bytes: 1, width: 400, height: 500, hash: 'h', kind: 'image', createdAt: '' } as never;
     const out = authoredHtml('team.grid', {
       people: [
-        { id: 'a', name: 'Hannah Wells', role: 'Founder', bio: '', portrait: { assetId: 'as_missing', alt: 'Hannah' } },
-        { id: 'b', name: 'Marcus Lee', bio: '' }
+        { id: 'a', name: 'Hannah Wells', role: 'Founder', bio: '', portrait: { assetId: 'as_hannah', alt: 'Hannah Wells smiling' } },
+        { id: 'b', name: 'Marcus Lee', role: 'Project manager', bio: '', portrait: { assetId: 'as_missing', alt: 'Marcus' } },
+        { id: 'c', name: 'Sofia Alvarez', bio: '' }
       ]
     });
-    const people = [...out.matchAll(member)].map((m) => m[1]);
-    expect(people).toHaveLength(2);
+    const people = [...out.matchAll(member)].map((m) => m[1].replace(/\s+/g, ' ').trim());
+    expect(people).toHaveLength(3);
     expect(out).not.toContain('so-img--placeholder');
-    expect(people[0]).toContain('>Founder</p>');
-    expect(people[1]).toMatch(/^\s*<h3\b[^>]*>Marcus Lee<\/h3>\s*$/);
-    const withPortrait = html('team.grid', { people: [{ id: 'a', name: 'Hannah Wells', role: '', bio: '', portrait: { src: '/media/hannah.jpg', alt: 'Hannah Wells smiling' } }] });
-    expect(withPortrait).toMatch(/<img\b[^>]*alt="Hannah Wells smiling"/);
+    expect(out.match(/<img\b/g)).toHaveLength(1);
+    expect(people[0]).toMatch(/^<img\b[^>]*src="\/media\/hannah\.jpg"[^>]*alt="Hannah Wells smiling"[^>]*\/?> <h3\b[^>]*>Hannah Wells<\/h3> <p\b[^>]*>Founder<\/p>$/);
+    expect(people[1]).toMatch(/^<h3\b[^>]*>Marcus Lee<\/h3> <p\b[^>]*>Project manager<\/p>$/);
+    expect(people[2]).toMatch(/^<h3\b[^>]*>Sofia Alvarez<\/h3>$/);
   });
 });
 
 describe('logos.strip', () => {
   const logo = (name: string, image: Record<string, unknown> | null) => ({ id: name, name, logo: image ?? { src: null, alt: '' } });
-  const items = (out: string) => [...out.matchAll(/<li class="[^"]*so-foundation-logos-strip__logo-item[^"]*">([\s\S]*?)<\/li>/g)].map((m) => m[1]);
+  const items = (out: string) => [...out.matchAll(/<li class="[^"]*so-foundation-logos-strip__logo-item[^"]*">([\s\S]*?)<\/li>/g)].map((m) => m[1].trim());
 
   it('names every logo: its alt text, else the company name, and a decorative one by hidden text', () => {
     const out = html('logos.strip', {
@@ -273,46 +324,60 @@ describe('logos.strip', () => {
         logo('Fernhill', { src: '/media/fernhill.png', alt: '' }),
         logo('Copperline', { src: '/media/copperline.png', alt: 'Copperline Café' }),
         logo('Marlow & Co', { src: '/media/marlow.png', alt: '', decorative: true }),
+        logo('Bright Harbour', { src: '/media/harbour.png', alt: '   ' }),
         logo('Oakhurst', null)
       ]
     });
-    const [fernhill, copperline, marlow, oakhurst] = items(out);
-    expect(fernhill).toMatch(/<img\b[^>]*alt="Fernhill"/);
-    expect(fernhill).not.toContain('so-visually-hidden');
-    expect(copperline).toMatch(/<img\b[^>]*alt="Copperline Café"/);
-    expect(copperline).not.toContain('>Copperline<');
-    expect(marlow).toMatch(/<img\b[^>]*alt=""/);
-    expect(marlow).toMatch(/<span class="so-visually-hidden">Marlow &amp; Co<\/span>/);
-    expect(oakhurst).not.toContain('<img');
-    expect(oakhurst).toMatch(/<span\b[^>]*>Oakhurst<\/span>/);
+    const [fernhill, copperline, marlow, harbour, oakhurst] = items(out);
+    expect(fernhill).toMatch(/^<img\b[^>]*alt="Fernhill"[^>]*\/?>$/);
+    expect(copperline).toMatch(/^<img\b[^>]*alt="Copperline Café"[^>]*\/?>$/);
+    expect(marlow).toMatch(/^<img\b[^>]*alt=""[^>]*\/?>\s*<span class="so-visually-hidden">Marlow &amp; Co<\/span>$/);
+    expect(harbour).toMatch(/^<img\b[^>]*alt="Bright Harbour"[^>]*\/?>$/);
+    expect(oakhurst).toMatch(/^<span\b[^>]*>Oakhurst<\/span>$/);
+    expect(bundle.files.get(`${STYLES_DIR}/theme.css`)).toMatch(/\.so-visually-hidden\s*\{[^}]*position:\s*absolute[^}]*clip:/);
   });
 
-  it('caps the height of tall or square logos', () => {
-    expect(componentsCss()).toMatch(/\.so-foundation-logos-strip__logo-image\s*\{[^}]*max-height:\s*48px/);
+  it('caps the height of tall or square logos without cropping them', () => {
+    const rule = componentsCss().match(/\.so-foundation-logos-strip__logo-image\s*\{([^}]*)\}/)![1];
+    expect(rule).toMatch(/max-height:\s*48px/);
+    expect(rule).toMatch(/max-width:\s*140px/);
+    expect(rule).toMatch(/width:\s*auto/);
+    expect(rule).toMatch(/object-fit:\s*contain/);
   });
 });
 
 describe('shell.header', () => {
-  const brand = (out: string) => out.match(/<a class="so-header__brand[^"]*"[^>]*>[\s\S]*?<\/a>/)![0];
-  const logo = { src: '/media/logo.svg', alt: 'Test Studio' };
+  const brand = (out: string) => out.match(/<a class="so-header__brand[^"]*"[^>]*>[\s\S]*?<\/a>/)![0].replace(/>\s+</g, '><');
+  const logo = { src: '/media/logo.svg', alt: 'Studio wordmark' };
 
   it('announces the brand once when a logo sits beside the visible name', () => {
-    const link = brand(html('shell.header', { siteName: 'Test Studio', logo, showSiteName: true }));
-    expect(link).toMatch(/<img\b[^>]*alt=""/);
-    expect(link).toMatch(/<span>Test Studio<\/span>/);
-    expect(link).not.toMatch(/^<a\b[^>]*aria-label=/);
+    for (const image of [logo, { ...logo, decorative: true }]) {
+      const link = brand(html('shell.header', { siteName: 'Test Studio', logo: image, showSiteName: true }));
+      expect(link).toMatch(/^<a\b[^>]*><img\b[^>]*alt=""[^>]*\/?><span>Test Studio<\/span><\/a>$/);
+      expect(link).not.toMatch(/^<a\b[^>]*aria-label=/);
+    }
   });
 
-  it('names a logo-only or nameless brand link for screen readers', () => {
+  it('names a logo shown alone by its own alt text, else by the site name', () => {
     const logoOnly = brand(html('shell.header', { siteName: 'Test Studio', logo, showSiteName: false }));
-    expect(logoOnly).toMatch(/^<a\b[^>]*aria-label="Test Studio"/);
-    expect(logoOnly).not.toContain('<span');
-    const blankName = brand(html('shell.header', { siteName: '  ', logo: { src: '/media/logo.svg', alt: 'Studio logo' }, showSiteName: true }));
-    expect(blankName).toMatch(/^<a\b[^>]*aria-label="Studio logo"/);
-    expect(blankName).not.toContain('<span');
-    expect(blankName).toMatch(/<img\b[^>]*alt="Studio logo"/);
+    expect(logoOnly).toMatch(/^<a\b[^>]*><img\b[^>]*alt="Studio wordmark"[^>]*\/?><\/a>$/);
+    expect(logoOnly).not.toMatch(/^<a\b[^>]*aria-label=/);
+    const decorative = brand(html('shell.header', { siteName: 'Test Studio', logo: { ...logo, decorative: true }, showSiteName: false }));
+    expect(decorative).toMatch(/^<a\b[^>]*aria-label="Test Studio"[^>]*><img\b[^>]*alt=""/);
+    const noAlt = brand(html('shell.header', { siteName: ' Test Studio ', logo: { src: '/media/logo.svg', alt: '' }, showSiteName: false }));
+    expect(noAlt).toMatch(/^<a\b[^>]*aria-label="Test Studio"/);
+    const blankName = brand(html('shell.header', { siteName: '  ', logo, showSiteName: true }));
+    expect(blankName).toMatch(/^<a\b[^>]*><img\b[^>]*alt="Studio wordmark"[^>]*\/?><\/a>$/);
+  });
+
+  it('shows a text-only brand as is, and names an empty one Home', () => {
     const textOnly = brand(html('shell.header', { siteName: 'Test Studio', logo: null }));
-    expect(textOnly).toMatch(/<span>Test Studio<\/span>/);
+    expect(textOnly).toMatch(/^<a\b[^>]*><span>Test Studio<\/span><\/a>$/);
     expect(textOnly).not.toMatch(/^<a\b[^>]*aria-label=/);
+    for (const siteName of ['', '   ', null]) {
+      const empty = brand(html('shell.header', { siteName, logo: { src: null, alt: 'Old logo' } }));
+      expect(empty).toMatch(/^<a\b[^>]*aria-label="Home"/);
+      expect(empty).not.toContain('<span');
+    }
   });
 });

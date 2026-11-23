@@ -33,6 +33,8 @@ const HEADER_SOURCE = `<script>
 	// The visible name, when there is one to show. Beside it the logo is decorative, so the brand is announced once.
 	const name = $derived(typeof siteName === 'string' ? siteName.trim() : '');
 	const nameShown = $derived(!!name && (showSiteName || !logo?.src));
+	// A logo shown alone names the link by its own alternative text, which matches what it visibly says.
+	const logoAlt = $derived(logo?.src && !logo.decorative && typeof logo.alt === 'string' ? logo.alt.trim() : '');
 
 	/** Site-relative links go through resolve() so the site works under a sub-path. */
 	const href = (link) => (link?.href?.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link?.href);
@@ -60,7 +62,7 @@ const HEADER_SOURCE = `<script>
 <header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', open && 'so-header--open', className]} bind:this={header}>
 	<div class="so-header__inner">
 		<!-- Without the visible name, the link is still named for screen readers. -->
-		<a class="so-header__brand" href={resolve('/')} aria-label={nameShown ? undefined : name || logo?.alt?.trim() || 'Home'}>
+		<a class="so-header__brand" href={resolve('/')} aria-label={nameShown || logoAlt ? undefined : name || 'Home'}>
 			{#if logo?.src}
 				<SoImage image={nameShown ? { ...logo, decorative: true } : logo} class="so-header__logo" eager />
 			{/if}

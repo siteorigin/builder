@@ -30,6 +30,7 @@ function evaluate(v: unknown, scope: Scope): unknown {
 
 /** Mirrors the generated `has()` helper, on unresolved values. */
 function shown(v: unknown, state: ProjectState): boolean {
+  if (typeof v === 'string') return v.trim().length > 0;
   if (Array.isArray(v)) return v.length > 0;
   if (v && typeof v === 'object') {
     const o = v as Record<string, unknown>;

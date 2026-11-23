@@ -44,6 +44,7 @@ export const IMAGE_SVELTE = `<script>
 	import { asset } from '$app/paths';
 	let { image = null, class: className = '', eager = false, sizes = '100vw', fallbackAlt = '', ...rest } = $props();
 	const fallback = $derived(String(fallbackAlt ?? '').trim());
+	const label = $derived(image?.decorative ? '' : String(image?.alt ?? '').trim() || fallback);
 	const url = (path) => (path.startsWith('/') && !path.startsWith('//') ? asset(path.slice(1)) : path);
 	const srcset = $derived(
 		image?.srcset
@@ -63,7 +64,7 @@ export const IMAGE_SVELTE = `<script>
 		src={url(image.src)}
 		{srcset}
 		sizes={srcset ? sizes : undefined}
-		alt={image.decorative ? '' : String(image.alt ?? '').trim() || fallback}
+		alt={label}
 		width={image.width}
 		height={image.height}
 		loading={eager ? 'eager' : 'lazy'}
@@ -76,9 +77,9 @@ export const IMAGE_SVELTE = `<script>
 {:else}
 	<div
 		class={['so-img', 'so-img--placeholder', className]}
-		role={image?.alt && !image?.decorative ? 'img' : undefined}
-		aria-label={image?.alt && !image?.decorative ? image.alt : undefined}
-		aria-hidden={image?.alt && !image?.decorative ? undefined : 'true'}
+		role={label ? 'img' : undefined}
+		aria-label={label || undefined}
+		aria-hidden={label ? undefined : 'true'}
 		{...rest}
 	>
 		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -227,8 +228,9 @@ export function iconsJs(state: ProjectState): string {
   return `${ICON_NOTICE}\nexport const ICONS = ${JSON.stringify(used)};\n`;
 }
 
-export const UTIL_JS = `/** Returns whether a resolved value should be shown. */
+export const UTIL_JS = `/** Returns whether a resolved value should be shown. Text of only spaces counts as empty. */
 export function has(value) {
+	if (typeof value === 'string') return value.trim().length > 0;
 	if (Array.isArray(value)) return value.length > 0;
 	if (value && typeof value === 'object') {
 		if ('href' in value) return !!value.href;
