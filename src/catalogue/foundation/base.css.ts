@@ -10,6 +10,10 @@ body {
   font-family: var(--so-font-body);
   font-size: var(--so-text-body-size);
   line-height: var(--so-text-body-line-height);
+  /* A word wider than its box (a display heading or an email address at a visitor's enlarged text size) breaks
+     instead of pushing the page sideways. Unlike break-word, anywhere also lets flex and fit-content boxes
+     shrink below that word. Text that fits wraps exactly as before. */
+  overflow-wrap: anywhere;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -26,8 +30,9 @@ address { font-style: normal; }
 :focus-visible { outline: 2px solid var(--so-color-focus); outline-offset: 3px; border-radius: 4px; }
 ::selection { background: color-mix(in srgb, var(--so-color-brand) 22%, transparent); }
 
-.so-skip-link { position: absolute; left: 12px; top: -48px; z-index: 100; padding: 10px 16px; border-radius: var(--so-radius-sm); background: var(--so-color-text); color: var(--so-color-background); text-decoration: none; }
-.so-skip-link:focus { top: 12px; }
+/* Moved up by its own height, so it stays out of sight at any text size until it is focused. */
+.so-skip-link { position: absolute; left: 12px; top: 12px; transform: translateY(calc(-100% - 12px)); z-index: 100; padding: 10px 16px; border-radius: var(--so-radius-sm); background: var(--so-color-text); color: var(--so-color-background); text-decoration: none; }
+.so-skip-link:focus { transform: none; }
 
 .so-rich > * + * { margin-top: 1em; }
 /* Inline links take the surrounding text colour, so they stay readable on every section tone. */
@@ -48,7 +53,7 @@ address { font-style: normal; }
   min-height: 46px; padding: 0.7em 1.35em;
   border: 1px solid transparent; border-radius: var(--so-radius-pill);
   font-family: var(--so-font-body); font-size: 0.97rem; font-weight: 550; line-height: 1.2; letter-spacing: -0.005em;
-  text-decoration: none; white-space: nowrap; cursor: pointer;
+  text-align: center; text-decoration: none; cursor: pointer;
   background: var(--so-btn-bg, transparent); color: var(--so-btn-fg, currentColor);
   transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
 }
