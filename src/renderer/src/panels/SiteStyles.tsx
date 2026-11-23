@@ -39,7 +39,7 @@ const FOUNDATION_USES: Record<string, string> = {
 
 /** Where Foundation's components use each text style, checked against its component definitions. */
 const FOUNDATION_TEXT_USES: Record<string, string> = {
-  'text.display': 'The centred hero heading',
+  'text.display': 'The centered hero heading',
   'text.h1': 'Page headings in the split hero and page introduction',
   'text.h2': 'Section headings',
   'text.h3': 'Card titles, plan names, questions and team names',
@@ -279,7 +279,7 @@ function BorderControl({ value, name, colors, onCommit }: { value: string; name:
         <option value="dotted">Dotted</option>
         <option value="double">Double</option>
       </select>
-      <select className="select sm" value={color.id} aria-label={`${name} colour`} onChange={(e) => onCommit(build(m[1], m[2], e.target.value))}>
+      <select className="select sm" value={color.id} aria-label={`${name} color`} onChange={(e) => onCommit(build(m[1], m[2], e.target.value))}>
         {colors.map((c) => (
           <option key={c.id} value={c.id}>
             {c.label}
@@ -485,11 +485,11 @@ export function SiteStyles() {
           </button>
         )}
         <span className="ss-swatch">
-          <input type="color" disabled={!!follows} value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'} onChange={(e) => set(t.id, e.target.value)} aria-label={`${t.label} colour`} />
+          <input type="color" disabled={!!follows} value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'} onChange={(e) => set(t.id, e.target.value)} aria-label={`${t.label} color`} />
         </span>
         <div className="ss-color-text">
           <div className="ss-name">
-            <NameWithReset label={compact ? `${t.label} colour` : t.label} reset={changed(t.id) && <ResetDot label={t.label} theme={`colour, ${themeHex(t.id)}`} onReset={() => set(t.id, null)} />} />
+            <NameWithReset label={compact ? `${t.label} color` : t.label} reset={changed(t.id) && <ResetDot label={t.label} theme={`color, ${themeHex(t.id)}`} onReset={() => set(t.id, null)} />} />
           </div>
           <div className="ss-desc">{desc}</div>
           {follows && (
@@ -505,25 +505,25 @@ export function SiteStyles() {
                   refocus(trigger, row, null, () => null);
                 }}
               >
-                Use its own colour
+                Use its own color
               </button>
             </div>
           )}
         </div>
         {follows ? (
-          <span className="ss-hex ss-hex-linked mono" title={`Follows ${follows}. Choose "Use its own colour" to set it separately.`}>
+          <span className="ss-hex ss-hex-linked mono" title={`Follows ${follows}. Choose "Use its own color" to set it separately.`}>
             {value}
           </span>
         ) : (
-          <DraftInput className="input sm mono ss-hex" value={value} onCommit={(v) => v.trim() && set(t.id, v.trim())} ariaLabel={`${t.label} colour value`} />
+          <DraftInput className="input sm mono ss-hex" value={value} onCommit={(v) => v.trim() && set(t.id, v.trim())} ariaLabel={`${t.label} color value`} />
         )}
         {!compact && (
           <div className="ss-detail" id={detailId} hidden={!open}>
             {open && (
               <>
-                <Field label="Same as" hint="Follows another colour, and changes when it does.">
+                <Field label="Same as" hint="Follows another color, and changes when it does.">
                   <select className="select sm" value={ref ?? ''} onChange={(e) => set(t.id, e.target.value ? { token: e.target.value } : value)}>
-                    <option value="">Its own colour</option>
+                    <option value="">Its own color</option>
                     {colorIds
                       .filter((id) => id !== t.id && !loops.has(id))
                       .map((id) => (
@@ -749,7 +749,7 @@ export function SiteStyles() {
   const brand = byId('color.brand') ?? colors[0];
   const jumps = [
     { id: 'tok-basics', label: 'Basics' },
-    { id: 'tok-color', label: 'Colours' },
+    { id: 'tok-color', label: 'Colors' },
     { id: 'tok-text', label: 'Text' },
     { id: 'tok-layout', label: 'Layout' },
     { id: 'site-settings', label: 'Site' }
@@ -860,8 +860,8 @@ export function SiteStyles() {
         </div>
       </Section>
 
-      <Section title="Colours" id="tok-color" scope={changedNote(colorIds)}>
-        {[...COLOR_GROUPS, { label: 'Other colours', ids: colorIds.filter((id) => !COLOR_GROUPS.some((g) => g.ids.includes(id))) }]
+      <Section title="Colors" id="tok-color" scope={changedNote(colorIds)}>
+        {[...COLOR_GROUPS, { label: 'Other colors', ids: colorIds.filter((id) => !COLOR_GROUPS.some((g) => g.ids.includes(id))) }]
           .map((g) => ({ ...g, list: g.ids.map(byId).filter((t): t is TokenDef => !!t && t.group === 'color') }))
           .filter((g) => g.list.length)
           .map((g) => (

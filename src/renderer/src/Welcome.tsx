@@ -124,7 +124,7 @@ export function Welcome() {
                   <b>
                     <MousePointerClick /> Click to edit
                   </b>
-                  Change text, images and colours right on the page.
+                  Change text, images and colors right on the page.
                 </li>
                 <li>
                   <b>

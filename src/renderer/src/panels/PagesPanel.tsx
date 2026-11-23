@@ -3,7 +3,7 @@ import { Copy, FileText, House, Menu, MoreHorizontal, Pencil, Plus, Settings2, T
 import { slugify, validateRoute } from '@shared/routes';
 import type { ProjectState } from '@shared/types';
 import { applyOps, markDraft, setState, toast, useStore } from '../store';
-import { openSection, rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
+import { openSection, rovingKeys, useMenu } from '../components/ui';
 import { selectPage } from '../lib/actions';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
 
@@ -60,7 +60,10 @@ export function PagesPanel() {
   const addInput = useRef<HTMLInputElement>(null);
   const renameInput = useRef<HTMLInputElement>(null);
   const typeahead = useRef({ text: '', at: 0 });
-  useRovingTabStop(listRef, 'option');
+  /** The row keyboard focus was last on: it holds the list's tab stop (APG listbox), so Tab out of the list,
+   *  or out of a row's menu, continues from it. Opening a page moves the stop to that page. */
+  const [focusedRow, setFocusedRow] = useState<string | null>(null);
+  useEffect(() => setFocusedRow(null), [pageId]);
   useEffect(() => {
     markDraft('page-add', adding);
     return () => markDraft('page-add', false);
@@ -103,6 +106,7 @@ export function PagesPanel() {
   const st = snap.state;
   const order = st.site.pageOrder;
   const homeId = st.site.homePageId;
+  const tabStop = focusedRow && order.includes(focusedRow) ? focusedRow : pageId && order.includes(pageId) ? pageId : order[0];
 
   // After an inline edit ends, keyboard focus goes back to what it was about, unless the user has
   // already clicked somewhere else.
@@ -207,7 +211,8 @@ export function PagesPanel() {
       const r = rows[(start + k) % rows.length];
       if (st.pages[r.dataset.page!]?.title.toLowerCase().startsWith(needle)) {
         e.preventDefault();
-        if (r !== rows[cur]) (r.focus(), r.click());
+        // Focus only: opening a page is Enter or Space, so typing never sends the preview through pages.
+        if (r !== rows[cur]) r.focus();
         return true;
       }
     }
@@ -250,8 +255,9 @@ export function PagesPanel() {
             aria-label="Pages"
             aria-description="Type a title to jump to it. F2 renames, Shift+F10 opens page options."
             ref={listRef}
+            onFocus={(e) => setFocusedRow(e.target.closest<HTMLElement>('[role="option"]')?.dataset.page ?? null)}
             onKeyDown={(e) => {
-              if (!typeAhead(e)) rovingKeys(e, 'option');
+              if (!typeAhead(e)) rovingKeys(e, 'option', { follow: false });
             }}
           >
             {order.map((id) => {
@@ -279,7 +285,8 @@ export function PagesPanel() {
                   aria-label={isHome ? `${p.title}, home page` : p.title}
                   aria-description={p.route}
                   aria-keyshortcuts="F2 Shift+F10"
-                  tabIndex={-1}
+                  // The list's one tab stop is the open page (else the first); arrows move focus between rows.
+                  tabIndex={id === tabStop ? 0 : -1}
                   title={`${p.title}\n${p.route}${isHome ? ' · home page' : ''}`}
                   draggable={!renaming}
                   onDragStart={(e) => {
@@ -310,7 +317,7 @@ export function PagesPanel() {
                   onDoubleClick={() => setRenaming(id)}
                   onKeyDown={(e) => {
                     if (e.target !== e.currentTarget) return;
-                    if (e.key === 'Enter') selectPage(id);
+                    if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), selectPage(id));
                     if (e.key === 'F2') (e.preventDefault(), setRenaming(id));
                     if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
                       e.preventDefault();

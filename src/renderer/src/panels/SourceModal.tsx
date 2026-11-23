@@ -1,32 +1,10 @@
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Code, Lock } from 'lucide-react';
 import { applyOps, api, setState, toast, useStore, confirmDialog } from '../store';
 import { Field, Modal, TabPanel, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
 import { prepareCodeForSave } from '../lib/code';
 import { CodeEditor } from '../components/CodeEditor';
-
-/** Small, dependency-free Svelte/HTML highlighter for read-only views. */
-function highlight(src: string) {
-  const out: React.ReactNode[] = [];
-  const re = /(<!--[\s\S]*?-->|\/\/[^\n]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|<\/?[A-Za-z][\w:-]*|\b(?:import|from|let|const|export|function|return|if|else|each|as|true|false|null|undefined)\b|[A-Za-z_][\w-]*(?==))/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  let i = 0;
-  while ((m = re.exec(src))) {
-    if (m.index > last) out.push(<Fragment key={i++}>{src.slice(last, m.index)}</Fragment>);
-    const t = m[0];
-    const cls = t.startsWith('<!--') || t.startsWith('//') ? 'tok-com' : /^["'`]/.test(t) ? 'tok-str' : t.startsWith('<') ? 'tok-tag' : /^[a-z]+$/.test(t) && /^(import|from|let|const|export|function|return|if|else|each|as|true|false|null|undefined)$/.test(t) ? 'tok-kw' : 'tok-attr';
-    out.push(
-      <span key={i++} className={cls}>
-        {t}
-      </span>
-    );
-    last = m.index + t.length;
-  }
-  out.push(<Fragment key={i++}>{src.slice(last)}</Fragment>);
-  return out;
-}
 
 export function SourceModal({ definitionId }: { definitionId: string }) {
   const def = useStore((s) => s.snapshot?.state.components[definitionId]);

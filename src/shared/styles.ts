@@ -72,7 +72,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'textAlign', label: 'Alignment', group: 'typography', kind: 'enum', options: [
     { value: 'start', label: 'Left' }, { value: 'center', label: 'Center' }, { value: 'end', label: 'Right' }
   ] },
-  { id: 'color', label: 'Text colour', group: 'appearance', kind: 'color', tokenGroup: 'color' },
+  { id: 'color', label: 'Text color', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'background', label: 'Background', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'border', label: 'Border', group: 'appearance', kind: 'border', tokenGroup: 'border' },
   { id: 'radius', label: 'Corner radius', group: 'appearance', kind: 'length', tokenGroup: 'radius', placeholder: '8px' },

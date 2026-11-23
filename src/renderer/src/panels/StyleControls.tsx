@@ -558,7 +558,7 @@ function Control({
           }}
         >
           {def.kind === 'color' && (
-            <input type="color" value={hexOf(literal ? value : current, tokens) ?? '#000000'} onChange={(e) => onSet(e.target.value)} aria-label={`${label}: pick a colour`} />
+            <input type="color" value={hexOf(literal ? value : current, tokens) ?? '#000000'} onChange={(e) => onSet(e.target.value)} aria-label={`${label}: pick a color`} />
           )}
           <DraftInput
             className={`input sm grow style-input${def.kind === 'color' ? ' mono' : ''}${literal ? ' is-set' : ''}`}

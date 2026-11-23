@@ -3,6 +3,7 @@ import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 import type { ProviderId, SettingsPatch } from '@shared/api';
+import { externalLink } from '@shared/links';
 import { Controller, defaultProjectsFolder } from './controller';
 import { loadSettings, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
@@ -135,7 +136,9 @@ function registerIpc() {
   });
   handle('app:openExternal', async (url: string) => {
     if (headless) return;
-    if (/^https?:\/\//.test(url)) await shell.openExternal(url);
+    // Web pages, email addresses and phone numbers only, each checked: the link may come from the previewed site.
+    const link = externalLink(url);
+    if (link) await shell.openExternal(link.href);
   });
   handle('dialogs:chooseFolder', async (title: string, defaultPath?: string) => {
     const r = await dialog.showOpenDialog(win!, { title, defaultPath, properties: ['openDirectory', 'createDirectory'] });
@@ -226,7 +229,8 @@ async function createWindow() {
     title: 'SiteOrigin Builder',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     trafficLightPosition: { x: 16, y: 17 },
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#151517' : '#f6f6f4',
+    // The app's --bg (styles.css), so the window never flashes a different color before the editor paints.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#11151c' : '#f2f4f7',
     webPreferences: {
       preload: join(here, '../preload/index.cjs'),
       contextIsolation: true,
@@ -248,7 +252,8 @@ async function createWindow() {
     if (!isEditorUrl(url)) e.preventDefault();
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (!headless && /^https?:\/\//.test(url)) void shell.openExternal(url);
+    const link = externalLink(url);
+    if (!headless && link) void shell.openExternal(link.href);
     return { action: 'deny' };
   });
   // The preview iframe must not navigate away from the project origin or open popups.

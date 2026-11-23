@@ -1,9 +1,9 @@
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, OwnerRef } from '@shared/types';
 import { isBinding } from '@shared/types';
-import { enclosingRepeatProp, findParent } from '@engine/tree';
+import { findParent } from '@engine/tree';
 import { api, applyOps, getState, setState, toast } from '../store';
-import { boundaryOf, refLabel, resolveRef, treeFor } from './model';
+import { boundaryOf, listPropFor, refLabel, resolveRef, treeFor } from './model';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
 
@@ -111,43 +111,72 @@ export async function insert(spec: { componentId?: string; definitionId?: string
   if (id) setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
 }
 
-/** Commit inline text from the canvas to the right document field. */
+/** The field an inline edit on the canvas writes: a text node's text, or a link's (button's) label. */
+function inlineField(node: GraphNode | undefined): { field: 'text' | 'label'; value: unknown } | null {
+  if (node?.kind === 'text') return { field: 'text', value: node.text };
+  if (node?.kind === 'link') return { field: 'label', value: node.label };
+  return null;
+}
+
+/** The value a reference's inline-editable field shows now: a bound field shows its placement's value, or the
+ *  property's default when the placement has none. */
+function currentValue(ref: ElementRef, bound: unknown): unknown {
+  if (!isBinding(bound)) return bound;
+  const r = resolveRef(getState().snapshot!.state, ref);
+  const props = (r.instance?.props ?? {}) as Record<string, unknown>;
+  if ('$prop' in bound) return props[bound.$prop] ?? (r.def?.properties[bound.$prop] as { default?: unknown } | undefined)?.default;
+  const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  const items = list ? props[list] : undefined;
+  const item = Array.isArray(items) ? items.find((it) => (it as { id?: unknown } | null)?.id === itemId) : undefined;
+  return item ? (item as Record<string, unknown>)[bound.$item] : undefined;
+}
+
+/** Whether an edit leaves the field as it was. Rich text compares as paragraphs (a stored string is split the
+ *  way the engine splits it), plain text as a string. */
+function sameValue(current: unknown, next: string | string[]): boolean {
+  if (!Array.isArray(next)) return typeof current === 'string' && current === next;
+  const paras = Array.isArray(current) ? current.map(String) : typeof current === 'string' ? current.split(/\n{2,}|\n/).map((p) => p.trim()).filter(Boolean) : null;
+  return !!paras && paras.length === next.length && paras.every((p, i) => p === next[i]);
+}
+
+/** Commit inline text from the canvas to the right document field. Text that ends up as it was makes no edit. */
 export async function commitText(ref: ElementRef, text: string | string[]) {
   const s = getState();
   if (!s.snapshot) return;
   const r = resolveRef(s.snapshot.state, ref);
-  const node = r.node as GraphNode | undefined;
-  if (!node || node.kind !== 'text') return;
+  const target = inlineField(r.node as GraphNode | undefined);
+  if (!target) return;
+  if (sameValue(currentValue(ref, target.value), text)) return;
+  const label = target.field === 'label' ? 'Edit button text' : 'Edit text';
   if (!ref.instancePath.length) {
-    await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: 'text', value: text }], 'Edit text');
+    await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label);
     return;
   }
   if (ref.instancePath.length > 1) return toast('Edit nested component text from the inspector.', 'error');
   const instId = ref.instancePath[0];
-  const binding = node.text;
-  if (!isBinding(binding)) return toast('This text is part of the component design. Use Edit definition or Make unique to change it.', 'error');
+  const binding = target.value;
+  if (!isBinding(binding)) return toast('This text is part of the component design. Use Edit everywhere or Make unique to change it.', 'error');
   if ('$prop' in binding) {
-    await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, value: text }], 'Edit text');
+    await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, value: text }], label);
   } else {
-    const def = r.def!;
-    // The list the repeated item belongs to is the one its enclosing repeat walks; matching field names alone
-    // cannot tell a footer's links from its contact links.
-    const repeated = enclosingRepeatProp(def, ref.nodeId);
-    const listProp = repeated && def.properties[repeated]?.type === 'list' ? repeated : Object.entries(def.properties).find(([, p]) => p.type === 'list' && binding.$item in p.fields)?.[0];
+    // The list the repeated item belongs to: the one the enclosing repeat shows (matching field names alone
+    // cannot tell a footer's links from its contact links).
+    const listProp = listPropFor(r.def!, ref.nodeId);
     const itemId = ref.itemPath?.[ref.itemPath.length - 1];
     if (!listProp || !itemId) return;
-    await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], 'Edit text');
+    await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], label);
   }
 }
 
+/** Text and button labels can be edited on the canvas when they are the page's own, or a placement's content. */
 export function canInlineEdit(ref: ElementRef): boolean {
   const s = getState();
   if (!s.snapshot) return false;
-  const r = resolveRef(s.snapshot.state, ref);
-  const n = r.node;
-  if (!n || n.kind !== 'text') return false;
+  const target = inlineField(resolveRef(s.snapshot.state, ref).node);
+  if (!target) return false;
   if (!ref.instancePath.length) return true;
-  return ref.instancePath.length === 1 && isBinding(n.text);
+  return ref.instancePath.length === 1 && isBinding(target.value);
 }
 
 export function selectPage(pageId: string) {

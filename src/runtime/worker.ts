@@ -4,11 +4,12 @@
  * Its environment is constructed explicitly by the main process and never contains provider credentials.
  */
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import bridgeSource from './bridge.client.js?raw';
 import { frameAncestorsCsp, framePolicyPlugin, previewFsPolicy } from './policy';
+import { projectSrcPath } from './paths';
 
 type Msg =
   | { type: 'start'; dir: string; port?: number; packaged?: boolean }
@@ -30,6 +31,14 @@ async function loadVite(dir: string) {
 function devPlugin(dir: string) {
   const devRoot = join(dir, '.siteorigin', 'cache', 'dev');
   const VIRTUAL = 'virtual:siteorigin-bridge';
+  // Vite names modules by real path, so a project opened through a link is matched by both names.
+  const names = [dir];
+  try {
+    const real = realpathSync.native(dir);
+    if (real !== dir) names.push(real);
+  } catch {
+    // The folder is checked again when Vite starts; keep the name it was opened by.
+  }
   return {
     name: 'siteorigin-editor-instrumentation',
     enforce: 'pre' as const,
@@ -39,11 +48,9 @@ function devPlugin(dir: string) {
     },
     load(id: string) {
       if (id === '\0' + VIRTUAL + '.js') return bridgeSource;
-      const clean = id.split('?')[0];
-      if (!clean.startsWith(dir + sep)) return null;
-      const rel = relative(dir, clean);
-      if (!rel.startsWith(`src${sep}`)) return null;
-      const variant = join(devRoot, rel);
+      const rel = projectSrcPath(names, id);
+      if (!rel) return null;
+      const variant = join(devRoot, ...rel.split('/'));
       if (existsSync(variant)) return readFileSync(variant, 'utf8');
       return null;
     }

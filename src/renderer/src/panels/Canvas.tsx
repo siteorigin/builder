@@ -7,6 +7,10 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { api, confirmDialog, getState, markDraft, setState, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
+import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
+import { paragraphsFromDom, richDom } from '../lib/richtext';
+import { dropAt, moveIndex } from '../lib/reorder';
+import { externalLink } from '@shared/links';
 import { boundaryOf, descOf, refLabel, resolveRef, selectionFromChain, type BridgeDesc } from '../lib/model';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateSelection, moveSelection, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
@@ -15,6 +19,13 @@ import { AppMark } from '../components/AppMark';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
+
+/** Shortcuts as this platform writes them: ⌘ and Meta on macOS, Ctrl and Control elsewhere. */
+const isMac = api.platform === 'darwin';
+const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
+const ariaKeys = (k: string) => (isMac ? k : k.replace('Meta', 'Control'));
+
+const samePath = (a: string, b: string | null) => !!b && (a === b || a === b + '/' || a + '/' === b);
 
 export function Canvas() {
   const runtime = useStore((s) => s.runtime);
@@ -45,10 +56,12 @@ export function Canvas() {
   const [dragging, setDragging] = useState(false);
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
-  const pendingEdit = useRef<{ ref: ElementRef; desc: string } | null>(null);
+  const pendingEdits = useRef(new Map<string, { ref: ElementRef; desc: string }>());
   /** The route the editor last asked the page to show; its acknowledgement is the one that counts. */
   const pendingNav = useRef<string | null>(null);
-  const measureWaiters = useRef(new Map<string, (rects: Array<Rect | null>) => void>());
+  /** The route the page last said it is showing, or null while a navigation the editor asked for is on its way. */
+  const frameAt = useRef<string | null>(null);
+  const measureWaiters = useRef(new Map<string, (rects: unknown) => void>());
   /** The element chain under the pointer in the page, so hover can be re-resolved when the selection changes. */
   const hoverChain = useRef<BridgeDesc[] | null>(null);
   const canvasHover = useRef<ElementRef | null>(null);
@@ -64,7 +77,8 @@ export function Canvas() {
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, []);
-  const [reorder, setReorder] = useState<{ rects: Rect[]; from: number; to: number } | null>(null);
+  /** While dragging to reorder: the insertion line, in page pixels. */
+  const [reorder, setReorder] = useState<{ line: Rect } | null>(null);
   const url = runtime.state === 'ready' ? runtime.url : null;
   const origin = url ? new URL(url).origin : null;
   const state = snapshot?.state;
@@ -92,6 +106,20 @@ export function Canvas() {
     setSession(newSessionId());
   }, [url]);
 
+  /** The inline edit is over (committed, cancelled, or its page went away): shortcuts work again. */
+  function endInlineEdit(editId?: string) {
+    if (editId === undefined) pendingEdits.current.clear();
+    else pendingEdits.current.delete(editId);
+    inlineEdit.active = pendingEdits.current.size > 0;
+    markDraft('canvas-text', inlineEdit.active);
+  }
+  // A new page load (another server, Try again) or closing the editor ends any edit the old page had open.
+  useEffect(() => {
+    frameAt.current = null;
+    endInlineEdit();
+  }, [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => endInlineEdit(), []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Bridge messages
   useEffect(() => {
     const onMsg = (e: MessageEvent) => {
@@ -106,6 +134,8 @@ export function Canvas() {
           setState({ frameReady: true });
           setFrameError(null);
           setRetrying(false);
+          frameAt.current = String(p.path);
+          endInlineEdit();
           post('mode', { mode: getState().mode });
           syncTrack();
           // A page chosen while the preview was starting wins: the navigate effect opens it next.
@@ -116,25 +146,28 @@ export function Canvas() {
           // earlier request must not undo the page the user has since chosen. In Preview, a visitor's own
           // link clicks move the editor along with them.
           const path = String(p.path);
-          const same = (a: string, b: string | null) => !!b && (a === b || a === b + '/' || a + '/' === b);
-          if (getState().mode !== 'preview' && pendingNav.current && !same(path, pendingNav.current)) break;
+          if (getState().mode !== 'preview' && pendingNav.current && !samePath(path, pendingNav.current)) break;
           pendingNav.current = path;
-          pendingEdit.current = null;
+          // The page the frame is showing, so following it below does not send the frame back there (which would
+          // drop a #section the visitor's link went to, and its scroll position).
+          frameAt.current = path;
+          // An open edit is not ended here: one in the shared header outlives the page change, and the page
+          // ends any other (its element goes away) with its own cancel.
           setState({ frameReady: true });
           syncPage(path);
           break;
         }
         case 'hover':
-          hoverChain.current = (p.chain as BridgeDesc[]) ?? null;
+          hoverChain.current = chainOf(p.chain);
           resolveHover();
           break;
         case 'rects':
-          setState({ rects: { selected: (p.selected as Rect[]) ?? [], hovered: (p.hovered as Rect[]) ?? [] } });
+          setState({ rects: { selected: rectList(p.selected), hovered: rectList(p.hovered) } });
           break;
         case 'select': {
           if (!st) return;
           pagePick();
-          const chain = p.chain as BridgeDesc[];
+          const chain = chainOf(p.chain);
           const next = withinDefinition(chain.length ? selectionFromChain(st, chain, s.selection, !!p.alt || !!p.meta || !!s.definitionMode) : null);
           setState({ selection: next });
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
@@ -142,15 +175,16 @@ export function Canvas() {
         }
         case 'dblclick': {
           if (!st) return;
-          const chain = p.chain as BridgeDesc[];
+          const chain = chainOf(p.chain);
           const ref = withinDefinition(selectionFromChain(st, chain, s.selection, true));
           if (ref && canInlineEdit(ref)) {
             setState({ selection: ref });
             const desc = descOf(st, ref);
-            pendingEdit.current = { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]) };
+            const editId = Math.random().toString(36).slice(2);
+            pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]) });
             inlineEdit.active = true;
             markDraft('canvas-text', true);
-            post('beginTextEdit', { desc });
+            post('beginTextEdit', { desc, editId });
           } else if (ref) {
             setState({ selection: ref, rightTab: 'inspect' });
             const r = resolveRef(st, ref);
@@ -159,21 +193,27 @@ export function Canvas() {
           break;
         }
         case 'textCommit': {
-          const edit = pendingEdit.current;
-          pendingEdit.current = null;
-          inlineEdit.active = false;
-          markDraft('canvas-text', false);
-          const d = p.desc as { ctx?: string; node?: string; items?: string } | undefined;
-          const text = p.text;
-          const validText = typeof text === 'string' ? text.length <= 20000 : Array.isArray(text) && text.length <= 500 && text.every((t) => typeof t === 'string' && t.length <= 20000);
-          // Accept only the commit for the edit the editor started, on that exact element.
-          if (edit && d && validText && JSON.stringify([d.ctx, d.node, d.items]) === edit.desc && canInlineEdit(edit.ref)) void commitText(edit.ref, text as string | string[]);
+          const editId = String(p.editId);
+          const edit = pendingEdits.current.get(editId);
+          if (!edit) break;
+          endInlineEdit(editId);
+          const d = descOrNull(p.desc);
+          // Accept only the commit for an edit the editor started, on that exact element.
+          if (!d || JSON.stringify([d.ctx, d.node, d.items]) !== edit.desc || !canInlineEdit(edit.ref)) break;
+          // Rich text arrives as a copy of its structure (bold and italic included), plain text as a string.
+          const dom = p.rich !== undefined ? richDom(p.rich) : null;
+          const value = dom ? paragraphsFromDom(dom) : p.rich === undefined && typeof p.text === 'string' && p.text.length <= 20000 ? p.text : null;
+          if (value === null || (Array.isArray(value) && value.length > 500)) {
+            toast('That text change could not be saved. Try editing it in the inspector.', 'error');
+            break;
+          }
+          void commitText(edit.ref, value);
           break;
         }
         case 'textCancel':
-          pendingEdit.current = null;
-          inlineEdit.active = false;
-          markDraft('canvas-text', false);
+          if (!pendingEdits.current.has(String(p.editId))) break;
+          endInlineEdit(String(p.editId));
+          if (p.reason === 'too-large') toast('That text is too long to edit on the page. Edit it in the inspector instead.', 'error');
           break;
         case 'key':
           // Ignored: shortcuts are taken from trusted keyboard input (see App), never from the page.
@@ -181,7 +221,8 @@ export function Canvas() {
         case 'contextmenu': {
           if (!st) return;
           pagePick();
-          const ref = withinDefinition(selectionFromChain(st, p.chain as BridgeDesc[], s.selection, false));
+          const chain = chainOf(p.chain);
+          const ref = chain.length ? withinDefinition(selectionFromChain(st, chain, s.selection, false)) : null;
           if (!ref && s.definitionMode) {
             setState({ selection: null });
             break;
@@ -189,15 +230,28 @@ export function Canvas() {
           if (ref) setState({ selection: ref, ...(s.rightTab === 'styles' ? { rightTab: 'inspect' as const } : {}) });
           const fr = frameRef.current!.getBoundingClientRect();
           const z = currentZoom();
-          openContextMenu(fr.left + Number(p.x) * z, fr.top + Number(p.y) * z, ref);
+          const at = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+          openContextMenu(fr.left + at(p.x) * z, fr.top + at(p.y) * z, ref);
           break;
         }
-        case 'externalLink':
-          void confirmDialog({ title: 'Open this link in your browser?', body: String(p.href), confirmLabel: 'Open in browser' }).then((ok) => ok === true && void api.app.openExternal(String(p.href)));
+        case 'externalLink': {
+          // Previewing: a link that leaves the site opens outside the app, after the visitor's-eye check here.
+          const link = externalLink(p.href);
+          if (!link) {
+            toast('This link can’t be opened from the preview.', 'error');
+            break;
+          }
+          const ask =
+            link.kind === 'email'
+              ? { title: 'Write an email?', confirmLabel: 'Open email app' }
+              : link.kind === 'phone'
+                ? { title: 'Call this number?', confirmLabel: 'Open phone app' }
+                : { title: 'Open this link in your browser?', confirmLabel: 'Open in browser' };
+          void confirmDialog({ ...ask, body: link.target }).then((ok) => ok === true && void api.app.openExternal(link.href));
           break;
+        }
         case 'runtimeError':
           setFrameError(String(p.message).slice(0, 400));
-          setRetrying(false);
           setRetrying(false);
           break;
         case 'revisionApplied':
@@ -207,7 +261,7 @@ export function Canvas() {
           const w = measureWaiters.current.get(String(p.requestId));
           if (w) {
             measureWaiters.current.delete(String(p.requestId));
-            w(p.rects as Array<Rect | null>);
+            w(p.rects);
           }
           break;
         }
@@ -292,9 +346,12 @@ export function Canvas() {
   // Navigate when the current page changes.
   useEffect(() => {
     if (!ready || !page) return;
+    // The page already went there itself (a link clicked while previewing): leave it where it is.
+    if (samePath(page.route, frameAt.current)) return;
     // Until the page confirms the navigation, it is "opening", not ready.
     setState({ frameReady: false });
     pendingNav.current = page.route;
+    frameAt.current = null;
     post('navigate', { path: page.route });
   }, [pageId, page?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -330,17 +387,17 @@ export function Canvas() {
     const items = [
         { heading: name },
         ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: () => setState({ selection: withinDefinition(parent) }) }] : []),
-        { label: 'Ask AI about this', icon: <Sparkles />, shortcut: '⌘J', onSelect: () => askAiAbout(ref) },
+        { label: 'Ask AI about this', icon: <Sparkles />, shortcut: keys('⌘J'), onSelect: () => askAiAbout(ref) },
         ...(t
           ? [
               ...(reorderable || !locked || !isInstance ? [{ separator: true }] : []),
               ...(reorderable
                 ? [
-                    { label: 'Move up', icon: <ArrowUp />, shortcut: '⇧⌘↑', disabled: sib!.index === 0, onSelect: on(() => moveSelection(-1)) },
-                    { label: 'Move down', icon: <ArrowDown />, shortcut: '⇧⌘↓', disabled: sib!.index >= sib!.count - 1, onSelect: on(() => moveSelection(1)) }
+                    { label: 'Move up', icon: <ArrowUp />, shortcut: keys('⇧⌘↑'), disabled: sib!.index === 0, onSelect: on(() => moveSelection(-1)) },
+                    { label: 'Move down', icon: <ArrowDown />, shortcut: keys('⇧⌘↓'), disabled: sib!.index >= sib!.count - 1, onSelect: on(() => moveSelection(1)) }
                   ]
                 : []),
-              ...(locked ? [] : [{ label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: on(duplicateSelection) }]),
+              ...(locked ? [] : [{ label: 'Duplicate', icon: <Copy />, shortcut: keys('⌘D'), onSelect: on(duplicateSelection) }]),
               ...(!isInstance ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: t } }) }] : []),
               ...(locked ? [] : [{ separator: true }, { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: on(deleteSelection) }])
             ]
@@ -367,34 +424,35 @@ export function Canvas() {
     const early = () => (released = true);
     window.addEventListener('pointerup', early, { once: true });
     const requestId = Math.random().toString(36).slice(2);
-    const rects = await new Promise<Array<Rect | null>>((resolve) => {
-      measureWaiters.current.set(requestId, resolve);
+    const rects = await new Promise<Array<Rect | null> | null>((resolve) => {
+      measureWaiters.current.set(requestId, (raw) => resolve(measuredRects(raw, info.list.length)));
       post('measure', { requestId, descs: info.list.map((id) => descOf(st, { owner: t.owner, instancePath: [], nodeId: id })) });
-      setTimeout(() => resolve([]), 1500);
+      setTimeout(() => resolve(null), 1500);
     });
     window.removeEventListener('pointerup', early);
-    if (released || rects.length !== info.list.length || rects.some((r) => !r)) return;
-    const list = rects as Rect[];
-    const horizontal = list.length > 1 && Math.abs(list[1].y - list[0].y) < 4;
     const from = info.index;
+    // Siblings hidden at this width take no space on the page: the drag moves among the visible ones.
+    const visible = rects ? rects.flatMap((r, i) => (r ? [i] : [])) : [];
+    if (released || !rects?.[from] || visible.length < 2) return;
+    const boxes = visible.map((i) => rects[i]!);
+    let to: number | null = null;
     setDragging(true);
-    setReorder({ rects: list, from, to: from });
-    let to = from;
+    setReorder({ line: dropAt(boxes, rects[from]!.x + 1, rects[from]!.y + 1).line });
     const move = (ev: PointerEvent) => {
       const box = wrapRef.current?.getBoundingClientRect();
       if (!box) return;
       const z = currentZoom();
-      const pos = horizontal ? (ev.clientX - box.left) / z : (ev.clientY - box.top) / z;
-      to = list.filter((r) => (horizontal ? r.x + r.width / 2 : r.y + r.height / 2) < pos).length;
-      setReorder({ rects: list, from, to });
+      const drop = dropAt(boxes, (ev.clientX - box.left) / z, (ev.clientY - box.top) / z);
+      to = drop.to;
+      setReorder({ line: drop.line });
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       setDragging(false);
       setReorder(null);
-      const index = to > from ? to - 1 : to;
-      if (index !== from) void applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], 'Move');
+      const index = to === null ? null : moveIndex(visible, from, to);
+      if (index !== null) void applyOps([{ type: 'node.move', owner: t.owner, nodeId: t.nodeId, parentId: info.parentId, slot: info.slot, index }], 'Move');
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -476,7 +534,7 @@ export function Canvas() {
   const hovering = hover && !sameRef(hover, selection) && !reorder && !dragging && !menu.isOpen;
   const firstSel = selBoxes[0];
   const defRoot = !!definitionMode && !!selection && selection.instancePath.length === 1 && state?.components[definitionMode.definitionId]?.tree?.rootIds[0] === selection.nodeId;
-  const placement = firstSel && selection ? chipPlacement(firstSel, !selection.instancePath.length || defRoot) : null;
+  const placement = firstSel && selection ? chipPlacement(firstSel, !selection.instancePath.length || defRoot, frameH * z) : null;
 
   return (
     <main ref={canvasRef} tabIndex={-1} className={`canvas${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}`} aria-label="Website preview">
@@ -552,7 +610,7 @@ export function Canvas() {
                 {selBoxes.map((b, i) => (
                   <div key={`s${i}`} className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}`} style={b} />
                 ))}
-                {reorder && <ReorderIndicator rects={reorder.rects.map(toBox)} to={reorder.to} />}
+                {reorder && <div className="ov-drop" style={toBox(reorder.line)} role="presentation" />}
               </div>
               {firstSel && selection && state && placement && !reorder && (
                 <SelectionChip
@@ -597,15 +655,6 @@ export function Canvas() {
       {menu.node}
     </main>
   );
-}
-
-function ReorderIndicator({ rects, to }: { rects: Array<{ left: number; top: number; width: number; height: number }>; to: number }) {
-  const horizontal = rects.length > 1 && Math.abs(rects[1].top - rects[0].top) < 4;
-  const ref = rects[Math.min(to, rects.length - 1)];
-  const style = horizontal
-    ? { left: to >= rects.length ? ref.left + ref.width : ref.left - 2, top: ref.top, width: 3, height: ref.height }
-    : { left: ref.left, top: to >= rects.length ? ref.top + ref.height - 1 : ref.top - 1, width: ref.width, height: 3 };
-  return <div className="ov-drop" style={style} role="presentation" />;
 }
 
 /** Where a structural target sits among its siblings, for the move controls and the drag handle. */
@@ -661,13 +710,14 @@ const CHIP_GAP = 4;
 /**
  * Where the chip goes. A tall section (with its top on screen) carries it inside its top edge, where its own
  * padding is. A smaller element gets it above, when there is room inside the page. Everything else (parts,
- * which sit among other content, and anything at or scrolled past the top of the page) parks it in the strip
- * above the page frame, lined up with the selection, so it never covers the page.
+ * which sit among other content, and anything scrolled past the top or bottom of the visible page) parks it
+ * in the strip above the page frame, lined up with the selection, so it never covers the page or floats off
+ * it. `frameHeight` is the visible page's height, in the same (zoomed) pixels as the box.
  */
-function chipPlacement(box: { top: number; height: number }, topLevel: boolean): 'inside' | 'above' | 'strip' {
+function chipPlacement(box: { top: number; height: number }, topLevel: boolean, frameHeight: number): 'inside' | 'above' | 'strip' {
   if (!topLevel) return 'strip';
-  if (box.top >= 0 && box.height > 120) return 'inside';
-  if (box.top >= CHIP_H + CHIP_GAP + 2) return 'above';
+  if (box.top >= 0 && box.height > 120 && box.top + CHIP_H + CHIP_GAP + 2 <= frameHeight) return 'inside';
+  if (box.top >= CHIP_H + CHIP_GAP + 2 && box.top < frameHeight) return 'above';
   return 'strip';
 }
 
@@ -776,7 +826,7 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
         {item ? <span className="of">· {item.n} of {item.count}</span> : repeats > 1 && <span className="of">· all {repeats} {repeatsLabel}</span>}
       </span>
       <span className="chip-sep" aria-hidden="true" />
-      <button className="icon-btn" title="Ask AI about this (⌘J)" aria-label="Ask AI about this" aria-keyshortcuts="Meta+J" onClick={() => askAiAbout(selection)}>
+      <button className="icon-btn" title={`Ask AI about this (${keys('⌘J')})`} aria-label="Ask AI about this" aria-keyshortcuts={ariaKeys('Meta+J')} onClick={() => askAiAbout(selection)}>
         <Sparkles />
       </button>
       {inspectorHidden && (
@@ -795,16 +845,16 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
       {(canReorder || canEdit) && <span className="chip-sep" aria-hidden="true" />}
       {canReorder && (
         <>
-          <button className="icon-btn" title="Move up (⇧⌘↑)" aria-label="Move up" aria-keyshortcuts="Shift+Meta+ArrowUp" aria-disabled={!canUp || undefined} onClick={guard(canUp, () => void moveSelection(-1))}>
+          <button className="icon-btn" title={`Move up (${keys('⇧⌘↑')})`} aria-label="Move up" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowUp')} aria-disabled={!canUp || undefined} onClick={guard(canUp, () => void moveSelection(-1))}>
             <ArrowUp />
           </button>
-          <button className="icon-btn" title="Move down (⇧⌘↓)" aria-label="Move down" aria-keyshortcuts="Shift+Meta+ArrowDown" aria-disabled={!canDown || undefined} onClick={guard(canDown, () => void moveSelection(1))}>
+          <button className="icon-btn" title={`Move down (${keys('⇧⌘↓')})`} aria-label="Move down" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowDown')} aria-disabled={!canDown || undefined} onClick={guard(canDown, () => void moveSelection(1))}>
             <ArrowDown />
           </button>
         </>
       )}
       {canEdit && (
-        <button className="icon-btn" title="Duplicate (⌘D)" aria-label="Duplicate" aria-keyshortcuts="Meta+D" onClick={() => void duplicateSelection()}>
+        <button className="icon-btn" title={`Duplicate (${keys('⌘D')})`} aria-label="Duplicate" aria-keyshortcuts={ariaKeys('Meta+D')} onClick={() => void duplicateSelection()}>
           <Copy />
         </button>
       )}

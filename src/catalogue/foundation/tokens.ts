@@ -12,7 +12,7 @@ export const FOUNDATION_TOKENS: TokenDef[] = [
   { id: 'color.muted', label: 'Muted text', group: 'color', value: '#5c5f59' },
   { id: 'color.brand', label: 'Brand', group: 'color', value: '#1f5a4c' },
   { id: 'color.brand-strong', label: 'Brand (strong)', group: 'color', value: '#16443a' },
-  { id: 'color.on-brand', label: 'Text on brand colour', group: 'color', value: '#ffffff' },
+  { id: 'color.on-brand', label: 'Text on brand color', group: 'color', value: '#ffffff' },
   { id: 'color.accent', label: 'Accent', group: 'color', value: '#d98f48' },
   { id: 'color.inverse', label: 'Dark sections', group: 'color', value: '#14211d' },
   { id: 'color.on-inverse', label: 'Text on dark sections', group: 'color', value: '#f1eee6' },

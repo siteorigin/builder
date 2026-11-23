@@ -908,7 +908,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         </span>
         <span className="grow">
           <strong>Site styles</strong>
-          <span>Colours, fonts and spacing for every page</span>
+          <span>Colors, fonts and spacing for every page</span>
         </span>
         <ChevronRight aria-hidden="true" className="chev" />
       </button>

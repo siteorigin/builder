@@ -6,7 +6,8 @@ import { getConfirm, markDraft, onConfirmChange, useStore } from '../store';
 
 const setToasts = (toasts: ReturnType<typeof useStore.getState>['toasts']) => useStore.setState({ toasts });
 
-const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+// Editable content counts (the code editor's text area is one), so Tab order and wrapping inside a dialog see it.
+const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [contenteditable="true"], [tabindex]:not([tabindex="-1"])';
 
 /** Dialogs currently open, innermost last; global shortcuts stay out of the way while any is open. */
 export const openDialogs: HTMLElement[] = [];
@@ -646,10 +647,12 @@ export function Spinner({ large, decorative }: { large?: boolean; decorative?: b
 
 /**
  * Keyboard model for a list or tree of rows (WAI-ARIA APG listbox / tree view): the container is one tab
- * stop (the selected row, else the first), Up/Down/Home/End move focus and selection follows it, Enter
- * activates. Rows are found by role; each row's own handler does Left/Right for expand and collapse.
+ * stop (the selected row, else the first), Up/Down/Home/End move focus and, by default, selection follows
+ * it. With `follow: false` the keys only move focus and the row's own Enter or Space activates it, for rows
+ * whose activation is costly (a page row opens that page in the preview). Rows are found by role; each
+ * row's own handler does Left/Right for expand and collapse.
  */
-export function rovingKeys(e: React.KeyboardEvent<HTMLElement>, role: 'option' | 'treeitem') {
+export function rovingKeys(e: React.KeyboardEvent<HTMLElement>, role: 'option' | 'treeitem', { follow = true }: { follow?: boolean } = {}) {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
   // Modified arrows belong to commands (⇧⌘↑/↓ moves the selection); only plain keys navigate.
   if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
@@ -662,7 +665,7 @@ export function rovingKeys(e: React.KeyboardEvent<HTMLElement>, role: 'option' |
   if (!next || n === i) return;
   e.preventDefault();
   next.focus();
-  next.click();
+  if (follow) next.click();
 }
 
 /** After render, make sure exactly one row in the container is tabbable. */

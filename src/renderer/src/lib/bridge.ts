@@ -22,6 +22,8 @@ export function acceptMessage(e: MessageEvent, frame: HTMLIFrameElement | null, 
   if (!origin || e.origin !== origin) return null;
   const m = e.data as BridgeMessage;
   if (!m || typeof m !== 'object' || m.protocolVersion !== PROTOCOL || m.sessionId !== sessionId || typeof m.type !== 'string') return null;
+  // Handlers read fields off the payload: it must be a plain object.
+  if (!m.payload || typeof m.payload !== 'object' || Array.isArray(m.payload)) return null;
   try {
     if (JSON.stringify(m).length > MAX_MESSAGE_CHARS) return null;
   } catch {

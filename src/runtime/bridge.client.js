@@ -10,7 +10,9 @@ let selected = null; // descriptor
 let hovered = null;
 /** The innermost element under the pointer, as last reported to the editor. */
 let pointerAt = null;
-let editing = null; // { el, desc, original }
+let editing = null; // { el, desc, editId, original, rich }
+/** Larger commits than this would be dropped by the editor's message size check. */
+const MAX_COMMIT_CHARS = 150000;
 const errors = [];
 
 function send(type, payload = {}) {
@@ -101,7 +103,11 @@ document.documentElement.addEventListener('mouseleave', () => {
 document.addEventListener(
   'click',
   (e) => {
-    if (editing && editing.el.contains(e.target)) return;
+    if (editing && editing.el.contains(e.target)) {
+      // Clicks place the caret in the text being edited; they never follow a link or toggle a disclosure.
+      if (e.target.closest && e.target.closest('a[href], summary')) e.preventDefault();
+      return;
+    }
     if (mode !== 'edit') {
       const a = e.target.closest && e.target.closest('a[href]');
       if (a && a.origin !== location.origin) {
@@ -113,6 +119,13 @@ document.addEventListener(
     e.preventDefault();
     e.stopPropagation();
     if (editing) commitEdit();
+    // A disclosure (an FAQ question) still opens and closes while editing, so what is inside can be reached.
+    const summary = e.target.closest && e.target.closest('summary');
+    const details = summary && summary.parentElement;
+    if (details && details.tagName === 'DETAILS') {
+      details.open = !details.open;
+      scheduleRects();
+    }
     send('select', { chain: chainFrom(e.target), alt: e.altKey, meta: e.metaKey || e.ctrlKey });
   },
   true
@@ -158,12 +171,15 @@ document.addEventListener('keydown', (e) => {
 // Inline text editing
 // ---------------------------------------------------------------------------
 
-function beginTextEdit(desc) {
+function beginTextEdit(desc, editId) {
   const el = findAll(desc)[0];
-  if (!el) return;
+  // The editor is waiting for this edit to end: tell it there is nothing to edit.
+  if (!el) return send('textCancel', { desc, editId });
+  if (editing) commitEdit();
   const rich = el.classList.contains('so-rich');
-  editing = { el, desc, original: el.innerHTML, rich };
-  el.setAttribute('contenteditable', 'plaintext-only');
+  editing = { el, desc, editId, original: el.innerHTML, rich };
+  // Rich text keeps its bold and italic (⌘B, ⌘I); everything else is plain text.
+  el.setAttribute('contenteditable', rich ? 'true' : 'plaintext-only');
   el.setAttribute('spellcheck', 'true');
   el.style.outline = 'none';
   el.style.cursor = 'text';
@@ -176,10 +192,21 @@ function beginTextEdit(desc) {
   el.addEventListener('keydown', onEditKey);
   el.addEventListener('blur', onEditBlur);
   el.addEventListener('input', scheduleRects);
+  el.addEventListener('paste', onEditPaste);
+  el.addEventListener('drop', onEditDrop);
   send('textEditStarted', { desc });
 }
 function onEditKey(e) {
   e.stopPropagation();
+  // Keys that compose a character (an IME, a dead key for an accent) belong to the composition.
+  if (e.isComposing || e.keyCode === 229) return;
+  const mod = e.metaKey || e.ctrlKey;
+  const k = e.key.toLowerCase();
+  if (mod && !e.altKey && !e.shiftKey && (k === 'b' || k === 'i' || k === 'u')) {
+    e.preventDefault();
+    if (editing.rich && k !== 'u') document.execCommand(k === 'b' ? 'bold' : 'italic');
+    return;
+  }
   if (e.key === 'Escape') {
     e.preventDefault();
     cancelEdit();
@@ -194,6 +221,15 @@ function onEditKey(e) {
 function onEditBlur() {
   if (editing) commitEdit();
 }
+/** Pasted content arrives as plain text: formatting, images and markup from elsewhere never get in. */
+function onEditPaste(e) {
+  e.preventDefault();
+  const text = (e.clipboardData && e.clipboardData.getData('text/plain')) || '';
+  document.execCommand('insertText', false, editing && !editing.rich ? text.replace(/\s+/g, ' ') : text);
+}
+function onEditDrop(e) {
+  e.preventDefault();
+}
 function endEdit() {
   const { el } = editing;
   el.removeAttribute('contenteditable');
@@ -203,22 +239,61 @@ function endEdit() {
   el.removeEventListener('keydown', onEditKey);
   el.removeEventListener('blur', onEditBlur);
   el.removeEventListener('input', scheduleRects);
+  el.removeEventListener('paste', onEditPaste);
+  el.removeEventListener('drop', onEditDrop);
   editing = null;
   getSelection()?.removeAllRanges();
 }
 function commitEdit() {
   if (!editing) return;
-  const { el, desc, rich } = editing;
-  const text = rich ? el.innerText.replace(/\r/g, '').split(/\n{2,}|\n/).map((p) => p.trim()).filter(Boolean) : el.innerText.replace(/\s+/g, ' ').trim();
+  const { el, desc, editId, rich, original } = editing;
+  // Nothing changed: end the edit without a commit, so no history entry or rebuild follows.
+  if (el.innerHTML === original) {
+    endEdit();
+    return send('textCancel', { desc, editId });
+  }
+  // Rich text goes back as a small copy of its structure (blocks, breaks, bold, italic) for the editor to
+  // turn into paragraphs; plain text as its words.
+  const payload = rich ? { desc, editId, rich: richCopy(el) } : { desc, editId, text: el.innerText.replace(/\s+/g, ' ').trim() };
+  // Too much to send: put the text back and say why, rather than lose the message (and the edit) on the way.
+  if (JSON.stringify(payload).length > MAX_COMMIT_CHARS) {
+    el.innerHTML = original;
+    endEdit();
+    return send('textCancel', { desc, editId, reason: 'too-large' });
+  }
   endEdit();
-  send('textCommit', { desc, text });
+  send('textCommit', payload);
+}
+/** Text, element names and inline bold/italic of what an edit left, as plain data; null when too large. */
+function richCopy(root) {
+  let budget = 4000;
+  const copy = (n, depth) => {
+    if (budget-- <= 0 || depth > 16) throw new Error('too large');
+    if (n.nodeType === 3) return n.nodeValue;
+    if (n.nodeType !== 1) return null;
+    const out = { tag: n.tagName.toLowerCase(), children: [] };
+    const w = n.style && n.style.fontWeight;
+    if (w) out.b = w === 'bold' || w === 'bolder' || Number(w) >= 600;
+    const st = n.style && n.style.fontStyle;
+    if (st) out.i = st === 'italic' || st === 'oblique';
+    for (const c of n.childNodes) {
+      const v = copy(c, depth + 1);
+      if (v !== null) out.children.push(v);
+    }
+    return out;
+  };
+  try {
+    return [...root.childNodes].map((c) => copy(c, 0)).filter((v) => v !== null);
+  } catch {
+    return null;
+  }
 }
 function cancelEdit() {
   if (!editing) return;
-  const { el, original, desc } = editing;
+  const { el, original, desc, editId } = editing;
   el.innerHTML = original;
   endEdit();
-  send('textCancel', { desc });
+  send('textCancel', { desc, editId });
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +371,7 @@ window.addEventListener('message', async (e) => {
       break;
     }
     case 'beginTextEdit':
-      beginTextEdit(m.payload.desc);
+      beginTextEdit(m.payload.desc, m.payload.editId);
       break;
     case 'measure': {
       const descs = Array.isArray(m.payload.descs) ? m.payload.descs.slice(0, 200) : [];
@@ -315,7 +390,15 @@ window.addEventListener('message', async (e) => {
 window.addEventListener('scroll', scheduleRects, { passive: true });
 window.addEventListener('resize', scheduleRects);
 new ResizeObserver(scheduleRects).observe(document.documentElement);
-new MutationObserver(scheduleRects).observe(document.body, { childList: true, subtree: true, characterData: true });
+new MutationObserver(() => {
+  // The page re-rendered the element being edited away (an update arrived): the edit is over.
+  if (editing && !editing.el.isConnected) {
+    const { desc, editId } = editing;
+    endEdit();
+    send('textCancel', { desc, editId });
+  }
+  scheduleRects();
+}).observe(document.body, { childList: true, subtree: true, characterData: true });
 window.addEventListener('error', (e) => {
   errors.push(String(e.message));
   send('runtimeError', { message: String(e.message) });

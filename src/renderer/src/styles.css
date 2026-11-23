@@ -764,9 +764,6 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .style-footer { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
 .style-footer-hint { font-size: 12px; color: var(--text-3); }
 .style-footer-every { margin-top: 4px; font-size: 12px; min-height: 24px; }
-.token-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 6px; border-radius: var(--r-sm); border: 1px solid var(--border-control); background: var(--raised); font-size: 12px; min-width: 0; flex: 1; text-align: left; }
-.token-chip .swatch { width: 14px; height: 14px; border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15), 0 0 0 1px rgb(255 255 255 / 0.12); flex: none; }
-.token-chip .link { color: var(--accent-text); width: 12px; height: 12px; flex: none; }
 .list-editor { display: flex; flex-direction: column; gap: 4px; }
 .list-editor-item { border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); overflow: hidden; }
 .list-editor-item.focused { border-color: var(--accent); box-shadow: var(--ring); }
@@ -1052,8 +1049,6 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .cmdk-list { max-height: 360px; overflow: auto; padding: 6px; }
 .code-view { margin: 0; padding: 14px 16px; height: 60vh; overflow: auto; background: var(--panel-2); border-radius: var(--r-md); border: 1px solid var(--border); font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre; tab-size: 2; user-select: text; color: var(--text); }
 textarea.code-view { width: 100%; resize: none; outline: none; }
-.tok-tag { color: #d0488f; } .tok-attr { color: #8a5a0c; } .tok-str { color: #1d7347; } .tok-com { color: var(--text-3); font-style: italic; } .tok-kw { color: #6f5bd8; }
-@media (prefers-color-scheme: dark) { .tok-tag { color: #ff7ab8; } .tok-attr { color: #f0c068; } .tok-str { color: #6ad49a; } .tok-kw { color: #a796ff; } }
 
 .composer textarea:focus-visible { box-shadow: none; }
 .md code { font-family: var(--mono); font-size: 12px; padding: 1px 4px; border-radius: var(--r-xs); background: var(--active); }
@@ -1231,7 +1226,7 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .canvas.sel-shared { --select: #0b6b45; }
 .list-item.selected.shared { background: var(--green-soft); color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
 /* Colour swatches keep a visible edge on both themes, even for near-black and near-white colours. */
-.swatch-lg, .token-chip .swatch, .color-input input[type='color'] { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border-control); }
+.swatch-lg, .color-input input[type='color'] { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border-control); }
 /* The Site styles shortcut opens the right dock, so when on it takes the neutral pressed look, never the
    sidebar's blue: one rail item is ever blue, the open sidebar panel. */
 .rail .icon-btn.shortcut[aria-pressed='true'] { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
