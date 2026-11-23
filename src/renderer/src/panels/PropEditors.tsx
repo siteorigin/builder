@@ -610,7 +610,7 @@ export type ListOp =
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, annotate, linkPairs }: {
+export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, hint, annotate, linkPairs }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -620,12 +620,14 @@ export function PropField({ name, schema, value, onChange, onList, state, focusI
   focusItem?: string;
   /** A shorter visible label, when a group heading already says what the field belongs to. */
   label?: string;
+  /** For a scalar: what to say under it in place of the schema's description. */
+  hint?: ReactNode;
   /** For a list: what to say about each item, such as the key a form field is sent under. */
   annotate?: (item: ListItem, index: number) => ListItemNote | undefined;
   linkPairs?: LinkPairs;
 }) {
   if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} annotate={annotate} linkPairs={linkPairs} />;
-  return <ScalarField schema={schema} value={value} onChange={onChange} state={state} label={label} />;
+  return <ScalarField schema={schema} value={value} onChange={onChange} state={state} label={label} hint={hint} />;
   void name;
 }
 

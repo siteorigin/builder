@@ -6,7 +6,7 @@ import { allTrees, childLists, displayName, subtreeIds } from './tree';
 import { boundSchema } from './schema';
 import { declaredTokens, findTokenCycle } from './tokens';
 import { missingSectionLinks, unlinkedButtons } from '@generator/checks';
-import { formConnected, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, namesFormFields } from '@catalogue/foundation/form';
+import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, namesFormFields } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -152,8 +152,9 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
       if (inTheme || n.kind !== 'instance' || def?.componentId !== 'contact.form' || def.kind !== 'code') continue;
       const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
-      if (owner.kind !== 'component' && !formConnected(props))
-        out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. Add an HTTPS form endpoint or a Web3Forms access key, or choose Netlify Forms.`, owner, nodeId: n.id });
+      // A binding outside a component has nothing to bind to and is exported empty, so the default decides.
+      const problem = owner.kind !== 'component' ? formConnectionProblem(def, Object.fromEntries(Object.entries(n.props).filter(([, v]) => !isBinding(v)))) : undefined;
+      if (problem) out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. ${problem}`, owner, nodeId: n.id });
       // A list bound from outside is only known where it is placed.
       if (namesFormFields(def) && !isBinding(props.fields)) {
         const fields = formFieldsAsSent(def, props.fields);

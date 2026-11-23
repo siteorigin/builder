@@ -1,5 +1,5 @@
 import type { ComponentDefinition } from '@shared/types';
-import { SCHEMA_VERSION } from '@shared/types';
+import { SCHEMA_VERSION, isBinding } from '@shared/types';
 import { P, PACK_ID, PACK_VERSION, definitionIdFor } from '../dsl';
 
 /** Hidden "honeypot" field names each service recognises as spam traps. */
@@ -27,6 +27,15 @@ const FIELD_NAME_SOURCE = `	function fieldName(field, i) {
 	}`;
 /** The form refuses to send while two of its fields share a key; forms from before this check send both. */
 const AMBIGUOUS_SOURCE = `	const ambiguous = $derived(new Set(names).size < names.length);`;
+
+/**
+ * How the form reads its service settings, and when they connect it. Every version of the theme's form so far has
+ * both exactly, so the inspector can tell a form that uses the settings this way from code that may not.
+ */
+const SERVICE_SOURCE = `	const key = $derived(String(accessKey ?? '').trim());
+	const netlifyName = $derived(String(formName ?? '').trim());
+	const action = $derived(provider === 'web3forms' ? 'https://api.web3forms.com/submit' : provider === 'endpoint' && isEndpoint(endpoint) ? endpoint.trim() : undefined);`;
+const CONNECTED_SOURCE = `provider === 'netlify' ? !!netlifyName : provider === 'web3forms' ? !!key : !!action`;
 
 const FORM_SOURCE = `<script>
 	/**
@@ -61,10 +70,8 @@ const FORM_SOURCE = `<script>
 ${RESERVED_SOURCE}
 	const AUTOCOMPLETE = { email: 'email', tel: 'tel' };
 	const honeypot = $derived(HONEYPOT[provider] ?? '_gotcha');
-	const key = $derived(String(accessKey ?? '').trim());
-	const netlifyName = $derived(String(formName ?? '').trim());
-	const action = $derived(provider === 'web3forms' ? 'https://api.web3forms.com/submit' : provider === 'endpoint' && isEndpoint(endpoint) ? endpoint.trim() : undefined);
-	const connected = $derived(provider === 'netlify' ? !!netlifyName : provider === 'web3forms' ? !!key : !!action);
+${SERVICE_SOURCE}
+	const connected = $derived(${CONNECTED_SOURCE});
 	// The key each answer is sent under. Two answers under one key reach the service as one field twice.
 	const names = $derived((fields ?? []).map((field, i) => fieldName(field, i)));
 ${AMBIGUOUS_SOURCE}
@@ -389,12 +396,105 @@ export function formConnected(props: Record<string, unknown>): boolean {
   if (provider === 'netlify') return !!String(props.formName ?? '').trim();
   if (provider === 'web3forms') return !!String(props.accessKey ?? '').trim();
   if (provider !== 'endpoint') return false;
+  return isHttpsEndpoint(props.endpoint);
+}
+
+/** The component's `isEndpoint`: a full HTTPS address. */
+function isHttpsEndpoint(value: unknown): boolean {
   try {
-    const url = new URL(String(props.endpoint ?? '').trim());
+    const url = new URL(String(value ?? '').trim());
     return url.protocol === 'https:' && !!url.hostname;
   } catch {
     return false;
   }
+}
+
+/**
+ * The one setting each form service needs, how to get it, and what the editor says until it is filled in.
+ * `invalid` is for text that is there but cannot work (an endpoint that is not a full HTTPS address).
+ */
+export const FORM_SERVICES: Record<string, { prop: string; setup: string; missing: string; invalid?: string }> = {
+  endpoint: {
+    prop: 'endpoint',
+    setup: 'Create a form with Formspree, Basin, Getform or a similar service and paste the HTTPS endpoint it gives you, such as https://formspree.io/f/abc123.',
+    missing: 'Add the HTTPS endpoint your form service gives you.',
+    invalid: 'Use the full HTTPS endpoint your form service gives you, starting with https://.'
+  },
+  web3forms: {
+    prop: 'accessKey',
+    setup: 'Enter the email address messages should go to at web3forms.com, and Web3Forms emails you an access key. The key is public by design: it can only send messages to that address.',
+    missing: 'Add your Web3Forms access key.'
+  },
+  netlify: {
+    prop: 'formName',
+    setup: 'Works when the site is hosted on Netlify: turn on form detection under Forms in the site’s Netlify settings, then deploy. Messages are listed there under this name, so give each form on the site its own.',
+    missing: 'Add a form name for Netlify Forms.'
+  }
+};
+
+const SERVICE_SETTINGS = Object.values(FORM_SERVICES).map((s) => s.prop);
+
+/**
+ * Whether a definition reads its form service settings the way the theme's contact form does: any version of it, or
+ * a project copy of it whose code still does. Code that reads them some other way keeps the ordinary inspector.
+ */
+function readsFormServices(def: ComponentDefinition | undefined): def is ComponentDefinition {
+  if (!def || def.kind !== 'code' || def.properties.provider?.type !== 'enum') return false;
+  // A copy made unique takes a project component ID; its provenance still names the form it came from.
+  if (def.componentId !== 'contact.form' && def.provenance?.componentId !== 'contact.form') return false;
+  if (SERVICE_SETTINGS.some((p) => def.properties[p]?.type !== 'string')) return false;
+  return !!def.source?.includes(SERVICE_SOURCE) && def.source.includes(CONNECTED_SOURCE);
+}
+
+/**
+ * The value a placed form is exported with: its own, else the schema default (a stored null included). A value the
+ * schema does not declare is not exported at all.
+ */
+function exported(def: ComponentDefinition, props: Record<string, unknown>, key: string): unknown {
+  const schema = Object.hasOwn(def.properties, key) ? def.properties[key] : undefined;
+  return schema ? (props[key] ?? schema.default) : undefined;
+}
+
+/**
+ * Why a contact form cannot send, in the words of its selected service's setting, or of the service itself when it
+ * is one the form does not know. Undefined once it can send, or when the service or its setting is bound from
+ * outside and only known where the form is placed. `props` are the instance's own values.
+ */
+export function formConnectionProblem(def: ComponentDefinition, props: Record<string, unknown>): string | undefined {
+  const provider = exported(def, props, 'provider');
+  if (isBinding(provider)) return undefined;
+  if (typeof provider !== 'string' || !Object.hasOwn(FORM_SERVICES, provider)) return 'Choose a form service and add the setting it needs.';
+  const service = FORM_SERVICES[provider];
+  const value = exported(def, props, service.prop);
+  if (isBinding(value)) return undefined;
+  if (formConnected({ provider, [service.prop]: value })) return undefined;
+  return service.invalid && text(value ?? '').trim() ? service.invalid : service.missing;
+}
+
+/** What the inspector shows for a contact form's service: the selected service's setting, and the others to hide. */
+export interface FormServiceSetup {
+  /** The property the selected service needs. */
+  prop: string;
+  /** The other services' settings. Hidden, not cleared: switching back shows what was entered. */
+  hidden: string[];
+  /** How to get the setting from the service. */
+  setup: string;
+  /** Why the form cannot send yet, while the setting is missing or unusable. */
+  problem?: string;
+}
+
+/**
+ * The selected service's setting for the inspector, or undefined when the settings cannot be sorted by service: a
+ * definition that does not read them the way the theme's form does, a service bound from outside (two placements
+ * can choose differently) or one the form does not know. Every setting shows then, as before.
+ * `props` are the instance's own values.
+ */
+export function formServiceSetup(def: ComponentDefinition | undefined, props: Record<string, unknown>): FormServiceSetup | undefined {
+  if (!readsFormServices(def)) return undefined;
+  const provider = exported(def, props, 'provider');
+  if (typeof provider !== 'string' || !Object.hasOwn(FORM_SERVICES, provider)) return undefined;
+  const service = FORM_SERVICES[provider];
+  return { prop: service.prop, hidden: SERVICE_SETTINGS.filter((p) => p !== service.prop), setup: service.setup, problem: formConnectionProblem(def, props) };
 }
 
 /** Names a field may not be sent under: the component's `RESERVED`. */

@@ -198,6 +198,87 @@ await axis('Tone').selectOption('muted');
 await eventually(() => assert.match(read('src/routes/+page.svelte'), /variant="muted"/, 'the form takes the tone chosen in the Inspector'));
 await eventually(async () => assert.equal(await frame.locator('section.so-form--muted').count(), 1, 'the preview shows the form in that tone'));
 
+step('a contact form shows only the setting its service needs, and keeps the others');
+const inspector = win.locator('#dock-panel-inspect');
+const setting = (label) => inspector.getByLabel(label, { exact: true });
+const SETTINGS = ['Form endpoint URL', 'Web3Forms access key', 'Netlify form name'];
+const noteOf = (control) =>
+  control.evaluate((el) => {
+    const note = document.getElementById(el.getAttribute('aria-describedby') ?? '');
+    return {
+      text: note?.textContent ?? '',
+      visible: !!note && note.checkVisibility() && !!el.closest('.field')?.contains(note),
+      warnings: [...(note?.querySelectorAll('.field-warning') ?? [])].map((w) => w.textContent)
+    };
+  });
+// The placed form's service values and its own FORM_UNCONNECTED message, from the project itself.
+const formState = () =>
+  win.evaluate(async () => {
+    const s = await window.builder.project.snapshot();
+    const page = s.state.pages[s.state.site.homePageId];
+    const node = Object.values(page.nodes).find((n) => n.kind === 'instance' && s.state.components[n.definitionId]?.componentId === 'contact.form');
+    const { provider, endpoint, accessKey, formName } = node.props;
+    const warning = s.diagnostics.filter((d) => d.code === 'FORM_UNCONNECTED' && d.nodeId === node.id).map((d) => d.message).join(' ');
+    return { provider, endpoint, accessKey, formName, warning };
+  });
+// Exactly one service setting is in the inspector. Its own visible note gives the setup steps and, while the form
+// cannot send, exactly one warning, which the project check repeats.
+const showsOnly = (label, setup, warning) =>
+  eventually(async () => {
+    for (const other of SETTINGS) assert.equal(await setting(other).count(), other === label ? 1 : 0, `${other} is ${other === label ? 'shown' : 'hidden'} for this service`);
+    const note = await noteOf(setting(label));
+    assert.ok(note.visible, `the note under ${label} is visible in its field`);
+    for (const text of setup) assert.ok(note.text.includes(text), `the note under ${label} says “${text}”: ${note.text}`);
+    assert.deepEqual(note.warnings, warning ? [warning] : [], `the note under ${label} warns ${warning ? `“${warning}”` : 'nothing'}`);
+    const { warning: check } = await formState();
+    if (warning) assert.ok(check.endsWith(warning), `the project check says “${warning}”: ${check}`);
+    else assert.equal(check, '', 'the project check has nothing to say about the form');
+  });
+const service = setting('Form service');
+const ENDPOINT_SETUP = ['paste the HTTPS endpoint it gives you', 'https://formspree.io/f/abc123'];
+const WEB3_SETUP = ['web3forms.com', 'emails you an access key'];
+const NETLIFY_SETUP = ['hosted on Netlify', 'form detection', 'then deploy'];
+await showsOnly('Form endpoint URL', ENDPOINT_SETUP, 'Add the HTTPS endpoint your form service gives you.');
+assert.equal(await service.getAttribute('aria-describedby'), null, 'the service list carries none of the setting’s note');
+await service.selectOption('web3forms');
+await showsOnly('Web3Forms access key', WEB3_SETUP, 'Add your Web3Forms access key.');
+await setting('Web3Forms access key').fill('e2e-test-key');
+await setting('Web3Forms access key').press('Enter');
+await showsOnly('Web3Forms access key', WEB3_SETUP, null);
+await service.selectOption('netlify');
+await showsOnly('Netlify form name', NETLIFY_SETUP, null);
+assert.equal(await setting('Netlify form name').inputValue(), 'contact', 'Netlify starts with a form name');
+await setting('Netlify form name').fill('');
+await setting('Netlify form name').press('Enter');
+await showsOnly('Netlify form name', NETLIFY_SETUP, 'Add a form name for Netlify Forms.');
+// A name typed and not yet committed is still a draft when the author moves to the service list.
+await setting('Netlify form name').fill('enquiries');
+assert.equal((await formState()).formName, '', 'the typed name is still a draft');
+await service.focus();
+await service.selectOption('endpoint');
+await eventually(async () => {
+  const { provider, formName } = await formState();
+  assert.deepEqual({ provider, formName }, { provider: 'endpoint', formName: 'enquiries' }, 'leaving the name for the service list saves it');
+});
+await showsOnly('Form endpoint URL', ENDPOINT_SETUP, 'Add the HTTPS endpoint your form service gives you.');
+await setting('Form endpoint URL').fill('http://insecure.example/f');
+await setting('Form endpoint URL').press('Enter');
+await showsOnly('Form endpoint URL', ENDPOINT_SETUP, 'Use the full HTTPS endpoint your form service gives you, starting with https://.');
+await setting('Form endpoint URL').fill('https://formspree.io/f/e2etest');
+await setting('Form endpoint URL').press('Enter');
+await showsOnly('Form endpoint URL', ENDPOINT_SETUP, null);
+await service.selectOption('netlify');
+await showsOnly('Netlify form name', NETLIFY_SETUP, null);
+assert.equal(await setting('Netlify form name').inputValue(), 'enquiries', 'the Netlify form name typed before the switch is kept, and connects the form');
+await service.selectOption('endpoint');
+await showsOnly('Form endpoint URL', ENDPOINT_SETUP, null);
+assert.equal(await setting('Form endpoint URL').inputValue(), 'https://formspree.io/f/e2etest', 'switching back shows the endpoint entered before');
+await service.selectOption('web3forms');
+await showsOnly('Web3Forms access key', WEB3_SETUP, null);
+assert.equal(await setting('Web3Forms access key').inputValue(), 'e2e-test-key', 'switching back shows the key entered before');
+assert.deepEqual(await formState(), { provider: 'web3forms', endpoint: 'https://formspree.io/f/e2etest', accessKey: 'e2e-test-key', formName: 'enquiries', warning: '' }, 'the project keeps every service’s setting');
+await eventually(async () => assert.equal(await frame.locator('form.so-form__form input[name="access_key"]').inputValue(), 'e2e-test-key', 'the preview form sends that key to Web3Forms'));
+
 step('repeatable lists: capacity, and focus after a move to either end');
 if (!(await win.locator('[role="tree"]').first().isVisible())) await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
