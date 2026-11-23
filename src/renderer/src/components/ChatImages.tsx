@@ -180,7 +180,7 @@ function ImagePreview({ img, onClose, onChoose }: { img: ChatImageRef & { label:
     >
       <div className="image-preview">
         <div className="image-preview-frame">
-          <Picture key={fileState} a={live} devUrl={devUrl} />
+          <Picture key={fileState} a={live} devUrl={devUrl} original />
         </div>
         <p className="image-preview-meta">{[sizeOf(live), live.description?.trim()].filter(Boolean).join(' · ') || 'No description yet.'}</p>
       </div>

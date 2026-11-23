@@ -584,7 +584,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         </div>
         <div className="asset-preview">
           {devUrl ? (
-            <Picture key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={sel} devUrl={devUrl} />
+            <Picture key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={sel} devUrl={devUrl} maxHeight={176} />
           ) : (
             <span className="asset-preview-off">
               <ImageIcon aria-hidden="true" />

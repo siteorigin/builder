@@ -13,7 +13,7 @@ import { announcementText } from '../lib/announce';
 const MOVE_PENDING_MS = 3000;
 import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
 import { importAndPlace } from '../lib/place';
-import { assetUrl } from '../lib/model';
+import { AssetImage } from '../components/AssetImage';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { pageIds, planSectionPick, sharedPageIds } from '@generator/checks';
 import { contactMismatch } from '@shared/contact-links';
@@ -22,6 +22,12 @@ import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
 import { effectiveItem } from '@shared/page-teasers';
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+
+/** Changes when a picture's files go missing or come back, so a preview that gave up on a file tries it again. */
+const missingKey = (snapshot: { missingAssets: Array<{ assetId: string; original: boolean; variants: unknown[] }> } | null | undefined, id: string) => {
+  const gone = snapshot?.missingAssets.find((m) => m.assetId === id);
+  return gone ? `missing-${gone.original}-${gone.variants.length}` : 'present';
+};
 
 const OTHER_SECTION = '\u0000other';
 
@@ -345,7 +351,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
         </div>
       )}
       <div className="insp-image-top">
-        <div className={`insp-image-thumb${asset ? '' : ' empty'}`}>{asset && devUrl ? <img src={assetUrl(devUrl, asset.file)!} alt="" /> : <ImageOff aria-hidden="true" />}</div>
+        <div className={`insp-image-thumb${asset ? '' : ' empty'}`}>{asset && devUrl ? <AssetImage key={missingKey(snapshot, asset.id)} asset={asset} devUrl={devUrl} cover alt="" /> : <ImageOff aria-hidden="true" />}</div>
         <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
           <span className={`ellipsis insp-image-name${asset ? '' : ' none'}`} title={asset?.name}>{asset ? asset.name : over ? 'Drop to use this image' : 'No image chosen'}</span>
           <span className="row" style={{ gap: 4 }}>
@@ -390,7 +396,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
                     closeBrowser();
                   }}
                 >
-                  {devUrl ? <img src={assetUrl(devUrl, a.file)!} alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
+                  {devUrl ? <AssetImage key={missingKey(snapshot, a.id)} asset={a} devUrl={devUrl} cover alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
                   <span className="ellipsis">{a.name}</span>
                 </button>
               ))}
