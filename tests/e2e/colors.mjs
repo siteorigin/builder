@@ -56,7 +56,8 @@ const cases = [
   { label: 'translucent rgba()', value: 'rgba(209, 65, 49, 0.5)', start: '#d14131', fill: 'rgba(209, 65, 49, 0.5)', adjusted: 'rgba(192, 57, 43, 0.5)' },
   { label: 'translucent hex', value: '#d1413180', start: '#d14131', fill: 'rgba(209, 65, 49, 0.5)', adjusted: '#c0392b80' },
   { label: 'modern rgb()', value: 'rgb(209 65 49 / 40%)', start: '#d14131', fill: 'rgba(209, 65, 49, 0.4)', adjusted: 'rgb(192 57 43 / 0.4)' },
-  { label: 'hsl()', value: 'hsl(5 63% 51%)', start: '#d14033', adjusted: '#c0392b' }
+  { label: 'hsl()', value: 'hsl(5 63% 51%)', start: '#d14033', adjusted: '#c0392b' },
+  { label: 'zero opacity', value: '#d1413100', start: '#d14131', fill: 'rgba(209, 65, 49, 0)', adjusted: '#c0392b00' }
 ];
 
 for (const c of cases) {
@@ -83,10 +84,41 @@ for (const c of cases) {
   assert.equal(await text().inputValue(), c.value, `${c.label}: the text field follows the undo`);
 }
 
-step('the RGB color survives closing and reopening the project');
+step('a fast drag that goes out and comes back ends where it was left, as one undo step');
 await paste('rgb(209, 65, 49)');
+await eventually(async () => assert.equal(await swatch(), 'rgb(209, 65, 49)', 'the editor shows the pasted color before the drag starts'));
+await picker().evaluate((el) => {
+  // Three steps of one drag in a single task, before any save can come back: out, further out, home again.
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  for (const hex of ['#0000ff', '#336699', '#d14131']) {
+    set.call(el, hex);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+});
+await eventually(async () => assert.equal(await saved(), '#d14131', 'the last place the drag reached is what is saved'));
+await eventually(async () => assert.equal(await picker().inputValue(), '#d14131', 'and what the picker shows'));
+await undo();
+await eventually(async () => assert.equal(await saved(), 'rgb(209, 65, 49)', 'the whole drag is one undo step'));
+
+step('each format survives closing and reopening the project');
+const named = (name) => ({
+  text: section('Colors').locator(`input.ss-hex[aria-label="${name} color value"]`),
+  picker: section('Colors').locator(`input[type="color"][aria-label="${name} color"]`),
+  fill: section('Colors').locator('.color-pick').filter({ has: win.locator(`input[aria-label="${name} color"]`) }).locator('.color-pick-fill')
+});
+const reopenCases = [
+  { name: 'Accent', value: '#d43', start: '#dd4433', fill: 'rgb(221, 68, 51)' },
+  { name: 'Cards and panels', value: '#d14131', start: '#d14131', fill: 'rgb(209, 65, 49)' },
+  { name: 'Primary text', value: 'rgba(209, 65, 49, 0.5)', start: '#d14131', fill: 'rgba(209, 65, 49, 0.5)' }
+];
+for (const c of reopenCases) {
+  await named(c.name).text.fill(c.value);
+  await named(c.name).text.press('Enter');
+  await eventually(async () => assert.equal(await win.evaluate(async (id) => (await window.builder.project.snapshot()).state.tokens.overrides[id], { Accent: 'color.accent', 'Cards and panels': 'color.surface', 'Primary text': 'color.text' }[c.name]), c.value, `${c.name} is saved as typed`));
+}
 await eventually(async () => assert.equal(await cta(), 'rgb(209, 65, 49)', 'the preview button has exactly the pasted color'), 20000);
-await win.evaluate(() => window.builder.project.flush?.());
+await settled();
 await win.evaluate(() => window.builder.projects.close());
 await win.waitForSelector('.welcome');
 const reopened = await win.evaluate((d) => window.builder.projects.open(d), dir);
@@ -94,9 +126,15 @@ assert.ok(reopened.ok, `the project reopens: ${JSON.stringify(reopened)}`);
 await win.waitForSelector('.editor');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
 await win.locator('#dock-panel-styles').waitFor();
-await eventually(async () => assert.equal(await text().inputValue(), 'rgb(209, 65, 49)', 'the saved text is still there'));
+await eventually(async () => assert.equal(await text().inputValue(), 'rgb(209, 65, 49)', 'the saved RGB text is still there'));
 assert.equal(await picker().inputValue(), '#d14131', 'the reopened picker starts from the saved red, not black');
 assert.equal(await swatch(), 'rgb(209, 65, 49)', 'the reopened swatch shows the saved red');
+for (const c of reopenCases) {
+  const row = named(c.name);
+  await eventually(async () => assert.equal(await row.text.inputValue(), c.value, `${c.name}: the saved text is still there`));
+  assert.equal(await row.picker.inputValue(), c.start, `${c.name}: the reopened picker starts from the saved color, not black`);
+  assert.equal(await row.fill.evaluate((el) => getComputedStyle(el).backgroundColor), c.fill, `${c.name}: the reopened swatch shows the saved color`);
+}
 await pick('#b03a2e');
 await eventually(async () => assert.equal(await saved(), '#b03a2e', 'an adjustment on a reopened project saves'));
 await undo();
@@ -109,10 +147,16 @@ await eventually(async () => assert.equal(await picker().isDisabled(), false, 't
 await pick('#336699');
 await eventually(async () => assert.equal(await saved(), '#336699', 'a pick replaces the mix with a plain color'));
 
-step('a color the picker cannot read keeps its text and shuts the picker');
+step('a color the picker cannot read keeps its text, paints nothing, and a pick replaces it');
 await paste('currentcolor');
-await eventually(async () => assert.equal(await picker().isDisabled(), true, 'the picker is shut rather than starting from black'));
+await eventually(async () => assert.equal(await row().locator('.color-pick').getAttribute('class'), 'color-pick unpainted', 'the swatch shows it has nothing to paint'));
+assert.equal(await swatch(), 'rgba(0, 0, 0, 0)', 'nothing is painted for it');
+assert.equal(await picker().isDisabled(), false, 'the picker still opens, so the color can be replaced');
 assert.equal(await text().inputValue(), 'currentcolor', 'the text value is still editable');
+await pick('#336699');
+await eventually(async () => assert.equal(await saved(), '#336699', 'a pick replaces it with a plain color'));
+await paste('rgb(255, 0 0)');
+await eventually(async () => assert.equal(await swatch(), 'rgba(0, 0, 0, 0)', 'text that is not a color leaves nothing painted, not the color before it'));
 
 step('a color that follows another stays linked');
 await paste('rgba(209, 65, 49, 0.5)');

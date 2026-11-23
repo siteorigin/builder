@@ -78,7 +78,7 @@ function NewStyle({ tokens }: { tokens: TokenDef[] }) {
       ) : (
         <Field label="Value" controlId={`${uid}-value`}>
           <span className="row" style={{ gap: 6 }}>
-            {group === 'color' && <ColorPick className="md" value={value} onPick={setValue} replaceUnreadable label="Pick a colour" />}
+            {group === 'color' && <ColorPick className="md" value={value} onPick={setValue} label="Pick a colour" />}
             <input id={`${uid}-value`} className="input sm mono grow" value={value} placeholder={spec.placeholder} onChange={(e) => setValue(e.target.value)} />
           </span>
         </Field>

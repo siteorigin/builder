@@ -17,8 +17,9 @@ export interface Rgba {
 }
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
-const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
-const ANGLE = /^([+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?)(deg|grad|rad|turn)?$/i;
+// A decimal point needs a digit after it (CSS reads `5.` as invalid).
+const NUMBER = /^[+-]?(\d+(\.\d+)?|\.\d+)(e[+-]?\d+)?$/i;
+const ANGLE = /^([+-]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?)(deg|grad|rad|turn)?$/i;
 
 /** A channel's number, or its percentage of `full`; `none` is zero. Null when it is neither. */
 function channel(s: string, full: number): number | null {
@@ -72,30 +73,39 @@ function labToRgb(L: number, a: number, b: number): [number, number, number] {
   return [toSrgb(3.1338561 * x - 1.6168667 * y - 0.4906146 * z), toSrgb(-0.9787684 * x + 1.9161415 * y + 0.033454 * z), toSrgb(0.0719453 * x - 0.2289914 * y + 1.4052427 * z)];
 }
 
-function hslToRgb(h: number, s: number, l: number): [number, number, number] {
-  const sat = clamp(s, 0, 100) / 100;
-  const light = clamp(l, 0, 100) / 100;
+/** HSL to sRGB. The legacy comma syntax clamps saturation and lightness to 100%; the modern one lets them run past it and clips the channels. */
+function hslToRgb(h: number, s: number, l: number, legacy: boolean): [number, number, number] {
+  const sat = (legacy ? clamp(s, 0, 100) : Math.max(0, s)) / 100;
+  const light = (legacy ? clamp(l, 0, 100) : Math.max(0, l)) / 100;
   const f = (n: number) => {
     const k = (n + (((h % 360) + 360) % 360) / 30) % 12;
-    return 255 * (light - sat * Math.min(light, 1 - light) * Math.max(-1, Math.min(k - 3, 9 - k, 1)));
+    return clamp(255 * (light - sat * Math.min(light, 1 - light) * Math.max(-1, Math.min(k - 3, 9 - k, 1))), 0, 255);
   };
   return [f(0), f(8), f(4)];
 }
 
-/** The components of `fn(a b c / d)` or the legacy `fn(a, b, c, d)`, or null when it is neither. */
-function args(inner: string): { parts: string[]; alpha: string | undefined } | null {
+/**
+ * The components of `fn(a b c / d)` (modern: spaces, an optional slash alpha) or `fn(a, b, c)` / `fn(a, b, c, d)`
+ * (legacy: commas only). Mixed separators, empty fields and stray text are not CSS, so they give null.
+ */
+function args(inner: string): { parts: string[]; alpha: string | undefined; legacy: boolean } | null {
   if (/[()]/.test(inner) || /\bfrom\b/i.test(inner)) return null;
+  if (inner.includes(',')) {
+    if (inner.includes('/')) return null;
+    const parts = inner.split(',').map((x) => x.trim());
+    if (parts.length < 3 || parts.length > 4 || parts.some((x) => !x || /\s/.test(x))) return null;
+    return { parts: parts.slice(0, 3), alpha: parts[3], legacy: true };
+  }
   const slash = inner.split('/');
   if (slash.length > 2) return null;
-  const parts = slash[0].trim().split(/\s*,\s*|\s+/).filter(Boolean);
-  let alpha: string | undefined = slash[1]?.trim();
-  if (alpha === '') return null;
-  if (alpha === undefined && parts.length === 4) alpha = parts.pop();
-  else if (alpha !== undefined && parts.length === 4) return null;
-  return parts.length === 3 ? { parts, alpha } : null;
+  const parts = slash[0].trim().split(/\s+/);
+  const alpha = slash[1]?.trim();
+  if (parts.length !== 3 || parts.some((x) => !x) || (alpha !== undefined && (!alpha || /\s/.test(alpha)))) return null;
+  return { parts, alpha, legacy: false };
 }
 
-const done = (rgb: [number, number, number], a: number | null): Rgba | null => (a === null ? null : { r: rgb[0], g: rgb[1], b: rgb[2], a });
+/** The colour, unless a part was unreadable or the maths overflowed (a huge hue or chroma): nothing the picker can start from. */
+const done = (rgb: [number, number, number], a: number | null): Rgba | null => (a === null || !rgb.every(Number.isFinite) ? null : { r: rgb[0], g: rgb[1], b: rgb[2], a });
 
 /** A CSS colour as sRGB, or null when it is not one the parser can resolve on its own. */
 export function parseColor(value: string): Rgba | null {
@@ -115,17 +125,24 @@ export function parseColor(value: string): Rgba | null {
   const parsed = args(m[2]);
   if (!parsed) return null;
   const [p0, p1, p2] = parsed.parts;
+  const legacy = parsed.legacy;
+  // The comma syntax exists only for rgb() and hsl(), takes no `none`, and has its own channel rules.
+  if (legacy && (!/^(rgba?|hsla?)$/.test(m[1]) || [...parsed.parts, parsed.alpha ?? ''].some((x) => x.toLowerCase() === 'none'))) return null;
   const a = alphaOf(parsed.alpha);
   switch (m[1]) {
     case 'rgb':
     case 'rgba': {
+      // Legacy channels are all numbers or all percentages.
+      if (legacy && new Set(parsed.parts.map((x) => x.endsWith('%'))).size > 1) return null;
       const [r, g, b] = [channel(p0, 255), channel(p1, 255), channel(p2, 255)];
       return r === null || g === null || b === null ? null : done([clamp(r, 0, 255), clamp(g, 0, 255), clamp(b, 0, 255)], a);
     }
     case 'hsl':
     case 'hsla': {
+      // Legacy saturation and lightness are percentages.
+      if (legacy && !(p1.endsWith('%') && p2.endsWith('%'))) return null;
       const [h, sat, light] = [hueOf(p0), channel(p1, 100), channel(p2, 100)];
-      return h === null || sat === null || light === null ? null : done(hslToRgb(h, sat, light), a);
+      return h === null || sat === null || light === null ? null : done(hslToRgb(h, sat, light, legacy), a);
     }
     case 'oklab': {
       const [L, x, y] = [channel(p0, 1), channel(p1, 0.4), channel(p2, 0.4)];
@@ -170,13 +187,14 @@ export function opacityOf(value: string): number {
   return parseColor(value)?.a ?? 1;
 }
 
-/** An opacity as short CSS text: 0.5, 0.35, 0.0004, 0 (six decimals at most, no trailing zeros). */
-const alphaText = (a: number) => String(Number(clamp(a, 0, 1).toFixed(6)));
+/** An opacity as short CSS text (0.5, 0.35, 0.0004, 4e-7): ten significant digits, so a tiny alpha never becomes 0 or 1. */
+const alphaText = (a: number) => String(Number(clamp(a, 0, 1).toPrecision(10)));
 
 /**
- * The value to save when `picked` (#rrggbb) is chosen in the picker on top of `current`. An opaque or
- * unresolvable or fully transparent current value becomes the plain #rrggbb. A translucent one keeps its opacity and, where it
- * can, its notation: 8-digit hex stays hex, legacy rgba() stays rgba(), anything else becomes rgb(r g b / a).
+ * The value to save when `picked` (#rrggbb) is chosen in the picker on top of `current`. An opaque, unresolvable
+ * or empty current value, and the `transparent` keyword (which names no colour of its own), become the plain
+ * #rrggbb. A colour with alpha keeps its opacity, zero included, and where it can its notation: 8-digit hex stays
+ * hex, legacy rgba() stays rgba(), anything else becomes rgb(r g b / a).
  * Picking the colour the picker already showed returns `current` untouched, so nothing is rewritten.
  * `resolved` is the colour a browser made of `current` when `parseColor` could not (a `color-mix()`).
  */
@@ -186,9 +204,8 @@ export function colorFromPicker(current: string, picked: string, resolved?: Rgba
   const was = resolved ?? parseColor(current);
   const hex = toHex6(next);
   if (was && toHex6(was) === hex) return current;
-  // Nothing to preserve in a colour that is opaque, or so transparent that a pick would look like nothing happened.
-  if (!was || was.a >= 1 || was.a <= 0) return hex;
   const text = current.trim().toLowerCase();
+  if (!was || was.a >= 1 || text === 'transparent') return hex;
   const alpha = Math.round(was.a * 255);
   if (text.startsWith('#')) return `${hex}${alpha.toString(16).padStart(2, '0')}`;
   const [r, g, b] = [Math.round(next.r), Math.round(next.g), Math.round(next.b)];

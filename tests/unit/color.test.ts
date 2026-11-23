@@ -41,6 +41,20 @@ describe('parseColor', () => {
     expect(opacityOf('rgb(209, 65, 49)')).toBe(1);
     expect(pickerHex('rgb(100% 0% 0% / 50%)')).toBe('#ff0000');
     expect(pickerHex('rgb(none 0 0)')).toBe('#000000');
+    expect(pickerHex('rgb(none 255 0)')).toBe('#00ff00');
+    expect(pickerHex('rgb(5.5 10 20)')).toBe('#060a14');
+    expect(pickerHex('rgb(.5 1e1 +20)')).toBe('#010a14');
+    expect(pickerHex('rgb(10% 20 30)')).toBe('#1a141e');
+  });
+
+  it('refuses what CSS refuses, so the picker never starts from text the page would not paint', () => {
+    for (const v of [
+      'rgb(209, 65 49)', 'rgb(209 65, 49)', 'rgb(209,65,49,)', 'rgb(209,65,49 / .4)', 'rgb(209 65 49 .4)', 'rgb(209 65 49 / )', 'rgb(209 65 49 / 1 2)',
+      'rgb(10%, 20, 30)', 'rgb(NONE, 0, 0)', 'rgb(0, 0, 0, none)', 'rgb(5. 10 20)', 'rgb(1 2 3 / .4 / .5)',
+      'hsl(120, 50, 50)', 'hsl(120, none, 50%)', 'oklab(0.5, 0.1, 0.1)', 'lab(50, 10, 10)', 'oklch(0.5 0.1)', 'rgb()', 'rgb(, , )'
+    ]) {
+      expect(parseColor(v), v).toBeNull();
+    }
   });
 
   it('clamps what CSS clamps', () => {
@@ -59,6 +73,15 @@ describe('parseColor', () => {
     expect(pickerHex('hsl(-120 100% 50%)')).toBe('#0000ff');
     expect(pickerHex('hsl(0 0% 100%)')).toBe('#ffffff');
     expect(opacityOf('hsla(180, 100%, 50%, 0.3)')).toBe(0.3);
+    expect(pickerHex('hsl(120 50 50)')).toBe('#40bf40');
+  });
+
+  it('clamps legacy hsl() saturation and lightness, and clips the channels of the modern syntax', () => {
+    expect(pickerHex('hsl(30, 120%, 60%)')).toBe('#ff9933');
+    expect(pickerHex('hsl(30 120% 60%)')).toBe('#ff991f');
+    expect(pickerHex('hsl(30 200% 120%)')).toBe('#ccffff');
+    expect(pickerHex('hsl(30, 200%, 120%)')).toBe('#ffffff');
+    expect(pickerHex('hsl(30 -50% 50%)')).toBe('#808080');
   });
 
   it('reads the modern colour spaces, clamped into sRGB', () => {
@@ -67,6 +90,15 @@ describe('parseColor', () => {
     near('oklab(0.628 0.2249 0.1258)', '#ff0000', 2);
     near('lab(54.2905 80.8049 69.891)', '#ff0000', 2);
     near('lch(54.2905 106.8386 40.8526)', '#ff0000', 2);
+    // Mid-tones, where the transfer curve and the matrices matter (a red alone cannot tell them from linear scaling).
+    near('oklch(0.7 0.1 200)', '#40b1b7');
+    near('lab(60 -30 40)', '#6a9e45');
+    near('lch(70 40 280)', '#97a9f3');
+    // Percentages scale to each channel's reference range: 100% chroma is 0.4 in OKLCH, 125 in Lab, 150 in LCH.
+    expect(pickerHex('oklch(70% 25% 200)')).toBe(pickerHex('oklch(0.7 0.1 200)'));
+    expect(pickerHex('lab(60% -24% 32%)')).toBe(pickerHex('lab(60 -30 40)'));
+    expect(pickerHex('lch(70% 30% 280)')).toBe(pickerHex('lch(70 45 280)'));
+    expect(pickerHex('oklab(70% -25% 12.5%)')).toBe(pickerHex('oklab(0.7 -0.1 0.05)'));
     expect(pickerHex('oklch(1 0 0)')).toBe('#ffffff');
     expect(pickerHex('oklch(0 0 0)')).toBe('#000000');
     expect(pickerHex('lab(100 0 0)')).toBe('#ffffff');
@@ -80,6 +112,18 @@ describe('parseColor', () => {
     expect(parseColor('transparent')).toEqual({ r: 0, g: 0, b: 0, a: 0 });
     expect(pickerHex('white')).toBe('#ffffff');
     expect(pickerHex('BLACK')).toBe('#000000');
+    expect(opacityOf('white')).toBe(1);
+    expect(opacityOf('black')).toBe(1);
+    expect(opacityOf('transparent')).toBe(0);
+  });
+
+  it('gives null for numbers that overflow rather than a color with NaN channels', () => {
+    for (const v of ['hsl(1e308turn 100% 50%)', 'oklab(0.7 1e200 1e200)', 'oklch(0.7 1e308 40)', 'lab(50 1e308 1e308)', 'rgb(1e999 0 0)']) {
+      const c = parseColor(v);
+      expect(c === null || [c.r, c.g, c.b, c.a].every(Number.isFinite), v).toBe(true);
+    }
+    expect(parseColor('hsl(1e308turn 100% 50%)')).toBeNull();
+    expect(parseColor('oklab(0.7 1e200 1e200)')).toBeNull();
   });
 
   it('gives null, never black, for what it cannot resolve', () => {
@@ -96,6 +140,11 @@ describe('parseColor', () => {
       expect(validateStyleValue('color', v), v).toBeNull();
       expect(parseColor(v), v).not.toBeNull();
     }
+    // The editor's check is looser than CSS: these pass it, and the parser must not invent a color for them.
+    for (const v of ['rgb(209, 65 49)', '#abcde', 'rgb(209,65,49,)']) {
+      expect(validateStyleValue('color', v), v).toBeNull();
+      expect(parseColor(v), v).toBeNull();
+    }
     // What the editor accepts but only a browser can resolve stays unresolved here, on purpose.
     for (const v of ['currentcolor', 'color-mix(in srgb, #fff 50%, #000)']) {
       expect(validateStyleValue('color', v), v).toBeNull();
@@ -107,6 +156,8 @@ describe('parseColor', () => {
 describe('toHex6', () => {
   it('rounds each channel and ignores opacity', () => {
     expect(toHex6({ r: 209.4, g: 64.5, b: 48.6, a: 0.2 })).toBe('#d14131');
+    expect(toHex6({ r: 0, g: 127.5, b: 255, a: 1 })).toBe('#0080ff');
+    expect(toHex6({ r: -4, g: 300, b: 0.4, a: 1 })).toBe('#00ff00');
   });
 });
 
@@ -117,10 +168,15 @@ describe('colorFromPicker', () => {
     }
   });
 
-  it('saves a plain #rrggbb over a colour too transparent to see, so a pick is never invisible', () => {
+  it('saves a plain #rrggbb over the transparent keyword, which names no color of its own', () => {
     expect(colorFromPicker('transparent', '#c0392b')).toBe('#c0392b');
-    expect(colorFromPicker('rgb(0 0 0 / 0)', '#c0392b')).toBe('#c0392b');
-    expect(colorFromPicker('#00000000', '#c0392b')).toBe('#c0392b');
+    expect(colorFromPicker(' TRANSPARENT ', '#c0392b')).toBe('#c0392b');
+  });
+
+  it('keeps an explicit zero opacity, since the picker has no opacity control to bring it back', () => {
+    expect(colorFromPicker('rgb(0 0 0 / 0)', '#c0392b')).toBe('rgb(192 57 43 / 0)');
+    expect(colorFromPicker('rgba(0, 0, 0, 0)', '#c0392b')).toBe('rgba(192, 57, 43, 0)');
+    expect(colorFromPicker('#d1413100', '#0000ff')).toBe('#0000ff00');
   });
 
   it('saves a plain #rrggbb over a value it cannot resolve', () => {
@@ -138,6 +194,12 @@ describe('colorFromPicker', () => {
     expect(colorFromPicker('hsl(10 63% 50% / 0.2)', '#c0392b')).toBe('rgb(192 57 43 / 0.2)');
     expect(colorFromPicker('oklch(0.6 0.2 30 / 0.2)', '#c0392b')).toBe('rgb(192 57 43 / 0.2)');
     expect(colorFromPicker('rgb(209 65 49 / 0.0004)', '#c0392b')).toBe('rgb(192 57 43 / 0.0004)');
+    // A tiny alpha stays tiny: rounding it to 0 or 1 would change what the next pick does.
+    expect(colorFromPicker('rgb(209 65 49 / 0.0000004)', '#c0392b')).toBe('rgb(192 57 43 / 4e-7)');
+    expect(colorFromPicker('rgb(209 65 49 / 0.9999996)', '#c0392b')).toBe('rgb(192 57 43 / 0.9999996)');
+    expect(colorFromPicker('  RGBA(209, 65, 49, 0.5) ', '#c0392b')).toBe('rgba(192, 57, 43, 0.5)');
+    // A colour only a browser could resolve keeps its opacity too.
+    expect(colorFromPicker('color-mix(in srgb, #d14131 50%, transparent)', '#c0392b', { r: 209, g: 65, b: 49, a: 0.5 })).toBe('rgb(192 57 43 / 0.5)');
   });
 
   it('rewrites nothing when the picked colour is the one the picker showed', () => {
@@ -148,6 +210,7 @@ describe('colorFromPicker', () => {
 
   it('keeps the colour it was given for a picked value it cannot read', () => {
     expect(colorFromPicker('rgb(209, 65, 49)', 'not a color')).toBe('rgb(209, 65, 49)');
+    expect(colorFromPicker('rgb(209, 65, 49)', '#xyz')).toBe('rgb(209, 65, 49)');
   });
 });
 

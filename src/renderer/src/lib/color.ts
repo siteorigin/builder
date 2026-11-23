@@ -6,7 +6,7 @@ const SRGB = /^color\(srgb ([-+\d.e]+) ([-+\d.e]+) ([-+\d.e]+)(?: \/ ([-+\d.e]+%
 /** What the browser makes of a colour the parser leaves alone (a `color-mix()` of literals), as sRGB; null when it cannot say. */
 function browserColor(value: string): Rgba | null {
   // `currentcolor` and `var()` depend on where the colour is used: there is nothing to start a picker from.
-  if (typeof document === 'undefined' || /currentcolor|var\(|\bfrom\b/i.test(value)) return null;
+  if (typeof document === 'undefined' || /currentcolor|var\(/i.test(value)) return null;
   if (!probe) {
     probe = document.createElement('span');
     probe.setAttribute('aria-hidden', 'true');
