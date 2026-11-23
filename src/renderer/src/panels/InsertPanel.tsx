@@ -82,6 +82,19 @@ export function SectionSketch({ id }: { id: string }) {
       );
     case 'faq.list':
       return <span className="sketch">{[...Array(4)].map((_, i) => <i key={i} className="row-line" />)}</span>;
+    case 'data.table':
+      return (
+        <span className="sketch">
+          {bar('45%', 5, 'hi')}
+          {[...Array(4)].map((_, r) => (
+            <span key={r} className="sketch-table-row">
+              {[...Array(3)].map((_, c) => (
+                <i key={c} className={r === 0 ? 'hi' : ''} style={{ width: '28%', height: r === 0 ? 4 : 3 }} />
+              ))}
+            </span>
+          ))}
+        </span>
+      );
     case 'stats.row':
       return (
         <span className="sketch cols">

@@ -145,7 +145,7 @@ const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...SELECTION_TOOLS, 'locat
  * plain question to the author. Nothing that changes the site, measures the live preview or builds the project.
  */
 export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'locate_field', 'request_clarification'];
-export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'style_selected_element']);
+export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element']);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export const FOCUSED_WINDOW_TOKENS = 64_000;
@@ -443,6 +443,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       return runBrand(args as z.infer<typeof BRAND_ARGS>, host, callId);
     case 'update_selected_props':
     case 'edit_selected_list':
+    case 'edit_selected_table':
     case 'style_selected_element':
     case 'request_wider_scope':
       return runSelectionTool(name as keyof typeof SELECTION_ARGS, args, host, callId);

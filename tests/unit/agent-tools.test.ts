@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext } from '@shared/api';
-import type { ElementRef, InstanceNode, LinkValue, ListItem, ProjectState, PropSchema } from '@shared/types';
+import type { ElementRef, InstanceNode, LinkValue, ListItem, ProjectState, PropSchema, TableValue } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
@@ -19,6 +19,7 @@ import { checkExample, retrieveExamples } from '@agent/examples';
 import { contrastRatio, derivedBrandTokens } from '@agent/brand';
 import { ProjectSession } from '../../src/main/project/session';
 import { validateState } from '@engine/validate';
+import { installComponent, makeInstance } from '@engine/install';
 import { compileProject } from '../../src/main/compile';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[];
@@ -734,6 +735,44 @@ describe('selection tools', () => {
     expect(items[1]).toMatchObject({ title: 'Renamed', description: 'Added.' });
     // Without an image to choose, a focused run is not told how to choose one (#12).
     expect(adapter.requests[0].system).not.toContain('assetId');
+  });
+
+  it('changes one table cell, row or column by ID, never rewriting the rest (issue #179)', async () => {
+    let added = '';
+    const tableAt = (st: ProjectState) => nodeAt(st, pageAt(st, '/')!.rootIds.length - 1);
+    const { session, adapter, run } = await setup(
+      [
+        (req) => {
+          expect(req.tools.map((t) => t.name)).toContain('edit_selected_table');
+          return [call('t1', 'edit_selected_table', { prop: 'table', action: 'setCell', rowId: 'row_2', columnId: 'col_time', value: '19:00' })];
+        },
+        () => [call('t2', 'edit_selected_table', { prop: 'table', action: 'insertRow', cells: ['Friday', 'Raku', '17:00'] })],
+        (req) => {
+          added = lastResult(req).rowId;
+          return [call('t3', 'edit_selected_table', { prop: 'table', action: 'moveColumn', columnId: 'col_time', index: 0 })];
+        },
+        () => [call('t4', 'edit_selected_table', { prop: 'table', action: 'removeRow', rowId: 'row_gone' })],
+        () => finish()
+      ],
+      focused,
+      'business',
+      (s) => {
+        const def = s.components[installComponent(s, 'data.table')];
+        const node = makeInstance(def);
+        const home = s.pages[s.site.homePageId];
+        home.nodes[node.id] = node;
+        home.rootIds.push(node.id);
+      }
+    );
+    await run('Move the Wednesday class to 7pm and add a Friday raku class', { ...heroRef(session.state), nodeId: tableAt(session.state).id });
+    const t = tableAt(session.state).props.table as TableValue;
+    expect(added).toMatch(/^row_/);
+    expect(t.columns.map((c) => c.id)).toEqual(['col_time', 'col_day', 'col_workshop']);
+    expect(t.rows.map((r) => r.id)).toEqual(['row_1', 'row_2', 'row_3', added]);
+    expect(t.rows[1].cells).toEqual({ col_day: 'Wednesday', col_workshop: 'Hand building', col_time: '19:00' });
+    expect(t.rows[3].cells).toEqual({ col_day: 'Friday', col_workshop: 'Raku', col_time: '17:00' });
+    // A step naming a row the table does not have is refused with the reason, and changes nothing.
+    expect(JSON.stringify(lastResult(adapter.requests[4]))).toContain('no row has the ID \\"row_gone\\"');
   });
 
   it('styles one part at one screen size', async () => {

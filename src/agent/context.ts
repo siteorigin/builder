@@ -3,14 +3,44 @@ import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, Pr
 import { isBinding } from '@shared/types';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
 import { displayName } from '@engine/tree';
+import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { teaserFields } from '@shared/page-teasers';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
+const isEntry = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const isTable = (v: unknown): v is { columns: unknown[]; rows: unknown[] } => isEntry(v) && Array.isArray(v.columns) && Array.isArray(v.rows) && Object.keys(v).length === 2;
+/** Rows of a table shown in a summary; the rest are counted. */
+const TABLE_ROWS_SHOWN = 20;
+
+/**
+ * A table as its column IDs and names, then each row's ID and texts in column order. Rows past the first few are
+ * counted, and a summary that leaves anything out says so, so it is never written back as the whole table.
+ */
+function summarizeTable(t: { columns: unknown[]; rows: unknown[] }) {
+  const columns = t.columns.filter(isEntry).map((c) => ({ id: c.id, label: clip(String(c.label ?? ''), 80) }));
+  let clipped = false;
+  const text = (v: unknown) => {
+    const s = v === undefined || v === null ? '' : String(v);
+    if (s.length > 220) clipped = true;
+    return clip(s, 220);
+  };
+  const rows = t.rows.slice(0, TABLE_ROWS_SHOWN).filter(isEntry).map((r) => ({ id: r.id, cells: columns.map((c) => text(isEntry(r.cells) ? r.cells[String(c.id)] : '')) }));
+  const hidden = Math.max(0, t.rows.length - TABLE_ROWS_SHOWN);
+  if (!hidden && !clipped) return { columns, rows };
+  return {
+    columns,
+    rows,
+    ...(hidden ? { rowsNotShown: hidden } : {}),
+    note: 'Partial view. Change cells, rows or columns by ID with instance.editTable; writing this back as the whole table would lose what it leaves out.'
+  };
+}
+
 function summarizeValue(v: unknown, pages: RichPages, depth = 0): unknown {
   if (typeof v === 'string') return clip(v, 220);
+  if (isTable(v)) return summarizeTable(v);
   if (Array.isArray(v)) {
     // Rich text reads as the same short text form the tools accept.
     if (v.length && v.every(isRichBlock)) {
@@ -138,6 +168,7 @@ export function propSchemaSummary(schema: Record<string, PropSchema>) {
         ...(s.pageTeaser ? { fromLinkedPage: { link: s.pageTeaser.link, ...Object.fromEntries(teaserFields(s.pageTeaser).map(([f, what]) => [f, `page ${what} when empty`])) } } : {})
       };
     else if (s.type === 'enum') out[k] = { type: 'enum', label: s.label, options: s.options.map((o) => o.value) };
+    else if (s.type === 'table') out[k] = { type: 'table', label: s.label, shape: TABLE_SIGNATURE };
     else out[k] = { type: s.type, label: s.label };
   }
   return out;
@@ -159,9 +190,13 @@ export function componentDetail(def: ComponentDefinition) {
   };
 }
 
+/** How a table is written whole, and its limits. */
+const TABLE_SIGNATURE = `table{columns:string[], rows:string[][]} max ${TABLE_LIMITS.columns} columns, ${TABLE_LIMITS.rows} rows`;
+
 /** One property as a short type signature: "string", "link", "enum(a|b)", "list<title:string, icon:icon>". */
 function propSignature(s: PropSchema): string {
   if (s.type === 'enum') return `enum(${s.options.map((o) => o.value).join('|')})`;
+  if (s.type === 'table') return TABLE_SIGNATURE;
   if (s.type === 'list') return `list<${Object.entries(s.fields).map(([f, fs]) => `${f}:${propSignature(fs)}`).join(', ')}>${s.max ? ` max ${s.max}` : ''}`;
   return s.type;
 }

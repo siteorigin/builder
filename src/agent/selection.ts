@@ -9,6 +9,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, Pr
 import type { EditOperation } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
 import { getTree } from '@engine/tree';
+import { TABLE_ACTIONS, TABLE_LIMITS, type TableAction } from '@engine/table';
 import { checkProps, fieldError, type FieldIssue } from './macros';
 import { propJsonSchema, propsJsonSchema, type JsonSchema } from './propschema';
 import type { ToolDefinition } from './types';
@@ -23,6 +24,15 @@ export const SELECTION_ARGS = {
     index: z.number().int().min(0).optional(),
     fields: z.record(z.string(), z.unknown()).optional()
   }),
+  edit_selected_table: z.object({
+    prop: z.string(),
+    action: z.enum(TABLE_ACTIONS as [TableAction, ...TableAction[]]),
+    rowId: z.string().optional(),
+    columnId: z.string().optional(),
+    index: z.number().int().min(0).optional(),
+    value: z.string().optional(),
+    cells: z.array(z.string()).optional()
+  }),
   style_selected_element: z.object({
     partId: z.string().optional(),
     scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
@@ -34,6 +44,8 @@ export const SELECTION_ARGS = {
 export const SELECTION_DESCRIPTIONS: Record<keyof typeof SELECTION_ARGS, string> = {
   update_selected_props: 'Change the content of the selected element. Send only the properties that change.',
   edit_selected_list: 'Change one item of a list in the selected element: update, insert, remove or move it.',
+  edit_selected_table:
+    'Change one cell, row or column of a table in the selected element, by the row and column IDs in its content: set a cell, rename a column, or insert, remove or move a row or column. Other cells stay where they are.',
   style_selected_element: 'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}.',
   request_wider_scope: 'Ask the user for permission to change more than the selected element, when the request cannot be done inside it.'
 };
@@ -143,6 +155,26 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
       }
     });
   }
+  const tables = Object.entries(r.properties).filter(([, s]) => s.type === 'table');
+  if (tables.length && r.node.kind === 'instance')
+    tools.push({
+      name: 'edit_selected_table',
+      description: SELECTION_DESCRIPTIONS.edit_selected_table,
+      parameters: {
+        type: 'object',
+        properties: {
+          prop: { type: 'string', enum: tables.map(([k]) => k) },
+          action: { type: 'string', enum: [...TABLE_ACTIONS] },
+          rowId: { type: 'string', description: 'The row to change: setCell, removeRow, moveRow.' },
+          columnId: { type: 'string', description: 'The column to change: setCell, renameColumn, removeColumn, moveColumn.' },
+          index: { type: 'integer', minimum: 0, description: 'Position for insert or move. Inserts default to the end.' },
+          value: { type: 'string', maxLength: TABLE_LIMITS.cell, description: "setCell: the cell's text. renameColumn and insertColumn: the column's name." },
+          cells: { type: 'array', maxItems: TABLE_LIMITS.columns, items: { type: 'string', maxLength: TABLE_LIMITS.cell }, description: "insertRow: the new row's cells in column order." }
+        },
+        required: ['prop', 'action'],
+        additionalProperties: false
+      }
+    });
   const parts = r.def ? Object.keys(r.def.parts) : [];
   tools.push({
     name: 'style_selected_element',
@@ -243,6 +275,19 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
             ? { type: 'instance.listRemove', ...base, itemId: itemId! }
             : { type: 'instance.listMove', ...base, itemId: itemId!, index: a.index! };
     return applySelected([op], host, `Edit ${schema.label}`, callId);
+  }
+
+  if (name === 'edit_selected_table') {
+    const a = args as z.infer<(typeof SELECTION_ARGS)['edit_selected_table']>;
+    const schema = Object.hasOwn(r.properties, a.prop) ? r.properties[a.prop] : undefined;
+    if (r.node.kind !== 'instance' || schema?.type !== 'table') return fieldError([{ field: 'prop', message: `"${a.prop}" is not a table here` }], note);
+    // The engine checks the row and column against the table as it is when the step lands.
+    const op: EditOperation = { type: 'instance.editTable', owner, nodeId, prop: a.prop, action: a.action };
+    for (const k of ['rowId', 'columnId', 'index', 'value', 'cells'] as const) if (a[k] !== undefined) Object.assign(op, { [k]: a[k] });
+    const res = await applySelected([op], host, `Edit ${schema.label}`, callId);
+    // A new row or column's ID, for the next step that fills it in.
+    const made = res.ok ? (res.results?.[0] as { rowId?: string; columnId?: string } | undefined) : undefined;
+    return made?.rowId || made?.columnId ? { ...res, content: { ...(res.content as Record<string, unknown>), ...made } } : res;
   }
 
   const a = args as z.infer<(typeof SELECTION_ARGS)['style_selected_element']>;

@@ -31,7 +31,8 @@ const COMPONENTS = [
   'intro.page',
   'content.media',
   'cta.banner',
-  'content.pages'
+  'content.pages',
+  'data.table'
 ] as const;
 type ComponentId = (typeof COMPONENTS)[number];
 
@@ -422,5 +423,73 @@ describe('content.pages', () => {
     expect(out).not.toMatch(EMPTY_HEADING);
     // With no pages chosen yet the section is its heading alone: no empty list.
     expect(authoredHtml('content.pages', { heading: 'Projects', items: [] })).not.toContain('<ul');
+  });
+});
+
+describe('data.table', () => {
+  const table = {
+    columns: [
+      { id: 'col_day', label: 'Day' },
+      { id: 'col_workshop', label: 'Workshop' },
+      { id: 'col_time', label: 'Start time' }
+    ],
+    rows: [
+      { id: 'row_1', cells: { col_day: 'Monday', col_workshop: 'Wheel throwing', col_time: '10:00' } },
+      { id: 'row_2', cells: { col_day: 'Wednesday', col_workshop: 'Hand building', col_time: '18:30' } },
+      { id: 'row_4', cells: { col_day: 'Friday', col_workshop: 'Raku', col_time: '17:00' } }
+    ]
+  };
+  /** Markup without Svelte's scoped-style classes, which say nothing about the structure. */
+  const bare = (out: string) => out.replace(/ class="svelte-[a-z0-9]+"/g, '').replace(/ svelte-[a-z0-9]+(?=")/g, '');
+  const rendered = (props: Record<string, unknown>) => bare(authoredHtml('data.table', props));
+  const rowsOf = (out: string) => tags(tags(out, 'tbody')[0], 'tr').map((tr) => [...tr.matchAll(/<(th|td)\b([^>]*)>([^<]*)<\/\1>/g)].map((m) => `${m[1]}${m[2]}:${m[3]}`));
+
+  it('puts every column name in a header cell over its cells, in column order (issue #179)', () => {
+    const out = rendered({ table, caption: 'Weekly workshops' });
+    expect(tags(tags(out, 'thead')[0], 'th')).toEqual(['Day', 'Workshop', 'Start time']);
+    expect(out.match(/<th scope="col">/g)).toHaveLength(3);
+    expect(rowsOf(out)).toEqual([
+      ['td:Monday', 'td:Wheel throwing', 'td:10:00'],
+      ['td:Wednesday', 'td:Hand building', 'td:18:30'],
+      ['td:Friday', 'td:Raku', 'td:17:00']
+    ]);
+    // A moved column moves its cells with it.
+    const moved = rendered({ table: { ...table, columns: [table.columns[2], table.columns[0], table.columns[1]] } });
+    expect(rowsOf(moved)[0]).toEqual(['td:10:00', 'td:Monday', 'td:Wheel throwing']);
+  });
+
+  it('names each row by its first cell when row headings are on', () => {
+    const out = rendered({ table, rowHeaders: true });
+    expect(rowsOf(out).map((r) => r[0])).toEqual(['th scope="row":Monday', 'th scope="row":Wednesday', 'th scope="row":Friday']);
+    expect(rowsOf(out)[0].slice(1)).toEqual(['td:Wheel throwing', 'td:10:00']);
+  });
+
+  it('scrolls inside a focusable region named by the caption, or by the heading without one', () => {
+    const out = rendered({ table, caption: 'Weekly workshops', heading: 'Timetable' });
+    const region = out.match(/<div class="[^"]*so-table__scroll[^"]*"([^>]*)>/)![1];
+    expect(region).toContain('role="region"');
+    expect(region).toContain('tabindex="0"');
+    const ref = region.match(/aria-labelledby="([^"]+)"/)![1];
+    expect(out).toMatch(new RegExp(`<caption id="${ref}">Weekly workshops</caption>`));
+    const uncaptioned = rendered({ table, caption: '', heading: 'Timetable' });
+    expect(uncaptioned).not.toContain('<caption');
+    expect(uncaptioned.match(/<div class="[^"]*so-table__scroll[^"]*"([^>]*)>/)![1]).toContain('aria-label="Timetable"');
+    const nameless = rendered({ table, caption: '', heading: '' });
+    expect(nameless.match(/<div class="[^"]*so-table__scroll[^"]*"([^>]*)>/)![1]).toContain('aria-label="Table"');
+    expect(nameless).not.toMatch(EMPTY_HEADING);
+  });
+
+  it('keeps the page from scrolling sideways: only the table region scrolls', () => {
+    const source = bundle.files.get(defFile(bundle.defs['data.table']))!;
+    expect(source).toMatch(/\.so-table__scroll\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/);
+    expect(source).toMatch(/\.so-table__inner\s*\{[^}]*min-width:\s*0/);
+  });
+
+  it('shows text as text, and a hand-edited odd table without failing', () => {
+    const odd = rendered({ table: { columns: [{ id: 'col_a', label: '<b>A & {B}</b>' }], rows: [{ id: 'row_1', cells: { col_a: '1 < 2 & {x}' } }] } });
+    expect(odd).toContain('<th scope="col">&lt;b>A &amp; {B}&lt;/b></th>');
+    expect(odd).toContain('<td>1 &lt; 2 &amp; {x}</td>');
+    expect(() => html('data.table', { table: { columns: [null, { id: 'col_a', label: 'A' }], rows: [{ id: 'row_1', cells: null }, null] } })).not.toThrow();
+    expect(() => html('data.table', { table: null })).not.toThrow();
   });
 });
