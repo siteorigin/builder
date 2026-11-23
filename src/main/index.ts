@@ -485,6 +485,8 @@ let quitState: 'idle' | 'asking' | 'closing' | 'done' = 'idle';
 app.on('before-quit', (e) => {
   if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing)) return;
   e.preventDefault();
+  // Quit again while the editor's question is open: re-ask, which brings back Wait or Leave Anyway if it hung.
+  if (quitState === 'asking') void controller.mayLeave();
   if (quitState !== 'idle') return;
   quitState = 'asking';
   void controller.mayLeave().then(async (ok) => {

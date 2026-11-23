@@ -118,6 +118,7 @@ export function createLeaveGate(opts: LeaveGateOptions) {
     },
     /** The editor window closed or its page crashed: nothing it held can be saved, so leaving goes ahead. */
     editorGone() {
+      hung = false;
       end(true);
     },
     /** The editor page stopped responding (it hung, perhaps with the author's question open): ask the person
@@ -142,6 +143,7 @@ export function createLeaveGate(opts: LeaveGateOptions) {
     /** The editor page was replaced (reloaded) mid-question: the request it never answered is dropped, and
      *  the action that asked does not go ahead; asking again reaches the new page. */
     editorReplaced() {
+      hung = false;
       end(false);
     },
     get pending() {
