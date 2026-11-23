@@ -1,144 +1,582 @@
-import { useState } from 'react';
-import { ArrowLeft, ImagePlus, Trash2 } from 'lucide-react';
-import { api, applyOps, toast, useStore } from '../store';
-import { Field, DraftInput } from '../components/ui';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, ChevronDown, ChevronRight, Component, FileText, Globe, ImageIcon, ImagePlus, Info, PanelTop, Replace, Search, Trash2, Upload } from 'lucide-react';
+import { allTrees, displayName } from '@engine/tree';
+import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
+import { api, applyOps, getState, setState, toast, useStore } from '../store';
+import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
 import { assetUrl } from '../lib/model';
+import { openSiteStyles, selectPage } from '../lib/actions';
+
+/** Above this an image is worth flagging: pages load smaller copies, but the original still ships with the site. */
+const LARGE = 1_500_000;
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+function formatBytes(b: number): string {
+  if (b < 1024) return plural(b, 'byte', 'bytes');
+  if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatType(mime: string): string {
+  if (mime === 'image/svg+xml') return 'SVG';
+  return mime.replace(/^image\//, '').toUpperCase();
+}
+
+/** Logos, banners and extreme shapes are shown whole; ordinary photos fill the tile. Formats that can be
+ *  transparent get a checker behind the picture itself, so it shows only through transparent pixels. */
+function fitFor(a: AssetRecord): { contain: boolean; alpha: boolean } {
+  const ratio = a.width && a.height ? a.width / a.height : 1;
+  return { contain: a.mime === 'image/svg+xml' || ratio > 1.8 || ratio < 0.56, alpha: /svg|png|webp|gif|avif/.test(a.mime) };
+}
+
+const nameOf = (a: AssetRecord) => a.name.trim() || 'Untitled image';
+/** Two lines of a tile hold about 30 characters. A longer name keeps its first and last words, since versions
+ *  and sizes live at the end, cut at word boundaries where there are any. */
+function shortName(name: string): string {
+  if (name.length <= 30) return name;
+  let head = name.slice(0, 14);
+  if (head.lastIndexOf(' ') > 6) head = head.slice(0, head.lastIndexOf(' '));
+  const space = name.lastIndexOf(' ', name.length - 6);
+  const tail = space > head.length && name.length - space - 1 <= 13 ? name.slice(space + 1) : name.slice(-11);
+  return `${head.trimEnd()} … ${tail.trimStart()}`;
+}
+
+/** An Undo on a toast only undoes the edit it describes: once anything else has happened, History is the way back. */
+const undoIfLatest = (label: string) => () => {
+  if (getState().snapshot?.history.undoLabel === label) void api.project.undo();
+  else toast(`Other changes came after that. Open History to undo “${label}”.`, 'info', { label: 'History', run: () => setState({ modal: { kind: 'history' } }) });
+};
+
+interface Place {
+  key: string;
+  icon: 'page' | 'shell' | 'component' | 'site';
+  where: string;
+  what?: string;
+  count: number;
+  go?: () => void;
+}
+
+/** Every place an image is used, by the same rules as the engine's usage count. */
+function placesOf(state: ProjectState, assetId: string): Place[] {
+  const count = (v: unknown): number => {
+    if (Array.isArray(v)) return v.reduce<number>((n, x) => n + count(x), 0);
+    if (!v || typeof v !== 'object') return 0;
+    let n = (v as { assetId?: unknown }).assetId === assetId ? 1 : 0;
+    for (const x of Object.values(v)) n += count(x);
+    return n;
+  };
+  const out: Place[] = [];
+  const reveal = (owner: OwnerRef, nodeId: string) => () => {
+    if (owner.kind === 'page') selectPage(owner.id);
+    setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true });
+  };
+  for (const t of allTrees(state)) {
+    for (const n of Object.values(t.tree.nodes)) {
+      const c = count(n);
+      if (!c) continue;
+      const what = displayName(state, n);
+      const key = `${t.owner.kind}/${t.owner.id}/${n.id}`;
+      if (t.owner.kind === 'page') out.push({ key, icon: 'page', where: t.label, what, count: c, go: reveal(t.owner, n.id) });
+      else if (t.owner.kind === 'shell') out.push({ key, icon: 'shell', where: `Shared ${t.label.toLowerCase()}`, what, count: c, go: reveal(t.owner, n.id) });
+      else out.push({ key, icon: 'component', where: `${t.label} design`, what, count: c });
+    }
+  }
+  for (const d of Object.values(state.components)) {
+    const c = count(d.properties);
+    if (c) out.push({ key: `default/${d.id}`, icon: 'component', where: `${d.name} default`, what: 'Starting image for new copies', count: c });
+  }
+  for (const p of Object.values(state.pages)) {
+    const c = count(p.seo) + (p.seo.socialImage === assetId ? 1 : 0);
+    if (c) out.push({ key: `seo/${p.id}`, icon: 'page', where: p.title, what: 'Sharing image', count: c, go: () => selectPage(p.id) });
+  }
+  if (state.site.favicon === assetId) out.push({ key: 'favicon', icon: 'site', where: 'Site', what: 'Browser tab icon', count: 1, go: openSiteStyles });
+  if (state.site.socialImage === assetId) out.push({ key: 'social', icon: 'site', where: 'Site', what: 'Sharing image', count: 1, go: openSiteStyles });
+  return out;
+}
+
+const PLACE_ICON = { page: FileText, shell: PanelTop, component: Component, site: Globe };
+
+/** The picture, once it has loaded: the transparency checker waits for it, and a file that will not load shows a glyph. */
+function Picture({ a, devUrl, lazy }: { a: AssetRecord; devUrl: string | null; lazy?: boolean }) {
+  const src = devUrl ? assetUrl(devUrl, a.file) : null;
+  const [load, setLoad] = useState<'wait' | 'ok' | 'error'>('wait');
+  useEffect(() => setLoad('wait'), [src]);
+  if (!src || load === 'error') return <ImageIcon className="asset-noimg" aria-hidden="true" />;
+  return <img className={fitFor(a).alpha && load === 'ok' ? 'alpha' : undefined} src={src} alt="" loading={lazy ? 'lazy' : undefined} draggable={false} onLoad={() => setLoad('ok')} onError={() => setLoad('error')} />;
+}
+
+function Thumb({ a, devUrl }: { a: AssetRecord; devUrl: string | null }) {
+  return (
+    <span className={`asset-thumb${fitFor(a).contain ? ' contain' : ''}`}>
+      <Picture a={a} devUrl={devUrl} lazy />
+    </span>
+  );
+}
+
+/** Arrow keys, Home and End move between tiles by row and column; Tab still walks them in order. */
+function gridKeys(e: React.KeyboardEvent<HTMLElement>) {
+  const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('[data-asset]')];
+  const i = tiles.indexOf(document.activeElement as HTMLElement);
+  if (i < 0 || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+  const cols = tiles.filter((t) => t.offsetTop === tiles[0].offsetTop).length || 1;
+  const to = ({ ArrowLeft: i - 1, ArrowRight: i + 1, ArrowUp: i - cols, ArrowDown: i + cols, Home: 0, End: tiles.length - 1 } as Record<string, number>)[e.key];
+  if (to === undefined) return;
+  e.preventDefault();
+  tiles[Math.max(0, Math.min(tiles.length - 1, to))].focus();
+}
 
 export function AssetsPanel() {
   const snap = useStore((s) => s.snapshot);
   const runtime = useStore((s) => s.runtime);
+  const narrow = useStore((s) => s.leftWidth < 240);
   const [over, setOver] = useState(false);
+  const dragDepth = useRef(0);
   const [selected, setSelected] = useState<string | null>(null);
+  const [replacing, setReplacing] = useState(false);
+  const replaceSession = useRef(0);
+  const [q, setQ] = useState('');
+  const [pickQ, setPickQ] = useState('');
+  const [filter, setFilter] = useState<'all' | 'unused'>('all');
+  const [importing, setImporting] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [allPlaces, setAllPlaces] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const assetsDoc = snap?.state.assets.assets;
+  const assets = useMemo(() => Object.values(assetsDoc ?? {}).sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [assetsDoc]);
+  const sel = selected && assetsDoc ? (assetsDoc[selected] ?? null) : null;
+  const places = useMemo(() => (snap && sel ? placesOf(snap.state, sel.id) : []), [snap, sel]);
+  useEffect(() => {
+    setNameError(null);
+    setAllPlaces(false);
+  }, [selected]);
+  // A pending "Import a replacement" never applies after the panel has gone.
+  useEffect(() => () => void replaceSession.current++, []);
+  // An image removed elsewhere (undo, the AI) closes its details rather than leaving them blank.
+  useEffect(() => {
+    if (selected && assetsDoc && !assetsDoc[selected]) {
+      replaceSession.current++;
+      const hadFocus = document.activeElement === document.body || !!document.activeElement?.closest('.asset-host');
+      setSelected(null);
+      setReplacing(false);
+      if (hadFocus) requestAnimationFrame(() => (document.querySelector<HTMLElement>('.asset-tools input') ?? document.querySelector<HTMLElement>('.asset-drop'))?.focus());
+    }
+  }, [selected, assetsDoc]);
+  if (!snap) return null;
+  const usage = snap.assetUsage;
+  const devUrl = runtime.state === 'ready' ? runtime.url : null;
+  const unused = assets.filter((a) => !usage[a.id]);
+  const query = replacing ? pickQ : q;
+  const needle = query.trim().toLowerCase();
+  const matches = (a: AssetRecord) => !needle || `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle);
+  const found = assets.filter((a) => matches(a) && !(replacing && a.id === sel?.id));
+  const foundUnused = found.filter((a) => !usage[a.id]);
+  const mode = unused.length && !replacing ? filter : 'all';
+  const shown = mode === 'unused' ? foundUnused : found;
+
+  /** Focus moves to the tile (when it is still shown), else search, else the empty state's Add images. */
+  const focusTile = (id?: string | null) =>
+    requestAnimationFrame(() => {
+      const el = (id && document.querySelector<HTMLElement>(`[data-asset="${id}"]`)) || searchRef.current || document.querySelector<HTMLElement>('.asset-drop');
+      el?.focus();
+    });
   const back = () => {
     const id = selected;
     setSelected(null);
-    requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-asset="${id}"]`)?.focus());
+    setReplacing(false);
+    focusTile(id);
   };
-  if (!snap) return null;
-  const assets = Object.values(snap.state.assets.assets).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const devUrl = runtime.state === 'ready' ? runtime.url : null;
-  const sel = selected ? snap.state.assets.assets[selected] : null;
-  const unused = assets.filter((a) => !snap.assetUsage[a.id]);
+  const openReplace = () => {
+    replaceSession.current++;
+    setPickQ('');
+    setReplacing(true);
+  };
+  const closeReplace = () => {
+    replaceSession.current++;
+    setReplacing(false);
+    requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-replace-open')?.focus());
+  };
 
+  /** Import through the app's picker (no paths) or dropped files, and say exactly what arrived. */
   const importFiles = async (paths?: string[]) => {
-    const r = await api.project.importAssets(paths);
-    if (r.message) toast(r.message, r.ok ? 'info' : 'error');
-    else if (r.assetIds.length) toast(`Imported ${r.assetIds.length} image${r.assetIds.length === 1 ? '' : 's'}.`);
+    const before = new Set(Object.keys(getState().snapshot?.state.assets.assets ?? {}));
+    setImporting(true);
+    try {
+      const r = await api.project.importAssets(paths).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The images couldn’t be added: ${e.message}` }));
+      const added = r.assetIds.filter((id) => !before.has(id));
+      const already = r.assetIds.length - added.length;
+      const parts = [added.length ? `Added ${plural(added.length, 'image', 'images')}.` : '', already ? `${plural(already, 'image was', 'images were')} already here.` : '', r.message ?? ''].filter(Boolean);
+      if (parts.length) toast(parts.join(' '), r.message && !added.length ? 'error' : 'info');
+      return { ids: r.assetIds, added, failed: !!r.message };
+    } finally {
+      setImporting(false);
+    }
   };
+  /** Adding keeps the view (details, search, filter) as it is; the toast says what arrived. */
+  const addImages = async (paths?: string[]) => {
+    if (importing) return;
+    const wasEmpty = assets.length === 0;
+    const session = replaceSession.current;
+    const { added } = await importFiles(paths);
+    if (!added.length) return;
+    if (replacing && replaceSession.current === session) {
+      setPickQ('');
+      focusTile(added[0]);
+    } else if (wasEmpty) requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-add')?.focus());
+  };
+
+  const replaceWith = async (withId: string) => {
+    if (!sel || withId === sel.id) return;
+    const n = places.length || usage[sel.id] || 0;
+    const target = getState().snapshot?.state.assets.assets[withId];
+    const label = `Replace ${nameOf(sel)}`;
+    if (await applyOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], label)) {
+      replaceSession.current++;
+      setReplacing(false);
+      toast(`${target ? nameOf(target) : 'The new image'} now shows in ${n === 1 ? 'its place' : `all ${n} places`} instead of ${nameOf(sel)}.`, 'info', { label: 'Undo', run: undoIfLatest(label) });
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
+    }
+  };
+  const removeOne = async (a: AssetRecord) => {
+    const i = shown.findIndex((x) => x.id === a.id);
+    const next = shown[i + 1] ?? shown[i - 1];
+    const label = `Remove ${nameOf(a)}`;
+    if (await applyOps([{ type: 'asset.remove', assetId: a.id }], label)) {
+      setSelected(null);
+      toast(`Removed ${nameOf(a)}.`, 'info', { label: 'Undo', run: undoIfLatest(label) });
+      focusTile(next?.id);
+    }
+  };
+  const removeMany = async (list: AssetRecord[]) => {
+    const label = list.length === 1 ? `Remove ${nameOf(list[0])}` : `Remove ${list.length} unused images`;
+    if (await applyOps(list.map((a) => ({ type: 'asset.remove' as const, assetId: a.id })), label)) {
+      toast(`Removed ${plural(list.length, 'unused image', 'unused images')}.`, 'info', { label: 'Undo', run: undoIfLatest(label) });
+      if (list.length === unused.length) setFilter('all');
+      focusTile(null);
+    }
+  };
+
+  /** Escape leaves the details (or the replace picker), unless it is reverting a field or clearing a search. */
+  const onEscape = (fn: () => void) => (e: React.KeyboardEvent) => {
+    const t = e.target as HTMLInputElement;
+    if (e.key !== 'Escape' || t.matches('textarea, input:not([type="search"])') || (t.matches('input') && t.value)) return;
+    e.stopPropagation();
+    fn();
+  };
+
+  const isFileDrag = (e: React.DragEvent) => [...e.dataTransfer.types].includes('Files');
+  const dropProps = {
+    onDragEnter: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      dragDepth.current++;
+      setOver(true);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!over) setOver(true);
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (!dragDepth.current) setOver(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      dragDepth.current = 0;
+      setOver(false);
+      const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
+      if (paths.length) void addImages(paths);
+    }
+  };
+
+  const grid = (onPick: (a: AssetRecord) => void, label: string) => (
+    <div className="asset-grid" role="group" aria-label={label} onKeyDown={gridKeys}>
+      {shown.map((a) => {
+        const big = a.bytes > LARGE;
+        const name = nameOf(a);
+        return (
+          <button key={a.id} data-asset={a.id} className="asset-tile" onClick={() => onPick(a)} aria-label={big ? `${name}, large file, ${formatBytes(a.bytes)}` : name} title={big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}>
+            <Thumb a={a} devUrl={devUrl} />
+            {big && (
+              <span className="asset-size" aria-hidden="true">
+                <Info />
+                {formatBytes(a.bytes)}
+              </span>
+            )}
+            <span className="asset-name">{shortName(name)}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+  const noMatches = (
+    <div className="asset-nomatch">
+      <p>
+        {needle && mode === 'unused' && found.length ? (
+          <>No unused images match “{query.trim()}”.</>
+        ) : needle ? (
+          <>No images match “{query.trim()}”.</>
+        ) : replacing ? (
+          'There are no other images in this project yet. Import one above.'
+        ) : (
+          'Every image is in use.'
+        )}
+      </p>
+      {needle && mode === 'unused' && found.length > 0 && (
+        <button className="btn btn-sm" onClick={() => setFilter('all')}>
+          Show all {found.length}
+        </button>
+      )}
+      {needle && (
+        <button
+          className="btn btn-sm"
+          onClick={() => {
+            (replacing ? setPickQ : setQ)('');
+            searchRef.current?.focus();
+          }}
+        >
+          Clear search
+        </button>
+      )}
+    </div>
+  );
+  const browseTools = (
+    <div className="asset-tools">
+      <div className="search">
+        <Search />
+        <input ref={searchRef} className="input" type="search" placeholder="Search images" value={query} onChange={(e) => (replacing ? setPickQ : setQ)(e.target.value)} aria-label="Search images by name or description" />
+      </div>
+      {!replacing && unused.length > 0 && (
+        <Segmented
+          full
+          label="Show"
+          value={mode}
+          onChange={setFilter}
+          options={[
+            { value: 'all', label: <>All <span className="asset-count">{found.length}</span></> },
+            { value: 'unused', label: <>Unused <span className="asset-count">{foundUnused.length}</span></> }
+          ]}
+        />
+      )}
+      <span className="sr-only" role="status">
+        {needle ? `${plural(shown.length, 'image matches', 'images match')}` : ''}
+      </span>
+    </div>
+  );
+
+  let tools: React.ReactNode = null;
+  let body: React.ReactNode;
+  if (sel && replacing) {
+    const n = places.length || usage[sel.id] || 0;
+    body = <div className="asset-replace">{shown.length ? grid((a) => void replaceWith(a.id), `Images to use instead of ${nameOf(sel)}`) : noMatches}</div>;
+    tools = (
+      <div className="asset-replace-top">
+        <div className="asset-detail-top">
+          <button className="btn btn-sm btn-ghost asset-back" autoFocus onClick={closeReplace}>
+            <ArrowLeft /> Cancel
+          </button>
+        </div>
+        <div className="asset-replace-head">
+          <Thumb a={sel} devUrl={devUrl} />
+          <div>
+            <h4 title={nameOf(sel)}>Replace {nameOf(sel)}</h4>
+            <p>{n === 1 ? 'Pick the image to show in its place.' : `Pick the image to show in all ${n} places.`} You can undo this.</p>
+          </div>
+        </div>
+        <div className="asset-replace-add">
+          <button
+            className="btn btn-sm"
+            disabled={importing}
+            title="Choose one file to use straight away, or several to pick from here"
+            onClick={async () => {
+              const session = replaceSession.current;
+              const r = await importFiles();
+              if (replaceSession.current !== session) return;
+              // Applied only while the picker is still open for this image, and only for one file that came in cleanly.
+              if (r.ids.length === 1 && !r.failed) void replaceWith(r.ids[0]);
+              else if (r.added.length) {
+                setPickQ('');
+                focusTile(r.added[0]);
+              }
+            }}
+          >
+            <ImagePlus /> Import a replacement…
+          </button>
+          <p>Choose one file to use it straight away, or several to pick from here.</p>
+        </div>
+        {browseTools}
+      </div>
+    );
+  } else if (sel) {
+    const used = usage[sel.id] ?? 0;
+    const shownPlaces = allPlaces ? places : places.slice(0, 4);
+    body = (
+      <div className="asset-detail" id="asset-detail">
+        <div className="asset-detail-top">
+          <button className="btn btn-sm btn-ghost asset-back" autoFocus onClick={back}>
+            <ArrowLeft /> All images
+          </button>
+        </div>
+        <div className="asset-preview">
+          {devUrl ? (
+            <Picture a={sel} devUrl={devUrl} />
+          ) : (
+            <span className="asset-preview-off">
+              <ImageIcon aria-hidden="true" />
+              The picture appears once the site preview is running.
+            </span>
+          )}
+        </div>
+        <div className="asset-ident">
+          <h4>{nameOf(sel)}</h4>
+          <p className="asset-meta">{[sel.width && sel.height ? `${sel.width} × ${sel.height}` : '', formatBytes(sel.bytes), formatType(sel.mime)].filter(Boolean).join(' · ')}</p>
+        </div>
+        {sel.bytes > LARGE && (
+          <p className="asset-note">
+            <Info aria-hidden="true" />
+            <span>
+              <b>Large file.</b>{' '}
+              {sel.variants?.length
+                ? `Pages load smaller copies, but the ${formatBytes(sel.bytes)} original is still part of the site. A copy under 1.5 MB keeps it light.`
+                : `At ${formatBytes(sel.bytes)} it will slow pages down. Export a copy under 1.5 MB and use it with Replace everywhere.`}
+            </span>
+          </p>
+        )}
+        <section className="asset-uses" aria-labelledby="asset-uses-title">
+          <h5 id="asset-uses-title">{used ? `Used in ${plural(places.length || used, 'place', 'places')}` : 'Not used anywhere yet'}</h5>
+          {places.length > 0 && (
+            <ul>
+              {shownPlaces.map((p) => {
+                const Icon = PLACE_ICON[p.icon];
+                const inner = (
+                  <>
+                    <Icon aria-hidden="true" />
+                    <span className="where">{p.where}</span>
+                    {p.what && <span className="what">{p.what}</span>}
+                    {p.count > 1 && <span className="times">{p.count}×</span>}
+                    {p.go && <ChevronRight className="go" aria-hidden="true" />}
+                  </>
+                );
+                return (
+                  <li key={p.key}>
+                    {p.go ? (
+                      <button className="asset-use" onClick={p.go} title={`Show ${p.what ? `${p.what} on ` : ''}${p.where}`}>
+                        {inner}
+                      </button>
+                    ) : (
+                      <span className="asset-use static">{inner}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {places.length > 4 && (
+            <button className="uses-toggle asset-more" aria-expanded={allPlaces} onClick={() => setAllPlaces(!allPlaces)}>
+              {allPlaces ? 'Show fewer' : `Show all ${places.length} places`}
+              <ChevronDown size={11} />
+            </button>
+          )}
+          <div className="asset-actions">
+            {used ? (
+              <>
+                <button className="btn btn-sm asset-replace-open" onClick={openReplace}>
+                  <Replace /> Replace everywhere…
+                </button>
+                <p className="asset-why">To remove this image, replace it or take it out of {places.length === 1 ? 'the place' : 'the places'} above first.</p>
+              </>
+            ) : (
+              <button className="btn btn-sm btn-danger" onClick={() => void removeOne(sel)}>
+                <Trash2 /> Remove image
+              </button>
+            )}
+          </div>
+        </section>
+        <div className="asset-fields">
+          <Field label="Name" error={nameError}>
+            <DraftInput
+              value={sel.name}
+              onLive={() => nameError && setNameError(null)}
+              onCommit={(v) => {
+                if (!v.trim()) return setNameError('An image needs a name, so the old one was kept.');
+                setNameError(null);
+                if (v.trim() === sel.name) return;
+                void applyOps([{ type: 'asset.update', assetId: sel.id, name: v.trim() }], 'Rename image');
+              }}
+            />
+          </Field>
+          <Field label="Description" hint="Note what’s in it and where it fits. It helps you and the AI pick images; the AI never sees the picture.">
+            <DraftInput multiline rows={2} placeholder="For example: team photo outside the studio, summer" value={sel.description ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, description: v }], 'Describe image')} />
+          </Field>
+          <Field label="Suggested alt text" hint="Filled in when you place the image, for people who can’t see it. Describe what matters, without “image of”. If it’s only decoration, mark it decorative where you place it.">
+            <DraftInput multiline rows={2} value={sel.altSuggestion ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, altSuggestion: v }], 'Edit alt suggestion')} />
+          </Field>
+        </div>
+      </div>
+    );
+  } else if (assets.length === 0) {
+    body = (
+      <div className="asset-empty">
+        <button className={`asset-drop${over ? ' over' : ''}`} onClick={() => void addImages()} disabled={importing}>
+          <span className="asset-drop-icon">
+            <ImagePlus aria-hidden="true" />
+          </span>
+          <b>Add images</b>
+          <span>Drop files here, or click to choose</span>
+          <small>JPEG, PNG, WebP, GIF, AVIF or SVG</small>
+        </button>
+        <p>Images you add are copied into this project, so the site keeps working wherever it goes.</p>
+      </div>
+    );
+  } else {
+    const removable = shown.filter((a) => !usage[a.id]);
+    tools = browseTools;
+    body = (
+      <>
+        {mode === 'unused' && removable.length > 0 && (
+          <div className="asset-cleanup">
+            <p>{needle ? `${plural(removable.length, 'unused image matches', 'unused images match')} your search.` : `${plural(removable.length, 'image isn’t', 'images aren’t')} used anywhere.`}</p>
+            <button className="btn btn-sm btn-danger" onClick={() => void removeMany(removable)}>
+              <Trash2 /> {removable.length === 1 ? 'Remove it' : needle ? `Remove these ${removable.length}` : `Remove all ${removable.length}`}
+            </button>
+          </div>
+        )}
+        {shown.length ? grid((a) => setSelected(a.id), 'Images') : noMatches}
+        {!needle && mode === 'all' && <p className="asset-drop-hint">You can also drop image files anywhere on this panel.</p>}
+      </>
+    );
+  }
 
   return (
     <>
       <div className="panel-head">
         <h3>Assets</h3>
-        <button className="icon-btn sm" title="Import images" aria-label="Import images" onClick={() => void importFiles()}>
-          <ImagePlus />
-        </button>
-      </div>
-      <div
-        className="panel-body"
-        onDragOver={(e) => {
-          e.preventDefault();
-          setOver(true);
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setOver(false);
-          const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
-          if (paths.length) void importFiles(paths);
-          else void importFiles();
-        }}
-      >
-        {!sel && (
-          <button className={`dropzone${over ? ' over' : ''}`} onClick={() => void importFiles()} title="JPEG, PNG, WebP, GIF, AVIF or SVG">
-            <ImagePlus />
-            <b>Add images</b>
-            <span>Drop them here, or click to choose</span>
+        {assets.length > 0 && !narrow && !replacing && <span className="context">{plural(assets.length, 'image', 'images')}</span>}
+        {assets.length > 0 && !replacing && (
+          <button className="btn btn-sm asset-add" onClick={() => void addImages()} disabled={importing} title="Choose images to add, or drop files anywhere on this panel">
+            <ImagePlus /> Add images
           </button>
         )}
-        {/* An image's details replace the grid (in place, with its own picture), so the fields are where
-            the eye and the keyboard go next; Back returns to the same tile. */}
-        {sel && (
-          <div className="asset-detail col" id="asset-detail" style={{ gap: 10 }}>
-            <button className="btn btn-sm btn-ghost asset-back" autoFocus onClick={back}>
-              <ArrowLeft /> All images
-            </button>
-            {devUrl && (
-              <div className="asset-preview">
-                <img src={assetUrl(devUrl, sel.file)!} alt="" />
-              </div>
-            )}
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <strong className="ellipsis">{sel.name}</strong>
-              <span className="faint" style={{ fontSize: 12, flex: 'none' }}>
-                {snap.assetUsage[sel.id] ? `Used ${snap.assetUsage[sel.id] === 1 ? 'once' : `${snap.assetUsage[sel.id]} times`}` : 'Not used yet'}
-              </span>
-            </div>
-            <Field label="Name">
-              <DraftInput value={sel.name} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, name: v }], 'Rename image')} />
-            </Field>
-            <Field label="Description" hint="Helps you and the AI choose images. The AI never sees image contents.">
-              <DraftInput multiline value={sel.description ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, description: v }], 'Describe image')} />
-            </Field>
-            <Field label="Suggested alt text" hint="Used as the starting alt text when you place this image.">
-              <DraftInput value={sel.altSuggestion ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, altSuggestion: v }], 'Edit alt suggestion')} />
-            </Field>
-            <p className="faint" style={{ margin: 0, fontSize: 12 }}>
-              {sel.width && sel.height ? `${sel.width} × ${sel.height}px · ` : ''}
-              {(sel.bytes / 1024).toFixed(0)} KB · {sel.mime.replace(/^image\//, '').toUpperCase()}
-              {sel.bytes > 1_500_000 && <span style={{ color: 'var(--amber)' }}> · Large file</span>}
-            </p>
-            <div className="row wrap">
-              <button
-                className="btn btn-sm"
-                onClick={async () => {
-                  const r = await api.project.importAssets();
-                  const id = r.assetIds[0];
-                  if (id && id !== sel.id && (await applyOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: id }], 'Replace image'))) toast(`Replaced every use of ${sel.name}.`);
-                }}
-              >
-                Replace everywhere…
-              </button>
-              <button
-                className="btn btn-sm btn-danger"
-                disabled={!!snap.assetUsage[sel.id]}
-                title={snap.assetUsage[sel.id] ? 'This image is in use. Replace or remove it on the page first.' : 'Remove image'}
-                onClick={async () => {
-                  if (await applyOps([{ type: 'asset.remove', assetId: sel.id }], 'Remove image')) setSelected(null);
-                }}
-              >
-                <Trash2 /> Remove
-              </button>
-            </div>
-            {!!snap.assetUsage[sel.id] && <p className="field-hint" style={{ margin: 0 }}>To remove this image, replace it or take it off the page first.</p>}
-          </div>
-        )}
-        {sel ? null : assets.length === 0 ? (
-          <p className="muted" style={{ padding: '8px 16px', margin: 0 }}>
-            No images yet. Images you add are copied into this project, so the site keeps working wherever it goes.
+      </div>
+      <div className="asset-host" {...dropProps} onKeyDown={sel ? onEscape(replacing ? closeReplace : back) : undefined}>
+        {importing && (
+          <p className="asset-importing" role="status">
+            <Spinner decorative /> Adding images…
           </p>
-        ) : (
-          <div className="asset-grid">
-            {assets.map((a) => (
-              <button key={a.id} data-asset={a.id} className={`asset-tile${selected === a.id ? ' selected' : ''}`} aria-pressed={selected === a.id} aria-controls={selected === a.id ? 'asset-detail' : undefined} onClick={() => setSelected(a.id)} title={a.name}>
-                <div className="thumb">{devUrl ? <img src={assetUrl(devUrl, a.file)!} alt="" loading="lazy" /> : null}</div>
-                <span>
-                  <span className="ellipsis">{a.name}</span>
-                  {!snap.assetUsage[a.id] && (
-                    <span className="uses none" title="Not used on any page">
-                      Unused
-                    </span>
-                  )}
-                </span>
-              </button>
-            ))}
-          </div>
         )}
-        {!sel && unused.length > 1 && (
-          <div style={{ padding: '0 12px 16px' }}>
-            <button className="btn btn-sm btn-ghost" onClick={() => void applyOps(unused.map((a) => ({ type: 'asset.remove' as const, assetId: a.id })), 'Remove unused images')}>
-              <Trash2 /> Remove {unused.length} unused images
-            </button>
+        {tools}
+        <div className={`panel-body${assets.length ? '' : ' asset-body-empty'}`}>{body}</div>
+        {over && assets.length > 0 && (
+          <div className="asset-drop-overlay" aria-hidden="true">
+            <div>
+              <Upload />
+              <b>Drop to add images</b>
+              <span>They’re copied into this project</span>
+            </div>
           </div>
         )}
       </div>
