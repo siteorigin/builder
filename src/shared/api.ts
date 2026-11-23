@@ -1,9 +1,10 @@
 import type { ApplyResult, EditBatch } from './ops';
 import type { ElementRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
+import type { LocalProviderSettings } from './local';
 
 export type Appearance = 'system' | 'light' | 'dark';
-export type ProviderId = 'openai' | 'anthropic';
+export type ProviderId = 'openai' | 'anthropic' | 'local';
 
 export interface RecentProject {
   dir: string;
@@ -19,12 +20,13 @@ export interface AppSettings {
   ai: {
     provider: ProviderId | null;
     models: Record<ProviderId, string>;
+    local: LocalProviderSettings;
     sendOnEnter: boolean;
     setupAcknowledged: boolean;
   };
 }
 
-export type SettingsPatch = Omit<Partial<AppSettings>, 'ai'> & { ai?: Partial<AppSettings['ai']> };
+export type SettingsPatch = Omit<Partial<AppSettings>, 'ai'> & { ai?: Partial<Omit<AppSettings['ai'], 'local'>> & { local?: Partial<LocalProviderSettings> } };
 
 export interface ProviderStatus {
   id: ProviderId;
@@ -34,6 +36,8 @@ export interface ProviderStatus {
   /** Keys live in a local file for this user account; the OS keychain is never used. */
   storage: 'local-file';
   models: Array<{ id: string; label: string; note?: string }>;
+  /** Shown wherever the user decides what to send: project content would leave this computer. */
+  warning?: string;
 }
 
 export interface Diagnostic {
@@ -228,6 +232,8 @@ export interface BuilderApi {
     setKey(provider: ProviderId, key: string | null): Promise<ProviderStatus[]>;
     /** Test a key and model; the typed (unsaved) key and model are used when given. */
     testProvider(provider: ProviderId, key?: string, model?: string): Promise<{ ok: boolean; message: string }>;
+    /** Models the saved local server reports. */
+    localModels(): Promise<{ ok: boolean; models: string[]; message?: string }>;
     conversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }>;
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;

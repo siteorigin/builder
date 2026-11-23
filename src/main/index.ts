@@ -4,11 +4,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 import type { ProviderId, SettingsPatch } from '@shared/api';
 import { externalLink } from '@shared/links';
+import { checkLocalBaseURL } from '@shared/local';
 import { Controller, defaultProjectsFolder } from './controller';
-import { loadSettings, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
+import { loadSettings, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
 import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
+import { LocalAdapter, listLocalModels, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource } from './codecheck';
 import { fixComponentSource } from '@agent/fixer';
@@ -56,6 +58,17 @@ const orchestratorDeps = {
     const s = (await loadSettings()).settings.ai;
     const provider = s.provider;
     if (!provider) return { error: 'Choose an AI provider in Settings to use the assistant.' };
+    if (provider === 'local') {
+      const endpoint = await localEndpoint();
+      // A server that runs a single model needs no choice in Settings.
+      if (!endpoint.model) {
+        const found = await listLocalModels(endpoint);
+        if (!found.ok) return { error: found.message ?? 'Could not reach the local server.' };
+        if (!found.models.length) return { error: 'The local server has no models loaded.' };
+        endpoint.model = found.models[0];
+      }
+      return { adapter: new LocalAdapter(endpoint), model: endpoint.model, provider };
+    }
     const key = await getKey(provider);
     if (!key) return { error: `Add your ${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key in Settings to use the assistant.` };
     const model = s.models[provider];
@@ -137,6 +150,13 @@ function registerIpc() {
   handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, dev: !app.isPackaged }));
   handle('app:getSettings', async () => (await loadSettings()).settings);
   handle('app:setSettings', async (patch: SettingsPatch) => {
+    const before = (await loadSettings()).settings.ai;
+    const url = checkLocalBaseURL(before.local.baseURL, before.local.allowRemote);
+    // Withdrawing permission ends work in progress at once, which would otherwise keep sending to that server.
+    if (before.provider === 'local' && url.ok && url.remote && patch.ai?.local && 'allowRemote' in patch.ai.local && patch.ai.local.allowRemote !== true) {
+      orchestrator.stop();
+      fixAbort?.abort();
+    }
     const s = await updateSettings(patch);
     nativeTheme.themeSource = s.appearance;
     return s;
@@ -195,15 +215,21 @@ function registerIpc() {
   });
   // Tests the key and model as typed in Settings when given, so an unsaved key can be checked before saving.
   handle('ai:test', async (p: ProviderId, typedKey?: unknown, typedModel?: unknown) => {
-    if (p !== 'openai' && p !== 'anthropic') return { ok: false, message: 'Unknown provider.' };
+    if (p !== 'openai' && p !== 'anthropic' && p !== 'local') return { ok: false, message: 'Unknown provider.' };
     const typed = typeof typedKey === 'string' ? typedKey.trim() : '';
     const custom = typeof typedModel === 'string' ? typedModel.trim() : '';
     if (typed.length > 1000 || custom.length > 200) return { ok: false, message: 'That key or model ID is too long.' };
+    if (p === 'local') {
+      const endpoint = await localEndpoint();
+      return testLocal({ ...endpoint, apiKey: typed || endpoint.apiKey, model: custom || endpoint.model });
+    }
     const key = typed || (await getKey(p))?.key;
     if (!key) return { ok: false, message: 'No API key is set.' };
     const model = custom || (await loadSettings()).settings.ai.models[p];
     return p === 'openai' ? testOpenAI(key, model) : testAnthropic(key, model);
   });
+  // Always the saved server, so a key is only ever sent to the address the user saved.
+  handle('ai:localModels', async () => listLocalModels(await localEndpoint()));
   handle('ai:conversations', () => orchestrator.loadConversations());
   handle('ai:newConversation', () => orchestrator.newConversation());
   handle('ai:openConversation', (id: string) => orchestrator.openConversation(id));

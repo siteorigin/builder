@@ -57,7 +57,7 @@ export interface AdapterOptions {
 }
 
 const QUOTA = 'The provider account has no remaining credit or quota. Check billing for this API key.';
-const redact = (s: string) => s.replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-…');
+export const redact = (s: string) => s.replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-…');
 
 /**
  * Classify a provider error code or type that arrived without an HTTP status, such as an SSE `error` or

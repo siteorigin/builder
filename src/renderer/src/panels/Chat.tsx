@@ -298,7 +298,11 @@ export function Chat() {
                 </div>
               )
             )}
-            <p className="chat-privacy">Page text and structure are sent to {configured && provider ? provider.label : 'the provider you choose'}. Images are never sent.</p>
+            <p className="chat-privacy">
+              {provider?.id === 'local' && configured
+                ? (provider.warning ?? 'Page text and structure stay on this computer.')
+                : `Page text and structure are sent to ${configured && provider ? provider.label : 'the provider you choose'}. Images are never sent.`}
+            </p>
           </div>
         )}
         {msgs.map((m) => (m.role === 'user' ? <UserMessage key={m.id} m={m} /> : <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} undoable={m.id === undoableId} onAnswered={focusComposer} />))}
@@ -329,6 +333,12 @@ export function Chat() {
               <Square size={10} fill="currentColor" /> Stop
             </button>
           </span>
+        </div>
+      )}
+      {configured && provider?.warning && (
+        <div className="scope-note danger" role="status">
+          <TriangleAlert />
+          <span>{provider.warning}</span>
         </div>
       )}
       {configured ? (
@@ -396,7 +406,8 @@ export function Chat() {
             {provider && (
               <button className="btn btn-sm btn-ghost composer-model" title="Change AI provider or model" aria-haspopup="dialog" onClick={openSettings}>
                 <span className="label">
-                  {provider.label} · {modelLabel}
+                  {provider.label}
+                  {modelLabel ? ` · ${modelLabel}` : ''}
                 </span>
                 <Settings2 size={12} />
               </button>

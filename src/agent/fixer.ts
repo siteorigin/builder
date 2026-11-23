@@ -47,7 +47,11 @@ export async function fixComponentSource(
       { model, system: SYSTEM, tools: [], maxOutputTokens: Math.min(adapter.capabilities().maxOutputTokens, 16000), items: [{ kind: 'user', text: `Problems found:\n${list}\n\nComponent:\n\`\`\`svelte\n${current}\n\`\`\`` }] },
       signal
     )) {
-      if (ev.type === 'done') text = ev.text;
+      if (ev.type === 'done') {
+        text = ev.text;
+        // A cut-off reply can still contain a closed code block, but it is not a finished fix.
+        if (ev.stopReason !== 'end' || ev.toolCalls.length) failed = 'The fixer did not finish its reply.';
+      }
       if (ev.type === 'error') {
         failed = ev.message;
         cancelled = ev.code === 'cancelled';

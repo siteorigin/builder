@@ -5,6 +5,8 @@ import type { AppSettings, SettingsPatch, ProviderId, ProviderStatus, RecentProj
 import { atomicWrite } from './project/fsutil';
 import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
+import type { LocalEndpoint } from '@agent/local';
+import { checkLocalBaseURL, DEFAULT_LOCAL_SETTINGS } from '@shared/local';
 
 interface SettingsFile {
   settings: AppSettings;
@@ -18,7 +20,9 @@ const DEFAULTS: SettingsFile = {
     developerMode: false,
     ai: {
       provider: 'openai',
-      models: { openai: PROVIDER_MODELS.openai[0].id, anthropic: PROVIDER_MODELS.anthropic[0].id },
+      // No local model is preselected: the running server says what it offers.
+      models: { openai: PROVIDER_MODELS.openai[0].id, anthropic: PROVIDER_MODELS.anthropic[0].id, local: '' },
+      local: DEFAULT_LOCAL_SETTINGS,
       sendOnEnter: true,
       setupAcknowledged: false
     }
@@ -35,7 +39,7 @@ export async function loadSettings(): Promise<SettingsFile> {
   try {
     const raw = JSON.parse(await fs.readFile(file(), 'utf8')) as Partial<SettingsFile>;
     cache = {
-      settings: { ...DEFAULTS.settings, ...raw.settings, ai: { ...DEFAULTS.settings.ai, ...raw.settings?.ai, models: { ...DEFAULTS.settings.ai.models, ...raw.settings?.ai?.models } } },
+      settings: { ...DEFAULTS.settings, ...raw.settings, ai: { ...DEFAULTS.settings.ai, ...raw.settings?.ai, models: { ...DEFAULTS.settings.ai.models, ...raw.settings?.ai?.models }, local: { ...DEFAULTS.settings.ai.local, ...raw.settings?.ai?.local } } },
       recents: raw.recents ?? [],
       trusted: raw.trusted ?? {}
     };
@@ -45,13 +49,20 @@ export async function loadSettings(): Promise<SettingsFile> {
   return cache;
 }
 
-export async function saveSettings() {
-  if (cache) await atomicWrite(file(), JSON.stringify(cache, null, 2));
+let writes: Promise<void> = Promise.resolve();
+
+/** One write at a time, each of the latest state, so an older save can never land after a newer one. */
+export function saveSettings(): Promise<void> {
+  const run = writes.then(async () => {
+    if (cache) await atomicWrite(file(), JSON.stringify(cache, null, 2));
+  });
+  writes = run.catch(() => undefined);
+  return run;
 }
 
 export async function updateSettings(patch: SettingsPatch): Promise<AppSettings> {
   const s = await loadSettings();
-  s.settings = { ...s.settings, ...patch, ai: { ...s.settings.ai, ...(patch.ai ?? {}), models: { ...s.settings.ai.models, ...(patch.ai?.models ?? {}) } } };
+  s.settings = { ...s.settings, ...patch, ai: { ...s.settings.ai, ...(patch.ai ?? {}), models: { ...s.settings.ai.models, ...(patch.ai?.models ?? {}) }, local: { ...s.settings.ai.local, ...(patch.ai?.local ?? {}) } } };
   await saveSettings();
   return s.settings;
 }
@@ -92,7 +103,8 @@ export async function trust(dir: string, configHash: string) {
 // ---------------------------------------------------------------------------
 
 const credFile = () => join(app.getPath('userData'), 'api-keys.json');
-const ENV_KEYS: Record<ProviderId, string> = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
+// A cloud provider's key is never sent to a local server, so the local provider has no environment fallback.
+const ENV_KEYS: Partial<Record<ProviderId, string>> = { openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY' };
 
 async function readStoredKeys(): Promise<Partial<Record<ProviderId, string>>> {
   try {
@@ -112,8 +124,9 @@ export async function setKey(provider: ProviderId, key: string | null) {
 
 /** Development builds may use provider keys from the environment as a documented override. */
 function envKey(provider: ProviderId): string | undefined {
-  if (app.isPackaged) return undefined;
-  return process.env[ENV_KEYS[provider]] || undefined;
+  const name = ENV_KEYS[provider];
+  if (app.isPackaged || !name) return undefined;
+  return process.env[name] || undefined;
 }
 
 export async function getKey(provider: ProviderId): Promise<{ key: string; source: ProviderStatus['source'] } | null> {
@@ -137,5 +150,24 @@ export async function providerStatuses(): Promise<ProviderStatus[]> {
       models: PROVIDER_MODELS[id]
     });
   }
+  // A local server needs no key: it is ready to try once its address is acceptable.
+  const { local } = (await loadSettings()).settings.ai;
+  const url = checkLocalBaseURL(local.baseURL, local.allowRemote);
+  const key = await getKey('local');
+  out.push({
+    id: 'local',
+    label: 'Local model',
+    configured: url.ok,
+    source: key?.source ?? null,
+    storage: 'local-file',
+    models: [],
+    ...(url.ok && url.remote ? { warning: `Project content is sent to ${new URL(url.url).host}, which is not this computer.` } : {})
+  });
   return out;
+}
+
+/** The saved local server. A model server the app runs itself can supply the same shape without Settings. */
+export async function localEndpoint(): Promise<LocalEndpoint> {
+  const { local, models } = (await loadSettings()).settings.ai;
+  return { ...local, model: models.local, apiKey: (await getKey('local'))?.key ?? null };
 }

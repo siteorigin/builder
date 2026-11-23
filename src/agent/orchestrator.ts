@@ -739,7 +739,9 @@ export class Orchestrator {
 function activityLabel(call: ToolCall, state: ProjectState): string {
   let args: Record<string, unknown> = {};
   try {
-    args = JSON.parse(call.arguments || '{}');
+    // Labels are built before the arguments are validated, so they may be any JSON at all.
+    const parsed = JSON.parse(call.arguments || '{}');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed;
   } catch {
     /* ignore */
   }
@@ -758,7 +760,7 @@ function activityLabel(call: ToolCall, state: ProjectState): string {
     case 'search_assets':
       return 'Looking through images';
     case 'apply_operations': {
-      const ops = (args.operations as Array<{ type: string; title?: string; owner?: { kind: string } }>) ?? [];
+      const ops = (Array.isArray(args.operations) ? args.operations.filter((o) => o && typeof o === 'object') : []) as Array<{ type: string; title?: string; owner?: { kind: string } }>;
       if (ops.some((o) => o.type === 'page.create')) return `Adding ${ops.find((o) => o.type === 'page.create')?.title ?? 'a'} page`;
       if (ops.some((o) => o.owner?.kind === 'shell')) return 'Updating shared navigation';
       if (ops.some((o) => o.type === 'token.set')) return 'Updating site styles';
