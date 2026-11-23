@@ -1055,10 +1055,6 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .run-phase { font-size: 12px; font-weight: 600; color: var(--accent-text); }
 .run-target { font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-actions { flex: none; display: flex; gap: 6px; }
-/* Waiting carries two actions, so they take their own row and the phase and target read in full. */
-.run-strip.waiting { flex-wrap: wrap; row-gap: 6px; }
-.run-strip.waiting .run-text { flex: 1 1 calc(100% - 32px); }
-.run-strip.waiting .run-actions { flex: 1 1 100%; justify-content: flex-end; }
 .run-stop svg { width: 10px; height: 10px; }
 .run-strip.waiting { box-shadow: inset 0 0 0 1px var(--accent); }
 .run-phase { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

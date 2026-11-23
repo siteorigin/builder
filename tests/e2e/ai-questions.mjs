@@ -1,0 +1,104 @@
+// The AI's clarification questions in the real app (issue #22): an interview of two questions answered once with a
+// choice and once from the composer with Enter, every question and answer kept on the turn and after reopening the
+// thread, an empty answer that sends nothing, a message drafted before the question that is kept aside and comes
+// back, and ordinary chat afterwards. The model is a local OpenAI-compatible server in this process, scripted
+// reply by reply, so nothing is sent to a real provider.
+import assert from 'node:assert/strict';
+import { join } from 'node:path';
+import { createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { MockOpenAIServer, envelopeReply } from '../unit/mock-openai-server.ts';
+
+const { WORK, SHOTS, cleanup } = scratch('ai-questions');
+const server = await new MockOpenAIServer().start();
+let { app, win, errors } = await launch(WORK);
+
+try {
+  await win.evaluate((baseURL) => window.builder.app.setSettings({ ai: { provider: 'local', models: { local: 'test-model' }, local: { baseURL, allowRemote: false, toolMode: 'constrained-json' } } }), server.baseURL);
+  await win.reload();
+  await win.waitForSelector('.welcome');
+
+  const message = () => win.getByRole('textbox', { name: 'Message' });
+  const answerBox = () => win.getByRole('textbox', { name: 'Your answer' });
+  const card = () => win.locator('.question-card');
+  const log = () => win.locator('.chat-log');
+  /** The question and answer blocks a turn shows. */
+  const exchanges = () => log().locator('.answered');
+  const posts = () => server.requests.filter((r) => r.method === 'POST');
+  /** Everything the model was sent in its latest request, as text. */
+  const lastSent = () => JSON.stringify(posts().at(-1)?.body.messages ?? []);
+
+  const audience = { question: 'Who is the Contact page mainly for?', choices: ['New clients', 'Existing clients', 'Both equally'] };
+  const tone = { question: 'Which tone should it take?', choices: ['Warm and friendly', 'Calm and understated', 'Direct and brisk'] };
+
+  step('a project, with the AI tab open');
+  await createProject(win, { name: 'Kloof Light Studio', parentDir: WORK, starter: 'blank', sampleImages: false });
+  await win.locator('.dock-tab', { hasText: 'AI' }).click();
+  await message().waitFor();
+
+  step('an interview request; a message drafted while the AI starts');
+  // The first question takes a moment, as a real model would, so there is time to draft the next message.
+  server.script({ ...envelopeReply('request_clarification', audience, 'Asking about the audience'), delayMs: 2500 }, envelopeReply('request_clarification', tone, 'Asking about the tone'), envelopeReply('finish', { message: 'Headline idea: Talk to us, whenever suits you.' }));
+  await message().fill('Interview me about the Contact page in two separate questions, then suggest a headline in chat only');
+  await message().press('Enter');
+  await eventually(async () => assert.equal(await message().inputValue(), ''));
+  await message().fill('Now make the footer darker');
+
+  step('the first question waits above the composer, which becomes the answer box');
+  await card().getByText(audience.question).waitFor({ timeout: 30000 });
+  assert.equal(await answerBox().inputValue(), '', 'the answer box starts empty; the drafted message is set aside');
+  assert.match(await card().innerText(), /Your unsent message is kept for afterwards/);
+  assert.equal(await win.getByRole('textbox', { name: 'Message' }).count(), 0, 'one text box while a question waits');
+
+  step('an empty answer sends nothing');
+  const before = posts().length;
+  await answerBox().press('Enter');
+  assert.equal(await win.getByRole('button', { name: 'Send answer' }).isDisabled(), true);
+  await win.waitForTimeout(400);
+  assert.equal(posts().length, before);
+  assert.equal(await card().getByText(audience.question).count(), 1, 'still waiting on the first question');
+
+  step('a choice answers the first question; the second keeps the first exchange in view');
+  await card().getByRole('button', { name: 'Both equally' }).click();
+  await card().getByText(tone.question).waitFor({ timeout: 15000 });
+  await exchanges().getByText(audience.question).waitFor();
+  assert.match(await exchanges().first().innerText(), /You answered: Both equally/);
+  assert.match(lastSent(), /Both equally/, 'the model heard the first answer');
+
+  await win.locator('.chat').screenshot({ path: join(SHOTS, 'ai-questions-waiting.png') });
+
+  step('the composer answers the second question with Enter');
+  await answerBox().fill('Calm and understated');
+  await answerBox().press('Enter');
+  await log().getByText('No changes made').waitFor({ timeout: 15000 });
+  assert.equal(await card().count(), 0, 'no question waits once the request is done');
+  assert.deepEqual(await exchanges().allInnerTexts(), [`${audience.question}\nYou answered: Both equally`, `${tone.question}\nYou answered: Calm and understated`], 'both exchanges, in the order asked');
+  assert.match(await log().innerText(), /Talk to us, whenever suits you/);
+  assert.match(lastSent(), /Calm and understated/);
+
+  step('back to ordinary chat: the drafted message returns and sends as a new request');
+  await eventually(async () => assert.equal(await message().inputValue(), 'Now make the footer darker'));
+  server.script(envelopeReply('finish', { message: 'Noted, nothing to change yet.' }));
+  await message().press('Enter');
+  await log().getByText('Noted, nothing to change yet.').waitFor({ timeout: 15000 });
+  await eventually(async () => assert.equal(await message().inputValue(), ''));
+  const followUp = lastSent();
+  for (const said of [audience.question, 'Both equally', tone.question, 'Calm and understated']) assert.ok(followUp.includes(said), `the next request includes "${said}"`);
+
+  step('reopening the thread shows every question and answer');
+  await win.getByRole('button', { name: 'New conversation' }).click();
+  await eventually(async () => assert.equal(await exchanges().count(), 0));
+  await win.getByRole('button', { name: 'Earlier conversations' }).click();
+  await win.locator('.menu [role^="menuitem"]', { hasText: 'Interview me about the Contact page' }).click();
+  await exchanges().getByText(tone.question).waitFor();
+  assert.deepEqual(await exchanges().allInnerTexts(), [`${audience.question}\nYou answered: Both equally`, `${tone.question}\nYou answered: Calm and understated`]);
+
+  assert.deepEqual(errors, [], 'no page errors');
+  console.log('\nai-questions: all checks passed');
+  await app.close();
+  await server.stop();
+  cleanup();
+} catch (e) {
+  await app.close().catch(() => undefined);
+  await server.stop().catch(() => undefined);
+  throw e;
+}
