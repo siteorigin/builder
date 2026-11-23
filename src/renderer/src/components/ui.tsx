@@ -443,29 +443,36 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
   const [open, setOpen] = useState(() => (key && localStorage.getItem(key) !== null ? localStorage.getItem(key) === '1' : defaultOpen));
   useEffect(() => {
     if (!id) return;
+    let frame = 0;
     const onOpen = (e: Event) => {
       // The section's ID alone (as older callers send it) opens and scrolls to it.
-      const detail = (e as CustomEvent<string | { id: string; scroll: boolean }>).detail;
-      const { id: target, scroll } = typeof detail === 'string' ? { id: detail, scroll: true } : (detail ?? { id: '', scroll: true });
+      const detail = (e as CustomEvent<string | { id: string; scroll?: boolean; focus?: string }>).detail;
+      const { id: target, scroll = true, focus } = typeof detail === 'string' ? { id: detail } : (detail ?? { id: '' });
       if (target !== id) return;
       setOpen(true);
       if (key) localStorage.setItem(key, '1');
       // Opened on the way to something inside it, which then takes the scroll and the focus itself.
       if (!scroll) return;
-      requestAnimationFrame(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
         const el = rootRef.current;
         const scroller = el?.closest<HTMLElement>('.panel-body');
         if (!el || !scroller) return;
+        // A control inside the section, when one was named and has rendered; else the section itself.
+        const control = (focus && el.querySelector<HTMLElement>(focus)) || null;
         // Land below the sticky inspector header, and only animate when motion is welcome.
         const head = scroller.querySelector<HTMLElement>('.insp-head')?.offsetHeight ?? 0;
-        const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - head;
+        const top = (control ?? el).getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - head;
         const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         scroller.scrollTo({ top, behavior: reduce ? 'auto' : 'smooth' });
-        el.querySelector<HTMLElement>('.section-head')?.focus({ preventScroll: true });
+        (control ?? el.querySelector<HTMLElement>('.section-head'))?.focus({ preventScroll: true });
       });
     };
     window.addEventListener('inspector-open-section', onOpen);
-    return () => window.removeEventListener('inspector-open-section', onOpen);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('inspector-open-section', onOpen);
+    };
   }, [id, key]);
   return (
     <div className="section" ref={rootRef}>
@@ -497,9 +504,12 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
 }
 
 /** A labelled field. The label, hint and error are wired to the single control child (id, aria-describedby). */
-/** Open (and scroll to) a collapsible Section by its id. */
-export function openSection(id: string, opts: { scroll?: boolean } = {}) {
-  window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: { id, scroll: opts.scroll ?? true } }));
+/**
+ * Open (and scroll to) a collapsible Section by its id. `scroll: false` only opens it; `focus`, a selector
+ * inside it, names the control to scroll to and focus instead of the section's heading.
+ */
+export function openSection(id: string, opts: { scroll?: boolean; focus?: string } = {}) {
+  window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: { id, scroll: opts.scroll ?? true, focus: opts.focus } }));
 }
 
 export function Field({ label, children, hint, error, extra, controlId: explicitId }: { label?: ReactNode; children: ReactNode; hint?: ReactNode; error?: string | null; extra?: ReactNode; controlId?: string }) {

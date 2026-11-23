@@ -196,7 +196,10 @@ export const OPERATION_SCHEMAS = {
   'token.set': z.object({
     type: z.literal('token.set'),
     tokenId: z.string(),
-    value: z.unknown().nullable().describe('New value, or null to use the theme default.')
+    value: z
+      .unknown()
+      .nullable()
+      .describe('New value; { "token": "group.name" } to follow another style of the same kind (not for text styles); or null to go back to the theme default (theme styles only).')
   }),
   'token.create': z.object({
     type: z.literal('token.create'),
