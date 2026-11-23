@@ -385,8 +385,10 @@ export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, 
   const teaser = schema.pageTeaser;
   // A page list's cards are told apart by the page they stand for: a card sent for another page is a new card, even
   // under the same title. Only one sent without a page is matched by its title, so it keeps the page it had.
+  // A page link, or a page's ID sent as it is (which the engine also takes).
   const pageOf = (it: unknown) => {
-    const l = teaser && isRow(it) ? (it[teaser.link] as Partial<LinkValue> | undefined) : undefined;
+    const l = teaser && isRow(it) ? (it[teaser.link] as Partial<LinkValue> | string | undefined) : undefined;
+    if (typeof l === 'string') return l && !/[/:#@]/.test(l) ? l : undefined;
     return l && typeof l === 'object' && l.type === 'page' && typeof l.target === 'string' && l.target ? l.target : undefined;
   };
   // A card an id already claimed is that card, wherever it now points: it leaves the page it names to the others.

@@ -313,6 +313,8 @@ describe('page list schema', () => {
     // Pointed somewhere else, the card keeps the title it was sent, even one that was its old page's.
     const moved = withStoredFields(schema, [{ id: 'i_b', pageLink: { type: 'url', target: 'https://partner.example/' }, title: 'About' }], inherited, showsAbout);
     expect(moved.items[0]).toMatchObject({ pageLink: { type: 'url' }, title: 'About' });
+    // A page's ID sent as it is names the same page.
+    expect(withStoredFields(schema, [{ id: 'i_b', pageLink: 'pg_b', title: 'About' }], inherited, showsAbout).items[0]).toMatchObject({ title: '' });
     // A card an id moved to a page leaves that page's own card to be found by its page.
     const two = [
       { id: 'i_about', pageLink: { type: 'page', target: 'pg_about' }, title: '', description: 'Our story, told our way' },

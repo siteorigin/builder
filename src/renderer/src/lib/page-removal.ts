@@ -87,7 +87,8 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
       const nodeId = choice.slice(SECTION_NODE.length);
       if (!given.has(nodeId)) {
         // A new ID never takes another missing section's name, which still means a different place.
-        const reserved = [...given.values(), ...review.missing.map((m) => m.fragment).filter((f) => f !== fragment)];
+        // Nor one the page has today, which links may still use even if only a removed card keeps it showing.
+        const reserved = [...given.values(), ...review.missing.map((m) => m.fragment).filter((f) => f !== fragment), ...pageIds(state, replacementId)];
         const plan = planSectionPick(view, replacementId, nodeId, reserved);
         if (!plan) return none;
         operations.push(...plan.operations);
