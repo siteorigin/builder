@@ -14,6 +14,7 @@ import { applyOperations } from '@engine/apply';
 import { RUNTIME_DIR, defFile, generateProject } from '@generator/index';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, buildSearchIndex, pageText, usesSiteSearch, type SearchEntry } from '@generator/search';
 import { readField } from '../../src/renderer/src/lib/held';
+import { describeOps } from '@agent/report';
 import type { EditOperation } from '@shared/ops';
 import type { InstanceNode, ProjectState } from '@shared/types';
 
@@ -287,5 +288,12 @@ describe('Hide from site search setting', () => {
     const s = apply(start, [{ type: 'page.update', pageId: start.site.homePageId, searchHidden: true }]);
     const read = readField(s, { type: 'page.update', pageId: s.site.homePageId, searchHidden: false });
     expect(read).toEqual({ found: true, value: { searchHidden: true } });
+  });
+
+  it('is named apart from search engines when the assistant changes it', () => {
+    const start = fresh();
+    const ops: EditOperation[] = [{ type: 'page.update', pageId: start.site.homePageId, searchHidden: true, noindex: true }];
+    const r = applyOperations(start, ops);
+    expect(describeOps(ops, start, r.state, r.results).map((c) => c.label)).toEqual(['Changed the search visibility and site search visibility of page Home']);
   });
 });
