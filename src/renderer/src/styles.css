@@ -597,16 +597,131 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .empty-insp svg { width: 26px; height: 26px; }
 
 /* ---------- Site styles ---------- */
-.token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 32px; }
-.token-row .name { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.token-row .name span { line-height: 1.25; overflow-wrap: anywhere; }
-.token-row .hex { width: 84px; font-family: var(--mono); font-size: 12px; }
+/* Site-wide theme editor (SiteStyles.tsx). Reads top-down as the owner's questions: which theme and look,
+   what has changed, the fonts, the palette (brand first), text styles as specimens, then layout and site
+   details. Rows share
+   one rhythm: a preview on the left, the name (with its reset when changed) and a plain-words line, the
+   value on the right. Changed values follow the inspector's rule: the reset beside the name is the mark. */
 .swatch-lg { width: 22px; height: 22px; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15), 0 0 0 1px rgb(255 255 255 / 0.14); flex: none; }
-.palette { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
-.palette button { aspect-ratio: 1; border-radius: 8px; border: 0; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.1); }
-.palette button[aria-pressed='true'] { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
-.token-row .ovr-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
-.type-sample { font-size: 22px; line-height: 1.1; }
+.ss-intro { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 14px; border-bottom: 1px solid var(--border); }
+.ss-intro .scope-note { font-size: 12px; line-height: 1.4; padding: 7px 10px; }
+.ss-theme { display: flex; align-items: center; gap: 12px; }
+.ss-look { display: grid; place-items: center; align-content: center; gap: 4px; width: 60px; height: 60px; flex: none; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12), 0 0 0 1px var(--border-strong); }
+.ss-look > span:first-child { font-size: 24px; line-height: 1; }
+.ss-look-dots { display: flex; gap: 3px; }
+.ss-look-dots i { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15); }
+.ss-theme-meta { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ss-eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-3); }
+.ss-theme-name { display: flex; align-items: baseline; gap: 6px; }
+.ss-theme-name strong { font-size: 14px; font-weight: 600; }
+.ss-theme-name span { font-size: 12px; }
+.ss-theme-desc { font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.ss-theme-switch { margin-top: 6px; }
+.ss-theme-hint { margin-top: 3px; font-size: 12px; color: var(--text-3); }
+.ss-theme { align-items: flex-start; }
+.ss .section-body { gap: 14px; }
+.ss-group { display: flex; flex-direction: column; gap: 2px; }
+.ss-group-label { padding: 2px 0 4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.ss-name { min-width: 0; min-height: 20px; font-size: 13px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
+/* The reset sits inline right after the name, so it stays beside the last word when a long name wraps. */
+.ss-name .reset-dot { vertical-align: middle; margin: -4px 0 -3px; }
+.ss-nowrap { white-space: nowrap; }
+.ss-name > label { font-weight: inherit; color: inherit; }
+.set > * > .ss-name { font-weight: 500; }
+/* Changes from the theme: a count, a review list and one undoable reset. */
+.ss-changes { display: flex; flex-direction: column; gap: 6px; padding: 6px 6px 6px 10px; border-radius: var(--r-sm); background: var(--panel-2); }
+.ss-changes-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--text-2); }
+.ss-changes-actions { display: flex; gap: 4px; margin-left: auto; }
+.ss-changes-row strong { color: var(--text); font-weight: 600; }
+.ss-changes-row .btn svg { width: 13px; height: 13px; }
+.ss-flip { transform: rotate(180deg); }
+.ss-review { display: flex; flex-direction: column; margin: 0; padding: 0 0 2px; list-style: none; }
+.ss-review li { display: grid; grid-template-columns: minmax(0, 1fr) 24px; column-gap: 6px; padding: 5px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.ss-review-what { color: var(--text-3); }
+.ss-review-name { grid-column: 1; color: var(--text); font-weight: 500; }
+.ss-review-vals { grid-column: 1; color: var(--text-2); overflow-wrap: anywhere; }
+.ss-review .reset-dot { grid-column: 2; grid-row: 1 / span 2; align-self: center; margin: 0; }
+/* Colours: one row per role. Details (where it is used, linking) · swatch (the picker) · name and what it colours · hex. */
+.ss-color { display: grid; grid-template-columns: 16px 28px minmax(0, 1fr) 74px; align-items: center; column-gap: 8px; min-height: 44px; padding: 4px 0; margin-left: -6px; }
+.ss-color.compact { grid-template-columns: 44px minmax(0, 1fr) 74px; column-gap: 10px; margin-left: 0; }
+.ss-color.compact .ss-swatch, .ss-color.compact .ss-swatch input[type='color'] { width: 44px; height: 44px; }
+.ss-swatch input[type='color']:disabled { opacity: 1; outline: 1px dashed var(--border-control); outline-offset: 2px; }
+.ss-hex-linked { display: flex; align-items: center; height: 26px; padding: 0 8px; border-radius: var(--r-sm); border: 1px dashed var(--border-control); font-size: 12px; color: var(--text-2); outline-offset: 1px; }
+.ss-detail[hidden], .ss-text-body[hidden], .ss-review[hidden] { display: none; }
+.ss-disclose { display: grid; place-items: center; width: 22px; height: 28px; margin-right: -6px; padding: 0; border: 0; border-radius: var(--r-xs); background: none; color: var(--text-3); }
+.ss-disclose:hover { background: var(--hover); color: var(--text); }
+.ss-disclose svg { width: 12px; height: 12px; transition: transform 120ms; }
+.ss-disclose[aria-expanded='true'] svg { transform: rotate(90deg); }
+.ss-detail { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 8px; margin: 6px 0 4px; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); }
+.ss-detail-label { font-size: 12px; font-weight: 500; color: var(--text-2); }
+.ss-none { margin: 0; font-size: 12px; color: var(--text-3); }
+.ss-uses-block { display: flex; flex-direction: column; gap: 6px; }
+.ss-swatch { display: grid; width: 28px; height: 28px; }
+.ss-swatch input[type='color'] { width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--r-sm); background: none; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border-control); overflow: hidden; }
+.ss-swatch input[type='color']::-webkit-color-swatch-wrapper { padding: 0; }
+.ss-swatch input[type='color']::-webkit-color-swatch { border: 0; border-radius: var(--r-sm); }
+@media (prefers-color-scheme: dark) { .ss-swatch input[type='color'] { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2), 0 0 0 1px var(--border-control); } }
+.ss-color-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ss-desc { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; font-size: 12px; line-height: 1.35; color: var(--text-3); }
+.ss-follows { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; font-size: 12px; line-height: 1.35; color: var(--text-2); }
+.ss-follows .link-btn { margin-left: 2px; font-size: 12px; min-height: 24px; }
+.ss-follows svg { width: 12px; height: 12px; flex: none; }
+.ss-hex { text-transform: lowercase; }
+.ss-uses { display: flex; flex-direction: column; gap: 4px; margin: -4px 0 0; font-size: 12px; }
+.ss-uses > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; }
+.ss-uses dt { color: var(--text-3); }
+.ss-uses dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+/* Fonts: a specimen tile in the font itself, then the choice. */
+.ss-font { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 10px; padding: 4px 0; }
+.ss-font-sample { display: grid; place-items: center; width: 44px; height: 44px; border-radius: var(--r-sm); background: var(--raised); box-shadow: 0 0 0 1px var(--border-strong); font-size: 22px; line-height: 1; color: var(--text); }
+.ss-font-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* Text styles: each one previewed in its own font, weight and (capped) size; the numbers open below. */
+.ss-text-list { display: flex; flex-direction: column; border-radius: var(--r-sm); box-shadow: 0 0 0 1px var(--border-strong); background: var(--raised); overflow: hidden; }
+.ss-text + .ss-text { border-top: 1px solid var(--border); }
+.ss-text-head { display: flex; align-items: center; gap: 2px; padding-right: 8px; }
+.ss-text-head:hover { background: var(--hover); }
+.ss-text-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 6px 4px 6px 10px; border: 0; background: none; text-align: left; color: var(--text); outline-offset: -2px; }
+.ss-text-toggle .chev { width: 12px; height: 12px; flex: none; color: var(--text-3); transition: transform 120ms; }
+.ss-text-toggle[aria-expanded='true'] .chev { transform: rotate(90deg); }
+.ss-text-spec { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ss-specimen { line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-text-meta { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.ss-field-name { font-size: 12px; font-weight: 500; color: var(--text-2); }
+.ss-field-name label { color: inherit; }
+.ss-text-body { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px 30px; border-top: 1px solid var(--border); background: var(--panel-2); }
+/* Layout: preview · name (and the plain size for values that scale) · value. Long values take their own line. */
+.ss-token { display: grid; grid-template-columns: minmax(0, 1fr) 92px; align-items: center; gap: 8px; min-height: 34px; }
+.ss-token.wide { grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 2px 0 8px; }
+.ss-token.wide > :not(.ss-token-label) { width: 100%; }
+/* A shadow's CSS, once opened, takes the full width to be read whole. */
+.ss-token:has(.ss-css-area) { grid-template-columns: minmax(0, 1fr); }
+.ss-token .ss-size:has(> .ss-css-toggle:only-child) { align-items: flex-end; }
+.ss-token-label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ss-preview { display: grid; place-items: center start; width: 40px; height: 28px; flex: none; }
+.ss-bar { display: block; height: 8px; border-radius: 2px; background: color-mix(in srgb, var(--text-2) 45%, transparent); }
+.ss-corner { position: relative; display: block; width: 28px; height: 28px; overflow: hidden; border-radius: var(--r-xs); background: var(--panel-2); }
+.ss-corner i { position: absolute; top: 6px; left: 6px; width: 60px; height: 60px; border: 2px solid var(--text-2); background: var(--raised); }
+.ss-well { position: relative; display: grid; place-items: center; width: 40px; height: 28px; overflow: hidden; border-radius: var(--r-xs); box-shadow: 0 0 0 1px var(--border-strong); }
+/* Drawn three times larger and scaled down, so a shadow's real offsets and spread survive the small sample. */
+.ss-well i { position: absolute; top: 40%; left: 50%; display: block; width: 84px; height: 52px; border-radius: 10px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.06); transform: translate(-50%, -50%) scale(0.25); }
+.ss-token .ss-well { height: 32px; }
+.ss-well i[style*='border'] { top: 50%; width: 24px; height: 15px; border-radius: 3px; transform: translate(-50%, -50%); }
+/* Size fields: pixels for an owner, with the CSS itself one step away. */
+.ss-size { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.ss-size-pair { display: flex; align-items: flex-end; gap: 8px; }
+.ss-num { display: inline-grid; grid-template-columns: 58px auto; align-items: center; column-gap: 5px; }
+.ss-num .input { text-align: right; font-variant-numeric: tabular-nums; }
+.ss-num-label { grid-column: 1 / -1; padding-bottom: 3px; font-size: 12px; color: var(--text-3); }
+.ss-unit { font-size: 12px; color: var(--text-3); }
+.ss-size-to { padding-bottom: 5px; font-size: 12px; color: var(--text-3); }
+.ss-size > .input { width: 100%; }
+.ss-size-note { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; font-size: 12px; color: var(--text-3); }
+.ss-css-toggle { min-height: 24px; font-size: 12px; }
+.ss-css-area { min-height: 52px; font-size: 12px; }
+.ss-theme-use { margin: 0; font-size: 12px; color: var(--text); }
+.ss-border { display: grid; grid-template-columns: auto minmax(0, 0.7fr) minmax(0, 1.3fr); gap: 6px; align-items: center; }
+.ss-border .ss-num { grid-template-columns: 44px auto; }
+.ss-lang { max-width: 140px; }
 
 /* ---------- Chat ---------- */
 .chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
