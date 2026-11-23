@@ -288,6 +288,8 @@ export class Orchestrator {
 
   reset() {
     this.conversation = null;
+    // Another project never waits on this one's transcript write.
+    this.saving = Promise.resolve();
   }
 
   // -------------------------------------------------------------------------

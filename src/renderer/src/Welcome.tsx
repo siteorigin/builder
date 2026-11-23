@@ -81,7 +81,8 @@ export function Welcome() {
             </span>
             <ChevronRight className="chev" />
           </button>
-          <button className="welcome-action secondary" disabled={opening === 'dialog'} onClick={() => void open()}>
+          {/* One project opens at a time: a second open while one is on its way would not close the first. */}
+          <button className="welcome-action secondary" disabled={!!opening} onClick={() => void open()}>
             <span className="ico">{opening === 'dialog' ? <Spinner decorative /> : <FolderOpen size={18} />}</span>
             <span className="grow">
               <strong>Open project…</strong>
