@@ -74,6 +74,8 @@ export interface ProjectSnapshot {
   runtime: RuntimeState;
   recoveryNotes: string[];
   aiBusy: boolean;
+  /** The AI request being worked on, while `aiBusy`. */
+  aiRunId?: string | null;
   assetUsage: Record<string, number>;
   /** Files changed outside the app. canonical: a project document (keep or restore); generated: a derived file (restore). */
   conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated' }>;
@@ -276,7 +278,10 @@ export interface BuilderApi {
     clearHistory(workspaceKey?: string): Promise<Conversation>;
     /** `conversationId` is the conversation the message was written in; main refuses it if another one is open. */
     send(text: string, context: ChatContext, conversationId?: string): Promise<{ ok: boolean; runId?: string; message?: string }>;
+    /** Stop the AI. Given the request's ID, resolves once that request has ended and its changes are
+     *  rolled back; `stopped` is false when it had already ended (or another request is running). */
     stop(): Promise<void>;
+    stop(runId: string): Promise<{ stopped: boolean; status?: RunStatus }>;
     answer(runId: string, answer: string): Promise<void>;
     undoTurn(runId: string): Promise<{ ok: boolean; message?: string }>;
     fixCode(source: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string; cancelled?: boolean }>;

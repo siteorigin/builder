@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, History, House, LogOut, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, History, House, LogOut, MessageCircleQuestionMark, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { api, saveLocal, setState, toast, useStore } from '../store';
 import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
@@ -8,6 +8,7 @@ import { selectPage, setMode } from '../lib/actions';
 import { saveStatusAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
 import { toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
+import { settledState } from '../lib/savestate';
 
 const ZOOMS = [0.5, 0.75, 1, 1.25];
 
@@ -24,9 +25,22 @@ export function Toolbar() {
   const definitionMode = useStore((s) => s.definitionMode);
   const dockOpen = useStore((s) => s.dockOpen);
   const hasConflict = useStore((s) => (s.snapshot?.conflicts.length ?? 0) > 0);
+  // An edit made while the AI worked: being applied (after stopping the AI), or waiting for the author.
+  const handoff = useStore((s) => s.heldEdits.some((h) => h.phase === 'applying'));
+  const stoppingForEdit = useStore((s) => s.heldEdits.some((h) => h.phase === 'applying' && !!h.stopping));
+  const held = useStore((s) => s.heldEdits.some((h) => h.phase !== 'applying'));
   const menu = useMenu();
-  const settled: SaveStatus = hasConflict ? 'conflict' : runStatus ? 'ai' : drafting || pending ? 'busy' : 'saved';
-  const announce = useTransitionAnnouncement(settled, saveStatusAnnouncement);
+  // Screen readers hear settled changes only. When the AI finishes they hear how it really ended, and what
+  // became of an edit held meanwhile.
+  const settled: SaveStatus = settledState({ conflict: hasConflict, runStatus, stopping: stoppingForEdit, handoff, held, drafting, pending: pending > 0 });
+  // A save in flight when the AI finishes is a step on the way, not where it came from: what settles
+  // after it is announced from the state before it, so the AI's real outcome is not lost.
+  const beforeBusy = useRef<SaveStatus>(settled);
+  const announce = useTransitionAnnouncement(settled, (prev, next) => {
+    const from = prev === 'busy' ? beforeBusy.current : prev;
+    beforeBusy.current = next === 'busy' ? from : next;
+    return saveStatusAnnouncement(from, next, useStore.getState().aiOutcome);
+  });
   // The width field keeps a draft while typing, so intermediate values like "3" on the way to "390" are allowed.
   const [widthDraft, setWidthDraft] = useState(String(viewport));
   useEffect(() => setWidthDraft(String(viewport)), [viewport]);
@@ -74,13 +88,21 @@ export function Toolbar() {
   const spin = <LoaderCircle style={{ animation: 'spin 1s linear infinite' }} />;
   const save = conflicts
     ? { cls: 'error', icon: <CircleAlert />, text: 'File conflict', title: 'A project file was changed outside SiteOrigin Builder. Review it in Project health.' }
-    : runStatus
-      ? { cls: 'pending', icon: spin, text: 'AI is checking', title: 'The AI’s changes are saved once they pass checks.' }
-      : drafting
-        ? { cls: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
-        : pending
-          ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
-          : { cls: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
+    : runStatus === 'stopping' || stoppingForEdit
+      ? { cls: 'pending', icon: spin, text: 'Stopping AI…', title: stoppingForEdit ? 'Your edit is applied once the AI’s changes are undone.' : 'Anything the AI changed in this request is undone.' }
+      : handoff
+        ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Checking and saving your edit' }
+        : runStatus === 'awaiting-input'
+          ? { cls: 'pending', icon: <MessageCircleQuestionMark />, text: 'AI is waiting for you', title: 'The AI asked a question. Answer it in the AI panel.' }
+          : runStatus
+            ? { cls: 'pending', icon: spin, text: 'AI is checking', title: 'The AI’s changes are saved once they pass checks.' }
+            : held
+              ? { cls: 'pending', icon: <Pencil />, text: 'Edit not saved', title: 'An edit you made while the AI was working is waiting for you.' }
+              : drafting
+                ? { cls: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
+                : pending
+                  ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
+                  : { cls: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
   const siteName = state.site.name;
   const defName = definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
   const placeName = defName ?? page?.title ?? '';

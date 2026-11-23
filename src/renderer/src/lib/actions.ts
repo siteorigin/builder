@@ -1,5 +1,5 @@
 import type { EditOperation } from '@shared/ops';
-import type { ElementRef, GraphNode, OwnerRef, RichText } from '@shared/types';
+import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@shared/types';
 import { sameRichText, toRichText } from '@shared/richtext';
 import { isBinding } from '@shared/types';
 import { findParent } from '@engine/tree';
@@ -124,11 +124,11 @@ function inlineField(node: GraphNode | undefined): { field: 'text' | 'label'; va
   return null;
 }
 
-/** The value a reference's inline-editable field shows now: a bound field shows its placement's value, or the
- *  property's default when the placement has none. */
-function currentValue(ref: ElementRef, bound: unknown): unknown {
+/** The value a reference's inline-editable field shows in `state`: a bound field shows its placement's value,
+ *  or the property's default when the placement has none. */
+function currentValue(state: ProjectState, ref: ElementRef, bound: unknown): unknown {
   if (!isBinding(bound)) return bound;
-  const r = resolveRef(getState().snapshot!.state, ref);
+  const r = resolveRef(state, ref);
   const props = (r.instance?.props ?? {}) as Record<string, unknown>;
   if ('$prop' in bound) return props[bound.$prop] ?? (r.def?.properties[bound.$prop] as { default?: unknown } | undefined)?.default;
   const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
@@ -144,14 +144,17 @@ function sameValue(current: unknown, next: string | RichText): boolean {
   return sameRichText(toRichText(current), next);
 }
 
-/** Commit inline text from the canvas to the right document field. Text that ends up as it was makes no edit. */
-export async function commitText(ref: ElementRef, text: string | RichText) {
-  const s = getState();
-  if (!s.snapshot) return;
-  const r = resolveRef(s.snapshot.state, ref);
+/**
+ * Commit inline text from the canvas to the right document field, as that field is in `snapshot` (by default
+ * the project now; the project when editing began, for an edit checked because the AI ran meanwhile). Text
+ * that ends up as it was makes no edit.
+ */
+export async function commitText(ref: ElementRef, text: string | RichText, snapshot = getState().snapshot) {
+  if (!snapshot) return;
+  const r = resolveRef(snapshot.state, ref);
   const target = inlineField(r.node as GraphNode | undefined);
   if (!target) return;
-  if (sameValue(currentValue(ref, target.value), text)) return;
+  if (sameValue(currentValue(snapshot.state, ref, target.value), text)) return;
   const label = (target.field === 'label' ? 'Edit button text' : 'Edit text') + (ref.owner.kind === 'component' ? ' everywhere' : '');
   if (!ref.instancePath.length) {
     await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label);

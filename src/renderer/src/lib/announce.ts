@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { RunStatus } from '@shared/api';
 
 /**
  * Text for a polite live region that changes only when `state` moves to a different value, so screen
@@ -33,15 +34,42 @@ export function announcementText(msg: string | null, count: number): { text: str
   return { text: msg + (n % 2 ? '' : ' '), count: n };
 }
 
-/** The toolbar's save status, as screen readers hear it settle. */
-export type SaveStatus = 'conflict' | 'ai' | 'busy' | 'saved';
+/** The toolbar's save status, as screen readers hear it settle. `held`: an edit typed while the AI worked waits. */
+export type SaveStatus = 'conflict' | 'ai' | 'held' | 'busy' | 'saved';
 
-/** Screen readers hear settled changes only: a save completing, an AI check starting or finishing, a conflict
- *  appearing or clearing. Typing and the Unsaved/Saving flicker in between stay quiet, and clear the region,
- *  so it never still says "All changes saved" while the toolbar shows a change that is not saved. */
-export function saveStatusAnnouncement(prev: SaveStatus, next: SaveStatus): string {
+/** How the last AI request ended (`run`), and what became of an edit held while it worked (`edit`). */
+export interface AiEnding {
+  run: RunStatus | null;
+  edit?: 'saved' | 'held';
+}
+
+const RUN_ENDED: Partial<Record<RunStatus, string>> = {
+  completed: 'AI changes saved',
+  'no-changes': 'AI finished without changing anything',
+  cancelled: 'AI stopped',
+  failed: 'AI request failed',
+  conflicted: 'AI stopped. A file changed outside SiteOrigin Builder, so its changes were kept for review'
+};
+
+/**
+ * Screen readers hear settled changes only: a save completing, an AI check starting or finishing, a conflict
+ * appearing or clearing. Typing and the Unsaved/Saving flicker in between stay quiet, and clear the region,
+ * so it never still says "All changes saved" while the toolbar shows a change that is not saved. Given how
+ * the last AI request ended (`ending`), the AI finishing is announced as it really ended (a stopped request
+ * is not "AI changes saved"), and a held edit as saved only once it was.
+ */
+export function saveStatusAnnouncement(prev: SaveStatus, next: SaveStatus, ending?: AiEnding | null): string {
   if (next === 'conflict') return 'File conflict. A project file was changed outside SiteOrigin Builder.';
   if (next === 'ai') return 'AI is checking its changes';
   if (next === 'busy') return '';
-  return prev === 'conflict' ? 'File conflict resolved. All changes saved' : prev === 'ai' ? 'AI changes saved' : 'All changes saved';
+  const ran = prev !== 'ai' ? undefined : ending === undefined ? 'AI changes saved' : ending?.run ? RUN_ENDED[ending.run] : undefined;
+  if (next === 'held') {
+    const edit = ending?.edit === 'held' ? 'Your edit was not applied. Review it below' : ending?.edit === 'saved' ? 'Your edit was saved. Another edit is not saved yet' : 'Your edit is not saved yet';
+    return [ran, edit].filter(Boolean).join('. ');
+  }
+  if (prev === 'conflict') return 'File conflict resolved. All changes saved';
+  if (prev === 'held' && ending?.edit === 'saved') return 'Your edit was saved';
+  if (prev === 'ai' && ending?.edit === 'saved') return [ran, 'Your edit was saved'].filter(Boolean).join('. ');
+  if (prev === 'ai') return ran ?? 'All changes saved';
+  return 'All changes saved';
 }

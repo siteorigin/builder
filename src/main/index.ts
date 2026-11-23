@@ -127,6 +127,7 @@ const orchestrator = new Orchestrator({
   codeEnabled: async () => (await loadSettings()).settings.developerMode
 });
 controller.aiBusy = () => orchestrator.busy;
+controller.aiRunId = () => orchestrator.runId;
 controller.onSessionOpened = async (s) => {
   orchestrator.reset();
   // Another app took the project over: stop the assistant (the session already refuses its writes).
@@ -278,7 +279,8 @@ function registerIpc() {
     return readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory();
   });
   handle('ai:send', (text: string, ctx, conversationId?: string) => (readOnlyReason() ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined)));
-  handle('ai:stop', () => orchestrator.stop());
+  // With a request ID, stop exactly that request and answer once it has ended and its changes are rolled back.
+  handle('ai:stop', (runId?: unknown) => (typeof runId === 'string' ? orchestrator.stopRun(runId) : orchestrator.stop()));
   handle('ai:answer', (runId: string, answer: string) => orchestrator.answer(runId, answer));
   handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));
   handle('ai:fixCode', async (source: string) => {

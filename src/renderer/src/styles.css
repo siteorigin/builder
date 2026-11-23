@@ -294,6 +294,14 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .toast.error { background: #a32a24; color: white; }
 @media (prefers-color-scheme: dark) { .toast { background: #e7ecf4; color: var(--ink); } .toast.error { background: #ffb3ad; color: #3a0c09; } }
 .toast button { color: inherit; opacity: 0.8; }
+/* A typed edit kept while the AI works: stays until the author applies or discards it. */
+.toasts .toast-group { display: contents; }
+.toast.held { align-items: flex-start; max-width: 460px; }
+.toast.held .held-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.toast.held .held-where { font-weight: 600; }
+.toast.held .held-text { user-select: text; overflow-wrap: anywhere; opacity: 0.9; }
+.toast.held .held-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-left: -8px; }
+.toast.held button { opacity: 1; }
 
 /* ---------- Welcome ---------- */
 .welcome { display: grid; grid-template-columns: 340px 1fr; height: 100%; }
