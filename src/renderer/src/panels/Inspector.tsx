@@ -684,9 +684,11 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
               const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${instNodeId}:${listProp}:${itemId}:${b.item}`);
               // A page list's card says where an empty field's text comes from.
               const teaser = teaserFieldNote(state, listSchema, item, b.item!);
+              // An item without its own value for the field shows the field's default, on the site and here.
+              const value = Object.hasOwn(item, b.item!) ? item[b.item!] : field.default;
               return (
-                <div key={`${itemId}:${b.item}`} style={{ display: 'contents' }} {...reveal.handlers}>
-                  <ScalarField schema={field} value={item[b.item!]} state={state} onChange={edit} hint={teaser?.hint} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
+                <div key={`${itemId}:${b.item}`} data-field={b.item} style={{ display: 'contents' }} {...reveal.handlers}>
+                  <ScalarField schema={field} value={value} state={state} onChange={edit} hint={teaser?.hint} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
                 </div>
               );
             }

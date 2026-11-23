@@ -16,6 +16,7 @@ import { Chat } from './panels/Chat';
 import { SettingsModal } from './panels/SettingsModal';
 import { ExportModal } from './panels/ExportModal';
 import { CommandMenu } from './panels/CommandMenu';
+import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, RenameComponentModal, SetHomeModal } from './panels/Dialogs';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
@@ -139,6 +140,11 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   }
   if (mod && key.toLowerCase() === 'k') {
     setState({ modal: s.modal?.kind === 'cmdk' ? null : { kind: 'cmdk' } });
+    return true;
+  }
+  // Find and replace in the site's content. Never over another dialog, which could hold an unsaved draft.
+  if (mod && shift && key.toLowerCase() === 'f') {
+    if (!s.modal && !openDialogs.length && s.snapshot) setState({ modal: { kind: 'find' } });
     return true;
   }
   if (mod && key.toLowerCase() === 's') {
@@ -316,7 +322,7 @@ export function Editor() {
       if (openDialogs.length && !(mod && e.key.toLowerCase() === 'k' && getState().modal?.kind === 'cmdk')) return;
       // Undo and Redo from a control without text history of its own (a select, a checkbox) undo the project.
       const history = mod && !e.altKey && ['z', 'y'].includes(e.key.toLowerCase()) && focusedSurface(e.target as HTMLElement) !== 'text';
-      if (isTyping(e) && !history && !(mod && ['k', 'e', 'j', 's'].includes(e.key.toLowerCase()))) return;
+      if (isTyping(e) && !history && !(mod && ['k', 'e', 'j', 's'].includes(e.key.toLowerCase())) && !(mod && e.shiftKey && e.key.toLowerCase() === 'f')) return;
       // Delete removes the canvas selection only when the canvas or Layers has the focus, never from a
       // button or row in another panel (an Assets tile, a page row).
       if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
@@ -488,6 +494,7 @@ export function Editor() {
       {modal?.kind === 'settings' && <SettingsModal />}
       {modal?.kind === 'export' && <ExportModal />}
       {modal?.kind === 'cmdk' && <CommandMenu />}
+      {modal?.kind === 'find' && <FindReplaceModal initial={modal.query} />}
       {modal?.kind === 'source' && <SourceModal definitionId={modal.definitionId} />}
       {modal?.kind === 'page-source' && <PageSourceModal pageId={modal.pageId} />}
       {modal?.kind === 'new-code' && <NewCodeComponentModal />}

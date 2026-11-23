@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, FolderOpen, History, Plus, Redo2, Search, Undo2, Settings, Sparkles, Upload, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House } from 'lucide-react';
+import { Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, TextSearch, Undo2, Settings, Sparkles, Upload, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
@@ -9,6 +9,8 @@ import { insert, selectPage, askAiAbout, setMode, openSiteStyles } from '../lib/
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { LucideIcon } from './InsertPanel';
+import { openContentMatch } from './FindReplace';
+import { contentFields, findContent, placedSections, sectionMatches } from '../lib/find-content';
 
 interface Cmd {
   id: string;
@@ -35,6 +37,7 @@ export function CommandMenu() {
       { id: 'newpage', label: 'Add page…', group: 'Page', icon: <Plus />, run: () => (setState({ leftTab: 'pages' }), setTimeout(() => window.dispatchEvent(new Event('builder-add-page')), 0)) },
       { id: 'ai', kbd: '⌘J', label: 'Ask AI…', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
       { id: 'styles', label: 'Open site styles: colors, fonts and spacing', group: 'View', icon: <Palette />, run: () => openSiteStyles() },
+      { id: 'find', kbd: '⇧⌘F', label: 'Find and replace in site content…', group: 'Edit', icon: <Replace />, run: () => setState({ modal: { kind: 'find' } }) },
       { id: 'undo', kbd: '⌘Z', label: 'Undo', group: 'Edit', icon: <Undo2 />, run: () => void api.project.undo() },
       { id: 'redo', kbd: '⇧⌘Z', label: 'Redo', group: 'Edit', icon: <Redo2 />, run: () => void api.project.redo() },
       { id: 'newproject', kbd: '⇧⌘N', label: 'New project…', group: 'Project', icon: <Plus />, run: () => sendCommand('new-project') },
@@ -51,7 +54,43 @@ export function CommandMenu() {
       { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];
   }, [snap]);
-  const filtered = exactDetailFirst(cmds.filter((c) => matchesWords(q, commandText(c.label, c.detail))), q).slice(0, 40);
+  // What is already on the site comes before what can be added: the sections placed on each page, and a few of the
+  // words and destinations the search finds (the full list is in Find and replace).
+  const sections = useMemo(() => (snap ? placedSections(snap.state) : []), [snap]);
+  const fields = useMemo(() => (snap ? contentFields(snap.state) : []), [snap]);
+  const found = useMemo<Cmd[]>(() => {
+    const t = q.trim();
+    if (!snap || !t) return [];
+    const placed = sections
+      .filter((x) => sectionMatches(x, t))
+      .slice(0, 6)
+      .map((x, i) => ({
+        id: `sec:${i}:${x.label}`,
+        label: x.label,
+        group: 'On the site',
+        icon: <Component />,
+        run: () => {
+          const st = useStore.getState();
+          // The header and footer show on the current page unless it has none; then on the first page with them.
+          const shows = (id: string | null) => !!id && st.snapshot?.state.pages[id]?.shell !== 'none' && !!st.snapshot?.state.pages[id];
+          const pageId = x.pageId ?? (shows(st.pageId) ? st.pageId : snap.state.site.pageOrder.find(shows)) ?? null;
+          if (pageId && (pageId !== st.pageId || st.definitionMode)) selectPage(pageId);
+          setState({ mode: 'edit', selection: x.ref, rightTab: 'inspect', dockOpen: true });
+        }
+      }));
+    const words = t.length < 2 ? [] : findContent(snap.state, t, {}, fields).slice(0, 5).map((m) => ({
+      id: `find:${m.id}`,
+      label: `${m.before}${m.match}${m.after}`.slice(0, 90),
+      group: `${m.field.where} › ${m.field.section}`,
+      icon: m.kind === 'link' ? <Link2 /> : <TextSearch />,
+      run: () => openContentMatch(m.field)
+    }));
+    return [...placed, ...words, { id: 'find:all', label: `Find “${t}” in site content…`, group: 'Edit', icon: <Replace />, run: () => setState({ modal: { kind: 'find', query: t } }) }];
+  }, [snap, q, sections, fields]);
+  const matched = exactDetailFirst(cmds.filter((c) => matchesWords(q, commandText(c.label, c.detail))), q);
+  // A page whose address was typed exactly stays first; then what is already on the site; then everything else.
+  const exact = matched.filter((c) => !!c.detail && c.detail.toLowerCase() === q.trim().toLowerCase());
+  const filtered = [...exact, ...found, ...matched.slice(exact.length)].slice(0, 40);
   const pick = (c: Cmd | undefined) => {
     if (!c) return;
     if (useStore.getState().modal?.kind === 'cmdk') setState({ modal: null });
