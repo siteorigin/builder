@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AiEvent, AppSettings, ChatMessage, Conversation, LocalWorkspaceState, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, ChatMessage, ChatMode, Conversation, LocalWorkspaceState, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ResponsiveScope } from '@shared/types';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
@@ -128,11 +128,17 @@ interface State {
   conversation: Conversation | null;
   runStatus: RunStatus | null;
   activeRunId: string | null;
+  /** What kind of request is running, while `runStatus` is set: a question never holds the project. */
+  runMode: ChatMode | null;
   /** Unsent messages per conversation of the open project (see lib/chatDrafts). */
   chatDrafts: ChatDrafts;
   /** Library images attached to those unsent messages, by asset ID (see lib/chatDrafts). */
   chatImages: ChatImages;
   chatContextEnabled: { page: boolean; selection: boolean };
+  /** What the next message is: a change for the AI to make, or a read-only question. */
+  chatMode: ChatMode;
+  /** A field to bring into view and focus once its component shows in the Inspector ("Open in inspector"). */
+  inspectorFocus: InspectorFocus | null;
   /** Typed edits made while the AI was working (see HeldEdit). */
   heldEdits: HeldEdit[];
   aiOutcome: AiOutcome | null;
@@ -170,13 +176,36 @@ export const useStore = create<State>((set) => ({
   conversation: null,
   runStatus: null,
   activeRunId: null,
+  runMode: null,
   chatDrafts: {},
   chatImages: {},
   chatContextEnabled: { page: true, selection: true },
+  chatMode: 'edit',
+  inspectorFocus: null,
   heldEdits: [],
   aiOutcome: null,
   setState: (p) => set(p)
 }));
+
+/**
+ * One request to focus a content field, taken by the Inspector of the component named. `opening` is the
+ * project opening it was made in, and a request that no Inspector took soon after is dropped.
+ */
+export interface InspectorFocus {
+  seq: number;
+  at: number;
+  opening: string;
+  owner: OwnerRef;
+  nodeId: string;
+  prop: string;
+  itemId?: string;
+  field?: string;
+  /** The field's label, to say it has gone. */
+  label: string;
+}
+
+/** The status of a request that may change the site; a read-only question is not one. */
+export const editRunStatus = (s: Pick<State, 'runStatus' | 'runMode'>) => (s.runMode === 'ask' ? null : s.runStatus);
 
 export const getState = () => useStore.getState();
 export const setState = (p: Partial<State>) => useStore.setState(p);
@@ -625,8 +654,14 @@ export function applyAiEvent(e: AiEvent) {
   const s = getState();
   if (e.kind === 'status') {
     const terminal = ['completed', 'no-changes', 'cancelled', 'failed', 'conflicted'].includes(e.status!);
-    aiEpoch++;
-    setState(terminal ? { runStatus: null, activeRunId: null, aiOutcome: { run: e.status!, runId: e.runId } } : { runStatus: e.status!, activeRunId: e.runId });
+    // A question never changes the site, so edits typed while it runs are not held or checked against it.
+    const ask = e.mode === 'ask';
+    if (!ask) aiEpoch++;
+    setState(
+      terminal
+        ? { runStatus: null, activeRunId: null, runMode: null, ...(ask ? {} : { aiOutcome: { run: e.status!, runId: e.runId } }) }
+        : { runStatus: e.status!, activeRunId: e.runId, runMode: ask ? 'ask' : 'edit' }
+    );
     return;
   }
   const conv = s.conversation;

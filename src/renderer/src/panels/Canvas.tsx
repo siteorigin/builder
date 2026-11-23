@@ -46,6 +46,7 @@ export function Canvas() {
   const revealedItem = useStore((s) => s.revealedItem);
   const inspectorShown = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const runStatus = useStore((s) => s.runStatus);
+  const reading = useStore((s) => s.runMode === 'ask');
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const definitionMode = useStore((s) => s.definitionMode);
   // While Site styles is open, edits are site-wide; the element selection steps back.
@@ -716,7 +717,15 @@ export function Canvas() {
               </button>
             </>
           ) : (
-            runPhase(runStatus) === 'checking' ? 'The AI is checking its changes. You can look around while it works.' : runPhase(runStatus) === 'stopping' ? 'Stopping the AI and undoing its changes.' : 'The AI is editing this site. You can look around while it works.'
+            reading ? (
+              runStatus === 'stopping' ? 'Stopping the question.' : 'The AI is reading the site to answer your question. You can keep editing.'
+            ) : runPhase(runStatus) === 'checking' ? (
+              'The AI is checking its changes. You can look around while it works.'
+            ) : runPhase(runStatus) === 'stopping' ? (
+              'Stopping the AI and undoing its changes.'
+            ) : (
+              'The AI is editing this site. You can look around while it works.'
+            )
           )}
           <button className="btn btn-sm" onClick={() => void api.ai.stop()}>
             Stop

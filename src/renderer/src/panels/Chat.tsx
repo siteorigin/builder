@@ -1,14 +1,14 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUp, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, FileText, Globe, History, Info, KeyRound, MousePointerClick, Play, Plus, RotateCcw, Settings2, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChatActivity, ChatChange, ChatContext, ChatImageRef, ChatMessage } from '@shared/api';
+import { ArrowUp, BookOpen, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, FileText, Globe, History, Info, KeyRound, MessageCircleQuestionMark, MousePointerClick, Pencil, Play, Plus, RotateCcw, Settings2, SlidersHorizontal, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
+import type { ChatActivity, ChatChange, ChatContext, ChatImageRef, ChatMessage, FieldLocation } from '@shared/api';
 import { refKey } from '@shared/types';
-import { api, getState, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft } from '../store';
+import { api, getState, saveLocal, setState, toast, useStore, confirmDialog, selectChatDraft, selectChatImages, setChatDraft } from '../store';
 import { afterSendMessage, draftFor, imagesFor, moveDraft, moveImages, unsentDrafts, withDraft, withImages } from '../lib/chatDrafts';
 import { refLabel, resolveRef } from '../lib/model';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, resumableId } from '../lib/result';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId } from '../lib/result';
 import { composerAction, isPaused, isStarting, offeredImages, questionHint, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
@@ -36,6 +36,8 @@ const PHASE: Record<string, string> = {
 
 /** How a finished turn is headed: one icon and one word per outcome, never color alone. */
 function outcome(r: NonNullable<ChatMessage['result']>) {
+  // A question read the site and could not change it, which is what its heading says.
+  if (r.ask && r.status === 'no-changes') return { icon: <BookOpen />, label: 'Answered · site unchanged' };
   if (r.status === 'completed' && r.incomplete) return { icon: <CircleDashed />, label: 'Partly done' };
   if (r.status === 'no-changes' && r.incomplete) return { icon: <CircleDashed />, label: 'Not finished' };
   switch (r.status) {
@@ -56,6 +58,7 @@ function outcome(r: NonNullable<ChatMessage['result']>) {
 
 /** A summary that only repeats its outcome ("Stopped.") says what happened to the site instead. */
 function summaryOf(r: NonNullable<ChatMessage['result']>) {
+  if (r.ask && r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return 'You stopped this question. It could not change anything.';
   if (r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return r.changes.length ? 'You stopped this request. Its changes were undone.' : 'You stopped this request before it changed anything.';
   return r.summary;
 }
@@ -82,6 +85,9 @@ export function Chat() {
   const snap = useStore((s) => s.snapshot);
   const viewport = useStore((s) => s.viewport);
   const ctxOn = useStore((s) => s.chatContextEnabled);
+  const chatMode = useStore((s) => s.chatMode);
+  const runMode = useStore((s) => s.runMode);
+  const askMode = chatMode === 'ask';
   const providers = useStore((s) => s.providers);
   const settings = useStore((s) => s.settings);
   const logRef = useRef<HTMLDivElement>(null);
@@ -159,7 +165,7 @@ export function Chat() {
       } else if (runStatus === 'preparing' && announcedRun.current !== `${activeRunId}:start`) {
         announcedRun.current = `${activeRunId}:start`;
         setAnnounce(`AI started working${target ? ` on ${target}` : ''}.`);
-      } else if (runStatus === 'stopping') setAnnounce('Stopping the AI. Its changes are being undone.');
+      } else if (runStatus === 'stopping') setAnnounce(runMode === 'ask' ? 'Stopping the question.' : 'Stopping the AI. Its changes are being undone.');
       else if (runStatus === 'running') setAnnounce('');
     }
     const run = trackedRun.current;
@@ -179,7 +185,8 @@ export function Chat() {
   const modelLabel = provider?.models.find((m) => m.id === model)?.label ?? model;
   const sel = selLabel?.toLowerCase();
   // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
-  const suggestions = msgs.length === 0 && configured && conversation && !draft.trim() ? chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: ctxOn }) : [];
+  // The starters are changes to make, so a question starts from an empty box.
+  const suggestions = !askMode && msgs.length === 0 && configured && conversation && !draft.trim() ? chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: ctxOn }) : [];
   const openSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const focusComposer = () => requestAnimationFrame(() => taRef.current?.focus());
 
@@ -219,7 +226,8 @@ export function Chat() {
       selectionLabel: ctxOn.selection && selLabel ? selLabel : null,
       viewport,
       // The images go by asset ID only; the app checks they are still in Assets before anything is sent.
-      ...(images.length ? { assetIds: [...images] } : {})
+      ...(images.length ? { assetIds: [...images] } : {}),
+      ...(askMode ? { mode: 'ask' as const } : {})
     };
     // Keep focus in the composer: the Send button is about to be disabled.
     taRef.current?.focus();
@@ -246,7 +254,11 @@ export function Chat() {
       // The user picks the target in the editor and sends "Continue" from the composer, never over a draft.
       toast(c.error, 'info');
       const s = getState();
-      if (conversation && !draftFor(s.chatDrafts, conversation.id).trim()) setState({ chatDrafts: withDraft(s.chatDrafts, conversation.id, 'Continue') });
+      // "Continue" carries on with an edit, so the composer goes back to Edit for it.
+      if (conversation && !draftFor(s.chatDrafts, conversation.id).trim()) {
+        setState({ chatDrafts: withDraft(s.chatDrafts, conversation.id, 'Continue'), chatMode: 'edit' });
+        saveLocal({ chatMode: 'edit' });
+      }
       focusComposer();
       return;
     }
@@ -334,8 +346,17 @@ export function Chat() {
               <Sparkles size={20} />
             </div>
             <div className="col" style={{ gap: 4 }}>
-              <h3>Ask AI to edit your site</h3>
-              <p>It uses the same editing tools you do and checks its work. You can undo its changes like your own.</p>
+              {askMode ? (
+                <>
+                  <h3>Ask how your site works</h3>
+                  <p>The AI reads the site and answers without changing anything. It can point you to the field to change, and you can keep editing meanwhile.</p>
+                </>
+              ) : (
+                <>
+                  <h3>Ask AI to edit your site</h3>
+                  <p>It uses the same editing tools you do and checks its work. You can undo its changes like your own.</p>
+                </>
+              )}
             </div>
             {!configured ? (
               <button className="btn btn-primary" onClick={openSettings}>
@@ -386,7 +407,7 @@ export function Chat() {
             {waiting ? <CircleHelp /> : <Sparkles />}
           </span>
           <span className="run-text">
-            <span className="run-phase">{PHASE[runStatus!] ?? 'Working'}</span>
+            <span className="run-phase">{runMode === 'ask' && runStatus !== 'awaiting-input' && runStatus !== 'stopping' ? 'Reading the site' : (PHASE[runStatus!] ?? 'Working')}</span>
             {workingUser?.context && <span className="run-target">{targetOf(workingUser.context)}</span>}
           </span>
           <span className="run-actions">
@@ -451,13 +472,19 @@ export function Chat() {
       {configured || asking ? (
         <div className="composer">
           {(page || selLabel) && (
-            <div className="chips" role="group" aria-label="Your next message applies to">
+            <div className="chips" role="group" aria-label={askMode ? 'Your question is about' : 'Your next message applies to'}>
               {page && (
-                <span className="chip" title="The AI starts from the page you are viewing. Without a selection, it can also change other pages.">
+                <span className="chip" title={askMode ? 'The AI starts from the page you are viewing.' : 'The AI starts from the page you are viewing. Without a selection, it can also change other pages.'}>
                   <FileText /> <span className="ellipsis">{page.title}</span>
                 </span>
               )}
-              {selLabel && (
+              {selLabel && askMode && ctxOn.selection && (
+                // A question changes nothing, so the selection only says what it is about.
+                <span className="chip" title="The AI starts from the selected element">
+                  <MousePointerClick /> <span className="ellipsis">{selLabel}</span>
+                </span>
+              )}
+              {selLabel && !askMode && (
                 // What the next message may change: the selected element only, or anything on the site.
                 <Segmented<'selection' | 'site'>
                   label="What the AI may change"
@@ -506,7 +533,7 @@ export function Chat() {
           <textarea
             ref={taRef}
             value={composerText}
-            placeholder={asking ? 'Type your answer…' : waiting ? 'Waiting for the question…' : running ? 'Draft your next message…' : selLabel && ctxOn.selection ? `Ask about the ${sel}…` : 'Describe a change…'}
+            placeholder={asking ? 'Type your answer…' : waiting ? 'Waiting for the question…' : running ? 'Draft your next message…' : askMode ? 'Ask how this site works…' : selLabel && ctxOn.selection ? `Ask about the ${sel}…` : 'Describe a change…'}
             aria-label={asking ? 'Your answer' : 'Message'}
             aria-describedby={asking ? 'ai-question-text ai-question-hint' : undefined}
             rows={1}
@@ -537,6 +564,36 @@ export function Chat() {
             }}
           />
           <div className="composer-foot">
+            {!asking && (
+              <Segmented<'edit' | 'ask'>
+                label="What your next message does"
+                value={chatMode}
+                onChange={(v) => {
+                  setState({ chatMode: v });
+                  saveLocal({ chatMode: v });
+                }}
+                options={[
+                  {
+                    value: 'edit',
+                    title: 'Edit: the AI makes the changes you describe',
+                    label: (
+                      <>
+                        <Pencil /> Edit
+                      </>
+                    )
+                  },
+                  {
+                    value: 'ask',
+                    title: 'Ask: a read-only question. The AI reads the site and changes nothing, and you can keep editing.',
+                    label: (
+                      <>
+                        <MessageCircleQuestionMark /> Ask
+                      </>
+                    )
+                  }
+                ]}
+              />
+            )}
             {provider && (
               <button className="btn btn-sm btn-ghost composer-model" title="Change AI provider or model" aria-haspopup="dialog" onClick={openSettings}>
                 <span className="label">
@@ -593,11 +650,12 @@ export function Chat() {
 function UserMessage({ m }: { m: ChatMessage }) {
   const target = targetOf(m.context);
   const images = Array.isArray(m.images) ? m.images.filter((i) => typeof i?.assetId === 'string' && typeof i.name === 'string') : [];
+  const ask = m.context?.mode === 'ask';
   return (
     <div className="msg-user">
       {typeof m.text === 'string' ? m.text : ''}
       {images.length > 0 && <ImageChips images={images} label="Attached images" />}
-      {target && <span className="ctx">{target}</span>}
+      {(target || ask) && <span className="ctx">{[ask ? 'Question · read only' : '', target].filter(Boolean).join(' · ')}</span>}
     </div>
   );
 }
@@ -689,6 +747,41 @@ function AssistantMessage({ m, live, awaiting, undoable, asking, onContinue }: {
   );
 }
 
+let revealSeq = 0;
+
+/** The located fields of a result read back from disk: anything malformed is left out, never shown broken. */
+function storedLocations(list: unknown): FieldLocation[] {
+  if (!Array.isArray(list)) return [];
+  const text = (v: unknown) => typeof v === 'string';
+  return list.filter((l): l is FieldLocation => {
+    if (!l || typeof l !== 'object') return false;
+    const x = l as Partial<FieldLocation>;
+    const owner = !!x.owner && text(x.owner.id) && (x.owner.kind === 'page' || (x.owner.kind === 'shell' && (x.owner.id === 'header' || x.owner.id === 'footer')));
+    const item = x.itemId === undefined ? x.field === undefined : text(x.itemId) && text(x.field);
+    return owner && item && text(x.nodeId) && text(x.prop) && Array.isArray(x.path) && x.path.length > 0 && x.path.every(text);
+  });
+}
+
+/**
+ * Open a located field where it is now: its page, its component selected in the Inspector, the list item open
+ * and the field focused. Nothing in the site changes. A field that has gone is said so, and nothing moves.
+ */
+function openLocation(l: FieldLocation) {
+  const s = getState();
+  const st = s.snapshot?.state;
+  if (!st || !s.snapshot) return;
+  const target = locationTarget(st, s.pageId, l);
+  if ('error' in target) return toast(target.error, 'info');
+  selectPage(target.pageId);
+  setState({
+    selection: target.selection,
+    mode: 'edit',
+    rightTab: 'inspect',
+    dockOpen: true,
+    inspectorFocus: { seq: ++revealSeq, at: Date.now(), opening: s.snapshot.workspaceKey, owner: target.selection.owner, nodeId: l.nodeId, prop: l.prop, ...(l.itemId !== undefined ? { itemId: l.itemId, field: l.field } : {}), label: l.path.at(-1) ?? 'That field' }
+  });
+}
+
 /** Show a change: its page, then the element if it is still there. */
 function openChange(c: ChatChange) {
   const st = getState().snapshot?.state;
@@ -713,6 +806,7 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
   const undone = r.status === 'failed' || r.status === 'cancelled';
   const authProblem = !!r.error && /API key/i.test(r.summary);
   const { issues, unverified, passes } = checksOf(r);
+  const locations = storedLocations(r.locations);
   const [showPasses, setShowPasses] = useState(false);
   const retry = async () => {
     const conv = getState().conversation;
@@ -751,8 +845,12 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
         chatImages: withImages(getState().chatImages, conv.id, originalImages),
         ...(pageOk ? { pageId: ctx!.pageId } : {}),
         selection: selOk ? ctx!.selection : null,
-        chatContextEnabled: { page: true, selection: selOk }
+        chatContextEnabled: { page: true, selection: selOk },
+        // Tried again as it was sent: a question stays a question.
+        chatMode: ctx?.mode === 'ask' ? 'ask' : 'edit'
       });
+      // Kept with the draft it comes back with, so reopening the project cannot send it the other way.
+      saveLocal({ chatMode: ctx?.mode === 'ask' ? 'ask' : 'edit' });
       if ((ctx?.selection && !selOk) || (ctx?.pageId && !pageOk)) toast(`${ctx?.selectionLabel ?? ctx?.pageTitle ?? 'What this was about'} is no longer in the site. Choose what to change, then send again.`, 'info');
     }
     requestAnimationFrame(() => {
@@ -787,6 +885,18 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
         <div className="result-summary">
           <Md text={summaryOf(r)} />
         </div>
+        {locations.length > 0 && (
+          <ul className="locations" aria-label="Where to change it">
+            {locations.map((l, i) => (
+              <li key={i}>
+                <span className="location-path">{l.path.join(' → ')}</span>
+                <button className="btn btn-sm" onClick={() => openLocation(l)} title={`Open ${l.path.at(-1)} in the Inspector`}>
+                  <SlidersHorizontal /> Open in inspector
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         {r.changes.length > 0 &&
           (undone ? (
             <div className="result-section">

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import type { ChatMessage } from '@shared/api';
-import { canOpen, changeTarget, changeText, checksOf, continueContext, resumableId } from '../../src/renderer/src/lib/result';
+import type { InstanceNode, ListItem } from '@shared/types';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, locationTarget, resumableId } from '../../src/renderer/src/lib/result';
 
 describe('AI result card', () => {
   it('counts only passing checks as passed, keeping unchecked ones apart from site problems', () => {
@@ -122,5 +123,49 @@ describe('continuing an unfinished request (#88)', () => {
     // A font, or an ID the library never had, is not an image either.
     expect(continueContext(user('u', { ...ctx, assetIds: [nook.id, font.id] }), both, 1280)).toEqual({ error: 'An image attached to that request is no longer in Assets. Attach the images you want, then send "Continue".' });
     expect(continueContext(user('u', { ...ctx, assetIds: ['a_unknown'] }), both, 1280)).toEqual({ error: 'An image attached to that request is no longer in Assets. Attach the images you want, then send "Continue".' });
+  });
+});
+
+describe('opening a field the AI located (#203)', () => {
+  const setup = () => {
+    const state = createStarterState('business', 'Test Studio', false);
+    const contact = Object.values(state.pages).find((p) => p.title === 'Contact')!;
+    const nodeId = contact.rootIds.find((id) => (contact.nodes[id] as { definitionId?: string }).definitionId === 'foundation.contact.details')!;
+    const items = (contact.nodes[nodeId] as InstanceNode).props.items as ListItem[];
+    const hours = items.find((i) => i.label === 'Hours')!;
+    const owner = { kind: 'page' as const, id: contact.id };
+    const location = { owner, nodeId, prop: 'items', itemId: hours.id, field: 'value', path: ['Contact', 'Contact details', 'Content', 'Contact methods', 'Hours', 'Value'] };
+    return { state, contact, nodeId, hours, owner, location };
+  };
+
+  it('selects the component on its page, from whichever page is open', () => {
+    const { state, contact, nodeId, location, owner } = setup();
+    expect(locationTarget(state, state.site.homePageId, location)).toEqual({ pageId: contact.id, selection: { owner, instancePath: [], nodeId } });
+  });
+
+  it('follows the item after it moves, and never opens a different item with the same title', () => {
+    const { state, contact, nodeId, hours, owner, location } = setup();
+    let s = applyOperations(state, [{ type: 'instance.listMove', owner, nodeId, prop: 'items', itemId: hours.id, index: 0 }]).state;
+    expect(locationTarget(s, null, location)).toEqual({ pageId: contact.id, selection: { owner, instancePath: [], nodeId } });
+    s = applyOperations(s, [
+      { type: 'instance.listRemove', owner, nodeId, prop: 'items', itemId: hours.id },
+      { type: 'instance.listInsert', owner, nodeId, prop: 'items', item: { icon: 'clock', label: 'Hours', value: 'Weekends', link: { type: 'none', target: '' } } }
+    ]).state;
+    expect(locationTarget(s, null, location)).toEqual({ error: 'Value can no longer be opened. Contact methods in Contact details no longer has that contact method.' });
+    s = applyOperations(s, [{ type: 'node.remove', owner, nodeId }]).state;
+    expect(locationTarget(s, null, location)).toEqual({ error: 'Value can no longer be opened. That component is no longer on Contact.' });
+  });
+});
+
+describe('opening a shared header field the AI located (#203)', () => {
+  it('opens it on the page being viewed when that page shows the header, else on the first that does', () => {
+    const state = createStarterState('business', 'Test Studio', false);
+    const nodeId = state.site.shell.header.rootIds[0];
+    const owner = { kind: 'shell' as const, id: 'header' };
+    const about = Object.values(state.pages).find((p) => p.title === 'About')!;
+    const location = { owner, nodeId, prop: 'siteName', path: ['Header', 'Header', 'Content', 'Site name'] };
+    expect(locationTarget(state, about.id, location)).toEqual({ pageId: about.id, selection: { owner, instancePath: [], nodeId } });
+    about.shell = 'none';
+    expect(locationTarget(state, about.id, location)).toEqual({ pageId: state.site.homePageId, selection: { owner, instancePath: [], nodeId } });
   });
 });

@@ -81,6 +81,7 @@ interface StoreState {
   heldEdits: Held[];
   aiOutcome: { run: RunStatus | null; runId?: string; edit?: 'saved' | 'held' } | null;
   runStatus: RunStatus | null;
+  runMode: 'ask' | 'edit' | null;
   pendingSave: number;
   toasts: Array<{ action?: { label: string } }>;
 }
@@ -91,6 +92,7 @@ interface StoreModule {
   commitDraft(base: ProjectSnapshot | null, commit: () => void, text?: string | null, opts?: { check?: boolean }): void;
   holdEdit(base: ProjectSnapshot, operations: EditOperation[], label: string, opts?: { text?: string | null; seq?: number }): { id: number | null } | null;
   applyAiEvent(e: AiEvent): void;
+  aiActivity(): number;
   getState(): StoreState;
   setState(patch: Partial<StoreState>): void;
   useStore: { subscribe(fn: (s: StoreState, prev: StoreState) => void): () => void };
@@ -107,7 +109,8 @@ const dirs: string[] = [];
 function snapshot(): ProjectSnapshot | null {
   if (!current) return null;
   const { session, orch, dir } = current;
-  return { dir, workspaceKey: `${dir}#1`, state: structuredClone(session.state), revision: session.revision, aiBusy: orch.busy, aiRunId: orch.runId, conflicts: [] } as unknown as ProjectSnapshot;
+  // As the controller reports it: only a request that may change the site holds the project.
+  return { dir, workspaceKey: `${dir}#1`, state: structuredClone(session.state), revision: session.revision, aiBusy: orch.editing, aiRunId: orch.editing ? orch.runId : null, conflicts: [] } as unknown as ProjectSnapshot;
 }
 
 beforeAll(async () => {
@@ -131,7 +134,7 @@ beforeAll(async () => {
           if (meanwhile) return Promise.resolve(meanwhile()).then(() => current!.session.apply(batch, { label: opts?.label ?? 'Edit', coalesceKey: opts?.coalesceKey, source: 'user' }));
           if (opts?.opening !== undefined && opts.opening !== `${current!.dir}#1`) return Promise.resolve({ ok: false, revision: 0, error: { code: 'INVALID_ARGUMENT', message: 'That project is no longer open.' } });
           // As the controller does: the AI owns the project from the moment it starts.
-          if (current!.orch.busy) return Promise.resolve({ ok: false, revision: current!.session.revision, error: { code: 'BUSY', message: 'The AI is making changes.' } });
+          if (current!.orch.editing) return Promise.resolve({ ok: false, revision: current!.session.revision, error: { code: 'BUSY', message: 'The AI is making changes.' } });
           return current!.session.apply(batch, { label: opts?.label ?? 'Edit', coalesceKey: opts?.coalesceKey, source: 'user' });
         }
       }
@@ -174,8 +177,8 @@ async function setup(turns: Turn[]) {
   store.setState({ snapshot: snapshot() });
   const about = Object.values(session.state.pages).find((p) => p.title === 'About')!.id;
   const ctx: ChatContext = { pageId: about, pageTitle: 'About', selection: null, selectionLabel: null, viewport: 1280 };
-  const send = async (text: string) => {
-    const r = await orch.send(text, ctx);
+  const send = async (text: string, mode?: 'ask') => {
+    const r = await orch.send(text, { ...ctx, ...(mode ? { mode } : {}) });
     expect(r.ok).toBe(true);
     return r.runId!;
   };
@@ -207,6 +210,25 @@ const stopAndApply = (id: number) => store.applyHeld(id, { stopRunId: store.getS
 const outcomeText = () => saveAnnouncement('working', 'saved', store.getState().aiOutcome);
 
 describe('Stop AI and apply my edit', () => {
+  it('saves an edit typed while a read-only question runs, never holding it or treating the question as an edit (#203)', async () => {
+    const g = gate();
+    const { session, orch, about, send } = await setup([g.turn, () => [{ type: 'done', stopReason: 'end', text: 'The title is set.', toolCalls: [] }]]);
+    const before = store.aiActivity();
+    await send('What is the browser title of About?', 'ask');
+    await until(() => statusOf() === 'running', 'the question to start');
+    expect(store.getState().runMode).toBe('ask');
+    expect(store.getState().snapshot?.aiBusy).toBe(false);
+    // Typed after the question started, so a field would check whether the AI had run since it began.
+    await typeAndCommit(browserTitle(about, 'Typed meanwhile'), 'Change browser title', 'Typed meanwhile', store.getState().snapshot, store.aiActivity() !== before);
+    expect(store.getState().heldEdits).toEqual([]);
+    expect(session.state.pages[about].seo.title).toBe('Typed meanwhile');
+    g.release();
+    await until(() => !orch.busy && statusOf() === null, 'the question to end');
+    expect(store.aiActivity()).toBe(before);
+    expect(store.getState().runMode).toBeNull();
+    expect(store.getState().aiOutcome).toBeNull();
+  });
+
   it('applies an edit made while the AI waits for an answer, after the request is cancelled (issue #177)', async () => {
     const { session, about, send, dir } = await setup([() => call('q', 'request_clarification', { question: 'Formal or conversational?', choices: ['Formal', 'Conversational'] })]);
     const before = session.state.pages[about].seo.title;

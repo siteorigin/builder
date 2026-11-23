@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronRight, CircleCheck, Cloud, Copy, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
 import type { ExportFormat, ExportResult, RecentExport } from '@shared/api';
-import { api, setState, useStore } from '../store';
+import { api, editRunStatus, setState, useStore } from '../store';
 import { Modal, Segmented, Spinner } from '../components/ui';
 import { openAsset } from '../lib/actions';
 
@@ -54,7 +54,8 @@ function BuildDetails({ text }: { text: string }) {
 }
 
 export function ExportModal() {
-  const aiBusy = useStore((s) => !!s.runStatus);
+  // A read-only question changes nothing, so exporting goes on while it runs.
+  const aiBusy = useStore((s) => !!editRunStatus(s));
   const conflicts = useStore((s) => s.snapshot?.conflicts.length ?? 0);
   // Kept by the project, not this dialog: closing and reopening it still shows what was handed off.
   const recent = useStore((s) => s.snapshot?.recentExports ?? NO_EXPORTS);

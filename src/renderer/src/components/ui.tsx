@@ -3,7 +3,7 @@ import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, 
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, applyHeld, commitDraft, discardHeld, getConfirm, markDraft, onConfirmChange, undoAvailable, useStore, type HeldEdit } from '../store';
+import { aiActivity, applyHeld, commitDraft, discardHeld, editRunStatus, getConfirm, markDraft, onConfirmChange, undoAvailable, useStore, type HeldEdit } from '../store';
 import { afterSettle, isSettling, reportRefused } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import { runPhase } from '../lib/savestate';
@@ -444,9 +444,14 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
   useEffect(() => {
     if (!id) return;
     const onOpen = (e: Event) => {
-      if ((e as CustomEvent).detail !== id) return;
+      // The section's ID alone (as older callers send it) opens and scrolls to it.
+      const detail = (e as CustomEvent<string | { id: string; scroll: boolean }>).detail;
+      const { id: target, scroll } = typeof detail === 'string' ? { id: detail, scroll: true } : (detail ?? { id: '', scroll: true });
+      if (target !== id) return;
       setOpen(true);
       if (key) localStorage.setItem(key, '1');
+      // Opened on the way to something inside it, which then takes the scroll and the focus itself.
+      if (!scroll) return;
       requestAnimationFrame(() => {
         const el = rootRef.current;
         const scroller = el?.closest<HTMLElement>('.panel-body');
@@ -493,8 +498,8 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
 
 /** A labelled field. The label, hint and error are wired to the single control child (id, aria-describedby). */
 /** Open (and scroll to) a collapsible Section by its id. */
-export function openSection(id: string) {
-  window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: id }));
+export function openSection(id: string, opts: { scroll?: boolean } = {}) {
+  window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: { id, scroll: opts.scroll ?? true } }));
 }
 
 export function Field({ label, children, hint, error, extra, controlId: explicitId }: { label?: ReactNode; children: ReactNode; hint?: ReactNode; error?: string | null; extra?: ReactNode; controlId?: string }) {
@@ -742,7 +747,7 @@ const HELD_LABELS: Record<HeldAction, string> = {
 
 /** A typed edit made while the AI was working: kept, with what can be done with it now. */
 function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
-  const phase = useStore((s) => runPhase(s.runStatus));
+  const phase = useStore((s) => runPhase(editRunStatus(s)));
   const { message, actions } = heldPrompt(h, !!aiRunId, phase);
   const row = useRef<HTMLDivElement>(null);
   // The buttons change with the edit's state and the AI's. Focus that was on one stays in the row, and a

@@ -301,6 +301,7 @@ export function Editor() {
   const shown = fitPanels(windowWidth, prefs);
   const aiBusy = useStore((s) => !!s.runStatus);
   const aiPhase = useStore((s) => runPhase(s.runStatus));
+  const aiReading = useStore((s) => s.runMode === 'ask');
   const leaving = useStore((s) => s.leaving);
   // New project, or a project to trust, chosen from here: asked over this project, which stays open until the new
   // one has opened (#80).
@@ -484,7 +485,7 @@ export function Editor() {
             panelsStyle={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
             options={[
               { value: 'inspect', label: 'Inspector', icon: <SlidersHorizontal />, panel: () => <Inspector /> },
-              { value: 'chat', label: 'AI', icon: <Sparkles />, extra: aiBusy ? <span className="live" role="img" aria-label={aiPhase === 'asking' ? 'Waiting for your answer' : aiPhase === 'checking' ? 'Checking' : aiPhase === 'stopping' ? 'Stopping' : 'Working'} /> : undefined, panel: () => <Chat /> },
+              { value: 'chat', label: 'AI', icon: <Sparkles />, extra: aiBusy ? <span className="live" role="img" aria-label={aiPhase === 'asking' ? 'Waiting for your answer' : aiPhase === 'checking' ? 'Checking' : aiPhase === 'stopping' ? 'Stopping' : aiReading ? 'Reading the site' : 'Working'} /> : undefined, panel: () => <Chat /> },
               { value: 'styles', label: 'Site styles', icon: <Palette />, panel: () => <SiteStyles /> }
             ]}
           />
