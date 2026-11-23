@@ -3,12 +3,19 @@ import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, toa
 import { cleanDrafts, moveDraft, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
-import { ConfirmHost, Toasts } from './components/ui';
+import { ConfirmHost, Toasts, openDialogs, openMenus } from './components/ui';
 import { runInspection } from './lib/inspect';
 import { restorePanelWidth } from './lib/layout';
-import { forgetCopy, handleShortcut } from './Editor';
-import { inlineEdit } from './panels/Canvas';
+import { forgetCopy, handleShortcut, projectHistory } from './Editor';
+import { frameTextFocus, inlineEdit } from './panels/Canvas';
+import { focusedSurface, forwardedKeyRuns, menuHistoryOwner, type HistoryContext } from './lib/history';
 import { endEditingHold, prepareToLeave, projectClosed } from './lib/leave';
+
+/** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
+function historyContext(): HistoryContext {
+  const s = getState();
+  return { editor: s.screen === 'editor', mode: s.mode, inlineEdit: inlineEdit.active, frameText: frameTextFocus.active, overlay: openDialogs.length > 0 || openMenus.count > 0, focus: focusedSurface(document.activeElement as HTMLElement | null) };
+}
 
 export function App() {
   const screen = useStore((s) => s.screen);
@@ -51,13 +58,19 @@ export function App() {
       api.on('ai:event', applyAiEvent),
       api.on('inspect:request', (req) => void runInspection(req)),
       api.on('menu:command', (cmd) => window.dispatchEvent(new CustomEvent('builder-command', { detail: cmd }))),
+      // Edit → Undo and Redo, and their keys when nothing on the page took them: a text field (a dialog's too,
+      // so this runs before the editor's dialog guard) keeps its own history, the editor undoes the project.
+      api.on('menu:history', ({ action, fromKey }) => {
+        // While the project is being left, the editor takes no input (see lib/leave.ts).
+        if (getState().leaving) return;
+        const owner = menuHistoryOwner(historyContext(), fromKey);
+        if (owner === 'text') void (action === 'redo' ? api.edit.redo() : api.edit.undo());
+        else if (owner === 'project') projectHistory(action);
+      }),
       // While the preview frame has focus, the editor's own keydown handler cannot see keys; the main
-      // process forwards the real key presses instead.
+      // process forwards the real key presses instead. In Preview the page is the visitor's.
       api.on('input:key', (k) => {
-        if (getState().screen !== 'editor' || document.activeElement?.tagName !== 'IFRAME') return;
-        // While text is edited on the page, only Save acts: it hands that text back and saves it.
-        if (inlineEdit.active && !((k.meta || k.ctrl) && k.key.toLowerCase() === 's')) return;
-        handleShortcut(k.key, k.meta || k.ctrl, k.shift);
+        if (forwardedKeyRuns(historyContext(), k.key, k.meta || k.ctrl)) handleShortcut(k.key, k.meta || k.ctrl, k.shift);
       }),
       useStore.subscribe(persistChatState)
     ];

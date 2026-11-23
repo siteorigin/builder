@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, net, session as electronSession, shell, Menu } from 'electron';
+import type { BaseWindow, KeyboardEvent, MenuItem, MenuItemConstructorOptions } from 'electron';
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
@@ -7,6 +8,7 @@ import { externalLink } from '@shared/links';
 import { checkLocalBaseURL } from '@shared/local';
 import { Controller, defaultProjectsFolder } from './controller';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
+import { menuKeyCopy } from './history-keys';
 import { loadSettings, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
@@ -215,6 +217,10 @@ function registerIpc() {
       ? controller.session.copy(pageId, nodeId, rev)
       : { ok: false, message: 'Nothing to copy.' }
   );
+  // The focused field's own Undo and Redo (in the editor, a dialog or the preview frame): the renderer sends
+  // these only when a text field owns history; project history goes through project:undo and project:redo.
+  handle('edit:undo', () => win?.webContents.undo());
+  handle('edit:redo', () => win?.webContents.redo());
   handle('project:undo', () => controller.session?.undo());
   handle('project:redo', () => controller.session?.redo());
   handle('project:importAssets', (paths?: string[], only?: 'image' | 'font') => controller.importAssets(paths, only === 'image' || only === 'font' ? only : undefined));
@@ -375,7 +381,8 @@ async function createWindow() {
     if (input.type !== 'keyDown') return;
     const mod = input.meta || input.control;
     const k = input.key.toLowerCase();
-    const relevant = (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', '\\', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
+    // With Shift held, macOS reports the backslash key as "|".
+    const relevant = (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', '\\', '|', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
     if (relevant) controller.send('input:key', { key: input.key, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt });
   });
   nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
@@ -409,6 +416,37 @@ async function createWindow() {
 function buildMenu() {
   const isMac = process.platform === 'darwin';
   const send = (cmd: string) => () => controller.send('menu:command', cmd);
+  // Undo and Redo belong to whatever has focus, which only the editor knows: a text field (a visitor's in
+  // Preview, too) keeps its own history and authoring surfaces undo the project. So these are not the
+  // stock roles (text history only); the editor routes them. Their keys arrive here only when the page left
+  // the key alone. They act on the editor window only while it has focus (never, say, while it is minimized);
+  // a headless window never has focus.
+  const history = (action: 'undo' | 'redo') => (_item: MenuItem, focused: BaseWindow | undefined, event: KeyboardEvent) => {
+    if (!headless && (!win || focused !== win)) return;
+    controller.send('menu:history', { action, fromKey: menuKeyCopy(event, process.platform === 'darwin') });
+  };
+  // Electron's own Edit menu, with Undo and Redo routed through the editor.
+  const editMenu: MenuItemConstructorOptions = {
+    label: 'Edit',
+    submenu: [
+      { id: 'edit-undo', label: 'Undo', accelerator: 'CommandOrControl+Z', click: history('undo') },
+      { id: 'edit-redo', label: 'Redo', accelerator: process.platform === 'win32' ? 'Control+Y' : 'Shift+CommandOrControl+Z', click: history('redo') },
+      { type: 'separator' },
+      { role: 'cut' },
+      { role: 'copy' },
+      { role: 'paste' },
+      ...(isMac
+        ? ([
+            { role: 'pasteAndMatchStyle' },
+            { role: 'delete' },
+            { role: 'selectAll' },
+            { type: 'separator' },
+            { label: 'Substitutions', submenu: [{ role: 'showSubstitutions' }, { type: 'separator' }, { role: 'toggleSmartQuotes' }, { role: 'toggleSmartDashes' }, { role: 'toggleTextReplacement' }] },
+            { label: 'Speech', submenu: [{ role: 'startSpeaking' }, { role: 'stopSpeaking' }] }
+          ] satisfies MenuItemConstructorOptions[])
+        : ([{ role: 'delete' }, { type: 'separator' }, { role: 'selectAll' }] satisfies MenuItemConstructorOptions[]))
+    ]
+  };
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       ...(isMac ? [{ role: 'appMenu' as const }] : []),
@@ -424,7 +462,7 @@ function buildMenu() {
           isMac ? { role: 'close' as const } : { role: 'quit' as const }
         ]
       },
-      { role: 'editMenu' },
+      editMenu,
       { role: 'viewMenu' },
       { role: 'windowMenu' }
     ])

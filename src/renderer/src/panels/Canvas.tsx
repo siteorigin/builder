@@ -20,6 +20,8 @@ import { AppMark } from '../components/AppMark';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
+/** A text field inside the preview has focus, as the page reports it. It only keeps Undo, Delete and paste in that field; it never starts a project change. */
+export const frameTextFocus = { active: false };
 
 /** Shortcuts as this platform writes them: ⌘ and Meta on macOS, Ctrl and Control elsewhere. */
 const isMac = api.platform === 'darwin';
@@ -127,6 +129,7 @@ export function Canvas() {
   // A new page load (another server, Try again) or closing the editor ends any edit the old page had open.
   useEffect(() => {
     frameAt.current = null;
+    frameTextFocus.active = false;
     endInlineEdit();
   }, [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => endInlineEdit(), []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -146,6 +149,7 @@ export function Canvas() {
           setFrameError(null);
           setRetrying(false);
           frameAt.current = String(p.path);
+          frameTextFocus.active = false;
           endInlineEdit();
           post('mode', { mode: getState().mode });
           syncTrack();
@@ -251,6 +255,9 @@ export function Canvas() {
           break;
         case 'key':
           // Ignored: shortcuts are taken from trusted keyboard input (see App), never from the page.
+          break;
+        case 'textFocus':
+          frameTextFocus.active = p.on === true;
           break;
         case 'contextmenu': {
           if (!st) return;

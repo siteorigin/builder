@@ -2,11 +2,12 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { BuilderApi } from '@shared/api';
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'menu:command', 'input:key', 'lifecycle:request']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request']);
 
 const api: BuilderApi = {
   platform: process.platform,
   app: { info: invoke('app:info'), getSettings: invoke('app:getSettings'), setSettings: invoke('app:setSettings'), openExternal: invoke('app:openExternal') } as BuilderApi['app'],
+  edit: { undo: invoke('edit:undo'), redo: invoke('edit:redo') } as BuilderApi['edit'],
   dialogs: { chooseFolder: invoke('dialogs:chooseFolder'), chooseImages: async () => [], defaultProjectsFolder: invoke('dialogs:defaultProjectsFolder') } as BuilderApi['dialogs'],
   projects: {
     recents: invoke('projects:recents'),
