@@ -269,7 +269,12 @@ export function Tabs<T extends string>({ value, options, onChange, label, idBase
   );
 }
 
-export function Section({ title, children, defaultOpen = true, actions, id, scope }: { title: ReactNode; children: ReactNode; defaultOpen?: boolean; actions?: ReactNode; id?: string; scope?: ReactNode }) {
+/**
+ * A collapsible section (WAI-ARIA APG accordion/disclosure). `level` makes its header row a heading at that
+ * level, so assistive technology can move between sections by heading. The controlled region always exists
+ * (hidden while closed) so aria-controls resolves; its children mount only while open.
+ */
+export function Section({ title, children, defaultOpen = true, actions, id, scope, level }: { title: ReactNode; children: ReactNode; defaultOpen?: boolean; actions?: ReactNode; id?: string; scope?: ReactNode; level?: number }) {
   const key = id ? `section:${id}` : null;
   const bodyId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -297,7 +302,7 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
   }, [id, key]);
   return (
     <div className="section" ref={rootRef}>
-      <div className="row" style={{ paddingRight: 8 }}>
+      <div className="row" style={{ paddingRight: 8 }} role={level ? 'heading' : undefined} aria-level={level}>
         <button
           className="section-head grow"
           aria-expanded={open}
@@ -313,10 +318,12 @@ export function Section({ title, children, defaultOpen = true, actions, id, scop
         </button>
         {actions}
       </div>
-      {open && (
+      {open ? (
         <div className="section-body" id={bodyId}>
           {children}
         </div>
+      ) : (
+        <div id={bodyId} hidden />
       )}
     </div>
   );

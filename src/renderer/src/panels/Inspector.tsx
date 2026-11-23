@@ -1,5 +1,32 @@
-import { useMemo, useState } from 'react';
-import { Code, Component, Copy, FileCode2, FileText, House, Info, MousePointerClick, Palette, PanelTop, Pencil, Sparkles, Split, Trash2, Users } from 'lucide-react';
+import { useId, useMemo, useState, type ReactNode } from 'react';
+import {
+  ArrowDown,
+  ChevronDown,
+  ChevronRight,
+  Code,
+  Component,
+  Copy,
+  Ellipsis,
+  FileCode2,
+  FileText,
+  Heading,
+  House,
+  Image as ImageIcon,
+  Link as LinkIcon,
+  List,
+  MousePointerClick,
+  Palette,
+  PanelBottom,
+  PanelTop,
+  Pencil,
+  Pilcrow,
+  Shapes,
+  Sparkles,
+  Split,
+  SquareDashed,
+  Trash2,
+  Users
+} from 'lucide-react';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
@@ -7,13 +34,18 @@ import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
 import { findParent, instancesOf } from '@engine/tree';
 import { applyOps, setState, useStore } from '../store';
-import { DraftInput, Field, openSection, Section, SwitchRow } from '../components/ui';
-import { ImageEditor, LinkEditor, PropField, ScalarEditor, IconPicker } from './PropEditors';
+import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
+import { FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker } from './PropEditors';
 import { StyleControls } from './StyleControls';
-import { boundaryOf, ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
+import { ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 
 type ListOp = { kind: 'insert' } | { kind: 'remove'; itemId: string } | { kind: 'move'; itemId: string; index: number } | { kind: 'field'; itemId: string; field: string; value: unknown };
+type Tokens = ReturnType<typeof effectiveTokens>;
+type Tone = 'local' | 'shared' | 'definition';
+
+/** Inspector sections are headings one level below the selection's name. */
+const LEVEL = 4;
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): EditOperation {
   switch (op.kind) {
@@ -41,6 +73,80 @@ function inheritedStyles(def: ComponentDefinition, nodeId: string, variant?: str
   return out;
 }
 
+/** The selection one level up: the component a part belongs to (what Escape selects). */
+function parentOf(sel: ElementRef): ElementRef {
+  return { owner: sel.owner, instancePath: sel.instancePath.slice(0, -1), nodeId: sel.instancePath[sel.instancePath.length - 1] };
+}
+
+/**
+ * Select a list's component, open its Content and land in that list: on one row (expanded when `expand`), or
+ * on its Add button when the list is empty.
+ */
+function openList(parent: ElementRef, listProp: string, rowId: string | undefined, expand: boolean) {
+  setState({ selection: parent });
+  setTimeout(() => {
+    openSection('content');
+    setTimeout(() => {
+      const list = document.querySelector<HTMLElement>(`#dock-panel-inspect [data-list="${CSS.escape(listProp)}"]`);
+      const head = rowId ? list?.querySelector<HTMLElement>(`#list-head-${CSS.escape(rowId)}`) : null;
+      if (head && expand && head.getAttribute('aria-expanded') !== 'true') head.click();
+      (head ?? list?.querySelector<HTMLElement>('.insp-add'))?.focus({ preventScroll: false });
+    }, 250);
+  }, 50);
+}
+
+/** Number of style values set across sizes. */
+function countStyles(styles: ResponsiveStyles | undefined): number {
+  return Object.values(styles ?? {}).reduce((n, sc) => n + Object.keys(sc ?? {}).length, 0);
+}
+const changes = (n: number) => `${n} change${n === 1 ? '' : 's'}`;
+
+/** The nearest repeat enclosing a node in a definition tree, if any. */
+function enclosingRepeat(def: ComponentDefinition, nodeId: string): string | undefined {
+  if (!def.tree) return undefined;
+  let id: string | null | undefined = nodeId;
+  for (let guard = 0; id && guard < 50; guard++) {
+    const n = def.tree.nodes[id];
+    if (n && n.kind === 'repeat' && n.id !== nodeId) return n.list.$prop;
+    id = findParent(def.tree, id)?.parentId;
+  }
+  return undefined;
+}
+
+const focusName = () => requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>('#dock-panel-inspect .insp-name h3')?.focus()));
+
+/** Change the selection from inside the Inspector, then put focus on the new selection's name. */
+function selectAndFocus(ref: ElementRef) {
+  setState({ selection: ref });
+  focusName();
+}
+
+/** Leave Edit everywhere for the page it was entered from; focus lands on that page's name, not the body. */
+const doneEditing = () => {
+  const dm = useStore.getState().definitionMode;
+  if (!dm) return;
+  setState({ definitionMode: null, pageId: dm.returnPageId, selection: null });
+  focusName();
+};
+
+/** What kind of basic element a node is, in words and as an icon. */
+function elementKind(node: GraphNode): { name: string; icon: ReactNode } {
+  switch (node.kind) {
+    case 'text':
+      return node.tag === 'p' || node.rich ? { name: 'Paragraph', icon: <Pilcrow /> } : { name: 'Heading', icon: <Heading /> };
+    case 'image':
+      return { name: 'Image', icon: <ImageIcon /> };
+    case 'link':
+      return node.appearance === 'primary' || node.appearance === 'secondary' ? { name: 'Button', icon: <MousePointerClick /> } : { name: 'Link', icon: <LinkIcon /> };
+    case 'icon':
+      return { name: 'Icon', icon: <Shapes /> };
+    case 'element':
+      return { name: 'Container', icon: <SquareDashed /> };
+    default:
+      return { name: 'Element', icon: <SquareDashed /> };
+  }
+}
+
 export function Inspector() {
   const snap = useStore((s) => s.snapshot);
   const selection = useStore((s) => s.selection);
@@ -57,9 +163,10 @@ export function Inspector() {
   })();
   if (editingDef && (!selection || (selection.owner.kind === 'component' && selection.owner.id === editingDef.id) || !throughPlacement)) {
     // Outside picks (another section) show the overview: the mode edits this component only.
-    const node = selection && selection.owner.kind === 'component' ? editingDef.tree?.nodes[selection.nodeId] : undefined;
+    const direct = !!selection && selection.owner.kind === 'component' && selection.owner.id === editingDef.id && !selection.instancePath.length;
+    const node = direct ? editingDef.tree?.nodes[selection!.nodeId] : undefined;
     return (
-      <div className="panel-body" key={selection ? JSON.stringify(selection) : 'def-overview'}>
+      <div className="panel-body insp" key={selection ? JSON.stringify(selection) : 'def-overview'}>
         {node ? <DefinitionNodeInspector state={st} def={editingDef} node={node} tokens={tokens} /> : <DefinitionOverview state={st} def={editingDef} />}
       </div>
     );
@@ -73,8 +180,15 @@ export function Inspector() {
         <span>The selected element no longer exists.</span>
       </div>
     );
+  // Deeper inside the placement being edited (a component nested in it): stay in the design's own view.
+  if (editingDef && throughPlacement && selection.instancePath.length > 1)
+    return (
+      <div className="panel-body insp" key={JSON.stringify(selection)}>
+        <DefinitionOverview state={st} def={editingDef} nested />
+      </div>
+    );
   return (
-    <div className="panel-body" key={JSON.stringify(selection)}>
+    <div className="panel-body insp" key={JSON.stringify(selection)}>
       {definitionMode && selection.instancePath.length === 1 && r.def?.id === definitionMode.definitionId ? (
         <DefinitionNodeInspector state={st} def={r.def} node={r.node} tokens={tokens} />
       ) : !selection.instancePath.length && r.node.kind === 'instance' ? (
@@ -88,107 +202,199 @@ export function Inspector() {
   );
 }
 
-/** Sticky inspector header: what is selected, who a change affects, and quick jumps to its sections. */
-function Header({ title, badge, children, icon, jumps }: { title: string; badge?: React.ReactNode; children?: React.ReactNode; icon?: React.ReactNode; jumps?: Array<{ id: string; label: string }> }) {
+/**
+ * Sticky inspector header, the same anatomy for every selection: a kind tile, the name, what kind of thing it
+ * is, then who a change affects. Commands for the selection sit at the right of the name.
+ */
+function Header({ title, kind, icon, tone = 'local', actions, children }: { title: string; kind: ReactNode; icon: ReactNode; tone?: Tone; actions?: ReactNode; children?: ReactNode }) {
+  // The name takes focus (not a tab stop) when an Inspector link changes the selection, so focus stays here.
   return (
-    <div className="insp-head">
-      <div className="insp-title">
-        {icon}
-        <h3 title={title}>{title}</h3>
-        {badge}
+    <div className="insp-head insp-sel">
+      <div className="insp-id">
+        <span className={`insp-kind ${tone}`} aria-hidden="true">
+          {icon}
+        </span>
+        <div className="insp-name">
+          <h3 title={title} tabIndex={-1}>
+            {title}
+          </h3>
+          <span className="insp-kind-label">{kind}</span>
+        </div>
+        {actions && <div className="insp-actions">{actions}</div>}
       </div>
       {children}
-      {jumps && jumps.length > 1 && (
-        <nav className="insp-jump" aria-label="Jump to section">
-          {jumps.map((j) => (
-            <button key={j.id} onClick={() => openSection(j.id)}>
-              {j.label}
-            </button>
-          ))}
-        </nav>
-      )}
     </div>
   );
 }
 
-function ScopeNote({ owner, state, def }: { owner: OwnerRef; state: ProjectState; def?: ComponentDefinition }) {
-  if (owner.kind === 'shell')
+/** One line saying who a change affects. Ordinary page-only edits stay quiet; shared and definition scopes keep their hue. */
+function Scope({ tone, icon, children, aside }: { tone: Tone; icon: ReactNode; children: ReactNode; aside?: ReactNode }) {
+  return (
+    <div className={`insp-scope ${tone}`}>
+      {icon}
+      <span className="grow">{children}</span>
+      {aside}
+    </div>
+  );
+}
+
+function OwnerScope({ owner, state, aside }: { owner: OwnerRef; state: ProjectState; aside?: ReactNode }) {
+  if (owner.kind === 'shell') {
+    const n = pagesUsingShell(state);
     return (
-      <div className="scope-note shared">
-        <Users />
-        <span>
-          <strong>Shared {owner.id}.</strong> Changes appear on all {pagesUsingShell(state)} page{pagesUsingShell(state) === 1 ? '' : 's'} that show it.
-        </span>
-      </div>
+      <Scope tone="shared" icon={<Users />} aside={aside}>
+        <strong>Shared {owner.id}.</strong> Changes show on {n === 1 ? 'the 1 page' : `all ${n} pages`} that use it.
+      </Scope>
     );
+  }
   if (owner.kind === 'component')
     return (
-      <div className="scope-note definition">
-        <Component />
-        <span>
-          <strong>Component design.</strong> Changes apply everywhere {def?.name ?? 'this component'} is used.
-        </span>
-      </div>
+      <Scope tone="definition" icon={<Pencil />}>
+        <strong>Component design.</strong> Changes apply everywhere {state.components[owner.id]?.name ?? 'it'} is used.
+      </Scope>
     );
   return (
-    <div className="scope-note instance">
-      <Info />
-      <span>
-        <strong>Only here</strong>, on the {ownerLabel(state, owner)} page. Other pages are not affected.
-      </span>
-    </div>
+    <Scope tone="local" icon={<FileText />} aside={aside}>
+      Only on the {ownerLabel(state, owner)} page
+    </Scope>
   );
 }
 
-function InstanceInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; tokens: ReturnType<typeof effectiveTokens>; selection: ElementRef }) {
+/** A compact "Parts" menu: the way from a section down to one of its parts, beside the Style jump. */
+function PartsButton({ title, parts }: { title: string; parts: Array<{ label: string; select: () => void }> }) {
+  const menu = useMenu();
+  return (
+    <>
+      <button className="insp-mini" aria-haspopup="menu" aria-expanded={menu.isOpen} title={`Select a part of ${title}`} onClick={(e) => menu.openAt(e.currentTarget, parts.map((p) => ({ label: p.label, onSelect: p.select })), `Parts of ${title}`)}>
+        Parts <ChevronDown aria-hidden="true" />
+      </button>
+      {menu.node}
+    </>
+  );
+}
+
+/** Ask AI, plus a menu of everything else that can be done to the selection. */
+function SelectionActions({ title, selection, items }: { title: string; selection: ElementRef; items: MenuItem[] }) {
+  const menu = useMenu();
+  return (
+    <>
+      <button className="icon-btn" aria-label={`Ask AI about ${title}`} title="Ask AI about this (⌘J)" onClick={() => askAiAbout(selection)}>
+        <Sparkles />
+      </button>
+      {items.length > 0 && (
+        <button className="icon-btn" aria-haspopup="menu" aria-expanded={menu.isOpen} aria-label={`More actions for ${title}`} title="More actions" onClick={(e) => menu.openAt(e.currentTarget, items, `Actions for ${title}`)}>
+          <Ellipsis />
+        </button>
+      )}
+      {menu.node}
+    </>
+  );
+}
+
+function InstanceInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; tokens: Tokens; selection: ElementRef }) {
   const scope = useStore((s) => s.styleScope);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const def = state.components[node.definitionId];
   if (!def) return null;
+  const title = node.name ?? def.name;
+  const shell = owner.kind === 'shell';
   const variants = Object.entries(def.variants ?? {});
   const uses = instancesOf(state, def.id).length;
-  const partIds = def.kind === 'managed' ? Object.keys(def.parts) : [];
+  const partIds = def.kind === 'managed' ? Object.keys(def.parts).filter((p) => p !== 'root') : [];
   const rootPart = def.parts.root;
+  const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
   const set = (prop: string, value: unknown) => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], `Edit ${def.properties[prop]?.label ?? prop}`, `${node.id}:${prop}`);
   const onStyle = (partId: string) => (property: string, value: StyleValue | null) =>
     void applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], `Style ${def.parts[partId]?.label ?? partId}`, `${node.id}:${partId}:${scope}:${property}`);
+  const overrides = countStyles(node.overrides?.root);
+  const selectPart = (p: string) => selectAndFocus({ owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p });
+  const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
+  const makeUnique = () => void applyOps([{ type: 'component.makeUnique', owner, nodeId: node.id }], 'Make unique');
+  const viewSource = () => setState({ modal: { kind: 'source', definitionId: def.id } });
+  const items: MenuItem[] = [
+    ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
+    { label: 'Make unique', icon: <Split />, hint: 'Separate copy', onSelect: makeUnique },
+    ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void applyOps([{ type: 'component.convertToCode', owner, nodeId: node.id }], 'Convert to code') }] : []),
+    ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
+    ...(partIds.length ? [{ separator: true }, { heading: 'Select a part' }, ...partIds.map((p) => ({ label: def.parts[p].label, onSelect: () => selectPart(p) }))] : []),
+    ...(!shell
+      ? [
+          { separator: true },
+          { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
+          { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
+        ]
+      : [])
+  ];
+  const fields = groupFields(Object.entries(def.properties).map(([key, schema]) => ({ key, schema, data: null })));
   return (
     <>
       <Header
-        title={node.name ?? def.name}
-        icon={<span className={`layer-kind ${owner.kind === 'shell' ? 'shell' : 'instance'}`}>{owner.kind === 'shell' ? <PanelTop /> : <Component />}</span>}
-        badge={<span className="badge" title={def.owner === 'project' ? 'A component made in this project' : 'A component from the Foundation theme'}>{def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'Theme component'}</span>}
-        jumps={[{ id: 'content', label: 'Content' }, ...(def.kind === 'managed' ? [{ id: 'style', label: 'Style' }] : []), { id: 'component', label: 'Component' }]}
+        title={title}
+        kind={shell ? `Shared ${owner.id} · ${origin.toLowerCase()}` : `Section · ${origin.toLowerCase()}`}
+        tone={shell ? 'shared' : 'local'}
+        icon={shell ? owner.id === 'footer' ? <PanelBottom /> : <PanelTop /> : <Component />}
+        actions={<SelectionActions title={title} selection={selection} items={items} />}
       >
-        <ScopeNote owner={owner} state={state} />
+        <OwnerScope
+          owner={owner}
+          state={state}
+          aside={
+            !shell &&
+            def.kind === 'managed' && (
+              <span className="insp-mini-row">
+                {partIds.length > 0 && <PartsButton title={title} parts={partIds.map((p) => ({ label: def.parts[p].label, select: () => selectPart(p) }))} />}
+                <button className="insp-mini" onClick={() => openSection('style')} title="Open Style and scroll to it">
+                  Style <ArrowDown aria-hidden="true" />
+                </button>
+              </span>
+            )
+          }
+        />
       </Header>
-      <Section title="Content" id="content">
-        {Object.keys(def.properties).length === 0 && <p className="faint" style={{ margin: 0 }}>This component has no content properties. Add elements inside it from Insert.</p>}
-        {Object.entries(def.properties).map(([name, schema]) => (
-          <PropField
-            key={name}
-            name={name}
-            schema={schema}
-            value={node.props[name] ?? schema.default}
-            onChange={(v) => set(name, v)}
-            onList={(op) => void applyOps([listOps(owner, node.id, name, op)], `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${name}:${op.itemId}:${op.field}` : undefined)}
-            state={state}
-          />
-        ))}
+      <Section title="Content" id="content" level={LEVEL}>
+        {fields.length === 0 && <p className="faint insp-note">This section has no content of its own. Add elements inside it from Insert.</p>}
+        <FieldGroups
+          groups={fields}
+          render={({ key, schema, label }) => (
+            <PropField
+              key={key}
+              name={key}
+              schema={schema}
+              label={label}
+              value={node.props[key] ?? schema.default}
+              onChange={(v) => set(key, v)}
+              onList={(op) => void applyOps([listOps(owner, node.id, key, op)], `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+              state={state}
+            />
+          )}
+        />
       </Section>
       {def.kind === 'managed' && (
-        <Section title="Style" id="style" defaultOpen={false} scope={(() => {
-          const n = Object.values(node.overrides ?? {}).reduce((t, r) => t + Object.values(r ?? {}).reduce((u, sc) => u + Object.keys(sc ?? {}).length, 0), 0);
-          return n ? `${n} change${n === 1 ? '' : 's'} here` : undefined;
-        })()}>
-          <span className="field-hint">Styles the whole {def.name.toLowerCase()}. To style one part, such as a heading, select it on the page or in Layers.</span>
-          {variants.length > 1 && <Field label="Design variant">{<select className="select" value={node.variant ?? def.defaultVariant} onChange={(e) => void applyOps([{ type: 'instance.setVariant', owner, nodeId: node.id, variant: e.target.value }], 'Change variant')}>
-            {variants.map(([id, v]) => (
-              <option key={id} value={id}>
-                {v.label}
-              </option>
-            ))}
-          </select>}</Field>}
+        <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={overrides ? `Whole section · ${changes(overrides)}` : 'Whole section'}>
+          {partIds.length > 0 && (
+            <p className="insp-note insp-parts">
+              <span className="faint">To style one part, select it:</span>{' '}
+              {partIds.map((p, i) => (
+                <span key={p}>
+                  {i > 0 && <span className="faint"> · </span>}
+                  <button className="link-btn" onClick={() => selectPart(p)}>
+                    {def.parts[p].label}
+                  </button>
+                </span>
+              ))}
+            </p>
+          )}
+          {variants.length > 1 && (
+            <Field label="Design variant">
+              <select className="select" value={node.variant ?? def.defaultVariant} onChange={(e) => void applyOps([{ type: 'instance.setVariant', owner, nodeId: node.id, variant: e.target.value }], 'Change variant')}>
+                {variants.map(([id, v]) => (
+                  <option key={id} value={id}>
+                    {v.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
           <StyleControls
             styles={node.overrides?.root}
             inherited={inheritedStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variant)}
@@ -198,39 +404,20 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: 'root', scope: sc }], 'Reset overrides')}
             target={`the ${def.name.toLowerCase()} itself`}
           />
-          {partIds.length > 1 && (
-            <div className="field-hint">
-              Parts:{' '}
-              {partIds
-                .filter((p) => p !== 'root')
-                .map((p, i) => (
-                  <span key={p}>
-                    {i > 0 && ', '}
-                    <button className="link-btn" onClick={() => setState({ selection: { owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p } })}>
-                      {def.parts[p].label}
-                    </button>
-                  </span>
-                ))}
-            </div>
-          )}
         </Section>
       )}
-      <Section title="Component" id="component" defaultOpen={false} scope={`Used ${uses === 1 ? 'once' : `${uses} times`}`}>
-        {def.description && (
-          <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-            {def.description}
-          </p>
-        )}
+      <Section title="Component" id="component" defaultOpen={false} level={LEVEL} scope={shell ? undefined : `Used ${uses === 1 ? 'once' : `${uses} times`}`}>
+        <p className="insp-note muted">
+          {def.description ? `${def.description} ` : ''}
+          <span className="faint">{def.owner === 'project' ? (def.kind === 'code' ? 'A code component in this project.' : 'Made in this project.') : 'From the site’s theme.'}</span>
+        </p>
         <div className="action-grid">
-          <button className="btn btn-sm" onClick={() => askAiAbout(selection)}>
-            <Sparkles /> Ask AI
-          </button>
           {def.kind === 'managed' && (
-            <button className="btn btn-sm" onClick={() => setState({ modal: { kind: 'edit-definition', ref: selection } })}>
+            <button className="btn btn-sm" onClick={editEverywhere}>
               <Pencil /> Edit everywhere…
             </button>
           )}
-          <button className="btn btn-sm" onClick={() => void applyOps([{ type: 'component.makeUnique', owner, nodeId: node.id }], 'Make unique')} title="Make a separate copy of this component for this placement, so its design can change on its own">
+          <button className="btn btn-sm" onClick={makeUnique} title="Make a separate copy of this component for this placement, so its design can change on its own">
             <Split /> Make unique
           </button>
           {dev && def.kind === 'managed' && (
@@ -239,28 +426,18 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             </button>
           )}
           {dev && (
-            <button className="btn btn-sm" onClick={() => setState({ modal: { kind: 'source', definitionId: def.id } })}>
-              <FileCode2 /> {dev && def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source'}
+            <button className="btn btn-sm" onClick={viewSource}>
+              <FileCode2 /> {def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source'}
             </button>
-          )}
-          {owner.kind !== 'shell' && (
-            <>
-              <button className="btn btn-sm" onClick={() => void duplicateSelection()}>
-                <Copy /> Duplicate
-              </button>
-              <button className="btn btn-sm btn-danger" onClick={() => void deleteSelection()}>
-                <Trash2 /> Delete
-              </button>
-            </>
           )}
         </div>
       </Section>
-      <Section title="Advanced" id="advanced" defaultOpen={false}>
-        <Field label="Layer name">
+      <Section title="Advanced" id="advanced" defaultOpen={false} level={LEVEL}>
+        <Field label="Layer name" hint="Shown in Layers. Not visible on the site.">
           <DraftInput value={node.name ?? ''} placeholder={def.name} onCommit={(v) => void applyOps([{ type: 'node.rename', owner, nodeId: node.id, name: v }], 'Rename layer')} />
         </Field>
         {dev && (
-          <p className="mono faint" style={{ margin: 0, userSelect: 'text' }}>
+          <p className="mono faint insp-note" style={{ userSelect: 'text' }}>
             {node.id} · {def.id}
           </p>
         )}
@@ -269,7 +446,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   );
 }
 
-function PartInspector({ state, selection, tokens }: { state: ProjectState; selection: ElementRef; tokens: ReturnType<typeof effectiveTokens> }) {
+function PartInspector({ state, selection, tokens }: { state: ProjectState; selection: ElementRef; tokens: Tokens }) {
   const scope = useStore((s) => s.styleScope);
   const r = resolveRef(state, selection);
   const def = r.def!;
@@ -279,8 +456,9 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   const owner = selection.owner;
   const partId = selection.partId;
   const part = partId ? def.parts[partId] : undefined;
-  const boundary = boundaryOf(state, { ...selection, instancePath: selection.instancePath.slice(0, 1), nodeId: inst.id });
+  const parent = parentOf(selection);
   const itemId = selection.itemPath?.[selection.itemPath.length - 1];
+  const title = part?.label ?? refLabel(state, selection);
 
   // Content bound to this part
   const bindings: Array<{ prop?: string; item?: string; kind: string }> = [];
@@ -304,35 +482,56 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
     }
     return undefined;
   })();
-  const listProp = contentList ?? (repeatList && def.properties[repeatList]?.type === 'list' ? repeatList : undefined);
+  // The repeat that encloses the part names its list exactly; a field-name match is only a fallback.
+  const listProp = (repeatList && def.properties[repeatList]?.type === 'list' ? repeatList : undefined) ?? contentList;
+  const listSchema = listProp ? (def.properties[listProp] as Extract<ComponentDefinition['properties'][string], { type: 'list' }>) : undefined;
+  const listItems = listProp ? (((inst.props[listProp] ?? listSchema?.default) as Array<Record<string, unknown>>) ?? []) : [];
+  const itemLabel = listSchema?.itemLabel.toLowerCase() ?? 'item';
+  const listLabel = listSchema?.label.toLowerCase() ?? 'items';
+  const itemIndex = itemId ? listItems.findIndex((x) => x.id === itemId) : -1;
+  const partName = (part?.label ?? 'part').toLowerCase();
+  const n = listItems.length;
+  // Style reach, worded the same in the header and on the Style heading.
+  const styleReach = n === 1 ? `the 1 ${partName}` : `all ${n} ${partName}s`;
   const instOwner = owner;
   const instNodeId = selection.instancePath[0];
+  const kind = elementKind(node);
+  const parentName = inst.name ?? def.name;
+  const parentLink = (
+    <>
+      Part of{' '}
+      <button className="link-btn" onClick={() => selectAndFocus(parent)} title="Select the whole section (Esc)">
+        {parentName}
+      </button>
+    </>
+  );
+  const hasContent = !nested && bindings.length > 0;
+  // Content reach comes from the binding: an item field is per item, a section property is shared by every item.
+  const perItem = bindings.some((b) => b.item);
+  const contentReach = !hasContent || !listSchema ? '' : perItem ? (itemId ? `This ${itemLabel} only${itemIndex >= 0 ? ` (${itemIndex + 1} of ${n})` : ''}` : `Each ${itemLabel} has its own`) : `Same in every ${itemLabel}`;
 
   return (
     <>
-      <Header title={part?.label ?? refLabel(state, selection)} icon={<span className="layer-kind part"><MousePointerClick /></span>}>
-        <div className={`scope-note ${owner.kind === 'shell' ? 'shared' : 'instance'}`}>
-          {owner.kind === 'shell' ? <Users /> : <Info />}
-          <span>
-            Part of{' '}
-            <button className="link" onClick={() => setState({ selection: boundary })} title="Select the whole component (Esc)">
-              {def.name}
-            </button>
-            {listProp
-              ? itemId
-                ? `, in one of its ${((inst.props[listProp] as unknown[]) ?? []).length} ${(def.properties[listProp] as { label: string }).label.toLowerCase()}`
-                : `, in all ${((inst.props[listProp] as unknown[]) ?? []).length} ${(def.properties[listProp] as { label: string }).label.toLowerCase()}`
-              : ''}
-            {owner.kind === 'shell' ? `, in the shared ${owner.id}. Changes appear on every page that shows it.` : `, only on the ${ownerLabel(state, owner)} page.`}
-          </span>
-        </div>
+      <Header
+        title={title}
+        kind={parentLink}
+        tone={owner.kind === 'shell' ? 'shared' : 'local'}
+        icon={kind.icon}
+        actions={<SelectionActions title={title} selection={selection} items={[{ label: `Select ${parentName}`, icon: <Component />, shortcut: 'Esc', onSelect: () => selectAndFocus(parent) }]} />}
+      >
+        <OwnerScope owner={owner} state={state} />
+        {listSchema && !nested && (
+          <Scope tone="local" icon={<List />}>
+            {contentReach ? `Content: ${contentReach.charAt(0).toLowerCase()}${contentReach.slice(1)} · ` : ''}Style: {styleReach}
+          </Scope>
+        )}
       </Header>
       {nested ? (
-        <Section title="Content" id="part-content">
-          <p className="muted" style={{ margin: 0 }}>This belongs to a component inside {def.name}. Change it with Edit everywhere on that component, or make {def.name} unique.</p>
+        <Section title="Content" id="part-content" level={LEVEL}>
+          <p className="muted insp-note">This belongs to a component inside {def.name}. Change it with Edit everywhere on that component, or make {def.name} unique.</p>
         </Section>
       ) : bindings.length ? (
-        <Section title="Content" id="part-content" scope={listProp ? (itemId ? `This ${(def.properties[listProp] as { itemLabel: string }).itemLabel.toLowerCase()} only` : undefined) : undefined}>
+        <Section title="Content" id="part-content" level={LEVEL} scope={listSchema ? (perItem ? (itemId ? `This ${itemLabel} only` : `Each ${itemLabel}`) : `Every ${itemLabel}`) : undefined}>
           {bindings.map((b, i) => {
             if (b.prop) {
               const schema = def.properties[b.prop];
@@ -349,52 +548,29 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
                 />
               );
             }
-            if (listProp && itemId) {
-              const schema = def.properties[listProp] as Extract<ComponentDefinition['properties'][string], { type: 'list' }>;
-              const field = schema.fields[b.item!];
-              const item = ((inst.props[listProp] as Array<Record<string, unknown>>) ?? []).find((x) => x.id === itemId);
+            if (listProp && listSchema && itemId) {
+              const field = listSchema.fields[b.item!];
+              const item = listItems.find((x) => x.id === itemId);
               if (!field || !item) return null;
-              return (
-                <Field key={i} label={`${field.label} for this ${schema.itemLabel.toLowerCase()}`}>
-                  <ScalarEditor schema={field} value={item[b.item!]} state={state} onChange={(v) => void applyOps([{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${instNodeId}:${listProp}:${itemId}:${b.item}`)} />
-                </Field>
-              );
+              const edit = (v: unknown) => void applyOps([{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${instNodeId}:${listProp}:${itemId}:${b.item}`);
+              return <ScalarField key={i} schema={field} value={item[b.item!]} state={state} onChange={edit} />;
             }
             return null;
           })}
-          {listProp && !itemId && (
-            <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-              Each {(def.properties[listProp] as { itemLabel: string }).itemLabel.toLowerCase()} has its own text: click one on the page to change it, or{' '}
-              <button
-                className="link-btn"
-                onClick={() => {
-                  setState({ selection: boundary });
-                  // Land on the list itself: open Content, scroll below the sticky header, focus the first item.
-                  setTimeout(() => {
-                    openSection('content');
-                    setTimeout(() => document.querySelector<HTMLElement>('#dock-panel-inspect .list-editor-head button.title')?.focus({ preventScroll: false }), 250);
-                  }, 50);
-                }}
-              >
-                open the {(def.properties[listProp] as { label: string }).label.toLowerCase()} list
-              </button>
-              .
-            </p>
-          )}
-          {listProp && itemId && (
-            <button className="btn btn-sm btn-ghost" style={{ alignSelf: 'flex-start' }} onClick={() => setState({ selection: boundary })}>
-              Edit all {(def.properties[listProp] as { label: string }).label.toLowerCase()}
+          {listSchema && perItem && !itemId && <p className="muted insp-note">Each {itemLabel} has its own text. Click one on the page to change it, or open the list to edit them all.</p>}
+          {listSchema && (
+            <button className="btn btn-sm insp-inline-btn" onClick={() => openList(parent, listProp!, itemId ?? (listItems[0]?.id as string | undefined), !!itemId)}>
+              <List /> {itemId ? `Show in ${listLabel} list` : `Open ${listLabel} list`}
             </button>
           )}
         </Section>
       ) : (
-        <Section title="Content" id="part-content">
-          <p className="muted" style={{ margin: 0 }}>This is fixed in the component's design. To change it, select {def.name} and choose Edit everywhere, or Make unique for just this placement.</p>
+        <Section title="Content" id="part-content" level={LEVEL}>
+          <p className="muted insp-note">This is fixed in the section’s design. To change it, select {def.name} and choose Edit everywhere, or Make unique for just this placement.</p>
         </Section>
       )}
       {part && !nested && def.kind === 'managed' && (
-        <Section title="Style" id="part-style" scope={listProp ? `All ${((inst.props[listProp] as unknown[]) ?? []).length} ${(part.label ?? 'items').toLowerCase()}s` : undefined}>
-          {listProp && <span className="field-hint">Style changes apply to the {(part.label ?? 'part').toLowerCase()} in every {(def.properties[listProp] as { itemLabel: string }).itemLabel.toLowerCase()}.</span>}
+        <Section title="Style" id="part-style" level={LEVEL} scope={[listSchema ? styleReach.charAt(0).toUpperCase() + styleReach.slice(1) : '', countStyles(inst.overrides?.[partId!]) ? changes(countStyles(inst.overrides?.[partId!])) : ''].filter(Boolean).join(' · ') || undefined}>
           <StyleControls
             styles={inst.overrides?.[partId!]}
             inherited={inheritedStyles(def, part.nodeId, inst.variant)}
@@ -409,21 +585,32 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   );
 }
 
-function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: GraphNode; tokens: ReturnType<typeof effectiveTokens>; selection: ElementRef }) {
+function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: GraphNode; tokens: Tokens; selection: ElementRef }) {
   const scope = useStore((s) => s.styleScope);
   const content = (field: Extract<EditOperation, { type: 'node.setContent' }>['field'], value: unknown) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field, value }], `Edit ${field}`, `${node.id}:${field}`);
   const t = structuralTarget(selection);
+  const title = refLabel(state, selection);
+  const kind = elementKind(node);
+  const iconId = useId();
+  const items: MenuItem[] =
+    t && owner.kind !== 'shell'
+      ? [
+          ...(node.kind === 'element' ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component', ref: t } }) }, { separator: true }] : []),
+          { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
+          { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
+        ]
+      : [];
   return (
     <>
-      <Header title={refLabel(state, selection)}>
-        <ScopeNote owner={owner} state={state} def={owner.kind === 'component' ? state.components[owner.id] : undefined} />
+      <Header title={title} kind={title.toLowerCase().startsWith(kind.name.toLowerCase()) ? 'Basic element' : `${kind.name} · basic element`} tone={owner.kind === 'shell' ? 'shared' : owner.kind === 'component' ? 'definition' : 'local'} icon={kind.icon} actions={<SelectionActions title={title} selection={selection} items={items} />}>
+        <OwnerScope owner={owner} state={state} />
       </Header>
-      <Section title="Content" id="prim-content">
+      <Section title="Content" id="prim-content" level={LEVEL}>
         {node.kind === 'text' && (
           <>
             {!node.rich && (
               <Field label="Type">
-                <select className="select" value={node.tag} onChange={(e) => content('tag', e.target.value)} aria-label="Text type">
+                <select className="select" value={node.tag} onChange={(e) => content('tag', e.target.value)}>
                   {['h1', 'h2', 'h3', 'h4', 'p'].map((tg) => (
                     <option key={tg} value={tg}>
                       {tg === 'p' ? 'Paragraph' : `Heading ${tg.slice(1)}`}
@@ -432,20 +619,31 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
                 </select>
               </Field>
             )}
-            <Field label="Text" hint="Double-click the text on the canvas to edit it in place.">
-              <DraftInput multiline value={Array.isArray(node.text) ? node.text.join('\n\n') : isBinding(node.text) ? '' : String(node.text)} onCommit={(v) => content('text', v)} />
+            <Field label="Text" hint="Or double-click the text on the page to edit it there.">
+              <DraftInput multiline rows={2} value={Array.isArray(node.text) ? node.text.join('\n\n') : isBinding(node.text) ? '' : String(node.text)} onCommit={(v) => content('text', v)} />
             </Field>
           </>
         )}
-        {node.kind === 'image' && !isBinding(node.image) && <ImageEditor value={node.image} onChange={(v) => content('image', v)} state={state} />}
+        {node.kind === 'image' && !isBinding(node.image) && (
+          <div className="field" role="group" aria-label="Image">
+            <ImageEditor value={node.image} onChange={(v) => content('image', v)} state={state} />
+          </div>
+        )}
         {node.kind === 'link' && (
           <>
             <Field label="Label">
               <DraftInput value={isBinding(node.label) ? '' : String(node.label)} onCommit={(v) => content('label', v)} />
             </Field>
-            <Field label="Destination">{!isBinding(node.link) && <LinkEditor value={node.link} onChange={(v) => content('link', v)} state={state} />}</Field>
+            {!isBinding(node.link) && (
+              <div className="field" role="group" aria-labelledby={`${node.id}-dest`}>
+                <div className="field-label" id={`${node.id}-dest`}>
+                  Link
+                </div>
+                <LinkEditor value={node.link} onChange={(v) => content('link', v)} state={state} label={kind.name} />
+              </div>
+            )}
             <Field label="Appearance">
-              <select className="select" value={String(node.appearance)} onChange={(e) => content('appearance', e.target.value)} aria-label="Appearance">
+              <select className="select" value={String(node.appearance)} onChange={(e) => content('appearance', e.target.value)}>
                 <option value="primary">Primary button</option>
                 <option value="secondary">Secondary button</option>
                 <option value="text">Text with arrow</option>
@@ -454,13 +652,14 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
             </Field>
           </>
         )}
-        {node.kind === 'icon' && <IconPicker value={isBinding(node.icon) ? 'sparkles' : String(node.icon)} onChange={(v) => content('icon', v)} />}
-        {node.kind === 'element' && <p className="faint" style={{ margin: 0 }}>A layout container with {node.children.length} item{node.children.length === 1 ? '' : 's'}. Select it, then use Insert to add elements inside.</p>}
-        <Field label="Anchor ID" hint="Lets links jump to this element, e.g. #services.">
-          <DraftInput value={node.anchor ?? ''} placeholder="none" onCommit={(v) => content('anchor', v)} />
-        </Field>
+        {node.kind === 'icon' && (
+          <Field label="Icon" controlId={iconId}>
+            <IconPicker id={iconId} value={isBinding(node.icon) ? 'sparkles' : String(node.icon)} onChange={(v) => content('icon', v)} />
+          </Field>
+        )}
+        {node.kind === 'element' && <p className="faint insp-note">A container with {node.children.length} item{node.children.length === 1 ? '' : 's'}. With it selected, add elements inside it from Insert.</p>}
       </Section>
-      <Section title="Style" id="prim-style">
+      <Section title="Style" id="prim-style" level={LEVEL} scope={countStyles(node.styles) ? changes(countStyles(node.styles)) : undefined}>
         <StyleControls
           styles={node.styles}
           inherited={undefined}
@@ -470,26 +669,11 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
           onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], 'Reset styles')}
         />
       </Section>
-      {t && owner.kind !== 'shell' && (
-        <Section title="Actions" id="prim-actions" defaultOpen={false}>
-          <div className="action-grid">
-            <button className="btn btn-sm" onClick={() => askAiAbout(selection)}>
-              <Sparkles /> Ask AI
-            </button>
-            {node.kind === 'element' && (
-              <button className="btn btn-sm" onClick={() => setState({ modal: { kind: 'create-component', ref: t } })}>
-                <Component /> Create component
-              </button>
-            )}
-            <button className="btn btn-sm" onClick={() => void duplicateSelection()}>
-              <Copy /> Duplicate
-            </button>
-            <button className="btn btn-sm btn-danger" onClick={() => void deleteSelection()}>
-              <Trash2 /> Delete
-            </button>
-          </div>
-        </Section>
-      )}
+      <Section title="Advanced" id="prim-advanced" defaultOpen={false} level={LEVEL} scope={node.anchor ? `#${node.anchor}` : undefined}>
+        <Field label="Anchor ID" hint="Lets links jump straight to this element, as #services.">
+          <DraftInput value={node.anchor ?? ''} placeholder="e.g. services" onCommit={(v) => content('anchor', v)} />
+        </Field>
+      </Section>
     </>
   );
 }
@@ -514,35 +698,59 @@ function styleSetFor(node: GraphNode): string[] | undefined {
   }
 }
 
-/** Component editing with nothing selected: what is being edited, where it is used, and how to start. */
-function DefinitionOverview({ state, def }: { state: ProjectState; def: ComponentDefinition }) {
+/** Where a component is used, in words: "Home and About", "Home, About and 3 more". */
+function placesText(state: ProjectState, def: ComponentDefinition): string {
   const places = [...new Set(instancesOf(state, def.id).map((u) => u.label))];
+  if (!places.length) return 'nowhere yet';
+  if (places.length === 1) return places[0];
+  if (places.length <= 3) return `${places.slice(0, -1).join(', ')} and ${places[places.length - 1]}`;
+  return `${places.slice(0, 2).join(', ')} and ${places.length - 2} more`;
+}
+
+const DoneButton = () => (
+  <button className="btn btn-sm" onClick={doneEditing}>
+    Done editing
+  </button>
+);
+
+/** Component editing with nothing selected: what is being edited, where it is used, and how to start. */
+function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: ComponentDefinition; nested?: boolean }) {
   return (
     <>
-      <Header title={def.name} icon={<span className="layer-kind definition"><Component /></span>} badge={<span className="badge plum">Everywhere</span>}>
-        <div className="scope-note definition">
-          <Component />
-          <span>
-            <strong>Editing {def.name}.</strong> Changes apply wherever it is used: {places.join(', ') || 'nowhere yet'}.
-          </span>
-        </div>
+      <Header title={def.name} kind="Component design" tone="definition" icon={<Component />} actions={<DoneButton />}>
+        <Scope tone="definition" icon={<Pencil />}>
+          <strong>Editing everywhere.</strong> Changes apply wherever it’s used: {placesText(state, def)}.
+        </Scope>
       </Header>
-      <div className="empty-insp">
-        <MousePointerClick />
-        <span>Click part of {def.name} on the page, or pick a layer, to change its design.</span>
-        <button className="btn btn-sm" onClick={() => useStore.getState().definitionMode && setState({ definitionMode: null, pageId: useStore.getState().definitionMode!.returnPageId, selection: null })}>
-          Done editing
-        </button>
+      <div className="insp-empty">
+        <MousePointerClick aria-hidden="true" />
+        <p>{nested ? `That belongs to a component inside ${def.name}, so it can’t be changed here. ` : ''}Click part of {def.name} on the page, or choose a part:</p>
+        <div className="insp-part-list" role="group" aria-label={`Parts of ${def.name}`}>
+          {def.tree?.rootIds[0] && (
+            <button className="btn btn-sm" onClick={() => selectAndFocus({ owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: def.tree!.rootIds[0] })}>
+              Whole {def.name.toLowerCase()}
+            </button>
+          )}
+          {Object.entries(def.parts)
+            .filter(([id]) => id !== 'root')
+            .map(([id, p]) => (
+              <button key={id} className="btn btn-sm" onClick={() => selectAndFocus({ owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: p.nodeId, partId: id })}>
+                {p.label}
+              </button>
+            ))}
+        </div>
       </div>
     </>
   );
 }
 
-function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectState; def: ComponentDefinition; node: GraphNode; tokens: ReturnType<typeof effectiveTokens> }) {
+function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectState; def: ComponentDefinition; node: GraphNode; tokens: Tokens }) {
   const scope = useStore((s) => s.styleScope);
   const owner: OwnerRef = { kind: 'component', id: def.id };
   const uses = instancesOf(state, def.id).length;
   const partId = Object.entries(def.parts).find(([, p]) => p.nodeId === node.id)?.[0];
+  const isRoot = def.tree?.rootIds[0] === node.id;
+  const title = partId && partId !== 'root' ? def.parts[partId].label : isRoot ? def.name : refLabel(state, { owner, instancePath: [], nodeId: node.id });
   // A copy of a theme component compares against the theme's design, so only real changes show as changes.
   const original = def.componentId ? catalogueComponent(state.site.themeId, def.componentId)?.tree?.nodes[node.id]?.styles : undefined;
   const changed: ResponsiveStyles | undefined = original
@@ -552,22 +760,42 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           .filter(([, vals]) => Object.keys(vals as object).length)
       )
     : node.styles;
+  // A part inside a repeat is styled once for every item, in every placement.
+  const repeated = enclosingRepeat(def, node.id);
+  const itemWord = repeated ? (def.properties[repeated] as { itemLabel?: string } | undefined)?.itemLabel?.toLowerCase() : undefined;
+  const placements = uses === 1 ? '1 placement' : `${uses} placements`;
+  const rootRef: ElementRef | null = def.tree?.rootIds[0] ? { owner, instancePath: [], nodeId: def.tree.rootIds[0] } : null;
+  const kindLine = isRoot ? (
+    'Component design'
+  ) : (
+    <>
+      Part of{' '}
+      {rootRef ? (
+        <button className="link-btn" onClick={() => selectAndFocus(rootRef)} title="Select the whole design (Esc)">
+          {def.name}
+        </button>
+      ) : (
+        def.name
+      )}{' '}
+      design
+    </>
+  );
   return (
     <>
-      <Header title={partId && partId !== 'root' ? def.parts[partId].label : def.tree?.rootIds[0] === node.id ? def.name : refLabel(state, { owner, instancePath: [], nodeId: node.id })} badge={<span className="badge plum">Everywhere</span>}>
-        <div className="scope-note definition">
-          <Component />
-          <span>
-            <strong>Editing {def.name}.</strong> {uses === 1 ? 'Used once. Layout and style changes apply there and wherever you add it later.' : `Layout and style changes apply to all ${uses} placements, except where one has its own changes.`}
-          </span>
-        </div>
+      <Header title={title} kind={kindLine} tone="definition" icon={isRoot ? <Component /> : elementKind(node).icon} actions={<DoneButton />}>
+        <Scope tone="definition" icon={<Pencil />}>
+          <strong>Editing everywhere.</strong>{' '}
+          {uses === 1 ? `Used once, on ${placesText(state, def)}, and wherever you add it later. A placement’s own changes still win.` : `Changes apply to all ${uses} placements, except where one has its own changes.`}
+        </Scope>
       </Header>
       {node.kind === 'text' && !isBinding(node.text) && (
-        <Section title="Fixed text" id="def-text">
-          <DraftInput multiline value={Array.isArray(node.text) ? node.text.join('\n\n') : String(node.text)} onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'text', value: v }], 'Edit definition text')} />
+        <Section title="Content" id="def-text" level={LEVEL} scope="Same in every placement">
+          <Field label="Text">
+            <DraftInput multiline rows={2} value={Array.isArray(node.text) ? node.text.join('\n\n') : String(node.text)} onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'text', value: v }], 'Edit definition text')} />
+          </Field>
         </Section>
       )}
-      <Section title="Style" id="def-style" scope={uses === 1 ? '1 placement' : `${uses} placements`}>
+      <Section title="Style" id="def-style" level={LEVEL} scope={repeated ? `Every ${itemWord ?? 'item'} · ${placements}` : placements}>
         <StyleControls
           styles={changed}
           inherited={original}
@@ -598,18 +826,19 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
 
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
+  const dev = useStore((s) => !!s.settings?.developerMode);
   const [titleError, setTitleError] = useState<string | null>(null);
   if (!page) return null;
   const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], label);
   const isHome = page.id === state.site.homePageId;
   return (
-    <div className="panel-body">
-      <Header title={page.title} icon={<span className="layer-kind">{isHome ? <House /> : <FileText />}</span>} badge={isHome ? <span className="badge accent">Home page</span> : undefined}>
-        <span className="muted" style={{ fontSize: 13 }}>
-          {previewing ? 'You are previewing. Switch to Edit in the toolbar to change things on the page.' : 'Settings for this page. Click anything on the page to change it.'}
-        </span>
+    <div className="panel-body insp">
+      <Header title={page.title} kind={`${isHome ? 'Home page' : 'Page'} · ${isHome ? '/' : page.route}`} icon={isHome ? <House /> : <FileText />}>
+        <Scope tone="local" icon={<MousePointerClick />}>
+          {previewing ? 'Previewing. Page settings stay editable; switch to Edit to select things on the page.' : 'Nothing selected. Click anything on the page to edit it.'}
+        </Scope>
       </Header>
-      <Section title="Page" id="page-basic">
+      <Section title="Page" id="page-basic" level={LEVEL}>
         <Field label="Title" error={titleError}>
           <DraftInput
             value={page.title}
@@ -625,33 +854,35 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         </Field>
         <SwitchRow checked={page.shell !== 'none'} onChange={(v) => upd({ shell: v ? 'default' : 'none' })} label="Show shared header and footer" />
       </Section>
-      <Section title="Search & sharing" id="page-seo">
-        <Field label="Browser title" hint={`Default: ${isHome ? state.site.name : `${page.title} · ${state.site.name}`}`}>
-          <DraftInput value={page.seo.title ?? ''} placeholder="Use default" onCommit={(v) => upd({ seoTitle: v })} />
+      <Section title="Search & sharing" id="page-seo" level={LEVEL}>
+        <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>
+          <DraftInput value={page.seo.title ?? ''} onCommit={(v) => upd({ seoTitle: v })} />
         </Field>
         <Field label="Description" hint="Shown by search engines. About 150 characters.">
           <DraftInput multiline value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v })} />
         </Field>
         <SwitchRow checked={!!page.seo.noindex} onChange={(v) => upd({ noindex: v })} label="Hide from search engines" hint="Search engines are asked not to list this page." />
       </Section>
-      {useStore.getState().settings?.developerMode && (
-      <Section title="Advanced" id="page-adv" defaultOpen={false}>
-        {useStore.getState().settings?.developerMode && (
-          <button className="btn btn-sm" onClick={() => setState({ modal: { kind: 'page-source', pageId: page.id } })}>
+      {dev && (
+        <Section title="Advanced" id="page-adv" defaultOpen={false} level={LEVEL}>
+          <button className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={() => setState({ modal: { kind: 'page-source', pageId: page.id } })}>
             <FileCode2 /> View generated source
           </button>
-        )}
-        <p className="mono faint" style={{ margin: 0, userSelect: 'text' }}>
-          {page.id}
-        </p>
-      </Section>
+          <p className="mono faint insp-note" style={{ userSelect: 'text' }}>
+            {page.id}
+          </p>
+        </Section>
       )}
-      <div style={{ padding: 14 }}>
-        <button className="btn btn-sm btn-ghost" onClick={() => setState({ rightTab: 'styles' })}>
-          <Palette /> Site styles: colours, fonts and spacing
-        </button>
-      </div>
+      <button className="insp-goto" onClick={() => setState({ rightTab: 'styles' })}>
+        <span className="insp-kind local" aria-hidden="true">
+          <Palette />
+        </span>
+        <span className="grow">
+          <strong>Site styles</strong>
+          <span>Colours, fonts and spacing for every page</span>
+        </span>
+        <ChevronRight aria-hidden="true" className="chev" />
+      </button>
     </div>
   );
 }
-
