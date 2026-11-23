@@ -6,7 +6,7 @@
  */
 import { existsSync } from 'node:fs';
 import { posix } from 'node:path';
-import { chromium, webkit, type Browser, type BrowserType, type Page } from 'playwright';
+import { chromium, webkit, type Browser, type BrowserType, type Page, type Route } from 'playwright';
 import { compile } from 'svelte/compiler';
 import { build, type Rolldown } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -21,6 +21,8 @@ const LABELS = ['Our studio', 'Heritage projects', 'Conservation services', 'Res
 const HEADING = 'visitor-bookmark';
 const SECTION = 'opening-hours';
 const ENGINES = ([['chromium', chromium], ['webkit', webkit]] as Array<[string, BrowserType]>).filter(([, engine]) => existsSync(engine.executablePath()));
+/** Where a revealed target lands below the header: the theme's 1rem, give or take rounding. */
+const GAP = { min: 15, max: 18 };
 
 /** The exported site: a tall header, a short heading and a padded section with anchors, and links to both. */
 function exportedSite(sticky: boolean) {
@@ -57,7 +59,8 @@ function exportedSite(sticky: boolean) {
 
 /**
  * Every case's layout and home page as one script that defines `window.mountCase(name)`. Mounting ends the way
- * SvelteKit ends hydrating a page: components have mounted, then `afterNavigate` callbacks hear an `enter`.
+ * SvelteKit ends hydrating a page: components have mounted, `afterNavigate` callbacks hear an `enter`, and the
+ * router takes over scroll restoration.
  */
 async function bundleSites(sites: Record<string, Map<string, string>>): Promise<string> {
   const src = new Map<string, string>();
@@ -71,7 +74,7 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
     "import { navigated } from '$app/navigation';",
     ...names.map((n, i) => `import E${i} from '\0site/${n}/Entry.svelte';`),
     `const all = { ${names.map((n, i) => `${JSON.stringify(n)}: E${i}`).join(', ')} };`,
-    "window.mountCase = (name, type = 'enter') => { mount(all[name], { target: document.getElementById('app') }); flushSync(); navigated(type); };"
+    "window.mountCase = (name, type = 'enter') => { mount(all[name], { target: document.getElementById('app') }); flushSync(); navigated(type); history.scrollRestoration = 'manual'; };"
   ].join('\n');
   const out = (await build({
     configFile: false,
@@ -96,7 +99,7 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
           if (id === '\0$app/paths') return 'export const base = ""; export const resolve = (p) => p; export const asset = (p) => "/" + p;';
           if (id === '\0$app/state') return 'export const page = { route: { id: "/" }, url: new URL("https://site.test/") };';
           if (id === '\0$app/navigation')
-            return "import { onMount } from 'svelte'; const callbacks = new Set(); export function afterNavigate(fn) { onMount(() => { callbacks.add(fn); return () => callbacks.delete(fn); }); } export function navigated(type) { for (const fn of callbacks) fn({ type }); }";
+            return "import { onMount } from 'svelte'; const callbacks = new Set(); export function afterNavigate(fn) { onMount(() => { callbacks.add(fn); return () => callbacks.delete(fn); }); } export function navigated(type) { for (const fn of callbacks) fn({ type }); } export function beforeNavigate() {}";
           const text = src.get(id);
           if (text === undefined) return null;
           return id.endsWith('.svelte') ? compile(text, { filename: id.slice(1), generate: 'client', css: 'injected' }).js.code : text;
@@ -115,6 +118,7 @@ interface Landing {
   bottom: number;
   headerBottom: number;
   viewportHeight: number;
+  scrollY: number;
   /** What the browser finds at the target's first row and centre: the target, the header, or something else. */
   hits: string[];
 }
@@ -129,10 +133,18 @@ const landing = (id: string) => `(() => {
     const el = document.elementFromPoint(x, y);
     return !el ? 'nothing' : header.contains(el) ? 'header' : target.contains(el) ? 'target' : el.tagName.toLowerCase();
   });
-  return { top: t.top, bottom: t.bottom, headerBottom: header.getBoundingClientRect().bottom, viewportHeight: innerHeight, hits };
+  return { top: t.top, bottom: t.bottom, headerBottom: header.getBoundingClientRect().bottom, viewportHeight: innerHeight, scrollY, hits };
 })()`;
 
 const settled = 'new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))';
+/** Resolves once the page has not scrolled for eight frames: a smooth jump and the header's reveal are both over. */
+const atRest = `new Promise((done) => {
+  let last = NaN, still = 0, frames = 0;
+  const step = () => { still = scrollY === last ? still + 1 : 0; last = scrollY; if (still >= 8 || ++frames > 400) done(); else requestAnimationFrame(step); };
+  requestAnimationFrame(step);
+})`;
+
+if (!ENGINES.length) describe.skip('anchors below the sticky header (needs Chromium or WebKit)', () => it('runs in a browser', () => {}));
 
 describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) => {
   let browser: Browser;
@@ -142,7 +154,7 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
   beforeAll(async () => {
     const [bundled, launched] = await Promise.allSettled([
       bundleSites(Object.fromEntries(Object.entries(sites).map(([name, site]) => [name, site.files]))),
-      engine.launch({ headless: true, timeout: 30_000 })
+      engine.launch({ headless: true, executablePath: engine.executablePath(), timeout: 30_000 })
     ]);
     if (launched.status === 'fulfilled') browser = launched.value;
     if (bundled.status === 'rejected') throw bundled.reason;
@@ -154,14 +166,23 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
     await browser?.close();
   });
 
+  interface Site {
+    page: Page;
+    /** Lets the held web font finish (failing), so `document.fonts.ready` resolves. */
+    releaseFont: () => Promise<void>;
+  }
+
   /**
    * Opens a case the way a visitor does. `/live` mounts the site; `/` serves the markup it rendered, and the site's
-   * script only takes over once the browser has loaded the page and jumped to any fragment.
+   * script only takes over once the browser has loaded the page and jumped to any fragment. Before it does, it
+   * returns to a saved position as SvelteKit does on a reload or (`?restore`) in a reopened tab. `?arrive=` names
+   * the navigation the header mounts in (a visit starts with `enter`); `?font` adds a web font the test holds back.
    */
-  async function withSite(name: keyof typeof sites, width: number, body: (page: Page) => Promise<void>) {
+  async function withSite(name: keyof typeof sites, width: number, body: (site: Site) => Promise<void>, motion: 'reduce' | 'no-preference' = 'reduce') {
     // Reduced motion turns off the theme's smooth scrolling, so a jump has finished when it is measured.
-    const context = await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: 'reduce' });
+    const context = await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: motion });
     context.setDefaultTimeout(10_000);
+    const held: Route[] = [];
     try {
       const page = await context.newPage();
       const head = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sites[name].css}</style>`;
@@ -169,16 +190,29 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
       await page.route(`${ORIGIN}/**`, (route) => {
         const path = new URL(route.request().url()).pathname;
         if (path === '/site.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script });
+        if (path === '/held.woff2') return void held.push(route);
         const html = (inner: string) => route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><html lang="en"><head>${head}</head><body>${inner}</body></html>` });
         if (path === '/live') return html(`<div id="app" style="display: contents"></div><script src="/site.js"></script><script>mountCase(${JSON.stringify(name)})</script>`);
         return html(
-          `${rendered}<script>addEventListener('load', () => requestAnimationFrame(() => requestAnimationFrame(() => {
+          `${rendered}<script>
+          addEventListener('pagehide', () => sessionStorage.setItem('saved-scroll', String(scrollY)));
+          addEventListener('load', () => requestAnimationFrame(() => requestAnimationFrame(() => {
+            const params = new URLSearchParams(location.search);
             const id = decodeURIComponent(location.hash.slice(1));
             window.beforeScript = id ? { top: document.getElementById(id).getBoundingClientRect().top, headerBottom: document.querySelector('header.so-header').getBoundingClientRect().bottom } : null;
+            const saved = sessionStorage.getItem('saved-scroll');
+            if (saved !== null && (params.has('restore') || performance.getEntriesByType('navigation')[0].type === 'reload')) {
+              history.scrollRestoration = 'manual';
+              scrollTo({ top: Number(saved), behavior: 'instant' });
+            }
+            if (params.has('font')) {
+              const font = new FontFace('Held', 'url(/held.woff2)');
+              document.fonts.add(font);
+              font.load().catch(() => {});
+            }
             const s = document.createElement('script');
             s.src = '/site.js';
-            // ?arrive= names the navigation the header mounts in; a visit starts with \`enter\`.
-            s.onload = () => { const app = document.getElementById('app'); app.textContent = ''; mountCase(${JSON.stringify(name)}, new URLSearchParams(location.search).get('arrive') ?? undefined); window.started = true; };
+            s.onload = () => { const app = document.getElementById('app'); app.textContent = ''; mountCase(${JSON.stringify(name)}, params.get('arrive') ?? undefined); window.started = true; };
             document.body.append(s);
           })));</script>`
         );
@@ -188,8 +222,12 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
       await page.evaluate(settled);
       // The component styles Svelte injected travel with the markup, as they would in a prerendered page.
       rendered = (await page.evaluate(`[...document.head.querySelectorAll('style:not(:first-of-type)')].map((s) => s.outerHTML).join('') + document.getElementById('app').outerHTML`)) as string;
-      await body(page);
+      const releaseFont = async () => {
+        await Promise.all(held.splice(0).map((r) => r.fulfill({ status: 404, body: '' })));
+      };
+      await body({ page, releaseFont });
     } finally {
+      await Promise.all(held.splice(0).map((r) => r.abort().catch(() => {})));
       await context.close();
     }
   }
@@ -199,94 +237,162 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
     await page.goto('about:blank');
     expect(await page.goto(`${ORIGIN}/${query}#${id}`), 'a new document loads').not.toBeNull();
     await page.waitForFunction('window.started === true');
-    await page.evaluate(settled);
+    await page.evaluate(atRest);
     const before = (await page.evaluate('window.beforeScript')) as { top: number; headerBottom: number };
     return { before, after: (await page.evaluate(landing(id))) as Landing };
   };
 
   const follow = async (page: Page, id: string) => {
-    await page.evaluate('scrollTo(0, 0)');
+    await page.evaluate('scrollTo({ top: 0, behavior: "instant" })');
     await page.evaluate(settled);
     await page.locator(`main a[href="#${id}"]`).click();
-    await page.evaluate(settled);
+    await page.evaluate(atRest);
     return (await page.evaluate(landing(id))) as Landing;
   };
 
   const describeLanding = (where: string, l: Landing) => `${where}: target ${Math.round(l.top)}..${Math.round(l.bottom)}, header ends at ${Math.round(l.headerBottom)}, hits ${l.hits.join(', ')}`;
 
-  /** The target starts in view, below the header, and the browser finds it there rather than the header. */
-  function expectRevealed(where: string, l: Landing) {
-    expect(l.hits, describeLanding(where, l)).toEqual(['target', 'target'].slice(0, l.hits.length));
+  /** The target is in view, below the header, and the browser finds it there rather than the header. */
+  function expectClear(where: string, l: Landing) {
     expect(l.hits.length, describeLanding(where, l)).toBeGreaterThan(0);
+    expect(l.hits, describeLanding(where, l)).toEqual(['target', 'target'].slice(0, l.hits.length));
     expect(l.top, describeLanding(where, l)).toBeGreaterThanOrEqual(Math.max(l.headerBottom, 0) - 0.5);
     expect(l.top, describeLanding(where, l)).toBeLessThan(l.viewportHeight / 2);
   }
 
+  /** Clear, and 1rem below whatever covers the top of the window: the header while it sticks, or nothing. */
+  function expectLanded(where: string, l: Landing) {
+    expectClear(where, l);
+    const gap = l.top - Math.max(l.headerBottom, 0);
+    expect(gap, describeLanding(where, l)).toBeGreaterThanOrEqual(GAP.min);
+    expect(gap, describeLanding(where, l)).toBeLessThanOrEqual(GAP.max);
+  }
+
   it.each([1024, 768, 390])('a direct visit to a heading or a section clears the sticky header at %ipx', async (width) => {
-    await withSite('sticky', width, async (page) => {
+    await withSite('sticky', width, async ({ page }) => {
       for (const id of [HEADING, SECTION]) {
         const { before, after } = await visit(page, id);
-        // The browser jumped to the fragment before the script ran, using the theme's fallback margin, which a
-        // header with wrapped labels covers; the collapsed phone header does not.
-        expect(before.top, 'the browser jumped to the fragment before the script ran').toBeLessThan(200);
-        if (width >= 768) expect(before.top, `${id} at ${width}px starts under the header`).toBeLessThan(before.headerBottom);
-        expectRevealed(`${id} at ${width}px`, after);
+        // The browser jumped to the fragment before the script ran, using the theme's 5.5rem fallback margin.
+        expect(before.top, `${id} at ${width}px: the browser jumped to the fragment before the script ran`).toBeCloseTo(88, 0);
+        if (width >= 768) {
+          // Wrapped labels make the header taller than that; the script reveals what it covers.
+          expect(before.top, `${id} at ${width}px starts under the header`).toBeLessThan(before.headerBottom);
+          expectLanded(`${id} at ${width}px`, after);
+        } else {
+          // The collapsed phone header is shorter, so the target was already clear and stays where it is.
+          expect(before.top, `${id} at ${width}px starts clear of the header`).toBeGreaterThanOrEqual(before.headerBottom);
+          expectClear(`${id} at ${width}px`, after);
+          expect(Math.abs(after.top - before.top), describeLanding(`${id} at ${width}px`, after)).toBeLessThan(1);
+        }
       }
     });
   }, 60_000);
 
-  it('a reload keeps the place the visitor scrolled to, even with the anchor under the header', async () => {
-    await withSite('sticky', 1024, async (page) => {
-      const { after } = await visit(page, HEADING);
-      expectRevealed('direct visit', after);
-      // Scrolled back just far enough for the heading to sit under the header, which a reload restores.
-      await page.evaluate(`scrollBy(0, ${Math.round(after.top - after.headerBottom / 2)})`);
+  it('a direct visit with smooth scrolling clears the header once the jump comes to rest', async () => {
+    await withSite(
+      'sticky',
+      1024,
+      async ({ page }) => {
+        expect(await page.evaluate('matchMedia("(prefers-reduced-motion: reduce)").matches')).toBe(false);
+        const { before, after } = await visit(page, HEADING);
+        // The theme's smooth jump was still on its way when the script ran.
+        expect(before.top, 'the jump was still moving when the script ran').toBeGreaterThan(200);
+        expectLanded('after the smooth jump', after);
+      },
+      'no-preference'
+    );
+  }, 60_000);
+
+  it('a web font that makes the header taller after the visit lands is revealed again, unless the visitor has scrolled', async () => {
+    await withSite('sticky', 1024, async ({ page, releaseFont }) => {
+      const grow = () => page.addStyleTag({ content: '.so-header__inner { padding-block: 40px; }' });
+      const { after } = await visit(page, HEADING, '?font');
+      expectLanded('before the font loads', after);
+      expect(await page.evaluate('document.fonts.status'), 'the font is still loading').toBe('loading');
+      await grow();
       await page.evaluate(settled);
-      const scrolled = (await page.evaluate('scrollY')) as number;
-      expect(await page.reload(), 'the page reloads').not.toBeNull();
-      await page.waitForFunction('window.started === true');
-      await page.evaluate(settled);
-      expect((await page.evaluate('performance.getEntriesByType("navigation")[0].type')) as string).toBe('reload');
-      // WebKit restores to within a few pixels; revealing the heading would move it a header's height away.
-      expect(Math.abs(((await page.evaluate('scrollY')) as number) - scrolled), 'the restored position stays').toBeLessThan(20);
+      const covered = (await page.evaluate(landing(HEADING))) as Landing;
+      expect(covered.top, describeLanding('the taller header covers the heading', covered)).toBeLessThan(covered.headerBottom);
+      await releaseFont();
+      await page.waitForFunction('document.fonts.status === "loaded"');
+      await page.evaluate(atRest);
+      expectLanded('after the font loads', (await page.evaluate(landing(HEADING))) as Landing);
+
+      // The visitor scrolls while the font loads: the page stays where they put it.
+      await visit(page, HEADING, '?font');
+      await grow();
+      await page.mouse.move(500, 400);
+      await page.mouse.wheel(0, -40);
+      await page.evaluate(atRest);
+      const moved = (await page.evaluate(landing(HEADING))) as Landing;
+      await releaseFont();
+      await page.waitForFunction('document.fonts.status === "loaded"');
+      await page.evaluate(atRest);
       const kept = (await page.evaluate(landing(HEADING))) as Landing;
-      expect(kept.top, describeLanding('after the reload', kept)).toBeLessThan(kept.headerBottom);
+      expect(kept.scrollY, describeLanding('after the font loads', kept)).toBe(moved.scrollY);
+      expect(kept.top, describeLanding('after the font loads', kept)).toBeLessThan(kept.headerBottom);
+    });
+  }, 60_000);
+
+  it('a reload or a reopened tab keeps the restored place, even with the anchor under the header', async () => {
+    await withSite('sticky', 1024, async ({ page }) => {
+      for (const reopen of [false, true]) {
+        const { after } = await visit(page, HEADING);
+        expectLanded('direct visit', after);
+        // Scrolled back just far enough for the heading to sit under the header; that position is saved on leaving.
+        await page.evaluate(`scrollBy({ top: ${Math.round(after.top - after.headerBottom / 2)}, behavior: 'instant' })`);
+        await page.evaluate(settled);
+        const scrolled = (await page.evaluate('scrollY')) as number;
+        if (reopen) {
+          await page.goto('about:blank');
+          expect(await page.goto(`${ORIGIN}/?restore#${HEADING}`), 'the tab reopens').not.toBeNull();
+        } else expect(await page.reload(), 'the page reloads').not.toBeNull();
+        await page.waitForFunction('window.started === true');
+        await page.evaluate(atRest);
+        expect((await page.evaluate('performance.getEntriesByType("navigation")[0].type')) as string).toBe(reopen ? 'navigate' : 'reload');
+        const kept = (await page.evaluate(landing(HEADING))) as Landing;
+        expect(kept.scrollY, describeLanding(reopen ? 'reopened' : 'reloaded', kept)).toBe(scrolled);
+        expect(kept.top, describeLanding(reopen ? 'reopened' : 'reloaded', kept)).toBeLessThan(kept.headerBottom);
+      }
     });
   }, 60_000);
 
   it('a header shown again later in a visit leaves the page where it is', async () => {
-    await withSite('sticky', 1024, async (page) => {
+    await withSite('sticky', 1024, async ({ page }) => {
       // The header mounts during a back navigation, as it does returning from a page without the site shell.
       const { before, after } = await visit(page, HEADING, '?arrive=popstate');
       expect(before.top, 'the heading starts under the header').toBeLessThan(before.headerBottom);
-      expect(after.top, describeLanding('after the header mounts', after)).toBe(before.top);
+      expect(Math.abs(after.top - before.top), describeLanding('after the header mounts', after)).toBeLessThan(1);
     });
   }, 60_000);
 
-  it('links to a heading and a section clear the header as the viewport width changes', async () => {
-    await withSite('sticky', 1024, async (page) => {
+  it('links to a heading and a section land 1rem below the header as the viewport width changes', async () => {
+    await withSite('sticky', 1024, async ({ page }) => {
       await page.goto(`${ORIGIN}/`);
       await page.waitForFunction('window.started === true');
-      for (const width of [1024, 768, 390, 1280, 1024]) {
+      const heights: number[] = [];
+      for (const width of [1024, 768, 390, 1280, 768]) {
         await page.setViewportSize({ width, height: 800 });
         await page.evaluate(settled);
-        for (const id of [HEADING, SECTION]) expectRevealed(`link to ${id} at ${width}px`, await follow(page, id));
+        heights.push((await page.evaluate(`document.querySelector('header.so-header').getBoundingClientRect().height`)) as number);
+        for (const id of [HEADING, SECTION]) expectLanded(`link to ${id} at ${width}px`, await follow(page, id));
       }
+      // Each step changes the header's height, so a stale offset in either direction shows.
+      for (let i = 1; i < heights.length; i++) expect(heights[i], `header heights ${heights.join(', ')}`).not.toBeCloseTo(heights[i - 1], 0);
     });
   }, 60_000);
 
-  it('without a sticky header, anchors land at the top of the window', async () => {
-    await withSite('static', 1024, async (page) => {
-      // A direct visit keeps the place the browser chose, since nothing covers it.
-      expectRevealed('direct visit', (await visit(page, HEADING)).after);
+  it('without a sticky header, links land 1rem from the top and a direct visit stays where the browser put it', async () => {
+    await withSite('static', 1024, async ({ page }) => {
+      for (const id of [HEADING, SECTION]) {
+        const { before, after } = await visit(page, id);
+        expectClear(`direct visit to ${id}`, after);
+        expect(Math.abs(after.top - before.top), describeLanding(`direct visit to ${id}`, after)).toBeLessThan(1);
+      }
       for (const width of [1024, 390]) {
         await page.setViewportSize({ width, height: 800 });
         await page.evaluate(settled);
-        for (const id of [HEADING, SECTION]) {
-          const l = await follow(page, id);
-          expectRevealed(`link to ${id} at ${width}px`, l);
-          expect(l.top, describeLanding(`link to ${id} at ${width}px`, l)).toBeLessThanOrEqual(32);
-        }
+        for (const id of [HEADING, SECTION]) expectLanded(`link to ${id} at ${width}px`, await follow(page, id));
       }
     });
   }, 60_000);

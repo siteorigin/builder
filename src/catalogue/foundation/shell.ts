@@ -9,7 +9,7 @@ const HEADER_SOURCE = `<script>
 	 * Foundation theme code component. Props are edited in SiteOrigin Builder.
 	 */
 	import { onMount } from 'svelte';
-	import { afterNavigate } from '$app/navigation';
+	import { afterNavigate, beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import SoImage from '../runtime/Image.svelte';
@@ -48,19 +48,25 @@ const HEADER_SOURCE = `<script>
 	});
 
 	/**
-	 * Publishes the height the header covers while it sticks (0 when it does not stick or is hidden) as
+	 * Publishes how far down the header reaches while it stays in view (0 when it scrolls away or is hidden) as
 	 * --so-header-offset on the page root. The theme's [id] scroll margin adds to it, so jump links land below it.
+	 * The computed position also counts a sticky or fixed position set as a style rather than by the setting.
 	 */
 	function publishOffset(el) {
 		const root = el.ownerDocument.documentElement;
-		const value = (sticky && getComputedStyle(el).position === 'sticky' ? Math.ceil(el.getBoundingClientRect().height) : 0) + 'px';
+		const style = getComputedStyle(el);
+		const height = el.getBoundingClientRect().height;
+		const stays = (style.position === 'sticky' || style.position === 'fixed') && height > 0;
+		const value = (stays ? Math.ceil(height + Math.max(parseFloat(style.top) || 0, 0)) : 0) + 'px';
 		if (root.style.getPropertyValue('--so-header-offset') !== value) root.style.setProperty('--so-header-offset', value);
 	}
 
-	// The height changes when the brand or the links wrap, at a breakpoint, and when the fonts load.
+	// The height changes when the brand or the links wrap, at a breakpoint, and when the fonts load. The sticky
+	// setting changes the position without the size, which the observer would miss.
 	$effect(() => {
 		const el = header;
 		if (!el) return;
+		void sticky;
 		publishOffset(el);
 		const observer = new ResizeObserver(() => publishOffset(el));
 		observer.observe(el, { box: 'border-box' });
@@ -71,9 +77,10 @@ const HEADER_SOURCE = `<script>
 	});
 
 	/**
-	 * A visitor who opens a link to an anchor is scrolled there before the height above is published, so a tall
-	 * header can cover the target. Reveals it, and again once the fonts have loaded (they can make the header
-	 * taller), until the visitor moves on. Returns a function that stops it.
+	 * A visitor who opens a link to an anchor is scrolled there by the browser before the height above is
+	 * published, so a tall header can cover the target. Once that scroll (smooth by default) has come to rest, and
+	 * again once the fonts have loaded (they can make the header taller), reveals the target if the header covers
+	 * it, until the visitor moves on. Returns a function that stops it.
 	 */
 	function revealBookmark(el) {
 		const doc = el.ownerDocument;
@@ -101,9 +108,24 @@ const HEADER_SOURCE = `<script>
 			const box = target.getBoundingClientRect();
 			if (box.top < el.getBoundingClientRect().bottom - 0.5 && box.bottom > 0) target.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
 		};
-		reveal();
+		// At rest once the page has not moved for three frames, or after two seconds of movement.
+		const settle = () => {
+			let last = NaN;
+			let still = 0;
+			let frames = 0;
+			const step = () => {
+				if (done) return;
+				still = win.scrollY === last ? still + 1 : 0;
+				last = win.scrollY;
+				if (still >= 3 || ++frames >= 120) reveal();
+				else frame = win.requestAnimationFrame(step);
+			};
+			win.cancelAnimationFrame(frame);
+			frame = win.requestAnimationFrame(step);
+		};
+		settle();
 		doc.fonts?.ready.then(() => {
-			if (!done) frame = win.requestAnimationFrame(reveal);
+			if (!done) settle();
 		});
 		return stop;
 	}
@@ -119,6 +141,11 @@ const HEADER_SOURCE = `<script>
 		if (type !== 'enter' || !win || win.location.hash.length < 2) return;
 		if (win.performance.getEntriesByType?.('navigation')[0]?.type !== 'navigate' || win.history.scrollRestoration === 'manual') return;
 		stopReveal = revealBookmark(header);
+	});
+	// Leaving the page, the outgoing one stays put until the next one renders.
+	beforeNavigate(() => {
+		stopReveal?.();
+		stopReveal = undefined;
 	});
 	onMount(() => () => stopReveal?.());
 
