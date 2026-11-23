@@ -9,7 +9,7 @@ import { findParent, instancesOf } from '@engine/tree';
 import { applyOps, setState, useStore } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow } from '../components/ui';
 import { ImageEditor, LinkEditor, PropField, ScalarEditor, IconPicker } from './PropEditors';
-import { ScopePicker, StyleControls } from './StyleControls';
+import { StyleControls } from './StyleControls';
 import { boundaryOf, ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 
@@ -189,14 +189,14 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               </option>
             ))}
           </select>}</Field>}
-          <ScopePicker />
           <StyleControls
             styles={node.overrides?.root}
             inherited={inheritedStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variant)}
             allowed={rootPart?.styleControls}
             tokens={tokens}
             onSet={onStyle('root')}
-            onReset={() => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id }], 'Reset overrides')}
+            onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: 'root', scope: sc }], 'Reset overrides')}
+            target={`the ${def.name.toLowerCase()} itself`}
           />
           {partIds.length > 1 && (
             <div className="field-hint">
@@ -395,14 +395,13 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
       {part && !nested && def.kind === 'managed' && (
         <Section title="Style" id="part-style" scope={listProp ? `All ${((inst.props[listProp] as unknown[]) ?? []).length} ${(part.label ?? 'items').toLowerCase()}s` : undefined}>
           {listProp && <span className="field-hint">Style changes apply to the {(part.label ?? 'part').toLowerCase()} in every {(def.properties[listProp] as { itemLabel: string }).itemLabel.toLowerCase()}.</span>}
-          <ScopePicker />
           <StyleControls
             styles={inst.overrides?.[partId!]}
             inherited={inheritedStyles(def, part.nodeId, inst.variant)}
             allowed={part.styleControls}
             tokens={tokens}
             onSet={(property, value) => void applyOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], `Style ${part.label}`, `${instNodeId}:${partId}:${scope}:${property}`)}
-            onReset={() => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId }], 'Reset part overrides')}
+            onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, scope: sc }], 'Reset part overrides')}
           />
         </Section>
       )}
@@ -462,14 +461,13 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
         </Field>
       </Section>
       <Section title="Style" id="prim-style">
-        <ScopePicker />
         <StyleControls
           styles={node.styles}
           inherited={undefined}
           allowed={styleSetFor(node)}
           tokens={tokens}
           onSet={(property, value) => void applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value }], `Style ${property}`, `${node.id}:${scope}:${property}`)}
-          onReset={() => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id }], 'Reset styles')}
+          onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], 'Reset styles')}
         />
       </Section>
       {t && owner.kind !== 'shell' && (
@@ -570,10 +568,10 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         </Section>
       )}
       <Section title="Style" id="def-style" scope={uses === 1 ? '1 placement' : `${uses} placements`}>
-        <ScopePicker />
         <StyleControls
           styles={changed}
           inherited={original}
+          designSizesWin
           tokens={tokens}
           allowed={styleSetFor(node)}
           onSet={(property, value) => {
@@ -583,13 +581,13 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           }}
           onReset={
             original
-              ? () => {
+              ? (only) => {
                   const ops: EditOperation[] = [];
-                  for (const sc of Object.keys(changed ?? {}) as Array<keyof ResponsiveStyles>)
+                  for (const sc of (only ? [only] : Object.keys(changed ?? {})) as Array<keyof ResponsiveStyles>)
                     for (const prop of Object.keys(changed?.[sc] ?? {})) ops.push({ type: 'node.setStyle', owner, nodeId: node.id, scope: sc, property: prop, value: (original[sc]?.[prop] ?? null) as StyleValue | null });
                   if (ops.length) void applyOps(ops, `Restore ${def.name} design`);
                 }
-              : () => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id }], 'Clear element styles')
+              : (sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], 'Clear element styles')
           }
           resetLabel={original ? 'Restore original design' : 'Clear styles on this element'}
         />

@@ -559,21 +559,80 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .section-head[aria-expanded='false'] svg.chev { transform: rotate(-90deg); }
 .section-body { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 11px; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-/* Label column wide enough for the longest label; the reset control appears only on rows that hold a
-   value set here, and is always visible there (not on hover). */
-.style-row { display: grid; grid-template-columns: minmax(104px, 38%) minmax(0, 1fr); align-items: center; gap: 8px; min-height: 28px; }
 /* A changed value is marked by a small reset button beside its label (the mark is the action), so unset
    rows keep their controls at full width. */
 .reset-dot { display: inline-grid; place-items: center; width: 24px; height: 24px; margin: -4px 0; flex: none; border: 0; border-radius: var(--r-xs); background: none; color: var(--accent-text); }
 .reset-dot svg { width: 13px; height: 13px; }
 .reset-dot:hover { background: var(--accent-soft); }
 .editor.defining .reset-dot { color: var(--plum); }
-.style-row > .style-label { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 4px; min-width: 0; line-height: 1.25; }
+/* ---------- Style controls (StyleControls.tsx) ----------
+   Rows are label | value. A value changed here reads at full strength with a reset in the label rail; a value
+   showing through (from the design or from All sizes) is quiet text. A row only says where its value comes
+   from when that is not obvious: an All sizes value seen from one size, or a size with its own value. */
+.style-controls { display: flex; flex-direction: column; gap: 16px; }
+.style-scope { position: sticky; top: var(--style-scope-top, 0px); z-index: 1; display: flex; flex-direction: column; gap: 6px; margin: 0 -14px; padding: 8px 14px 10px; background: var(--panel); border-bottom: 1px solid var(--border); }
+.style-scope-label { font-size: 12px; font-weight: 500; color: var(--text-2); }
+.style-scope-picker { display: flex; padding: 2px; gap: 2px; border-radius: 8px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border-control); }
+.style-scope-picker button { position: relative; flex: 1; height: 26px; padding: 0 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text-2); font-size: 12px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
+.style-scope-picker button:hover { color: var(--text); background: var(--hover); }
+.style-scope-picker button[aria-checked='true'] { background: var(--raised); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border-control), var(--shadow-sm); }
+.style-scope-picker button:focus-visible { outline-offset: 0; }
+.style-scope-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
+.editor.defining .style-scope-dot { background: var(--plum); }
+.style-scope-note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.style-scope-note strong { color: var(--text); font-weight: 600; }
+.style-scope-preview { display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: start; gap: 6px; margin: 0; padding: 5px 8px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.35; color: var(--text); font-weight: 500; }
+.style-scope-preview > svg { width: 14px; height: 14px; color: var(--text-2); margin-top: 1px; }
+.style-scope-link { border: 0; background: none; padding: 0; color: var(--accent-text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+.style-scope-link:hover { text-decoration-color: currentColor; }
+.editor.defining .style-scope-link, .editor.defining .style-more { color: var(--plum); }
+.editor.defining .style-more:hover { background: var(--plum-soft); }
+.style-group { display: flex; flex-direction: column; gap: 6px; }
+.style-group-title { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 2px; }
+.style-row { display: grid; grid-template-columns: 124px minmax(0, 1fr); align-items: start; column-gap: 8px; row-gap: 3px; min-height: 28px; }
+.style-row > .style-label { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 2px; min-width: 0; min-height: 26px; line-height: 1.25; }
 .style-row > .style-label > span { min-width: 0; overflow-wrap: anywhere; }
-.style-row.set > .style-label { color: var(--text); font-weight: 500; }
-.style-row .ovr-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
-.style-control { display: flex; gap: 4px; min-width: 0; }
+.style-row.set > .style-label { color: var(--text); font-weight: 600; }
+/* The reset sits at the end of the label rail, so every reset lines up whatever the label's length. */
+.style-row .reset-dot { margin: -4px -4px -4px auto; border-radius: var(--r-sm); }
+.style-control { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .style-control .input, .style-control .select { min-width: 0; }
+.style-source { grid-column: 2; display: flex; flex-direction: column; font-size: 12px; line-height: 1.35; color: var(--text-3); }
+.style-source .previewed { color: var(--text-2); font-weight: 500; }
+.style-source-tag { font-weight: 400; color: var(--text-3); }
+.style-field { position: relative; display: flex; flex: 1; min-width: 0; }
+.style-field > .select { flex: 1; }
+.style-field.has-lead > .select { padding-left: 27px; }
+.style-lead { position: absolute; left: 8px; top: 50%; translate: 0 -50%; width: 14px; height: 14px; pointer-events: none; color: var(--text-3); }
+/* The app's swatch ring (as in Site styles), so a white or near-black colour keeps a 3:1 edge. */
+.style-lead.swatch { width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border-control); }
+.style-select.is-inherited, .style-input.is-inherited::placeholder { color: var(--text-3); }
+.style-select.is-inherited, .style-input.is-inherited { background-color: transparent; }
+.style-select.is-set, .style-input.is-set { color: var(--text); font-weight: 500; background-color: color-mix(in srgb, var(--accent) 7%, var(--raised)); }
+.editor.defining .style-select.is-set, .editor.defining .style-input.is-set { background-color: color-mix(in srgb, var(--plum) 7%, var(--raised)); }
+/* In dark, a quieter changed fill and a lighter chevron keep the picker's arrow at 3:1 or better. */
+@media (prefers-color-scheme: dark) {
+  .style-select.is-set, .style-input.is-set { background-color: color-mix(in srgb, var(--accent) 4%, var(--raised)); }
+  .editor.defining .style-select.is-set, .editor.defining .style-input.is-set { background-color: color-mix(in srgb, var(--plum) 4%, var(--raised)); }
+  .style-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
+}
+.panel-body .style-controls :is(input, select, button) { scroll-margin-top: var(--style-scroll-top, 150px); }
+.style-custom { display: flex; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; }
+.style-custom input[type='color'] { width: 26px; height: 26px; border: 1px solid var(--border-control); border-radius: var(--r-sm); padding: 2px; background: var(--raised); flex: none; }
+.style-custom input[type='color']::-webkit-color-swatch-wrapper { padding: 0; }
+.style-custom input[type='color']::-webkit-color-swatch { border: 0; border-radius: var(--r-xs); }
+.style-input.mono { font-family: var(--mono); font-size: 12px; }
+.style-input.is-set::placeholder { color: var(--text-2); }
+.editor.defining .style-row .reset-dot:hover { background: var(--plum-soft); }
+.style-more { display: flex; align-items: flex-start; gap: 6px; min-height: 28px; margin: -6px -6px; padding: 6px 6px; text-align: left; border: 0; border-radius: var(--r-sm); background: none; color: var(--accent-text); font-size: 12px; font-weight: 600; align-self: flex-start; }
+.style-more svg { width: 14px; height: 14px; flex: none; margin-top: 1px; }
+.style-more-text { display: flex; flex-direction: column; gap: 1px; }
+.style-more-groups { font-weight: 400; color: var(--text-2); }
+.style-more:hover { background: var(--accent-soft); }
+.style-more-body { display: flex; flex-direction: column; gap: 16px; }
+.style-more-body[hidden] { display: none; }
+.style-footer { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
+.style-footer-hint { font-size: 12px; color: var(--text-3); }
 .token-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 6px; border-radius: var(--r-sm); border: 1px solid var(--border-control); background: var(--raised); font-size: 12px; min-width: 0; flex: 1; text-align: left; }
 .token-chip .swatch { width: 14px; height: 14px; border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15), 0 0 0 1px rgb(255 255 255 / 0.12); flex: none; }
 .token-chip .link { color: var(--accent-text); width: 12px; height: 12px; flex: none; }

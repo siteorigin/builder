@@ -47,7 +47,7 @@ step('phone-only padding override on selected section');
 await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
 await win.waitForTimeout(800);
 await win.getByRole('button', { name: 'Style', exact: true }).last().click();
-await win.getByRole('group', { name: 'Style scope' }).getByRole('button', { name: 'Phone', exact: true }).click();
+await win.getByRole('radiogroup', { name: 'Edit styles for' }).getByRole('radio', { name: 'Phone', exact: true }).click();
 const row = win.locator('.style-row', { hasText: 'Vertical padding' }).first();
 await row.locator('select').selectOption({ label: 'Large · 24px' }).catch(async () => { await row.locator('select').selectOption('token:space.lg'); });
 await win.waitForTimeout(1500);
