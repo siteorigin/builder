@@ -3,6 +3,7 @@ import { ChevronRight, CircleCheck, Cloud, FolderCode, Globe, TriangleAlert, Upl
 import type { ExportFormat, ExportResult, RecentExport } from '@shared/api';
 import { api, setState, useStore } from '../store';
 import { Modal, Segmented, Spinner } from '../components/ui';
+import { openAsset } from '../lib/actions';
 
 const NO_EXPORTS: RecentExport[] = [];
 
@@ -113,6 +114,11 @@ export function ExportModal() {
             {result.warnings.map((w, i) => (
               <span key={i}>• {w}</span>
             ))}
+            {!result.ok && result.assetId && (
+              <button className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={() => openAsset(result.assetId!)}>
+                Open in Assets
+              </button>
+            )}
           </div>
         )}
         {recent.length > 0 && (

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, Component, FileText, Globe, ImageIcon, ImagePlus, Info, MapPin, PanelTop, Replace, Search, Trash2, Upload } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Component, FileSearch, FileText, Globe, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Trash2, TriangleAlert, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
@@ -244,7 +244,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const [nameError, setNameError] = useState<string | null>(null);
   const [allPlaces, setAllPlaces] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
+  const [fixing, setFixing] = useState(false);
+  const focus = useStore((s) => s.assetFocus);
   const assetsDoc = snap?.state.assets.assets;
+  // Images whose files are not in the project folder: their uses stay, and the details offer to bring the files back.
+  const missingAssets = snap?.missingAssets;
+  const missingOf = useMemo(() => new Map((missingAssets ?? []).map((m) => [m.assetId, m])), [missingAssets]);
   // Images and fonts are listed apart: a font is never shown, picked or replaced as a picture.
   const assets = useMemo(() => Object.values(assetsDoc ?? {}).filter((a) => a?.kind === 'image').sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [assetsDoc]);
   const fonts = useMemo(() => Object.values(assetsDoc ?? {}).filter(isValidFontAsset).sort((a, b) => fontLabel(a).localeCompare(fontLabel(b))), [assetsDoc]);
@@ -255,6 +260,15 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     setNameError(null);
     setAllPlaces(false);
   }, [selected]);
+  // Another panel asked for one image (Project health, an export): show its details.
+  useEffect(() => {
+    if (!focus) return;
+    setState({ assetFocus: null });
+    if (!assetsDoc?.[focus]) return;
+    replaceSession.current++;
+    setReplacing(false);
+    setSelected(focus);
+  }, [focus, assetsDoc]);
   // A pending "Import a replacement" never applies after the panel has gone.
   useEffect(() => () => void replaceSession.current++, []);
   // An image removed elsewhere (undo, the AI) closes its details rather than leaving them blank.
@@ -370,6 +384,17 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
     }
   };
+  /** Locate a missing file, or make missing copies again, and say how it went. */
+  const fixFiles = async (run: () => Promise<{ ok: boolean; message?: string }>) => {
+    if (fixing) return;
+    setFixing(true);
+    try {
+      const r = await run().catch((e: Error) => ({ ok: false, message: e.message }));
+      if (r.message) toast(r.message, r.ok ? 'info' : 'error');
+    } finally {
+      setFixing(false);
+    }
+  };
   const removeOne = async (a: AssetRecord) => {
     const i = shown.findIndex((x) => x.id === a.id);
     const next = shown[i + 1] ?? shown[i - 1];
@@ -430,11 +455,26 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const grid = (onPick: (a: AssetRecord) => void, label: string) => (
     <div className="asset-grid" role="group" aria-label={label} onKeyDown={gridKeys}>
       {shown.map((a) => {
-        const big = a.bytes > LARGE;
+        const gone = missingOf.get(a.id);
+        const big = a.bytes > LARGE && !gone;
         const name = nameOf(a);
+        const missingLabel = gone ? (gone.original ? 'file missing' : 'smaller copies missing') : '';
         return (
-          <button key={a.id} data-asset={a.id} className="asset-tile" onClick={() => onPick(a)} aria-label={big ? `${name}, large file, ${formatBytes(a.bytes)}` : name} title={big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}>
-            <Thumb a={a} devUrl={devUrl} />
+          <button
+            key={a.id}
+            data-asset={a.id}
+            className="asset-tile"
+            onClick={() => onPick(a)}
+            aria-label={gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}
+            title={gone ? `${name}\n${missingLabel[0].toUpperCase()}${missingLabel.slice(1)}` : big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}
+          >
+            <Thumb key={gone ? 'missing' : 'present'} a={a} devUrl={devUrl} />
+            {gone && (
+              <span className="asset-size asset-gone" aria-hidden="true">
+                <TriangleAlert />
+                {gone.original ? 'Missing' : 'Copies missing'}
+              </span>
+            )}
             {big && (
               <span className="asset-size" aria-hidden="true">
                 <Info />
@@ -548,6 +588,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   } else if (sel) {
     const used = usage[sel.id] ?? 0;
     const shownPlaces = allPlaces ? places : places.slice(0, 4);
+    const gone = missingOf.get(sel.id);
+    const copies = gone?.variants.length ?? 0;
     body = (
       <div className="asset-detail" id="asset-detail">
         <div className="asset-detail-top">
@@ -557,7 +599,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         </div>
         <div className="asset-preview">
           {devUrl ? (
-            <Picture a={sel} devUrl={devUrl} />
+            <Picture key={gone ? 'missing' : 'present'} a={sel} devUrl={devUrl} />
           ) : (
             <span className="asset-preview-off">
               <ImageIcon aria-hidden="true" />
@@ -569,6 +611,40 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           <h4>{nameOf(sel)}</h4>
           <p className="asset-meta">{[sel.width && sel.height ? `${sel.width} × ${sel.height}` : '', formatBytes(sel.bytes), formatType(sel.mime)].filter(Boolean).join(' · ')}</p>
         </div>
+        {gone && (
+          <div className="asset-note asset-missing" role="note">
+            <TriangleAlert aria-hidden="true" />
+            <div>
+              {gone.original ? (
+                <span>
+                  <b>File missing.</b> This picture is no longer in the project folder, so {used ? 'the places below show nothing' : 'it can’t be shown'}. {used ? 'Every use and its alt text are kept: locate' : 'Locate'} the file to bring it back{used ? ', or show another image instead' : ''}.
+                </span>
+              ) : (
+                <span>
+                  <b>{copies === 1 ? 'A smaller copy is missing.' : `${copies} smaller copies are missing.`}</b> Some screen sizes may show nothing until {copies === 1 ? 'it is' : 'they are'} made again from the original.
+                </span>
+              )}
+              <div className="asset-missing-actions">
+                {gone.original ? (
+                  <>
+                    <button className="btn btn-sm" disabled={fixing} onClick={() => void fixFiles(() => api.project.locateAsset(sel.id))}>
+                      <FileSearch /> Locate file…
+                    </button>
+                    {used > 0 && (
+                      <button className="btn btn-sm asset-replace-open" onClick={openReplace}>
+                        <Replace /> Use another image…
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <button className="btn btn-sm" disabled={fixing} onClick={() => void fixFiles(() => api.project.regenerateAssetCopies(sel.id))}>
+                    <RefreshCw /> Make copies again
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
         {sel.bytes > LARGE && (
           <p className="asset-note">
             <Info aria-hidden="true" />

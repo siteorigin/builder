@@ -107,6 +107,12 @@ describe('responsive copies', () => {
     expect((await renderVariants(still, 'image/png', 1200)).map((v) => v.width)).toEqual([480, 960]);
   });
 
+  it('makes exactly the widths asked for, never wider than the picture', async () => {
+    const variants = await renderVariants(await halves(1000, 500, 'jpeg'), 'image/jpeg', 1000, [960, 1440]);
+    expect(variants.map((v) => v.width)).toEqual([960]);
+    expect((await sharp(variants[0].data).metadata()).width).toBe(960);
+  });
+
   it('is deterministic, and leaves other formats alone', async () => {
     const photo = await halves(2000, 1000, 'jpeg');
     const [a, b] = [await renderVariants(photo, 'image/jpeg', 2000), await renderVariants(photo, 'image/jpeg', 2000)];
@@ -225,6 +231,38 @@ describe('media worker client', () => {
       throw new Error('no utility process');
     });
     expect(await broken.variants(Buffer.from('c'), 'image/jpeg', 2000)).toEqual([]);
+  });
+
+  it('says a picture is unreadable only when the decoder refused it, never because the worker failed', async () => {
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { timeoutMs: 1000 });
+    const refused = client.inspect(Buffer.from('a'), 'image/png', 100);
+    await tick();
+    expect(workers[0].sent[0]).toMatchObject({ check: true });
+    workers[0].reply({ id: workers[0].sent[0].id, ok: false, error: 'The picture could not be decoded.', unreadable: true });
+    expect(await refused).toEqual({ unreadable: true, variants: [] });
+    const failed = client.inspect(Buffer.from('b'), 'image/png', 100);
+    await tick();
+    workers[0].reply({ id: workers[0].sent[1].id, ok: false, error: 'out of memory' });
+    expect(await failed).toEqual({ unreadable: false, variants: [] });
+    const crashed = client.inspect(Buffer.from('c'), 'image/png', 100);
+    await tick();
+    workers[0].exit(1);
+    expect(await crashed).toEqual({ unreadable: false, variants: [] });
+    client.stop();
+    expect(await createVariantClient(() => { throw new Error('no utility process'); }).inspect(Buffer.from('d'), 'image/png', 100)).toEqual({ unreadable: false, variants: [] });
+  });
+
+  it('asks for exactly the widths a library image lists when making its copies again', async () => {
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn);
+    const p = client.variants(Buffer.from('a'), 'image/jpeg', 1000, [960]);
+    await tick();
+    expect(workers[0].sent[0]).toMatchObject({ widths: [960] });
+    expect(workers[0].sent[0].check).toBeUndefined();
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [] });
+    await p;
+    client.stop();
   });
 
   it('reads copies that sit inside a larger buffer, and survives a failed send or a fatal worker error', async () => {

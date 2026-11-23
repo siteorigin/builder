@@ -790,6 +790,7 @@ describe('tool definitions', () => {
     expect(withCode.types).toContain('page.create');
     expect(withCode.types).toContain('component.createCode');
     expect(withCode.types).not.toContain('asset.add');
+    expect(withCode.types).not.toContain('asset.relink');
     expect(withCode.types).not.toContain('node.paste');
     expect(withCode.required).not.toContain('scope');
     const noCode = applySchema(toolDefinitions({ codeEnabled: false }));

@@ -208,6 +208,11 @@ export function setMode(mode: 'edit' | 'preview') {
 
 /** Open Site styles. Site styles are site-wide, so this leaves component editing first: the plum band
  *  must never sit over site-wide controls. */
+/** Show one library image in Assets, closing the dialog that asked for it. */
+export function openAsset(assetId: string) {
+  setState({ leftTab: 'assets', assetFocus: assetId, modal: null });
+}
+
 export function openSiteStyles() {
   const dm = getState().definitionMode;
   setState(dm ? { definitionMode: null, pageId: dm.returnPageId, selection: null, rightTab: 'styles', dockOpen: true } : { rightTab: 'styles', dockOpen: true });

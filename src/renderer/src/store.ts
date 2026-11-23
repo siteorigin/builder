@@ -101,6 +101,8 @@ interface State {
   mode: 'edit' | 'preview';
   leftTab: LeftTab | null;
   rightTab: RightTab;
+  /** A library image another panel asked Assets to show (Project health, an export that stopped for it). */
+  assetFocus: string | null;
   /** The preview page itself has loaded and connected (not just the website tools). */
   frameReady: boolean;
   /** Fields holding typed text that is not committed yet (the toolbar says "Editing…" rather than "Saved"). */
@@ -147,6 +149,7 @@ export const useStore = create<State>((set) => ({
   mode: 'edit',
   leftTab: 'pages',
   rightTab: 'inspect',
+  assetFocus: null,
   frameReady: false,
   drafting: 0,
   leaving: false,

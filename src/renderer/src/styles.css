@@ -1412,6 +1412,10 @@ body.dialog-open .toast .btn { visibility: hidden; }
 .asset-note { display: flex; gap: 8px; margin: 10px 0 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .asset-note svg { flex: none; width: 14px; height: 14px; margin-top: 2px; }
 .asset-note b { color: var(--text); font-weight: 600; }
+.asset-note.asset-missing { background: var(--red-soft); }
+.asset-note.asset-missing > svg { color: var(--red); }
+.asset-missing-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.asset-size.asset-gone { background: rgb(150 32 28 / 0.88); }
 .asset-uses { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .asset-uses h5 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .asset-uses ul { display: flex; flex-direction: column; margin: 0 -6px; padding: 0; list-style: none; }

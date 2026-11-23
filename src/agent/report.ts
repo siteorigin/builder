@@ -311,6 +311,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Removed ${quoted(assetName(op.assetId))} from the library`);
       case 'asset.replace':
         return plain(op, `Replaced ${quoted(assetName(op.assetId))} with ${quoted(assetName(op.withAssetId))} wherever it was used`);
+      case 'asset.relink':
+        return plain(op, `Gave ${quoted(assetName(op.assetId))} a new image file`);
       default: {
         // Every operation type has a sentence; a new one fails the type check here until it gets one.
         const unknown: never = op;

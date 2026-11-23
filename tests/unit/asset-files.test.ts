@@ -1,66 +1,464 @@
 /**
- * Media the site cannot use (issue #48): an image file no browser can show is refused at import with its name and
- * a reason, while the good files of the same batch still arrive.
+ * Media the site cannot use (issue #48). An image file no browser can show is refused at import with its name and a
+ * reason, while the good files of the same batch still arrive. A library image whose files leave the project folder
+ * keeps its uses; Project health and Assets name it, the author can locate the file or make the copies again, and a
+ * website export stops naming it instead of failing in the build.
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { crc32 } from 'node:zlib';
 import sharp from 'sharp';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { VariantRequest } from '../../src/main/project/media-client';
+
+const env = vi.hoisted(() => ({ userData: '' }));
+
+/** The preview's worker: ready at once, gone when asked to stop. */
+class FakeRuntime extends EventEmitter {
+  stdout = new EventEmitter();
+  stderr = new EventEmitter();
+  exited = false;
+  postMessage(m: { type: string }) {
+    if (m.type === 'start') queueMicrotask(() => this.emit('message', { type: 'ready', url: 'http://127.0.0.1:1' }));
+    if (m.type === 'stop') this.kill();
+  }
+  kill() {
+    if (!this.exited) queueMicrotask(() => this.emit('exit', 0));
+    this.exited = true;
+    return true;
+  }
+}
+
+/** The media worker, run in this process by the code the real worker runs. */
+class InlineMediaWorker extends EventEmitter {
+  postMessage(m: VariantRequest) {
+    void import('../../src/main/project/image-variants').then(({ handleVariantRequest }) => handleVariantRequest(m)).then((r) => this.emit('message', r));
+  }
+  kill() {
+    return true;
+  }
+}
 
 vi.mock('electron', () => ({
-  // No media worker in unit tests: pictures import without their responsive copies.
-  utilityProcess: {
-    fork: () => {
-      throw new Error('no worker in unit tests');
-    }
-  }
+  app: { isPackaged: false, getPath: () => env.userData, getVersion: () => '0.0.0', getAppPath: () => process.cwd() },
+  BrowserWindow: class {},
+  shell: { showItemInFolder: () => undefined },
+  nativeImage: { createFromPath: () => ({ isEmpty: () => true }) },
+  dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }), showSaveDialog: async () => ({ canceled: true }) },
+  utilityProcess: { fork: (path: string) => (path.endsWith('media-worker.js') ? new InlineMediaWorker() : new FakeRuntime()) }
 }));
 
-const { importAsset } = await import('../../src/main/project/assets');
+const { importAsset, locateAssetFile, restoreAssetFiles, stopMediaWorker } = await import('../../src/main/project/assets');
+const { findMissingAssetFiles, missingFileDiagnostics } = await import('../../src/main/project/asset-files');
+const { isReadable } = await import('../../src/main/project/image-variants');
+const { imageProblem } = await import('../../src/main/project/media');
+const { missingAssetsStop, missingSourceWarnings, missingWebsiteAssets } = await import('../../src/main/export');
+const { ProjectSession } = await import('../../src/main/project/session');
+const { Controller } = await import('../../src/main/controller');
+const { applyOperations, assetUsages } = await import('@engine/apply');
+const { createStarterState, STARTER_ASSETS } = await import('@catalogue/starters');
+const { validateOperation } = await import('@shared/ops');
+const { sha } = await import('../../src/main/project/fsutil');
+type AssetRecord = import('@shared/types').AssetRecord;
+type ProjectState = import('@shared/types').ProjectState;
 
 const dirs: string[] = [];
-const temp = () => {
-  const d = mkdtempSync(join(tmpdir(), 'so-asset-files-'));
+const temp = (name = 'files') => {
+  const d = realpathSync(mkdtempSync(join(tmpdir(), `so-asset-${name}-`)));
   dirs.push(d);
   return d;
 };
-afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+const controllers: Array<InstanceType<typeof Controller>> = [];
+beforeEach(() => {
+  env.userData = temp('userdata');
+});
+afterEach(async () => {
+  for (const c of controllers.splice(0)) await c.close();
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+});
+afterAll(() => stopMediaWorker());
 
-const photo = (format: 'jpeg' | 'png' | 'webp' | 'gif' | 'avif') => {
-  const img = sharp({ create: { width: 64, height: 48, channels: 3, background: { r: 200, g: 120, b: 40 } } });
+const picture = (format: 'jpeg' | 'png' | 'webp' | 'gif' | 'avif', width = 64, height = 48, colour = { r: 200, g: 120, b: 40 }) => {
+  const img = sharp({ create: { width, height, channels: 3, background: colour } });
   return (format === 'jpeg' ? img.jpeg() : format === 'png' ? img.png() : format === 'webp' ? img.webp() : format === 'gif' ? img.gif() : img.avif()).toBuffer();
 };
 
-/** Write `data` as `name` in a fresh folder and import it into a fresh project. */
-async function importFile(name: string, data: Buffer) {
-  const src = temp();
+/** Write `data` as `name` in a fresh folder, and return its path. */
+function sourceFile(name: string, data: Buffer): string {
+  const src = temp('source');
   writeFileSync(join(src, name), data);
-  return importAsset(temp(), join(src, name), []);
+  return join(src, name);
+}
+
+/** Write `data` as `name` in a fresh folder and import it into a fresh project. */
+const importFile = (name: string, data: Buffer, project = temp('project')) => importAsset(project, sourceFile(name, data), []);
+
+/** A 1x1 PNG whose chunks are all whole and correctly checksummed, but whose image data no decoder can unpack. */
+async function damagedPng(): Promise<Buffer> {
+  const png = Buffer.from(await picture('png', 1, 1));
+  for (let i = 8; i < png.length; ) {
+    const len = png.readUInt32BE(i);
+    if (png.toString('latin1', i + 4, i + 8) === 'IDAT') {
+      // A zlib header naming no compression method there is.
+      png[i + 8] = 0x00;
+      png[i + 9] = 0x00;
+      png.writeUInt32BE(crc32(png.subarray(i + 4, i + 8 + len)), i + 8 + len);
+      return png;
+    }
+    i += 12 + len;
+  }
+  throw new Error('no IDAT');
 }
 
 describe('importing a picture no browser can show', () => {
   it('refuses an empty file, naming it', async () => {
-    await expect(importFile('empty.jpg', Buffer.alloc(0))).rejects.toThrow(/^empty\.jpg .*empty/);
+    await expect(importFile('empty.jpg', Buffer.alloc(0))).rejects.toThrow(/^empty\.jpg was not imported because the file is empty\./);
   });
 
-  it('refuses a photo that was cut short', async () => {
-    const jpeg = await photo('jpeg');
-    await expect(importFile('cut.jpg', jpeg.subarray(0, Math.floor(jpeg.length / 2)))).rejects.toThrow(/^cut\.jpg .*incomplete/);
-    const png = await photo('png');
-    await expect(importFile('cut.png', png.subarray(0, png.length - 20))).rejects.toThrow(/^cut\.png .*incomplete/);
+  it('refuses a photo that was cut short, at any point', async () => {
+    const jpeg = await picture('jpeg', 400, 300);
+    for (const at of [jpeg.length - 2, Math.floor(jpeg.length / 2), 300, 20]) await expect(importFile('cut.jpg', jpeg.subarray(0, at)), `JPEG cut at ${at}`).rejects.toThrow(/^cut\.jpg was not imported because it is incomplete/);
+    const png = await picture('png', 400, 300);
+    for (const at of [png.length - 1, png.length - 20, 40]) await expect(importFile('cut.png', png.subarray(0, at)), `PNG cut at ${at}`).rejects.toThrow(/^cut\.png .*incomplete/);
+    for (const format of ['gif', 'webp', 'avif'] as const) {
+      const whole = await picture(format, 400, 300);
+      await expect(importFile(`cut.${format}`, whole.subarray(0, whole.length - 10)), format).rejects.toThrow(/incomplete/);
+    }
   });
 
   it('refuses a file whose contents are not the format its name says', async () => {
-    await expect(importFile('notes.png', Buffer.from('just some text, not a picture'))).rejects.toThrow(/^notes\.png .*not a PNG/);
+    await expect(importFile('notes.png', Buffer.from('just some text, not a picture'))).rejects.toThrow(/^notes\.png was not imported because it is not a PNG image/);
+    await expect(importFile('photo.png', await picture('jpeg'))).rejects.toThrow(/not a PNG/);
+  });
+
+  it('refuses a picture whose data cannot be decoded, before writing anything', async () => {
+    const png = await damagedPng();
+    expect(imageProblem(png, 'image/png')).toBeNull();
+    expect(await isReadable(png)).toBe(false);
+    const project = temp('project');
+    await expect(importFile('broken.png', png, project)).rejects.toThrow(/^broken\.png was not imported because it is damaged/);
+    expect(existsSync(join(project, 'static'))).toBe(false);
   });
 
   it('still imports every readable format, including those that get no smaller copies', async () => {
     for (const [name, format] of [['a.jpg', 'jpeg'], ['b.png', 'png'], ['c.webp', 'webp'], ['d.gif', 'gif'], ['e.avif', 'avif']] as const) {
-      const { record } = await importFile(name, await photo(format));
+      const { record } = await importFile(name, await picture(format));
       expect(record, name).toMatchObject({ kind: 'image', width: 64, height: 48 });
+      expect(record.variants, name).toBeUndefined();
     }
-    const { record } = await importFile('f.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>'));
+    const { record } = await importFile('f.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'));
     expect(record).toMatchObject({ kind: 'image', mime: 'image/svg+xml' });
+    const big = await importFile('wide.webp', await picture('webp', 2000, 1000));
+    expect(big.record).toMatchObject({ width: 2000, height: 1000 });
+    expect(big.record.variants).toBeUndefined();
+  });
+
+  it('accepts every picture bundled with the Business starter, which new projects import', async () => {
+    for (const a of STARTER_ASSETS) expect(imageProblem(readFileSync(join('resources/starter-assets', a.source)), 'image/jpeg'), a.source).toBeNull();
+  });
+
+  it('keeps the good files of a batch while naming each refused one', async () => {
+    const { c, dir } = await openProject();
+    const good = sourceFile('good.png', await picture('png'));
+    const r = await c.importAssets([sourceFile('empty.jpg', Buffer.alloc(0)), good, sourceFile('cut.png', (await picture('png')).subarray(0, 30))]);
+    expect(r.ok).toBe(false);
+    expect(r.assetIds).toHaveLength(1);
+    expect(c.session!.state.assets.assets[r.assetIds[0]]).toMatchObject({ name: 'good' });
+    expect(r.message).toMatch(/empty\.jpg was not imported because the file is empty\..*cut\.png was not imported because it is incomplete/);
+    expect(existsSync(join(dir, c.session!.state.assets.assets[r.assetIds[0]].file))).toBe(true);
+  });
+});
+
+/** A project folder holding one imported photo big enough for smaller copies. */
+async function photoProject(): Promise<{ dir: string; record: AssetRecord; source: string }> {
+  const dir = temp('project');
+  const source = sourceFile('reading-nook.jpg', await picture('jpeg', 1200, 800));
+  const { record } = await importAsset(dir, source, []);
+  return { dir, record, source };
+}
+
+describe('finding image files that left the project folder', () => {
+  it('reports a missing original, missing copies, or both, and nothing for files that are there', async () => {
+    const { dir, record } = await photoProject();
+    expect(record.variants?.map((v) => v.width)).toEqual([480, 960]);
+    const assets = { [record.id]: record };
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
+    unlinkSync(join(dir, record.variants![1].file));
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: false, variants: [record.variants![1].file] }]);
+    unlinkSync(join(dir, record.file));
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: true, variants: [record.variants![1].file] }]);
+    rmSync(join(dir, 'static/assets'), { recursive: true });
+    expect((await findMissingAssetFiles(dir, assets))[0]).toEqual({ assetId: record.id, original: true, variants: record.variants!.map((v) => v.file) });
+  });
+
+  it('does not count a folder or a link in place of a file, and leaves fonts and pictures without copies alone', async () => {
+    const { dir, record } = await photoProject();
+    const gif = (await importFile('logo.gif', await picture('gif'), dir)).record;
+    const font = { ...gif, id: 'a_font', kind: 'font' as const, file: 'static/assets/gone-00000000.woff2' };
+    const assets = { [record.id]: record, [gif.id]: gif, [font.id]: font };
+    unlinkSync(join(dir, record.file));
+    mkdirSync(join(dir, record.file));
+    const outside = sourceFile('elsewhere.jpg', await picture('jpeg'));
+    unlinkSync(join(dir, record.variants![0].file));
+    symlinkSync(outside, join(dir, record.variants![0].file));
+    expect(await findMissingAssetFiles(dir, assets)).toEqual([{ assetId: record.id, original: true, variants: [record.variants![0].file] }]);
+  });
+
+  it('names the image in Project health, as a problem while the site uses it, without mentioning how often', () => {
+    const state = createStarterState('business', 'Health', true);
+    for (const a of STARTER_ASSETS) state.assets.assets[a.id] = { id: a.id, name: a.name, file: `static/assets/${a.id.slice(2)}-00000000.jpg`, mime: 'image/jpeg', bytes: 1, hash: a.id, kind: 'image', createdAt: 'now' };
+    expect(assetUsages(state).a_reading).toBeGreaterThan(0);
+    const missing = [
+      { assetId: 'a_reading', original: true, variants: ['static/assets/reading-00000000-480w.jpg', 'static/assets/reading-00000000-960w.jpg'] },
+      { assetId: 'a_person3', original: false, variants: ['static/assets/person3-00000000-480w.jpg'] }
+    ];
+    const unused = structuredClone(state);
+    walkImages(unused, (v) => v.assetId === 'a_person3' && (v.assetId = null));
+    const d = missingFileDiagnostics(unused, missing);
+    expect(d).toEqual([
+      { severity: 'error', code: 'ASSET_FILE_MISSING', message: 'Reading nook is missing its original file and 2 smaller copies in the project folder. Locate the file or choose another image in Assets.', owner: { kind: 'asset', id: 'a_reading' } },
+      { severity: 'warning', code: 'ASSET_FILE_MISSING', message: 'Portrait 3 is missing a smaller copy in the project folder. Make the copies again in Assets.', owner: { kind: 'asset', id: 'a_person3' } }
+    ]);
+    // Removing one of its uses leaves the problem as it was, so the AI never takes it for one it introduced.
+    const fewer = structuredClone(state);
+    let once = false;
+    walkImages(fewer, (v) => v.assetId === 'a_reading' && !once && ((once = true), (v.assetId = null)));
+    expect(missingFileDiagnostics(fewer, missing)[0].message).toBe(d[0].message);
+  });
+});
+
+/** Every image value in the state (`{ assetId, alt }`), for a test to change in place. */
+function walkImages(state: ProjectState, fn: (v: { assetId: string | null; alt?: string }) => unknown) {
+  const visit = (v: unknown) => {
+    if (Array.isArray(v)) return v.forEach(visit);
+    if (!v || typeof v !== 'object') return;
+    if ('assetId' in v) fn(v as { assetId: string | null });
+    Object.values(v).forEach(visit);
+  };
+  visit(state.pages);
+  visit(state.site.shell);
+  visit(state.components);
+}
+
+describe('bringing missing files back', () => {
+  it('puts the same picture back where the library expects it, with its copies, under its recorded names', async () => {
+    const { dir, record, source } = await photoProject();
+    const original = readFileSync(join(dir, record.file));
+    rmSync(join(dir, 'static/assets'), { recursive: true });
+    // Found again under another name: what matters is that it is the same picture.
+    const renamed = sourceFile('IMG_2041.JPG', readFileSync(source));
+    const r = await locateAssetFile(dir, record, renamed);
+    expect(r).toEqual({ same: true, written: [record.file, ...record.variants!.map((v) => v.file)], failed: [] });
+    expect(readFileSync(join(dir, record.file)).equals(original)).toBe(true);
+    for (const v of record.variants!) expect((await sharp(join(dir, v.file)).metadata()).width).toBe(v.width);
+    expect(await findMissingAssetFiles(dir, { [record.id]: record })).toEqual([]);
+  });
+
+  it('stores a different picture as an import would, for the record to point at', async () => {
+    const { dir, record } = await photoProject();
+    unlinkSync(join(dir, record.file));
+    const other = await picture('png', 1000, 500, { r: 10, g: 90, b: 200 });
+    const r = await locateAssetFile(dir, record, sourceFile('new-nook.png', other));
+    expect(r.same).toBe(false);
+    if (r.same) return;
+    expect(r.stored).toMatchObject({ mime: 'image/png', width: 1000, height: 500, hash: sha(other), bytes: other.length });
+    expect(r.stored.file).toMatch(/^static\/assets\/new-nook-[0-9a-f]{8}\.png$/);
+    expect(r.stored.variants?.map((v) => v.width)).toEqual([480]);
+    for (const f of [r.stored.file, ...r.stored.variants!.map((v) => v.file)]) expect(existsSync(join(dir, f))).toBe(true);
+  });
+
+  it('refuses a located file that is not a usable picture, writing nothing', async () => {
+    const { dir, record } = await photoProject();
+    rmSync(join(dir, 'static/assets'), { recursive: true });
+    await expect(locateAssetFile(dir, record, sourceFile('nook.jpg', Buffer.alloc(0)))).rejects.toThrow(/^nook\.jpg can't be used because the file is empty/);
+    await expect(locateAssetFile(dir, record, sourceFile('nook.woff2', Buffer.from('wOF2')))).rejects.toThrow(/not an image/);
+    expect(existsSync(join(dir, 'static/assets'))).toBe(false);
+  });
+
+  it('makes missing copies again at the widths the library lists, even ones a new import would not make', async () => {
+    const dir = temp('project');
+    const photo = await picture('jpeg', 1000, 600);
+    const { record } = await importAsset(dir, sourceFile('wide.jpg', photo), []);
+    // Imported by an older version, which also made a 960px copy of a 1000px picture.
+    const stem = record.file.replace(/\.jpg$/, '');
+    expect(record.variants?.map((v) => v.width)).toEqual([480]);
+    const older: AssetRecord = { ...record, variants: [{ width: 480, file: `${stem}-480w.jpg` }, { width: 960, file: `${stem}-960w.jpg` }] };
+    const r = await restoreAssetFiles(dir, older);
+    expect(r).toEqual({ written: [`${stem}-960w.jpg`], failed: [] });
+    expect((await sharp(join(dir, `${stem}-960w.jpg`)).metadata()).width).toBe(960);
+    // Copies already there are left alone.
+    expect(await restoreAssetFiles(dir, older)).toEqual({ written: [], failed: [] });
+  });
+
+  it('makes no copies from an original that is no longer the recorded picture', async () => {
+    const { dir, record } = await photoProject();
+    writeFileSync(join(dir, record.file), await picture('jpeg', 1200, 800, { r: 0, g: 0, b: 0 }));
+    unlinkSync(join(dir, record.variants![0].file));
+    await expect(restoreAssetFiles(dir, record)).rejects.toThrow(/not the picture the library recorded/);
+    expect(existsSync(join(dir, record.variants![0].file))).toBe(false);
+  });
+});
+
+describe('giving a library image a new file', () => {
+  const record = (): AssetRecord => ({ id: 'a_pic', name: 'Pic', file: 'static/assets/pic-11111111.jpg', mime: 'image/jpeg', bytes: 10, width: 1200, height: 800, hash: 'old', kind: 'image', createdAt: 'then', description: 'Our studio', altSuggestion: 'A studio', variants: [{ width: 480, file: 'static/assets/pic-11111111-480w.jpg' }] });
+  const relink = { type: 'asset.relink' as const, assetId: 'a_pic', file: 'static/assets/new-22222222.webp', mime: 'image/webp', bytes: 20, hash: 'new', width: 300, height: 200 };
+
+  it('keeps the image, its details and every use with its alt text, and replaces the file details as a whole', () => {
+    let s = createStarterState('blank', 'Relink', false);
+    s = applyOperations(s, [{ type: 'asset.add', asset: record() }]).state;
+    const c = applyOperations(s, [{ type: 'component.createCode', name: 'Pic', source: '<p>x</p>\n', properties: { photo: { type: 'image', label: 'Photo' } } }]);
+    s = applyOperations(c.state, [{ type: 'node.insert', owner: { kind: 'page', id: c.state.site.homePageId }, definitionId: c.results[0].definitionId as string, props: { photo: { assetId: 'a_pic', alt: 'The studio at dusk' } } }]).state;
+    const after = applyOperations(s, [relink]).state;
+    expect(after.assets.assets.a_pic).toEqual({ id: 'a_pic', name: 'Pic', file: relink.file, mime: 'image/webp', bytes: 20, width: 300, height: 200, hash: 'new', kind: 'image', createdAt: 'then', description: 'Our studio', altSuggestion: 'A studio' });
+    expect(JSON.stringify(after.pages)).toContain('{"assetId":"a_pic","alt":"The studio at dusk"}');
+    expect(assetUsages(after).a_pic).toBe(1);
+    const svg = applyOperations(s, [{ ...relink, file: 'static/assets/new-22222222.svg', mime: 'image/svg+xml', width: undefined, height: undefined }]).state.assets.assets.a_pic;
+    expect(svg.width).toBeUndefined();
+    expect(svg.variants).toBeUndefined();
+  });
+
+  it('takes only importer file names, for images', () => {
+    expect(validateOperation({ ...relink, file: 'static/assets/../../secret.jpg' }).ok).toBe(false);
+    expect(validateOperation({ ...relink, file: 'src/routes/+page.svelte' }).ok).toBe(false);
+    expect(validateOperation({ ...relink, mime: 'font/woff2' }).ok).toBe(false);
+    const s = applyOperations(createStarterState('blank', 'Font', false), [{ type: 'asset.add', asset: { ...record(), kind: 'font' } }]).state;
+    expect(() => applyOperations(s, [relink])).toThrow(/not an image/);
+  });
+
+  it('is the editor’s alone: an AI change cannot point an image at another file', async () => {
+    const dir = temp('project');
+    const s = await ProjectSession.create(dir, createStarterState('blank', 'AI', false));
+    try {
+      expect((await s.apply({ operations: [{ type: 'asset.add', asset: record() }] }, { label: 'Import', source: 'user' })).ok).toBe(true);
+      const ai = await s.apply({ operations: [relink] }, { label: 'Relink', source: 'ai' });
+      expect(ai).toMatchObject({ ok: false, error: { code: 'SCOPE_MISMATCH' } });
+      expect(s.state.assets.assets.a_pic.file).toBe(record().file);
+    } finally {
+      await s.close();
+    }
+  });
+});
+
+/** A Business site with its sample pictures imported, its preview tools in place, opened in the Controller. */
+async function openProject(): Promise<{ c: InstanceType<typeof Controller>; dir: string }> {
+  const dir = temp('project');
+  const state = createStarterState('business', 'Reading Room', true);
+  for (const a of STARTER_ASSETS) {
+    const { record } = await importAsset(dir, join('resources/starter-assets', a.source), []);
+    state.assets.assets[a.id] = { ...record, id: a.id, name: a.name, altSuggestion: a.alt };
+  }
+  const created = await ProjectSession.create(dir, state);
+  await created.close();
+  const pkg = '{"name":"site","type":"module"}';
+  writeFileSync(join(dir, 'package.json'), pkg);
+  writeFileSync(join(dir, 'vite.config.js'), 'export default {};');
+  mkdirSync(join(dir, 'node_modules/@sveltejs/kit'), { recursive: true });
+  writeFileSync(join(dir, 'node_modules/@sveltejs/kit/package.json'), '{"name":"@sveltejs/kit"}');
+  writeFileSync(join(dir, '.siteorigin/cache/deps.json'), JSON.stringify({ lockHash: sha('' + pkg), preparedAt: '2026-01-01T00:00:00.000Z' }));
+  const c = new Controller(() => null);
+  c.send = () => undefined;
+  controllers.push(c);
+  expect((await c.trustAndOpen(dir)).ok).toBe(true);
+  return { c, dir };
+}
+
+async function until(check: () => boolean, what: string) {
+  for (let i = 0; i < 300 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+  if (!check()) throw new Error(`Timed out waiting for ${what}`);
+}
+
+describe('a project whose picture was moved out of its folder', () => {
+  it('lists it in Project health with its uses kept, and relinks a new picture in one step that can be undone', async () => {
+    const { c, dir } = await openProject();
+    const s = c.session!;
+    const nook = s.state.assets.assets.a_reading;
+    const uses = c.snapshot()!.assetUsage.a_reading;
+    expect(uses).toBeGreaterThan(0);
+    expect(c.snapshot()!.missingAssets).toEqual([]);
+    const outside = temp('moved');
+    for (const f of [nook.file, ...(nook.variants ?? []).map((v) => v.file)]) {
+      copyFileSync(join(dir, f), join(outside, f.split('/').pop()!));
+      unlinkSync(join(dir, f));
+    }
+    // The folder watcher notices; the library entry and its uses stay.
+    await until(() => !!c.snapshot()!.missingAssets.length, 'the missing files to be noticed');
+    const snap = c.snapshot()!;
+    expect(snap.missingAssets).toEqual([{ assetId: 'a_reading', original: true, variants: (nook.variants ?? []).map((v) => v.file) }]);
+    expect(snap.diagnostics.find((d) => d.code === 'ASSET_FILE_MISSING')).toMatchObject({ severity: 'error', owner: { kind: 'asset', id: 'a_reading' }, message: expect.stringMatching(/^Reading nook is missing its original file/) });
+    expect(snap.assetUsage.a_reading).toBe(uses);
+    const alts = JSON.stringify(s.state.pages).match(/"assetId":"a_reading","alt":"[^"]*"/g);
+
+    // A different picture becomes this image's file, everywhere it is used.
+    const replacement = sourceFile('new-nook.png', await picture('png', 900, 600, { r: 40, g: 160, b: 90 }));
+    const r = await c.locateAsset('a_reading', replacement);
+    expect(r).toEqual({ ok: true, message: 'new-nook.png now shows wherever Reading nook is used.' });
+    const relinked = s.state.assets.assets.a_reading;
+    expect(relinked).toMatchObject({ id: 'a_reading', name: 'Reading nook', altSuggestion: nook.altSuggestion, mime: 'image/png', width: 900 });
+    expect(JSON.stringify(s.state.pages).match(/"assetId":"a_reading","alt":"[^"]*"/g)).toEqual(alts);
+    await until(() => !c.snapshot()!.missingAssets.length, 'the relinked image to be found');
+    expect(c.snapshot()!.diagnostics.some((d) => d.code === 'ASSET_FILE_MISSING')).toBe(false);
+
+    // Undo points the image back at the old files, which are still missing.
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.assets.assets.a_reading).toEqual(nook);
+    await until(() => !!c.snapshot()!.missingAssets.length, 'the old files to be missing again');
+
+    // Putting the original back (located under any name) restores it in place, with no change to the project.
+    const revision = s.revision;
+    const r2 = await c.locateAsset('a_reading', join(outside, nook.file.split('/').pop()!));
+    expect(r2).toEqual({ ok: true, message: 'Reading nook is back in the project folder.' });
+    expect(s.revision).toBe(revision);
+    expect(c.snapshot()!.missingAssets).toEqual([]);
+  });
+
+  it('makes missing copies again, and refuses to work on a project open read-only', async () => {
+    const { c, dir } = await openProject();
+    const hero = c.session!.state.assets.assets.a_hero;
+    expect(hero.variants?.length).toBeGreaterThan(0);
+    for (const v of hero.variants!) unlinkSync(join(dir, v.file));
+    const r = await c.regenerateAssetCopies('a_hero');
+    expect(r.ok).toBe(true);
+    expect(r.message).toMatch(/^Made \d+ smaller copies of Hero interior again\.$|^Made a smaller copy of Hero interior again\.$/);
+    for (const v of hero.variants!) expect(existsSync(join(dir, v.file))).toBe(true);
+    expect(c.snapshot()!.missingAssets).toEqual([]);
+    expect(await c.locateAsset('a_nope', sourceFile('x.png', await picture('png')))).toEqual({ ok: false, message: 'That image is no longer in the library.' });
+  });
+});
+
+describe('exporting with missing image files', () => {
+  /** A staged project: a page naming one image's files, and another image nothing names. */
+  async function staged() {
+    const dir = temp('staged');
+    const state = createStarterState('blank', 'Staged', false);
+    const { record: used } = await importAsset(dir, sourceFile('reading-nook.jpg', await picture('jpeg', 1200, 800)), []);
+    const { record: spare } = await importAsset(dir, sourceFile('spare.png', await picture('png')), []);
+    state.assets.assets[used.id] = { ...used, name: 'Reading nook' };
+    state.assets.assets[spare.id] = { ...spare, name: 'Spare' };
+    mkdirSync(join(dir, 'src/routes'), { recursive: true });
+    const name = (f: string) => f.split('/').pop();
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<img src="/assets/${name(used.file)}" srcset="${used.variants!.map((v) => `/assets/${name(v.file)} ${v.width}w`).join(', ')}" alt="">`);
+    return { dir, state, used: state.assets.assets[used.id], spare: state.assets.assets[spare.id] };
+  }
+
+  it('stops a website export for a picture the site uses, naming it, and lets one it does not use pass', async () => {
+    const { dir, state, used, spare } = await staged();
+    expect(await missingWebsiteAssets(dir, state)).toEqual([]);
+    unlinkSync(join(dir, spare.file));
+    expect(await missingWebsiteAssets(dir, state)).toEqual([{ asset: spare, missing: { assetId: spare.id, original: true, variants: [] }, used: false }]);
+    unlinkSync(join(dir, used.variants![1].file));
+    const copyGone = (await missingWebsiteAssets(dir, state)).filter((m) => m.used);
+    expect(missingAssetsStop(copyGone).message).toBe('Reading nook is missing a smaller copy in the project folder, and the website uses it. Make the copies again in Assets, then export again.');
+    unlinkSync(join(dir, used.file));
+    const stop = missingAssetsStop((await missingWebsiteAssets(dir, state)).filter((m) => m.used));
+    expect(stop.message).toBe('Reading nook is missing its original file and a smaller copy in the project folder, and the website uses them. Locate the file in Assets, then export again.');
+    expect(stop.warnings).toEqual([`Reading nook: ${used.file}, ${used.variants![1].file} not found.`]);
+  });
+
+  it('notes in an editable export which pictures it does not have', async () => {
+    const { dir, state, used } = await staged();
+    unlinkSync(join(dir, used.file));
+    expect(missingSourceWarnings(state, await findMissingAssetFiles(dir, state.assets.assets))).toEqual(['Reading nook is missing its original file in the project folder, so the exported project does not have it either. Fix it in Assets and export again.']);
   });
 });

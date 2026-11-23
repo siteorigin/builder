@@ -287,6 +287,20 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       if (state.site.socialImage === op.assetId) state.site.socialImage = op.withAssetId;
       return {};
     }
+    case 'asset.relink': {
+      const a = own(state.assets.assets, op.assetId) ?? fail(`Asset "${op.assetId}" does not exist.`);
+      if (a.kind !== 'image') fail(`"${a.name}" is not an image.`);
+      a.file = op.file;
+      a.mime = op.mime;
+      a.bytes = op.bytes;
+      a.hash = op.hash;
+      // Details the new file does not have are dropped, never left over from the old one.
+      for (const k of ['width', 'height', 'variants'] as const) delete a[k];
+      if (op.width !== undefined) a.width = op.width;
+      if (op.height !== undefined) a.height = op.height;
+      if (op.variants?.length) a.variants = clone(op.variants);
+      return {};
+    }
   }
   fail(`Unsupported operation "${(op as { type: string }).type}".`);
 }

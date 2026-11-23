@@ -48,6 +48,13 @@ export interface Diagnostic {
   nodeId?: string;
 }
 
+/** A library image whose files are not in the project folder: its original, and which listed copies. */
+export interface MissingAssetFiles {
+  assetId: string;
+  original: boolean;
+  variants: string[];
+}
+
 export interface HistoryInfo {
   canUndo: boolean;
   canRedo: boolean;
@@ -77,6 +84,8 @@ export interface ProjectSnapshot {
   /** The AI request being worked on, while `aiBusy`. */
   aiRunId?: string | null;
   assetUsage: Record<string, number>;
+  /** Library images whose files are missing from the project folder, as last checked. */
+  missingAssets: MissingAssetFiles[];
   /** Files changed outside the app. canonical: a project document (keep or restore); generated: a derived file (restore). */
   conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated' }>;
   /** Set when the project is open for inspection only (a newer format, or another app is editing it). */
@@ -132,6 +141,8 @@ export interface ExportResult {
   warnings: string[];
   revision?: number;
   previewUrl?: string;
+  /** The library image the export stopped for, so the author can open it in Assets. */
+  assetId?: string;
 }
 
 /** An export the open project made since it was opened, so the author can find and compare what they handed off. */
@@ -309,6 +320,10 @@ export interface BuilderApi {
     importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }>;
     /** What private metadata an image asset's original carries, which website exports leave out. Null when it cannot be read. */
     photoMetadata(assetId: string): Promise<{ location: boolean; device: boolean } | null>;
+    /** Find the file of a library image whose original is missing (a dialog, unless `path` is given). */
+    locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string }>;
+    /** Make again the smaller copies a library image is missing. */
+    regenerateAssetCopies(assetId: string): Promise<{ ok: boolean; message?: string }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;
     exportStatic(format?: ExportFormat): Promise<ExportResult>;
     retryPreview(): Promise<void>;

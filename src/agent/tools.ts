@@ -76,7 +76,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
 
 /** Operations the assistant never sends: images are added only by the verified importer, theme updates by the
  *  user, and pastes come from the editor's own Copy. */
-const NEVER_OFFERED = new Set<OperationType>(['asset.add', 'theme.refresh', 'node.paste']);
+const NEVER_OFFERED = new Set<OperationType>(['asset.add', 'asset.relink', 'theme.refresh', 'node.paste']);
 /** Operations that need Developer mode. */
 export const CODE_OPERATIONS = new Set<OperationType>(['component.createCode', 'component.updateSource', 'component.convertToCode']);
 const CODE_TOOLS = new Set<ToolName>(['read_source', 'apply_source_patch']);

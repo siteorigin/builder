@@ -29,6 +29,8 @@ const api: BuilderApi = {
     redo: invoke('project:redo'),
     importAssets: invoke('project:importAssets'),
     photoMetadata: invoke('project:photoMetadata'),
+    locateAsset: invoke('project:locateAsset'),
+    regenerateAssetCopies: invoke('project:regenerateAssetCopies'),
     exportSource: invoke('project:exportSource'),
     exportStatic: invoke('project:exportStatic'),
     retryPreview: invoke('project:retryPreview'),
