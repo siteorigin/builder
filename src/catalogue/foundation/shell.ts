@@ -51,16 +51,17 @@ const HEADER_SOURCE = `<script>
 	 * Publishes how far down the window the header reaches while it stays at the top (0 when it scrolls away, is
 	 * hidden or stays at the bottom) as --so-header-offset on the page root. The theme's [id] scroll margin adds
 	 * to it, so jump links land below it. The computed style also counts a position set as a style: a sticky
-	 * header stays in view only with a top inset, and a fixed one covers the top when it sits in the top half.
+	 * header stays in view at its top inset (only when it has one), a fixed one where it is, and either covers
+	 * the top of the window when it sits nearer the top edge than the bottom.
 	 */
 	function publishOffset(el) {
 		const root = el.ownerDocument.documentElement;
 		const style = getComputedStyle(el);
 		const box = el.getBoundingClientRect();
 		const top = parseFloat(style.top);
-		let reach = 0;
-		if (box.height > 0 && style.position === 'sticky' && Number.isFinite(top)) reach = Math.max(top, 0) + box.height;
-		else if (box.height > 0 && style.position === 'fixed' && box.top < el.ownerDocument.defaultView.innerHeight / 2) reach = Math.max(box.bottom, 0);
+		const pinned = style.position === 'sticky' && Number.isFinite(top) ? top : style.position === 'fixed' ? box.top : NaN;
+		const bottom = pinned + box.height;
+		const reach = box.height > 0 && pinned < el.ownerDocument.defaultView.innerHeight - bottom ? Math.max(bottom, 0) : 0;
 		const value = Math.ceil(reach) + 'px';
 		if (root.style.getPropertyValue('--so-header-offset') !== value) root.style.setProperty('--so-header-offset', value);
 	}
@@ -125,7 +126,8 @@ const HEADER_SOURCE = `<script>
 			if (!target || el.contains(target)) return;
 			publishOffset(el);
 			const box = target.getBoundingClientRect();
-			if (box.top < el.getBoundingClientRect().bottom - 0.5 && box.bottom > 0) target.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
+			const cover = el.getBoundingClientRect();
+			if (box.top < cover.bottom - 0.5 && box.bottom > Math.max(cover.top, 0)) target.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
 		};
 		// At rest once the page has not moved for three frames, or after two seconds of movement.
 		const settle = () => {

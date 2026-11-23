@@ -390,17 +390,19 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
   }, 60_000);
 
   it.each([
-    ['a sticky header set lower with an inset', 'sticky', '.so-header { top: 10vh !important; }', 'below'],
-    ['a header made sticky without a top inset, which scrolls away', 'static', '.so-header { position: sticky !important; }', 'top'],
-    ['a header fixed to the bottom of the window', 'sticky', '.so-header { position: fixed !important; top: auto !important; bottom: 0; left: 0; right: 0; }', 'top']
-  ] as const)('with %s, links clear what covers the top of the window', async (_case, name, css, where) => {
+    ['a sticky header set lower with an inset', 'sticky', '.so-header { top: 10vh !important; }', 'below', [800, 600]],
+    ['a sticky header mostly above the window', 'static', '.so-header { position: sticky !important; top: -140px !important; }', 'below', [800, 600]],
+    ['a header made sticky without a top inset, which scrolls away', 'static', '.so-header { position: sticky !important; }', 'top', [800, 600]],
+    // In the short window the header fills most of the lower half.
+    ['a header fixed to the bottom of the window', 'sticky', '.so-header { position: fixed !important; top: auto !important; bottom: 0; left: 0; right: 0; }', 'top', [800, 240]]
+  ] as const)('with %s, links clear what covers the top of the window', async (_case, name, css, where, heights) => {
     await withSite(
       name,
       1024,
       async ({ page }) => {
         await page.goto(`${ORIGIN}/`);
         await page.waitForFunction('window.started === true');
-        for (const height of [800, 600]) {
+        for (const height of heights) {
           await page.setViewportSize({ width: 1024, height });
           await page.evaluate(settled);
           for (const id of [HEADING, SECTION]) {
@@ -408,7 +410,8 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
             const label = `link to ${id} in a ${height}px window`;
             if (where === 'below') expectLanded(label, l);
             else {
-              expect(l.hits, describeLanding(label, l)).toEqual(['target', 'target'].slice(0, l.hits.length));
+              // A header at the bottom can cover the middle of a tall section; its start is what the link shows.
+              expect(l.hits[0], describeLanding(label, l)).toBe('target');
               expect(l.top, describeLanding(label, l)).toBeGreaterThanOrEqual(GAP.min);
               expect(l.top, describeLanding(label, l)).toBeLessThanOrEqual(GAP.max);
             }
