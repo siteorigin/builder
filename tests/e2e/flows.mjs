@@ -585,7 +585,7 @@ assert.equal(await activeLabel(), 'Move column Start time left', 'focus stays on
 await tableEd.getByLabel('Column 3 name').fill('Class');
 await win.keyboard.press('Enter');
 await eventually(async () => assert.deepEqual(await headers(), ['Day', 'Start time', 'Class'], 'a renamed column keeps its cells'));
-await tableEd.getByLabel('Caption').fill('Weekly workshops');
+await win.locator('#dock-panel-inspect').getByLabel('Caption', { exact: true }).fill('Weekly workshops');
 await win.keyboard.press('Enter');
 
 // The saved table survives closing and reopening the project.
@@ -640,7 +640,7 @@ assert.doesNotMatch(about, /data-so-|siteorigin-bridge/, 'no editor markup in th
 assert.deepEqual([...about.matchAll(/<th scope="col"[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]), ['Day', 'Start time', 'Class'], 'each exported column has a header cell');
 assert.match(about, /<caption id="([^"]+)"[^>]*>Weekly workshops<\/caption>/, 'the exported table has its caption');
 assert.match(about, /role="region" tabindex="0" aria-labelledby="[^"]+"/, 'the exported table scrolls in a named, focusable region');
-assert.match(about, /<td[^>]*>Friday<\/td><td[^>]*>17:00<\/td><td[^>]*>Raku<\/td>/, 'the fourth workshop is exported with each cell under its column');
+assert.match(about.replace(/<!--[\s\S]*?-->/g, ''), /<td[^>]*>Friday<\/td><td[^>]*>17:00<\/td><td[^>]*>Raku<\/td>/, 'the fourth workshop is exported with each cell under its column');
 assert.ok(readFileSync(join(exportDir, 'index.html'), 'utf8').includes('Rooms that work beautifully'), 'the exported home page has the edited heading');
 assert.ok(!readdirSync(exportDir).includes('.siteorigin'), 'no editor state in the export');
 
