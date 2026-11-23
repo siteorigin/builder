@@ -22,6 +22,7 @@ const api: BuilderApi = {
   project: {
     snapshot: invoke('project:snapshot'),
     apply: invoke('project:apply'),
+    copy: invoke('project:copy'),
     undo: invoke('project:undo'),
     redo: invoke('project:redo'),
     importAssets: invoke('project:importAssets'),

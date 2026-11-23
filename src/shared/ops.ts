@@ -100,6 +100,15 @@ export const OPERATION_SCHEMAS = {
       index: z.number().int().min(0).optional().describe('Position among siblings. Defaults to the end.')
     })
     .describe('Copy a section or element (with everything inside it) to a position in any page. The copy gets new IDs.'),
+  // The editor's Paste: places what Copy captured in the open session, even if the original has since changed.
+  'node.paste': z.object({
+    type: z.literal('node.paste'),
+    clipboardId: z.string(),
+    toOwner: owner,
+    parentId: z.string().nullable().optional(),
+    slot: z.string().optional(),
+    index: z.number().int().min(0).optional()
+  }),
   'node.rename': z.object({ type: z.literal('node.rename'), owner, nodeId: z.string(), name: z.string().max(60) }),
   'node.setStyle': z.object({
     type: z.literal('node.setStyle'),

@@ -50,13 +50,35 @@ import { contractConflicts, themeRefresh } from './theme-updates';
 
 export type OpResult = Record<string, unknown>;
 
+/**
+ * What the editor's Copy holds: a detached copy of one page subtree as it was when copied, with the names of
+ * the components, pages, images and site styles it refers to, so a paste can say which one has gone since.
+ * The open session keeps it in memory; it is never saved.
+ */
+export interface Clipboard {
+  id: string;
+  /** The page it was copied from. */
+  pageId: string;
+  /** The copied subtree; its only root is the copied node. */
+  tree: NodeTree;
+  /** Placed components: name, and the property schema and slots the copied content was written for. */
+  components: Record<string, { name: string; contract: string }>;
+  pages: Record<string, string>;
+  assets: Record<string, string>;
+}
+
+/** State an operation can read that is not part of the project: what the editor has recently copied. */
+export interface ApplyContext {
+  clipboards?: readonly Clipboard[];
+}
+
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
 function own<T>(rec: Record<string, T>, key: string): T | undefined {
   return Object.hasOwn(rec, key) ? rec[key] : undefined;
 }
 
 /** Apply one operation to a mutable draft. Throws EngineError on invalid input. */
-export function applyOperation(state: ProjectState, op: EditOperation): OpResult {
+export function applyOperation(state: ProjectState, op: EditOperation, ctx: ApplyContext = {}): OpResult {
   switch (op.type) {
     case 'page.create':
       return pageCreate(state, op);
@@ -99,6 +121,8 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
       return nodeDuplicate(state, op);
     case 'node.copy':
       return nodeCopy(state, op);
+    case 'node.paste':
+      return nodePaste(state, op, ctx.clipboards?.find((c) => c.id === op.clipboardId));
     case 'node.rename': {
       const n = getNode(editableTree(state, op.owner), op.nodeId);
       if (op.name.trim()) n.name = op.name.trim();
@@ -680,8 +704,91 @@ function nodeCopy(state: ProjectState, op: Op<'node.copy'>): OpResult {
   const from = getTree(state, op.owner);
   getNode(from, op.nodeId);
   if (!findParent(from, op.nodeId)) fail('Node is not attached.');
+  return placeCopy(state, from, op.nodeId, op);
+}
+
+/** What copied content relies on a component for: its property schema and slots. Its look can change freely. */
+function contentContract(def: ComponentDefinition): string {
+  return JSON.stringify({ properties: Object.keys(def.properties).sort().map((k) => [k, def.properties[k]]), slots: Object.keys(def.slots ?? {}).sort() });
+}
+
+function styleTokens(n: GraphNode): string[] {
+  const out: string[] = [];
+  const all = [n.styles, ...(n.kind === 'instance' ? Object.values(n.overrides ?? {}) : [])];
+  for (const rs of all)
+    for (const scope of Object.values(rs ?? {}))
+      for (const v of Object.values(scope ?? {})) if (v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string') out.push((v as { token: string }).token);
+  return out;
+}
+
+/** Take a copy of page content as it is now, for a later paste that must not depend on the original. */
+export function captureClipboard(state: ProjectState, pageId: string, nodeId: string): Clipboard {
+  const page = getTree(state, { kind: 'page', id: pageId });
+  getNode(page, nodeId);
+  if (!findParent(page, nodeId)) fail('Node is not attached.');
+  const clip: Clipboard = { id: newId('clip'), pageId, tree: { rootIds: [nodeId], nodes: {} }, components: {}, pages: {}, assets: {} };
+  for (const id of subtreeIds(page, nodeId)) {
+    const n = clone(page.nodes[id]);
+    for (const cl of childLists(n)) if (cl.ids.some((c) => !own(page.nodes, c))) fail('Part of this content is missing from the page, so it cannot be copied.');
+    if (n.kind === 'instance') {
+      const def = own(state.components, n.definitionId) ?? fail(`Component definition "${n.definitionId}" is missing.`);
+      if (def.category === 'shell') fail('The shared header and footer cannot be copied.');
+      clip.components[def.id] = { name: def.name, contract: contentContract(def) };
+    }
+    clip.tree.nodes[id] = n;
+  }
+  const walk = (v: unknown) => {
+    if (Array.isArray(v)) return v.forEach(walk);
+    if (!v || typeof v !== 'object') return;
+    const o = v as Record<string, unknown>;
+    if (o.type === 'page' && typeof o.target === 'string') clip.pages[o.target] = own(state.pages, o.target)?.title ?? o.target;
+    if (typeof o.assetId === 'string') clip.assets[o.assetId] = own(state.assets.assets, o.assetId)?.name ?? o.assetId;
+    Object.values(o).forEach(walk);
+  };
+  walk(clip.tree.nodes);
+  return clip;
+}
+
+/**
+ * Paste what was copied, as it was when copied: the original may since have been edited or removed. What it
+ * refers to must still be in the project, and the components it places must still take the same content.
+ */
+function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | undefined): OpResult {
+  if (!clip) fail('Nothing copied is available to paste. Copy it again.');
+  // The editor pastes onto pages only; content placed inside a definition follows other rules.
+  if (op.toOwner.kind !== 'page') fail('Paste onto a page.');
+  const gone = (what: string) => fail(`Nothing was pasted: the copy ${what}, which has been removed since it was copied.`);
+  for (const [id, c] of Object.entries(clip.components)) {
+    const def = own(state.components, id);
+    if (!def) gone(`uses the "${c.name}" component`);
+    if (contentContract(def!) !== c.contract) fail(`Nothing was pasted: the content "${c.name}" takes has changed since it was copied. Copy it again.`);
+  }
+  for (const [id, title] of Object.entries(clip.pages)) if (!own(state.pages, id)) gone(`links to the "${title}" page`);
+  for (const [id, name] of Object.entries(clip.assets)) if (!own(state.assets.assets, id)) gone(`shows the image "${name}"`);
+  // Variant options and parts removed since copying are dropped, as they were from every live placement;
+  // only then is what remains checked for site styles.
+  const tree = clone(clip.tree);
+  const tokens = new Set(effectiveTokens(state).map((t) => t.id));
+  for (const n of Object.values(tree.nodes)) {
+    if (n.kind === 'instance') {
+      const def = state.components[n.definitionId];
+      for (const [axis, v] of Object.entries(n.variants ?? {})) {
+        const a = def.variantAxes && own(def.variantAxes, axis);
+        if (!a || typeof v !== 'string' || !own(a.options, v)) delete n.variants![axis];
+      }
+      if (n.variants && !Object.keys(n.variants).length) delete n.variants;
+      for (const part of Object.keys(n.overrides ?? {})) if (part !== 'root' && !own(def.parts, part)) delete n.overrides![part];
+      if (n.overrides && !Object.keys(n.overrides).length) delete n.overrides;
+    }
+    for (const t of styleTokens(n)) if (!tokens.has(t)) gone(`uses the site style "${t}"`);
+  }
+  return placeCopy(state, tree, tree.rootIds[0], op);
+}
+
+/** Place a copy of `from`'s subtree at `op`'s destination, with new IDs; shared by copy and paste. */
+function placeCopy(state: ProjectState, from: NodeTree, nodeId: string, op: { toOwner: OwnerRef; parentId?: string | null; slot?: string; index?: number }): OpResult {
   const to = editableTree(state, op.toOwner);
-  for (const id of subtreeIds(from, op.nodeId)) {
+  for (const id of subtreeIds(from, nodeId)) {
     const n = from.nodes[id];
     if (n.kind !== 'instance') continue;
     const def = state.components[n.definitionId] ?? fail(`Component definition "${n.definitionId}" is missing.`);
@@ -693,7 +800,7 @@ function nodeCopy(state: ProjectState, op: Op<'node.copy'>): OpResult {
   if (op.slot && !op.parentId) fail('A slot needs the instance that has it as parentId.');
   const list = insertionList(to, op.parentId, op.slot, state);
   const taken = anchorsInUse(state, op.toOwner);
-  const nid = copySubtree(from, to, op.nodeId, state);
+  const nid = copySubtree(from, to, nodeId, state);
   for (const id of subtreeIds(to, nid)) {
     const n = to.nodes[id];
     if (n.anchor && taken.has(n.anchor)) delete n.anchor;
@@ -1508,12 +1615,12 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
   return { rebound: mapping.size };
 }
 
-export function applyOperations(state: ProjectState, ops: EditOperation[]): { state: ProjectState; results: OpResult[] } {
+export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): { state: ProjectState; results: OpResult[] } {
   const draft = clone(state);
   const results: OpResult[] = [];
   for (const [i, op] of ops.entries()) {
     try {
-      results.push(applyOperation(draft, op));
+      results.push(applyOperation(draft, op, ctx));
     } catch (e) {
       if (e instanceof EngineError) {
         e.message = ops.length > 1 ? `Operation ${i + 1} (${op.type}): ${e.message}` : e.message;

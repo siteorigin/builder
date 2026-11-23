@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { InstanceNode } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { ProjectSession } from '../../src/main/project/session';
 import { sha } from '../../src/main/project/fsutil';
@@ -206,5 +207,67 @@ describe('follow-up regressions', () => {
     writeFileSync(sitePath, JSON.stringify(JSON.parse(readFileSync(sitePath, 'utf8'))));
     const r = await s.apply({ operations: [{ type: 'site.update', name: 'After reformat' }] }, { label: 'x' });
     expect(r.ok).toBe(true);
+  });
+});
+
+describe('copy and paste (#62)', () => {
+  const grid = (s: ProjectSession) => {
+    const home = s.state.pages[s.state.site.homePageId];
+    return home.rootIds.map((id) => home.nodes[id] as InstanceNode).find((n) => s.state.components[n.definitionId]?.componentId === 'features.grid')!;
+  };
+  const contact = (s: ProjectSession) => Object.values(s.state.pages).find((p) => p.title === 'Contact')!;
+
+  it('pastes Services grid on Contact after the original was deleted, as one step undo takes back', async () => {
+    const { s } = await make();
+    const home = { kind: 'page' as const, id: s.state.site.homePageId };
+    const original = grid(s);
+    const c = await s.copy(home.id, original.id, s.revision);
+    expect(c.ok).toBe(true);
+    expect((await s.apply({ operations: [{ type: 'node.remove', owner: home, nodeId: original.id }] }, { label: 'Delete Services grid' })).ok).toBe(true);
+    const before = contact(s).rootIds.length;
+    const r = await s.apply({ operations: [{ type: 'node.paste', clipboardId: c.clipboardId!, toOwner: { kind: 'page', id: contact(s).id } }] }, { label: 'Paste Services grid', source: 'user' });
+    expect(r.error?.message).toBeUndefined();
+    const id = r.results![0].nodeId as string;
+    const copy = contact(s).nodes[id] as InstanceNode;
+    expect(contact(s).rootIds).toHaveLength(before + 1);
+    expect(contact(s).rootIds).toContain(id);
+    expect(copy.definitionId).toBe(original.definitionId);
+    expect(copy.props.heading).toBe(original.props.heading);
+    expect(s.state.pages[home.id].nodes[original.id]).toBeUndefined();
+    await s.undo();
+    expect(contact(s).rootIds).toHaveLength(before);
+    expect(s.state.pages[home.id].nodes[original.id]).toBeUndefined();
+    // The copy is still held: undoing the delete and pasting again works the same.
+    await s.undo();
+    expect(s.state.pages[home.id].nodes[original.id]).toBeDefined();
+    const again = await s.apply({ operations: [{ type: 'node.paste', clipboardId: c.clipboardId!, toOwner: { kind: 'page', id: contact(s).id } }] }, { label: 'Paste', source: 'user' });
+    expect(again.ok).toBe(true);
+  });
+
+  it('keeps a few recent copies, so a paste still finds the copy it followed', async () => {
+    const { s } = await make();
+    const home = s.state.pages[s.state.site.homePageId];
+    const to = { kind: 'page' as const, id: contact(s).id };
+    const first = await s.copy(home.id, grid(s).id, s.revision);
+    const later = await s.copy(home.id, home.rootIds[0], s.revision);
+    expect(later.clipboardId).not.toBe(first.clipboardId);
+    const r = await s.apply({ operations: [{ type: 'node.paste', clipboardId: first.clipboardId!, toOwner: to }] }, { label: 'Paste', source: 'user' });
+    expect((contact(s).nodes[r.results![0].nodeId as string] as InstanceNode).definitionId).toBe(grid(s).definitionId);
+    for (let i = 0; i < 5; i++) await s.copy(home.id, home.rootIds[0], s.revision);
+    const old = await s.apply({ operations: [{ type: 'node.paste', clipboardId: first.clipboardId!, toOwner: to }] }, { label: 'Paste', source: 'user' });
+    expect(old.error?.message).toMatch(/Copy it again/);
+  });
+
+  it('refuses a paste from an AI run, and a copy of a revision the editor no longer shows', async () => {
+    const { s } = await make();
+    const home = s.state.site.homePageId;
+    const stale = await s.copy(home, grid(s).id, s.revision - 1);
+    expect(stale).toMatchObject({ ok: false, message: expect.stringMatching(/changed while copying/) });
+    const missing = await s.copy(home, 'n_missing', s.revision);
+    expect(missing.ok).toBe(false);
+    const c = await s.copy(home, grid(s).id, s.revision);
+    const r = await s.apply({ operations: [{ type: 'node.paste', clipboardId: c.clipboardId!, toOwner: { kind: 'page', id: contact(s).id } }] }, { label: 'Paste', source: 'ai' });
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/only for the editor/);
   });
 });

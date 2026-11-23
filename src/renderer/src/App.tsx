@@ -4,7 +4,7 @@ import { Welcome } from './Welcome';
 import { Editor } from './Editor';
 import { ConfirmHost, Toasts } from './components/ui';
 import { runInspection } from './lib/inspect';
-import { handleShortcut } from './Editor';
+import { forgetCopy, handleShortcut } from './Editor';
 import { inlineEdit } from './panels/Canvas';
 
 export function App() {
@@ -24,7 +24,10 @@ export function App() {
           setState({ snapshot: snap, runtime: snap.runtime, pageId });
         }
       }),
-      api.on('project:closed', () => setState({ screen: 'welcome', snapshot: null, selection: null, conversation: null, definitionMode: null })),
+      api.on('project:closed', () => {
+        forgetCopy();
+        setState({ screen: 'welcome', snapshot: null, selection: null, conversation: null, definitionMode: null });
+      }),
       api.on('runtime:status', (runtime) => setState({ runtime })),
       api.on('ai:event', applyAiEvent),
       api.on('inspect:request', (req) => void runInspection(req)),

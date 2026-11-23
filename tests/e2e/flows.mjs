@@ -98,6 +98,33 @@ await eventually(() => assert.doesNotMatch(siteCss(), /padding-block: var\(--so-
 await win.locator('[aria-label^="Redo"]').first().click();
 await eventually(() => assert.match(siteCss(), phoneRule, 'redo restores the padding rule'));
 
+step('copy a section, delete it, then paste it on another page');
+const sectionsOn = (title) =>
+  win.evaluate(async (t) => {
+    const s = await window.builder.project.snapshot();
+    const p = Object.values(s.state.pages).find((x) => x.title === t);
+    return p.rootIds.map((id) => s.state.components[p.nodes[id].definitionId]?.name ?? p.nodes[id].kind);
+  }, title);
+const pageRow = (title) => win.locator('.side-panel-view:not([hidden]) [data-page]', { hasText: title }).first();
+assert.ok(!(await sectionsOn('Contact')).includes('Services grid'), 'Contact starts without a services grid');
+await win.locator('.rail [aria-label="Layers"]').click();
+await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
+await win.keyboard.press(`${MOD}+c`);
+await win.locator('.toast', { hasText: 'Copied Services grid' }).waitFor();
+await win.keyboard.press('Delete');
+await eventually(async () => assert.ok(!(await sectionsOn('Home')).includes('Services grid'), 'the original section is deleted'));
+await win.locator('.rail [aria-label="Pages"]').click();
+await pageRow('Contact').click();
+await win.keyboard.press(`${MOD}+v`);
+await eventually(async () => assert.ok((await sectionsOn('Contact')).includes('Services grid'), 'the copy is pasted on Contact although its original is gone'));
+await eventually(() => assert.ok(read('src/routes/contact/+page.svelte').includes('Everything your project needs, in one place'), 'the copy is written to the Contact page'));
+assert.equal(await win.locator('.toast.error').count(), 0, 'no paste error is shown');
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.ok(!(await sectionsOn('Contact')).includes('Services grid'), 'undo takes the paste back'));
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.ok((await sectionsOn('Home')).includes('Services grid'), 'a second undo restores the original'));
+await pageRow('Home').click();
+
 step('drag to reorder: canvas grip and layers');
 await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
 await win.waitForTimeout(800);

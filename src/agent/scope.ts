@@ -36,6 +36,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'node.move': 'node',
   'node.duplicate': 'node',
   'node.copy': 'copy',
+  // The editor's own clipboard; the session refuses it from an AI run.
+  'node.paste': 'wider',
   'node.rename': 'node',
   'node.setStyle': 'node',
   'node.resetStyles': 'node',

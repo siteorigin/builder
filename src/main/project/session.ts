@@ -7,7 +7,7 @@ import type { ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
-import { applyOperations } from '@engine/apply';
+import { applyOperations, captureClipboard, type Clipboard } from '@engine/apply';
 import { listThemes } from '@catalogue/index';
 import { EngineError } from '@engine/tree';
 import { validateState, type Diagnostic } from '@engine/validate';
@@ -66,6 +66,9 @@ interface GeneratedManifest {
   generator: string;
   files: Record<string, string>;
 }
+
+/** How many recent copies a session keeps for Paste. */
+const CLIPBOARD_LIMIT = 5;
 
 export interface CommitOptions {
   label: string;
@@ -134,6 +137,9 @@ export class ProjectSession extends EventEmitter {
   private migrationDue = false;
   /** Publishing an update failed and may have left its journal, which only reopening the project can finish. */
   private migrationFailed = false;
+  /** What the editor copied most recently, newest last. Held only while this project is open; never saved. A
+   *  few are kept so a paste pressed before a later copy finished still finds the copy it followed. */
+  private clipboards: Clipboard[] = [];
 
   constructor(public readonly dir: string) {
     super();
@@ -835,6 +841,25 @@ export class ProjectSession extends EventEmitter {
   }
 
   /**
+   * Take a copy of page content for the editor's Paste, as it is now, so the paste does not depend on the
+   * original. `expectedRevision` is the revision the editor showed when Copy was pressed: a change that landed
+   * since (another window, a file edited outside the app) could make the copy differ from what was on screen.
+   */
+  copy(pageId: string, nodeId: string, expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }> {
+    return this.serialize(async () => {
+      if (expectedRevision !== this.revision) return { ok: false, message: 'The project changed while copying. Copy it again.' };
+      try {
+        const clip = captureClipboard(this.state, pageId, nodeId);
+        this.clipboards = [...this.clipboards.slice(-(CLIPBOARD_LIMIT - 1)), clip];
+        return { ok: true, clipboardId: clip.id };
+      } catch (e) {
+        if (e instanceof EngineError) return { ok: false, message: e.message };
+        throw e;
+      }
+    });
+  }
+
+  /**
    * Validate and apply an edit batch. `runId` identifies the AI run that holds the writer lock;
    * manual edits are rejected while a run is active.
    */
@@ -860,10 +885,13 @@ export class ProjectSession extends EventEmitter {
         if (!v.ok) return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: v.message, recoverable: true } };
         ops.push(v.op);
       }
+      // Paste places what the editor copied; an AI run never sends it.
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'node.paste'))
+        return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'node.paste is only for the editor. Use node.copy.', recoverable: true } };
       let next: ProjectState;
       let results;
       try {
-        ({ state: next, results } = applyOperations(this.state, ops));
+        ({ state: next, results } = applyOperations(this.state, ops, { clipboards: this.clipboards }));
       } catch (e) {
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
