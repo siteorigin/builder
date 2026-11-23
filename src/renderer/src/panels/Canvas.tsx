@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Box, Component, Copy, Ellipsis, Eye, GripVertical, Image, Link2, PanelRight, Pencil, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Users } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Component, Copy, Ellipsis, Eye, GripVertical, Image, Link2, PanelRight, Pencil, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { applyOps } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
@@ -23,6 +23,7 @@ import { runPhase } from '../lib/savestate';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
 import { isShellPart, showsPart } from '@shared/page-shell';
+import { addressPath, frameEntry, NO_HISTORY, observe, siteAddresses, startJourney, stepTarget, type VisitorHistory } from '../lib/preview-history';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -35,6 +36,13 @@ const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').repl
 const ariaKeys = (k: string) => (isMac ? k : k.replace('Meta', 'Control'));
 
 const samePath = (a: string, b: string | null) => !!b && (a === b || a === b + '/' || a + '/' === b);
+
+/** Back and Forward through a visitor's journey in Preview, for the keyboard (see App and Editor). */
+let visitorStep: ((dir: 'back' | 'forward') => boolean) | null = null;
+/** Step back or forward in Preview; false when there is no such step. */
+export function stepVisitor(dir: 'back' | 'forward'): boolean {
+  return visitorStep?.(dir) ?? false;
+}
 
 export function Canvas() {
   const runtime = useStore((s) => s.runtime);
@@ -79,6 +87,15 @@ export function Canvas() {
   // After Try again, the problem stays reported as "Restarting preview" until the new page says it is ready.
   const [retrying, setRetrying] = useState(false);
   const frameReady = useStore((s) => s.frameReady);
+  const workspaceKey = useStore((s) => s.snapshot?.workspaceKey);
+  /** A visitor's journey through the site in Preview (see lib/preview-history): the frame's own history entries,
+   *  and which of them were visited while previewing. Kept apart from project Undo. */
+  const [journey, setJourneyState] = useState<VisitorHistory>(NO_HISTORY);
+  const journeyRef = useRef(journey);
+  const setJourney = (h: VisitorHistory) => {
+    journeyRef.current = h;
+    setJourneyState(h);
+  };
   const [dragging, setDragging] = useState(false);
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
@@ -90,6 +107,10 @@ export function Canvas() {
   const sentReveal = useRef<RevealTarget | null>(null);
   /** The route the page last said it is showing, or null while a navigation the editor asked for is on its way. */
   const frameAt = useRef<string | null>(null);
+  /** The frame session whose page has said it is ready at least once. */
+  const readySession = useRef<string | null>(null);
+  /** A route asked for again because a page that loaded meanwhile never heard of it: asked again only once. */
+  const askedAgain = useRef<string | null>(null);
   const measureWaiters = useRef(new Map<string, (rects: unknown) => void>());
   /** The element chain under the pointer in the page, so hover can be re-resolved when the selection changes. */
   const hoverChain = useRef<BridgeDesc[] | null>(null);
@@ -160,9 +181,13 @@ export function Canvas() {
   // A new page load (another server, Try again) or closing the editor ends any edit the old page had open.
   useEffect(() => {
     frameAt.current = null;
+    // Nothing has been asked of the new page yet.
+    pendingNav.current = null;
     frameTextFocus.active = false;
     endInlineEdit();
   }, [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A new frame (another server, Try again) or another project starts a fresh journey.
+  useEffect(() => setJourney(NO_HISTORY), [url, session, workspaceKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => endInlineEdit(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Bridge messages
@@ -174,12 +199,20 @@ export function Canvas() {
       const st = s.snapshot?.state;
       const p = m.payload as Record<string, unknown>;
       switch (m.type) {
-        case 'ready':
+        case 'ready': {
+          const path = String(p.path);
+          const first = readySession.current !== session;
+          // A page loaded in full inside the same frame (a visitor's Back across documents): Preview follows it.
+          const reloaded = !first && s.mode === 'preview';
+          // A page picked while this one loaded, which the page before it (or this one, still starting) may never
+          // have heard about.
+          const asked = frameAt.current === null ? pendingNav.current : null;
+          readySession.current = session;
           setReady(true);
           setState({ frameReady: true });
           setFrameError(null);
           setRetrying(false);
-          frameAt.current = String(p.path);
+          frameAt.current = path;
           frameTextFocus.active = false;
           endInlineEdit();
           post('mode', { mode: getState().mode });
@@ -193,9 +226,27 @@ export function Canvas() {
           // A new page starts with nothing revealed.
           sentReveal.current = null;
           syncReveal();
-          // A page chosen while the preview was starting wins: the navigate effect opens it next.
-          if (!getState().pageId) syncPage(String(p.path));
+          const shown = s.pageId ? st?.pages[s.pageId]?.route : undefined;
+          if (!s.pageId) syncPage(path);
+          // The page picked wins, asked for once more (a page that loads somewhere else again is followed instead).
+          else if (asked && !samePath(path, asked) && askedAgain.current !== asked) {
+            askedAgain.current = asked;
+            setState({ frameReady: false });
+            frameAt.current = null;
+            post('navigate', { path: asked });
+          } else if (reloaded) syncPage(path);
+          // A page chosen while the preview was starting wins: the navigate effect opens it next, and until then
+          // this one is on its way out.
+          else if (first && shown && !samePath(path, shown)) frameAt.current = null;
           break;
+        }
+        case 'history': {
+          // While a page the editor asked for is still opening, the entries on the way are not the visitor's: that
+          // page joins the journey once the frame confirms it (see navigated).
+          const at = frameEntry(p);
+          if (at) setJourney(observe(journeyRef.current, at, getState().mode === 'preview' && frameAt.current !== null));
+          break;
+        }
         case 'navigated': {
           // While editing, only the reply for the page the editor last asked for counts: a late reply for an
           // earlier request must not undo the page the user has since chosen. In Preview, a visitor's own
@@ -206,6 +257,9 @@ export function Canvas() {
           // The page the frame is showing, so following it below does not send the frame back there (which would
           // drop a #section the visitor's link went to, and its scroll position).
           frameAt.current = path;
+          // In Preview the page the frame is on is a visit, also when the editor opened it (the page picker).
+          const at = journeyRef.current.at;
+          if (getState().mode === 'preview' && at && samePath(addressPath(at.address), path)) setJourney(observe(journeyRef.current, at, true));
           // An open edit is not ended here: one in the shared header outlives the page change, and the page
           // ends any other (its element goes away) with its own cancel.
           setState({ frameReady: true });
@@ -492,6 +546,29 @@ export function Canvas() {
     post('formLiveTest', { id: form.id, target: form.destination, requestId });
   };
 
+  // Entering Preview starts the visitor's journey where the frame is (or carries on with the last one, when the
+  // author went back to editing, opened no other page and moved none). A page the editor is still opening is where
+  // it starts, once the frame is there.
+  useEffect(() => {
+    if (mode !== 'preview') return;
+    const site = siteAddresses(Object.values(getState().snapshot?.state.pages ?? {}).map((pg) => pg.route));
+    setJourney(startJourney(journeyRef.current, site, frameAt.current !== null));
+  }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** Back or Forward: the frame steps through its own history, so the site restores the page and its scroll. */
+  function step(dir: 'back' | 'forward'): boolean {
+    const key = getState().mode === 'preview' ? stepTarget(journeyRef.current, dir) : null;
+    if (!key) return false;
+    post('traverse', { key });
+    return true;
+  }
+  useEffect(() => {
+    visitorStep = step;
+    return () => {
+      visitorStep = null;
+    };
+  });
+
   // Navigate when the current page changes.
   useEffect(() => {
     if (!ready || !page) return;
@@ -500,6 +577,7 @@ export function Canvas() {
     // Until the page confirms the navigation, it is "opening", not ready.
     setState({ frameReady: false });
     pendingNav.current = page.route;
+    askedAgain.current = null;
     frameAt.current = null;
     post('navigate', { path: page.route });
   }, [pageId, page?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -760,8 +838,22 @@ export function Canvas() {
         </div>
       )}
       {mode === 'preview' && (
-        <div className="preview-pill" role="status">
-          <Eye /> Previewing: links and menus work as they will for visitors
+        <div className="preview-pill" role="group" aria-label="Preview">
+          <span className="pill-note" title="Links and menus work as they will for visitors">
+            <Eye aria-hidden="true" /> Previewing
+          </span>
+          <button className="pill-step" aria-label="Back" title={isMac ? 'Back (⌘[)' : 'Back (Alt+Left)'} aria-keyshortcuts={isMac ? 'Meta+[' : 'Alt+ArrowLeft'} disabled={!stepTarget(journey, 'back')} onClick={() => step('back')}>
+            <ArrowLeft />
+          </button>
+          <button className="pill-step" aria-label="Forward" title={isMac ? 'Forward (⌘])' : 'Forward (Alt+Right)'} aria-keyshortcuts={isMac ? 'Meta+]' : 'Alt+ArrowRight'} disabled={!stepTarget(journey, 'forward')} onClick={() => step('forward')}>
+            <ArrowRight />
+          </button>
+          {journey.at && (
+            // The address the visitor is at, #section included. Announced as it changes.
+            <output className="pill-address" aria-label="Page address" title={journey.at.address}>
+              {journey.at.address}
+            </output>
+          )}
           <button onClick={() => setState({ mode: 'edit' })}>
             <Pencil size={13} /> Back to editing
           </button>

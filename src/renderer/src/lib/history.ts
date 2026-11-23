@@ -1,3 +1,5 @@
+import { visitorStepKey, type KeyChord } from '@shared/preview-keys';
+
 /**
  * Who Undo and Redo belong to, from what has focus and the editor's mode.
  *
@@ -72,6 +74,15 @@ const PREVIEW_KEYS = new Set(['k', 's', 'e', 'j', 'f', '\\', '|']);
  * an editor menu or dialog is open, only the editor-wide shortcuts run, as from the editor itself. While site
  * copy is edited on the page, only Save runs: it hands that text back and saves it.
  */
+/**
+ * Back or Forward through the visitor's journey, for a key press forwarded while the preview frame has focus: only
+ * in Preview, with no editor menu or dialog open. It never reaches project Undo, which has keys of its own.
+ */
+export function forwardedVisitorStep(c: HistoryContext, k: KeyChord, mac: boolean): 'back' | 'forward' | null {
+  const dir = visitorStepKey(k, mac);
+  return dir && c.editor && c.focus === 'canvas' && c.mode === 'preview' && !c.overlay ? dir : null;
+}
+
 export function forwardedKeyRuns(c: HistoryContext, key: string, mod: boolean): boolean {
   if (!c.editor || c.focus !== 'canvas') return false;
   if (c.inlineEdit) return mod && key.toLowerCase() === 's';

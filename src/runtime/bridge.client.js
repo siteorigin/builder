@@ -1230,6 +1230,26 @@ window.addEventListener('message', async (e) => {
       }
       break;
     }
+    // Back or Forward in a visitor's journey: a step to a neighbouring entry of this frame's own history, which
+    // the site restores (its page and scroll position) as the browser's Back does. Only while previewing, and only
+    // to an entry that is still there; a step that does not happen reports where the page still is.
+    case 'traverse': {
+      const nav = window.navigation;
+      const key = String(m.payload.key || '');
+      const current = nav && nav.currentEntry;
+      const list = current ? nav.entries() : [];
+      const i = current ? current.index : -1;
+      const near = i >= 0 && ((list[i - 1] && list[i - 1].key === key) || (list[i + 1] && list[i + 1].key === key));
+      if (mode !== 'preview' || !near) {
+        reportHistory();
+        break;
+      }
+      const step = nav.traverseTo(key);
+      // Both promises reject when the step is cancelled or superseded: never an error of the page's.
+      step.committed.catch(() => undefined);
+      step.finished.catch(() => reportHistory());
+      break;
+    }
     case 'reveal':
       setReveal(m.payload.target);
       break;
@@ -1323,6 +1343,30 @@ function reportNav() {
 window.addEventListener('siteorigin:navigated', reportNav);
 window.addEventListener('popstate', reportNav);
 
+/**
+ * Where this frame is in its own history: the address with its #fragment, and the keys of the entries either side,
+ * so the editor can offer Back and Forward through a visitor's journey. Every link, section jump, Back and Forward
+ * changes the current entry. Without the Navigation API only the address is known.
+ */
+function reportHistory() {
+  const nav = window.navigation;
+  const current = nav && nav.currentEntry;
+  const list = current ? nav.entries() : [];
+  const i = current ? current.index : -1;
+  // Exactly as the page has it (site addresses are plain letters, numbers and hyphens). A very long query gives way
+  // before the #fragment does.
+  const hash = location.hash.slice(0, 300);
+  let address = location.pathname + location.search;
+  if (address.length + hash.length > 2000) address = address.slice(0, 1999 - hash.length) + '…';
+  send('history', {
+    address: address + hash,
+    key: (current && current.key) || null,
+    back: (i > 0 && list[i - 1] && list[i - 1].key) || null,
+    forward: (i >= 0 && list[i + 1] && list[i + 1].key) || null
+  });
+}
+if (window.navigation) window.navigation.addEventListener('currententrychange', reportHistory);
+
 if (import.meta.hot) {
   import.meta.hot.on('siteorigin:revision', (data) => {
     revision = data.revision;
@@ -1346,5 +1390,6 @@ style.textContent =
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);
 send('ready', { path: location.pathname, title: document.title });
+reportHistory();
 reportTextFocus();
 reportForms();

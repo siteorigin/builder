@@ -606,6 +606,14 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .form-practice-result:empty { margin-top: -6px; }
 .form-practice-live[aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
 .form-practice-result { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+/* Back, Forward and the address of the visitor's journey: quiet controls on the pill itself. */
+.preview-pill .pill-note { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.preview-pill .pill-step { width: 26px; padding: 0; justify-content: center; background: transparent; color: #fff; }
+.preview-pill .pill-step + .pill-step { margin-left: -8px; }
+.preview-pill .pill-step:hover:not(:disabled) { background: rgb(255 255 255 / 0.16); }
+.preview-pill .pill-step:disabled { color: rgb(255 255 255 / 0.38); background: transparent; }
+.preview-pill .pill-step:focus-visible { outline-color: #fff; }
+.preview-pill .pill-address { flex: 0 1 auto; min-width: 0; max-width: 340px; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); font-size: 12px; color: var(--sky-1); user-select: text; }
 .ai-veil { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: 10px; padding: 6px 6px 6px 14px; border-radius: 99px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; }
 .ai-veil .spark { color: var(--accent-text); }
 
