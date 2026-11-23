@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
+import { MOD, assertTabsResolve, createProject, eventually, launch, scratch, step } from './harness.mjs';
 
 const LIVE_FIX = !!process.env.LIVE_FIX;
 const { WORK, SHOTS: OUT, cleanup } = scratch('code');
@@ -12,6 +12,13 @@ const frame = await createProject(win, { name: 'Code Test', parentDir: join(WORK
 
 step('turn on Developer mode');
 await win.locator('[aria-label="Settings"]').click();
+await assertTabsResolve(win, 'settings, as opened');
+await win.locator('.modal [role="tab"][aria-selected="true"]').press('End');
+await win.getByRole('tab', { name: 'AI assistant', selected: true }).waitFor();
+await assertTabsResolve(win, 'settings, AI assistant');
+await win.getByRole('tab', { name: 'AI assistant' }).press('Home');
+await win.getByRole('tab', { name: 'General', selected: true }).waitFor();
+await assertTabsResolve(win, 'settings, general');
 await win.getByRole('switch', { name: 'Developer mode' }).click();
 await win.keyboard.press('Escape');
 await win.locator('.modal').waitFor({ state: 'detached' });
@@ -34,7 +41,9 @@ if (!LIVE_FIX) {
 }
 
 step('the properties tab edits the schema before creating');
+await assertTabsResolve(win, 'new component, source');
 await win.getByRole('tab', { name: /^Properties/ }).click();
+await assertTabsResolve(win, 'new component, properties');
 await win.getByRole('button', { name: 'Add property' }).click();
 await win.locator('.schema-row').last().getByLabel('Type').selectOption('enum');
 await win.screenshot({ path: join(OUT, '40b-code-properties.png') });
@@ -62,6 +71,7 @@ await win.getByRole('treeitem', { name: /Counter/ }).first().click();
 await win.evaluate(() => window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: 'component' })));
 await win.locator('#dock-panel-inspect').getByRole('button', { name: 'Edit code' }).first().click();
 await win.getByRole('tab', { name: 'Properties' }).click();
+await assertTabsResolve(win, 'component source, properties');
 const label = win.getByLabel('prop1 label');
 await label.fill('Tone');
 await label.press('Enter');

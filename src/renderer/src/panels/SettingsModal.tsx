@@ -78,160 +78,178 @@ export function SettingsModal() {
   return (
     <Modal title="Settings" icon={<Settings />} onClose={close} footer={<button className="btn" onClick={close}>Close</button>}>
       <div className="col" style={{ gap: 16 }}>
-        <Tabs value={tab} onChange={setTab} label="Settings sections" idBase="settings" options={[{ value: 'general', label: 'General' }, { value: 'ai', label: 'AI assistant' }]} />
-        {tab === 'general' ? (
-          <div className="col" style={{ gap: 18 }} role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general">
-            <Field label="Appearance" hint="Changes how SiteOrigin Builder looks. Your website's colors are set in Site styles.">
-              <Segmented<AppSettings['appearance']>
-                value={settings.appearance}
-                onChange={(appearance) => void update({ appearance })}
-                options={[
-                  { value: 'system', label: 'System', icon: <Monitor /> },
-                  { value: 'light', label: 'Light', icon: <Sun /> },
-                  { value: 'dark', label: 'Dark', icon: <Moon /> }
-                ]}
-              />
-            </Field>
-            <SwitchRow checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte code. Code is checked before it is saved." />
-            <div className="scope-note info">
-              <Info />
-              <span>Each project keeps your last 100 changes, so you can undo even after reopening it. This history stays on your computer and is never exported.</span>
-            </div>
-          </div>
-        ) : (
-          <div className="col" style={{ gap: 18 }} role="tabpanel" id="settings-panel-ai" aria-labelledby="settings-tab-ai">
-            <Field label="Provider">
-              <Segmented<ProviderId>
-                value={provider}
-                onChange={(p) => void update({ ai: { provider: p } })}
-                options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.configured ? <Check /> : undefined }))}
-              />
-            </Field>
-            {isLocal && <LocalModelSettings settings={settings} update={update} keyRevision={keyRevision} />}
-            {status && (
-              <Field
-                controlId="settings-api-key"
-                label={isLocal ? 'API key (optional)' : `${status.label} API key`}
-                hint={
-                  isLocal
-                    ? 'Only needed if your server asks for one.'
-                    : status.configured && status.source === 'environment'
-                    ? 'Using the key from your environment (development build).'
-                    : 'Kept on this computer where only your user account can read it. It is never put in your projects, exports or logs.'
-                }
-              >
-                <div className="row">
-                  <input
-                    id="settings-api-key"
-                    aria-describedby="settings-api-key-note"
-                    className="input grow mono"
-                    type="password"
-                    autoComplete="off"
-                    placeholder={keySaved ? '•••••••••••••••• (saved)' : isLocal ? 'None' : provider === 'openai' ? 'sk-…' : 'sk-ant-…'}
-                    value={keys[provider]}
-                    onChange={(e) => setKeys({ ...keys, [provider]: e.target.value })}
-                    onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && void saveKey()}
-                  />
-                  <button
-                    className="btn"
-                    disabled={!keys[provider].trim()}
-                    onClick={() => void saveKey()}
-                  >
-                    <KeyRound /> Save
-                  </button>
-                  {keySaved && status.source !== 'environment' && (
-                    <button className="btn btn-danger" onClick={async () => {
-                        setState({ providers: await api.ai.setKey(provider, null) });
-                        setKeyRevision((n) => n + 1);
-                      }}>
-                      Remove
-                    </button>
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          label="Settings sections"
+          idBase="settings"
+          panelClassName="col"
+          panelStyle={{ gap: 18 }}
+          options={[
+            {
+              value: 'general',
+              label: 'General',
+              panel: () => (
+                <>
+                  <Field label="Appearance" hint="Changes how SiteOrigin Builder looks. Your website's colors are set in Site styles.">
+                    <Segmented<AppSettings['appearance']>
+                      value={settings.appearance}
+                      onChange={(appearance) => void update({ appearance })}
+                      options={[
+                        { value: 'system', label: 'System', icon: <Monitor /> },
+                        { value: 'light', label: 'Light', icon: <Sun /> },
+                        { value: 'dark', label: 'Dark', icon: <Moon /> }
+                      ]}
+                    />
+                  </Field>
+                  <SwitchRow checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte code. Code is checked before it is saved." />
+                  <div className="scope-note info">
+                    <Info />
+                    <span>Each project keeps your last 100 changes, so you can undo even after reopening it. This history stays on your computer and is never exported.</span>
+                  </div>
+                </>
+              )
+            },
+            {
+              value: 'ai',
+              label: 'AI assistant',
+              panel: () => (
+                <>
+                  <Field label="Provider">
+                    <Segmented<ProviderId>
+                      value={provider}
+                      onChange={(p) => void update({ ai: { provider: p } })}
+                      options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.configured ? <Check /> : undefined }))}
+                    />
+                  </Field>
+                  {isLocal && <LocalModelSettings settings={settings} update={update} keyRevision={keyRevision} />}
+                  {status && (
+                    <Field
+                      controlId="settings-api-key"
+                      label={isLocal ? 'API key (optional)' : `${status.label} API key`}
+                      hint={
+                        isLocal
+                          ? 'Only needed if your server asks for one.'
+                          : status.configured && status.source === 'environment'
+                          ? 'Using the key from your environment (development build).'
+                          : 'Kept on this computer where only your user account can read it. It is never put in your projects, exports or logs.'
+                      }
+                    >
+                      <div className="row">
+                        <input
+                          id="settings-api-key"
+                          aria-describedby="settings-api-key-note"
+                          className="input grow mono"
+                          type="password"
+                          autoComplete="off"
+                          placeholder={keySaved ? '•••••••••••••••• (saved)' : isLocal ? 'None' : provider === 'openai' ? 'sk-…' : 'sk-ant-…'}
+                          value={keys[provider]}
+                          onChange={(e) => setKeys({ ...keys, [provider]: e.target.value })}
+                          onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && void saveKey()}
+                        />
+                        <button
+                          className="btn"
+                          disabled={!keys[provider].trim()}
+                          onClick={() => void saveKey()}
+                        >
+                          <KeyRound /> Save
+                        </button>
+                        {keySaved && status.source !== 'environment' && (
+                          <button className="btn btn-danger" onClick={async () => {
+                              setState({ providers: await api.ai.setKey(provider, null) });
+                              setKeyRevision((n) => n + 1);
+                            }}>
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                      <div className="row" style={{ gap: 12, marginTop: 2 }}>
+                        {unsavedKey ? (
+                          <span className="field-hint" role="status" style={{ color: 'var(--text-2)' }}>
+                            Not saved yet. Press Save (or Enter) to keep this key.
+                          </span>
+                        ) : (
+                          !isLocal && (
+                            <button className="link-btn" style={{ fontSize: 12 }} onClick={() => void api.app.openExternal(keyUrl)}>
+                              Where do I get {/^[aeiou]/i.test(status.label) ? 'an' : 'a'} {status.label} key?
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </Field>
                   )}
-                </div>
-                <div className="row" style={{ gap: 12, marginTop: 2 }}>
-                  {unsavedKey ? (
-                    <span className="field-hint" role="status" style={{ color: 'var(--text-2)' }}>
-                      Not saved yet. Press Save (or Enter) to keep this key.
-                    </span>
+                  {!isLocal && <Field label="Model">
+                    <div className="row">
+                      {custom ? (
+                        <input
+                          key={provider}
+                          className="input grow mono"
+                          value={modelDraft}
+                          onChange={(e) => setModelDrafts({ ...modelDrafts, [provider]: e.target.value })}
+                          onBlur={commitModelDraft}
+                          onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commitModelDraft()}
+                          aria-label="Custom model ID"
+                          spellCheck={false}
+                        />
+                      ) : (
+                        <select key={provider} className="select grow" value={model} onChange={(e) => void setModel(e.target.value)} aria-label="Model">
+                          {status?.models.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.label}
+                              {m.note ? ` — ${m.note}` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {(settings.developerMode || custom || !known) && (
+                        <button
+                          className="btn"
+                          // Keep focus in the model field so its blur does not save the typed ID on the way to the list.
+                          onMouseDown={(e) => custom && e.preventDefault()}
+                          onClick={() => (custom ? chooseFromList() : setCustomMode({ ...customMode, [provider]: true }))}
+                        >
+                          {custom ? 'Choose from list' : 'Other model…'}
+                        </button>
+                      )}
+                    </div>
+                  </Field>}
+                  <div className="row">
+                    <button
+                      className="btn"
+                      disabled={(!status?.configured && !unsavedKey) || !!testing}
+                      title={unsavedKey ? 'Tests the key you typed. Press Save to keep it.' : undefined}
+                      onClick={async () => {
+                        setTesting(provider);
+                        // What is on screen is what gets tested: a typed but unsaved key, and a typed model ID.
+                        const r = await api.ai.testProvider(provider, keys[provider].trim() || undefined, custom && !isLocal ? modelDraft.trim() || undefined : undefined);
+                        setTesting(null);
+                        toast(unsavedKey && r.ok ? `${r.message} Press Save to keep this key.` : r.message, r.ok ? 'info' : 'error');
+                      }}
+                    >
+                      {testing ? 'Testing…' : unsavedKey ? 'Test this key' : 'Test connection'}
+                    </button>
+                  </div>
+                  <SwitchRow checked={settings.ai.sendOnEnter} onChange={(v) => void update({ ai: { sendOnEnter: v } })} label="Press Enter to send messages" hint="When off, use ⌘ Enter to send and Enter for a new line." />
+                  {!isLocal ? (
+                    <div className="scope-note info">
+                      <Shield />
+                      <span>
+                        When you use the assistant, your request and the relevant page text and structure are sent to {status?.label ?? 'the provider'}. Images and screenshots are never sent. The provider may charge your account for usage.
+                      </span>
+                    </div>
                   ) : (
-                    !isLocal && (
-                      <button className="link-btn" style={{ fontSize: 12 }} onClick={() => void api.app.openExternal(keyUrl)}>
-                        Where do I get {/^[aeiou]/i.test(status.label) ? 'an' : 'a'} {status.label} key?
-                      </button>
+                    !status?.warning && (
+                      <div className="scope-note info">
+                        <Shield />
+                        <span>Your requests and page content stay on this computer.</span>
+                      </div>
                     )
                   )}
-                </div>
-              </Field>
-            )}
-            {!isLocal && <Field label="Model">
-              <div className="row">
-                {custom ? (
-                  <input
-                    key={provider}
-                    className="input grow mono"
-                    value={modelDraft}
-                    onChange={(e) => setModelDrafts({ ...modelDrafts, [provider]: e.target.value })}
-                    onBlur={commitModelDraft}
-                    onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commitModelDraft()}
-                    aria-label="Custom model ID"
-                    spellCheck={false}
-                  />
-                ) : (
-                  <select key={provider} className="select grow" value={model} onChange={(e) => void setModel(e.target.value)} aria-label="Model">
-                    {status?.models.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.label}
-                        {m.note ? ` — ${m.note}` : ''}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                {(settings.developerMode || custom || !known) && (
-                  <button
-                    className="btn"
-                    // Keep focus in the model field so its blur does not save the typed ID on the way to the list.
-                    onMouseDown={(e) => custom && e.preventDefault()}
-                    onClick={() => (custom ? chooseFromList() : setCustomMode({ ...customMode, [provider]: true }))}
-                  >
-                    {custom ? 'Choose from list' : 'Other model…'}
-                  </button>
-                )}
-              </div>
-            </Field>}
-            <div className="row">
-              <button
-                className="btn"
-                disabled={(!status?.configured && !unsavedKey) || !!testing}
-                title={unsavedKey ? 'Tests the key you typed. Press Save to keep it.' : undefined}
-                onClick={async () => {
-                  setTesting(provider);
-                  // What is on screen is what gets tested: a typed but unsaved key, and a typed model ID.
-                  const r = await api.ai.testProvider(provider, keys[provider].trim() || undefined, custom && !isLocal ? modelDraft.trim() || undefined : undefined);
-                  setTesting(null);
-                  toast(unsavedKey && r.ok ? `${r.message} Press Save to keep this key.` : r.message, r.ok ? 'info' : 'error');
-                }}
-              >
-                {testing ? 'Testing…' : unsavedKey ? 'Test this key' : 'Test connection'}
-              </button>
-            </div>
-            <SwitchRow checked={settings.ai.sendOnEnter} onChange={(v) => void update({ ai: { sendOnEnter: v } })} label="Press Enter to send messages" hint="When off, use ⌘ Enter to send and Enter for a new line." />
-            {!isLocal ? (
-              <div className="scope-note info">
-                <Shield />
-                <span>
-                  When you use the assistant, your request and the relevant page text and structure are sent to {status?.label ?? 'the provider'}. Images and screenshots are never sent. The provider may charge your account for usage.
-                </span>
-              </div>
-            ) : (
-              !status?.warning && (
-                <div className="scope-note info">
-                  <Shield />
-                  <span>Your requests and page content stay on this computer.</span>
-                </div>
+                </>
               )
-            )}
-          </div>
-        )}
+            }
+          ]}
+        />
       </div>
     </Modal>
   );

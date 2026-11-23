@@ -1,5 +1,6 @@
 // Shared setup for the end-to-end scripts: scratch folders, launching the built app, the platform
 // shortcut modifier and polling assertions.
+import assert from 'node:assert/strict';
 import { _electron as electron } from 'playwright';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -76,6 +77,30 @@ export async function eventually(check, timeout = 10000, interval = 150) {
 }
 
 export const step = (m) => console.log(`\n== ${m}`);
+
+/**
+ * Every tab on the page names, in aria-controls, exactly one element: its own tabpanel, labelled by it back,
+ * shown only while the tab is selected.
+ */
+export async function assertTabsResolve(win, where) {
+  const problems = await win.evaluate(() => {
+    const out = [];
+    for (const tab of document.querySelectorAll('[role="tab"]')) {
+      const id = tab.getAttribute('aria-controls');
+      const panels = id ? document.querySelectorAll(`#${CSS.escape(id)}`) : [];
+      if (panels.length !== 1) {
+        out.push(`${tab.id}: aria-controls "${id}" matches ${panels.length} elements`);
+        continue;
+      }
+      const panel = panels[0];
+      if (panel.getAttribute('role') !== 'tabpanel' || panel.getAttribute('aria-labelledby') !== tab.id) out.push(`${tab.id}: "${id}" is not its tabpanel`);
+      const selected = tab.getAttribute('aria-selected') === 'true';
+      if ((getComputedStyle(panel).display !== 'none') !== selected) out.push(`${tab.id}: its panel is ${selected ? 'hidden' : 'shown'} while the tab is ${selected ? '' : 'not '}selected`);
+    }
+    return out;
+  });
+  assert.deepEqual(problems, [], `every tab controls a panel on the page (${where})`);
+}
 
 /**
  * A check for a known, tracked app bug: its failure is reported but does not fail the script. When it

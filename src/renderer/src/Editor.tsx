@@ -427,29 +427,22 @@ export function Editor() {
         <Canvas />
         <aside className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }}>
           <Resizer side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} />
+          {/* Every dock panel stays mounted, so the chat and inspector keep their state while hidden. */}
           <Tabs<'inspect' | 'chat' | 'styles'>
             className="dock-tabs"
             label="Right panel views"
             idBase="dock"
             value={rightTab}
             onChange={(v) => (v === 'styles' ? openSiteStyles() : setState({ rightTab: v }))}
+            keepMounted
+            panelClassName="dock-panel"
+            panelsStyle={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}
             options={[
-              { value: 'inspect', label: 'Inspector', icon: <SlidersHorizontal /> },
-              { value: 'chat', label: 'AI', icon: <Sparkles />, extra: aiBusy ? <span className="live" role="img" aria-label="Working" /> : undefined },
-              { value: 'styles', label: 'Site styles', icon: <Palette /> }
+              { value: 'inspect', label: 'Inspector', icon: <SlidersHorizontal />, panel: () => <Inspector /> },
+              { value: 'chat', label: 'AI', icon: <Sparkles />, extra: aiBusy ? <span className="live" role="img" aria-label="Working" /> : undefined, panel: () => <Chat /> },
+              { value: 'styles', label: 'Site styles', icon: <Palette />, panel: () => <SiteStyles /> }
             ]}
           />
-          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <div id="dock-panel-inspect" className="dock-panel" role="tabpanel" aria-labelledby="dock-tab-inspect" hidden={rightTab !== 'inspect'}>
-              <Inspector />
-            </div>
-            <div id="dock-panel-chat" className="dock-panel" role="tabpanel" aria-labelledby="dock-tab-chat" hidden={rightTab !== 'chat'}>
-              <Chat />
-            </div>
-            <div id="dock-panel-styles" className="dock-panel" role="tabpanel" aria-labelledby="dock-tab-styles" hidden={rightTab !== 'styles'}>
-              <SiteStyles />
-            </div>
-          </div>
         </aside>
       </div>
       <StatusBar />
