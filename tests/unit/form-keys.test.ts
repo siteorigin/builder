@@ -13,7 +13,7 @@ import type { Component } from 'svelte';
 import type { ComponentDefinition, InstanceNode, ListItem, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { contactForm, formFieldKey, formKeyClashes, namesFormFields, formRefusesClashes } from '@catalogue/foundation/form';
+import { contactForm, formFieldKey, formKeyClashes, formKeyNote, namesFormFields, formRefusesClashes } from '@catalogue/foundation/form';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
@@ -134,6 +134,17 @@ describe('keys stay distinct and stable through edits', () => {
     expect(warning).toMatchObject({ severity: 'warning', nodeId });
     expect(warning.message).toContain('“Email” and “Phone” fields are both sent as “email”');
     expect(warning.message).toContain('visitors cannot send the form');
+    // The field editor flags both fields, each naming the other, and says what every field is sent as.
+    const fields = fieldsOf(s, nodeId);
+    expect(fields.map((_, i) => formKeyNote(fields, i).error)).toEqual([
+      undefined,
+      '“Phone” is also sent as “email”. Give each field its own name.',
+      '“Email” is also sent as “email”. Give each field its own name.',
+      undefined
+    ]);
+    expect(formKeyNote(fields, 3).hint).toBe('Sent as “message”. Changing the label keeps it; clear it to make a new one from the label.');
+    const same = [{ label: 'Email', name: 'email' }, { label: 'Email', name: '' }, { label: '', name: 'email' }];
+    expect(formKeyNote(same, 0).error).toBe('“Email” (field 2) and field 3 are also sent as “email”. Give each field its own name.');
     // Swapping two names one at a time passes through the clash and out of it.
     const swapped = edit(s, nodeId, { type: 'instance.setProp', itemId: idOf(s, nodeId, 'Email'), field: 'name', value: 'phone' });
     expect(clashWarnings(swapped)).toEqual([]);

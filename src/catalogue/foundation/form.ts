@@ -455,6 +455,17 @@ export function formFieldTitles(fields: readonly FormField[], indexes: readonly 
   return names.length < 2 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
+/** What the field editor says under a field's name: the key it is sent under, and any other field sent under it too. */
+export function formKeyNote(fields: readonly FormField[], index: number): { hint: string; error?: string } {
+  const key = formFieldKey(fields[index] ?? {}, index);
+  const clash = formKeyClashes(fields).find((c) => c.indexes.includes(index));
+  const others = clash?.indexes.filter((j) => j !== index) ?? [];
+  return {
+    hint: `Sent as “${key}”. Changing the label keeps it; clear it to make a new one from the label.`,
+    error: others.length ? `${formFieldTitles(fields, others, clash!.indexes)} ${others.length === 1 ? 'is' : 'are'} also sent as “${key}”. Give each field its own name.` : undefined
+  };
+}
+
 /**
  * Whether a definition names its form fields the way the theme's contact form does, in any version so far. Custom
  * code may name them differently, so the editor shows and keeps keys only for a definition this says yes to.

@@ -35,7 +35,7 @@ import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
-import { formFieldKey, formFieldTitles, formKeyClashes, namesFormFields, type FormField } from '@catalogue/foundation/form';
+import { formKeyNote, namesFormFields, type FormField } from '@catalogue/foundation/form';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf } from '@engine/tree';
 import { applyOps, applyWith, setState, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
@@ -54,18 +54,7 @@ const LEVEL = 4;
 /** Under each contact form field's name: the key its answer is sent under, or the other fields sent under it too. */
 function formKeyNotes(value: unknown): ((item: ListItem, index: number) => ListItemNote | undefined) | undefined {
   if (!Array.isArray(value)) return undefined;
-  const fields = value as FormField[];
-  const clashes = formKeyClashes(fields);
-  return (_item, i) => {
-    const key = formFieldKey(fields[i] ?? {}, i);
-    const clash = clashes.find((c) => c.indexes.includes(i));
-    const others = clash?.indexes.filter((j) => j !== i) ?? [];
-    return {
-      field: 'name',
-      hint: `Sent as “${key}”. Changing the label keeps it; clear it to make a new one from the label.`,
-      error: others.length ? `${formFieldTitles(fields, others, clash!.indexes)} ${others.length === 1 ? 'is' : 'are'} also sent as “${key}”. Give each field its own name.` : undefined
-    };
-  };
+  return (_item, i) => ({ field: 'name', ...formKeyNote(value as FormField[], i) });
 }
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): EditOperation {
