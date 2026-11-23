@@ -34,6 +34,7 @@ interface StoreState {
   definitionMode: unknown;
   rightTab: string;
   dockOpen: boolean;
+  modal: { kind: string; id?: number; opening?: string } | null;
 }
 type Checked = { kind: string; where?: string; what?: string; message?: string };
 interface StoreModule {
@@ -56,6 +57,11 @@ interface ActionsModule {
   insert(spec: { primitive?: string; componentId?: string }, label: string): Promise<void>;
 }
 
+interface ReviewModule {
+  settleImportReview(id: number, webCopies: Set<string> | null): void;
+}
+const REVIEW_PATH = '../../src/renderer/src/lib/import-review';
+let review: ReviewModule;
 const STORE_PATH = '../../src/renderer/src/store';
 const PLACE_PATH = '../../src/renderer/src/lib/place';
 const ACTIONS_PATH = '../../src/renderer/src/lib/actions';
@@ -77,7 +83,12 @@ let lateBroadcast = 0;
 /** Runs once, just before the next write from the renderer reaches the session: something that lands meanwhile. */
 let beforeApply: (() => Promise<unknown>) | null = null;
 /** The import the author started, released by the test: the picture is still being copied until then. */
-let importing: { paths?: string[]; release: (assetIds?: string[], message?: string) => Promise<void> } | null = null;
+let importing: { paths?: string[]; choices?: unknown; release: (assetIds?: string[], message?: string) => Promise<void> } | null = null;
+/** What the review says of each chosen file (see reviewImport): imported as it is, unless a test says otherwise. */
+let reviewRow: Record<string, unknown> = { action: 'import' };
+let reviews = 0;
+/** The kind of file each call to the project asked for: an image field only ever takes images. */
+const kinds: string[] = [];
 
 const key = () => `${session!.dir}#${opening}`;
 function snapshot(): ProjectSnapshot | null {
@@ -122,10 +133,19 @@ beforeAll(async () => {
           if (r.ok) publish();
           return r;
         },
-        importAssets: (paths?: string[]) =>
+        // What the author chose, as the review says it: an ordinary picture unless a test asks for a photo to convert.
+        reviewImport: async (paths?: string[], only?: string) => {
+          reviews++;
+          kinds.push(`review:${only}`);
+          const chosen = paths ?? ['/photos/studio-at-sunrise.png'];
+          return { paths: chosen, rows: chosen.map((path) => ({ path, name: path.split('/').pop(), bytes: 1000, fingerprint: `sha:${path}`, ...reviewRow })) };
+        },
+        importAssets: (paths?: string[], only?: string, choices?: unknown) =>
           new Promise((resolve) => {
+            kinds.push(`import:${only}`);
             importing = {
               paths,
+              choices,
               // The file is copied and its record saved, then the main process answers with the new asset's ID.
               release: async (assetIds, message) => {
                 const ids = assetIds ?? [(await write([{ type: 'asset.add', asset: photo }], 'Import images')) && photo.id];
@@ -139,12 +159,16 @@ beforeAll(async () => {
   store = (await import(/* @vite-ignore */ STORE_PATH)) as StoreModule;
   place = (await import(/* @vite-ignore */ PLACE_PATH)) as PlaceModule;
   actions = (await import(/* @vite-ignore */ ACTIONS_PATH)) as ActionsModule;
+  review = (await import(/* @vite-ignore */ REVIEW_PATH)) as ReviewModule;
 });
 
 afterEach(async () => {
   await session?.close().catch(() => undefined);
   session = null;
   importing = null;
+  reviewRow = { action: 'import' };
+  reviews = 0;
+  kinds.length = 0;
   opening = 1;
   aiBusy = false;
   quiet = false;
@@ -154,7 +178,7 @@ afterEach(async () => {
   applyCalls = 0;
   events.length = 0;
   resetPendingForTests();
-  store.setState({ snapshot: null, pendingSave: 0, toasts: [], selection: null, leftTab: 'pages', pageId: null, mode: 'edit', definitionMode: null, rightTab: 'inspect', dockOpen: false });
+  store.setState({ snapshot: null, pendingSave: 0, toasts: [], selection: null, leftTab: 'pages', pageId: null, mode: 'edit', definitionMode: null, rightTab: 'inspect', dockOpen: false, modal: null, leaving: false } as Partial<StoreState>);
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
 
@@ -193,11 +217,23 @@ async function setup() {
   return { home, owner, a: a.id, b: b.id, image, field };
 }
 
-/** Choose image → Import on one hero: what the image editor does, with the handler and project it shows now. */
-function startImport(write: (v: ImageValue) => void, opts: { shown?: () => boolean; start?: ImageValue } = {}) {
+/**
+ * Choose image → Import on one hero: what the image editor does, with the handler and project it shows now. Returns
+ * once the files are chosen (and reviewed) and the import has started.
+ */
+async function startImport(write: (v: ImageValue) => void, opts: { shown?: () => boolean; start?: ImageValue } = {}) {
+  importing = null;
+  const run = beginImport(write, opts);
+  for (let i = 0; i < 50 && !importing; i++) await tick();
+  expect(importing).not.toBeNull();
+  return { run };
+}
+
+/** Start Choose image → Import without waiting for the import to begin (it may wait on the review). */
+function beginImport(write: (v: ImageValue) => void, opts: { shown?: () => boolean; start?: ImageValue } = {}) {
   const start = opts.start ?? { assetId: null, alt: '' };
   const base = store.getState().snapshot;
-  const run = place.importAndPlace({
+  return place.importAndPlace({
     base,
     shown: opts.shown ?? (() => false),
     holds: (asset) => asset.id === start.assetId,
@@ -206,8 +242,6 @@ function startImport(write: (v: ImageValue) => void, opts: { shown?: () => boole
       write({ assetId: asset.id, alt: asset.altSuggestion || start.alt || '', decorative: start.decorative });
     }
   });
-  expect(importing).not.toBeNull();
-  return run;
 }
 
 const lastToast = () => store.getState().toasts.at(-1);
@@ -217,7 +251,7 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 describe('placing an imported image (issue #262)', () => {
   it('places it in the hero the import began from after the author selects another hero', async () => {
     const { a, b, owner, image, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     // While the picture is being copied, a placement is still owed: the toolbar must not say "Saved".
     expect(store.getState().pendingSave).toBe(1);
     expect(savesInFlight()).toBe(1);
@@ -241,7 +275,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('places it without a note while the hero is still shown', async () => {
     const { a, image, field } = await setup();
-    const run = startImport(field(a), { shown: () => true });
+    const { run } = await startImport(field(a), { shown: () => true });
     await importing!.release();
     expect(await run).toEqual({ kind: 'placed', assetId: photo.id });
     expect(image(a).assetId).toBe(photo.id);
@@ -250,7 +284,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('keeps the image in Assets and says why when the hero was edited meanwhile, with a way to find it', async () => {
     const { a, b, owner, image, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     await write([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: null, alt: 'A newer description' } }]);
     await importing!.release();
     expect(await run).toEqual({ kind: 'kept', assetId: photo.id });
@@ -269,7 +303,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('keeps the image and says why when the hero was removed meanwhile', async () => {
     const { a, owner, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     await write([{ type: 'node.remove', owner, nodeId: a }]);
     await importing!.release();
     expect(await run).toEqual({ kind: 'kept', assetId: photo.id });
@@ -279,7 +313,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('places it after an edit the window had not heard of yet, checking the field again first', async () => {
     const { a, b, owner, image, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     // Saved in the main process between the check and the write, not yet in this window's copy: the write is
     // refused as stale.
     beforeApply = () => write([{ type: 'instance.setProp', owner, nodeId: b, prop: 'heading', value: 'Elsewhere' }]);
@@ -291,7 +325,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('checks the field again after a stale write, and keeps the image when it was edited', async () => {
     const { a, owner, image, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     beforeApply = () => write([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: null, alt: 'Typed elsewhere' } }]);
     await importing!.release();
     expect(await run).toEqual({ kind: 'kept', assetId: photo.id });
@@ -302,9 +336,9 @@ describe('placing an imported image (issue #262)', () => {
 
   it('places the second of two imports into the same hero only if the first did not', async () => {
     const { a, image, field } = await setup();
-    const first = startImport(field(a));
+    const { run: first } = await startImport(field(a));
     const firstImport = importing!;
-    const second = startImport(field(a));
+    const { run: second } = await startImport(field(a));
     await firstImport.release();
     expect(await first).toEqual({ kind: 'placed', assetId: photo.id });
     const other: AssetRecord = { ...photo, id: 'img_dusk', name: 'Dusk.png', file: 'static/assets/dusk.png', hash: 'dusk', altSuggestion: 'Dusk' };
@@ -316,7 +350,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('never places it in a project opened since', async () => {
     const { a, image, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     // The project was closed and opened again while the picture was copied.
     opening = 2;
     await importing!.release();
@@ -327,7 +361,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('keeps the image and says so while the AI is making changes', async () => {
     const { a, image, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     // The AI started while the picture was being copied.
     aiBusy = true;
     publish();
@@ -342,7 +376,7 @@ describe('placing an imported image (issue #262)', () => {
     const { a, field, owner } = await setup();
     await write([{ type: 'asset.add', asset: photo }]);
     await write([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: photo.id, alt: 'Here' } }]);
-    const run = startImport(field(a), { start: { assetId: photo.id, alt: 'Here' } });
+    const { run } = await startImport(field(a), { start: { assetId: photo.id, alt: 'Here' } });
     await importing!.release([photo.id]);
     expect(await run).toEqual({ kind: 'placed', assetId: photo.id });
     expect(applyCalls).toBe(0);
@@ -353,7 +387,7 @@ describe('placing an imported image (issue #262)', () => {
     const { a, field, owner } = await setup();
     await write([{ type: 'asset.add', asset: photo }]);
     await write([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: photo.id, alt: 'Here' } }]);
-    const run = startImport(field(a), { start: { assetId: photo.id, alt: 'Here' } });
+    const { run } = await startImport(field(a), { start: { assetId: photo.id, alt: 'Here' } });
     await write([{ type: 'node.remove', owner, nodeId: a }]);
     await importing!.release([photo.id]);
     expect(await run).toEqual({ kind: 'kept', assetId: photo.id });
@@ -363,7 +397,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('asks the project before refusing on what this window last heard (the AI had already finished)', async () => {
     const { a, image, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     // This window still thinks the AI is working, and has not heard of the imported picture yet.
     store.setState({ snapshot: { ...snapshot()!, aiBusy: true } });
     quiet = true;
@@ -376,7 +410,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('tells a save waiting on it that the image the author asked for did not arrive', async () => {
     const { a, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     const saving = settle({ blur: () => undefined, wait: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) });
     await importing!.release([], 'Studio at sunrise.png is larger than 25 MB.');
     expect(await run).toEqual({ kind: 'none' });
@@ -387,7 +421,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('tells a save waiting on it that the image was not placed', async () => {
     const { a, owner, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     const saving = settle({ blur: () => undefined, wait: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) });
     await write([{ type: 'node.remove', owner, nodeId: a }]);
     await importing!.release();
@@ -425,7 +459,7 @@ describe('placing an imported image (issue #262)', () => {
     const { a, field, owner } = await setup();
     await write([{ type: 'asset.add', asset: photo }]);
     await write([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: photo.id, alt: 'Here' } }]);
-    const run = startImport(field(a), { start: { assetId: photo.id, alt: 'Here' } });
+    const { run } = await startImport(field(a), { start: { assetId: photo.id, alt: 'Here' } });
     // Removed in the main process; this window has not heard yet.
     quiet = true;
     await write([{ type: 'node.remove', owner, nodeId: a }]);
@@ -437,7 +471,7 @@ describe('placing an imported image (issue #262)', () => {
 
   it('offers the image it found in the project, even when this window has not heard of it yet', async () => {
     const { a, owner, image, field } = await setup();
-    const run = startImport(field(a));
+    const { run } = await startImport(field(a));
     // The hero is edited and the picture recorded, all before this window hears of either.
     quiet = true;
     await write([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: null, alt: 'Typed elsewhere' } }]);
@@ -803,3 +837,85 @@ describe('placing a library image from Assets (issue #13)', () => {
     expect(placed(page(), nook.id)).toEqual([]);
   });
 });
+
+describe('reviewing a phone photo before it is placed (issue #230)', () => {
+  const heic = { action: 'convert', format: 'HEIC', width: 3024, height: 4032, copy: { format: 'JPEG', width: 1920, height: 2560 } };
+  /** The review the author is looking at, once it is on screen. */
+  async function shownReview() {
+    for (let i = 0; i < 50 && store.getState().modal?.kind !== 'import-review'; i++) await tick();
+    const modal = store.getState().modal;
+    expect(modal?.kind).toBe('import-review');
+    return modal as { kind: 'import-review'; id: number; opening: string };
+  }
+
+  it('owes nothing while the review is open, and imports nothing when it is dismissed', async () => {
+    const { a, image, field } = await setup();
+    reviewRow = heic;
+    const run = beginImport(field(a));
+    await shownReview();
+    // Leaving the project now must not wait on a question the author has not answered.
+    expect(store.getState().pendingSave).toBe(0);
+    expect(savesInFlight()).toBe(0);
+    store.setState({ modal: null });
+    expect(await run).toEqual({ kind: 'none' });
+    expect(importing).toBeNull();
+    expect(image(a).assetId).toBeNull();
+  });
+
+  it('imports the converted photo once confirmed, in the opening it was reviewed in, and places it', async () => {
+    const { a, image, field } = await setup();
+    reviewRow = heic;
+    const run = beginImport(field(a));
+    const modal = await shownReview();
+    expect(modal.opening).toBe(key());
+    review.settleImportReview(modal.id, new Set());
+    for (let i = 0; i < 50 && !importing; i++) await tick();
+    // From the moment the author confirms, a placement is owed.
+    expect(store.getState().pendingSave).toBe(1);
+    expect(importing!.choices).toEqual({ opening: key(), files: [{ path: '/photos/studio-at-sunrise.png', fingerprint: 'sha:/photos/studio-at-sunrise.png', webCopy: true }] });
+    await importing!.release();
+    expect(await run).toEqual({ kind: 'placed', assetId: photo.id });
+    expect(image(a).assetId).toBe(photo.id);
+    expect(kinds).toEqual(['review:image', 'import:image']);
+  });
+
+  it('imports nothing, and takes the review off screen, when the author starts leaving the project', async () => {
+    const { a, field } = await setup();
+    reviewRow = heic;
+    const run = beginImport(field(a));
+    await shownReview();
+    store.setState({ leaving: true } as Partial<StoreState>);
+    expect(await run).toEqual({ kind: 'none' });
+    expect(store.getState().modal).toBeNull();
+    expect(importing).toBeNull();
+    store.setState({ leaving: false } as Partial<StoreState>);
+  });
+
+  it('imports nothing when the project is closed or opened again while the review is open', async () => {
+    const { a, field } = await setup();
+    reviewRow = heic;
+    const run = beginImport(field(a));
+    await shownReview();
+    opening = 2;
+    publish();
+    expect(await run).toEqual({ kind: 'none' });
+    expect(importing).toBeNull();
+    // The next opening never finds the old review on screen.
+    expect(store.getState().modal).toBeNull();
+  });
+
+  it('adds nothing, and owes nothing, when the only photo chosen can’t be converted here', async () => {
+    const { a, image, field } = await setup();
+    reviewRow = { action: 'refuse', format: 'HEIC', reason: 'it is a HEIC photo, which browsers can’t show, and this computer has no converter for it.' };
+    const run = beginImport(field(a));
+    const modal = await shownReview();
+    review.settleImportReview(modal.id, new Set());
+    for (let i = 0; i < 50 && !importing; i++) await tick();
+    expect(importing!.paths).toEqual([]);
+    await importing!.release([]);
+    expect(await run).toEqual({ kind: 'none' });
+    expect(image(a).assetId).toBeNull();
+    expect(reviews).toBe(1);
+  });
+});
+

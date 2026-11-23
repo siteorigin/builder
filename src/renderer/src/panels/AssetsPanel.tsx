@@ -10,6 +10,7 @@ import { imagePlacement, openSiteStyles, placeAsset, selectPage } from '../lib/a
 import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
+import { assetArrived, reviewImport } from '../lib/import-review';
 
 /** Above this an image is worth flagging: pages load smaller copies, but the original still ships with the site. */
 const LARGE = 1_500_000;
@@ -199,6 +200,31 @@ function useRecordsLocation(a: AssetRecord | null): boolean {
   return !!key && answer?.key === key && answer.location;
 }
 
+/**
+ * What a web-sized copy of a large JPEG or PNG would be (format and size), asked for each time such a picture is
+ * shown or its file changes. Null while unknown, or when no copy can be made from it.
+ */
+type WebPlan = { format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number };
+function useWebCopyPlan(a: AssetRecord | null, opening: string, originalMissing: boolean): WebPlan | null {
+  const [answer, setAnswer] = useState<{ key: string; plan: WebPlan | null } | null>(null);
+  const eligible = a?.kind === 'image' && a.bytes > LARGE && (a.mime === 'image/jpeg' || a.mime === 'image/png');
+  const id = eligible ? a.id : null;
+  // Asked again when the original comes back (Locate file) or the project is opened again.
+  const key = id && `${opening}:${id}:${a!.file}:${a!.hash}:${originalMissing ? 'missing' : 'here'}`;
+  useEffect(() => {
+    if (!id || !key) return;
+    let live = true;
+    api.project
+      .webCopyPlan(id)
+      .then((plan) => live && setAnswer({ key, plan }))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [id, key]);
+  return key && answer?.key === key ? answer.plan : null;
+}
+
 /** `narrow`: the sidebar is drawn under 240px wide, so the header drops the image count. */
 export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const snap = useStore((s) => s.snapshot);
@@ -250,6 +276,12 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const fonts = useMemo(() => Object.values(assetsDoc ?? {}).filter(isValidFontAsset).sort((a, b) => fontLabel(a).localeCompare(fontLabel(b))), [assetsDoc]);
   const sel = selected && assetsDoc ? (assetsDoc[selected] ?? null) : null;
   const recordsLocation = useRecordsLocation(sel);
+  const webPlan = useWebCopyPlan(sel, snap?.workspaceKey ?? '', !!(sel && missingOf.get(sel.id)?.original));
+  const [copying, setCopying] = useState(false);
+  // The image shown now, and the latest Add images: an answer that arrives later only changes the view still showing.
+  const selectedNow = useRef(selected);
+  selectedNow.current = selected;
+  const importRun = useRef(0);
   const places = useMemo(() => (snap && sel ? placesOf(snap.state, sel.id) : []), [snap, sel]);
   useEffect(() => {
     setNameError(null);
@@ -321,12 +353,17 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-replace-open')?.focus());
   };
 
-  /** Import through the app's picker (no paths) or dropped files, and say exactly what arrived. */
+  /**
+   * Import through the app's picker (no paths) or dropped files, and say exactly what arrived. HEIC photos, large
+   * photos and files that can't be added are shown in the import review first (see reviewImport).
+   */
   const importFiles = async (paths?: string[], only?: 'image') => {
     const before = new Set(Object.keys(getState().snapshot?.state.assets.assets ?? {}));
     setImporting(true);
     try {
-      const r = await api.project.importAssets(paths, only).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The images couldn’t be added: ${e.message}` }));
+      const plan = await reviewImport(paths, only).catch((e: Error) => (toast(`The images couldn’t be added: ${e.message}`, 'error'), null));
+      if (!plan) return { ids: [], added: [], failed: false, reviewed: false };
+      const r: { ok: boolean; assetIds: string[]; message?: string; note?: string } = await api.project.importAssets(plan.paths, only, plan.choices).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The images couldn’t be added: ${e.message}` }));
       const added = r.assetIds.filter((id) => !before.has(id));
       const already = r.assetIds.length - added.length;
       const doc = getState().snapshot?.state.assets.assets ?? {};
@@ -336,26 +373,76 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         addedImages ? `Added ${plural(addedImages, 'image', 'images')}.` : '',
         addedFonts ? `Added ${plural(addedFonts, 'font', 'fonts')}. Use ${addedFonts === 1 ? 'it' : 'them'} in Site styles.` : '',
         already ? `${plural(already, 'file was', 'files were')} already here.` : '',
+        r.note ?? '',
         r.message ?? ''
       ].filter(Boolean);
       if (parts.length) toast(parts.join(' '), r.message && !added.length ? 'error' : 'info');
-      return { ids: r.assetIds, added, failed: !!r.message };
+      return { ids: r.assetIds, added, failed: !!r.message, reviewed: plan.reviewed };
     } finally {
       setImporting(false);
     }
   };
-  /** Adding keeps the view (details, search, filter) as it is; the toast says what arrived. */
+  /**
+   * Adding keeps the view (details, search, filter) as it is; the toast says what arrived. After a review (a photo
+   * converted or made web-sized), the first image that arrived opens, so the author sees what was made.
+   */
   const addImages = async (paths?: string[]) => {
     if (importing) return;
     const wasEmpty = assets.length === 0;
     const session = replaceSession.current;
+    const run = ++importRun.current;
+    const opening = getState().snapshot?.workspaceKey;
     // While choosing a replacement picture, only pictures come in.
-    const { added } = await importFiles(paths, replacing ? 'image' : undefined);
-    if (!added.length) return;
+    const { ids, added, reviewed } = await importFiles(paths, replacing ? 'image' : undefined);
     if (replacing && replaceSession.current === session) {
+      if (!added.length) return;
       setPickQ('');
       focusTile(added[0]);
-    } else if (wasEmpty) requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-add')?.focus());
+      return;
+    }
+    if (reviewed && ids.length && opening && !(await assetArrived(ids[ids.length - 1], opening))) return;
+    // Only while the panel shows what it did when the import began: another import, a replacement, or the panel gone.
+    const still = run === importRun.current && replaceSession.current === session && getState().snapshot?.workspaceKey === opening;
+    const image = reviewed && still ? ids.find((id) => getState().snapshot?.state.assets.assets[id]?.kind === 'image') : undefined;
+    if (image) {
+      setSelected(image);
+      requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
+    } else if (added.length && wasEmpty && still) requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-add')?.focus());
+  };
+
+  /**
+   * Add a web-sized copy of the large image shown, and when it is used, show the copy in all its places (one step
+   * that can be undone). The original stays in Assets; the copy's details open.
+   */
+  const makeWebCopy = async () => {
+    const opening = getState().snapshot?.workspaceKey;
+    if (!sel || copying || !opening) return;
+    const replace = (usage[sel.id] ?? 0) > 0;
+    const n = places.length || usage[sel.id] || 0;
+    const name = nameOf(sel);
+    const from = sel.id;
+    const session = replaceSession.current;
+    setCopying(true);
+    try {
+      const r = await api.project.makeWebCopy(from, { replace, opening }).catch((e: Error) => ({ ok: false, message: e.message }) as Awaited<ReturnType<typeof api.project.makeWebCopy>>);
+      // Nothing is said about a project that has been closed or opened again since.
+      if (getState().snapshot?.workspaceKey !== opening) return;
+      if (!r.ok || !r.assetId) {
+        if (r.message) toast(r.message, r.ok ? 'info' : 'error');
+        return;
+      }
+      const undo = r.entryId && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: opening }) : undefined;
+      toast(replace ? `A web-sized copy now shows in ${n === 1 ? 'its place' : `all ${n} places`} instead of ${name}. The original is still in Assets.` : r.message ?? `Added a web-sized copy of ${name}.`, 'info', undo);
+      // The copy opens only while the author is still looking at the image it was made from.
+      if ((await assetArrived(r.assetId, opening)) && selectedNow.current === from && replaceSession.current === session) {
+        replaceSession.current++;
+        setReplacing(false);
+        setSelected(r.assetId);
+        requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
+      }
+    } finally {
+      setCopying(false);
+    }
   };
 
   const replaceWith = async (withId: string) => {
@@ -656,15 +743,25 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
           </div>
         )}
         {sel.bytes > LARGE && (
-          <p className="asset-note">
+          <div className="asset-note" role="note" data-testid="asset-large-note">
             <Info aria-hidden="true" />
-            <span>
-              <b>Large file.</b>{' '}
-              {sel.variants?.length
-                ? `Pages load smaller copies, but the ${formatBytes(sel.bytes)} original is still part of the site. A copy under 1.5 MB keeps it light.`
-                : `At ${formatBytes(sel.bytes)} it will slow pages down. Export a copy under 1.5 MB and use it with Replace everywhere.`}
-            </span>
-          </p>
+            <div>
+              <span>
+                <b>Large file.</b>{' '}
+                {sel.variants?.length ? `Pages load smaller copies, but the ${formatBytes(sel.bytes)} original is still part of the site.` : `At ${formatBytes(sel.bytes)} it will slow pages down.`}{' '}
+                {webPlan
+                  ? `A web-sized copy (${webPlan.format} · ${webPlan.width} × ${webPlan.height}) keeps it light. The original stays in Assets.`
+                  : 'A copy under 1.5 MB keeps it light: export one and use it with Replace everywhere.'}
+              </span>
+              {webPlan && (
+                <div className="asset-note-actions">
+                  <button className="btn btn-sm" data-testid="asset-web-copy" disabled={copying} onClick={() => void makeWebCopy()}>
+                    {copying ? <Spinner /> : <ImagePlus />} {used ? `Use a web-sized copy in ${plural(places.length || used, 'place', 'places')}` : 'Make a web-sized copy'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         )}
         {recordsLocation && (
           <p className="asset-note" data-testid="asset-location-note">

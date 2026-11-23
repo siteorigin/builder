@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState, StorageInfo, WebsiteTools } from '@shared/api';
+import type { CreateProjectOptions, ExportFormat, ExportResult, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState, StorageInfo, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -20,7 +20,8 @@ import { StaticPreviews } from './static-preview';
 import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind, locateAssetFile, restoreAssetFiles } from './project/assets';
+import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
+import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { photoMetadata } from './project/photo-metadata';
@@ -1214,35 +1215,94 @@ export class Controller {
     return buf ? photoMetadata(buf) : null;
   }
 
-  /** Import files. `only` limits a picker that can only use one kind, before anything is written to the project. */
-  async importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }> {
+  /** The file chooser for importing: images (HEIC photos included), fonts, or both. Null when it was closed. */
+  private async chooseImportFiles(only?: 'image' | 'font'): Promise<string[] | null> {
+    const images = { name: 'Images', extensions: IMPORT_IMAGE_EXTENSIONS };
+    const fonts = { name: 'Fonts', extensions: FONT_EXTENSIONS };
+    const r = await dialog.showOpenDialog(this.getWindow()!, {
+      title: only === 'font' ? 'Import fonts' : only === 'image' ? 'Import images' : 'Import images or fonts',
+      properties: ['openFile', 'multiSelections'],
+      filters: only === 'font' ? [fonts] : only === 'image' ? [images] : [{ name: 'Images and fonts', extensions: [...IMPORT_IMAGE_EXTENSIONS, ...FONT_EXTENSIONS] }, images, fonts]
+    });
+    return r.canceled ? null : r.filePaths;
+  }
+
+  /** The platform's HEIC decoder (sips on macOS), or null where there is none. */
+  photoDecoder: PhotoDecoder | null = heicDecoder();
+
+  /**
+   * Imports into the project one at a time: each batch finds the pictures the one before it added, so the same
+   * photo imported twice at once is still one asset. The slow work of a batch happens inside, so a second batch
+   * waits for the first.
+   */
+  private importQueue: Promise<unknown> = Promise.resolve();
+  private serialImport<T>(fn: () => Promise<T>): Promise<T> {
+    const p = this.importQueue.then(fn, fn);
+    this.importQueue = p.catch(() => undefined);
+    return p;
+  }
+
+  /**
+   * Choose files to import (the chooser, unless `paths` are given) and say what each would become, writing nothing:
+   * which HEIC photos are converted, which large photos could be added as web-sized copies, which can't be added.
+   */
+  async reviewImport(paths?: string[], only?: 'image' | 'font'): Promise<ImportReview | null> {
+    const s = this.session;
+    if (!s) return null;
+    // A read-only project imports nothing: the import that follows says why.
+    if (s.readOnly) return { paths: paths ?? [], rows: [] };
+    const files = paths ?? (await this.chooseImportFiles(only));
+    if (!files || this.session !== s) return null;
+    const rows: ImportReviewRow[] = [];
+    for (const f of files) {
+      const name = basename(f);
+      if (only !== 'font' && isAssetOfKind(f, 'image')) rows.push(await reviewImportFile(f, { converter: !!this.photoDecoder, opaque: isOpaquePicture }));
+      else if (only ? isAssetOfKind(f, only) : isAssetOfKind(f, 'font')) rows.push({ path: f, name, bytes: 0, action: 'import' });
+      // What the import would skip or refuse, the review names, so it is never counted among the files added.
+      else rows.push({ path: f, name, bytes: 0, action: 'refuse', reason: only ? `it is not ${only === 'font' ? 'a font' : 'an image'}.` : 'only JPEG, PNG, WebP, GIF, AVIF, SVG and HEIC images, and WOFF2 or WOFF fonts, can be added.' });
+    }
+    return { paths: files, rows };
+  }
+
+  /**
+   * Import files. `only` limits a picker that can only use one kind, before anything is written to the project.
+   * `choices` is what the author confirmed in a review (see reviewImport): it holds for the opening it was made in.
+   */
+  async importAssets(paths?: string[], only?: 'image' | 'font', choices?: ImportChoices): Promise<{ ok: boolean; assetIds: string[]; message?: string; note?: string }> {
     const s = this.session;
     if (!s) return { ok: false, assetIds: [] };
     if (s.readOnly) return { ok: false, assetIds: [], message: s.readOnly.reason };
-    let files = paths;
-    if (!files?.length) {
-      const r = await dialog.showOpenDialog(this.getWindow()!, {
-        title: only === 'font' ? 'Import fonts' : only === 'image' ? 'Import images' : 'Import images or fonts',
-        properties: ['openFile', 'multiSelections'],
-        filters: only === 'font' ? [{ name: 'Fonts', extensions: FONT_EXTENSIONS }] : only === 'image' ? [{ name: 'Images', extensions: IMAGE_EXTENSIONS }] : [{ name: 'Images and fonts', extensions: [...IMAGE_EXTENSIONS, ...FONT_EXTENSIONS] }, { name: 'Images', extensions: IMAGE_EXTENSIONS }, { name: 'Fonts', extensions: FONT_EXTENSIONS }]
-      });
-      if (r.canceled) return { ok: false, assetIds: [] };
-      files = r.filePaths;
-    }
+    if (choices && choices.opening !== this.workspaceKey) return { ok: false, assetIds: [], message: 'The project was closed before the files could be added.' };
+    // Only no paths at all opens the chooser: an empty list (a review that left nothing to add) adds nothing.
+    const files = paths ?? (await this.chooseImportFiles(only));
+    if (!files) return { ok: false, assetIds: [] };
+    if (this.session !== s) return { ok: false, assetIds: [], message: 'The project was closed before the files could be added.' };
     const picked = only ? files.filter((f) => isAssetOfKind(f, only)) : files;
     const refused = files.length - picked.length;
+    const reviewed = new Map((choices?.files ?? []).map((f) => [f.path, f]));
     // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile.
-    return s.withImport(async () => {
+    return this.serialImport(() => s.withImport(async () => {
       const ids: string[] = [];
       const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : 'an image'}.`] : [];
+      const notes: string[] = [];
       const ops = [];
       const backfills = [];
       // Files imported earlier in this batch count as existing too: the same picture dropped twice is one asset.
       const known = Object.values(s.state.assets.assets);
-      for (const f of picked) {
+      for (const [i, f] of picked.entries()) {
+        // A project closed or taken over meanwhile gets nothing more: the rest of the batch is not converted for nothing.
+        if (this.session !== s || this.closing) {
+          errors.push(`${picked.length - i === 1 ? `${basename(f)} was` : `${picked.length - i} files were`} not added because the project was closed.`);
+          break;
+        }
         try {
-          // Written only while the project is still open and this app's; the decoding is done before.
-          const { record, existing, font } = await importAsset(s.dir, f, known, this.writeFence(s));
+          const r = reviewed.get(f);
+          // Written only while the project is still open and this app's; the decoding and converting are done before.
+          const { record, existing, font, note } = await importAsset(s.dir, f, known, this.writeFence(s), {
+            decoder: this.photoDecoder,
+            ...(r ? { webCopy: r.webCopy, fingerprint: r.fingerprint } : {})
+          });
+          if (note) notes.push(note);
           if (!ids.includes(record.id)) ids.push(record.id);
           if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
           if (!existing) {
@@ -1262,8 +1322,67 @@ export class Controller {
         const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
         if (!r.ok) return { ok: false, assetIds: [], message: r.error?.message };
       }
-      return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined };
-    });
+      return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined, ...(notes.length ? { note: notes.join(' ') } : {}) };
+    }));
+  }
+
+  /** What a web-sized copy of a large library image would be, or null when none can be made from it. */
+  async webCopyPlan(assetId: string): Promise<{ format: 'JPEG' | 'PNG' | 'JPEG or PNG'; width: number; height: number } | null> {
+    const s = this.session;
+    const a = s?.state.assets.assets[assetId];
+    const buf = s && a ? await readLibraryImage(s.dir, a) : null;
+    return a && buf && sha(buf) === a.hash ? libraryWebCopyPlan(a, buf) : null;
+  }
+
+  /**
+   * Add a web-sized copy of a large library image to Assets, and with `replace` show it wherever the image is
+   * used, in one change that can be undone. The original stays in Assets, so nothing is lost.
+   */
+  async makeWebCopy(assetId: string, opts: { replace: boolean; opening: string }): Promise<{ ok: boolean; assetId?: string; entryId?: string; revision?: number; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false };
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
+    if (opts.opening !== this.workspaceKey) return { ok: false, message: 'The project was closed before the copy could be made.' };
+    const record = s.state.assets.assets[assetId];
+    if (record?.kind !== 'image') return { ok: false, message: 'That image is no longer in the library.' };
+    const name = record.name.trim() || 'The image';
+    const buf = await readLibraryImage(s.dir, record);
+    if (!buf) return { ok: false, message: `The original file of ${name} is missing. Locate it first.` };
+    return this.serialImport(() =>
+      s.withImport(async () => {
+        try {
+          const at = { revision: -1 };
+          const made = await storeLibraryWebCopy(s.dir, record, buf, Object.values(s.state.assets.assets), this.assetFence(s, record, at));
+          if ('smaller' in made) return { ok: false, message: `A web-sized copy of ${name} would be no smaller, so it was left as it is.` };
+          const ops = [
+            ...(made.existing ? [] : [{ type: 'asset.add' as const, asset: made.record }]),
+            ...(opts.replace ? [{ type: 'asset.replace' as const, assetId, withAssetId: made.record.id }] : [])
+          ];
+          const label = opts.replace ? `Use a web-sized copy of ${name}` : `Make a web-sized copy of ${name}`;
+          // The image, and a library copy reused for it, must still be the pictures they were: a relink meanwhile would
+          // otherwise show some other picture in every place the image is used.
+          const fresh = () => {
+            const now = s.state.assets.assets[assetId];
+            const copy = s.state.assets.assets[made.record.id];
+            return now?.file === record.file && now.hash === record.hash && (!made.existing || (copy?.file === made.record.file && copy.hash === made.record.hash));
+          };
+          const changed = { ok: false, message: `${name} changed while its copy was being made, so nothing was changed. Try again.` };
+          if (!fresh()) return changed;
+          if (!ops.length) return { ok: true, assetId: made.record.id, message: `${made.record.name} is already in Assets.` };
+          // Only on top of the project as it was when the copy was written (or now, when nothing was written); an
+          // unrelated change meanwhile is no reason to fail, as long as both pictures are as they were.
+          const apply = (expectedRevision: number) => s.apply({ operations: ops, expectedRevision }, { label, source: 'user' });
+          let r = await apply(at.revision >= 0 ? at.revision : s.revision);
+          if (r.error?.code === 'STALE_REVISION' && fresh()) r = await apply(s.revision);
+          if (r.error?.code === 'STALE_REVISION') return changed;
+          if (!r.ok) return { ok: false, message: r.error?.message ?? `The web-sized copy of ${name} could not be added.` };
+          return { ok: true, assetId: made.record.id, entryId: r.entryId, revision: r.revision };
+        } catch (e) {
+          if (e instanceof AssetChanged) return { ok: false, message: `${name} changed while its copy was being made. Look at it again in Assets.` };
+          return { ok: false, message: (e as Error).message };
+        }
+      })
+    );
   }
 
   /**

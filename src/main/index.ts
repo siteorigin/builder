@@ -3,7 +3,7 @@ import type { BaseWindow, KeyboardEvent, MenuItem, MenuItemConstructorOptions } 
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
-import type { LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
+import type { ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import { externalLink } from '@shared/links';
 import { checkLocalBaseURL } from '@shared/local';
 import { Controller, defaultProjectsFolder } from './controller';
@@ -19,6 +19,7 @@ import { LocalAdapter, listLocalModels, testLocal } from '@agent/local';
 import { compileProject } from './compile';
 import { checkSvelteSource, componentSources } from './codecheck';
 import { stopMediaWorker } from './project/assets';
+import { stopPhotoDecoders } from './project/photo-convert';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
 
@@ -151,6 +152,16 @@ controller.onSessionOpened = async (s) => {
 };
 /** A read-only project (newer format, or another app is editing it) refuses anything that writes to it. */
 const readOnlyReason = () => controller.session?.readOnly?.reason ?? null;
+
+/** An import review's confirmed choices from the renderer, kept only as far as they are well formed. */
+function importChoices(v: unknown): ImportChoices | undefined {
+  const c = v as { opening?: unknown; files?: unknown } | null | undefined;
+  if (!c || typeof c.opening !== 'string' || !Array.isArray(c.files)) return undefined;
+  const files = c.files.flatMap((f: { path?: unknown; fingerprint?: unknown; webCopy?: unknown }) =>
+    f && typeof f.path === 'string' && typeof f.fingerprint === 'string' ? [{ path: f.path, fingerprint: f.fingerprint, webCopy: f.webCopy === true }] : []
+  );
+  return { opening: c.opening, files };
+}
 controller.onSessionClosing = async () => {
   orchestrator.stop();
   // Let a running request finish reverting before the project lock is released.
@@ -250,7 +261,15 @@ function registerIpc() {
       : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } }
   );
   handle('project:redo', () => controller.session?.redo());
-  handle('project:importAssets', (paths?: string[], only?: 'image' | 'font') => controller.importAssets(paths, only === 'image' || only === 'font' ? only : undefined));
+  const kindOf = (only: unknown) => (only === 'image' || only === 'font' ? only : undefined);
+  const pathList = (paths: unknown) => (Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string') : undefined);
+  handle('project:reviewImport', (paths?: unknown, only?: unknown) => controller.reviewImport(pathList(paths), kindOf(only)));
+  handle('project:importAssets', (paths?: unknown, only?: unknown, choices?: unknown) => controller.importAssets(pathList(paths), kindOf(only), importChoices(choices)));
+  handle('project:webCopyPlan', (assetId: unknown) => (typeof assetId === 'string' ? controller.webCopyPlan(assetId) : null));
+  handle('project:makeWebCopy', (assetId: unknown, opts: unknown) => {
+    const o = (opts ?? {}) as { replace?: unknown; opening?: unknown };
+    return typeof assetId === 'string' && typeof o.opening === 'string' ? controller.makeWebCopy(assetId, { replace: o.replace === true, opening: o.opening }) : { ok: false };
+  });
   handle('project:photoMetadata', (assetId: unknown) => (typeof assetId === 'string' ? controller.photoMetadata(assetId) : null));
   handle('project:locateAsset', (assetId: string, path?: string) => controller.locateAsset(String(assetId), typeof path === 'string' && path ? path : undefined));
   handle('project:regenerateAssetCopies', (assetId: string) => controller.regenerateAssetCopies(String(assetId)));
@@ -642,7 +661,10 @@ app.on('window-all-closed', () => {
 });
 
 // The media worker would be ended with the app anyway; stopping it first settles any import still waiting on it.
-app.on('will-quit', () => stopMediaWorker());
+app.on('will-quit', () => {
+  stopMediaWorker();
+  stopPhotoDecoders();
+});
 
 // Quitting saves what is being typed, then closes the project (writing its unsaved workspace state), then
 // quits. A quit asked again while that is under way waits for it; one the author turns down ("Keep editing")

@@ -1229,6 +1229,51 @@ function itxtCredit(data: Buffer, nul: number): Buffer | null {
   return Buffer.concat([data.subarray(0, nul + 3), Buffer.from([0, 0]), data.subarray(translated + 1)]);
 }
 
+/**
+ * The Author and Copyright of a PNG's text chunks as a TIFF block (Artist, Copyright), for a JPEG made from that PNG:
+ * a JPEG has no text chunks, so its credits go in EXIF. Null when there are none to carry.
+ */
+export function textCreditsAsTiff(text: Buffer[]): Buffer | null {
+  const values = new Map<number, Buffer>();
+  for (const c of text) {
+    const type = c.toString('latin1', 0, 4);
+    const data = c.subarray(4);
+    const nul = data.indexOf(0);
+    const tag = { Author: TAG.artist, Copyright: TAG.copyright }[nul > 0 ? data.toString('latin1', 0, nul) : ''];
+    if (!tag || values.has(tag)) continue;
+    let value: string;
+    try {
+      value = type === 'tEXt' ? data.toString('latin1', nul + 1) : type === 'zTXt' ? inflateSync(data.subarray(nul + 2), { maxOutputLength: MAX_INFLATE }).toString('latin1') : pngItxtText(data, nul).toString('utf8');
+    } catch {
+      continue;
+    }
+    value = value.replace(/\0/g, '').trim();
+    if (value) values.set(tag, Buffer.from(`${value.slice(0, 2000)}\0`, 'utf8'));
+  }
+  if (!values.size) return null;
+  // Big-endian TIFF: header, one directory (tags in ascending order), then the values it points to.
+  const tags = [...values.keys()].sort((a, b) => a - b);
+  const dir = Buffer.alloc(2 + tags.length * 12 + 4);
+  dir.writeUInt16BE(tags.length, 0);
+  let at = 8 + dir.length;
+  const tail: Buffer[] = [];
+  tags.forEach((tag, i) => {
+    const v = values.get(tag)!;
+    const e = 2 + i * 12;
+    dir.writeUInt16BE(tag, e);
+    dir.writeUInt16BE(2, e + 2);
+    dir.writeUInt32BE(v.length, e + 4);
+    if (v.length <= 4) v.copy(dir, e + 8);
+    else {
+      dir.writeUInt32BE(at, e + 8);
+      const padded = v.length % 2 ? Buffer.concat([v, Buffer.alloc(1)]) : v;
+      tail.push(padded);
+      at += padded.length;
+    }
+  });
+  return Buffer.concat([Buffer.from([0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8]), dir, ...tail]);
+}
+
 /** The text of an iTXt chunk, inflated when it is compressed. */
 function pngItxtText(data: Buffer, nul: number): Buffer {
   const compressed = data[nul + 1] === 1;

@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { crc32 } from 'node:zlib';
 import sharp from 'sharp';
-import { isReadable, renderVariants } from '../../src/main/project/image-variants';
-import { createVariantClient, type VariantReply, type VariantRequest, type WorkerHandle } from '../../src/main/project/media-client';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { handleVariantRequest, isOpaque, isReadable, renderVariants, renderWebCopy } from '../../src/main/project/image-variants';
+import { createVariantClient, webCopySize, type VariantReply, type VariantRequest, type WorkerHandle } from '../../src/main/project/media-client';
 
 const u32 = (n: number) => {
   const b = Buffer.alloc(4);
@@ -379,5 +382,116 @@ describe('media worker client', () => {
     // Stopped for good: what was queued gets no copies and starts no new worker.
     expect(await queued).toEqual([]);
     expect(workers).toHaveLength(2);
+  });
+});
+
+describe('web-sized copies', () => {
+  it('turns a photo upright, fits it inside the edge without enlarging it, and drops its metadata', async () => {
+    // Stored 3000x1500 on its side (orientation 6), so displayed 1500x3000 with red on top.
+    const photo = await sharp(await halves(3000, 1500, 'jpeg', 6)).withExif({ IFD0: { Artist: 'Ana' } }).jpeg({ quality: 95 }).toBuffer();
+    const copy = await renderWebCopy(photo, 2560);
+    expect([copy.mime, copy.width, copy.height]).toEqual(['image/jpeg', 1280, 2560]);
+    const m = await sharp(copy.data).metadata();
+    expect([m.format, m.width, m.height, m.orientation, m.exif]).toEqual(['jpeg', 1280, 2560, undefined, undefined]);
+    expect((await pixel(copy.data, 640, 200)).r).toBeGreaterThan(200);
+    expect((await pixel(copy.data, 640, 2300)).b).toBeGreaterThan(200);
+    const small = await renderWebCopy(await halves(800, 600, 'png'), 2560);
+    expect([small.mime, small.width, small.height]).toEqual(['image/jpeg', 800, 600]);
+    const edge = await renderWebCopy(photo, 1000);
+    expect([edge.width, edge.height]).toEqual([500, 1000]);
+  });
+
+  it('makes the copy exactly the size an import review shows, whatever the decoder shrinks on load', async () => {
+    // A JPEG this size is decoded at half size first: resized from there, sharp alone would make it 2560 x 1501.
+    const wide = await halves(7680, 4505, 'jpeg');
+    const copy = await renderWebCopy(wide, 2560);
+    expect([copy.width, copy.height]).toEqual([2560, webCopySize(7680, 4505).height]);
+    expect((await sharp(copy.data).metadata()).height).toBe(copy.height);
+  });
+
+  it('keeps a picture with see-through pixels a PNG, and makes an opaque one with an alpha channel a JPEG', async () => {
+    const clear = await sharp({ create: { width: 3000, height: 1000, channels: 4, background: { r: 0, g: 128, b: 0, alpha: 0.5 } } }).png().toBuffer();
+    const copy = await renderWebCopy(clear, 2560);
+    expect([copy.mime, copy.width, copy.height]).toEqual(['image/png', 2560, 853]);
+    expect((await sharp(copy.data).metadata()).hasAlpha).toBe(true);
+    const a = (await pixel(copy.data, 10, 10)).a;
+    expect(a).toBeGreaterThan(100);
+    expect(a).toBeLessThan(160);
+    const solid = await sharp({ create: { width: 3000, height: 1000, channels: 4, background: { r: 0, g: 128, b: 0, alpha: 1 } } }).png().toBuffer();
+    expect((await renderWebCopy(solid, 2560)).mime).toBe('image/jpeg');
+    expect([await isOpaque(clear), await isOpaque(solid), await isOpaque(await halves(100, 50, 'jpeg'))]).toEqual([false, true, true]);
+  });
+
+  it('is deterministic', async () => {
+    const photo = await halves(3000, 2000, 'jpeg');
+    expect((await renderWebCopy(photo)).data.equals((await renderWebCopy(photo)).data)).toBe(true);
+  });
+
+  it('reads a decoded photo from a file when asked, and says when the decoder refuses the picture', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-web-copy-'));
+    try {
+      const file = join(dir, 'photo.tiff');
+      writeFileSync(file, await sharp(await halves(3000, 1500, 'jpeg', 6)).tiff().toBuffer());
+      const r = await handleVariantRequest({ id: 1, kind: 'web', path: file, data: new Uint8Array(0), mime: '', width: 0, maxEdge: 2560 });
+      expect(r).toMatchObject({ id: 1, ok: true, web: { mime: 'image/jpeg', width: 1280, height: 2560 } });
+      const broken = await handleVariantRequest({ id: 2, kind: 'web', data: new Uint8Array(Buffer.from('not a picture')), mime: 'image/jpeg', width: 0, maxEdge: 2560 });
+      expect(broken).toMatchObject({ id: 2, ok: false, unreadable: true });
+      const opaque = await handleVariantRequest({ id: 3, kind: 'opaque', data: new Uint8Array(await halves(100, 50, 'png')), mime: 'image/png', width: 0 });
+      expect(opaque).toMatchObject({ id: 3, ok: true, opaque: true });
+      const seeThrough = await sharp({ create: { width: 20, height: 20, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toBuffer();
+      expect(await handleVariantRequest({ id: 4, kind: 'opaque', data: new Uint8Array(seeThrough), mime: 'image/png', width: 0 })).toMatchObject({ id: 4, ok: true, opaque: false });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('media worker client: web-sized copies', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const spawner = () => {
+    const workers: FakeWorker[] = [];
+    return { workers, spawn: () => (workers.push(new FakeWorker()), workers[workers.length - 1]) };
+  };
+
+  it('asks for a copy from bytes or a file, and says when it could not be made rather than giving nothing', async () => {
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn);
+    const fromBytes = client.webCopy({ data: Buffer.from('photo'), mime: 'image/png' }, 2560);
+    await vi.waitFor(() => expect(workers[0]?.sent).toHaveLength(1));
+    expect(workers[0].sent[0]).toMatchObject({ kind: 'web', mime: 'image/png', maxEdge: 2560 });
+    expect(Buffer.from(workers[0].sent[0].data).toString()).toBe('photo');
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [], web: { data: new Uint8Array([4, 5]), mime: 'image/jpeg', width: 10, height: 5 } });
+    const made = await fromBytes;
+    expect(made.ok && [made.copy.mime, made.copy.width, [...made.copy.data]]).toEqual(['image/jpeg', 10, [4, 5]]);
+    const fromFile = client.webCopy({ path: '/tmp/photo.tiff' }, 2560);
+    await vi.waitFor(() => expect(workers[0].sent).toHaveLength(2));
+    expect(workers[0].sent[1]).toMatchObject({ kind: 'web', path: '/tmp/photo.tiff' });
+    workers[0].reply({ id: workers[0].sent[1].id, ok: false, error: 'bad', unreadable: true });
+    expect(await fromFile).toEqual({ ok: false, unreadable: true });
+    // A worker that crashes proves nothing about the picture, and the next request still runs.
+    const crashed = client.webCopy({ path: '/tmp/photo.tiff' }, 2560);
+    await vi.waitFor(() => expect(workers[0].sent).toHaveLength(3));
+    workers[0].exit(1);
+    expect(await crashed).toEqual({ ok: false, unreadable: false });
+    const opaque = client.opaque(Buffer.from('png'), 'image/png');
+    await vi.waitFor(() => expect(workers[1]?.sent).toHaveLength(1));
+    workers[1].reply({ id: workers[1].sent[0].id, ok: true, variants: [], opaque: false });
+    expect(await opaque).toBe(false);
+    client.stop();
+  });
+
+  it('gives a web-sized copy longer than responsive copies before giving up on the worker', async () => {
+    vi.useFakeTimers();
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { timeoutMs: 1000, webTimeoutMs: 5000 });
+    const slow = client.webCopy({ data: Buffer.from('a'), mime: 'image/jpeg' }, 2560);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(workers[0].killed).toBe(false);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(await slow).toEqual({ ok: false, unreadable: false });
+    expect(workers[0].killed).toBe(true);
+    client.stop();
   });
 });
