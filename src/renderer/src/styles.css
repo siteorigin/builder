@@ -932,3 +932,60 @@ body.dialog-open .toast .btn { visibility: hidden; }
 .token-row.set .token-title { color: var(--text); font-weight: 500; }
 /* The safe default in a dialog is visibly focused from the start, even when it was focused by the app. */
 .modal [data-autofocus]:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* Layers panel (LayersPanel.tsx). Scoped to .layers-tree so the shared list rows elsewhere keep their look.
+   Depth reads from one indent step (--layers-indent, tighter in a narrow sidebar) and a straight guide per open branch (darker on the path to the selection);
+   the selected row is the heaviest thing in the tree, its ancestors one step lighter. A drop between rows is
+   a line with a leading dot at the depth it lands; a drop into a row is a dashed ring with a fill and words. */
+.layers-tree { --layers-drop: var(--accent); --layers-pad: 8px; --layers-indent: 12px; }
+.layers-tree .layer-row { gap: 6px; padding-left: calc(var(--layers-pad) + var(--depth, 0) * var(--layers-indent)); }
+/* Opaque selection fills (the tint over the panel), so the branch guides stop at the selected row. */
+.layers-tree .layer-row.selected { font-weight: 600; background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel); }
+.layers-tree .layer-row.selected.shared { background: linear-gradient(var(--green-soft), var(--green-soft)), var(--panel); }
+.editor.defining .layers-tree .layer-row.selected { background: linear-gradient(var(--plum-soft), var(--plum-soft)), var(--panel); }
+.layers-tree .layer-row.contains-sel .grow { font-weight: 500; }
+.layers-tree .layer-row.contains-sel .layer-kind.shell { color: var(--green); }
+.editor.defining .layers-tree .layer-row.contains-sel .layer-kind { color: var(--plum); }
+/* Inside a green or plum selected row the whole row carries the scope colour; a tinted tile would vanish into it. */
+.layers-tree .layer-row.selected .layer-kind { background: transparent; }
+/* Focus on the selected row: the 2px focus outline, then a 1px gap of panel, then the selection fill. */
+.layers-tree .layer-row.selected:focus-visible { box-shadow: inset 0 0 0 3px var(--panel); }
+.layers-tree .layer-row.is-hidden:not(.selected) .layer-name, .layers-tree .layer-row.is-hidden:not(.selected) .layer-kind { color: var(--text-3); }
+.layers-tree .layer-flag { display: inline-flex; flex: none; color: var(--text-3); }
+.layers-tree .layer-flag svg { width: 14px; height: 14px; }
+.layers-tree .layer-row.selected .layer-flag { color: inherit; }
+.layers-tree .layer-badge { flex: none; height: 18px; padding: 0 6px; font-weight: 500; }
+.layers-tree .layer-row.selected .layer-badge { background: var(--raised); color: inherit; }
+.layers-children { position: relative; display: flex; flex-direction: column; gap: 1px; }
+.layers-children::before { content: ''; position: absolute; left: calc(var(--layers-pad) + var(--depth, 0) * var(--layers-indent) + 4px); top: 0; bottom: 6px; width: 1px; background: var(--border-strong); pointer-events: none; }
+.layers-children.on-path::before { background: color-mix(in srgb, var(--text-3) 70%, transparent); }
+@media (prefers-color-scheme: dark) { .layers-children.on-path::before { background: color-mix(in srgb, var(--text-3) 50%, transparent); } }
+.layers-sublabel { padding: 6px 8px 2px calc(var(--layers-pad) + var(--depth, 0) * var(--layers-indent) + 16px); font-size: 11px; font-weight: 600; color: var(--text-3); }
+/* The row being dragged keeps readable text; a quiet dashed ring marks it as the one moving. */
+.layers-tree .list-item.layer-row[data-dragging], .editor.defining .layers-tree .list-item.layer-row.selected[data-dragging] { background: var(--panel-2); color: var(--text-2); box-shadow: none; outline: 1px dashed var(--border-control); outline-offset: -1px; }
+.layers-tree .inline-edit { margin-left: -5px; padding: 0 4px; font-weight: 400; }
+.layers-tree .layer-row.drop-before::before, .layers-tree .layer-row.drop-after::after {
+  left: calc(var(--layers-pad) + var(--drop-depth, 0) * var(--layers-indent) - 1px); right: 6px; height: 8px; border-radius: 0;
+  background: radial-gradient(circle at 4px 4px, var(--layers-drop) 0 3px, transparent 3.5px) no-repeat, linear-gradient(var(--layers-drop), var(--layers-drop)) 6px 3px / calc(100% - 6px) 2px no-repeat;
+}
+.layers-tree .layer-row.drop-before::before { top: -4.5px; }
+.layers-tree .layer-row.drop-after::after { bottom: -4.5px; }
+.layers-tree .layer-row:is(.drop-before, .drop-after) { z-index: 2; }
+.layers-tree .layer-row.drop-inside, .editor.defining .layers-tree .layer-row.selected.drop-inside { background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel); outline: 2px dashed var(--layers-drop); outline-offset: -2px; box-shadow: none; }
+.layers-tree .layer-row.drop-inside .actions, .layers-tree .layer-row.drop-inside .layer-badge, .layers-tree .layer-row.drop-inside .layer-flag { display: none; }
+.layers-tree .layer-drop-tag { flex: none; height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; background: var(--layers-drop); color: var(--on-accent); }
+/* A narrow sidebar gives the names the room: a tighter indent, and the Custom badge and options button show
+   only on the row being pointed at, selected or focused (the badge's meaning stays in the tooltip and label). */
+.layers-tree { container: layers / inline-size; }
+@container layers (max-width: 232px) {
+  .layers-tree .list { --layers-pad: 6px; --layers-indent: 9px; padding-inline: 4px; }
+  .layers-tree .layer-badge { display: none; }
+  .layers-tree .layer-row .actions { display: none; }
+  .layers-tree .layer-row:is(:hover, .selected, :focus-within):not(.drop-inside) :is(.actions, .layer-badge) { display: inline-flex; }
+  /* At rest a project-made component keeps a small neutral dot on its glyph (the tooltip and label say what it is). */
+  .layers-tree .layer-row.is-custom:not(:hover, .selected, :focus-within) .layer-kind { position: relative; }
+  .layers-tree .layer-row.is-custom:not(:hover, .selected, :focus-within) .layer-kind::after { content: ''; position: absolute; right: -1px; top: -1px; width: 6px; height: 6px; border-radius: 50%; background: var(--text-2); box-shadow: 0 0 0 1.5px var(--panel); }
+}
+.layers-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 2px 14px 8px 33px; }
+.layers-empty p { margin: 0; color: var(--text-2); }
+.layers-empty .btn svg { width: 14px; height: 14px; }
