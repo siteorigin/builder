@@ -834,8 +834,9 @@ function parentMap(tree: NodeTree): Map<string, string> {
 }
 
 type SizeRange = 'phone' | 'tablet' | 'desktop';
-/** The widest viewport each range covers (see MEDIA_QUERIES). */
+/** The widest viewport each range covers (see MEDIA_QUERIES), and the narrowest (a phone is at least 320px). */
 const RANGE_MAX: Record<SizeRange, number> = { phone: 767, tablet: 1023, desktop: Infinity };
+const RANGE_MIN: Record<SizeRange, number> = { phone: 320, tablet: 768, desktop: 1024 };
 
 /**
  * One rendered element between an image and the viewport, with the style layers that size it, weakest first:
@@ -943,21 +944,47 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
     const m = typeof raw === 'string' ? raw.match(/^(\d+(?:\.\d+)?)px$/) : null;
     return m ? Number(m[1]) : null;
   };
+  const lengthVw = (v: unknown): number | null => {
+    const m = typeof v === 'string' ? v.match(/^(\d+(?:\.\d+)?)vw$/) : null;
+    return m ? Number(m[1]) / 100 : null;
+  };
   const boxes: SizingBox[] = [[{ styles: node.styles ?? {}, wide: false }]];
   sizingBoxes(ctx.state, ctx.tree, node.id, null, boxes, new Set());
   const at = (['desktop', 'tablet', 'phone'] as const).map((range) => {
+    // `share` of the viewport the image can take, `cap` the most it can take in pixels, `floor` the least.
     let share = 1;
     let cap = Infinity;
-    boxes.forEach((box, i) => {
+    let floor = 0;
+    let held = false;
+    for (let i = 0; i < boxes.length; i++) {
+      const box = boxes[i];
       if (i > 0 && boxStyle(box, 'layout', range) === 'grid') share *= trackShare(box, boxes[i - 1], range);
-      for (const prop of ['width', 'maxWidth']) {
-        const px = lengthPx(boxStyle(box, prop, range));
-        if (px !== null) cap = Math.min(cap, share * px);
+      const max = lengthPx(boxStyle(box, 'maxWidth', range));
+      const min = lengthPx(boxStyle(box, 'minWidth', range)) ?? 0;
+      const width = boxStyle(box, 'width', range);
+      const fixed = lengthPx(width);
+      if (fixed !== null) {
+        // A fixed width holds whatever its parent's track is (it can overflow it), so nothing further out counts.
+        cap = Math.min(cap, share * Math.max(min, Math.min(fixed, max ?? Infinity)));
+        held = true;
+        break;
       }
-    });
+      if (max !== null) cap = Math.min(cap, share * Math.max(min, max));
+      floor = Math.max(floor, share * min);
+      const vw = lengthVw(width);
+      if (vw !== null) {
+        // A viewport width is measured from the screen, not the parent.
+        share *= vw;
+        break;
+      }
+    }
     // Both are upper estimates; a fixed cap is the closer one when it is narrower than the range's widest screen.
-    // Rounded up, never down, and past float noise (0.3 × 100 is not quite 30).
-    return cap < Infinity && cap <= share * RANGE_MAX[range] ? `${Math.ceil(cap - 1e-6)}px` : `${Math.ceil(share * 10000 - 1e-6) / 100}vw`;
+    // A minimum wider than the share on the range's narrowest screen is covered by the share on its widest, or on
+    // desktops (which have no widest) by a larger share. Rounded up, never down, past float noise.
+    const px = (v: number) => `${Math.ceil(v - 1e-6)}px`;
+    if (held || (cap < Infinity && cap <= share * RANGE_MAX[range])) return px(Math.max(cap, floor));
+    if (floor > share * RANGE_MIN[range] && RANGE_MAX[range] < Infinity) return px(Math.max(floor, Math.min(cap, share * RANGE_MAX[range])));
+    return `${Math.ceil(Math.max(share, floor / RANGE_MIN[range]) * 10000 - 1e-6) / 100}vw`;
   });
   const [desktop, tablet, phone] = at;
   if (desktop === tablet && tablet === phone) return phone === '100vw' ? null : phone;

@@ -412,6 +412,23 @@ describe('SEO and performance', () => {
     expect(gridSizes(s)).toContain('(min-width: 1024px) 800px, (min-width: 768px) 100vw, 100vw');
   });
 
+  it('keeps a width the image holds whatever its column, even when it overflows the column', () => {
+    const { s, grid } = manualGrid(fresh());
+    const photos = (home(s).nodes[grid] as GraphNode & { children: string[] }).children;
+    const only = (width: Record<string, unknown>) => {
+      for (const id of photos) home(s).nodes[id].styles = { base: width };
+      return gridSizes(s);
+    };
+    // 600px in a 400px column stays 600px.
+    expect(only({ width: '600px' })).toEqual(['600px']);
+    expect(only({ width: '600px', maxWidth: '500px' })).toEqual(['500px']);
+    // A viewport width is the viewport's, not the column's: the runtime default.
+    expect(only({ width: '100vw' })).toEqual([null]);
+    // A minimum wider than the column wins over the column's share.
+    expect(only({ minWidth: '500px' })).toEqual(['(min-width: 1024px) 500px, (min-width: 768px) 100vw, 767px']);
+    expect(only({ maxWidth: '300px' })).toEqual(['300px']);
+  });
+
   it('sizes a grid outside any container by its share of the viewport, per range', () => {
     const { s, grid } = manualGrid(fresh());
     const page = home(s);
