@@ -77,3 +77,7 @@ test-results/
 playwright-report/
 dist/
 *.tsbuildinfo
+
+# Local working notes and stabilize state
+.tmp/
+.claude/worktrees/

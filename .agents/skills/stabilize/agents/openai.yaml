@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stabilize"
+  short_description: "Explicit-only local stabilization workflow — run by a human, never proactively."
+  default_prompt: "Use $stabilize (an explicitly-invoked, expensive workflow — run by a human, never proactively) to drive SiteOrigin Builder to a green, stable state on this Mac: run the full local gate once (typecheck, unit, build, every e2e script except the paid live-AI one, packaged smoke), attribute each failure to the commit on develop that caused it, fix real failures in batches and prove each fix with the narrowest re-run, harden flakes instead of deleting them, then squash the fixes into a single commit and fast-forward develop. If the tree was already green, commit nothing. Local only: no GitHub Actions, no Linux or Windows stages yet."
