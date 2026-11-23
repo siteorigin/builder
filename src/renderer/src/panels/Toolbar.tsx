@@ -5,6 +5,7 @@ import { api, saveLocal, setState, toast, useStore } from '../store';
 import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
+import { pageChoices } from '../lib/page-switch';
 import { saveStatusAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
 import { toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
@@ -162,11 +163,11 @@ export function Toolbar() {
                 e.currentTarget,
                 [
                   { heading: 'Pages' },
-                  ...state.site.pageOrder.map((id) => ({
-                    label: state.pages[id].title,
-                    checked: !definitionMode && id === pageId,
-                    hint: id === state.site.homePageId ? 'Home page' : undefined,
-                    onSelect: () => selectPage(id)
+                  ...pageChoices(state).map((p) => ({
+                    label: p.title,
+                    checked: !definitionMode && p.id === pageId,
+                    hint: p.home ? 'Home page · /' : p.address,
+                    onSelect: () => selectPage(p.id)
                   })),
                   { separator: true },
                   { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
