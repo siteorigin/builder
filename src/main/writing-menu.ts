@@ -1,7 +1,7 @@
 import type { ContextMenuParams, MenuItemConstructorOptions } from 'electron';
 
 /** What a right-click reports about the text under it. */
-export type WritingTarget = Pick<ContextMenuParams, 'isEditable' | 'misspelledWord' | 'dictionarySuggestions' | 'spellcheckEnabled' | 'editFlags'>;
+export type WritingTarget = Pick<ContextMenuParams, 'isEditable' | 'misspelledWord' | 'dictionarySuggestions' | 'editFlags'>;
 
 /** The edits the menu can make, on the page the right-click came from. */
 export interface WritingActions {
@@ -21,7 +21,9 @@ export interface WritingActions {
 export function writingMenuTemplate(target: WritingTarget, actions: WritingActions): MenuItemConstructorOptions[] | null {
   if (!target.isEditable) return null;
   const items: MenuItemConstructorOptions[] = [];
-  if (target.spellcheckEnabled && target.misspelledWord) {
+  // A misspelled word is reported only where spelling is checked (Electron's spellcheckEnabled flag can read
+  // false even then, so it is not consulted).
+  if (target.misspelledWord) {
     const suggestions = target.dictionarySuggestions ?? [];
     if (suggestions.length) for (const s of suggestions) items.push({ label: s, click: () => actions.replaceMisspelling(s) });
     else items.push({ label: 'No spelling suggestions', enabled: false });

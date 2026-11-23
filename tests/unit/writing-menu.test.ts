@@ -3,7 +3,7 @@ import type { EditFlags } from 'electron';
 import { writingMenuTemplate, type WritingActions, type WritingTarget } from '../../src/main/writing-menu';
 
 const flags = (over: Partial<EditFlags> = {}): EditFlags => ({ canUndo: false, canRedo: false, canCut: true, canCopy: true, canPaste: true, canDelete: true, canSelectAll: true, canEditRichly: false, ...over });
-const target = (over: Partial<WritingTarget> = {}): WritingTarget => ({ isEditable: true, misspelledWord: '', dictionarySuggestions: [], spellcheckEnabled: true, editFlags: flags(), ...over });
+const target = (over: Partial<WritingTarget> = {}): WritingTarget => ({ isEditable: true, misspelledWord: '', dictionarySuggestions: [], editFlags: flags(), ...over });
 const actions = (): WritingActions & { [K in keyof WritingActions]: ReturnType<typeof vi.fn> } => ({ replaceMisspelling: vi.fn(), cut: vi.fn(), copy: vi.fn(), paste: vi.fn(), selectAll: vi.fn() });
 const labels = (t: ReturnType<typeof writingMenuTemplate>) => t?.map((i) => (i.type === 'separator' ? '—' : i.label));
 const item = (t: ReturnType<typeof writingMenuTemplate>, label: string) => {
@@ -29,9 +29,8 @@ describe('writing menu', () => {
     expect(item(t, 'No spelling suggestions').enabled).toBe(false);
   });
 
-  it('gives a word spelled correctly, or text with spelling checks off, only the editing actions', () => {
+  it('gives a word spelled correctly only the editing actions', () => {
     expect(labels(writingMenuTemplate(target(), actions()))).toEqual(['Cut', 'Copy', 'Paste', '—', 'Select All']);
-    expect(labels(writingMenuTemplate(target({ spellcheckEnabled: false, misspelledWord: 'recieve', dictionarySuggestions: ['receive'] }), actions()))).toEqual(['Cut', 'Copy', 'Paste', '—', 'Select All']);
   });
 
   it('enables each editing action only when the page can do it, and runs it on the page', () => {
