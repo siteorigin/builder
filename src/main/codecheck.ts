@@ -503,13 +503,23 @@ const ONE_ELEMENT = new Set(['find', 'findLast', 'at', 'pop', 'shift', 'join']);
 const PASS_THROUGH = new Set(['$state', '$derived', 'String', 'encodeURI', 'decodeURI', 'structuredClone']);
 const STRING_METHODS = new Set(['trim', 'trimStart', 'trimEnd', 'toString', 'toLowerCase', 'toUpperCase', 'valueOf', 'normalize', 'concat']);
 
+/** Text followed per value: a URL or a style is judged by far less, and joined values cannot grow without end. */
+const MAX_TEXT = 1024;
 const strings = (vals: Val[]): string[] => vals.map((v) => (v.kind === 'str' ? v.s : HIDDEN));
-const keep = <T>(all: T[], suspicious: (v: T) => boolean): T[] => (all.length <= MAX_VALUES ? all : [...all.slice(0, MAX_VALUES), ...all.slice(MAX_VALUES).filter(suspicious).slice(0, MAX_VALUES * 4)]);
+/** The first values, and every one past them that may matter (the step budget bounds how many there are). */
+const keep = <T>(all: T[], matters: (v: T) => boolean): T[] => (all.length <= MAX_VALUES ? all : [...all.slice(0, MAX_VALUES), ...all.slice(MAX_VALUES).filter(matters)]);
+/** Lists and objects are always kept: one of them may hold the remote URL. */
 const capped = (vals: Val[]) => keep(vals, (v) => v.kind === 'arr' || v.kind === 'obj' || (v.kind === 'str' && SUSPICIOUS.test(v.s)));
+/** At most MAX_VALUES strings, the ones that may matter first. */
+function fewest(xs: string[]): string[] {
+  const unique = [...new Set(xs)];
+  return unique.length <= MAX_VALUES ? unique : [...unique.filter((v) => SUSPICIOUS.test(v)), ...unique.filter((v) => !SUSPICIOUS.test(v))].slice(0, MAX_VALUES);
+}
+/** Every way two values join (bounded: at most MAX_VALUES of each, and of the result, text clipped to MAX_TEXT). */
 function joinStrings(a: string[], b: string[]): string[] {
-  const out: string[] = [];
-  for (const x of a) for (const y of b) out.push(x + y);
-  return keep(out, (v) => SUSPICIOUS.test(v));
+  const out = new Set<string>();
+  for (const x of fewest(a)) for (const y of fewest(b)) out.add(x.length >= MAX_TEXT ? x.slice(0, MAX_TEXT) : x + y.slice(0, MAX_TEXT - x.length));
+  return fewest([...out]);
 }
 /** Scopes inside `scope` are those of functions and each blocks; a function's own scope covers its parameters and body. */
 const isScope = (n: Node, key: string) => (FUNCTION_TYPES.has(n.type) && (key === 'params' || key === 'body')) || (n.type === 'EachBlock' && (key === 'body' || key === 'key'));
@@ -526,6 +536,37 @@ function functionOf(s: Src): { fn: Node; scope: Node[] } | null {
   if (s === 'unknown') return null;
   if ('fn' in s) return s;
   return 'expr' in s && FUNCTION_TYPES.has(s.expr.type) ? { fn: s.expr, scope: s.scope } : null;
+}
+
+/** Bind the names in a pattern to `src` in `into`; a default value is one more source. */
+function bindPattern(into: Map<string, Src[]>, pattern: Node | null | undefined, src: Src, scope: Node[]) {
+  if (!pattern) return;
+  if (pattern.type === 'Identifier') {
+    const list = into.get(pattern.name as string);
+    if (!list) into.set(pattern.name as string, [src]);
+    else if (list.length < MAX_VALUES) list.push(src);
+  } else if (pattern.type === 'ObjectPattern')
+    for (const p of pattern.properties as Node[]) bindPattern(into, p.type === 'RestElement' ? (p.argument as Node) : (p.value as Node), p.type === 'RestElement' ? src : { member: src, key: nameOf(p.key as Node, p.computed) }, scope);
+  else if (pattern.type === 'ArrayPattern')
+    (pattern.elements as Array<Node | null>).forEach((el, index) => bindPattern(into, el?.type === 'RestElement' ? (el.argument as Node) : el, el?.type === 'RestElement' ? src : { element: src, index }, scope));
+  else if (pattern.type === 'AssignmentPattern') {
+    bindPattern(into, pattern.left as Node, src, scope);
+    bindPattern(into, pattern.left as Node, { expr: pattern.right as Node, scope }, scope);
+  } else if (pattern.type === 'RestElement') bindPattern(into, pattern.argument as Node, src, scope);
+}
+
+/** A function's parameters as one call gives them: its arguments, or the defaults where it gives none. */
+function callFrame(fn: Node, fnScope: Node[], args: Node[], callScope: Node[]): Map<string, Src[]> {
+  const frame = new Map<string, Src[]>();
+  const inner = [...fnScope, fn];
+  (fn.params as Node[]).forEach((p, i) => {
+    const arg = args[i];
+    const given: Src = arg && arg.type !== 'SpreadElement' ? { expr: arg, scope: callScope } : 'unknown';
+    // A default only applies when the argument is missing.
+    if (p.type === 'AssignmentPattern' && !arg) bindPattern(frame, p.left as Node, { expr: p.right as Node, scope: inner }, inner);
+    else bindPattern(frame, p.type === 'AssignmentPattern' ? (p.left as Node) : p, given, inner);
+  });
+  return frame;
 }
 
 function collectBindings(roots: unknown[]): Bindings {
@@ -574,9 +615,9 @@ function collectBindings(roots: unknown[]): Bindings {
     }
     const n = node as Node;
     if (typeof n.type !== 'string') return;
-    if (n.type === 'VariableDeclarator') bind(own(fnOwner(scope)), n.id as Node, n.init ? { expr: n.init as Node, scope } : 'unknown', scope);
-    else if (n.type === 'FunctionDeclaration' && n.id) add(own(fnOwner(scope)), String((n.id as Node).name), { fn: n, scope });
-    else if (FUNCTION_TYPES.has(n.type)) for (const p of n.params as Node[]) bind(own(n), p, 'unknown', [...scope, n]);
+    if (n.type === 'FunctionDeclaration' && n.id) add(own(fnOwner(scope)), String((n.id as Node).name), { fn: n, scope });
+    if (FUNCTION_TYPES.has(n.type)) for (const p of n.params as Node[]) bind(own(n), p, 'unknown', [...scope, n]);
+    else if (n.type === 'VariableDeclarator') bind(own(fnOwner(scope)), n.id as Node, n.init ? { expr: n.init as Node, scope } : 'unknown', scope);
     else if (n.type === 'EachBlock') bind(own(n), n.context as Node, { element: { expr: n.expression as Node, scope } }, scope);
     else if (n.type === 'AssignmentExpression' || n.type === 'CallExpression') later.push({ n, scope });
     else if (n.type === 'RegularElement' || n.type === 'SvelteElement') {
@@ -586,18 +627,21 @@ function collectBindings(roots: unknown[]): Bindings {
     for (const k of Object.keys(n)) if (!SKIP_KEYS.has(k)) go(n[k], isScope(n, k) ? [...scope, n] : scope);
   };
   go(roots, []);
+  // Assignments first, wherever they are written, so a call reaches a function assigned further down.
+  for (const { n, scope } of later)
+    if (n.type === 'AssignmentExpression' && ['=', '+=', '||=', '??='].includes(String(n.operator))) bind(null, n.left as Node, { expr: n.right as Node, scope }, scope);
   for (const { n, scope } of later) {
-    if (n.type === 'AssignmentExpression') {
-      if (['=', '+=', '||=', '??='].includes(String(n.operator))) bind(null, n.left as Node, { expr: n.right as Node, scope }, scope);
-      continue;
-    }
+    if (n.type !== 'CallExpression') continue;
     const callee = n.callee as Node;
     const args = n.arguments as Node[];
-    // items.map((item) => …): the callback's first parameter is an element of the array (reduce's second).
+    // items.map((item) => …) or items.forEach(show): the callback's first parameter is an element of the
+    // array (reduce's second).
     const method = callee.type === 'MemberExpression' ? nameOf(callee.property as Node, callee.computed) : null;
-    if (method && ELEMENT_CALLBACKS.has(method) && args[0] && FUNCTION_TYPES.has(args[0].type))
-      bind(own(args[0]), (args[0].params as Node[])[method === 'reduce' ? 1 : 0], { element: { expr: callee.object as Node, scope } }, [...scope, args[0]]);
-    // What a local function is called with is what its parameters hold.
+    if (method && ELEMENT_CALLBACKS.has(method) && args[0]) {
+      const callbacks = FUNCTION_TYPES.has(args[0].type) ? [{ fn: args[0], scope }] : args[0].type === 'Identifier' ? (lookupIn(b, args[0].name as string, scope) ?? []).map(functionOf) : [];
+      for (const cb of callbacks) if (cb) bind(own(cb.fn), (cb.fn.params as Node[])[method === 'reduce' ? 1 : 0], { element: { expr: callee.object as Node, scope } }, [...cb.scope, cb.fn]);
+    }
+    // What a local function is called with is what its parameters hold, for code inside it.
     const targets = callee.type === 'Identifier' ? (lookupIn(b, callee.name as string, scope) ?? []).map(functionOf) : FUNCTION_TYPES.has(callee.type) ? [{ fn: callee, scope }] : [];
     for (const t of targets) {
       if (!t) continue;
@@ -638,6 +682,20 @@ function returnsOf(fn: Node): Node[] {
 function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { vals: Val[]; props: Set<string> } {
   const memo = new Map<Src[], { vals: Val[]; props: Set<string> }>();
   const active = new Set<unknown>();
+  /** The calls being followed: inside each, the function's parameters are that call's arguments. */
+  const frames = new Map<Node, Array<Map<string, Src[]>>>();
+  /** Where a name is bound from this point; `local` when that depends on the call being followed. */
+  const find = (name: string, scope: Node[]): { srcs: Src[]; local: boolean } | undefined => {
+    for (let i = scope.length - 1; i >= 0; i--) {
+      const calls = frames.get(scope[i]);
+      const frame = calls?.[calls.length - 1]?.get(name);
+      if (frame) return { srcs: frame, local: true };
+      const own = b.scopes.get(scope[i])?.get(name);
+      if (own) return { srcs: own, local: !!calls?.length };
+    }
+    const global = b.names.get(name);
+    return global && { srcs: global, local: false };
+  };
   let steps = 0;
   let truncated = false;
   let touched = new Set<string>();
@@ -665,11 +723,26 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
         : 'member' in src
           ? capped(fromSrc(src.member, depth + 1).flatMap((v) => prop(v, src.key, depth + 1)))
           : capped(fromSrc(src.element, depth + 1).flatMap((v) => elementsOf(v, depth + 1, src.index)));
-  /** What the functions an expression names may return, read in the scopes they were written in. */
-  const returned = (fn: Node | undefined, depth: number, scope: Node[]): Val[] => {
+  /**
+   * What the functions an expression names may return, read in the scopes they were written in. Given the
+   * call's arguments, the parameters are those arguments alone, not every call's.
+   */
+  const returned = (fn: Node | undefined, depth: number, scope: Node[], args?: Node[]): Val[] => {
     const fns = !fn ? [] : FUNCTION_TYPES.has(fn.type) ? [{ fn, scope }] : fn.type === 'Identifier' ? (lookupIn(b, fn.name as string, scope) ?? []).map(functionOf).filter((f): f is { fn: Node; scope: Node[] } => !!f) : [];
     if (!fns.length) return [UNKNOWN];
-    return capped(fns.flatMap((f) => once(f.fn, () => returnsOf(f.fn).flatMap((r) => evaluate(r, depth, [...f.scope, f.fn])))));
+    return capped(
+      fns.flatMap((f) =>
+        once(f.fn, () => {
+          const calls = frames.get(f.fn) ?? [];
+          if (args) frames.set(f.fn, [...calls, callFrame(f.fn, f.scope, args, scope)]);
+          try {
+            return returnsOf(f.fn).flatMap((r) => evaluate(r, depth, [...f.scope, f.fn]));
+          } finally {
+            if (args) frames.set(f.fn, calls);
+          }
+        })
+      )
+    );
   };
   const evaluate = (n: Node | undefined, depth: number, scope: Node[]): Val[] => {
     if (!n) return [UNKNOWN];
@@ -677,7 +750,7 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
     const d = depth + 1;
     switch (n.type) {
       case 'Literal':
-        return n.value === null || ['string', 'number', 'boolean'].includes(typeof n.value) ? [{ kind: 'str', s: String(n.value) }] : [UNKNOWN];
+        return n.value === null || ['string', 'number', 'boolean'].includes(typeof n.value) ? [{ kind: 'str', s: String(n.value).slice(0, MAX_TEXT) }] : [UNKNOWN];
       case 'TemplateLiteral': {
         const exprs = n.expressions as Node[];
         let out = [''];
@@ -737,9 +810,11 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
           }
         ];
       case 'Identifier': {
-        const srcs = lookupIn(b, n.name as string, scope);
-        if (!srcs) return [UNKNOWN];
-        const known = memo.get(srcs);
+        const found = find(n.name as string, scope);
+        if (!found) return [UNKNOWN];
+        const { srcs, local } = found;
+        // Inside a call being followed, a name may hold that call's arguments: never remembered across calls.
+        const known = local ? undefined : memo.get(srcs);
         if (known) {
           known.props.forEach((p) => touched.add(p));
           return known.vals;
@@ -749,7 +824,7 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
         touched = new Set();
         const vals = once(srcs, () => capped(srcs.flatMap((src) => fromSrc(src, d))));
         const props = touched;
-        if (!truncated) memo.set(srcs, { vals, props });
+        if (!truncated && !local) memo.set(srcs, { vals, props });
         truncated ||= outerTruncated;
         touched = outerTouched;
         props.forEach((p) => touched.add(p));
@@ -776,9 +851,9 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
                 }
               }
             ];
-          return PASS_THROUGH.has(name) ? evaluate(args[0], d, scope) : returned(callee, d, scope);
+          return PASS_THROUGH.has(name) ? evaluate(args[0], d, scope) : returned(callee, d, scope, args);
         }
-        if (FUNCTION_TYPES.has(callee.type)) return returned(callee, d, scope);
+        if (FUNCTION_TYPES.has(callee.type)) return returned(callee, d, scope, args);
         if (callee.type !== 'MemberExpression') return [UNKNOWN];
         const method = nameOf(callee.property as Node, callee.computed);
         const obj = callee.object as Node;
@@ -789,6 +864,12 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
           return [{ kind: 'arr', items: all, at: (_i, at) => all(at) }];
         }
         const base = evaluate(obj, d, scope);
+        // slice(start, end) with written-out bounds keeps positions, shifted by start.
+        const bounds = method === 'slice' ? args.map((a) => (a.type === 'Literal' && Number.isInteger(a.value) && (a.value as number) >= 0 ? (a.value as number) : null)) : [];
+        if (method === 'slice' && bounds.every((x) => x !== null)) {
+          const [start = 0, end = Infinity] = bounds as number[];
+          return base.map((v): Val => (v.kind === 'arr' ? { kind: 'arr', items: v.items, at: (i, at) => (start + i < end ? v.at(start + i, at) : []) } : v));
+        }
         if (method && SAME_ARRAY.has(method) && base.some((v) => v.kind === 'arr'))
           return unordered(capped([...base, ...(method === 'concat' ? args.flatMap((a) => evaluate(a, d, scope).map((v) => (v.kind === 'arr' ? v : { kind: 'arr' as const, items: () => [v], at: () => [v] }))) : [])]));
         if (method && ONE_ELEMENT.has(method)) return capped(base.flatMap((v) => (v.kind === 'arr' ? v.items(d) : [v])));

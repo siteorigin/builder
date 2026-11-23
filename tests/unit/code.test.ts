@@ -244,6 +244,33 @@ describe('strict policy follows values and imports', () => {
     expect(await refused(`\tconst u = 'https://cdn.example/x.png';\n\tlet pic;\n\tonMount(() => { pic.href.baseVal = u; });`, `<svg><image bind:this={pic} /></svg>`)).toBe(true);
   });
 
+  it('stays bounded on values that grow, and reads each call with its own arguments', async () => {
+    const errorsOf = (body: string, markup: string) => strictErrors(script(body, markup));
+    // Every level doubles the text the check could follow (unbounded, this fills a 4 GB heap); it must finish
+    // quickly instead. Kept to 14 levels: Svelte's own compiler slows down the same way past about 20.
+    const doubling = Array.from({ length: 14 }, (_, i) => `\tconst a${i + 1} = false ? a${i} + a${i} : 'x';`).join('\n');
+    const uses = Array.from({ length: 15 }, (_, i) => `<p data-n={a${i}}>x</p>`).join('');
+    const t0 = Date.now();
+    expect(await errorsOf(`\tconst a0 = '${'y'.repeat(8000)}';\n${doubling}`, uses)).toEqual([]);
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    // A helper used for a local image and for a link: the image reads only its own call.
+    const identity = `\tconst site = 'https://example.com';\n\tfunction identity(x) { return x; }`;
+    expect(await errorsOf(identity, `<img src={identity('/assets/logo.svg')} alt="" /><a href={identity(site)}>Site</a>`)).toEqual([]);
+    expect((await errorsOf(identity, `<img src={identity(site)} alt="" />`)).length).toBe(1);
+    expect(await errorsOf(`\tconst site = 'https://example.com';`, `<img src={['/assets/logo.svg', site].slice(0, 1)[0]} alt="" />`)).toEqual([]);
+  }, 20_000);
+
+  it('follows parameter defaults, functions passed by name and calls written before the function', async () => {
+    const refused = async (body: string, markup: string) => (await strictErrors(script(body, markup))).length > 0;
+    const bound = `<img bind:this={img} alt="" />`;
+    expect(await refused(`\tconst remote = 'https://cdn.example/x.png';\n\tlet img;\n\tfunction show(url = remote) { img.src = url; }\n\tonMount(() => show());`, bound)).toBe(true);
+    expect(await refused(`\tconst urls = ['https://cdn.example/x.png'];\n\tlet img;\n\tfunction show(url) { img.src = url; }\n\tonMount(() => urls.forEach(show));`, bound)).toBe(true);
+    expect(await refused(`\tlet img;\n\tlet helper;\n\tfunction init() { helper('https://cdn.example/x.png'); }\n\thelper = (u) => { img.src = u; };\n\tonMount(init);`, bound)).toBe(true);
+    // A remote picture at the end of a long gallery of records.
+    const records = [...Array.from({ length: 320 }, (_, i) => `{ src: '/assets/${i}.png' }`), `{ src: 'https://cdn.example/last.png' }`].join(', ');
+    expect(await refused(`\tconst pics = [${records}];`, `{#each pics as p}<img src={p.src} alt="" />{/each}`)).toBe(true);
+  });
+
   it('reads a function in the scope it was written in, and keeps its parameters to itself', async () => {
     const errorsOf = (body: string, markup: string) => strictErrors(script(body, markup));
     // Two helpers with a parameter of the same name: only show() loads its argument.
