@@ -56,6 +56,14 @@ function useSelectedOnOpen() {
   return ref;
 }
 
+/** Close this dialog, and only this one: a save that lands after it was dismissed leaves the next dialog open. */
+function useCloseOwn() {
+  const [own] = useState(() => getState().modal);
+  return () => {
+    if (getState().modal === own) setState({ modal: null });
+  };
+}
+
 /**
  * Make one placement a separate component, under a name the author chooses. The suggestion is one no component has
  * yet, so repeated copies never stack "(unique)".
@@ -71,7 +79,7 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
   const [name, setName] = useState(suggested);
   const [busy, setBusy] = useState(false);
   const input = useSelectedOnOpen();
-  const close = () => setState({ modal: null });
+  const close = useCloseOwn();
   const ready = !!def && !!name.trim() && !busy;
   const make = async () => {
     if (!ready) return;
@@ -120,6 +128,7 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
 /** Rename one of the project's components, and say what it is for. Every placement keeps showing it. */
 export function RenameComponentModal({ definitionId }: { definitionId: string }) {
   const def = useStore((s) => (s.snapshot && Object.hasOwn(s.snapshot.state.components, definitionId) ? s.snapshot.state.components[definitionId] : undefined));
+  const revision = useStore((s) => s.snapshot?.revision);
   // What the fields showed when the dialog opened: only a field the author changed is saved, so a change made
   // meanwhile (by the AI) to the other one is kept.
   const [shown] = useState(() => ({ name: def?.name.trim() ?? '', description: def?.description?.trim() ?? '' }));
@@ -127,7 +136,7 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
   const [description, setDescription] = useState(def?.description ?? '');
   const [busy, setBusy] = useState(false);
   const input = useSelectedOnOpen();
-  const close = () => setState({ modal: null });
+  const close = useCloseOwn();
   const ready = def?.owner === 'project' && !!name.trim() && !busy;
   const save = async () => {
     if (!ready) return;
@@ -137,7 +146,8 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
     const described = d !== shown.description;
     if (!renamed && !described) return close();
     setBusy(true);
-    const r = await applyOps([{ type: 'component.rename', definitionId, name: renamed ? n : def.name, ...(described ? { description: d } : {}) }], `Rename component ${renamed ? n : def.name}`);
+    // Checked against the revision shown, so the name kept when only the description changes is the current one.
+    const r = await applyOps([{ type: 'component.rename', definitionId, name: renamed ? n : def.name, ...(described ? { description: d } : {}) }], `Rename component ${renamed ? n : def.name}`, undefined, revision);
     if (r) close();
     else setBusy(false);
   };

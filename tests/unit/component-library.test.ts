@@ -7,6 +7,7 @@ import { createStarterState } from '@catalogue/starters';
 import { instancesOf, placementCounts, placesOf } from '@engine/tree';
 import { applyOperations } from '@engine/apply';
 import { ProjectSession } from '../../src/main/project/session';
+import { keepPagesValid } from '../../src/renderer/src/lib/model';
 import { componentDocPath } from '../../src/main/project/documents';
 
 const dirs: string[] = [];
@@ -122,5 +123,23 @@ describe('where a library component is used (#56)', () => {
     for (const id of Object.keys(s.components)) expect(counts[id] ?? 0).toBe(instancesOf(s, id).length);
     const spare = applyOperations(s, [{ type: 'component.duplicate', definitionId: def, name: 'Spare' }]);
     expect(placesOf(spare.state, spare.results[0].definitionId as string)).toEqual([]);
+  });
+});
+
+describe('leaving Edit everywhere after its page has gone (#56 review)', () => {
+  it('returns to Home when the page it was entered from no longer exists', () => {
+    let s: ProjectState = createStarterState('business', 'Return', false);
+    const about = s.site.pageOrder.find((id) => id !== home(s))!;
+    const mode = { definitionId: 'proj.card-x1', returnPageId: about };
+    // While the page is there, nothing changes.
+    expect(keepPagesValid(s, about, mode)).toEqual({ pageId: about, definitionMode: mode });
+    // Gone, as an Undo of its creation leaves it.
+    s = structuredClone(s);
+    delete s.pages[about];
+    s.site.pageOrder = s.site.pageOrder.filter((id) => id !== about);
+    expect(keepPagesValid(s, about, mode)).toEqual({ pageId: home(s), definitionMode: { ...mode, returnPageId: home(s) } });
+    expect(keepPagesValid(s, null, null)).toEqual({ pageId: home(s), definitionMode: null });
+    // Own pages only: a name inherited from Object is not a page.
+    expect(keepPagesValid(s, 'constructor', { ...mode, returnPageId: 'toString' })).toEqual({ pageId: home(s), definitionMode: { ...mode, returnPageId: home(s) } });
   });
 });

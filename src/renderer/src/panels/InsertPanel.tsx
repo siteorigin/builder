@@ -313,13 +313,15 @@ export function InsertPanel() {
   const id = useId();
   const menu = useMenu();
   useGridTabStops(bodyRef);
-  // A manage menu describes the project as it was when it opened: any edit since (the AI, an Undo) closes it.
   const revision = snap?.revision;
+  // The component whose manage menu is open. Once it has gone (the AI, an Undo) its menu closes; anything else the
+  // menu offers is checked again when it is chosen.
+  const menuFor = useRef<string | null>(null);
   // The component deleted from its menu, until it has gone. Its row goes with it, and focus stays in the library
   // (else search) rather than falling to the page, where the next Delete would remove the canvas selection.
   const refocus = useRef<string | null>(null);
   useEffect(() => {
-    menu.close();
+    if (menuFor.current && snap && !Object.hasOwn(snap.state.components, menuFor.current)) menu.close();
     if (!refocus.current || !snap || Object.hasOwn(snap.state.components, refocus.current)) return;
     refocus.current = null;
     const a = document.activeElement;
@@ -535,6 +537,7 @@ export function InsertPanel() {
   };
   const manage = (it: Item) => {
     const def = st.components[it.spec.definitionId!];
+    menuFor.current = def?.id ?? null;
     return def ? manageItems(def) : [];
   };
 
