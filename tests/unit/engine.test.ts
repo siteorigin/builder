@@ -778,6 +778,13 @@ describe('site styles that follow other styles (#201)', () => {
     const broken = fresh();
     broken.tokens.overrides['color.accent'] = { token: 'color.missing' };
     expect(() => set(broken, 'color.brand', { token: 'color.accent' })).toThrow(/does not exist/);
+    const wrongKind = fresh();
+    wrongKind.tokens.overrides['color.accent'] = { token: 'space.md' };
+    expect(() => set(wrongKind, 'color.brand', { token: 'color.accent' })).toThrow(/spacing style/);
+    // An older document's link with an extra key is still a link to the style it names, as tokens.css writes it.
+    const extra = fresh();
+    extra.tokens.overrides['color.accent'] = { token: 'color.missing', extra: 1 } as never;
+    expect(() => set(extra, 'color.brand', { token: 'color.accent' })).toThrow(/does not exist/);
     // Borders can name another style's variable in their CSS; a link that closes that loop is refused.
     let b = applyOperations(fresh(), [
       { type: 'token.create', group: 'border', label: 'First', value: '1px solid black' },
@@ -829,7 +836,9 @@ describe('site styles that follow other styles (#201)', () => {
     const stray = structuredClone(made.state);
     stray.tokens.overrides[made.id] = '#123456';
     expect(() => set(stray, made.id, null)).toThrow(/no theme default/);
-    expect(set(stray, made.id, '#654321').tokens.custom[0].value).toBe('#654321');
+    const mended = set(stray, made.id, '#654321');
+    expect(mended.tokens.custom[0].value).toBe('#654321');
+    expect(mended.tokens.overrides[made.id]).toBeUndefined();
     // A theme style still goes back to the theme's value.
     const changed = set(made.state, 'color.brand', '#123456');
     expect(set(changed, 'color.brand', null).tokens.overrides['color.brand']).toBeUndefined();
@@ -838,6 +847,7 @@ describe('site styles that follow other styles (#201)', () => {
   it('keeps a followed font working for a text style family', () => {
     expect(() => set(fresh(), 'text.h1', { family: { token: 'space.md' } })).toThrow(/existing font token/);
     expect(() => set(fresh(), 'text.h1', { size: null })).toThrow(/Invalid size/);
+    expect(() => set(fresh(), 'text.h1', { lineHeight: null })).toThrow(/Invalid lineHeight/);
     const made = create(fresh(), 'font', 'Accent', { token: 'font.display' });
     const s = set(made.state, 'text.h1', { family: { token: made.id } });
     expect(errors(s)).toEqual([]);
@@ -1343,10 +1353,11 @@ describe('site style lengths and older text links (#201)', () => {
   it('accepts math of lengths, and refuses names inside it, negative widths and corners, and lists', () => {
     for (const good of ['max(1rem, 2vw)', 'calc(100% - clamp(1rem, 2vw, 3rem))', 'clamp(1.25rem, 0.8rem + 2.4vw, 2.5rem)', '0.5em'])
       expect(set(fresh(), 'space.md', good).tokens.overrides['space.md'], good).toBe(good);
-    for (const bad of ['calc(red)', 'calc(1px + auto)', 'min()', 'clamp(1rem,, 2rem)', 'var(--so-space-md)', 'auto', '24', '1px 2px', 'calc(1px; x)', 'clamp(40rem, 80vw)', 'calc(1rem, 2rem)', 'min(, 2rem)', 'min(2rem,)', 'calc(1px+)', 'calc(1px+2px)', 'calc(1px -2px)', '12.px'])
+    for (const bad of ['calc(red)', 'calc(1px + auto)', 'min()', 'clamp(1rem,, 2rem)', 'var(--so-space-md)', 'auto', '24', '1px 2px', 'calc(1px; x)', 'clamp(40rem, 80vw)', 'calc(1rem, 2rem)', 'min(, 2rem)', 'min(2rem,)', 'calc(1px+)', 'calc(1px+2px)', 'calc(1px -2px)', '12.px', 'calc(1px +(-2px))', 'calc(1px + 2)', 'calc(2 + 3)', 'calc(2px * 3px)', 'calc(2 / 1px)', 'clamp(0, 2vw, 1rem)', 'calc(1px\u00a0+\u00a02px)', 'calc(VAR(--so-space-md) * 2)'])
       expect(() => set(fresh(), 'space.md', bad), bad).toThrow(/length/);
-    for (const good of ['+12px', '0.0', '10vmin', '100lvh', '2lh', 'calc(100dvw - 2rem)', 'calc((1rem + 2px) * 1.5)', 'calc(1px + -2px)'])
+    for (const good of ['+12px', '0.0', '10vmin', '100lvh', '2lh', 'calc(100dvw - 2rem)', 'calc((1rem + 2px) * 1.5)', 'calc(1px + -2px)', '100dvi', 'calc(2 * 1rem)', 'calc(10px / 2)', 'max(1rem, 2vw, 10px)'])
       expect(set(fresh(), 'space.md', good).tokens.overrides['space.md'], good).toBe(good);
+    expect(() => set(fresh(), 'space.md', 'calc(var(--so-space-missing) * 2)')).toThrow(/not a site style/);
     // Another style's variable can be part of the math, just not this style's own.
     expect(set(fresh(), 'space.lg', 'calc(var(--so-space-md) * 2)').tokens.overrides['space.lg']).toBe('calc(var(--so-space-md) * 2)');
     expect(() => set(fresh(), 'space.md', 'calc(var(--so-space-md) * 2)')).toThrow(/loop/);
@@ -1381,6 +1392,7 @@ describe('site style lengths and older text links (#201)', () => {
     const h1 = effectiveTokens(s).find((t) => t.id === 'text.h1')!.value as Record<string, unknown>;
     s.tokens.overrides['text.h1'] = { ...h1, size: '3.3rem', token: c.results[0].tokenId } as never;
     const after = applyOperations(s, [{ type: 'token.remove', tokenId: c.results[0].tokenId as string, replacementTokenId: 'text.h2' }]).state;
+    expect(after.tokens.custom.some((t) => t.id === c.results[0].tokenId)).toBe(false);
     expect((after.tokens.overrides['text.h1'] as unknown as { size: string }).size).toBe('3.3rem');
     expect(css(after)).toContain('--so-text-h1-size: 3.3rem;');
   });
@@ -1389,7 +1401,19 @@ describe('site style lengths and older text links (#201)', () => {
     let s = fresh();
     const h1 = effectiveTokens(s).find((t) => t.id === 'text.h1')!.value as Record<string, unknown>;
     s.tokens.overrides['text.h1'] = { token: 'text.missing' } as never;
-    expect(css(s)).toContain(`--so-text-h1-size: ${h1.size};`);
+    for (const [k, v] of [['size', h1.size], ['line-height', h1.lineHeight], ['weight', h1.weight], ['tracking', h1.tracking], ['family', 'var(--so-font-display)'], ['transform', 'none']])
+      expect(css(s)).toContain(`--so-text-h1-${k}: ${v};`);
+    // Through a style of another kind, the link leads to no text style either.
+    const through = fresh();
+    through.tokens.overrides['text.h1'] = { token: 'font.body' } as never;
+    expect(css(through)).toContain(`--so-text-h1-size: ${h1.size};`);
+    expect(css(through)).not.toContain('var(--so-font-body-');
+    // A text style it does reach is followed whatever its metrics hold, as before.
+    const bold = fresh();
+    const h2 = effectiveTokens(bold).find((t) => t.id === 'text.h2')!.value as Record<string, unknown>;
+    bold.tokens.overrides['text.h2'] = { ...h2, weight: 'bold' } as never;
+    bold.tokens.overrides['text.h1'] = { token: 'text.h2' } as never;
+    expect(css(bold)).toContain('--so-text-h1-weight: var(--so-text-h2-weight);');
     expect(css(s)).not.toContain('var(--so-text-missing');
     s = set(s, 'text.h1', { weight: 600 });
     expect(s.tokens.overrides['text.h1']).toEqual({ ...h1, weight: 600 });
@@ -1424,11 +1448,41 @@ describe('site style lengths and older text links (#201)', () => {
     expect(detached.tokens.custom.some((t) => t.id === A)).toBe(false);
     expect(detached.tokens.custom.find((t) => t.id === B)?.value).toBe(display);
     const replaced = applyOperations(s, [{ type: 'token.remove', tokenId: A, replacementTokenId: 'font.body' }]).state;
+    expect(replaced.tokens.custom.some((t) => t.id === A)).toBe(false);
     expect(replaced.tokens.custom.find((t) => t.id === B)?.value).toEqual({ token: 'font.body' });
     expect((replaced.tokens.overrides['text.h1'] as unknown as { family: unknown }).family).toEqual({ token: 'font.body' });
     expect((detached.tokens.overrides['text.h1'] as unknown as { family: unknown }).family).toBe(display);
     const out = css(detached);
     for (const k of ['family', 'size', 'line-height', 'weight', 'tracking', 'transform']) expect(out).toContain(`--so-text-h1-${k}:`);
     expect(errors(detached)).toEqual([]);
+  });
+});
+
+describe('site style loops through CSS variables (#201)', () => {
+  const set = (s: ProjectState, tokenId: string, value: unknown) => applyOperations(s, [{ type: 'token.set', tokenId, value }]).state;
+
+  it('refuses a loop through a text metric variable', () => {
+    const s = set(fresh(), 'text.h1', { size: 'var(--so-space-md)' });
+    expect(() => set(s, 'space.md', 'calc(var(--so-text-h1-size) * 2)')).toThrow(/loop/);
+  });
+
+  it('refuses a new style whose own value would loop', () => {
+    expect(() => applyOperations(fresh(), [{ type: 'token.create', group: 'space', label: 'Gap', value: 'calc(var(--so-space-custom-gap) * 2)' }])).toThrow(/loop/);
+  });
+
+  it('does not let a loop an older document already has block other edits, or the edits that undo it', () => {
+    const s = fresh();
+    s.tokens.overrides['border.default'] = 'var(--so-border-default)';
+    s.tokens.overrides['shadow.sm'] = 'var(--so-shadow-sm)';
+    // A quoted font name that happens to read like a variable is not one.
+    s.tokens.overrides['font.body'] = '"var(--so-font-body)", Georgia, serif';
+    expect(set(s, 'color.brand', '#123456').tokens.overrides['color.brand']).toBe('#123456');
+    const fixed = applyOperations(s, [
+      { type: 'token.set', tokenId: 'border.default', value: null },
+      { type: 'token.set', tokenId: 'shadow.sm', value: null }
+    ]).state;
+    expect(validateState(fixed).some((d) => d.code === 'TOKEN_CYCLE')).toBe(false);
+    // A new loop is still refused beside an old one.
+    expect(() => set(s, 'radius.sm', 'calc(var(--so-radius-sm) * 2)')).toThrow(/loop/);
   });
 });

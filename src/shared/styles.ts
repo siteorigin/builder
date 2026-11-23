@@ -172,11 +172,18 @@ export const STYLE_GROUP_LABELS: Record<StylePropDef['group'], string> = {
   custom: 'Custom CSS'
 };
 
-/** The site style a value links to when it is exactly `{ token }`, or null for a value of its own. */
+const TEXT_METRIC_KEYS = ['family', 'size', 'lineHeight', 'weight', 'tracking'];
+
+/**
+ * The site style a stored value refers to as a whole, as tokens.css writes it: `{ token }`, or null for a value
+ * of its own. Text-style metrics with a stray `token` beside them (left by an older version) are the style's
+ * own value, not a link. Edits only ever store exactly `{ token }`; this also reads what older documents hold.
+ */
 export function linkOf(v: unknown): string | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  if (TEXT_METRIC_KEYS.some((k) => k in v)) return null;
   const token = (v as { token?: unknown }).token;
-  return typeof token === 'string' && Object.keys(v).length === 1 ? token : null;
+  return typeof token === 'string' ? token : null;
 }
 
 export function tokenVar(tokenId: string): string {
@@ -234,19 +241,26 @@ function wholeCall(value: string): boolean {
   return false;
 }
 
-const LENGTH_UNITS = 'px|rem|em|%|vw|vh|vi|vb|vmin|vmax|svw|svh|svi|svb|lvw|lvh|dvw|dvh|ch|ex|cap|ic|lh|rlh|cqw|cqh|cqi|cqb|cqmin|cqmax|cm|mm|q|in|pt|pc';
+const LENGTH_UNITS = 'px|rem|em|%|vw|vh|vi|vb|vmin|vmax|svw|svh|svi|svb|svmin|svmax|lvw|lvh|lvi|lvb|lvmin|lvmax|dvw|dvh|dvi|dvb|dvmin|dvmax|ch|ex|cap|ic|lh|rlh|cqw|cqh|cqi|cqb|cqmin|cqmax|cm|mm|q|in|pt|pc';
 const CSS_NUMBER = '(?:\\d+(?:\\.\\d+)?|\\.\\d+)';
 const TOKEN_LENGTH_RE = new RegExp(`^([+-]?)${CSS_NUMBER}(?:${LENGTH_UNITS})$`, 'i');
 const TOKEN_ZERO_RE = /^[+-]?(?:0+(?:\.0+)?|\.0+)$/;
-/** One piece of a math function: whitespace, a function opening, a site style's variable, a number or length, or punctuation. */
-const MATH_TOKEN_RE = new RegExp(`\\s+|(?:calc|min|max|clamp)\\(|var\\(\\s*--so-[a-z0-9-]+\\s*\\)|[+-]?${CSS_NUMBER}(?:${LENGTH_UNITS})?|[()+\\-*/,]`, 'iy');
+/**
+ * One piece of a math function: CSS whitespace, a function opening, a site style's variable, a number or
+ * length, or punctuation. Lower case only, as the theme writes them, so every check that looks for a
+ * variable by name finds it.
+ */
+const MATH_TOKEN_RE = new RegExp(`[ \\t\\n]+|(?:calc|min|max|clamp)\\(|var\\([ \\t\\n]*--so-[a-z0-9-]+[ \\t\\n]*\\)|[+-]?${CSS_NUMBER}(?:${LENGTH_UNITS})?|[()+\\-*/,]`, 'y');
 /** How many arguments each math function takes, at least and at most. */
 const MATH_ARITY: Record<string, [number, number]> = { calc: [1, 1], clamp: [3, 3], min: [1, Infinity], max: [1, Infinity] };
 
+type MathType = 'number' | 'length';
+
 /**
- * One calc(), min(), max() or clamp() call: numbers, lengths, site style variables, nested calls and brackets
- * joined by operators, each function given its number of arguments. CSS reads a + or - without a space on both
- * sides as a sign, so those are refused rather than written out as a value the browser drops.
+ * One calc(), min(), max() or clamp() call that works out to a length: numbers, lengths, site style variables
+ * (read as lengths), nested calls and brackets joined by operators, each function given its number of
+ * arguments. As in CSS, + and - join two of a kind and need a space on each side, * needs a number on one
+ * side, / a number on the right, and a function's arguments are all of one kind.
  */
 function isMathLength(value: string): boolean {
   const toks: Array<{ t: string; spaced: boolean }> = [];
@@ -256,49 +270,62 @@ function isMathLength(value: string): boolean {
     const m = MATH_TOKEN_RE.exec(value);
     if (!m) return false;
     at = MATH_TOKEN_RE.lastIndex;
-    if (/^\s+$/.test(m[0])) spaced = true;
-    else (toks.push({ t: m[0].toLowerCase(), spaced }), (spaced = false));
+    if (/^[ \t\n]+$/.test(m[0])) spaced = true;
+    else (toks.push({ t: m[0], spaced }), (spaced = false));
   }
   let i = 0;
-  const call = (): boolean => {
+  const call = (): MathType | null => {
     const fn = toks[i]?.t.match(/^(calc|min|max|clamp)\($/)?.[1];
-    if (!fn) return false;
+    if (!fn) return null;
     i++;
-    let args = 0;
+    const kinds: MathType[] = [];
     for (;;) {
-      if (!expr()) return false;
-      args++;
+      const k = expr();
+      if (!k) return null;
+      kinds.push(k);
       if (toks[i]?.t !== ',') break;
       i++;
     }
-    if (toks[i]?.t !== ')') return false;
+    if (toks[i]?.t !== ')') return null;
     i++;
-    return args >= MATH_ARITY[fn][0] && args <= MATH_ARITY[fn][1];
+    if (kinds.length < MATH_ARITY[fn][0] || kinds.length > MATH_ARITY[fn][1] || kinds.some((k) => k !== kinds[0])) return null;
+    return kinds[0];
   };
-  const operand = (): boolean => {
+  const operand = (): MathType | null => {
     const t = toks[i]?.t;
-    if (t === undefined) return false;
+    if (t === undefined) return null;
     if (t.endsWith('(') && t !== '(') return call();
     if (t === '(') {
       i++;
-      if (!expr() || toks[i]?.t !== ')') return false;
+      const k = expr();
+      if (!k || toks[i]?.t !== ')') return null;
       i++;
-      return true;
+      return k;
     }
-    if (t.startsWith('var(') || /^[+-]?[\d.]/.test(t)) return (i++, true);
-    return false;
+    if (t.startsWith('var(')) return (i++, 'length');
+    if (/^[+-]?[\d.]/.test(t)) return (i++, /[a-z%]$/.test(t) ? 'length' : 'number');
+    return null;
   };
-  const expr = (): boolean => {
-    if (!operand()) return false;
-    while (toks[i] && /^[+\-*/]$/.test(toks[i].t)) {
+  const expr = (): MathType | null => {
+    let left = operand();
+    while (left && toks[i] && /^[+\-*/]$/.test(toks[i].t)) {
       const op = toks[i];
-      if ((op.t === '+' || op.t === '-') && (!op.spaced || !toks[i + 1]?.spaced)) return false;
+      if ((op.t === '+' || op.t === '-') && (!op.spaced || !toks[i + 1]?.spaced)) return null;
       i++;
-      if (!operand()) return false;
+      const right = operand();
+      if (!right) return null;
+      if (op.t === '+' || op.t === '-') left = left === right ? left : null;
+      else if (op.t === '*') left = left === 'number' ? right : right === 'number' ? left : null;
+      else left = right === 'number' ? left : null;
     }
-    return true;
+    return left;
   };
-  return call() && i === toks.length;
+  return call() === 'length' && i === toks.length;
+}
+
+/** The site style variables CSS text names, such as `--so-space-md` in calc(var(--so-space-md) * 2). */
+export function cssVarNames(value: string): string[] {
+  return [...value.matchAll(/var\(\s*(--so-[a-z0-9-]+)\s*[,)]/gi)].map((m) => m[1].toLowerCase());
 }
 
 /**
@@ -337,6 +364,24 @@ export function followedText(tokens: TokenDef[], id: string): string {
   return typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '';
 }
 
+/**
+ * Whether a text style linked to another can be written out metric by metric: each style along the links is
+ * a text style, and the last holds metrics of its own (written out as they are, whatever they hold).
+ */
+export function textLinkLeadsToText(tokens: TokenDef[], id: string): boolean {
+  const byId = new Map(tokens.map((t) => [t.id, t]));
+  const seen = new Set([id]);
+  for (let cur = linkOf(byId.get(id)?.value); cur; ) {
+    const t = byId.get(cur);
+    if (!t || t.group !== 'text' || seen.has(cur)) return false;
+    seen.add(cur);
+    const next = linkOf(t.value);
+    if (!next) return !!t.value && typeof t.value === 'object';
+    cur = next;
+  }
+  return false;
+}
+
 /** A metric written as a number in a hand-edited document reads as the same CSS text. */
 const metricText = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : null);
 
@@ -351,10 +396,10 @@ export function textMetrics(tokens: TokenDef[], id: string): TextStyleValue | nu
   const size = metricText(v.size);
   const lineHeight = metricText(v.lineHeight);
   const tracking = metricText(v.tracking);
-  const weight = Number(v.weight);
+  const weight = typeof v.weight === 'number' ? v.weight : typeof v.weight === 'string' && v.weight.trim() ? Number(v.weight) : NaN;
   const family = v.family;
   const familyOk = (typeof family === 'string' && family.trim()) || linkOf(family);
-  if (size === null || lineHeight === null || tracking === null || !Number.isFinite(weight) || !familyOk) return null;
+  if (size === null || lineHeight === null || tracking === null || !(weight >= 100 && weight <= 900) || !familyOk) return null;
   const out: TextStyleValue = { family: family as TextStyleValue['family'], size, lineHeight, tracking, weight };
   if (typeof v.transform === 'string') out.transform = v.transform as TextStyleValue['transform'];
   return out;

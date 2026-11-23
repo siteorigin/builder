@@ -371,6 +371,8 @@ export function SiteStyles() {
   };
   /** A picker's changes merge with each other, never with a typed value: undo returns to what was typed. */
   const set = (id: string, value: unknown, by?: 'picker') => applyOps([{ type: 'token.set', tokenId: id, value }], `Change ${byId(id)?.label ?? id}`, by ? `token:${id}:${by}` : `token:${id}`);
+  /** Linking and unlinking are steps of their own, so undo always returns to the link before. */
+  const relink = (id: string, value: unknown) => applyOps([{ type: 'token.set', tokenId: id, value }], `Change ${byId(id)?.label ?? id}`);
   const group = (g: TokenDef['group']) => tokens.filter((t) => t.group === g);
   const changedNote = (ids: string[]) => {
     const n = ids.filter(changed).length;
@@ -513,7 +515,7 @@ export function SiteStyles() {
                 onClick={(e) => {
                   const row = e.currentTarget.closest('[data-ss-row]');
                   const trigger = e.currentTarget;
-                  set(t.id, value);
+                  relink(t.id, value);
                   refocus(trigger, row, null, () => null);
                 }}
               >
@@ -534,7 +536,7 @@ export function SiteStyles() {
             {open && (
               <>
                 <Field label="Same as" hint="Follows another color, and changes when it does.">
-                  <select className="select sm" value={ref ?? ''} onChange={(e) => set(t.id, e.target.value ? { token: e.target.value } : value)}>
+                  <select className="select sm" value={ref ?? ''} onChange={(e) => relink(t.id, e.target.value ? { token: e.target.value } : value)}>
                     <option value="">Its own color</option>
                     {colorIds
                       .filter((id) => id !== t.id && !loops.has(id))
@@ -754,7 +756,7 @@ export function SiteStyles() {
                 onClick={(e) => {
                   const row = e.currentTarget.closest('[data-ss-row]');
                   const trigger = e.currentTarget;
-                  commit(value);
+                  relink(t.id, value);
                   refocus(trigger, row, null, () => null);
                 }}
               >

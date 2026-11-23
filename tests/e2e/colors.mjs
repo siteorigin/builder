@@ -227,9 +227,11 @@ await eventually(async () => assert.equal(await customValue('color.custom-sea'),
 await sea.getByLabel('Same as').selectOption('color.brand');
 await eventually(async () => assert.deepEqual(await customValue('color.custom-sea'), { token: 'color.brand' }, 'it follows Brand as a link'));
 await eventually(async () => assert.equal(await sea.locator('input[type="color"]').isDisabled(), true, 'a linked color has no picker of its own'));
+const seaSwatch = () => sea.locator('.color-pick-fill').evaluate((el) => getComputedStyle(el).backgroundColor);
+await eventually(async () => assert.equal(await seaSwatch(), 'rgba(209, 65, 49, 0.5)', 'the linked swatch paints the color it follows'));
+await paste('#336699');
+await eventually(async () => assert.equal(await seaSwatch(), 'rgb(51, 102, 153)', 'and follows it when Brand changes'));
 const brandNow = await saved();
-assert.equal(brandNow, 'rgba(209, 65, 49, 0.5)', 'Brand is the color set in the step before');
-await eventually(async () => assert.equal(await sea.locator('.color-pick-fill').evaluate((el) => getComputedStyle(el).backgroundColor), brandNow, 'the linked swatch paints the color it follows'));
 await sea.getByLabel('Same as').selectOption('');
 await eventually(async () => assert.equal(await customValue('color.custom-sea'), brandNow, 'unlinking keeps the color it showed'));
 await undo();

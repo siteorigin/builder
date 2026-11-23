@@ -1,7 +1,7 @@
 import { variantOptions } from '@shared/variants';
 import type { ProjectState, ResponsiveStyles, TokenDef } from '@shared/types';
 import { getTheme } from '@catalogue/index';
-import { linkOf, tokenVar } from '@shared/styles';
+import { cssVarNames, linkOf, tokenVar } from '@shared/styles';
 import { allTrees } from './tree';
 
 export interface TokenRefSite {
@@ -71,33 +71,46 @@ export function declaredTokens(state: ProjectState): TokenDef[] {
 }
 
 /**
- * The first token that refers back to itself through other tokens, or null. A token refers to another by
- * linking to it, or by naming its variable in CSS text (a border's `var(--so-color-border)`): a loop through
- * either leaves every variable in it without a value.
+ * The tokens that refer back to themselves through other tokens, or lead into such a loop. A token refers to
+ * another by linking to it, by its text style's font, or by naming its variable in CSS text (a border's
+ * `var(--so-color-border)`, a text size's `var(--so-space-md)`, a spacing's `var(--so-text-h1-size)`): a loop
+ * through any of them leaves every variable in it without a value. Font stacks hold names only, never variables.
  */
-export function findTokenCycle(state: ProjectState): string | null {
+export function loopingTokens(state: ProjectState): Set<string> {
   const declared = declaredTokens(state);
   const byId = new Map(declared.map((t) => [t.id, t]));
-  const byVar = new Map(declared.map((t) => [tokenVar(t.id), t.id]));
+  const byVar = new Map<string, string>();
+  for (const t of declared) {
+    byVar.set(tokenVar(t.id), t.id);
+    if (t.group === 'text') for (const k of ['family', 'size', 'line-height', 'weight', 'tracking', 'transform']) byVar.set(`${tokenVar(t.id)}-${k}`, t.id);
+  }
   const value = (id: string) => (Object.hasOwn(state.tokens.overrides, id) ? state.tokens.overrides[id] : byId.get(id)?.value);
   const next = (id: string): string[] => {
     const v = value(id);
     const link = linkOf(v);
     if (link) return [link];
-    if (typeof v !== 'string') return [];
-    return [...v.matchAll(/var\(\s*(--so-[a-z0-9-]+)\s*[,)]/gi)].map((m) => byVar.get(m[1])).filter((x): x is string => !!x);
+    if (byId.get(id)?.group === 'font') return [];
+    const texts = typeof v === 'string' ? [v] : v && typeof v === 'object' ? Object.values(v).filter((x): x is string => typeof x === 'string') : [];
+    const out = texts.flatMap(cssVarNames).flatMap((n) => byVar.get(n) ?? []);
+    const family = v && typeof v === 'object' ? linkOf((v as { family?: unknown }).family) : null;
+    return family ? [...out, family] : out;
   };
-  const done = new Set<string>();
+  const reaches = new Map<string, boolean>();
   const open = new Set<string>();
   const loops = (id: string): boolean => {
-    if (done.has(id)) return false;
+    const known = reaches.get(id);
+    if (known !== undefined) return known;
     if (open.has(id)) return true;
     open.add(id);
-    if (next(id).some(loops)) return true;
+    const r = next(id).some(loops);
     open.delete(id);
-    done.add(id);
-    return false;
+    reaches.set(id, r);
+    return r;
   };
-  for (const t of declared) if (loops(t.id)) return t.id;
-  return null;
+  return new Set(declared.filter((t) => loops(t.id)).map((t) => t.id));
+}
+
+/** The first token that refers back to itself through other tokens (or leads into such a loop), or null. */
+export function findTokenCycle(state: ProjectState): string | null {
+  return loopingTokens(state).values().next().value ?? null;
 }
