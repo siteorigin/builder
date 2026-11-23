@@ -610,7 +610,9 @@ export class Controller {
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
     await this.onSessionClosing?.();
-    // Written while this is still the open project (a read-only one writes nothing).
+    // Written while this is still the open project, and only while it is still this app's: the lock is read again
+    // first, so a takeover the heartbeat has not seen yet makes it read-only, which writes nothing.
+    await s.stillOwner().catch(() => false);
     await this.flushLocalState();
     // One more try if that write failed: this is the last chance before the lock goes.
     if (this.localDirty) await this.flushLocalState();
