@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, net, sessio
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
-import type { ProviderId, SettingsPatch } from '@shared/api';
+import type { LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import { externalLink } from '@shared/links';
 import { checkLocalBaseURL } from '@shared/local';
 import { Controller, defaultProjectsFolder } from './controller';
@@ -201,7 +201,7 @@ function registerIpc() {
   handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
   handle('project:resolveConflict', (p: string, choice: 'keep' | 'restore') => controller.resolveConflict(p, choice));
   handle('project:unlock', () => controller.unlock());
-  handle('project:saveLocalState', (s) => controller.saveLocalState(s));
+  handle('project:saveLocalState', (s: LocalWorkspaceState, dir: string) => controller.saveLocalState(s, String(dir ?? '')));
   handle('project:validateSource', async (source: string) => {
     const problems = await checkSvelteSource(String(source));
     const errors = problems.filter((p) => p.severity === 'error');

@@ -88,7 +88,8 @@ export interface LocalWorkspaceState {
   zoom?: number | 'fit';
   leftTab?: string;
   rightTab?: string;
-  chatDraft?: string;
+  /** Unsent AI messages, keyed by the conversation they were written in. */
+  chatDrafts?: Record<string, string>;
 }
 
 export interface CreateProjectOptions {
@@ -225,7 +226,8 @@ export interface BuilderApi {
     restoreGenerated(path: string): Promise<void>;
     resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }>;
     unlock(): Promise<{ ok: boolean; message?: string }>;
-    saveLocalState(state: LocalWorkspaceState): Promise<void>;
+    /** `dir` is the project the state belongs to; a save for a project that is no longer open is dropped. */
+    saveLocalState(state: LocalWorkspaceState, dir: string): Promise<void>;
     validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
     flush(): Promise<void>;
   };

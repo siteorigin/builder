@@ -52,6 +52,7 @@ export class Controller {
   private createAbort: AbortController | null = null;
   private staticServer: Server | null = null;
   private localState: LocalWorkspaceState = {};
+  private localWrites: Promise<void> = Promise.resolve();
   private exportPaths = new Set<string>();
   private watchers: FSWatcher[] = [];
   private watchTimer: NodeJS.Timeout | null = null;
@@ -359,6 +360,8 @@ export class Controller {
     this.dev = null;
     await this.session.close();
     this.session = null;
+    // Workspace state belongs to the project it was saved in; the next one loads its own, or starts empty.
+    this.localState = {};
     this.send('project:closed');
   }
 
@@ -381,9 +384,21 @@ export class Controller {
     return { ok: true, dir: dest };
   }
 
-  saveLocalState(state: LocalWorkspaceState) {
+  /**
+   * Remember workspace state (open page, tabs, unsent AI drafts) for the project the editor meant by `dir`. A save
+   * that arrives after that project closed, such as a debounced draft, is dropped: it must never reach the next one.
+   */
+  saveLocalState(state: LocalWorkspaceState, dir: string): Promise<void> {
+    const s = this.session;
+    if (!s || s.dir !== dir) return Promise.resolve();
     this.localState = { ...this.localState, ...state };
-    if (this.session && !this.session.readOnly) void atomicWrite(this.session.local('workspace.json'), JSON.stringify(this.localState));
+    if (s.readOnly) return Promise.resolve();
+    const file = s.local('workspace.json');
+    const bytes = JSON.stringify(this.localState);
+    // One write at a time, in order, so an older state never lands after a newer one.
+    const write = this.localWrites.then(() => atomicWrite(file, bytes)).catch(() => undefined);
+    this.localWrites = write;
+    return write;
   }
 
   // -------------------------------------------------------------------------
