@@ -1,4 +1,5 @@
 import type { ComponentDefinition, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import { isBinding } from '@shared/types';
 
 export class EngineError extends Error {
   constructor(
@@ -91,6 +92,29 @@ export function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): s
     id = findParent(def.tree, id)?.parentId;
   }
   return undefined;
+}
+
+/**
+ * The links a list repeats whose visible text and destination are two fields of the same item (a contact method's
+ * value and link): `{ text, link }` field names. Read from the definition's own tree, so a project's copy with
+ * renamed fields pairs the same way; a code component has no tree to read and pairs nothing. A destination shared
+ * by two different texts belongs to neither, so it is left out.
+ */
+export function itemLinkPairs(def: ComponentDefinition, listProp: string): Array<{ text: string; link: string }> {
+  const schema = Object.hasOwn(def.properties, listProp) ? def.properties[listProp] : undefined;
+  if (!def.tree || schema?.type !== 'list') return [];
+  const found = new Map<string, { text: string; link: string }>();
+  for (const n of Object.values(def.tree.nodes)) {
+    if (n.kind !== 'link' || !isBinding(n.label) || !isBinding(n.link) || !('$item' in n.label) || !('$item' in n.link)) continue;
+    const text = n.label.$item;
+    const link = n.link.$item;
+    if (!Object.hasOwn(schema.fields, text) || !Object.hasOwn(schema.fields, link)) continue;
+    if (schema.fields[text].type !== 'string' || schema.fields[link].type !== 'link') continue;
+    if (enclosingRepeatProp(def, n.id) !== listProp) continue;
+    found.set(`${text}\u0000${link}`, { text, link });
+  }
+  const pairs = [...found.values()];
+  return pairs.filter((p) => pairs.filter((q) => q.link === p.link).length === 1);
 }
 
 /**

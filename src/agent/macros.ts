@@ -11,6 +11,8 @@ import { normalizeRoute, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { catalogueComponent, catalogueEntries } from '@catalogue/index';
 import { applyOperation } from '@engine/apply';
+import { itemLinkPairs } from '@engine/tree';
+import { followText, joinedLines } from '@shared/contact-links';
 import { normalizeProp, normalizeScalar } from '@engine/values';
 import { compactPropsSchema, IMAGE_SCHEMA, type JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -318,6 +320,32 @@ function expressible(state: ProjectState, page: PageDoc, id: string): boolean {
  * link to another item. An unmatched item is new: it starts from the field defaults with a fresh id, so it never
  * takes over a removed item's id or a link still waiting there. Returns the stored id each item kept, if any.
  */
+/**
+ * Move the email or phone links of a stored item to the visible text a sent copy of it changes, when the link
+ * opened the old text and the sent copy leaves the link out (see followText). Returns the link fields it moved.
+ */
+export function followStoredLinks(def: ComponentDefinition | undefined, prop: string, stored: ListItem | undefined, sent: unknown, merged: unknown): string[] {
+  if (!def || !stored || !sent || typeof sent !== 'object' || !merged || typeof merged !== 'object') return [];
+  const row = sent as Record<string, unknown>;
+  const out = merged as Record<string, unknown>;
+  const pairs = itemLinkPairs(def, prop);
+  if (!pairs.length) return [];
+  // Pairs exist only on a list property.
+  const fields = (def.properties[prop] as Extract<PropSchema, { type: 'list' }>).fields;
+  const moved: string[] = [];
+  for (const { text, link } of pairs) {
+    if (!Object.hasOwn(row, text) || Object.hasOwn(row, link)) continue;
+    // Compare the text as it will be stored: a one-line field joins its lines.
+    const field = fields[text];
+    const shown = field.type === 'string' && !field.multiline ? joinedLines(row[text]) : row[text];
+    const to = followText(stored[text], shown, stored[link]);
+    if (!to) continue;
+    out[link] = to;
+    moved.push(link);
+  }
+  return moved;
+}
+
 export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, sent: unknown[], stored: unknown[]): { items: unknown[]; ids: Array<string | undefined> } {
   const all = stored.filter((i): i is ListItem => !!i && typeof i === 'object' && typeof (i as ListItem).id === 'string');
   // An id two stored items share names neither of them.
@@ -526,8 +554,12 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
         const stored = node.props[prop];
         if (schema?.type === 'list' && Array.isArray(value) && Array.isArray(stored)) {
           const merged = withStoredFields(schema, value, stored);
+          const def = scratch.components[node.definitionId];
           merged.ids.forEach((id, i) => {
-            if (id) for (const f of Object.keys(value[i] as object)) if (f !== 'id') written.add(slotKey(slot.id, prop, id, f));
+            if (!id) return;
+            for (const f of Object.keys(value[i] as object)) if (f !== 'id') written.add(slotKey(slot.id, prop, id, f));
+            // An item whose visible email or phone changes carries the link that opened it, as an edit to it would.
+            for (const link of followStoredLinks(def, prop, (stored as ListItem[]).find((x) => x.id === id), value[i], merged.items[i])) written.add(slotKey(slot.id, prop, id, link));
           });
           push({ type: 'instance.setProp', owner, nodeId: slot.id, prop, value: merged.items }, slot.section);
           continue;
