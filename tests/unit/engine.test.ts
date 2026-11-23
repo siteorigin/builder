@@ -5,6 +5,7 @@ import { applyOperations } from '@engine/apply';
 import { EngineError, instancesOf } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
+import { pageIds } from '@generator/checks';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -794,13 +795,13 @@ describe('duplicating a page', () => {
       s = applyOperations(b.state, [{ type: 'node.setContent', owner: o, nodeId: id, field: 'link', value: link }]).state;
       return id;
     };
-    // Another page's section: About has one with this ID too, so a retargeted link would still look valid.
+    // Another page's section with the same ID as Contact's own: only the link's target tells them apart.
     const aboutRoot = s.pages[aboutId].nodes[s.pages[aboutId].rootIds[0]];
     s = structuredClone(s);
-    s.pages[aboutId].nodes[aboutRoot.id].anchor = 'team';
+    s.pages[aboutId].nodes[aboutRoot.id].anchor = 'studio-hours';
     const own = button({ type: 'page', target: contactId, anchor: 'studio-hours' });
     const whole = button({ type: 'page', target: contactId });
-    const other = button({ type: 'page', target: aboutId, anchor: 'team' });
+    const other = button({ type: 'page', target: aboutId, anchor: 'studio-hours' });
     const local = button({ type: 'anchor', target: 'studio-hours' });
     // A link inside rich text, which the engine stores the same way.
     const rich = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: sectionId, slot: 'content', primitive: 'richtext', text: 'See the hours' }]);
@@ -821,7 +822,7 @@ describe('duplicating a page', () => {
     const links = Object.values(copy.nodes).filter((n) => n.kind === 'link').map((n) => (n as { link: Record<string, unknown> }).link);
     expect(links).toContainEqual({ type: 'page', target: copyId, anchor: 'studio-hours' });
     expect(links).toContainEqual({ type: 'page', target: contactId });
-    expect(links).toContainEqual({ type: 'page', target: aboutId, anchor: 'team' });
+    expect(links).toContainEqual({ type: 'page', target: aboutId, anchor: 'studio-hours' });
     expect(links).toContainEqual({ type: 'anchor', target: 'studio-hours' });
     expect(links.filter((l) => l.target === contactId && l.anchor)).toEqual([]);
     const spans = Object.values(copy.nodes).flatMap((n) => (n.kind === 'text' && Array.isArray(n.text) ? (n.text as Array<{ spans?: Array<{ link?: unknown }> }>).flatMap((b) => b.spans ?? []) : []));
@@ -834,15 +835,13 @@ describe('duplicating a page', () => {
 
   it('leaves a link to a header or footer section pointing at the source page', () => {
     const { s, contactId } = contactWithLinks();
-    const header = s.site.shell.header;
-    const rootId = header.rootIds[0];
-    const target = (header.nodes[rootId] as { anchor?: string }).anchor ?? 'site-header';
-    (header.nodes[rootId] as { anchor?: string }).anchor = target;
+    // The starter header's navigation renders with this ID on every page.
+    expect(pageIds(s, contactId).has('so-site-nav')).toBe(true);
     const btn = Object.values(s.pages[contactId].nodes).find((n) => n.kind === 'link')!;
-    (btn as { link: unknown }).link = { type: 'page', target: contactId, anchor: target };
+    (btn as { link: unknown }).link = { type: 'page', target: contactId, anchor: 'so-site-nav' };
     const r = applyOperations(s, [{ type: 'page.duplicate', pageId: contactId, title: 'Contact copy' }]);
     const copy = r.state.pages[r.results[0].pageId as string];
-    const link = Object.values(copy.nodes).find((n) => n.kind === 'link' && (n as { link: { anchor?: string } }).link.anchor === target) as { link: { target: string } };
+    const link = Object.values(copy.nodes).find((n) => n.kind === 'link' && (n as { link: { anchor?: string } }).link.anchor === 'so-site-nav') as { link: { target: string } };
     expect(link.link.target).toBe(contactId);
   });
 });
