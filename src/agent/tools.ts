@@ -64,7 +64,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Call it at most once per turn.',
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
-  inspect_layout: 'Measure a page in the live preview at a viewport width: horizontal overflow, elements outside the viewport, missing images/alt text, heading structure and runtime errors. Structural evidence only; no screenshots.',
+  inspect_layout: 'Measure a page in the live preview at a viewport width: horizontal overflow, elements outside the viewport, whether each image loaded (report.images: failed images are files that could not be loaded; unverified ones were still loading when the check ran out of time, which is not a problem with the site), missing alt text, heading structure and runtime errors. Structural evidence only; no screenshots.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
   request_clarification: 'Ask the user one short question when a request is genuinely ambiguous and a wrong guess would change shared content. Offer up to four concrete choices.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
@@ -324,10 +324,10 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         const report = (await host.inspectLayout(a.pageId, WIDTHS[a.viewport])) as { error?: unknown } | null;
         // A preview that is not running or did not load is a failed check, never a clean result.
         if (!report || typeof report !== 'object' || report.error)
-          return { ok: false, content: { error: 'VALIDATION_FAILED', viewport: a.viewport, message: `Layout could not be inspected: ${String(report?.error ?? 'no report')}` } };
-        return { ok: true, content: { viewport: a.viewport, width: WIDTHS[a.viewport], report } };
+          return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${String(report?.error ?? 'no report')}` } };
+        return { ok: true, content: { pageId: resolved, viewport: a.viewport, width: WIDTHS[a.viewport], report } };
       } catch (e) {
-        return { ok: false, content: { error: 'VALIDATION_FAILED', viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
+        return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
       }
     }
     case 'validate_project': {
@@ -382,57 +382,3 @@ export function labelForOps(ops: EditOperation[], state: ProjectState): string {
   }
 }
 
-/** Human readable change list for the completion card. */
-export function describeOps(ops: EditOperation[], before: ProjectState, after: ProjectState, results: unknown[]): Array<{ label: string; pageId?: string; nodeId?: string; definitionId?: string }> {
-  const out: Array<{ label: string; pageId?: string; nodeId?: string; definitionId?: string }> = [];
-  const ownerName = (o: { kind: string; id: string }) =>
-    o.kind === 'page' ? after.pages[o.id]?.title ?? before.pages[o.id]?.title ?? 'page' : o.kind === 'shell' ? (o.id === 'header' ? 'Header' : 'Footer') : after.components[o.id]?.name ?? 'component';
-  const nodeName = (o: { kind: string; id: string }, nodeId: string) => {
-    try {
-      const t = getTree(after, o as never);
-      const n = t.nodes[nodeId];
-      return n ? displayName(after, n) : 'element';
-    } catch {
-      return 'element';
-    }
-  };
-  ops.forEach((op, i) => {
-    const res = (results[i] ?? {}) as Record<string, string>;
-    switch (op.type) {
-      case 'page.create':
-        out.push({ label: `Added page “${op.title}” (${res.route ?? ''})`, pageId: res.pageId });
-        break;
-      case 'page.update':
-        out.push({ label: `Updated page settings for ${ownerName({ kind: 'page', id: op.pageId })}`, pageId: op.pageId });
-        break;
-      case 'page.remove':
-        out.push({ label: `Removed page ${before.pages[op.pageId]?.title ?? ''}` });
-        break;
-      case 'node.insert':
-        out.push({ label: `Added ${op.componentId ? catalogueComponent(after.site.themeId, op.componentId)?.name ?? op.componentId : op.primitive ?? 'component'} to ${ownerName(op.owner)}`, pageId: op.owner.kind === 'page' ? op.owner.id : undefined, nodeId: res.nodeId });
-        break;
-      case 'node.remove':
-        out.push({ label: `Removed an element from ${ownerName(op.owner)}`, pageId: op.owner.kind === 'page' ? op.owner.id : undefined });
-        break;
-      case 'instance.setProp':
-      case 'instance.listInsert':
-      case 'instance.listRemove':
-      case 'instance.listMove':
-        out.push({ label: `Edited ${nodeName(op.owner, op.nodeId)} content on ${ownerName(op.owner)}`, pageId: op.owner.kind === 'page' ? op.owner.id : undefined, nodeId: op.nodeId });
-        break;
-      case 'node.setStyle':
-      case 'node.resetStyles':
-      case 'instance.setVariant':
-        out.push({ label: `Adjusted ${nodeName(op.owner, op.nodeId)} styling on ${ownerName(op.owner)}`, pageId: op.owner.kind === 'page' ? op.owner.id : undefined, nodeId: op.nodeId });
-        break;
-      case 'token.set':
-        out.push({ label: `Changed site style ${op.tokenId}` });
-        break;
-      default:
-        out.push({ label: op.type });
-    }
-  });
-  // Collapse duplicates
-  const seen = new Set<string>();
-  return out.filter((c) => (seen.has(c.label) ? false : (seen.add(c.label), true)));
-}

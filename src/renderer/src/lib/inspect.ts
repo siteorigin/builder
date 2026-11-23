@@ -10,9 +10,10 @@ const SETTLE_MS = 400;
  */
 export async function runInspection(req: { requestId: string; pageId: string; width: number }) {
   let report = await measure(req);
-  // A page the dev server has not caught up with (a route created moments ago, sections just added)
-  // is missing some of its sections; give it one more chance before reporting.
-  if (missingSections(req.pageId, report).length) {
+  // A page the dev server has not caught up with (a route created moments ago, sections just added) is
+  // missing some of its sections, and a file it has not picked up yet fails to load; give it one more
+  // chance before reporting.
+  if (missingSections(req.pageId, report).length || failedImages(report)) {
     await new Promise((r) => setTimeout(r, 1500));
     report = await measure(req);
   }
@@ -22,6 +23,12 @@ export async function runInspection(req: { requestId: string; pageId: string; wi
   // The section list is only for this check; it is not evidence for the AI.
   if (report && typeof report === 'object') delete (report as { sections?: unknown }).sections;
   api.inspectResult(req.requestId, report);
+}
+
+/** How many images the measured load could not load (see the bridge's image check). */
+function failedImages(report: unknown): number {
+  const r = report as { error?: unknown; images?: { failed?: unknown } } | null;
+  return !r || r.error || typeof r.images?.failed !== 'number' ? 0 : r.images.failed;
 }
 
 /** Top-level sections of the page that the measured load did not render. */
@@ -59,8 +66,8 @@ async function measure(req: { requestId: string; pageId: string; width: number }
       if (!m) return;
       if (m.type === 'ready') {
         postToFrame(frame, origin, sessionId, 'mode', { mode: 'preview' });
-        // The frame waits (up to 4s) for fonts and images itself before measuring; loading and
-        // measuring get separate deadlines.
+        // The frame waits (up to 4s) for fonts and images itself, and up to 2.5s more to request again
+        // images that showed nothing, before measuring; loading and measuring get separate deadlines.
         clearTimeout(timer);
         timer = setTimeout(() => done({ error: 'Timed out measuring the page.' }), 8000);
         postToFrame(frame, origin, sessionId, 'inspect', { requestId: req.requestId });

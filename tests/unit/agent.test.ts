@@ -472,7 +472,69 @@ describe('run budget, parallel calls and validation', () => {
     expect(v).toContain('Content is wider than the screen at phone width.');
     expect(v).toContain('Fits the screen at desktop width.');
     expect(v).toContain("Couldn't check the layout at tablet width.");
+    // The tablet check ran twice and failed twice: it is one line, and a check that could not run is not a pass.
+    expect(v.filter((x) => /tablet/.test(x))).toHaveLength(1);
+    expect(result!.checks?.find((c) => /tablet/.test(c.text))?.status).toBe('unverified');
     expect(Object.values(env.session.state.pages).some((p) => p.title === 'Wide')).toBe(true);
+  });
+
+  it('describes an image added with its photo and alt text in one request, and reports each check once with its latest result', async () => {
+    let homeId = '';
+    let imageId = '';
+    const rev = () => env.session.revision;
+    const owner = () => ({ kind: 'page', id: homeId });
+    const images = (failed: number) => ({ total: 1, loaded: 1 - failed, failed, unverified: 0, failedFiles: failed ? ['office-1a2b3c4d.jpg'] : [] });
+    let inspections = 0;
+    const env = await setup(
+      [
+        () => [call('a1', 'apply_operations', { expectedRevision: rev(), operations: [{ type: 'node.insert', owner: owner(), primitive: 'image', index: 1 }] })],
+        () => {
+          imageId = Object.values(env.session.state.pages[homeId].nodes).find((n) => n.kind === 'image')!.id;
+          return [call('a2', 'apply_operations', { expectedRevision: rev(), operations: [{ type: 'node.setContent', owner: owner(), nodeId: imageId, field: 'image', value: { assetId: 'as_office', alt: 'Our office' } }] })];
+        },
+        () => [calls(['i1', 'inspect_layout', { pageId: homeId, viewport: 'phone' }], ['i2', 'inspect_layout', { pageId: homeId, viewport: 'desktop' }])],
+        // The same page again, by its route: the earlier phone result is replaced, not repeated.
+        () => [call('i3', 'inspect_layout', { pageId: '/', viewport: 'phone' })],
+        () => finish('Added the office photo below the heading.')
+      ],
+      // The first phone check catches the image before the preview has it; the second finds it loaded.
+      { inspectLayout: async (_p, width) => ({ issues: [], images: images(width === 390 && ++inspections === 1 ? 1 : 0) }) }
+    );
+    homeId = env.session.state.site.homePageId;
+    const asset = { id: 'as_office', name: 'Office photo', file: 'static/assets/office-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 1000, width: 1600, height: 900, hash: 'h', kind: 'image' as const, createdAt: '2026-01-01T00:00:00Z' };
+    expect((await env.session.apply({ operations: [{ type: 'asset.add', asset }] }, { label: 'Import', source: 'user' })).ok).toBe(true);
+    const { result } = await env.run('Insert the office photo below the heading');
+    expect(result?.status).toBe('completed');
+    expect(result!.changes.map((c) => c.label)).toEqual(['Added image to Home', 'Set the image (“Office photo”) and alt text of Image on Home']);
+    for (const c of result!.changes) {
+      expect(c).toMatchObject({ pageId: homeId, nodeId: imageId });
+      expect(c.label).not.toMatch(/node\.|instance\./);
+    }
+    expect(result!.changes.flatMap((c) => c.operations)).toEqual(['node.insert', 'node.setContent']);
+    // Every check is said once, with its final state, and the stored lines are the same checks.
+    expect(result!.checks).toEqual([
+      { status: 'pass', text: 'Fits the screen at phone width.' },
+      { status: 'pass', text: 'The image loads at phone width.' },
+      { status: 'pass', text: 'Fits the screen at desktop width.' },
+      { status: 'pass', text: 'The image loads at desktop width.' },
+      { status: 'pass', text: 'Project structure, links and references are valid.' },
+      { status: 'pass', text: 'All components build without errors.' }
+    ]);
+    expect(result!.validation).toEqual(result!.checks!.map((c) => c.text));
+  });
+
+  it('reports a missing image as a problem with the site, even when the layout fits', async () => {
+    let homeId = '';
+    const env = await setup(
+      [() => [call('p1', 'apply_operations', create('Gallery', 0))], () => [call('i1', 'inspect_layout', { pageId: homeId, viewport: 'phone' })], () => finish('Added the gallery.')],
+      { inspectLayout: async () => ({ issues: [{ kind: 'broken-image', message: 'Image /assets/gone.jpg failed to load.' }], images: { total: 2, loaded: 1, failed: 1, unverified: 0, failedFiles: ['gone.jpg'] } }) }
+    );
+    homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Add a gallery page');
+    expect(result!.checks?.slice(0, 2)).toEqual([
+      { status: 'pass', text: 'Fits the screen at phone width.' },
+      { status: 'issue', text: 'An image failed to load at phone width (gone.jpg).' }
+    ]);
   });
 });
 
