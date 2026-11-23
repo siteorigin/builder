@@ -47,6 +47,41 @@ describe('measured preview loads', () => {
     expect(staleImages(state, home, { images: { failed: 0, sources: ['/assets/a-11111111.jpg'] } })).toEqual([]);
   });
 
+  it('expects only images the page renders for certain, so an up-to-date load is never called stale', () => {
+    let { state, home } = page();
+    const owner = { kind: 'page' as const, id: home };
+    // A section whose content slot the component really shows, holding photo A.
+    let r = applyOperations(state, [{ type: 'node.insert', owner, componentId: 'layout.section' }]);
+    const section = (r.results[0] as { nodeId: string }).nodeId;
+    r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'image' }]);
+    state = applyOperations(r.state, [{ type: 'node.setContent', owner, nodeId: (r.results[0] as { nodeId: string }).nodeId, field: 'image', value: 'as_a' }]).state;
+    const shown = ['/assets/b-22222222.jpg'];
+    expect(missingImages(state, home, { images: { failed: 0, sources: shown } })).toEqual(['/assets/a-11111111.jpg']);
+    // The same slot in a copy of the component with no place for it: what is put there is never shown.
+    const def = state.components[(state.pages[home].nodes[section] as { definitionId: string }).definitionId];
+    const tree = structuredClone(def.tree!);
+    for (const [id, n] of Object.entries(tree.nodes)) if (n.kind === 'slot') delete tree.nodes[id];
+    const noOutlet = { ...state, components: { ...state.components, [def.id]: { ...def, tree } } };
+    expect(missingImages(noOutlet, home, { images: { failed: 0, sources: shown } })).toEqual([]);
+  });
+
+  it('does not call a library image stale when the project names it in text, on a code page, or at another path', () => {
+    let { state, home } = page();
+    const hero = state.pages[home].rootIds[0];
+    const shown = (path: string) => ({ images: { failed: 0, sources: [path] } });
+    expect(staleImages(state, home, shown('/assets/a-11111111.jpg'))).toEqual(['/assets/a-11111111.jpg']);
+    // Another file that only ends like a library path is not that library image.
+    expect(staleImages(state, home, shown('/campaign/assets/a-11111111.jpg'))).toEqual([]);
+    // A text property naming the file (a component can show an image from an address).
+    const named = applyOperations(state, [{ type: 'instance.setProp', owner: { kind: 'page', id: home }, nodeId: hero, prop: 'lead', value: 'See /assets/a-11111111.jpg' }]).state;
+    expect(staleImages(named, home, shown('/assets/a-11111111.jpg'))).toEqual([]);
+    // A code component on the page can build an address this cannot follow.
+    state = applyOperations(state, [{ type: 'component.createCode', name: 'Photo strip', source: '<div class="g"></div>' }]).state;
+    const code = Object.values(state.components).find((d) => d.name === 'Photo strip')!;
+    state = applyOperations(state, [{ type: 'node.insert', owner: { kind: 'page', id: home }, definitionId: code.id }]).state;
+    expect(staleImages(state, home, shown('/assets/a-11111111.jpg'))).toEqual([]);
+  });
+
   it('counts failed images and sections a load did not render', () => {
     const { state, home } = page();
     expect(failedImages({ images: { failed: 2 } })).toBe(2);
