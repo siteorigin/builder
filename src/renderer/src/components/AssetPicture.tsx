@@ -14,18 +14,19 @@ export function fitFor(a: AssetRecord): { contain: boolean; alpha: boolean } {
  * The picture, once it has loaded, from the local preview server: it never leaves this computer. The transparency
  * checker waits for it, and a file that will not load (or a preview that is not running yet) shows a glyph.
  */
-export function Picture({ a, devUrl, lazy }: { a: AssetRecord; devUrl: string | null; lazy?: boolean }) {
+export function Picture({ a, devUrl, lazy, maxHeight, original }: { a: AssetRecord; devUrl: string | null; lazy?: boolean; maxHeight?: number; original?: boolean }) {
   const [load, setLoad] = useState<'wait' | 'ok' | 'error'>('wait');
   useEffect(() => setLoad('wait'), [a.file, devUrl]);
   if (!devUrl || load === 'error') return <ImageIcon className="asset-noimg" aria-hidden="true" />;
-  // Browsed at the size it is shown: the grid and the replace head load a small copy, the detail frame (176px
-  // tall at most) a larger one. The original is kept and is what the preview, the canvas and the export use.
+  // Browsed at the size it is shown: a tile loads a small copy, a framed preview (`maxHeight` is the tallest it
+  // gets) a larger one. `original` is for looking closely. The original file is kept either way.
   return (
     <AssetImage
       asset={a}
       devUrl={devUrl}
       cover={lazy && !fitFor(a).contain}
-      maxHeight={lazy ? undefined : 176}
+      original={original}
+      maxHeight={maxHeight}
       className={fitFor(a).alpha && load === 'ok' ? 'alpha' : undefined}
       alt=""
       loading={lazy ? 'lazy' : undefined}

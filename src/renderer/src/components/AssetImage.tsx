@@ -11,6 +11,8 @@ type Props = Omit<ImgHTMLAttributes<HTMLImageElement>, 'src' | 'srcSet' | 'sizes
    * Otherwise it is shown whole inside its container, and the container's width (capped by `maxHeight`) is.
    */
   cover?: boolean;
+  /** Deliberate inspection: always the original file, whatever size it is shown at. */
+  original?: boolean;
   /** The tallest the picture may render (CSS px). With its shape this caps the width it can reach. */
   maxHeight?: number;
 };
@@ -36,7 +38,7 @@ function useDevicePixelRatio(): number {
  * load is skipped for the next one, ending at the original. It loads nothing until it has been measured with a
  * size, so a lazy tile or a hidden panel never fetches the big file, and a hidden panel keeps its last size.
  */
-export function AssetImage({ asset, devUrl, cover, maxHeight, onError, ...rest }: Props) {
+export function AssetImage({ asset, devUrl, cover, original, maxHeight, onError, ...rest }: Props) {
   const ref = useRef<HTMLImageElement>(null);
   const [box, setBox] = useState<{ width: number; height: number } | null>(null);
   const dpr = useDevicePixelRatio();
@@ -56,7 +58,7 @@ export function AssetImage({ asset, devUrl, cover, maxHeight, onError, ...rest }
     return () => ro.disconnect();
   }, [cover]);
   let file = asset.file;
-  if (box) {
+  if (box && !original) {
     let width = cover ? coverWidth(box, asset) : box.width;
     if (maxHeight && asset.width && asset.height) width = Math.min(width, (maxHeight * asset.width) / asset.height);
     file = previewFile(asset, width, dpr, failed.key === key ? failed.files : undefined);
@@ -65,7 +67,7 @@ export function AssetImage({ asset, devUrl, cover, maxHeight, onError, ...rest }
     <img
       ref={ref}
       {...rest}
-      src={box ? (assetUrl(devUrl, file) ?? undefined) : undefined}
+      src={box || original ? (assetUrl(devUrl, file) ?? undefined) : undefined}
       onError={(e) => {
         if (file !== asset.file) setFailed((f) => ({ key, files: new Set([...(f.key === key ? f.files : []), file]) }));
         else onError?.(e);

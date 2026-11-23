@@ -118,11 +118,9 @@ try {
     await eventually(async () => assert.equal(await loaded(card().locator(`[data-asset-id="${id}"] img`)), true, `${id} shows`), 30000);
   }
   const srcs = await choices.locator('img').evaluateAll((els) => els.map((e) => e.currentSrc || e.src));
-  assert.deepEqual(
-    srcs.map((s) => new URL(s).pathname),
-    [first, second].map(servedAt),
-    'each choice shows its own file'
-  );
+  // A tile shows a generated smaller copy of its photo (#223); each still shows its own, never the other's.
+  const filesOf = (id) => [snap.state.assets.assets[id].file, ...(snap.state.assets.assets[id].variants ?? []).map((v) => v.file)].map((f) => `/${f.replace(/^static\//, '')}`);
+  srcs.forEach((s, i) => assert.ok(filesOf([first, second][i]).includes(new URL(s).pathname), `choice ${i + 1} shows its own photo or a smaller copy of it (${new URL(s).pathname})`));
   assert.notEqual(servedAt(first), servedAt(second), 'two different files');
   assert.ok(srcs.every((s) => /^http:\/\/(127\.0\.0\.1|localhost)/.test(s)), 'the pictures load from the local preview');
   assert.equal(await card().getByRole('button', { name: 'Keep it as it is' }).count(), 1, 'the text choice stays');
