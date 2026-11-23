@@ -14,9 +14,10 @@ vi.mock('electron', () => ({
   dialog: {},
   shell: {}
 }));
-const settings = vi.hoisted(() => ({ recentsFail: false }));
+const settings = vi.hoisted(() => ({ recentsFail: false, recents: 0 }));
 vi.mock('../../src/main/settings', () => ({
   addRecent: async () => {
+    settings.recents++;
     if (settings.recentsFail) throw new Error('EACCES: permission denied, open settings.json');
   },
   isTrusted: async () => true,
@@ -25,7 +26,7 @@ vi.mock('../../src/main/settings', () => ({
 }));
 // The website tools install stands in for npm: by default it finishes at once; a test can make it wait for Cancel,
 // fail, or write into the folder while it runs.
-const deps = vi.hoisted(() => ({ run: null as null | ((dir: string, signal?: AbortSignal) => Promise<void>) }));
+const deps = vi.hoisted(() => ({ run: null as null | ((dir: string, signal?: AbortSignal) => Promise<void>), previewFails: false }));
 vi.mock('../../src/main/runtime/manager', () => ({
   dependenciesReady: async () => true,
   prepareDependencies: async (dir: string, _onLine: (l: string) => void, signal?: AbortSignal) => {
@@ -38,7 +39,9 @@ vi.mock('../../src/main/runtime/manager', () => ({
     status = { state: 'idle' };
     onStatus() {}
     notifyRevision() {}
-    async start() {}
+    async start() {
+      if (deps.previewFails) throw new Error('The preview could not start.');
+    }
     async stop() {}
   }
 }));
@@ -53,7 +56,9 @@ const controllers: InstanceType<typeof Controller>[] = [];
 
 afterEach(async () => {
   deps.run = null;
+  deps.previewFails = false;
   settings.recentsFail = false;
+  settings.recents = 0;
   vi.restoreAllMocks();
   for (const c of controllers.splice(0)) await c.close();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
@@ -81,6 +86,10 @@ function setup() {
   controllers.push(c);
   return { c, parent, hooks };
 }
+
+/** Every path in the folder, files and folders alike. */
+const tree = (d: string) => (readdirSync(d, { recursive: true }) as string[]).sort();
+const theirLock = JSON.stringify({ pid: 1, host: 'another computer', instance: 'other-app', token: 'f00dfacef00dface', started: new Date().toISOString() });
 
 const opts = (parent: string) => ({ name: 'Meadow Studio', parentDir: parent, starter: 'business' as const, sampleImages: true });
 
@@ -224,6 +233,24 @@ describe('New project after a recoverable failure', () => {
   });
 });
 
+describe('New project when the preview fails to start', () => {
+  it('closes the project it had opened and leaves an author’s folder empty, and a retry works', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    deps.previewFails = true;
+    deps.run = async (d) => {
+      mkdirSync(join(d, 'node_modules', 'vite'), { recursive: true });
+    };
+    const r = await c.create(opts(parent));
+    expect(r).toEqual({ ok: false, message: 'The preview could not start.' });
+    expect(c.session).toBeNull();
+    expect(readdirSync(dir)).toEqual([]);
+    deps.previewFails = false;
+    expect(await c.create(opts(parent))).toEqual({ ok: true });
+  });
+});
+
 describe('New project when cleaning up goes wrong', () => {
   it('gives the claim up when the folder cannot be read again after claiming it, so a retry works', async () => {
     const { c, parent } = setup();
@@ -262,6 +289,7 @@ describe('New project when cleaning up goes wrong', () => {
     const { c, parent } = setup();
     settings.recentsFail = true;
     expect(await c.create(opts(parent))).toEqual({ ok: true });
+    expect(settings.recents).toBe(1);
     expect(existsSync(join(parent, 'meadow-studio', 'siteorigin.project.json'))).toBe(true);
     expect(c.session).not.toBeNull();
   });
@@ -282,25 +310,27 @@ describe('protecting what was already there', () => {
     expect((await c.create({ ...opts(parent), starter: 'blank' })).ok).toBe(false);
     expect(readdirSync(dir).sort()).toEqual(['.svelte-kit', 'NOTICE.md']);
     expect(readFileSync(join(dir, 'NOTICE.md'), 'utf8')).toBe('synced from elsewhere');
+    expect(readFileSync(join(dir, '.svelte-kit', 'note.txt'), 'utf8')).toBe('not the preview’s');
   });
 
   it('removes nothing when another app took the new project over while its tools were installing', async () => {
     const { c, parent, hooks } = setup();
     const dir = join(parent, 'meadow-studio');
     mkdirSync(dir);
-    const theirs = JSON.stringify({ pid: 1, host: 'another computer', instance: 'other-app', token: 'f00dfacef00dface', started: new Date().toISOString() });
+    const theirs = theirLock;
     let before: string[] = [];
     // Unlock in another window: the lock is now that app's.
     deps.run = (d, signal) => {
       writeFileSync(join(d, '.siteorigin', 'lock.json'), theirs);
       const installing = untilCancelled(d, signal);
-      before = readdirSync(d).sort();
+      before = tree(d);
       return installing;
     };
     hooks.cancelAt = 'dependencies';
-    expect(await c.create(opts(parent))).toEqual({ ok: false, message: 'Cancelled.' });
-    expect(readdirSync(dir).sort()).toEqual(before);
+    expect(await c.create(opts(parent))).toEqual({ ok: false, message: `Cancelled. The new project’s files were left in ${dir}.` });
+    expect(tree(dir)).toEqual(before);
     expect(before).toContain('siteorigin.project.json');
+    expect(before).toContain(join('.siteorigin', 'lock.json'));
     expect(readFileSync(join(dir, '.siteorigin', 'lock.json'), 'utf8')).toBe(theirs);
   });
 
@@ -368,13 +398,80 @@ describe('protecting what was already there', () => {
     mkdirSync(dir);
     let before: string[] = [];
     vi.spyOn(ProjectSession.prototype, 'acquireLock').mockImplementation(async () => {
-      before = readdirSync(dir).sort();
+      writeFileSync(join(dir, '.siteorigin', 'lock.json'), theirLock);
+      before = tree(dir);
       return new ProjectLockedError('This project is already open in SiteOrigin Builder on another computer.', { host: 'another computer', token: 'x' } as never);
     });
     const r = await c.create(opts(parent));
     expect(r.ok).toBe(false);
     expect(before).toContain('siteorigin.project.json');
-    expect(readdirSync(dir).sort()).toEqual(before);
+    expect(tree(dir)).toEqual(before);
+    expect(readFileSync(join(dir, '.siteorigin', 'lock.json'), 'utf8')).toBe(theirLock);
+  });
+
+  it('removes nothing when taking the lock fails and another app’s lock is there', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    let before: string[] = [];
+    vi.spyOn(ProjectSession.prototype, 'acquireLock').mockImplementation(async () => {
+      writeFileSync(join(dir, '.siteorigin', 'lock.json'), theirLock);
+      before = tree(dir);
+      throw Object.assign(new Error('EMFILE: too many open files, open lock.json'), { code: 'EMFILE' });
+    });
+    const r = await c.create(opts(parent));
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain(`The new project’s files were left in ${dir}.`);
+    expect(before).toContain('siteorigin.project.json');
+    expect(tree(dir)).toEqual(before);
+  });
+
+  for (const foreignLock of [false, true]) {
+    it(`${foreignLock ? 'removes nothing' : 'cleans up'} when setting the project up fails part way${foreignLock ? ' and another app has locked it meanwhile' : ''}`, async () => {
+      const { c, parent } = setup();
+      const dir = join(parent, 'meadow-studio');
+      mkdirSync(dir);
+      const create = ProjectSession.create.bind(ProjectSession);
+      let before: string[] = [];
+      vi.spyOn(ProjectSession, 'create').mockImplementation(async (d, state) => {
+        await create(d, state);
+        if (foreignLock) writeFileSync(join(d, '.siteorigin', 'lock.json'), theirLock);
+        before = tree(d);
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+      });
+      const r = await c.create(opts(parent));
+      expect(r.ok).toBe(false);
+      expect(before).toContain('siteorigin.project.json');
+      if (foreignLock) {
+        expect(tree(dir)).toEqual(before);
+      } else {
+        expect(r.message).toBe('Your disk is full. Free up some space and try again.');
+        expect(readdirSync(dir)).toEqual([]);
+        vi.restoreAllMocks();
+        expect(await c.create(opts(parent))).toEqual({ ok: true });
+      }
+    });
+  }
+
+  it('keeps a folder something else made under a project name before this attempt wrote there', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    // It arrives while the template is copied, before the project's own documents and site are written.
+    const cp = fs.cp.bind(fs);
+    vi.spyOn(fs, 'cp').mockImplementation((async (from: string, to: string, o?: object) => {
+      await cp(from, to, o);
+      if (to === dir) {
+        mkdirSync(join(dir, 'static'));
+        writeFileSync(join(dir, 'static', 'synced.txt'), 'theirs');
+      }
+    }) as never);
+    deps.run = async () => {
+      throw new Error('Installing dependencies failed (exit 1).');
+    };
+    expect((await c.create({ ...opts(parent), starter: 'blank' })).ok).toBe(false);
+    expect(readdirSync(dir)).toEqual(['static']);
+    expect(readFileSync(join(dir, 'static', 'synced.txt'), 'utf8')).toBe('theirs');
   });
 
   it('refuses a folder that already holds files and leaves them untouched', async () => {

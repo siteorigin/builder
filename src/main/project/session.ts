@@ -1099,6 +1099,18 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(fn, false);
   }
 
+  /**
+   * Run `fn` only if this app still owns the project, holding the lock generation's claim throughout, so no takeover
+   * can land between the check and `fn`. Says whether it ran.
+   */
+  whileOwner(fn: () => Promise<unknown>): Promise<boolean> {
+    return this.serialize(async () => {
+      if (this.lockState !== 'held' || !(await this.stillOwner())) return false;
+      await fn();
+      return true;
+    });
+  }
+
   /** Commands run one at a time, each (unless it only reads) holding the lock generation's claim throughout. */
   private serialize<T>(fn: () => Promise<T>, writes = true): Promise<T> {
     const run = writes ? () => this.fenced(fn) : fn;
