@@ -321,6 +321,16 @@ describe('opening a project ZIP file (#263)', () => {
     expect(readdirSync(join(projectDir, 'src', 'routes'))).toEqual([]);
   });
 
+  it('neither overwrites nor trusts settings it could not read at start', async () => {
+    // A fresh start of the app whose settings file cannot be read.
+    state.userData = tmp('so-userdata-unread-');
+    mkdirSync(join(state.userData, 'settings.json', 'blocked'), { recursive: true });
+    vi.resetModules();
+    const fresh = await import('../../src/main/settings');
+    await expect(fresh.untrust(join(state.userData, 'cafe'))).rejects.toThrow(/could not read its settings/);
+    expect(statSync(join(state.userData, 'settings.json')).isDirectory()).toBe(true);
+  });
+
   it('unpacks nothing when its window goes while the folder picker is up', async () => {
     const zip = await editableZip();
     const parent = tmp('so-recipient-');

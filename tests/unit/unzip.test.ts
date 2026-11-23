@@ -170,6 +170,8 @@ describe('telling ZIP files apart', () => {
     expect(await kind([{ name: 'index.html', data: '' }, { name: '_app/x.js', data: '' }, { name: 'a/b/siteorigin.project.json', data: '{}' }])).toBe('other');
     // The Finder's own folder beside the project's one folder does not count as a second folder.
     expect(await kind([{ name: 'cafe/siteorigin.project.json', data: '{}' }, { name: '__MACOSX/cafe/._x', data: '' }])).toBe('project');
+    // Even when the project's folder is named like it in other letters, and the Finder's comes first.
+    expect(await kind([{ name: '__MACOSX/._x', data: '' }, { name: '__macosx/siteorigin.project.json', data: '{}' }])).toBe('project');
   });
 
   it('reads names older Windows tools write in code page 437, and Info-ZIP’s Unicode names', async () => {
@@ -267,9 +269,9 @@ describe('an archive that could do harm', () => {
     await refuses([{ name: 'p\\logo.png', data: 'a', host: 0 }, { name: 'p/logo.png', data: 'b', host: 0 }], /two files named/);
     await refuses([{ name: 'P/a', data: 'a' }, { name: 'p/a/b', data: 'b' }], /both as a file and as a folder/);
     await refuses([{ name: 'p/a/b', data: 'b' }, { name: 'P/a', data: 'a' }], /both as a file and as a folder/);
-    // The same folder spelled two ways is one folder, written the way it was first spelled on every disk.
-    const entries = await readZipEntries(zipFile([{ name: 'p/' }, { name: 'P/a', data: 'a' }, { name: 'p/b', data: 'b' }, { name: 'P/Q/' }, { name: 'p/q/c', data: 'c' }]));
-    expect(entries.map((e) => e.path)).toEqual(['p', 'p/a', 'p/b', 'p/Q', 'p/Q/c']);
+    // Folders spelled two ways are kept as spelled (a Linux project may really have both); their files differ.
+    const entries = await readZipEntries(zipFile([{ name: 'p/' }, { name: 'P/a', data: 'a' }, { name: 'static/Icons/apple.svg', data: 'b' }, { name: 'static/icons/pear.svg', data: 'c' }]));
+    expect(entries.map((e) => e.path)).toEqual(['p', 'P/a', 'static/Icons/apple.svg', 'static/icons/pear.svg']);
   });
 
   it('never writes a link, whether made on Unix or on a Mac', async () => {
@@ -308,6 +310,10 @@ describe('an archive that could do harm', () => {
   it('refuses more folders than a project could have, however few entries name them', async () => {
     const deep = Array.from({ length: 80 }, (_, k) => ({ name: `d${k}/${'a/'.repeat(255)}` }));
     await expect(readZipEntries(zipFile([{ name: 'siteorigin.project.json', data: '{}' }, ...deep]))).rejects.toThrow(/more folders than a project can/);
+    // Spellings that differ only in case are separate folders on a case-sensitive disk, so they count separately.
+    const spelled = (k: number) => [...'abcdefg'].map((ch, i) => (k >> i) & 1 ? ch.toUpperCase() : ch).join('');
+    const variants = Array.from({ length: 80 }, (_, k) => ({ name: `${spelled(k)}/${'a/'.repeat(255)}` }));
+    await expect(readZipEntries(zipFile([{ name: 'siteorigin.project.json', data: '{}' }, ...variants]))).rejects.toThrow(/more folders than a project can/);
   });
 
   it('never reads past an entry into the next one', async () => {

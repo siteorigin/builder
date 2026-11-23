@@ -149,16 +149,14 @@ function findEndRecord(tail: Buffer, size: number): number {
   return -1;
 }
 
-/**
- * A folder (or file) in the archive's tree, keyed by each name as a case-insensitive disk would compare it, with the
- * spelling it was first seen with: every path is written with those spellings, so the folders made on any disk are
- * exactly the ones counted here.
- */
+/** A folder (or file) in the archive's tree, keyed by each name as a case-insensitive disk would compare it. */
 interface TreeNode {
   kind: 'file' | 'dir';
-  name: string;
   children?: Map<string, TreeNode>;
 }
+
+/** The archive's folders as spelled, which is what a case-sensitive disk makes. */
+type Spelled = Map<string, Spelled>;
 
 /** List a ZIP file's entries from its central directory, checking every name and limit before anything is written. */
 export async function readZipEntries(file: string): Promise<ZipEntry[]> {
@@ -184,7 +182,8 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
     const entries: ZipEntry[] = [];
     // Every path, folders included, as a tree of names a case-insensitive disk would compare: each name is held once,
     // so a hostile list of long, deep paths costs no more than its own size.
-    const tree: TreeNode = { kind: 'dir', name: '', children: new Map() };
+    const tree: TreeNode = { kind: 'dir', children: new Map() };
+    const spelledTree: Spelled = new Map();
     let folders = 0;
     let total = 0;
     let p = 0;
@@ -224,10 +223,19 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
         total += entrySize;
         if (total > MAX_TOTAL_BYTES) throw new ZipError(`That ZIP file would take more than ${MAX_TOTAL_BYTES / 1024 ** 3} GB once extracted, so it was not opened. ${EXTRACT_ELSEWHERE}`);
       }
-      // Two names one folder cannot tell apart (different case or accents, a file where a folder must go) would
-      // overwrite each other. Every folder a path implies counts, so empty folders cannot multiply unseen.
       const parts = path.split('/');
-      const spelled: string[] = [];
+      // Every folder a path implies counts, as spelled, so empty folders cannot multiply unseen on any disk.
+      let at = spelledTree;
+      for (const part of directory ? parts : parts.slice(0, -1)) {
+        let next = at.get(part);
+        if (!next) {
+          if (++folders > MAX_ENTRIES) throw new ZipError('That ZIP file holds more folders than a project can, so it was not opened.');
+          at.set(part, (next = new Map()));
+        }
+        at = next;
+      }
+      // Two names one folder cannot tell apart (different case or accents, a file where a folder must go) would
+      // overwrite each other.
       let node = tree;
       for (let i = 0; i < parts.length; i++) {
         const kind = i < parts.length - 1 || directory ? 'dir' : 'file';
@@ -237,17 +245,14 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
         if (before && before.kind !== kind) throw new ZipError(`That ZIP file contains ${where()} both as a file and as a folder, so it was not opened.`);
         if (before?.kind === 'file') throw new ZipError(`That ZIP file contains two files named ${where()} (perhaps with different capital letters or accents), so it was not opened.`);
         if (before) {
-          spelled.push(before.name);
           node = before;
           continue;
         }
-        if (kind === 'dir' && ++folders > MAX_ENTRIES) throw new ZipError('That ZIP file holds more folders than a project can, so it was not opened.');
-        const added: TreeNode = kind === 'dir' ? { kind, name: parts[i], children: new Map() } : { kind, name: parts[i] };
+        const added: TreeNode = kind === 'dir' ? { kind, children: new Map() } : { kind };
         node.children!.set(key, added);
-        spelled.push(parts[i]);
         node = added;
       }
-      entries.push({ path: spelled.join('/'), directory, special, executable: (unixMode & 0o111) !== 0, method, crc, compressedSize, size: entrySize, localOffset, dataLimit: cdOffset });
+      entries.push({ path, directory, special, executable: (unixMode & 0o111) !== 0, method, crc, compressedSize, size: entrySize, localOffset, dataLimit: cdOffset });
     }
     // Each entry's data must end before the next entry starts: entries that share their bytes are refused when read.
     const byOffset = [...entries].sort((a, b) => a.localOffset - b.localOffset);
