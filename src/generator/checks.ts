@@ -390,7 +390,8 @@ export interface RenderedContent {
  * form (`namesFormFields`), so a copy's fields are left to the inspector.
  */
 function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
-  if (def.owner === 'theme') return def.componentId === 'shell.header' || (def.componentId === 'contact.form' && namesFormFields(def)) ? def.componentId : undefined;
+  if (def.owner === 'theme')
+    return def.componentId === 'shell.header' || def.componentId === 'data.table' || (def.componentId === 'contact.form' && namesFormFields(def)) ? def.componentId : undefined;
   // Back through every copy (a copy of a copy) to where it started.
   let from = def.provenance?.forkedFrom;
   for (let guard = 0; from && guard < 20; guard++) {
@@ -409,6 +410,8 @@ function shippedCode(state: ProjectState, def: ComponentDefinition): string | un
  */
 function shippedCodeShows(state: ProjectState, which: string, props: Record<string, unknown>): Set<string> {
   if (which === 'contact.form') return new Set(['eyebrow', 'heading', 'lead', 'fields.label', 'fields.placeholder', 'submitLabel', 'successMessage', 'errorMessage']);
+  // The table's words around it. Its cells are a table value, edited in the inspector's table editor.
+  if (which === 'data.table') return new Set(['eyebrow', 'heading', 'lead', 'caption']);
   // As the header's markup reads them: `!!name && (showSiteName || !logo?.src)`, and `ctaLabel && ctaLink?.href`.
   const out = new Set(['links.label', 'links.link']);
   if (props.siteName && (props.showSiteName !== false || !shown(props.logo, state))) out.add('siteName');
