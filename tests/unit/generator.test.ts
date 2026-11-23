@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compile } from 'svelte/compiler';
+import { compile, parse } from 'svelte/compiler';
 import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
@@ -54,22 +54,46 @@ describe('generated Svelte compiles', () => {
 });
 
 describe('unsent form drafts (issue #274)', () => {
+  /** Every element in a Svelte source, with the names of its attributes. */
+  const elements = (source: string) => {
+    const found: Array<{ name: string; attributes: string[] }> = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== 'object') return;
+      const n = node as { type?: string; name?: string; attributes?: Array<{ type: string; name?: string }> };
+      if (n.type === 'RegularElement') found.push({ name: n.name!, attributes: (n.attributes ?? []).filter((a) => a.type === 'Attribute').map((a) => a.name!) });
+      for (const [key, value] of Object.entries(node)) if (key !== 'metadata' && key !== 'parent') walk(value);
+    };
+    walk(parse(source, { modern: true }).fragment);
+    return found;
+  };
+
   it('ships the draft keeper with every site and runs it once from the root layout, in the export and the preview', () => {
     for (const files of [generateProject(fresh()), generateProject(fresh(), { instrument: true }), generateProject(createStarterState('blank', 'Blank', false))]) {
       expect(files.get(`${RUNTIME_DIR}/drafts.js`)).toBe(DRAFTS_JS);
-      const layout = files.get('src/routes/+layout.svelte')!;
-      expect(layout).toContain("import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';");
-      expect(layout.match(/keepDrafts\(\);/g)).toHaveLength(1);
+      // A statement of the layout's own script, so it runs whenever the layout does.
+      const body = (parse(files.get('src/routes/+layout.svelte')!, { modern: true }).instance?.content.body ?? []) as unknown as Array<{
+        type: string;
+        source?: { value: string };
+        specifiers?: Array<{ local: { name: string } }>;
+        expression?: { type: string; callee?: { type: string; name?: string }; arguments?: unknown[] };
+      }>;
+      expect(body.filter((n) => n.type === 'ImportDeclaration' && n.source?.value === '../lib/siteorigin/runtime/drafts.js').map((n) => n.specifiers?.map((sp) => sp.local.name))).toEqual([['keepDrafts']]);
+      const calls = body.filter((n) => n.type === 'ExpressionStatement' && n.expression?.type === 'CallExpression' && n.expression.callee?.type === 'Identifier' && n.expression.callee.name === 'keepDrafts');
+      expect(calls.map((n) => n.expression?.arguments)).toEqual([[]]);
     }
     // Plain SvelteKit: no editor instrumentation, and nothing imported but Svelte and SvelteKit.
     expect(DRAFTS_JS).not.toMatch(/data-so-|__so|siteorigin-bridge/);
-    expect([...DRAFTS_JS.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['svelte', '$app/navigation']);
+    expect([...DRAFTS_JS.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['svelte', '$app/navigation', '$app/state']);
   });
 
   it('marks the theme contact form and each answer for it, and keeps the form a component a customised copy can save', async () => {
     const source = contactForm.source!;
-    expect(source).toMatch(/<form\b[^>]*\sdata-keep-draft\s/);
-    expect(source.match(/data-draft-field=\{field\.id \?\? i\}/g)).toHaveLength(2);
+    const all = elements(source);
+    expect(all.filter((e) => e.attributes.includes('data-keep-draft')).map((e) => e.name)).toEqual(['form']);
+    // Every visible answer, and nothing else: not the provider's hidden fields or the spam trap.
+    expect(all.filter((e) => e.attributes.includes('data-draft-field')).map((e) => e.name)).toEqual(['textarea', 'input']);
+    expect(all.filter((e) => e.attributes.includes('data-draft-field')).every((e) => e.attributes.includes('required') && e.attributes.includes('oninput'))).toBe(true);
     // Forking or duplicating the form makes it a project component, whose code must pass the ordinary check.
     expect((await checkSvelteSource(source)).filter((p) => p.severity === 'error')).toEqual([]);
   });
