@@ -115,7 +115,8 @@ function plansDef(s: ProjectState) {
             b.text('card-name', 'h3', item('name')),
             b.text('badge', 'span', 'Most popular', { when: eq(item('featured'), true) }),
             b.text('standard', 'span', 'Standard plan', { when: eq(item('featured'), false) }),
-            b.text('team', 'span', 'For teams', { when: ne(item('seats'), 1) })
+            b.text('team', 'span', 'For teams', { when: ne(item('seats'), 1) }),
+            b.text('solo', 'span', 'Just you', { unless: ne(item('seats'), 1) })
           ])
         ])
       ])
@@ -137,10 +138,12 @@ describe('conditions that compare a value (#90)', () => {
     expect(cards[0]).not.toContain('Most popular');
     expect(cards[0]).toContain('Standard plan');
     expect(cards[0]).not.toContain('For teams');
+    expect(cards[0]).toContain('Just you');
     expect(cards[1]).toContain('Pro');
     expect(cards[1]).toContain('Most popular');
     expect(cards[1]).not.toContain('Standard plan');
     expect(cards[1]).toContain('For teams');
+    expect(cards[1]).not.toContain('Just you');
     expect(video).toContain('Plays a video');
     expect(video).not.toContain('Shows a still');
     expect(image).toContain('Shows a still');
@@ -270,16 +273,18 @@ describe('properties that choose a tag, a variant and an accessible name (#90)',
     expect(big).toMatch(new RegExp(`^<article\\b[^>]*\\b${root}\\b`));
     expect(big).toMatch(/<h1\b[^>]*>Big welcome<\/h1>/);
     expect(openTag(big, gridRoot)).toContain(toneClass(tones[1]));
+    expect(openTag(big, gridRoot)).not.toContain(toneClass(tones[0]));
     expect(quiet).toMatch(new RegExp(`^<section\\b[^>]*\\b${root}\\b`));
     expect(quiet).toMatch(/<h2\b[^>]*>Quiet welcome<\/h2>/);
     expect(openTag(quiet, gridRoot)).toContain(toneClass(tones[0]));
+    expect(openTag(quiet, gridRoot)).not.toContain(toneClass(tones[1]));
   });
 
   it('names a navigation landmark and an icon from properties, falling back to the heading when blank', async () => {
     const s = fresh();
     const { def } = heroDef(s);
     place(s, def, { navName: 'Resources' });
-    place(s, def, { navName: '   ', iconName: '' });
+    place(s, def, { navName: '   ', iconName: '   ' });
     const [named, blank] = placements(await renderHome(s), def);
     const nav = (html: string) => openTag(html, nodeClass(def, 'nav'));
     const star = (html: string) => openTag(html, nodeClass(def, 'star'));
@@ -365,6 +370,9 @@ describe('properties that choose a tag, a variant and an accessible name (#90)',
       build: (b) => b.el('root', 'div', {}, [b.el('card-title', prop('wrap'), {}, [b.text('a', 'p', 'A')]), b.el('_card_title', prop('wrap'), {}, [b.text('b', 'p', 'B')])])
     });
     place(s, def, { wrap: 'section' });
+    expect(compileErrors(s)).toEqual([]);
+    // A hand-edited property named like a generated snippet keeps a local of its own.
+    def.properties.so_children_1 = P.str('Odd', 'x');
     expect(compileErrors(s)).toEqual([]);
   });
 });
@@ -493,6 +501,15 @@ describe('cards that link as a whole (#90)', () => {
     expect(count(html, new RegExp(`<article class="${card}">`))).toBe(1);
     expect(html).toMatch(new RegExp(`<article class="${card}">\\s*<h3[^>]*>Build</h3>\\s*</article>`));
     expect(html).toMatch(/<a href="https:\/\/example\.com\/feature" class="so-card-link/);
+    expect(html).not.toMatch(/<a href="https:\/\/example\.com\/design"[^>]*target=/);
+  });
+
+  it('opens a card in a new tab when its destination says so', async () => {
+    const s = fresh();
+    const def = cardsDef(s);
+    place(s, def, { featureLink: { type: 'url', target: 'https://example.com/feature', newTab: true } });
+    const [html] = placements(await renderHome(s), def);
+    expect(html).toMatch(/<a href="https:\/\/example\.com\/feature" class="so-card-link[^"]*" target="_blank" rel="noopener noreferrer">/);
   });
 
   it('refuses a card with a button inside it, and generates the card without its link', async () => {
@@ -621,6 +638,47 @@ describe('cards that link as a whole (#90)', () => {
     const started = performance.now();
     expect(validateState(s).filter((d) => d.code === 'CARD_LINK_INTERACTIVE')).toEqual([]);
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it('stays quick when every level of a library passes a card slot on through two placements', () => {
+    const s = fresh();
+    let prev = addDef(s, {
+      componentId: 'test.slotcard',
+      name: 'Slot card',
+      properties: {},
+      parts: {},
+      slots: { body: { label: 'Body' } },
+      build: (b) => b.el('card', 'div', { link: { type: 'url', target: 'https://example.com' } }, [b.slot('s', 'body')])
+    });
+    for (let i = 0; i < 25; i++) {
+      const below = prev;
+      prev = addDef(s, {
+        componentId: `test.pass${i}`,
+        name: `Pass ${i}`,
+        properties: {},
+        parts: {},
+        slots: { body: { label: 'Body' } },
+        build: (b) => {
+          b.slot('sa', 'body');
+          b.slot('sb', 'body');
+          for (const [id, slot] of [['a', 'sa'], ['b', 'sb']]) b.nodes[id] = { ...makeInstance(below, {}), id, slots: { body: [slot] } };
+          return b.el('root', 'div', {}, ['a', 'b']);
+        }
+      });
+    }
+    const started = performance.now();
+    expect(validateState(s).filter((d) => d.code === 'CARD_LINK_INTERACTIVE')).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+
+  it('survives a card whose content lists itself as its own child', () => {
+    const s = fresh();
+    const def = cardsDef(s);
+    def.properties.box = P.choice('Box', 'div', [['div', 'Plain'], ['details', 'Disclosure']]);
+    // Listed before the card, so a parent search finds the loop first.
+    def.tree!.nodes = { loop: { id: 'loop', kind: 'element', tag: { $item: 'tag' }, children: ['loop'] }, ...def.tree!.nodes };
+    (def.tree!.nodes.feature as { children: string[] }).children.push('loop');
+    expect(() => validateState(s)).not.toThrow();
   });
 
   it('refuses an edit that puts a link inside a card, and counts a bound destination as used', () => {

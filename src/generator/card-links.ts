@@ -37,6 +37,13 @@ export interface CardProblem {
 
 export const cardKey = (c: CardRef) => `${c.owner.kind}:${c.owner.id}:${c.cardId}`;
 
+/** Cards from both lists, each once: forwarding one slot through many placements still names each card once. */
+const mergeCards = (a: CardRef[], b: CardRef[]): CardRef[] => {
+  if (!b.length) return a;
+  const keys = new Set(a.map(cardKey));
+  return [...a, ...b.filter((c) => !keys.has(cardKey(c)) && keys.add(cardKey(c)))];
+};
+
 function richHasLink(value: unknown): boolean {
   const spans = (s: RichSpan[]) => s.some((x) => !!x.link);
   return toRichText(value).some((b) => (isListBlock(b) ? b.items.some(spans) : spans(b.spans)));
@@ -191,7 +198,7 @@ function cardSlots(pass: Pass, def: ComponentDefinition): Map<string, CardRef[]>
     const out = new Map<string, CardRef[]>();
     const tree = def.tree;
     if (def.kind !== 'managed' || !tree) return out;
-    const add = (slot: string, cards: CardRef[]) => out.set(slot, [...(out.get(slot) ?? []), ...cards]);
+    const add = (slot: string, cards: CardRef[]) => out.set(slot, mergeCards(out.get(slot) ?? [], cards));
     const seen = new Set<string>();
     const walk = (ids: string[], cards: CardRef[]) => {
       for (const id of ids) {
@@ -199,13 +206,13 @@ function cardSlots(pass: Pass, def: ComponentDefinition): Map<string, CardRef[]>
         if (!n || seen.has(id)) continue;
         seen.add(id);
         if (n.kind === 'slot' && cards.length) add(n.slot, cards);
-        if (n.kind === 'element' || n.kind === 'repeat') walk(n.children, isCardLink(n) ? [...cards, { owner: { kind: 'component', id: def.id }, cardId: n.id }] : cards);
+        if (n.kind === 'element' || n.kind === 'repeat') walk(n.children, isCardLink(n) ? mergeCards(cards, [{ owner: { kind: 'component', id: def.id }, cardId: n.id }]) : cards);
         if (n.kind === 'instance') {
           const nested = pass.state.components[n.definitionId];
           if (!nested) continue;
           const shown = renderedSlots(pass, nested);
           const inner = cardSlots(pass, nested);
-          for (const [slot, content] of Object.entries(n.slots ?? {})) if (shown.has(slot)) walk(content, [...cards, ...(inner.get(slot) ?? [])]);
+          for (const [slot, content] of Object.entries(n.slots ?? {})) if (shown.has(slot)) walk(content, mergeCards(cards, inner.get(slot) ?? []));
         }
       }
     };

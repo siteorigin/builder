@@ -360,8 +360,11 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
 /** The list property repeated by the nearest repeat above a node, or null outside any repeat. */
 export function enclosingList(def: ComponentDefinition, nodeId: string): ListProp | null {
   const tree = def.tree as NodeTree;
+  // A hand-edited tree can list a node under itself; each ancestor is visited once.
+  const seen = new Set<string>([nodeId]);
   let cur = findParent(tree, nodeId);
-  while (cur && cur.parentId) {
+  while (cur && cur.parentId && !seen.has(cur.parentId)) {
+    seen.add(cur.parentId);
     const p = tree.nodes[cur.parentId];
     if (p?.kind === 'repeat') {
       const schema = def.properties[p.list.$prop];
