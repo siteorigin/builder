@@ -1,12 +1,14 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Box, ChevronRight, Columns3, Component, Copy, CornerDownRight, Ellipsis, Eye, EyeOff, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
+import { ArrowDown, ArrowUp, Box, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
+import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
 import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { askAiAbout, deleteSelection, duplicateSelection, moveSelection } from '../lib/actions';
+import { everySizeEdits, eyeAction, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type VisibilityEdit } from '../lib/layers';
 
 /*
  * The Layers panel: the current page's outline (shared header, page content, shared footer), or a
@@ -55,10 +57,6 @@ function kindIcon(n: GraphNode) {
 /** The layer currently being dragged (only nodes owned directly by a page or definition tree). */
 let dragging: { owner: OwnerRef; nodeId: string } | null = null;
 
-function isHidden(n: GraphNode) {
-  return !!n.styles?.base?.hidden || (n.kind === 'instance' && !!n.overrides?.root?.base?.hidden);
-}
-
 /** Whether hiding a layer can work: not a repeat or slot, and not a code component that ignores the classes it is given. */
 function hideable(state: ProjectState, n: GraphNode) {
   if (n.kind === 'repeat' || n.kind === 'slot') return false;
@@ -67,10 +65,32 @@ function hideable(state: ProjectState, n: GraphNode) {
   return !!def && codeTakesOverrides(def);
 }
 
-/** Hide a layer at every size, or show it again. Sizes with their own visibility keep it. */
-function toggleHidden(owner: OwnerRef, n: GraphNode, name: string) {
-  const hide = !isHidden(n);
-  void applyOps([{ type: 'node.setStyle', owner, nodeId: n.id, ...(n.kind === 'instance' ? { partId: 'root' } : {}), scope: 'base', property: 'hidden', value: hide ? true : null }], hide ? `Hide ${name}` : `Show ${name}`);
+/** Change where a layer shows (see lib/layers: every size, or the size being previewed). */
+function applyVisibility(owner: OwnerRef, nodeId: string, edits: VisibilityEdit[], label: string) {
+  if (!edits.length) return;
+  void applyOps(edits.map((e) => ({ type: 'node.setStyle' as const, owner, nodeId, ...(e.partId ? { partId: e.partId } : {}), scope: e.scope, property: 'hidden', value: e.value })), label);
+}
+
+/** The sizes a layer hides itself at, for its tag: "Phone", "Tablet, Desktop". */
+const sizesTagText = (sizes: string[]) => sizes.map((z) => z[0].toUpperCase() + z.slice(1)).join(', ');
+
+/** A sentence for the tooltip: "Hidden on phone because Grid is hidden on phone." */
+const sentence = (text: string) => (text ? `${text[0].toUpperCase()}${text.slice(1)}.` : '');
+
+/** Select the layer that hides another one in this preview, and move keyboard focus to its row once shown. */
+function selectHider(owner: OwnerRef, by: HiddenBy) {
+  setState({ selection: by.part ? { owner, instancePath: [by.id], nodeId: by.part.nodeId, partId: by.part.id } : { owner, instancePath: [], nodeId: by.id } });
+  // Only while focus is still in Layers (or nowhere): a Tab away meanwhile keeps its place.
+  setTimeout(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && !active.closest('.layers-tree')) return;
+    document.querySelector<HTMLElement>('.layers-tree [role="treeitem"][aria-selected="true"]')?.focus();
+  }, 80);
+}
+
+/** The visibility a row describes in the preview being shown (a part of the placement with `partId`). */
+function visibilityOf(state: ProjectState, tree: NodeTree, n: GraphNode, partId?: string): RowVisibility {
+  return rowVisibility(state, tree, n, scopeForWidth(getState().viewport), partId);
 }
 
 /** The visible rows, in order (a row inside a closed branch is not rendered at all). */
@@ -126,7 +146,8 @@ export function LayersPanel() {
     const node = tree.nodes[ref.instancePath[0] ?? ref.nodeId];
     const partDef = ref.partId && node?.kind === 'instance' ? st.components[node.definitionId] : undefined;
     const isDefRoot = ref.owner.kind === 'component' && !ref.instancePath.length && tree.rootIds[0] === ref.nodeId;
-    const name = partDef && ref.partId ? partDef.parts[ref.partId]?.label ?? ref.partId : isDefRoot ? st.components[ref.owner.id]?.name ?? 'Component' : node ? displayName(st, node) : 'Layer';
+    const ownerDef = ref.owner.kind === 'component' ? st.components[ref.owner.id] : undefined;
+    const name = partDef && ref.partId ? partDef.parts[ref.partId]?.label ?? ref.partId : isDefRoot ? st.components[ref.owner.id]?.name ?? 'Component' : node ? layerLabel(st, node, ownerDef).label : 'Layer';
     // Shared header and footer rows are shared across pages: they are not moved, duplicated or deleted here.
     // The root of a component being edited is the component itself: it is not moved, copied or deleted here.
     const editable = topLevel && ref.owner.kind !== 'shell' && !isDefRoot;
@@ -206,7 +227,30 @@ export function LayersPanel() {
         `Move ${name}`,
         rowFor(ref.nodeId)
       );
+    // Where the layer shows, in the size being previewed and at every size, and the layer above that hides it.
+    const visibilityItems = () => {
+      const part = ref.partId && ref.instancePath.length === 1 ? ref.partId : undefined;
+      if (!node || (ref.instancePath.length && !part)) return [];
+      const size = scopeForWidth(getState().viewport);
+      const vis = visibilityOf(st, tree, node, part);
+      const out: Array<{ label: string; icon: React.ReactNode; hint?: string; onSelect: () => void }> = [];
+      if (vis.hiddenBy) {
+        const by = vis.hiddenBy;
+        out.push({ label: `Select ${by.target}`, hint: by.target === by.name ? `Hides this on ${size}` : `${by.name} hides this on ${size}`, icon: <CornerLeftUp />, onSelect: () => selectHider(ref.owner, by) });
+      }
+      if (editable && !ref.instancePath.length && hideable(st, node)) {
+        const edit = (edits: VisibilityEdit[], label: string, menuLabel: string, icon: React.ReactNode) => {
+          if (edits.length) out.push({ label: menuLabel, icon, onSelect: () => applyVisibility(ref.owner, node.id, edits, label) });
+        };
+        edit(showHereEdits(st, node, size), `Show ${name} on ${size}`, `Show on ${size}`, <Eye />);
+        edit(everySizeEdits(st, node, false), `Show ${name}`, 'Show at every size', <Eye />);
+        edit(hideHereEdits(st, node, size), `Hide ${name} on ${size}`, `Hide on ${size} only`, <EyeOff />);
+        edit(everySizeEdits(st, node, true), `Hide ${name}`, 'Hide at every size', <EyeOff />);
+      }
+      return out;
+    };
     const anchorOf = () => (el instanceof HTMLElement ? (() => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.bottom + 4 }; })() : el);
+    const visibility = visibilityItems();
     const items = [
       { heading: name },
       ...(onRename ? [{ label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: onRename }] : []),
@@ -219,11 +263,10 @@ export function LayersPanel() {
             ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : [])
           ]
         : []),
-      ...(editable && node && !ref.instancePath.length && hideable(st, node)
-        ? [{ label: isHidden(node) ? 'Show on the page' : 'Hide on the page', icon: isHidden(node) ? <Eye /> : <EyeOff />, onSelect: () => toggleHidden(ref.owner, node, name) }]
-        : []),
+      ...(visibility.length ? [{ separator: true }, ...visibility] : []),
       ...(editable
         ? [
+            ...(visibility.length ? [{ separator: true }] : []),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             { separator: true },
             { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
@@ -256,7 +299,8 @@ export function LayersPanel() {
     // A repeated single letter cycles through the matches; a longer prefix keeps the current row if it matches.
     const start = buf.length === 1 ? at + 1 : Math.max(0, at);
     const order = [...rows.slice(start), ...rows.slice(0, start)];
-    const hit = order.find((r) => (r.dataset.name ?? '').toLowerCase().startsWith(buf));
+    // A row answers to its name, and an unnamed text to its words too ("meet" finds "Text · Meet the makers").
+    const hit = order.find((r) => [r.dataset.name, r.dataset.words].some((w) => (w ?? '').toLowerCase().startsWith(buf)));
     if (!hit) return;
     e.preventDefault();
     if (hit !== rows[at]) (hit.focus(), hit.click());
@@ -362,6 +406,8 @@ type Drop = { where: 'before' | 'after' | 'inside' | 'first'; depth: number; lab
 function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: ListProps & { id: string; parentId?: string }) {
   const selection = useStore((s) => s.selection);
   const definitionMode = useStore((s) => s.definitionMode);
+  // What the row says about visibility follows the size the preview shows (not the inspector's style scope).
+  const size = useStore((s) => scopeForWidth(s.viewport));
   const [open, setOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [drop, setDrop] = useState<Drop | null>(null);
@@ -402,16 +448,25 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   }, [renaming, id]);
   if (!n) return null;
   const isOpen = open && expandable;
-  const name = isDefRoot ? state.components[owner.id]?.name ?? displayName(state, n) : displayName(state, n);
-  const hidden = isHidden(n);
+  // An unnamed text or button is told apart by its words; the root of a component being edited is the component.
+  const ownerDef = owner.kind === 'component' ? state.components[owner.id] : undefined;
+  const label = isDefRoot ? { label: ownerDef?.name ?? displayName(state, n), kind: ownerDef?.name ?? displayName(state, n), full: ownerDef?.name ?? displayName(state, n) } : layerLabel(state, n, ownerDef);
+  const name = label.label;
+  // The name a rename starts from: the layer's own name or its type, never the excerpt of its words.
+  const editName = isDefRoot ? label.kind : displayName(state, n);
+  const vis = rowVisibility(state, tree, n, size);
+  const hidden = vis.hiddenHere;
   const custom = def?.owner === 'project';
   const groupId = `layers-group-${owner.kind}-${id}`;
-  const title = [name, path.length ? `In ${path.join(' › ')}` : '', custom ? 'Made in this project' : '', hidden ? 'Hidden on the page' : ''].filter(Boolean).join('\n');
+  const title = [label.full, path.length ? `In ${path.join(' › ')}` : '', custom ? 'Made in this project' : '', sentence(vis.note)].filter(Boolean).join('\n');
   const draggable = owner.kind !== 'shell' && !isDefRoot;
   const canToggleHidden = owner.kind !== 'shell' && !isDefRoot && hideable(state, n);
+  const eye = canToggleHidden ? eyeAction(state, n, size) : null;
+  // The sizes it hides itself at, when that is not every size: "Phone", "Tablet, Desktop".
+  const sizesTag = vis.own.hiddenAt.length && vis.own.hiddenAt.length < 3 ? sizesTagText(vis.own.hiddenAt) : '';
   const startRename = () => {
     cancelRename.current = false;
-    renameBase.current = { snap: getState().snapshot, shown: name, name: n?.name ?? '', ai: aiActivity() };
+    renameBase.current = { snap: getState().snapshot, shown: editName, name: n?.name ?? '', ai: aiActivity() };
     setRenaming(true);
   };
 
@@ -445,7 +500,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
     selected && 'selected',
     selected && owner.kind === 'shell' && 'shared',
     containsSel && !selected && 'contains-sel',
-    hidden && 'is-hidden',
+    (hidden || vis.hiddenBy) && 'is-hidden',
     drop?.where === 'before' && 'drop-before',
     (drop?.where === 'after' || drop?.where === 'first') && 'drop-after',
     drop?.where === 'inside' && 'drop-inside',
@@ -459,8 +514,9 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
       <div
         className={rowClass}
         data-node={id}
-        data-name={name}
-        aria-label={`${name}${custom ? ', made in this project' : ''}${hidden ? ', hidden' : ''}`}
+        data-name={label.kind}
+        data-words={label.empty ? undefined : label.excerpt}
+        aria-label={`${label.full}${custom ? ', made in this project' : ''}${vis.note ? `, ${vis.note}` : ''}`}
         style={{ ...depthVar(depth), '--drop-depth': drop?.depth ?? depth } as React.CSSProperties}
         draggable={draggable && !renaming}
         onDragStart={(e) => {
@@ -583,7 +639,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
           <input
             className="input inline-edit grow"
             autoFocus
-            defaultValue={name}
+            defaultValue={editName}
             maxLength={60}
             aria-label={`Rename ${name}`}
             onFocus={(e) => e.currentTarget.select()}
@@ -596,7 +652,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
               if (!e.relatedTarget) requestAnimationFrame(() => rowFor(id)?.focus());
               const from = renameBase.current;
               renameBase.current = null;
-              if (cancelRename.current || value === (from?.shown ?? name)) return;
+              if (cancelRename.current || value === (from?.shown ?? editName)) return;
               // A typed name, like any typed edit: if the AI ran meanwhile, it is checked against the project as
               // it was when renaming began before it is applied (held while the AI works).
               const checked = !!from && (!!getState().snapshot?.aiBusy || aiActivity() !== from.ai);
@@ -618,27 +674,54 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
           />
         ) : (
           <span className="grow ellipsis layer-name" title={title}>
-            {name}
+            {label.excerpt ? (
+              <>
+                {label.kind} <span className={`layer-words${label.empty ? ' empty' : ''}`}>{label.excerpt}</span>
+              </>
+            ) : (
+              name
+            )}
           </span>
         )}
+        {/* Hidden only at some sizes: which ones, also while the preview shows another size. */}
+        {sizesTag && !renaming && (
+          <span className={`layer-sizes${hidden ? ' here' : ''}`} aria-hidden="true" title={sentence(`hidden ${sizesText(vis.own.hiddenAt)}`)}>
+            {sizesTag}
+          </span>
+        )}
+        {/* A layer above hides this one in this preview: the flag selects it, to show it again there. */}
+        {vis.hiddenBy && !renaming && (
+          <button
+            className="icon-btn sm layer-flag layer-hider"
+            tabIndex={-1}
+            aria-label={vis.hiddenBy.target === vis.hiddenBy.name ? `Select ${vis.hiddenBy.name}, which hides this on ${size}` : `Select ${vis.hiddenBy.target}: ${vis.hiddenBy.name} hides this on ${size}`}
+            title={`${sentence(`hidden on ${size} because ${vis.hiddenBy.name} is hidden ${sizesText(vis.hiddenBy.sizes)}`)} Click to select ${vis.hiddenBy.target}.`}
+            onClick={(e) => (e.stopPropagation(), selectHider(owner, vis.hiddenBy!))}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            <CornerLeftUp />
+          </button>
+        )}
         {hidden && !renaming && !canToggleHidden && (
-          <span className="layer-flag" title="Hidden on the page">
+          <span className="layer-flag" title={sentence(vis.note)}>
             <EyeOff aria-hidden="true" />
           </span>
         )}
-        {/* The eye shows (and switches) visibility at every size; a hidden layer always shows it. Like the row's
-            other actions it is for the pointer: the row's menu (Shift+F10) has Hide and Show for the keyboard. */}
-        {canToggleHidden && !renaming && (
+        {/* The eye is pressed when the layer hides itself in the preview being shown. A click shows it there again
+            (on this size alone when only this size hides it), or hides it at every size. Like the row's other
+            actions it is for the pointer: the row's menu (Shift+F10) has each of these for the keyboard. */}
+        {eye && !renaming && (
           <button
-            className={`icon-btn sm layer-eye${hidden ? ' on' : ''}`}
+            className={`icon-btn sm layer-eye${eye.pressed ? ' on' : ''}`}
             tabIndex={-1}
-            aria-label={hidden ? `Show ${name}` : `Hide ${name}`}
-            aria-pressed={hidden}
-            title={hidden ? 'Hidden on the page. Click to show it.' : 'Hide on the page'}
-            onClick={(e) => (e.stopPropagation(), toggleHidden(owner, n, name))}
+            aria-label={`Hide ${name}`}
+            aria-pressed={eye.pressed}
+            aria-description={eye.pressed ? `${sentence(vis.note)} ${eye.action}.` : `${eye.action}.`}
+            title={eye.pressed ? `${sentence(vis.note)} Click to ${eye.action.toLowerCase()}.` : eye.action}
+            onClick={(e) => (e.stopPropagation(), applyVisibility(owner, n.id, eye.edits, `${eye.action.replace(/^(Show|Hide)/, `$1 ${name}`)}`))}
             onDoubleClick={(e) => e.stopPropagation()}
           >
-            {hidden ? <EyeOff /> : <Eye />}
+            {eye.pressed ? <EyeOff /> : <Eye />}
           </button>
         )}
         {custom && !renaming && (
@@ -664,12 +747,15 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
             const pref: ElementRef = { owner, instancePath: [id], nodeId: p.nodeId, partId: pid };
             const psel = !!selection && refKey({ ...selection, itemPath: undefined }) === refKey(pref);
             const partNode = def?.tree?.nodes[p.nodeId];
+            // A part hidden in this preview by this placement's settings, or by the placement or a layer above it.
+            const pvis = rowVisibility(state, tree, n, size, pid);
+            const ptag = pvis.own.hiddenAt.length ? (pvis.own.hiddenAt.length < 3 ? sizesTagText(pvis.own.hiddenAt) : 'Hidden') : '';
             return (
               <div
                 key={pid}
-                className={`list-item layer-row layer-part${psel ? ' selected' : ''}${psel && owner.kind === 'shell' ? ' shared' : ''}`}
+                className={`list-item layer-row layer-part${psel ? ' selected' : ''}${psel && owner.kind === 'shell' ? ' shared' : ''}${pvis.hiddenHere || pvis.hiddenBy ? ' is-hidden' : ''}`}
                 data-name={p.label}
-                aria-label={`${p.label}, part of ${name}`}
+                aria-label={`${p.label}, part of ${name}${pvis.note ? `, ${pvis.note}` : ''}`}
                 style={depthVar(depth + 1)}
                 role="treeitem"
                 aria-selected={psel}
@@ -690,9 +776,14 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
               >
                 <span className="tree-spacer" />
                 <span className="layer-kind part">{partNode ? kindIcon(partNode) : <Box />}</span>
-                <span className="grow ellipsis layer-name" title={`${p.label}\nPart of ${[...path, name].join(' › ')}`}>
+                <span className="grow ellipsis layer-name" title={[p.label, `Part of ${[...path, name].join(' › ')}`, sentence(pvis.note)].filter(Boolean).join('\n')}>
                   {p.label}
                 </span>
+                {ptag && (
+                  <span className={`layer-sizes${pvis.hiddenHere ? ' here' : ''}`} aria-hidden="true" title={sentence(`hidden ${sizesText(pvis.own.hiddenAt)}`)}>
+                    {ptag}
+                  </span>
+                )}
                 <span className="actions">
                   <button className="icon-btn sm" tabIndex={-1} aria-haspopup="menu" aria-expanded="false" aria-label={`${p.label} options`} title="Part options" onDoubleClick={(e) => e.stopPropagation()} onClick={(e) => (e.stopPropagation(), onMenu(e.currentTarget, pref, false))}>
                     <Ellipsis />
