@@ -88,7 +88,7 @@ function args(inner: string): { parts: string[]; alpha: string | undefined } | n
   const slash = inner.split('/');
   if (slash.length > 2) return null;
   const parts = slash[0].trim().split(/\s*,\s*|\s+/).filter(Boolean);
-  let alpha = slash[1]?.trim();
+  let alpha: string | undefined = slash[1]?.trim();
   if (alpha === '') return null;
   if (alpha === undefined && parts.length === 4) alpha = parts.pop();
   else if (alpha !== undefined && parts.length === 4) return null;
@@ -170,22 +170,24 @@ export function opacityOf(value: string): number {
   return parseColor(value)?.a ?? 1;
 }
 
-/** An opacity as short CSS text: 0.5, 0.35, 0 (three decimals at most, no trailing zeros). */
-const alphaText = (a: number) => String(Math.round(clamp(a, 0, 1) * 1000) / 1000);
+/** An opacity as short CSS text: 0.5, 0.35, 0.0004, 0 (six decimals at most, no trailing zeros). */
+const alphaText = (a: number) => String(Number(clamp(a, 0, 1).toFixed(6)));
 
 /**
  * The value to save when `picked` (#rrggbb) is chosen in the picker on top of `current`. An opaque or
- * unresolvable current value becomes the plain #rrggbb. A translucent one keeps its opacity and, where it
+ * unresolvable or fully transparent current value becomes the plain #rrggbb. A translucent one keeps its opacity and, where it
  * can, its notation: 8-digit hex stays hex, legacy rgba() stays rgba(), anything else becomes rgb(r g b / a).
  * Picking the colour the picker already showed returns `current` untouched, so nothing is rewritten.
+ * `resolved` is the colour a browser made of `current` when `parseColor` could not (a `color-mix()`).
  */
-export function colorFromPicker(current: string, picked: string): string {
+export function colorFromPicker(current: string, picked: string, resolved?: Rgba | null): string {
   const next = parseColor(picked);
   if (!next) return current;
-  const was = parseColor(current);
+  const was = resolved ?? parseColor(current);
   const hex = toHex6(next);
   if (was && toHex6(was) === hex) return current;
-  if (!was || was.a >= 1) return hex;
+  // Nothing to preserve in a colour that is opaque, or so transparent that a pick would look like nothing happened.
+  if (!was || was.a >= 1 || was.a <= 0) return hex;
   const text = current.trim().toLowerCase();
   const alpha = Math.round(was.a * 255);
   if (text.startsWith('#')) return `${hex}${alpha.toString(16).padStart(2, '0')}`;

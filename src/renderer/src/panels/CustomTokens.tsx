@@ -4,6 +4,7 @@ import type { ProjectState, TokenDef, TokenGroup } from '@shared/types';
 import { effectiveTokens } from '@generator/index';
 import { tokenUsageCounts } from '@engine/tokens';
 import { applyOps } from '../store';
+import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field } from '../components/ui';
 
 /**
@@ -77,7 +78,7 @@ function NewStyle({ tokens }: { tokens: TokenDef[] }) {
       ) : (
         <Field label="Value" controlId={`${uid}-value`}>
           <span className="row" style={{ gap: 6 }}>
-            {group === 'color' && <input type="color" aria-label="Pick a colour" value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'} onChange={(e) => setValue(e.target.value)} />}
+            {group === 'color' && <ColorPick className="md" value={value} onPick={setValue} replaceUnreadable label="Pick a colour" />}
             <input id={`${uid}-value`} className="input sm mono grow" value={value} placeholder={spec.placeholder} onChange={(e) => setValue(e.target.value)} />
           </span>
         </Field>
@@ -117,7 +118,7 @@ function StyleRow({ t, uses, tokens }: { t: TokenDef; uses: number; tokens: Toke
   return (
     <div className="ss-custom-row" data-ss-row style={{ display: 'grid', gap: 6, paddingBlock: 6, borderBottom: '1px solid var(--line, #e5e5e5)' }}>
       <div className="row" style={{ gap: 8 }}>
-        {t.group === 'color' && typeof t.value === 'string' && <span className="ss-swatch" aria-hidden="true" style={{ width: 18, height: 18, borderRadius: 4, background: t.value, flex: 'none' }} />}
+        {t.group === 'color' && typeof t.value === 'string' && <ColorPick className="sm" value={t.value} />}
         <DraftInput className="input sm grow" value={t.label} onCommit={(v) => (v.trim() ? void applyOps([{ type: 'token.rename', tokenId: t.id, label: v.trim() }], `Rename ${t.label}`) : false)} ariaLabel={`${t.label} name`} />
         <button type="button" className="btn btn-sm btn-ghost" aria-label={`Remove ${t.label}`} aria-expanded={removing} onClick={() => (uses ? setRemoving(!removing) : void remove())}>
           <Trash2 />

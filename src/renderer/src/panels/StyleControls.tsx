@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef } from '@shared/types';
 import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, type StylePropDef } from '@shared/styles';
+import { ColorPick } from '../components/ColorPick';
 import { DraftInput } from '../components/ui';
 import { setState, useStore } from '../store';
 
@@ -402,21 +403,6 @@ function Lead({ def, v, tokens }: { def: StylePropDef; v: { token: string }; tok
   return <Palette className="style-lead" aria-hidden="true" />;
 }
 
-/** A colour the native picker can start from: the stored value, or what a site colour resolves to, as #rrggbb. */
-let colorProbe: CanvasRenderingContext2D | null = null;
-function hexOf(v: StyleValue | undefined, tokens: TokenDef[]): string | undefined {
-  const raw = isToken(v) ? colorOf(tokens, v.token) : v === undefined ? undefined : String(v);
-  if (!raw || raw === 'transparent') return undefined;
-  if (/^#[0-9a-f]{6}$/i.test(raw)) return raw.toLowerCase();
-  // The canvas normalises any CSS colour it understands (#abc, rgb(), hsl(), named) to #rrggbb when opaque.
-  colorProbe ??= document.createElement('canvas').getContext('2d');
-  if (!colorProbe) return undefined;
-  colorProbe.fillStyle = '#000001';
-  colorProbe.fillStyle = raw;
-  const out = String(colorProbe.fillStyle);
-  return /^#[0-9a-f]{6}$/i.test(out) && out !== '#000001' ? out : undefined;
-}
-
 function Control({
   def,
   label,
@@ -527,6 +513,8 @@ function Control({
   const linkedName = lead ? `${describe(def, lead, tokens)}, from Site styles` : undefined;
   // What a custom value starts from: the value in effect, written out.
   const currentText = isToken(current) ? (typeof tokenOf(tokens, current.token)?.value === 'string' ? String(tokenOf(tokens, current.token)!.value) : undefined) : current === undefined ? undefined : String(current);
+  // What the colour picker starts from: the colour in effect, a linked style followed to its end.
+  const colorText = isToken(current) ? colorOf(tokens, current.token) : current === undefined ? '' : String(current);
   return (
     <>
       <span className={`style-field${lead ? ' has-lead' : ''}`} title={linkedName}>
@@ -579,9 +567,7 @@ function Control({
             requestAnimationFrame(() => picker.current?.focus());
           }}
         >
-          {def.kind === 'color' && (
-            <input type="color" value={hexOf(literal ? value : current, tokens) ?? '#000000'} onChange={(e) => onSet(e.target.value)} aria-label={`${label}: pick a color`} />
-          )}
+          {def.kind === 'color' && <ColorPick className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
           <DraftInput
             className={`input sm grow style-input${def.kind === 'color' ? ' mono' : ''}${literal ? ' is-set' : ''}`}
             value={literal ? String(value) : ''}

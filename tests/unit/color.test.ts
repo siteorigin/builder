@@ -117,6 +117,12 @@ describe('colorFromPicker', () => {
     }
   });
 
+  it('saves a plain #rrggbb over a colour too transparent to see, so a pick is never invisible', () => {
+    expect(colorFromPicker('transparent', '#c0392b')).toBe('#c0392b');
+    expect(colorFromPicker('rgb(0 0 0 / 0)', '#c0392b')).toBe('#c0392b');
+    expect(colorFromPicker('#00000000', '#c0392b')).toBe('#c0392b');
+  });
+
   it('saves a plain #rrggbb over a value it cannot resolve', () => {
     expect(colorFromPicker('currentcolor', '#c0392b')).toBe('#c0392b');
     expect(colorFromPicker('', '#c0392b')).toBe('#c0392b');
@@ -131,7 +137,7 @@ describe('colorFromPicker', () => {
     expect(colorFromPicker('rgb(209 65 49 / 40%)', '#c0392b')).toBe('rgb(192 57 43 / 0.4)');
     expect(colorFromPicker('hsl(10 63% 50% / 0.2)', '#c0392b')).toBe('rgb(192 57 43 / 0.2)');
     expect(colorFromPicker('oklch(0.6 0.2 30 / 0.2)', '#c0392b')).toBe('rgb(192 57 43 / 0.2)');
-    expect(colorFromPicker('transparent', '#c0392b')).toBe('rgb(192 57 43 / 0)');
+    expect(colorFromPicker('rgb(209 65 49 / 0.0004)', '#c0392b')).toBe('rgb(192 57 43 / 0.0004)');
   });
 
   it('rewrites nothing when the picked colour is the one the picker showed', () => {
