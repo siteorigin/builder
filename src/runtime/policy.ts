@@ -42,18 +42,26 @@ export function previewFsPolicy(dir: string) {
 }
 
 /**
- * A Vite plugin that sends the frame-ancestors policy with every response, including SvelteKit's rendered pages
- * and static files (Vite's `server.headers` only covers the responses Vite itself writes).
+ * A Vite plugin that sends the frame-ancestors policy with every response: SvelteKit's rendered pages, the
+ * project's static files and Vite's own. The header is set on the HTTP server itself, before any middleware
+ * runs: SvelteKit serves `static/` from a middleware registered ahead of every other plugin's that never
+ * passes the request on, and Vite's `server.headers` only covers the responses Vite itself writes.
  */
 export function framePolicyPlugin(csp: string) {
+  type Res = { setHeader(k: string, v: string): void };
   return {
     name: 'siteorigin-frame-policy',
-    configureServer(server: { middlewares: { use: (fn: (req: unknown, res: { setHeader(k: string, v: string): void }, next: () => void) => void) => void } }) {
-      // Registered directly (not returned), so it runs before SvelteKit's own middleware.
-      server.middlewares.use((_req, res, next) => {
-        res.setHeader('Content-Security-Policy', csp);
-        next();
-      });
+    configureServer(server: {
+      httpServer: { prependListener(event: 'request', fn: (req: unknown, res: Res) => void): unknown } | null;
+      middlewares: { use: (fn: (req: unknown, res: Res, next: () => void) => void) => void };
+    }) {
+      if (server.httpServer) server.httpServer.prependListener('request', (_req, res) => res.setHeader('Content-Security-Policy', csp));
+      // Middleware mode has no server of its own; the earliest middleware is the closest.
+      else
+        server.middlewares.use((_req, res, next) => {
+          res.setHeader('Content-Security-Policy', csp);
+          next();
+        });
     }
   };
 }

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { resolveConfig } from 'vite';
+import { createServer, resolveConfig } from 'vite';
 import { atomicWrite } from '../../src/main/project/fsutil';
 import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, previewFsPolicy, realFileInside } from '../../src/runtime/policy';
 import { projectSrcPath } from '../../src/runtime/paths';
@@ -97,13 +97,29 @@ describe('preview server policy', () => {
     expect(frameAncestorsCsp(false).split(' ').slice(1)).toEqual(['app://editor', 'http://127.0.0.1:*', 'http://localhost:*']);
   });
 
-  it('sends the frame policy on every response, before SvelteKit handles it', () => {
-    let mw: ((req: unknown, res: { setHeader(k: string, v: string): void }, next: () => void) => void) | null = null;
-    framePolicyPlugin('frame-ancestors app://editor').configureServer({ middlewares: { use: (fn) => (mw = fn) } });
-    const headers: Record<string, string> = {};
-    let nexted = false;
-    mw!({}, { setHeader: (k, v) => (headers[k] = v) }, () => (nexted = true));
-    expect(headers['Content-Security-Policy']).toBe('frame-ancestors app://editor');
-    expect(nexted).toBe(true);
+  it('sends the frame policy on every response, including those answered before any other middleware', async () => {
+    const root = tmp();
+    mkdirSync(join(root, 'public'));
+    writeFileSync(join(root, 'public', 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    writeFileSync(join(root, 'index.html'), '<!doctype html><title>x</title>');
+    // Like SvelteKit's asset server: registered first, answers static files itself and never calls next().
+    const earlyAssets = {
+      name: 'early-assets',
+      configureServer(server: { middlewares: { use: (fn: (req: { url?: string }, res: { end(b: string): void }, next: () => void) => void) => void } }) {
+        server.middlewares.use((req, res, next) => (req.url === '/early.txt' ? res.end('early') : next()));
+      }
+    };
+    const server = await createServer({ root, configFile: false, logLevel: 'silent', publicDir: 'public', plugins: [earlyAssets, framePolicyPlugin('frame-ancestors app://editor')], server: { host: '127.0.0.1', port: 0, ws: false } });
+    try {
+      await server.listen();
+      const { port } = server.httpServer!.address() as { port: number };
+      for (const path of ['/early.txt', '/logo.svg', '/index.html', '/missing']) {
+        const res = await fetch(`http://127.0.0.1:${port}${path}`);
+        await res.arrayBuffer();
+        expect(res.headers.get('content-security-policy'), path).toBe('frame-ancestors app://editor');
+      }
+    } finally {
+      await server.close();
+    }
   });
 });
