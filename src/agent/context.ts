@@ -11,36 +11,53 @@ import { teaserFields } from '@shared/page-teasers';
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 const isEntry = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-const isTable = (v: unknown): v is { columns: unknown[]; rows: unknown[] } => isEntry(v) && Array.isArray(v.columns) && Array.isArray(v.rows) && Object.keys(v).length === 2;
-/** Rows of a table shown in a summary; the rest are counted. */
-const TABLE_ROWS_SHOWN = 20;
+/** Characters of cell text a table summary shows in all; each cell is cut to its share (16 to 220). */
+const TABLE_TEXT_BUDGET = 9000;
+/** A table at most this long (as JSON) is shown whole, IDs and all, wherever full props are shown. */
+const TABLE_FULL_CHARS = 8000;
 
 /**
- * A table as its column IDs and names, then each row's ID and texts in column order. Rows past the first few are
- * counted, and a summary that leaves anything out says so, so it is never written back as the whole table.
+ * A table as its column IDs and names, then every row's ID and texts in column order, so any row or column can be
+ * addressed by ID. Long cells are cut to fit; a summary that cuts anything says so, and the engine refuses it if
+ * it is written back as the whole table.
  */
-function summarizeTable(t: { columns: unknown[]; rows: unknown[] }) {
-  const columns = t.columns.filter(isEntry).map((c) => ({ id: c.id, label: clip(String(c.label ?? ''), 80) }));
+export function summarizeTable(t: unknown) {
+  if (!isEntry(t)) return t;
+  const columns = (Array.isArray(t.columns) ? t.columns : []).filter(isEntry).map((c) => ({ id: c.id, label: String(c.label ?? '') }));
+  const rowsIn = (Array.isArray(t.rows) ? t.rows : []).filter(isEntry);
+  const share = Math.max(16, Math.min(220, Math.floor(TABLE_TEXT_BUDGET / Math.max(1, rowsIn.length * columns.length))));
   let clipped = false;
   const text = (v: unknown) => {
     const s = v === undefined || v === null ? '' : String(v);
-    if (s.length > 220) clipped = true;
-    return clip(s, 220);
+    if (s.length > share) clipped = true;
+    return clip(s, share);
   };
-  const rows = t.rows.slice(0, TABLE_ROWS_SHOWN).filter(isEntry).map((r) => ({ id: r.id, cells: columns.map((c) => text(isEntry(r.cells) ? r.cells[String(c.id)] : '')) }));
-  const hidden = Math.max(0, t.rows.length - TABLE_ROWS_SHOWN);
-  if (!hidden && !clipped) return { columns, rows };
+  const rows = rowsIn.map((r) => ({ id: r.id, cells: columns.map((c) => text(isEntry(r.cells) ? r.cells[String(c.id)] : '')) }));
+  if (!clipped) return { columns, rows };
   return {
     columns,
     rows,
-    ...(hidden ? { rowsNotShown: hidden } : {}),
-    note: 'Partial view. Change cells, rows or columns by ID with instance.editTable; writing this back as the whole table would lose what it leaves out.'
+    cellsClipped: true,
+    note: 'Long cells are shortened here. Change cells, rows or columns by ID with instance.editTable; writing this back as the whole table is refused.'
   };
+}
+
+/**
+ * A placement's props as the AI reads them. Every table it shows is included, its definition's own when the
+ * placement has none, so its rows can be addressed by ID. `full` keeps other values whole and a table whole
+ * unless it is very large; otherwise values are summarized.
+ */
+export function agentProps(def: ComponentDefinition | undefined, props: Record<string, unknown>, pages: RichPages, full = false): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const schemas = def?.properties ?? {};
+  const table = (v: unknown) => (full && JSON.stringify(v ?? null).length <= TABLE_FULL_CHARS ? v : summarizeTable(v));
+  for (const [k, v] of Object.entries(props)) out[k] = Object.hasOwn(schemas, k) && schemas[k].type === 'table' && !isBinding(v) ? table(v) : full ? v : summarizeValue(v, pages, 1);
+  for (const [k, schema] of Object.entries(schemas)) if (schema.type === 'table' && !Object.hasOwn(props, k)) out[k] = table(schema.default);
+  return out;
 }
 
 function summarizeValue(v: unknown, pages: RichPages, depth = 0): unknown {
   if (typeof v === 'string') return clip(v, 220);
-  if (isTable(v)) return summarizeTable(v);
   if (Array.isArray(v)) {
     // Rich text reads as the same short text form the tools accept.
     if (v.length && v.every(isRichBlock)) {
@@ -106,7 +123,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       base.definitionId = n.definitionId;
       if (def?.owner === 'project') base.projectOwned = true;
       if (def?.variantAxes) base.variants = selectedVariants(def, n.variants);
-      base.props = summarizeValue(n.props, state.pages);
+      base.props = agentProps(def, n.props, state.pages);
       if (n.overrides) base.styleOverrides = n.overrides;
       if (n.slots && depth < 4) base.slots = Object.fromEntries(Object.entries(n.slots).map(([k, ids]) => [k, ids.map((c) => compactNode(state, tree, c, depth + 1))]));
       break;
@@ -226,8 +243,9 @@ export function tokensSummary(state: ProjectState) {
 }
 
 /** The selected element's own content, in full unless it is very large: this is what the edit works from. */
-function selectedProps(props: Record<string, unknown>, pages: RichPages): unknown {
-  return JSON.stringify(props).length <= 6000 ? props : summarizeValue(props, pages);
+function selectedProps(def: ComponentDefinition | undefined, props: Record<string, unknown>, pages: RichPages): unknown {
+  const shown = agentProps(def, props, pages, true);
+  return JSON.stringify(shown).length <= 6000 ? shown : agentProps(def, props, pages);
 }
 
 export function describeSelection(state: ProjectState, ref: ElementRef | null): Record<string, unknown> | null {
@@ -238,7 +256,7 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
   if (!ref.instancePath.length) {
     const node = compactNode(state, tree, ref.nodeId);
     const selected = tree.nodes[ref.nodeId];
-    if (selected?.kind === 'instance') node.props = selectedProps(selected.props, state.pages);
+    if (selected?.kind === 'instance') node.props = selectedProps(state.components[selected.definitionId], selected.props, state.pages);
     return { owner: ref.owner, nodeId: ref.nodeId, node };
   }
   const instId = ref.instancePath[0];
@@ -260,7 +278,7 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
     innerNodeId: ref.nodeId,
     itemId: ref.itemPath?.[ref.itemPath.length - 1] ?? null,
     boundTo: binding,
-    ...(inst?.kind === 'instance' ? { currentProps: selectedProps(inst.props, state.pages) } : {}),
+    ...(inst?.kind === 'instance' ? { currentProps: selectedProps(def, inst.props, state.pages) } : {}),
     note: 'Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId.'
   };
 }

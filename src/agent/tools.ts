@@ -10,7 +10,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
-import { catalogueIndex, compactNode, componentDetail, pageDetail, projectSummary, tokensSummary } from './context';
+import { agentProps, catalogueIndex, compactNode, componentDetail, pageDetail, projectSummary, tokensSummary } from './context';
 import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
@@ -305,7 +305,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         const out: Record<string, unknown> = {
           revision: host.revision(),
           owner: a.owner,
-          node: { ...n },
+          // Full props, with a table too large to show whole given every row ID and its cells shortened.
+          node: n.kind === 'instance' ? { ...n, props: agentProps(state.components[n.definitionId], n.props, state.pages, true) } : { ...n },
           displayName: displayName(state, n),
           parent: parent ? { parentId: parent.parentId, slot: parent.slot, index: parent.index, siblings: parent.list.length } : null
         };

@@ -922,8 +922,8 @@ export function PropField({ name, schema, value, onChange, onList, onTable, read
   value: unknown;
   onChange: (v: unknown, edit?: PendingEdit) => unknown;
   onList: (op: ListOp) => unknown;
-  /** A table edit: one cell, row or column by ID. */
-  onTable: (edit: TableEdit) => void;
+  /** A table edit: one cell, row or column by ID. Resolves to whether it was applied. */
+  onTable: (edit: TableEdit) => Promise<boolean>;
   /** The value as the project holds it now and its revision, for an edit built after earlier ones land. */
   read?: () => ReadValue | undefined;
   state: ProjectState;

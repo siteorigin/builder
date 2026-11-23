@@ -110,9 +110,10 @@ function applyListOp(owner: OwnerRef, nodeId: string, prop: string, op: ListOp, 
  * Apply one table edit by row and column ID. Typing in one cell (or one column's name) joins that cell's last edit;
  * adding, removing and moving rows or columns are each their own undo step.
  */
-function applyTableEdit(owner: OwnerRef, nodeId: string, prop: string, edit: TableEdit, label: string) {
-  const coalesceKey = edit.action === 'setCell' ? `${nodeId}:${prop}:${edit.rowId}:${edit.columnId}` : edit.action === 'renameColumn' ? `${nodeId}:${prop}:column:${edit.columnId}` : undefined;
-  void applyOps([{ type: 'instance.editTable', owner, nodeId, prop, ...edit }], label, coalesceKey);
+function applyTableEdit(owner: OwnerRef, nodeId: string, prop: string, edit: TableEdit, label: string): Promise<boolean> {
+  const at = `${owner.kind}:${owner.id}:${nodeId}:${prop}`;
+  const coalesceKey = edit.action === 'setCell' ? `${at}:${edit.rowId}:${edit.columnId}` : edit.action === 'renameColumn' ? `${at}:column:${edit.columnId}` : undefined;
+  return applyOps([{ type: 'instance.editTable', owner, nodeId, prop, ...edit }], label, coalesceKey).then((r) => r !== null);
 }
 
 /** Default styles a definition gives a node (base + selected variant), used as inherited placeholders. */

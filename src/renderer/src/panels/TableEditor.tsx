@@ -19,83 +19,99 @@ import {
   type TableMove
 } from '../lib/table-editor';
 
-/** How long a move may take to land before it is treated as refused or overtaken (as in the list editor). */
-const MOVE_PENDING_MS = 3000;
+/** How long a step may take to land before it is treated as refused or overtaken (as in the list editor). */
+const PENDING_MS = 3000;
+/** How long focus asked for after a step waits for its control to appear. */
+const FOCUS_MS = 1000;
 
-type After =
+/** A step on its way: what it was, when, and the control that took it (`from`, a focus key). */
+type After = { at: number; from: string } & (
   | { kind: 'addedRow'; before: string[] }
   | { kind: 'addedColumn'; before: string[] }
-  | { kind: 'removed'; focus: string }
-  | { kind: 'moved'; axis: 'row' | 'column'; id: string; direction: TableMove; index: number; from: number; title: string; at: number };
+  | { kind: 'removed'; axis: 'row' | 'column'; id: string; order: string[] }
+  | { kind: 'moved'; axis: 'row' | 'column'; id: string; direction: TableMove; index: number; start: number; title: string }
+);
 
 /**
  * A table property: its columns, named, reordered, added and removed, and its rows, each a disclosure with one
  * field per column. Every change is one step naming its row and column by ID (`onTable`), so a step taken right
  * after typing in a cell never puts back what the cell held before.
  */
-export function TableEditor({ name, schema, value, onTable }: { name: string; schema: TableProp; value: unknown; onTable: (edit: TableEdit) => void }) {
+export function TableEditor({ name, schema, value, onTable }: { name: string; schema: TableProp; value: unknown; onTable: (edit: TableEdit) => Promise<boolean> }) {
   const table = readTable(value, schema.default);
   const { columns, rows } = table;
   const [open, setOpen] = useState<string | null>(null);
   const [said, setSaid] = useState({ text: '', count: 0 });
   const after = useRef<After | null>(null);
-  const wantFocus = useRef<string | null>(null);
+  const wantFocus = useRef<{ key: string; until: number } | null>(null);
   const uid = useId();
   const key = (k: string) => `${uid}${k}`;
   const find = (k: string) => document.getElementById(key(k));
+  const focusSoon = (k: string) => (wantFocus.current = { key: k, until: Date.now() + FOCUS_MS });
   const shape = `${columns.map((c) => c.id).join(',')}|${rows.map((r) => r.id).join(',')}`;
   useEffect(() => {
     const a = after.current;
     if (!a) return;
-    if (a.kind === 'addedRow') {
-      const added = rows.find((r) => !a.before.includes(r.id));
+    // A step that has not landed by now was refused or overtaken: it never claims a later change, such as Undo.
+    if (Date.now() - a.at > PENDING_MS) return void (after.current = null);
+    // Focus follows a step only from where the step left it: the control that took it, or the page body (that
+    // control was removed, moved or disabled). Someone typing or working elsewhere keeps their place.
+    const active = document.activeElement;
+    const steer = !active || active === document.body || active === find(a.from);
+    if (a.kind === 'addedRow' || a.kind === 'addedColumn') {
+      const list: Array<{ id: string }> = a.kind === 'addedRow' ? rows : columns;
+      const added = list.find((x) => !a.before.includes(x.id));
       if (!added) return;
       after.current = null;
+      if (!steer) return;
+      if (a.kind === 'addedColumn') return void focusSoon(`colname-${added.id}`);
       setOpen(added.id);
-      wantFocus.current = columns[0] ? `cell-${added.id}-${columns[0].id}` : `rowhead-${added.id}`;
-    } else if (a.kind === 'addedColumn') {
-      const added = columns.find((c) => !a.before.includes(c.id));
-      if (!added) return;
-      after.current = null;
-      wantFocus.current = `colname-${added.id}`;
+      focusSoon(columns[0] ? `cell-${added.id}-${columns[0].id}` : `rowhead-${added.id}`);
     } else if (a.kind === 'removed') {
+      const list: Array<{ id: string }> = a.axis === 'row' ? rows : columns;
+      if (list.some((x) => x.id === a.id)) return;
       after.current = null;
-      wantFocus.current = a.focus;
+      if (!steer) return;
+      const next = focusAfterRemove(a.order, a.id, new Set(list.map((x) => x.id)));
+      focusSoon(next ? (a.axis === 'row' ? `rowhead-${next}` : `colname-${next}`) : a.axis === 'row' ? 'addrow' : 'addcol');
     } else {
-      // The move lands with a later revision; until then the entry is still where it was. Once it is anywhere but
-      // where the move put it, or the request is old, the move was refused or overtaken and is dropped.
+      // A move lands with a later revision; until then the entry is still where it was.
       const list: Array<{ id: string }> = a.axis === 'row' ? rows : columns;
       const at = list.findIndex((x) => x.id === a.id);
-      if (Date.now() - a.at > MOVE_PENDING_MS || (at !== a.index && at !== a.from)) after.current = null;
+      if (at !== a.index && at !== a.start) return void (after.current = null);
       if (at !== a.index) return;
       after.current = null;
       const prefix = a.axis === 'row' ? 'row' : 'col';
       const target = tableMoveFocus(a.direction, a.index, list.length);
-      // Focus goes back only where it was taken from: the button that moved the entry, or the page body (the
-      // button was moved in the page or went disabled). Someone who has tabbed elsewhere keeps their place.
-      const active = document.activeElement;
-      if (!active || active === document.body || active === find(`${prefix}${a.direction}-${a.id}`))
-        wantFocus.current = target === 'head' ? (a.axis === 'row' ? `rowhead-${a.id}` : `colname-${a.id}`) : `${prefix}${target}-${a.id}`;
+      if (steer) focusSoon(target === 'head' ? (a.axis === 'row' ? `rowhead-${a.id}` : `colname-${a.id}`) : `${prefix}${target}-${a.id}`);
       setSaid((p) => announcementText(tableMoveAnnouncement(a.axis, a.title, a.index, list.length), p.count) ?? p);
     }
   }, [shape]); // eslint-disable-line react-hooks/exhaustive-deps
   // Focus asked for above lands as soon as its control is on the page (a new row's first cell, once it opens).
   useEffect(() => {
-    const k = wantFocus.current;
-    const el = k ? find(k) : null;
-    if (!k || !el) return;
+    const want = wantFocus.current;
+    if (!want) return;
+    const el = find(want.key);
+    if (!el && Date.now() < want.until) return;
     wantFocus.current = null;
-    el.focus();
-    if (k.startsWith('colname-') && el instanceof HTMLInputElement) el.select();
+    el?.focus();
+    if (want.key.startsWith('colname-') && el instanceof HTMLInputElement) el.select();
   });
+  /** Send a step, remembering it until it lands; a step the project refuses is forgotten at once. */
+  const step = (pending: After, edit: TableEdit) => {
+    after.current = pending;
+    void onTable(edit).then((ok) => {
+      if (!ok && after.current === pending) after.current = null;
+    });
+  };
 
   const addRowBlocked = addRowNote(rows.length);
   const addColumnBlocked = addColumnNote(columns.length);
   const removeColumnBlocked = removeColumnNote(columns.length);
-  const move = (axis: 'row' | 'column', id: string, from: number, direction: TableMove, title: string) => {
-    const index = direction === 'up' || direction === 'left' ? from - 1 : from + 1;
-    after.current = { kind: 'moved', axis, id, direction, index, from, title, at: Date.now() };
-    onTable(axis === 'row' ? { action: 'moveRow', rowId: id, index } : { action: 'moveColumn', columnId: id, index });
+  const move = (axis: 'row' | 'column', id: string, start: number, direction: TableMove, title: string) => {
+    const index = direction === 'up' || direction === 'left' ? start - 1 : start + 1;
+    const from = `${axis === 'row' ? 'row' : 'col'}${direction}-${id}`;
+    step({ kind: 'moved', axis, id, direction, index, start, title, at: Date.now(), from }, axis === 'row' ? { action: 'moveRow', rowId: id, index } : { action: 'moveColumn', columnId: id, index });
   };
   return (
     <div className="field table-editor" role="group" aria-labelledby={key('label')} data-table={name}>
@@ -113,7 +129,7 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
             const title = columnTitle(c, i);
             return (
               <div key={c.id} className="table-editor-col">
-                <DraftInput id={key(`colname-${c.id}`)} value={String(c.label ?? '')} ariaLabel={`Column ${i + 1} name`} onCommit={(v) => onTable({ action: 'renameColumn', columnId: c.id, value: v })} />
+                <DraftInput id={key(`colname-${c.id}`)} value={String(c.label ?? '')} ariaLabel={`Column ${i + 1} name`} onCommit={(v) => void onTable({ action: 'renameColumn', columnId: c.id, value: v })} />
                 <button className="icon-btn sm" id={key(`colleft-${c.id}`)} aria-label={`Move column ${title} left`} disabled={i === 0} onClick={() => move('column', c.id, i, 'left', title)}>
                   <ArrowLeft />
                 </button>
@@ -122,15 +138,14 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
                 </button>
                 <button
                   className="icon-btn sm"
+                  id={key(`coldel-${c.id}`)}
                   aria-label={`Remove column ${title}`}
                   aria-disabled={removeColumnBlocked ? true : undefined}
                   aria-describedby={removeColumnBlocked ? key('removecol-note') : undefined}
                   title={removeColumnBlocked ?? undefined}
                   onClick={() => {
                     if (removeColumnBlocked) return;
-                    const next = focusAfterRemove(columns.map((x) => x.id), i);
-                    after.current = { kind: 'removed', focus: next ? `colname-${next}` : 'addcol' };
-                    onTable({ action: 'removeColumn', columnId: c.id });
+                    step({ kind: 'removed', axis: 'column', id: c.id, order: columns.map((x) => x.id), at: Date.now(), from: `coldel-${c.id}` }, { action: 'removeColumn', columnId: c.id });
                   }}
                 >
                   <Trash2 />
@@ -146,8 +161,7 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
             title={addColumnBlocked ?? undefined}
             onClick={() => {
               if (addColumnBlocked) return;
-              after.current = { kind: 'addedColumn', before: columns.map((x) => x.id) };
-              onTable({ action: 'insertColumn' });
+              step({ kind: 'addedColumn', before: columns.map((x) => x.id), at: Date.now(), from: 'addcol' }, { action: 'insertColumn' });
             }}
           >
             <Plus /> Add column
@@ -188,12 +202,9 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
                   </button>
                   <button
                     className="icon-btn sm"
+                    id={key(`rowdel-${r.id}`)}
                     aria-label={`Remove row ${title}`}
-                    onClick={() => {
-                      const next = focusAfterRemove(rows.map((x) => x.id), i);
-                      after.current = { kind: 'removed', focus: next ? `rowhead-${next}` : 'addrow' };
-                      onTable({ action: 'removeRow', rowId: r.id });
-                    }}
+                    onClick={() => step({ kind: 'removed', axis: 'row', id: r.id, order: rows.map((x) => x.id), at: Date.now(), from: `rowdel-${r.id}` }, { action: 'removeRow', rowId: r.id })}
                   >
                     <Trash2 />
                   </button>
@@ -203,7 +214,7 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
                   {isOpen &&
                     columns.map((c, ci) => (
                       <Field key={c.id} label={columnTitle(c, ci)}>
-                        <DraftInput id={key(`cell-${r.id}-${c.id}`)} value={cellText(r, c.id)} onCommit={(v) => onTable({ action: 'setCell', rowId: r.id, columnId: c.id, value: v })} />
+                        <DraftInput id={key(`cell-${r.id}-${c.id}`)} value={cellText(r, c.id)} onCommit={(v) => void onTable({ action: 'setCell', rowId: r.id, columnId: c.id, value: v })} />
                       </Field>
                     ))}
                 </div>
@@ -218,8 +229,7 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
             title={addRowBlocked ?? undefined}
             onClick={() => {
               if (addRowBlocked) return;
-              after.current = { kind: 'addedRow', before: rows.map((x) => x.id) };
-              onTable({ action: 'insertRow' });
+              step({ kind: 'addedRow', before: rows.map((x) => x.id), at: Date.now(), from: 'addrow' }, { action: 'insertRow' });
             }}
           >
             <Plus /> Add row

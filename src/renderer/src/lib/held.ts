@@ -125,7 +125,9 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       if (op.action === 'renameColumn') return found({ definitionId: node.definitionId, value: column.label });
       const row = (Array.isArray(table?.rows) ? table.rows : []).find((r) => r && r.id === op.rowId);
       if (!row) return gone('table row');
-      return found({ definitionId: node.definitionId, value: row.cells?.[column.id] ?? '' });
+      // The cell is known by its row and column: a row or column given new content under the same ID (a whole
+      // table written again) is not the cell the author edited.
+      return found({ definitionId: node.definitionId, value: row.cells?.[column.id] ?? '', row: row.cells, column: column.label });
     }
     case 'node.setStyle': {
       // A variant rule lives on the component definition with every other rule of that option: not one field.

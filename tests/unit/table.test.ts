@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { InstanceNode, ProjectState, TableValue } from '@shared/types';
+import type { ComponentDefinition, InstanceNode, ProjectState, TableValue } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
@@ -20,9 +20,9 @@ import { generateProject, defFile } from '@generator/index';
 import { compactPropsSchema, hasOpenSchema, propJsonSchema } from '@agent/propschema';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { selectionTools } from '@agent/selection';
-import { compactNode, catalogueIndex } from '@agent/context';
+import { agentProps, compactNode, catalogueIndex } from '@agent/context';
 import { OP_REACH } from '@agent/scope';
-import { fieldKey, readField, shownField, typedText } from '../../src/renderer/src/lib/held';
+import { checkHeld, fieldKey, readField, shownField, typedText } from '../../src/renderer/src/lib/held';
 import { addColumnNote, addRowNote, focusAfterRemove, readTable, removeColumnNote, rowTitle, tableCount, tableMoveAnnouncement, tableMoveFocus } from '../../src/renderer/src/lib/table-editor';
 import { checkSvelteSource } from '../../src/main/codecheck';
 import { ProjectSession } from '../../src/main/project/session';
@@ -74,6 +74,8 @@ describe('table values', () => {
     expect(t.columns.map((c) => c.label)).toEqual(['Day', 'Workshop']);
     expect(t.columns.every((c) => /^col_[a-z0-9]+$/.test(c.id))).toBe(true);
     expect(t.rows.every((r) => /^row_[a-z0-9]+$/.test(r.id))).toBe(true);
+    expect(new Set(t.columns.map((c) => c.id)).size).toBe(2);
+    expect(new Set(t.rows.map((r) => r.id)).size).toBe(2);
     const [day, workshop] = t.columns.map((c) => c.id);
     expect(t.rows.map((r) => r.cells)).toEqual([
       { [day]: 'Monday', [workshop]: 'Clay' },
@@ -100,6 +102,12 @@ describe('table values', () => {
     ['a row ID used twice', { columns: ['A'], rows: [{ id: 'row_1', cells: {} }, { id: 'row_1', cells: {} }] }, 'used twice'],
     ['an ID in the wrong form', { columns: [{ id: 'assetId', label: 'A' }], rows: [] }, 'is not a valid ID'],
     ['too many columns', { columns: Array.from({ length: TABLE_LIMITS.columns + 1 }, (_, i) => `C${i}`), rows: [] }, `at most ${TABLE_LIMITS.columns} columns`],
+    ['far too many columns', { columns: Array.from({ length: TABLE_LIMITS.columns + 5 }, (_, i) => `C${i}`), rows: [] }, `at most ${TABLE_LIMITS.columns} columns`],
+    ['a cell that is not text', { columns: ['A'], rows: [[{ text: 'x' }]] }, 'expected text'],
+    ['a row object with keys a row does not have', { columns: ['Day'], rows: [{ Day: 'Friday' }] }, '"Day" is not part of a row'],
+    ['a column object with keys a column does not have', { columns: [{ label: 'Day', width: 2 }], rows: [] }, '"width" is not part of a column'],
+    ['a table with keys a table does not have', { columns: ['Day'], rows: [], caption: 'x' }, '"caption" is not part of a table'],
+    ['a shortened view written back as the whole table', { columns: [{ id: 'col_a', label: 'A' }], rows: [{ id: 'row_1', cells: ['x…'] }], cellsClipped: true, note: 'Long cells are shortened' }, 'shortened view'],
     ['too many rows', { columns: ['A'], rows: Array.from({ length: TABLE_LIMITS.rows + 1 }, () => ['x']) }, `at most ${TABLE_LIMITS.rows} rows`],
     ['a cell that is too long', { columns: ['A'], rows: [['x'.repeat(TABLE_LIMITS.cell + 1)]] }, `longer than ${TABLE_LIMITS.cell}`],
     ['something that is not a table', ['Day', 'Workshop'], 'expected a table']
@@ -132,9 +140,15 @@ describe('table edits by ID', () => {
       { id: 'row_2', cells: { col_day: 'Wednesday', col_time: '18:30' } },
       { id: 'row_3', cells: { col_day: 'Saturday', col_time: '09:30' } }
     ]);
-    const columnId = applyOperations(s, [edit(nodeId, owner, { action: 'insertColumn', index: 1 })]).results[0].columnId as string;
+    const withColumn = applyOperations(s, [edit(nodeId, owner, { action: 'insertColumn', index: 1 })]);
+    const columnId = withColumn.results[0].columnId as string;
     expect(columnId).toMatch(/^col_/);
-    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+    const grown = tableOf(withColumn.state, owner, nodeId);
+    expect(grown.columns.map((c) => c.label)).toEqual(['Starts', 'Column 3', 'Day']);
+    expect(grown.rows.every((r) => r.cells[columnId] === '' && r.cells.col_day && r.cells.col_time)).toBe(true);
+    const removed = applyOperations(withColumn.state, [edit(nodeId, owner, { action: 'removeRow', rowId: 'row_2' })]).state;
+    expect(tableOf(removed, owner, nodeId).rows.map((r) => r.id)).toEqual([rowId, 'row_1', 'row_3']);
+    expect(validateState(removed).filter((d) => d.severity !== 'info')).toEqual([]);
   });
 
   it('keeps a cell typed just before its column was moved: each step names its cell, never the whole table', () => {
@@ -144,7 +158,8 @@ describe('table edits by ID', () => {
     const after = applyOperations(s, [edit(nodeId, owner, { action: 'moveColumn', columnId: 'col_time', index: 0 })]).state;
     const t = tableOf(after, owner, nodeId);
     expect(t.columns[0].id).toBe('col_time');
-    expect(t.rows[1].cells.col_time).toBe('19:00');
+    expect(t.rows[1].cells).toEqual({ col_day: 'Wednesday', col_workshop: 'Hand building', col_time: '19:00' });
+    expect(t.rows[0].cells).toEqual(TIMETABLE.rows[0].cells);
   });
 
   it('refuses a step whose row or column has gone, instead of bringing it back', () => {
@@ -160,6 +175,9 @@ describe('table edits by ID', () => {
     let s = applyOperations(s0, [edit(nodeId, owner, { action: 'removeColumn', columnId: 'col_time' }), edit(nodeId, owner, { action: 'removeColumn', columnId: 'col_workshop' })]).state;
     expect(refused(() => applyOperations(s, [edit(nodeId, owner, { action: 'removeColumn', columnId: 'col_day' })]))).toContain('at least one column');
     expect(refused(() => applyOperations(s, [edit(nodeId, owner, { action: 'renameColumn', columnId: 'col_day', value: '' })]))).toContain('needs a name');
+    const wide = { columns: Array.from({ length: TABLE_LIMITS.columns }, (_, i) => `C${i}`), rows: [] };
+    const sWide = applyOperations(s, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: wide }]).state;
+    expect(refused(() => applyOperations(sWide, [edit(nodeId, owner, { action: 'insertColumn' })]))).toContain(`at most ${TABLE_LIMITS.columns} columns`);
     const full = { columns: ['A'], rows: Array.from({ length: TABLE_LIMITS.rows }, () => ['x']) };
     s = applyOperations(s, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: full }]).state;
     expect(refused(() => applyOperations(s, [edit(nodeId, owner, { action: 'insertRow' })]))).toContain(`at most ${TABLE_LIMITS.rows} rows`);
@@ -170,6 +188,27 @@ describe('table edits by ID', () => {
     delete (s0.pages[owner.id].nodes[nodeId] as InstanceNode).props.table;
     const s = applyOperations(s0, [edit(nodeId, owner, { action: 'setCell', rowId: 'row_3', columnId: 'col_workshop', value: 'Raku' })]).state;
     expect(tableOf(s, owner, nodeId).rows.map((r) => r.cells.col_workshop)).toEqual(['Wheel throwing', 'Hand building', 'Raku']);
+    // The definition's own table, which other placements show, is unchanged.
+    const def = s.components[(s.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId];
+    expect(def.properties.table.default).toEqual(TIMETABLE);
+  });
+
+  it('needs the text it writes: a missing value never clears a cell, and "" does', () => {
+    const { s, owner, nodeId } = withTable();
+    expect(refused(() => applyOperations(s, [edit(nodeId, owner, { action: 'setCell', rowId: 'row_2', columnId: 'col_time' })]))).toContain('setCell needs a value');
+    expect(refused(() => applyOperations(s, [edit(nodeId, owner, { action: 'renameColumn', columnId: 'col_time' })]))).toContain('renameColumn needs a value');
+    const cleared = applyOperations(s, [edit(nodeId, owner, { action: 'setCell', rowId: 'row_2', columnId: 'col_time', value: '' })]).state;
+    expect(tableOf(cleared, owner, nodeId).rows[1].cells.col_time).toBe('');
+  });
+
+  it('reports a damaged saved table, and editing it keeps what can be read', () => {
+    const { s: s0, owner, nodeId } = withTable();
+    const node = s0.pages[owner.id].nodes[nodeId] as InstanceNode;
+    node.props.table = { ...TIMETABLE, columns: [...TIMETABLE.columns, null], rows: [TIMETABLE.rows[0], null, { ...TIMETABLE.rows[1], cells: { ...TIMETABLE.rows[1].cells, col_gone: 'x' } }] };
+    expect(validateState(s0).filter((d) => d.code === 'TABLE_DAMAGED').map((d) => d.nodeId)).toEqual([nodeId]);
+    const s = applyOperations(s0, [edit(nodeId, owner, { action: 'setCell', rowId: 'row_2', columnId: 'col_time', value: '19:00' })]).state;
+    expect(tableOf(s, owner, nodeId)).toEqual({ columns: TIMETABLE.columns, rows: [TIMETABLE.rows[0], { ...TIMETABLE.rows[1], cells: { ...TIMETABLE.rows[1].cells, col_time: '19:00' } }] });
+    expect(validateState(s).filter((d) => d.code === 'TABLE_DAMAGED')).toEqual([]);
   });
 
   it('refuses a table step on a property that is not a table', () => {
@@ -180,6 +219,8 @@ describe('table edits by ID', () => {
   it('applies the same pure step the engine uses', () => {
     const r = editTable(TIMETABLE, { action: 'moveRow', rowId: 'row_3', index: 0 }, 'Table');
     expect(r.value.rows.map((x) => x.id)).toEqual(['row_3', 'row_1', 'row_2']);
+    expect(editTable(TIMETABLE, { action: 'moveRow', rowId: 'row_1', index: 1 }, 'Table').value.rows.map((x) => x.id)).toEqual(['row_2', 'row_1', 'row_3']);
+    expect(editTable(TIMETABLE, { action: 'moveColumn', columnId: 'col_day', index: 9 }, 'Table').value.columns.map((x) => x.id)).toEqual(['col_workshop', 'col_time', 'col_day']);
     expect(TIMETABLE.rows.map((x) => x.id)).toEqual(['row_1', 'row_2', 'row_3']);
   });
 
@@ -187,6 +228,7 @@ describe('table edits by ID', () => {
     expect(OP_REACH['instance.editTable']).toBe('node');
     expect(validateOperation({ type: 'instance.editTable', owner: { kind: 'page', id: 'p' }, nodeId: 'n', prop: 'table', action: 'explode' }).ok).toBe(false);
     expect(validateOperation({ type: 'instance.editTable', owner: { kind: 'page', id: 'p' }, nodeId: 'n', prop: 'table', action: 'insertRow', cells: ['a'] }).ok).toBe(true);
+    expect(validateOperation({ type: 'instance.editTable', owner: { kind: 'page', id: 'p' }, nodeId: 'n', prop: 'table', action: 'moveRow', rowId: 'row_1', index: -1 }).ok).toBe(false);
   });
 });
 
@@ -208,32 +250,39 @@ describe('the Data table section', () => {
   });
 
   it('exports the table value into the page, the same bytes every time, with no editor attributes', () => {
-    const { s, owner, nodeId } = withTable();
+    const { s: s0, owner, nodeId } = withTable();
+    const s = applyOperations(s0, [edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_workshop', value: 'Raku firing' })]).state;
     const files = generateProject(s);
     const def = s.components[(s.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId];
     expect(files.get(defFile(def))).toContain('<th scope="col">');
     const page = files.get('src/routes/about/+page.svelte')!;
     expect(page).toContain('"col_workshop"');
-    expect(page).toContain('Wheel throwing');
+    expect(page).toContain('Raku firing');
+    expect(page).not.toContain('Wheel throwing');
     expect(page).not.toContain('data-so-');
     expect([...generateProject(structuredClone(s)).entries()]).toEqual([...files.entries()]);
   });
 
   it('keeps the table, IDs and all, when the theme is switched', () => {
     const { s: s0, owner, nodeId } = withTable();
-    const s = applyOperations(s0, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state;
+    const edited = applyOperations(s0, [edit(nodeId, owner, { action: 'insertRow', cells: ['Friday', 'Raku', '17:00'] })]);
+    const before = tableOf(edited.state, owner, nodeId);
+    const s = applyOperations(edited.state, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state;
     const node = s.pages[owner.id].nodes[nodeId] as InstanceNode;
     expect(s.components[node.definitionId].provenance?.pack).toBe('foundation-alt');
-    expect(node.props.table).toEqual(TIMETABLE);
+    expect(s.components[node.definitionId].parts.root).toEqual(catalogueComponent('foundation', 'data.table')!.parts.root);
+    expect(node.props.table).toEqual(before);
+    expect(before.rows).toHaveLength(4);
   });
 });
 
 describe('table properties in component schemas', () => {
   const state = createStarterState('business', 'Test', false);
-  it('allows a table property with a valid default', () => {
+  it('allows a table property with a valid default, and keeps one it is given', () => {
     const schema = normalizePropSchema({ type: 'table', label: 'Prices' }, state, 'prices');
     expect(schema.type).toBe('table');
     expect((schema.default as TableValue).columns.map((c) => c.label)).toEqual(['Column 1', 'Column 2']);
+    expect(normalizePropSchema({ type: 'table', label: 'Hours', default: TIMETABLE }, state, 'hours').default).toEqual(TIMETABLE);
   });
   it('refuses a table inside a list item', () => {
     expect(refused(() => normalizePropSchema({ type: 'list', fields: { grid: { type: 'table' } } }, state, 'items'))).toContain('needs a type of');
@@ -268,18 +317,38 @@ describe('the AI’s view of a table', () => {
     expect(entry.props.table).toContain('table{columns:string[], rows:string[][]}');
   });
 
-  it('shows row and column IDs, and says when a summary leaves rows out', () => {
+  it('shows every row and column ID, and says when it shortens cells, even for the largest table', () => {
     const { s: s0, owner, nodeId } = withTable();
-    const rows = Array.from({ length: 25 }, (_, i) => [`Day ${i + 1}`, 'Class', '10:00']);
-    const s = applyOperations(s0, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: { columns: ['Day', 'Workshop', 'Time'], rows } }]).state;
-    const props = compactNode(s, s.pages[owner.id], nodeId).props as { table: { columns: Array<{ id: string }>; rows: Array<{ id: string; cells: string[] }>; rowsNotShown?: number; note?: string } };
-    expect(props.table.columns.every((c) => c.id.startsWith('col_'))).toBe(true);
-    expect(props.table.rows[0].cells).toEqual(['Day 1', 'Class', '10:00']);
-    expect(props.table.rows).toHaveLength(20);
-    expect(props.table.rowsNotShown).toBe(5);
+    type Summary = { columns: Array<{ id: string; label: string }>; rows: Array<{ id: string; cells: string[] }>; cellsClipped?: boolean; note?: string };
+    const columns = Array.from({ length: TABLE_LIMITS.columns }, (_, i) => `Column ${i + 1}`);
+    const rows = Array.from({ length: TABLE_LIMITS.rows }, (_, r) => columns.map((_, c) => `${r + 1}.${c + 1} ${'x'.repeat(200)}`));
+    const s = applyOperations(s0, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: { columns, rows } }]).state;
+    const stored = tableOf(s, owner, nodeId);
+    const props = compactNode(s, s.pages[owner.id], nodeId).props as { table: Summary };
+    expect(props.table.columns.map((c) => c.id)).toEqual(stored.columns.map((c) => c.id));
+    expect(props.table.rows.map((r) => r.id)).toEqual(stored.rows.map((r) => r.id));
+    expect(props.table.rows[59].cells[11]).toMatch(/^60\.12 x+…$/);
+    expect(props.table.cellsClipped).toBe(true);
     expect(props.table.note).toContain('instance.editTable');
-    const small = compactNode(s0, s0.pages[owner.id], nodeId).props as { table: Record<string, unknown> };
+    expect(JSON.stringify(props).length).toBeLessThan(20000);
+    // Full props (inspect_element) shorten only a table too large to show whole, and it can never be written back.
+    const full = agentProps(s.components[(s.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId], (s.pages[owner.id].nodes[nodeId] as InstanceNode).props, s.pages, true);
+    expect((full.table as Summary).rows).toHaveLength(TABLE_LIMITS.rows);
+    expect(refused(() => applyOperations(s, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: full.table }]))).toContain('shortened view');
+    // A table shown whole reads back as exactly the stored table.
+    const small = compactNode(s0, s0.pages[owner.id], nodeId).props as { table: Summary };
     expect(small.table).not.toHaveProperty('note');
+    expect(normalizeTable(small.table, 'Table')).toEqual(TIMETABLE);
+  });
+
+  it('shows a table a placement takes from its definition, and never mistakes other props for one', () => {
+    const { s, owner, nodeId } = withTable();
+    const node = s.pages[owner.id].nodes[nodeId] as InstanceNode;
+    delete node.props.table;
+    expect((compactNode(s, s.pages[owner.id], nodeId).props as { table: { rows: Array<{ id: string }> } }).table.rows.map((r) => r.id)).toEqual(['row_1', 'row_2', 'row_3']);
+    const lists = { properties: { columns: { type: 'list', label: 'Columns', itemLabel: 'Column', fields: { title: { type: 'string', label: 'Title', default: '' } }, default: [] }, rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { title: { type: 'string', label: 'Title', default: '' } }, default: [] } } } as unknown as ComponentDefinition;
+    const props = { columns: [{ id: 'i_1', title: 'Plans' }], rows: [{ id: 'i_2', title: 'Monthly' }] };
+    expect(agentProps(lists, props, s.pages)).toEqual(props);
   });
 });
 
@@ -295,8 +364,20 @@ describe('typed table edits held while the AI works', () => {
     expect(readField(s, edit(nodeId, owner, { action: 'insertRow' }))).toBeNull();
     // Two cells are two fields; the same cell typed again is the same field.
     const other = edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_time', value: '19:00' });
+    const sameRow = edit(nodeId, owner, { action: 'setCell', rowId: 'row_2', columnId: 'col_day', value: '19:00' });
     expect(fieldKey([cell])).not.toBe(fieldKey([other]));
+    expect(fieldKey([cell])).not.toBe(fieldKey([sameRow]));
     expect(fieldKey([cell])).toBe(fieldKey([{ ...cell, value: '20:00' } as EditOperation]));
+  });
+
+  it('notices a row given other content under the same ID, even when the edited cell reads the same', () => {
+    const { s, owner, nodeId } = withTable();
+    const cell = edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_time', value: '11:00' });
+    const base = [(readField(s, cell) as { value: unknown }).value];
+    const replaced = { ...TIMETABLE, rows: [{ id: 'row_1', cells: { col_day: 'Sunday', col_workshop: 'Raku', col_time: '10:00' } }, ...TIMETABLE.rows.slice(1)] };
+    const after = applyOperations(s, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: replaced }]).state;
+    expect(checkHeld(after, [cell], base).kind).toBe('changed');
+    expect(checkHeld(s, [cell], base).kind).toBe('apply');
   });
 
   it('reports a removed row or column as gone', () => {
@@ -310,6 +391,7 @@ describe('typed table edits held while the AI works', () => {
 describe('the table editor’s wording and focus', () => {
   it('names rows by their first cells, and counts the table', () => {
     expect(rowTitle(TIMETABLE, TIMETABLE.rows[0], 0)).toBe('Monday · Wheel throwing');
+    expect(rowTitle(TIMETABLE, { id: 'row_x', cells: { col_day: '', col_workshop: 'Raku', col_time: '17:00' } }, 0)).toBe('Raku · 17:00');
     expect(rowTitle(TIMETABLE, { id: 'row_x', cells: {} }, 3)).toBe('Row 4');
     expect(tableCount(TIMETABLE)).toBe('3 columns · 3 rows');
     expect(tableCount({ columns: [TIMETABLE.columns[0]], rows: [TIMETABLE.rows[0]] })).toBe('1 column · 1 row');
@@ -324,14 +406,18 @@ describe('the table editor’s wording and focus', () => {
     expect(addRowNote(TABLE_LIMITS.rows - 1)).toBeNull();
     expect(addRowNote(TABLE_LIMITS.rows)).toContain(`at most ${TABLE_LIMITS.rows} rows`);
     expect(addColumnNote(TABLE_LIMITS.columns)).toContain(`at most ${TABLE_LIMITS.columns} columns`);
+    expect(addColumnNote(TABLE_LIMITS.columns - 1)).toBeNull();
     expect(removeColumnNote(1)).toContain('at least one column');
     expect(removeColumnNote(2)).toBeNull();
   });
 
-  it('moves focus to the next entry, then the previous, then Add', () => {
-    expect(focusAfterRemove(['a', 'b', 'c'], 1)).toBe('c');
-    expect(focusAfterRemove(['a', 'b', 'c'], 2)).toBe('b');
-    expect(focusAfterRemove(['a'], 0)).toBeNull();
+  it('moves focus to the next entry still there, then the previous, then Add, judged when the removal lands', () => {
+    expect(focusAfterRemove(['a', 'b', 'c'], 'b', new Set(['a', 'c']))).toBe('c');
+    expect(focusAfterRemove(['a', 'b', 'c'], 'a', new Set(['b', 'c']))).toBe('b');
+    expect(focusAfterRemove(['a', 'b', 'c'], 'c', new Set(['a', 'b']))).toBe('b');
+    expect(focusAfterRemove(['a'], 'a', new Set())).toBeNull();
+    // Two quick removals: B, then A (whose next was B) once B has gone too.
+    expect(focusAfterRemove(['a', 'b', 'c'], 'a', new Set(['c']))).toBe('c');
   });
 
   it('keeps focus on a move button while it still works, and announces the new place', () => {
@@ -340,6 +426,7 @@ describe('the table editor’s wording and focus', () => {
     expect(tableMoveFocus('down', 1, 3)).toBe('down');
     expect(tableMoveFocus('right', 2, 3)).toBe('head');
     expect(tableMoveAnnouncement('column', 'Start time', 0, 3)).toBe('Column Start time moved to position 1 of 3');
+    expect(tableMoveAnnouncement('row', 'Monday · Clay', 2, 4)).toBe('Row Monday · Clay moved to position 3 of 4');
   });
 });
 

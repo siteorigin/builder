@@ -585,6 +585,12 @@ assert.equal(await activeLabel(), 'Move column Start time left', 'focus stays on
 await tableEd.getByLabel('Column 3 name').fill('Class');
 await win.keyboard.press('Enter');
 await eventually(async () => assert.deepEqual(await headers(), ['Day', 'Start time', 'Class'], 'a renamed column keeps its cells'));
+// Remove row takes the row out and focus moves to the next row; Undo brings it back.
+await tableEd.getByRole('button', { name: 'Remove row Wednesday · 18:30' }).click();
+await eventually(async () => assert.equal(await previewRows().count(), 3, 'Remove row takes the row out'));
+await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.textContent?.trim()), 'Saturday · 09:30', 'focus moves to the next row'));
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(async () => assert.deepEqual((await previewRows().nth(1).locator('td').allInnerTexts()).map((t) => t.trim()), ['Wednesday', '18:30', 'Hand building'], 'undo puts the row back where it was'));
 await win.locator('#dock-panel-inspect').getByLabel('Caption', { exact: true }).fill('Weekly workshops');
 await win.keyboard.press('Enter');
 

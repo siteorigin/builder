@@ -52,9 +52,13 @@ export function removeColumnNote(columns: number): string | null {
   return columns <= 1 ? 'A table needs at least one column, so this one can’t be removed. Add another first.' : null;
 }
 
-/** Which entry takes focus once the one at `index` is removed: the next, else the previous, else none (Add). */
-export function focusAfterRemove(ids: string[], index: number): string | null {
-  return ids[index + 1] ?? ids[index - 1] ?? null;
+/**
+ * Which entry takes focus once `id` has gone, judged when the removal lands: the next entry of `order` (the list as
+ * it was when Remove was clicked) that is still `present`, else the previous one, else none (Add).
+ */
+export function focusAfterRemove(order: string[], id: string, present: ReadonlySet<string>): string | null {
+  const i = order.indexOf(id);
+  return order.slice(i + 1).find((x) => present.has(x)) ?? order.slice(0, Math.max(i, 0)).reverse().find((x) => present.has(x)) ?? null;
 }
 
 export type TableMove = 'up' | 'down' | 'left' | 'right';

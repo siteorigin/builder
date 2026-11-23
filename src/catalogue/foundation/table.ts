@@ -34,7 +34,8 @@ const TABLE_SOURCE = `<script>
 	const text = (v) => (v === undefined || v === null ? '' : String(v));
 	const cell = (row, column) => (isEntry(row.cells) ? text(row.cells[column.id]) : '');
 	// The scrolling region is named by the caption, else the heading, so it is never an unnamed stop.
-	const regionLabel = $derived(caption ? undefined : text(heading) || 'Table');
+	const captionText = $derived(text(caption).trim());
+	const regionLabel = $derived(captionText ? undefined : text(heading).trim() || 'Table');
 </script>
 
 <section class={['so-table', 'so-table--' + variant, className]}>
@@ -46,9 +47,9 @@ const TABLE_SOURCE = `<script>
 				{#if lead}<p class="so-table__lead">{lead}</p>{/if}
 			</div>
 		{/if}
-		<div class="so-table__scroll" role="region" tabindex="0" aria-labelledby={caption ? uid + '-caption' : undefined} aria-label={regionLabel}>
+		<div class="so-table__scroll" role="region" tabindex="0" aria-labelledby={captionText ? uid + '-caption' : undefined} aria-label={regionLabel}>
 			<table class="so-table__table">
-				{#if caption}<caption id={uid + '-caption'}>{caption}</caption>{/if}
+				{#if captionText}<caption id={uid + '-caption'}>{captionText}</caption>{/if}
 				<thead>
 					<tr>
 						{#each columns as column}
@@ -75,7 +76,10 @@ const TABLE_SOURCE = `<script>
 </section>
 
 <style>
+	/* Inside a row or grid the section may shrink to its container: only the table's own region scrolls. */
 	.so-table {
+		min-width: 0;
+		max-width: 100%;
 		padding-block: var(--so-space-section);
 		padding-inline: var(--so-container-gutter);
 		background: var(--so-color-background);
@@ -206,7 +210,8 @@ export const dataTable: ComponentDefinition = {
     table: { type: 'table', label: 'Table', default: DEFAULT_TABLE },
     rowHeaders: P.bool('Use the first column as row headings', false)
   },
-  parts: { root: { nodeId: 'root', label: 'Table section' } },
+  // The root places the classes it is given, so these style changes (hiding at a size included) show.
+  parts: { root: { nodeId: 'root', label: 'Table section', styleControls: ['paddingBlock', 'background', 'color', 'hidden'] } },
   variantAxes: {
     tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },

@@ -53,6 +53,14 @@ function settleIds(given: unknown[], pattern: RegExp, prefix: string, what: (i: 
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
+/** Keys a shortened view of a table carries (see the agent's summaries): it is never a whole table. */
+const PARTIAL_KEYS = ['note', 'cellsClipped', 'rowsNotShown'];
+
+/** Refuses keys an entry does not have, so a misplaced value is reported instead of silently lost. */
+function onlyKeys(v: Record<string, unknown>, allowed: string[], what: string, shape: string) {
+  for (const k of Object.keys(v)) if (!allowed.includes(k)) fail(`${what}: "${k.slice(0, 40)}" is not part of ${shape}.`);
+}
+
 /** A row's cells for these columns, from a list in column order or a map by column ID. */
 function cellsFor(raw: unknown, columns: TableColumn[], what: string): Record<string, string> {
   let byId: Record<string, unknown>;
@@ -74,15 +82,22 @@ function cellsFor(raw: unknown, columns: TableColumn[], what: string): Record<st
  */
 export function normalizeTable(v: unknown, label: string): TableValue {
   if (!isRecord(v)) fail(`${label}: expected a table such as ${TABLE_SHAPE}.`);
+  if (PARTIAL_KEYS.some((k) => Object.hasOwn(v, k)))
+    fail(`${label}: this is a shortened view of the table, and writing it back would lose what it leaves out. Change cells, rows or columns by ID with instance.editTable.`);
+  onlyKeys(v, ['columns', 'rows'], label, 'a table, which has only columns and rows');
   const { columns: colsIn, rows: rowsIn = [] } = v as { columns?: unknown; rows?: unknown };
   if (!Array.isArray(colsIn) || !colsIn.length) fail(`${label}: a table needs at least one column, as in ${TABLE_SHAPE}.`);
   if (colsIn.length > TABLE_LIMITS.columns) fail(`${label}: a table has at most ${TABLE_LIMITS.columns} columns.`);
   if (!Array.isArray(rowsIn)) fail(`${label}: rows are a list, as in ${TABLE_SHAPE}.`);
   if (rowsIn.length > TABLE_LIMITS.rows) fail(`${label}: a table has at most ${TABLE_LIMITS.rows} rows.`);
   const cols: Array<Record<string, unknown>> = colsIn.map((c) => (isRecord(c) ? c : { label: c }));
+  cols.forEach((c, i) => onlyKeys(c, ['id', 'label'], `${label} → column ${i + 1}`, 'a column, which is a name or { id, label }'));
   const colIds = settleIds(cols.map((c) => c.id), COLUMN_ID, 'col', (i) => `${label} → column ${i + 1}`);
   const columns = cols.map((c, i) => ({ id: colIds[i], label: columnName(c.label, `${label} → column ${i + 1}`) }));
-  for (const [i, r] of rowsIn.entries()) if (!Array.isArray(r) && !isRecord(r)) fail(`${label} → row ${i + 1}: expected a list of cell texts or { id, cells }.`);
+  for (const [i, r] of rowsIn.entries()) {
+    if (!Array.isArray(r) && !isRecord(r)) fail(`${label} → row ${i + 1}: expected a list of cell texts or { id, cells }.`);
+    if (isRecord(r)) onlyKeys(r, ['id', 'cells'], `${label} → row ${i + 1}`, 'a row, which is a list of cell texts in column order or { id, cells }');
+  }
   const rowIds = settleIds(rowsIn.map((r) => (isRecord(r) ? r.id : undefined)), ROW_ID, 'row', (i) => `${label} → row ${i + 1}`);
   const rows: TableRow[] = rowsIn.map((r, i) => ({ id: rowIds[i], cells: cellsFor(Array.isArray(r) ? r : (r as Record<string, unknown>).cells, columns, `${label} → row ${i + 1}`) }));
   return { columns, rows };
@@ -114,8 +129,24 @@ function moveTo<T>(list: T[], from: number, index: number): T[] {
  * Apply one step to `current` (a stored table) and return the table it makes. A new row or column also returns
  * its ID. Steps that name a row or column the table no longer has are refused, never applied somewhere else.
  */
+/**
+ * A stored table read leniently before a step is applied: entries that are not rows or columns, and cells under a
+ * column the table does not have, are left out. One damaged entry in a saved file never blocks fixing the rest.
+ */
+function readStored(v: unknown): unknown {
+  if (!isRecord(v)) return v;
+  const columns = Array.isArray(v.columns) ? v.columns.filter(isRecord).map((c) => ({ id: c.id, label: c.label })) : v.columns;
+  const ids = new Set(Array.isArray(columns) ? columns.map((c) => c.id) : []);
+  const rows = Array.isArray(v.rows)
+    ? v.rows.filter(isRecord).map((r) => ({ id: r.id, cells: isRecord(r.cells) ? Object.fromEntries(Object.entries(r.cells).filter(([k]) => ids.has(k))) : {} }))
+    : v.rows;
+  return { columns, rows };
+}
+
 export function editTable(current: unknown, edit: TableEdit, label: string): { value: TableValue; rowId?: string; columnId?: string } {
-  const table = normalizeTable(current, label);
+  const table = normalizeTable(readStored(current), label);
+  // Text is required where it is written: a missing value never clears a cell by accident.
+  if ((edit.action === 'setCell' || edit.action === 'renameColumn') && typeof edit.value !== 'string') fail(`${label}: ${edit.action} needs a value${edit.action === 'setCell' ? ' ("" clears the cell)' : ''}.`);
   const rowAt = () => {
     if (!edit.rowId) fail(`${label}: ${edit.action} needs a rowId.`);
     const i = table.rows.findIndex((r) => r.id === edit.rowId);
@@ -190,6 +221,3 @@ export function editTable(current: unknown, edit: TableEdit, label: string): { v
       return fail(`${label}: unknown table action "${String((edit as { action?: unknown }).action)}". Use one of ${TABLE_ACTIONS.join(', ')}.`);
   }
 }
-
-/** A column-name for the next column a person adds, as `editTable` names it. */
-export const nextColumnName = (table: TableValue) => `Column ${table.columns.length + 1}`;

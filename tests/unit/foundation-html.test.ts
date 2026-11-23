@@ -455,13 +455,21 @@ describe('data.table', () => {
     ]);
     // A moved column moves its cells with it.
     const moved = rendered({ table: { ...table, columns: [table.columns[2], table.columns[0], table.columns[1]] } });
-    expect(rowsOf(moved)[0]).toEqual(['td:10:00', 'td:Monday', 'td:Wheel throwing']);
+    expect(rowsOf(moved)).toEqual([
+      ['td:10:00', 'td:Monday', 'td:Wheel throwing'],
+      ['td:18:30', 'td:Wednesday', 'td:Hand building'],
+      ['td:17:00', 'td:Friday', 'td:Raku']
+    ]);
   });
 
   it('names each row by its first cell when row headings are on', () => {
     const out = rendered({ table, rowHeaders: true });
     expect(rowsOf(out).map((r) => r[0])).toEqual(['th scope="row":Monday', 'th scope="row":Wednesday', 'th scope="row":Friday']);
-    expect(rowsOf(out)[0].slice(1)).toEqual(['td:Wheel throwing', 'td:10:00']);
+    expect(rowsOf(out).map((r) => r.slice(1))).toEqual([
+      ['td:Wheel throwing', 'td:10:00'],
+      ['td:Hand building', 'td:18:30'],
+      ['td:Raku', 'td:17:00']
+    ]);
   });
 
   it('scrolls inside a focusable region named by the caption, or by the heading without one', () => {
@@ -474,6 +482,9 @@ describe('data.table', () => {
     const uncaptioned = rendered({ table, caption: '', heading: 'Timetable' });
     expect(uncaptioned).not.toContain('<caption');
     expect(uncaptioned.match(/<div class="[^"]*so-table__scroll[^"]*"([^>]*)>/)![1]).toContain('aria-label="Timetable"');
+    const blank = rendered({ table, caption: '   ', heading: 'Timetable' });
+    expect(blank).not.toContain('<caption');
+    expect(blank.match(/<div class="[^"]*so-table__scroll[^"]*"([^>]*)>/)![1]).toContain('aria-label="Timetable"');
     const nameless = rendered({ table, caption: '', heading: '' });
     expect(nameless.match(/<div class="[^"]*so-table__scroll[^"]*"([^>]*)>/)![1]).toContain('aria-label="Table"');
     expect(nameless).not.toMatch(EMPTY_HEADING);
@@ -483,13 +494,18 @@ describe('data.table', () => {
     const source = bundle.files.get(defFile(bundle.defs['data.table']))!;
     expect(source).toMatch(/\.so-table__scroll\s*\{[^}]*max-width:\s*100%[^}]*overflow-x:\s*auto/);
     expect(source).toMatch(/\.so-table__inner\s*\{[^}]*min-width:\s*0/);
+    // In a row or grid the section itself may shrink, so its content never widens the page.
+    expect(source).toMatch(/\.so-table\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%/);
+    expect(source).not.toMatch(/overflow-x:\s*(visible|hidden)/);
   });
 
   it('shows text as text, and a hand-edited odd table without failing', () => {
     const odd = rendered({ table: { columns: [{ id: 'col_a', label: '<b>A & {B}</b>' }], rows: [{ id: 'row_1', cells: { col_a: '1 < 2 & {x}' } }] } });
     expect(odd).toContain('<th scope="col">&lt;b>A &amp; {B}&lt;/b></th>');
     expect(odd).toContain('<td>1 &lt; 2 &amp; {x}</td>');
-    expect(() => html('data.table', { table: { columns: [null, { id: 'col_a', label: 'A' }], rows: [{ id: 'row_1', cells: null }, null] } })).not.toThrow();
+    const damaged = bare(html('data.table', { table: { columns: [null, { id: 'col_a', label: 'A' }], rows: [{ id: 'row_1', cells: null }, null, { id: 'row_2', cells: { col_a: 'kept' } }] } }));
+    expect(tags(tags(damaged, 'thead')[0], 'th')).toEqual(['A']);
+    expect(rowsOf(damaged)).toEqual([['td:'], ['td:kept']]);
     expect(() => html('data.table', { table: null })).not.toThrow();
   });
 });

@@ -3,7 +3,8 @@ import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { validateRoute } from '@shared/routes';
 import { variantIdsValid, variantOptions } from '@shared/variants';
-import { allTrees, childLists, displayName, subtreeIds } from './tree';
+import { EngineError, allTrees, childLists, displayName, subtreeIds } from './tree';
+import { normalizeTable } from './table';
 import { bindingProblem, bindingSlots, boundSchema } from './schema';
 import { cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle } from './tokens';
@@ -131,6 +132,17 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       if (n.kind === 'instance') {
         const def = state.components[n.definitionId];
         if (!def) out.push({ severity: 'error', code: 'DEF_MISSING', message: `${label}: ${n.definitionId} is not installed.`, owner, nodeId: n.id });
+        // A table changed by hand into a shape it cannot have shows only the rows it can, so it is reported.
+        else
+          for (const [k, schema] of Object.entries(def.properties)) {
+            if (schema.type !== 'table' || !Object.hasOwn(n.props, k) || isBinding(n.props[k])) continue;
+            try {
+              normalizeTable(n.props[k], schema.label);
+            } catch (e) {
+              if (!(e instanceof EngineError)) throw e;
+              out.push({ severity: 'warning', code: 'TABLE_DAMAGED', message: `${label}: part of a table in ${displayName(state, n)} cannot be read (${e.message}). Editing the table keeps the rows and columns that can.`, owner, nodeId: n.id });
+            }
+          }
       }
       if (!seen.has(n.id)) out.push({ severity: 'warning', code: 'NODE_DETACHED', message: `${label}: ${displayName(state, n)} is not attached to the tree.`, owner, nodeId: n.id });
     }
