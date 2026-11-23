@@ -101,8 +101,6 @@ interface State {
   mode: 'edit' | 'preview';
   leftTab: LeftTab | null;
   rightTab: RightTab;
-  /** What Welcome should do when it appears after leaving a project: start a new one, or ask to trust one. */
-  welcomeIntent: null | { kind: 'new' } | { kind: 'trust'; dir: string; name: string };
   /** The preview page itself has loaded and connected (not just the website tools). */
   frameReady: boolean;
   /** Fields holding typed text that is not committed yet (the toolbar says "Editing…" rather than "Saved"). */
@@ -149,7 +147,6 @@ export const useStore = create<State>((set) => ({
   mode: 'edit',
   leftTab: 'pages',
   rightTab: 'inspect',
-  welcomeIntent: null,
   frameReady: false,
   drafting: 0,
   leaving: false,

@@ -1,8 +1,11 @@
 // Leaving a project never drops what is still being typed: native Close Project, switching projects, New
 // Project, closing the window and quitting all save a focused Inspector field first; a value that cannot be
-// saved asks to keep editing or leave without it (#79). Needs no preview: edits go through the Inspector.
+// saved asks to keep editing or leave without it (#79). The open project stays open, with its page and
+// selection, until the project replacing it has opened: New project and a project to trust are asked over it,
+// and cancelling them or a damaged project leaves it as it was (#80). Needs no preview: edits go through the
+// Inspector.
 import assert from 'node:assert/strict';
-import { cpSync, readFileSync } from 'node:fs';
+import { cpSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MOD, eventually, launch, scratch, step } from './harness.mjs';
 
@@ -139,15 +142,96 @@ await dialog.getByRole('button', { name: 'Leave without it' }).click();
 await win.waitForSelector('.welcome');
 assert.equal(homeDoc(dirB).title, homeTitle, 'the saved title is unchanged');
 
-step('File > New Project saves the focused field before Welcome');
+/** The folder of the project open now, as the app names it. */
+const openDir = () => win.evaluate(() => window.builder.project.snapshot().then((s) => s?.dir ?? null));
+/** The native folder picker answers with `dir` (no dialog is shown). */
+const pickFolder = (dir) => app.evaluate(({ dialog }, d) => void (dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [d] })), dir);
+/** The open project is still the one being edited: no Welcome, the same project, the hero still selected. */
+async function stillEditing(dir, text, what) {
+  assert.equal(await win.locator('.welcome').count(), 0, `${what}: Welcome never appeared`);
+  assert.equal(await win.locator('.editor').count(), 1, `${what}: the editor is still open`);
+  assert.equal(await openDir(), realpathSync(dir), `${what}: the same project is open`);
+  assert.equal(await heading.inputValue(), text, `${what}: the hero is still selected, its heading shown`);
+}
+
+step('File > New Project opens over the project, saving the focused field, and Escape leaves the project as it was');
 await openProject(dirA);
 heading = await heroHeading();
 await typeDraft(heading, 'Kept through New Project');
 await menu('New Project…');
-await win.waitForSelector('.welcome');
-await win.getByRole('dialog', { name: 'New project' }).waitFor();
-assert.equal(savedHeading(dirA), 'Kept through New Project');
+const newProject = win.getByRole('dialog', { name: 'New project' });
+await newProject.waitFor();
+await eventually(() => assert.equal(savedHeading(dirA), 'Kept through New Project'));
 await win.keyboard.press('Escape');
+await newProject.waitFor({ state: 'detached' });
+await stillEditing(dirA, 'Kept through New Project', 'after cancelling New project');
+
+step('a project that needs trust is asked about over the open project, and Cancel leaves it as it was');
+const dirC = join(WORK, 'sites', 'quayside-studio-c');
+cpSync(dirA, dirC, { recursive: true, filter: (src) => !/[/\\](node_modules|\.siteorigin)$/.test(src) });
+await pickFolder(dirC);
+await menu('Open Project…');
+const trustPrompt = win.getByRole('dialog', { name: 'Trust this project?' });
+await trustPrompt.waitFor();
+assert.match(await trustPrompt.innerText(), /quayside-studio-c/, 'the prompt names the project that was picked');
+await trustPrompt.getByRole('button', { name: 'Cancel' }).click();
+await trustPrompt.waitFor({ state: 'detached' });
+await stillEditing(dirA, 'Kept through New Project', 'after cancelling the trust prompt');
+
+step('a damaged project names its file and leaves the open project as it was; repaired, it opens');
+const manifestB = join(dirB, 'siteorigin.project.json');
+const goodManifest = readFileSync(manifestB, 'utf8');
+writeFileSync(manifestB, goodManifest.slice(0, 40));
+await pickFolder(dirB);
+await menu('Open Project…');
+// Each error names its own folder in full, in quotes (one project's folder name starts with the other's).
+const damaged = (dir) => win.locator('.toast.error', { hasText: `"${realpathSync(dir)}"` }).filter({ hasText: 'siteorigin.project.json' });
+await damaged(dirB).waitFor();
+await stillEditing(dirA, 'Kept through New Project', 'after a damaged project failed to open');
+writeFileSync(manifestB, goodManifest);
+await menu('Open Project…');
+await eventually(async () => assert.equal(await openDir(), realpathSync(dirB), 'the repaired project opens'));
+await win.waitForSelector('.editor');
+
+step('from Welcome too: a damaged project names its file, and opens once repaired');
+await menu('Close Project');
+await win.waitForSelector('.welcome');
+// Not trusted yet: the check before the trust prompt explains it, and once repaired the prompt opens it.
+const manifestC = join(dirC, 'siteorigin.project.json');
+const goodC = readFileSync(manifestC, 'utf8');
+writeFileSync(manifestC, goodC.slice(0, 40));
+const openButton = win.locator('.welcome-action:not([disabled])', { hasText: 'Open project…' });
+await pickFolder(dirC);
+await openButton.click();
+await damaged(dirC).waitFor();
+assert.equal(await win.locator('.welcome').count(), 1, 'Welcome is still shown');
+writeFileSync(manifestC, goodC);
+await openButton.click();
+await trustPrompt.waitFor();
+await trustPrompt.getByRole('button', { name: 'Trust and open' }).click();
+await eventually(async () => assert.equal(await openDir(), realpathSync(dirC), 'the repaired project opens from Welcome'));
+await menu('Close Project');
+await win.waitForSelector('.welcome');
+// Already trusted (a recent project): the damage is explained the same way, and the card opens it once repaired.
+const manifestA = join(dirA, 'siteorigin.project.json');
+const goodA = readFileSync(manifestA, 'utf8');
+writeFileSync(manifestA, goodA.slice(0, 40));
+const openRecent = (dir) =>
+  eventually(async () => {
+    const clicked = await win.evaluate((d) => {
+      const card = [...document.querySelectorAll('.recent-card')].find((b) => b.title.endsWith(`\n${d}`) && !b.disabled);
+      card?.click();
+      return !!card;
+    }, realpathSync(dir));
+    assert.equal(clicked, true, 'the recent project can be chosen');
+  });
+await openRecent(dirA);
+await damaged(dirA).waitFor();
+assert.equal(await win.locator('.welcome').count(), 1, 'Welcome is still shown');
+writeFileSync(manifestA, goodA);
+await openRecent(dirA);
+await win.waitForSelector('.editor');
+assert.equal(await openDir(), realpathSync(dirA), 'the repaired project opens from Welcome');
 
 step('closing the window saves the focused field');
 await openProject(dirA);

@@ -57,7 +57,14 @@ export async function dependenciesReady(dir: string): Promise<boolean> {
   if (!existsSync(join(dir, 'node_modules', '@sveltejs', 'kit', 'package.json'))) return false;
   const marker = await fs.readFile(join(dir, '.siteorigin', 'cache', 'deps.json'), 'utf8').catch(() => null);
   if (!marker) return false;
-  return JSON.parse(marker).lockHash === (await lockHash(dir));
+  // A damaged marker says nothing about the install: it is set up again, as with none.
+  let prepared: { lockHash?: unknown };
+  try {
+    prepared = JSON.parse(marker);
+  } catch {
+    return false;
+  }
+  return prepared?.lockHash === (await lockHash(dir));
 }
 
 /**

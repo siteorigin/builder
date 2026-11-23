@@ -593,7 +593,7 @@ app.on('will-quit', () => stopMediaWorker());
 // leaves the app running. A close already under way still has a preview to stop and its private copy to remove.
 let quitState: 'idle' | 'asking' | 'closing' | 'done' = 'idle';
 app.on('before-quit', (e) => {
-  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing)) return;
+  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing && !controller.isCreating)) return;
   e.preventDefault();
   // Quit again while the editor's question is open: re-ask, which brings back Wait or Leave Anyway if it hung.
   if (quitState === 'asking') void controller.mayLeave();
@@ -606,6 +606,10 @@ app.on('before-quit', (e) => {
     }
     quitState = 'closing';
     try {
+      // A new project still being made is called off and removed first, so quitting leaves no half-made folder, and
+      // no project being opened replaces the one closed for it.
+      controller.quitting = true;
+      await controller.stopCreating();
       await controller.close();
     } finally {
       quitState = 'done';
