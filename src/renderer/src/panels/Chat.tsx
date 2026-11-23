@@ -18,7 +18,7 @@ function Md({ text }: { text: string }) {
   );
 }
 
-const SUGGESTIONS = ['Rewrite the home page hero to sound warmer and more confident', 'Add a Services page with three service cards and link it from the header', 'Make the brand colour a deep navy blue', 'Add an FAQ section to the Contact page'];
+const SUGGESTIONS = ['Rewrite the home page hero to sound warmer and more confident', 'Add a Services page with three service cards and link it from the header', 'Make the brand color a deep navy blue', 'Add an FAQ section to the Contact page'];
 
 /** What the run strip says for each phase of a run. */
 const PHASE: Record<string, string> = {
@@ -30,7 +30,7 @@ const PHASE: Record<string, string> = {
   stopping: 'Stopping'
 };
 
-/** How a finished turn is headed: one icon and one word per outcome, never colour alone. */
+/** How a finished turn is headed: one icon and one word per outcome, never color alone. */
 function outcome(r: NonNullable<ChatMessage['result']>) {
   if (r.status === 'completed' && r.incomplete) return { icon: <CircleDashed />, label: 'Partly done' };
   switch (r.status) {

@@ -502,6 +502,14 @@ describe('tool definitions', () => {
     expect(env.adapter.requests[0].tools.map((t) => t.name)).not.toContain('read_source');
     expect(JSON.stringify(env.adapter.requests[1].items.at(-1))).toContain('Unknown tool');
   });
+
+  it('finds a page by its route as well as its ID', async () => {
+    const env = await setup([() => [calls(['a', 'read_page', { pageId: '/about/' }], ['b', 'read_page', { pageId: 'about' }], ['c', 'read_page', { pageId: '/nope/' }])], () => finish('Read it.')]);
+    await env.run('Read the about page');
+    const results = env.adapter.requests[1].items.filter((i) => i.kind === 'tool_result') as Array<{ content: string; isError?: boolean }>;
+    expect(results.map((r) => !!r.isError)).toEqual([false, false, true]);
+    expect(JSON.parse(results[0].content).title).toBe('About');
+  });
 });
 
 describe('values the assistant commonly gets wrong', () => {

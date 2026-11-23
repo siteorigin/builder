@@ -74,7 +74,7 @@ export function SettingsModal() {
         <Tabs value={tab} onChange={setTab} label="Settings sections" idBase="settings" options={[{ value: 'general', label: 'General' }, { value: 'ai', label: 'AI assistant' }]} />
         {tab === 'general' ? (
           <div className="col" style={{ gap: 18 }} role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general">
-            <Field label="Appearance" hint="Changes how SiteOrigin Builder looks. Your website's colours are set in Site styles.">
+            <Field label="Appearance" hint="Changes how SiteOrigin Builder looks. Your website's colors are set in Site styles.">
               <Segmented<AppSettings['appearance']>
                 value={settings.appearance}
                 onChange={(appearance) => void update({ appearance })}

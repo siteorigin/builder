@@ -145,6 +145,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'read_page': {
       const a = args as z.infer<(typeof TOOL_ARGS)['read_page']>;
+      a.pageId = pageIdFor(state, a.pageId);
       const detail = pageDetail(state, a.pageId);
       if (!detail) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `No page "${a.pageId}". Pages: ${state.site.pageOrder.join(', ')}` } };
       if (a.nodeId) {
@@ -235,6 +236,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'inspect_layout': {
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_layout']>;
+      a.pageId = pageIdFor(state, a.pageId);
       if (!state.pages[a.pageId]) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Unknown page.' } };
       try {
         const report = (await host.inspectLayout(a.pageId, WIDTHS[a.viewport])) as { error?: unknown } | null;
@@ -257,6 +259,13 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       return { ok: true, content: { answer } };
     }
   }
+}
+
+/** Models often pass a route ("/about/") where a page ID is expected; both find the page. */
+function pageIdFor(state: ProjectState, ref: string): string {
+  if (state.pages[ref]) return ref;
+  const route = `/${ref.replace(/^\/+|\/+$/g, '')}/`.replace(/^\/\/$/, '/');
+  return Object.values(state.pages).find((p) => p.route === route || p.route === ref)?.id ?? ref;
 }
 
 export function labelForOps(ops: EditOperation[], state: ProjectState): string {
