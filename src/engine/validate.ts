@@ -6,7 +6,7 @@ import { allTrees, childLists, displayName, subtreeIds } from './tree';
 import { boundSchema } from './schema';
 import { declaredTokens, findTokenCycle } from './tokens';
 import { missingSectionLinks, unlinkedButtons } from '@generator/checks';
-import { formConnected } from '@catalogue/foundation/form';
+import { formConnected, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, namesFormFields } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -130,14 +130,25 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     if (owner.kind !== 'component')
       for (const b of unlinkedButtons(state, tree))
         out.push({ severity: 'warning', code: 'BUTTON_UNLINKED', message: `${label}: the “${b.label}” button has no link, so it shows as plain text. Choose a destination or clear its label.`, owner, nodeId: b.nodeId });
-    if (owner.kind !== 'component')
-      for (const n of Object.values(tree.nodes)) {
-        const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
-        if (n.kind !== 'instance' || def?.componentId !== 'contact.form' || def.kind !== 'code') continue;
-        const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
-        if (!formConnected(props))
-          out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. Add an HTTPS form endpoint or a Web3Forms access key, or choose Netlify Forms.`, owner, nodeId: n.id });
+    // Theme definitions are fixed theme data; a project component's own forms are checked like a page's.
+    const inTheme = owner.kind === 'component' && state.components[owner.id]?.owner === 'theme';
+    for (const n of Object.values(tree.nodes)) {
+      const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
+      if (inTheme || n.kind !== 'instance' || def?.componentId !== 'contact.form' || def.kind !== 'code') continue;
+      const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
+      if (owner.kind !== 'component' && !formConnected(props))
+        out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. Add an HTTPS form endpoint or a Web3Forms access key, or choose Netlify Forms.`, owner, nodeId: n.id });
+      // A list bound from outside is only known where it is placed.
+      if (namesFormFields(def) && !isBinding(props.fields)) {
+        const fields = formFieldsAsSent(def, props.fields);
+        for (const clash of formKeyClashes(fields)) {
+          const what = formFieldTitles(fields, clash.indexes, fields.map((_, i) => i));
+          const outcome = formRefusesClashes(def) ? 'so visitors cannot send the form' : 'so the form service cannot tell those answers apart';
+          const all = clash.indexes.length === 2 ? 'both' : 'all';
+          out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the contact form's ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id });
+        }
       }
+    }
   }
   for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {
     const where = i.owner.kind === 'shell' ? (i.owner.id === 'header' ? 'Header' : 'Footer') : (state.pages[i.owner.id]?.title ?? 'A page');

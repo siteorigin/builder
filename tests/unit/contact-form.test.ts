@@ -3,7 +3,9 @@
  * the client, bundled with Svelte's browser runtime and mounted on a stand-in page. Its POSTs are intercepted
  * and held, so each reply can be delayed, failed or let through. No real enquiry is ever sent.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { chromium, type Browser, type Page, type Route } from 'playwright';
 import { compile } from 'svelte/compiler';
 import { build, type Rolldown } from 'vite';
@@ -11,6 +13,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { defFile, generateProject } from '@generator/index';
+import { validateState } from '@engine/validate';
+import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import { ProjectSession } from '../../src/main/project/session';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const ORIGIN = 'https://site.test';
@@ -61,6 +67,8 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body><div
 interface Post {
   path: string;
   body: Record<string, string>;
+  /** Every submitted entry in order, so a key sent twice is seen twice. */
+  entries: Array<[string, string]>;
   respond: (status: number) => Promise<void>;
 }
 
@@ -107,16 +115,18 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         return route.fulfill({ contentType: 'text/html; charset=utf-8', body: PAGE });
       }
       held.push(route);
-      let body: Record<string, string>;
+      let entries: Array<[string, string]>;
       try {
         const data = await new Response(request.postDataBuffer(), { headers: { 'content-type': request.headers()['content-type'] ?? '' } }).formData();
-        body = Object.fromEntries([...data].map(([k, v]) => [k, String(v)]));
+        entries = [...data].map(([k, v]) => [k, String(v)]);
       } catch {
-        body = { unparsed: request.postData() ?? '' };
+        entries = [['unparsed', request.postData() ?? '']];
       }
+      const body = Object.fromEntries(entries);
       const post: Post = {
         path: url.pathname,
         body,
+        entries,
         respond: async (status) => {
           held.splice(held.indexOf(route), 1);
           await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ ok: status < 400 }) });
@@ -214,6 +224,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       const first = await nextPost();
       expect(first.path).toBe('/f/abc');
       expect(first.body).toMatchObject({ name: 'Ada', message: 'First request' });
+      expect(first.entries.map(([k]) => k)).toEqual(['name', 'email', 'message', '_gotcha']);
       expect(await editable()).toEqual([false, false, false]);
 
       await first.respond(500);
@@ -236,4 +247,101 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
       expect(await values()).toEqual(['', '', '']);
     });
   }, 20_000);
+
+  it('refuses to send two answers under one key, and says why (issue #198)', async () => {
+    // The stock form with "EMAIL" typed into Phone's field name, as in the issue.
+    const fields = [
+      { id: 'item-1', label: 'Name', name: 'name', type: 'text', required: true, placeholder: '' },
+      { id: 'item-2', label: 'Email', name: 'email', type: 'email', required: true, placeholder: '' },
+      { id: 'item-3', label: 'Phone', name: 'EMAIL', type: 'tel', required: false, placeholder: '' },
+      { id: 'item-4', label: 'Message', name: 'message', type: 'textarea', required: true, placeholder: '' }
+    ];
+    await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, field, button, status, posts, fetches }) => {
+      // Any POST, a native one included, is counted the moment it starts.
+      let sends = 0;
+      page.on('request', (r) => void (r.method() === 'POST' && sends++));
+      await field('Name').fill('Ada');
+      await field('Email').fill('ada@example.com');
+      await field('Phone').fill('+44 20 7946 0000');
+      await field('Message').fill('Hello');
+      expect(await button.isDisabled()).toBe(true);
+      expect(await status()).toBe('Two fields of this form have the same name, so it cannot be sent.');
+      // Neither Enter nor a scripted submit sends it.
+      await field('Email').press('Enter');
+      await page.evaluate(`document.querySelector('form').requestSubmit()`);
+      await page.waitForTimeout(250);
+      expect(await fetches()).toBe(0);
+      expect(sends).toBe(0);
+      expect(posts).toHaveLength(0);
+    });
+  }, 20_000);
+
+  it('sends each answer under its own key after fields are added, renamed, reordered, saved, reopened and exported', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-form-post-'));
+    try {
+      const start = createStarterState('business', 'Test Studio', false);
+      const defId = installComponent(start, 'contact.form');
+      const node = makeInstance(start.components[defId], { provider: 'netlify', formName: 'contact' });
+      const home = start.pages[start.site.homePageId];
+      home.nodes[node.id] = node;
+      home.rootIds.push(node.id);
+      const session = await ProjectSession.create(dir, start);
+      const fieldsIn = (s: ProjectState) => (s.pages[s.site.homePageId].nodes[node.id] as InstanceNode).props.fields as ListItem[];
+      const idOf = (label: string) => fieldsIn(session.state).find((f) => f.label === label)!.id;
+      const edit = async (op: Record<string, unknown>) => {
+        const r = await session.apply({ operations: [{ owner: { kind: 'page', id: start.site.homePageId }, nodeId: node.id, prop: 'fields', ...op } as EditOperation] }, { label: 'Edit fields' });
+        expect(r.ok).toBe(true);
+      };
+      await edit({ type: 'instance.listInsert', item: { label: 'Company' } });
+      await edit({ type: 'instance.setProp', itemId: idOf('Phone'), field: 'name', value: 'EMAIL' });
+      expect(validateState(session.state).filter((d) => d.code === 'FORM_FIELD_KEYS').map((d) => d.message)).toEqual([expect.stringContaining('“Email” and “Phone” fields are both sent as “email”')]);
+      await edit({ type: 'instance.setProp', itemId: idOf('Phone'), field: 'name', value: '' });
+      await edit({ type: 'instance.setProp', itemId: idOf('Email'), field: 'label', value: 'Courriel' });
+      await edit({ type: 'instance.listMove', itemId: idOf('Company'), index: 0 });
+      await session.close();
+
+      const again = await ProjectSession.open(dir, 'test');
+      let fields: ListItem[];
+      try {
+        expect(fieldsIn(again.state).map((f) => [f.label, f.name])).toEqual([
+          ['Company', 'company'],
+          ['Name', 'name'],
+          ['Courriel', 'email'],
+          ['Phone', 'phone'],
+          ['Message', 'message']
+        ]);
+        const files = generateProject(again.state);
+        // The export ships the component this suite runs; the form is mounted with the fields its page passes.
+        expect(files.get(defFile(again.state.components[defId]))).toBe(exportedFormSource());
+        const emitted = /^\tfields=\{(.*)\}$/m.exec(files.get('src/routes/+page.svelte')!);
+        if (!emitted) throw new Error('The exported page passes the form no fields');
+        fields = JSON.parse(emitted[1]);
+        expect(fields.map((f) => f.name)).toEqual(['company', 'name', 'email', 'phone', 'message']);
+      } finally {
+        await again.close();
+      }
+
+      await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ field, button, nextPost }) => {
+        await field('Company').fill('Acme');
+        await field('Name').fill('Ada');
+        await field('Courriel').fill('ada@example.com');
+        await field('Phone').fill('+44 20 7946 0000');
+        await field('Message').fill('Hello');
+        await button.click();
+        const post = await nextPost();
+        expect(post.entries).toEqual([
+          ['form-name', 'contact'],
+          ['company', 'Acme'],
+          ['name', 'Ada'],
+          ['email', 'ada@example.com'],
+          ['phone', '+44 20 7946 0000'],
+          ['message', 'Hello'],
+          ['bot-field', '']
+        ]);
+        await post.respond(200);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
