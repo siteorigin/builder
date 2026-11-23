@@ -72,6 +72,20 @@ export function directDependencies(def: ComponentDefinition): string[] {
 const NAME_MAX = 60;
 /** One trailing "(unique)" or "(unique 3)" that an earlier separate copy added. */
 const UNIQUE_SUFFIX = /\s*\(unique(?:\s+\d+)?\)\s*$/i;
+/** Room kept for the suffixes most series reach, up to " (unique 99)", so every copy in a series has the same stem. */
+const STEM_MAX = NAME_MAX - ' (unique 99)'.length;
+
+/** A name without the suffixes earlier copies added, cut to `max` without splitting a character in two. */
+function copyStem(name: string, max = STEM_MAX): string {
+  let stem = name.trim();
+  for (;;) {
+    while (UNIQUE_SUFFIX.test(stem)) stem = stem.replace(UNIQUE_SUFFIX, '');
+    if (stem.length <= max) break;
+    // A cut can expose a suffix that was mid-name, so the loop looks again.
+    stem = stem.slice(0, /[\uD800-\uDBFF]/.test(stem[max - 1]) ? max - 1 : max).trimEnd();
+  }
+  return stem || 'Component';
+}
 
 /**
  * The name a separate copy of a component gets when the author gives none: "Card (unique)", then "Card (unique 2)"
@@ -79,13 +93,11 @@ const UNIQUE_SUFFIX = /\s*\(unique(?:\s+\d+)?\)\s*$/i;
  * component has yet, so every variant in the library can be told apart.
  */
 export function uniqueCopyName(state: ProjectState, name: string): string {
-  let base = name.trim();
-  while (UNIQUE_SUFFIX.test(base)) base = base.replace(UNIQUE_SUFFIX, '');
-  base ||= 'Component';
+  const stem = copyStem(name);
   const taken = new Set(Object.values(state.components).map((d) => d.name.trim().toLowerCase()));
   for (let i = 1; ; i++) {
     const suffix = i === 1 ? ' (unique)' : ` (unique ${i})`;
-    const candidate = `${base.slice(0, NAME_MAX - suffix.length).trimEnd()}${suffix}`;
+    const candidate = `${copyStem(stem, NAME_MAX - suffix.length)}${suffix}`;
     if (!taken.has(candidate.toLowerCase())) return candidate;
   }
 }

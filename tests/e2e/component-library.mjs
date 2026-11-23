@@ -95,15 +95,21 @@ await win.keyboard.press('Escape');
 await menu.waitFor({ state: 'detached' });
 
 step('usage locations show where a component is placed, and a used one cannot be deleted');
+// A second page with its own card, so choosing a location has to switch pages.
+const [{ pageId: floor }] = await apply([{ type: 'page.create', title: 'Floor plan', starter: 'intro' }], 'Add page');
+const card = Object.values((await snapshot()).components).find((d) => d.name === 'Exhibitor card').id;
+const [{ nodeId: onFloor }] = await apply([{ type: 'node.insert', owner: { kind: 'page', id: floor }, definitionId: card }], 'Insert Exhibitor card');
 await manage('Exhibitor card').click();
 await menu.waitFor();
-assert.ok(await menu.getByText('Used once').isVisible(), 'the menu counts the placements');
+assert.ok(await menu.getByText('Used 2 times').isVisible(), 'the menu counts the placements');
 await win.waitForTimeout(300);
 await win.screenshot({ path: join(SHOTS, 'component-library-menu.png'), clip: { x: 0, y: 180, width: 420, height: 300 } });
 assert.equal(await menu.getByRole('menuitem', { name: /Delete component/ }).getAttribute('aria-disabled'), 'true', 'a used component cannot be deleted');
-const homeTitle = (await snapshot()).pages[pageId].title;
-await menu.getByRole('menuitem', { name: homeTitle }).click();
-await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${first}"]`).getAttribute('aria-selected'), 'true', 'choosing the page selects that placement'));
+await menu.getByRole('menuitem', { name: 'Floor plan' }).click();
+await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${onFloor}"]`).getAttribute('aria-selected'), 'true', 'choosing another page opens it and selects the placement there'));
+await manage('Exhibitor card').click();
+await menu.getByRole('menuitem', { name: (await snapshot()).pages[pageId].title }).click();
+await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${first}"]`).getAttribute('aria-selected'), 'true', 'and back to the first page'));
 
 step('Rename gives a variant a descriptive name and a description');
 await openInsert();
@@ -121,14 +127,20 @@ assert.equal(gold.description, 'For gold sponsors on the floor plan');
 await tile('Exhibitor card gold sponsor').waitFor();
 
 step('deleting an unused variant keeps the others, and Undo brings it back');
-const before = (await snapshot()).pages[pageId];
+const before = await snapshot();
+const blue = Object.values(before.components).find((d) => d.name === 'Exhibitor card blue');
 await manage('Exhibitor card blue').click();
 await menu.getByRole('menuitem', { name: /Delete component/ }).click();
-await eventually(async () => assert.deepEqual(await library(), { 'Exhibitor card': 1, 'Exhibitor card blue (unique)': 0, 'Exhibitor card gold sponsor': 1 }, 'only the deleted variant goes'));
+const undo = win.locator('.toast', { hasText: 'Deleted Exhibitor card blue' }).getByRole('button', { name: 'Undo' });
+await undo.waitFor();
+const after = await snapshot();
+assert.equal(after.components[blue.id], undefined, 'the variant is deleted');
+assert.deepEqual(Object.keys(after.components).sort(), Object.keys(before.components).filter((id) => id !== blue.id).sort(), 'only the deleted variant goes');
+assert.deepEqual(after.pages, before.pages, 'the pages and their placements are untouched');
 await tile('Exhibitor card blue').waitFor({ state: 'detached' });
-assert.deepEqual((await snapshot()).pages[pageId], before, 'the page and its placements are untouched');
-await win.locator('.toast', { hasText: 'Deleted Exhibitor card blue' }).getByRole('button', { name: 'Undo' }).click();
-await eventually(async () => assert.equal((await library())['Exhibitor card blue'], 0, 'Undo restores the deleted variant'));
+await eventually(async () => assert.ok(await win.evaluate(() => !!document.activeElement?.closest('.insert-panel')), 'focus stays in the Insert panel once the row has gone'));
+await undo.click();
+await eventually(async () => assert.deepEqual((await snapshot()).components[blue.id], blue, 'Undo restores the same variant'));
 await tile('Exhibitor card blue').waitFor();
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');

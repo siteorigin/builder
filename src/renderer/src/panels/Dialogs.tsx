@@ -62,21 +62,26 @@ function useSelectedOnOpen() {
  */
 export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerRef; nodeId: string; definitionId: string }) {
   const st = useStore((s) => s.snapshot?.state);
+  const revision = useStore((s) => s.snapshot?.revision);
   const node = st ? treeFor(st, owner)?.nodes[nodeId] : undefined;
   // The placement chosen, still showing the component it showed then: an Undo or the AI may have changed it.
   const def = st && node?.kind === 'instance' && node.definitionId === definitionId ? st.components[definitionId] : undefined;
   // Suggested once, as the dialog opens, so the field never changes under the author.
   const [suggested] = useState(() => (st && def ? uniqueCopyName(st, def.name) : ''));
   const [name, setName] = useState(suggested);
+  const [busy, setBusy] = useState(false);
   const input = useSelectedOnOpen();
   const close = () => setState({ modal: null });
-  const ready = !!def && !!name.trim();
+  const ready = !!def && !!name.trim() && !busy;
   const make = async () => {
     if (!ready) return;
     const chosen = name.trim();
-    // An unchanged suggestion is left to the engine, which checks it against the project as it is by then.
-    const r = await applyOps([{ type: 'component.makeUnique', owner, nodeId, ...(chosen === suggested ? {} : { name: chosen }) }], 'Make unique');
+    setBusy(true);
+    // An unchanged suggestion is left to the engine, which checks it against the project as it is by then. The
+    // revision checked above goes with it, so a change still on its way (an Undo) can't swap the component copied.
+    const r = await applyOps([{ type: 'component.makeUnique', owner, nodeId, ...(chosen === suggested ? {} : { name: chosen }) }], 'Make unique', undefined, revision);
     if (r) close();
+    else setBusy(false);
   };
   return (
     <Modal
@@ -115,19 +120,26 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
 /** Rename one of the project's components, and say what it is for. Every placement keeps showing it. */
 export function RenameComponentModal({ definitionId }: { definitionId: string }) {
   const def = useStore((s) => (s.snapshot && Object.hasOwn(s.snapshot.state.components, definitionId) ? s.snapshot.state.components[definitionId] : undefined));
+  // What the fields showed when the dialog opened: only a field the author changed is saved, so a change made
+  // meanwhile (by the AI) to the other one is kept.
+  const [shown] = useState(() => ({ name: def?.name.trim() ?? '', description: def?.description?.trim() ?? '' }));
   const [name, setName] = useState(def?.name ?? '');
   const [description, setDescription] = useState(def?.description ?? '');
+  const [busy, setBusy] = useState(false);
   const input = useSelectedOnOpen();
   const close = () => setState({ modal: null });
-  const ready = def?.owner === 'project' && !!name.trim();
+  const ready = def?.owner === 'project' && !!name.trim() && !busy;
   const save = async () => {
     if (!ready) return;
     const n = name.trim();
     const d = description.trim();
-    const describe = d !== (def.description ?? '').trim();
-    if (n === def.name && !describe) return close();
-    const r = await applyOps([{ type: 'component.rename', definitionId, name: n, ...(describe ? { description: d } : {}) }], `Rename component ${n}`);
+    const renamed = n !== shown.name;
+    const described = d !== shown.description;
+    if (!renamed && !described) return close();
+    setBusy(true);
+    const r = await applyOps([{ type: 'component.rename', definitionId, name: renamed ? n : def.name, ...(described ? { description: d } : {}) }], `Rename component ${renamed ? n : def.name}`);
     if (r) close();
+    else setBusy(false);
   };
   const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && !isImeComposing(e) && void save();
   return (

@@ -241,6 +241,24 @@ function ItemIcon({ it }: { it: Item }) {
   );
 }
 
+/**
+ * Show a component's placement on a page or in the shared header or footer, as the project is now: a menu opened
+ * earlier may name a page or placement that has gone since. The shared areas are shown on the current page, or the
+ * first page that shows them.
+ */
+function showPlacement(definitionId: string, owner: OwnerRef) {
+  const s = getState();
+  const st = s.snapshot?.state;
+  const place = st && placesOf(st, definitionId).find((p) => p.owner.kind === owner.kind && p.owner.id === owner.id);
+  if (!st || !place) return toast('That placement has been removed since the menu opened.', 'info');
+  const showsShell = (id: string | null | undefined) => !!id && Object.hasOwn(st.pages, id) && st.pages[id].shell !== 'none';
+  const current = s.definitionMode?.returnPageId ?? s.pageId;
+  const pageId = owner.kind === 'page' ? owner.id : showsShell(current) ? current : st.site.pageOrder.find(showsShell);
+  if (!pageId) return toast('No page shows the shared header and footer, so this placement is not visible anywhere.', 'info');
+  selectPage(pageId);
+  setState({ selection: { owner, instancePath: [], nodeId: place.nodeIds[0] }, rightTab: 'inspect', dockOpen: true });
+}
+
 /** How often a component is placed, in the Inspector's words: "once", "3 times". */
 const usedTimes = (n: number) => (n === 1 ? 'once' : `${n} times`);
 
@@ -295,6 +313,19 @@ export function InsertPanel() {
   const id = useId();
   const menu = useMenu();
   useGridTabStops(bodyRef);
+  // A manage menu describes the project as it was when it opened: any edit since (the AI, an Undo) closes it.
+  const revision = snap?.revision;
+  // The component deleted from its menu, until it has gone. Its row goes with it, and focus stays in the library
+  // (else search) rather than falling to the page, where the next Delete would remove the canvas selection.
+  const refocus = useRef<string | null>(null);
+  useEffect(() => {
+    menu.close();
+    if (!refocus.current || !snap || Object.hasOwn(snap.state.components, refocus.current)) return;
+    refocus.current = null;
+    const a = document.activeElement;
+    if (a && a !== document.body && a.isConnected) return;
+    (bodyRef.current?.querySelector<HTMLElement>('.insert-group[data-kind="component"] [role="gridcell"] > [tabindex="0"]') ?? searchRef.current)?.focus({ preventScroll: true });
+  }, [revision]);
   const entries = useMemo(() => (snap ? catalogueEntries(snap.state.site.themeId) : []), [snap?.state.site.themeId]);
   const uses = useMemo(() => (snap ? placementCounts(snap.state) : {}), [snap?.state]);
   // Opening the panel puts the cursor in search, so typing a name finds it straight away.
@@ -475,21 +506,20 @@ export function InsertPanel() {
     const places = placesOf(st, def.id);
     const needs = dependentsOf(st, def.id);
     const count = places.reduce((n, p) => n + p.nodeIds.length, 0);
-    const show = (owner: OwnerRef, nodeId: string) => () => {
-      if (owner.kind === 'page') selectPage(owner.id);
-      setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true });
-    };
+    // Pages that share a title are told apart by their address.
+    const titles = places.filter((p) => p.owner.kind === 'page').map((p) => p.label);
+    const pageLabel = (p: (typeof places)[number]) => (titles.indexOf(p.label) !== titles.lastIndexOf(p.label) ? `${p.label} (${st.pages[p.owner.id]?.route ?? ''})` : p.label);
     const placeItem = (p: (typeof places)[number]): MenuItem => {
       const n = p.nodeIds.length > 1 ? `${p.nodeIds.length} times` : undefined;
-      if (p.owner.kind === 'page') return { label: p.label, icon: <FileText />, hint: n, onSelect: show(p.owner, p.nodeIds[0]) };
-      if (p.owner.kind === 'shell') return { label: `Shared ${p.label.toLowerCase()}`, icon: p.owner.id === 'footer' ? <PanelBottom /> : <PanelTop />, hint: n, onSelect: show(p.owner, p.nodeIds[0]) };
+      if (p.owner.kind === 'page') return { label: pageLabel(p), icon: <FileText />, hint: n, onSelect: () => showPlacement(def.id, p.owner) };
+      if (p.owner.kind === 'shell') return { label: `Shared ${p.label.toLowerCase()}`, icon: p.owner.id === 'footer' ? <PanelBottom /> : <PanelTop />, hint: n, onSelect: () => showPlacement(def.id, p.owner) };
       // Inside another component's design: it is shown wherever that component is.
       return { label: `In ${p.label}`, icon: <Component />, hint: n ?? 'Design', disabled: true };
     };
     return [
       { label: 'Rename…', icon: <Pencil />, onSelect: () => setState({ modal: { kind: 'rename-component', definitionId: def.id } }) },
       { separator: true },
-      { heading: count ? `Used ${usedTimes(count)}` : 'Not used anywhere' },
+      { heading: count ? `Used ${usedTimes(count)}` : needs.length ? 'Not placed anywhere' : 'Not used anywhere' },
       ...places.map(placeItem),
       ...needs.map((d): MenuItem => ({ label: `Needed by ${d.name}`, icon: <Code />, hint: 'Code', disabled: true })),
       { separator: true },
@@ -497,7 +527,9 @@ export function InsertPanel() {
     ];
   };
   const removeDefinition = async (def: ComponentDefinition) => {
+    refocus.current = def.id;
     const r = await commitOps([{ type: 'component.remove', definitionId: def.id }], `Delete component ${def.name}`);
+    if (!r) refocus.current = null;
     if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
     toast(`Deleted ${def.name}`, 'info', undoAction(r));
   };
@@ -559,7 +591,6 @@ export function InsertPanel() {
           )}
         />
       )}
-      {menu.node}
       {mine.length > MINE_SHOWN && (
         <button className="btn btn-sm btn-ghost insert-more" aria-expanded={allMine} onClick={() => setAllMine(!allMine)}>
           {allMine ? 'Show fewer' : `Show all ${mine.length} components`}
@@ -571,6 +602,7 @@ export function InsertPanel() {
 
   return (
     <div className="insert-panel" onKeyDown={onPanelKey}>
+      {menu.node}
       <div className="panel-head">
         <h3>Insert</h3>
         {!query && (

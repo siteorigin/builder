@@ -162,7 +162,8 @@ export function instancesOf(state: ProjectState, definitionId: string): Array<{ 
 
 /** How many times each definition is placed, counted the way `instancesOf` counts, in one pass over the project. */
 export function placementCounts(state: ProjectState): Record<string, number> {
-  const out: Record<string, number> = {};
+  // No prototype, so a definition ID such as "constructor" counts from zero like any other.
+  const out: Record<string, number> = Object.create(null);
   for (const t of allTrees(state)) for (const n of Object.values(t.tree.nodes)) if (n.kind === 'instance') out[n.definitionId] = (out[n.definitionId] ?? 0) + 1;
   return out;
 }

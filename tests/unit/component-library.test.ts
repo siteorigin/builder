@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { InstanceNode, ProjectState } from '@shared/types';
@@ -14,6 +14,10 @@ afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force
 
 const home = (s: ProjectState) => s.site.homePageId;
 const page = (s: ProjectState) => ({ kind: 'page' as const, id: home(s) });
+const firstOf = (s: ProjectState, componentId: string) => {
+  const p = s.pages[home(s)];
+  return p.rootIds.map((id) => p.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === componentId)!.definitionId;
+};
 
 /** The issue's own steps: an Exhibitor card made from a group, a second copy, and Make unique twice. */
 async function exhibitorCards() {
@@ -42,38 +46,42 @@ describe('cleaning up component variants (#56)', () => {
   it('removes an unused variant, keeps the other placements, and undoes', async () => {
     const { dir, s, owner, first, second, card, forks } = await exhibitorCards();
     const names = [card, ...forks].map((id) => s.state.components[id].name);
-    expect(names[0]).toBe('Exhibitor card');
-    expect(new Set(names).size).toBe(3);
-    for (const n of names) expect(n).not.toMatch(/\(unique\).*\(unique\)/);
-    // The first fork lost its only placement to the second fork, so it is already unused.
+    expect(names).toEqual(['Exhibitor card', 'Exhibitor card (unique)', 'Exhibitor card (unique 2)']);
+    // Each Make unique moved the second card on, so the first copy is already unused.
+    expect((s.state.pages[home(s.state)].nodes[second] as InstanceNode).definitionId).toBe(forks[1]);
     expect(instancesOf(s.state, forks[0])).toHaveLength(0);
-    // Deleting the last card on the page leaves its variant unused too.
+    // Deleting the last card of that variant leaves it unused too: the library keeps it until it is deleted there.
     await s.apply({ operations: [{ type: 'node.remove', owner, nodeId: second }] }, { label: 'Delete Exhibitor card' });
     expect(instancesOf(s.state, forks[1])).toHaveLength(0);
-    const file = join(dir, componentDocPath(forks[0]));
-    expect(existsSync(file)).toBe(true);
+    expect(s.state.components[forks[1]]).toBeDefined();
+    const file = join(dir, componentDocPath(forks[1]));
+    const saved = readFileSync(file, 'utf8');
 
-    const r = await s.apply({ operations: [{ type: 'component.remove', definitionId: forks[0] }] }, { label: `Delete component ${names[1]}` });
+    const r = await s.apply({ operations: [{ type: 'component.remove', definitionId: forks[1] }] }, { label: `Delete component ${names[2]}` });
     expect(r.ok).toBe(true);
-    expect(s.state.components[forks[0]]).toBeUndefined();
+    expect(s.state.components[forks[1]]).toBeUndefined();
     expect(existsSync(file)).toBe(false);
     // The original and the other variant are untouched, and so is the card still on the page.
     expect(s.state.components[card].name).toBe('Exhibitor card');
-    expect(s.state.components[forks[1]]).toBeDefined();
+    expect(s.state.components[forks[0]].name).toBe(names[1]);
+    expect(existsSync(join(dir, componentDocPath(forks[0])))).toBe(true);
     expect((s.state.pages[home(s.state)].nodes[first] as InstanceNode).definitionId).toBe(card);
 
-    expect(s.historyInfo().undoLabel).toBe(`Delete component ${names[1]}`);
+    expect(s.historyInfo().undoLabel).toBe(`Delete component ${names[2]}`);
     await s.undo();
-    expect(s.state.components[forks[0]].name).toBe(names[1]);
-    expect(existsSync(file)).toBe(true);
+    expect(s.state.components[forks[1]].name).toBe(names[2]);
+    expect(readFileSync(file, 'utf8')).toBe(saved);
     expect((s.state.pages[home(s.state)].nodes[first] as InstanceNode).definitionId).toBe(card);
+    // Undo restores the definition, not the placement deleted before it.
+    expect(s.state.pages[home(s.state)].nodes[second]).toBeUndefined();
   });
 
-  it('refuses to delete a component that is still placed', async () => {
+  it('refuses to delete a component that is still placed, naming where', async () => {
     const { s, card } = await exhibitorCards();
+    const title = s.state.pages[home(s.state)].title;
     const r = await s.apply({ operations: [{ type: 'component.remove', definitionId: card }] }, { label: 'Delete component' });
     expect(r.ok).toBe(false);
-    expect(r.error?.message).toMatch(/is used once \(Home\)|is used 1 time/);
+    expect(r.error?.message).toBe(`"Exhibitor card" is used 1 time (${title}). Remove those uses first.`);
     expect(s.state.components[card]).toBeDefined();
   });
 });
@@ -85,20 +93,29 @@ describe('where a library component is used (#56)', () => {
     const owner = page(s);
     const stats = s.pages[pageId].rootIds.map((id) => s.pages[pageId].nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'stats.row')!;
     const def = stats.definitionId;
+    // An ID such as "constructor" with no placements has no count.
+    expect(placementCounts(s).constructor).toBeUndefined();
     const about = s.site.pageOrder.find((id) => id !== pageId)!;
-    s = applyOperations(s, [
+    const r = applyOperations(s, [
       { type: 'node.insert', owner, definitionId: def },
       { type: 'node.insert', owner: { kind: 'page', id: about }, definitionId: def },
-      { type: 'node.insert', owner: { kind: 'shell', id: 'footer' }, definitionId: def }
-    ]).state;
-    const places = placesOf(s, def);
-    expect(places.map((p) => [p.owner.kind, p.label, p.nodeIds.length])).toEqual([
-      ['shell', 'Footer', 1],
-      ['page', s.pages[pageId].title, 2],
-      ['page', s.pages[about].title, 1]
+      { type: 'node.insert', owner: { kind: 'shell', id: 'footer' }, definitionId: def },
+      // A project component whose design places it too.
+      { type: 'component.duplicate', definitionId: firstOf(s, 'cta.banner'), name: 'Wrapper' }
     ]);
-    expect(places[1].nodeIds).toContain(stats.id);
-    expect(placementCounts(s)[def]).toBe(4);
+    s = r.state;
+    const again = r.results[0].nodeId as string;
+    const wrapper = s.components[r.results[3].definitionId as string];
+    wrapper.tree!.nodes.nested = { id: 'nested', kind: 'instance', definitionId: def, props: {} };
+    (wrapper.tree!.nodes[wrapper.tree!.rootIds[0]] as { children: string[] }).children.push('nested');
+    const places = placesOf(s, def);
+    expect(places.map((p) => [p.owner, p.label, p.nodeIds])).toEqual([
+      [{ kind: 'shell', id: 'footer' }, 'Footer', [r.results[2].nodeId]],
+      [{ kind: 'page', id: pageId }, s.pages[pageId].title, [stats.id, again].sort((a, b) => s.pages[pageId].rootIds.indexOf(a) - s.pages[pageId].rootIds.indexOf(b))],
+      [{ kind: 'page', id: about }, s.pages[about].title, [r.results[1].nodeId]],
+      [{ kind: 'component', id: wrapper.id }, 'Wrapper', ['nested']]
+    ]);
+    expect(placementCounts(s)[def]).toBe(5);
     expect(placementCounts(s)[def]).toBe(instancesOf(s, def).length);
     // Every definition's count agrees with instancesOf, and an unused one has none.
     const counts = placementCounts(s);

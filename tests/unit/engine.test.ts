@@ -153,18 +153,40 @@ describe('components', () => {
     // Ordinary numbers stay part of the name, and a name of suffixes alone still gets one.
     expect(uniqueCopyName(s, 'Press copy 2')).toBe('Press copy 2 (unique)');
     expect(uniqueCopyName(s, ' (unique) ')).toBe('Component (unique)');
-    const long = uniqueCopyName(s, 'x'.repeat(70));
-    expect(long).toHaveLength(60);
-    expect(long.endsWith(' (unique)')).toBe(true);
+    // Long names keep one stem for the whole series, and a cut never exposes an old suffix or splits a character.
+    expect(uniqueCopyName(s, 'x'.repeat(70))).toBe(`${'x'.repeat(48)} (unique)`);
+    expect(uniqueCopyName(s, `${'x'.repeat(39)} (unique) extra words`)).toBe(`${'x'.repeat(39)} (unique)`);
+    const emoji = uniqueCopyName(s, `${'x'.repeat(47)}😀yyy`);
+    expect(emoji).toBe(`${'x'.repeat(47)} (unique)`);
+    expect(emoji).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  it('numbers a series of copies of a long name without starting again (#56)', () => {
+    let s = fresh();
+    const stats = firstInstance(s, 'stats.row');
+    s.components[stats.definitionId] = { ...s.components[stats.definitionId], name: 'x'.repeat(52) };
+    const names: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: stats.id }]);
+      s = r.state;
+      names.push(s.components[r.results[0].definitionId as string].name);
+    }
+    const stem = 'x'.repeat(48);
+    expect(names).toEqual([`${stem} (unique)`, `${stem} (unique 2)`, `${stem} (unique 3)`]);
+    for (const n of names) expect(n.length).toBeLessThanOrEqual(60);
   });
 
   it('keeps a name the author chose for a separate copy, even one another component has', () => {
     let s = fresh();
     const stats = firstInstance(s, 'stats.row');
-    const name = s.components[stats.definitionId].name;
-    const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: stats.id, name: `  ${name}  ` }]);
+    const other = s.components[firstInstance(s, 'cta.banner').definitionId].name;
+    expect(other).not.toBe(s.components[stats.definitionId].name);
+    const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: stats.id, name: `  ${other}  ` }]);
     s = r.state;
-    expect(s.components[r.results[0].definitionId as string].name).toBe(name);
+    const copy = r.results[0].definitionId as string;
+    expect(copy).not.toBe(stats.definitionId);
+    expect(s.components[copy].name).toBe(other);
+    expect((home(s).nodes[stats.id] as InstanceNode).definitionId).toBe(copy);
   });
 
   it('creates a component from a subtree with generated properties (3.4)', () => {
