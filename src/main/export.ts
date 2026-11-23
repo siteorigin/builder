@@ -6,6 +6,7 @@ import { existsSync, lstatSync, promises as fs } from 'node:fs';
 import { basename, join, relative, sep } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { STARTER_ASSETS } from '@catalogue/starters';
+import { validateState } from '@engine/validate';
 import { readIfExists, sha } from './project/fsutil';
 
 const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'build', '.git', '.DS_Store']);
@@ -275,3 +276,42 @@ export function uniqueChild(parent: string, base: string): string {
   for (let i = 2; existsSync(p); i++) p = join(parent, `${base}-${i}`);
   return p;
 }
+
+/** Project health's messages for links to sections their pages do not have. */
+export function brokenSectionLinks(state: ProjectState): string[] {
+  return validateState(state)
+    .filter((d) => d.code === 'LINK_SECTION_MISSING')
+    .map((d) => d.message);
+}
+
+/** Warnings for a source export whose links would stop the exported project from building. */
+export function sectionLinkWarnings(state: ProjectState): string[] {
+  const broken = brokenSectionLinks(state);
+  if (!broken.length) return [];
+  const lead = broken.length === 1 ? 'Project health found a link to a section its page does not have. Fix it before building the exported project:' : `Project health found ${broken.length} links to sections their pages do not have. Fix them before building the exported project:`;
+  return [lead, ...broken];
+}
+
+/**
+ * Why a production build failed, in words a person can act on. When the build refused a link to a missing section
+ * (SvelteKit's prerender checks every #fragment), the links Project health found lead the details.
+ */
+const MISSING_ID = /no element with id|handleMissingId|prerender_missing_id/i;
+
+export function explainBuildFailure(state: ProjectState, output: string[]): { message: string; warnings: string[] } {
+  const all = output.filter(Boolean);
+  if (!MISSING_ID.test(all.join('\n'))) return { message: 'The production build failed.', warnings: all.slice(0, 8) };
+  // The lines that name the page and the missing ID come first, so a long build log cannot push them out.
+  const named = all.flatMap((d) => d.split('\n')).filter((l) => MISSING_ID.test(l)).map((l) => l.trim());
+  const details = [...new Set([...named, ...all])];
+  const broken = brokenSectionLinks(state);
+  // Project health cannot see IDs a code component computes or hides, so the build may know of a link it does not.
+  if (!broken.length) return { message: 'The production build failed because a link goes to a section its page does not have. The details below name the page and the missing ID.', warnings: details.slice(0, 8) };
+  // The build's own lines keep a place however many links Project health lists: they may name one it missed.
+  const kept = named.slice(0, 3);
+  return {
+    message: `The production build failed because ${broken.length === 1 ? 'a link goes to a section its page does not have' : 'links go to sections their pages do not have'}. Choose a section for ${broken.length === 1 ? 'the link' : 'each link'} in Project health, then export again.`,
+    warnings: [...new Set([...broken.slice(0, 8 - kept.length), ...kept, ...details])].slice(0, 8)
+  };
+}
+

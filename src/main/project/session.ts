@@ -10,7 +10,7 @@ import { validateOperation } from '@shared/ops';
 import { applyOperations, captureClipboard, type Clipboard } from '@engine/apply';
 import { listThemes } from '@catalogue/index';
 import { EngineError } from '@engine/tree';
-import { validateState, type Diagnostic } from '@engine/validate';
+import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
 import { checkSvelteSource } from '../codecheck';
 import { atomicWrite, readIfExists, readJson, removeEmptyDirs, safeJoin, sha, toJson } from './fsutil';
@@ -499,7 +499,7 @@ export class ProjectSession extends EventEmitter {
         } catch (e) {
           return { ok: false, message: `The external version of ${path} could not be read, so it was not kept: ${(e as Error).message}` };
         }
-        const errors = validateState(next).filter((d) => d.severity === 'error');
+        const errors = validateState(next, { sectionLinks: false }).filter(blocksSaving);
         if (errors.length) return { ok: false, message: `Keeping the external version of ${path} would leave the site inconsistent: ${errors.slice(0, 3).map((d) => d.message).join(' ')} Restore SiteOrigin Builder's version instead, or fix the file.` };
         for (const def of Object.values(next.components)) {
           if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;
@@ -906,8 +906,8 @@ export class ProjectSession extends EventEmitter {
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }
-      const before = validateState(this.state).filter((d) => d.severity === 'error').map((d) => d.message);
-      const introduced = validateState(next).filter((d) => d.severity === 'error' && !before.includes(d.message));
+      const before = validateState(this.state, { sectionLinks: false }).filter(blocksSaving).map((d) => d.message);
+      const introduced = validateState(next, { sectionLinks: false }).filter((d) => blocksSaving(d) && !before.includes(d.message));
       if (introduced.length)
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
@@ -1338,7 +1338,7 @@ export class ProjectSession extends EventEmitter {
         if (settled) this.emit('history');
         return { ok: false, message: (e as Error).message };
       }
-      const errors = validateState(next).filter((d) => d.severity === 'error');
+      const errors = validateState(next, { sectionLinks: false }).filter(blocksSaving);
       if (errors.length) return { ok: false, message: errors.map((e) => e.message).join(' ') };
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === this.state.components[def.id]?.source) continue;

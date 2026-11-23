@@ -164,3 +164,27 @@ export function displayName(state: ProjectState, node: GraphNode, def?: Componen
     }
   }
 }
+
+/** IDs the generated layout already uses: the main landmark and the header's navigation. */
+export const RESERVED_ANCHORS = new Set(['main', 'so-site-nav']);
+
+/**
+ * Anchors that would share a document with one placed in `owner`: a page renders with the shared header and
+ * footer, and those render with every page. A definition is checked on its own.
+ */
+export function anchorsInUse(state: ProjectState, owner: OwnerRef, exceptNodeId?: string): Set<string> {
+  const trees: NodeTree[] =
+    owner.kind === 'component'
+      ? [getTree(state, owner)]
+      : [state.site.shell.header, state.site.shell.footer, ...(owner.kind === 'page' ? [getTree(state, owner)] : Object.values(state.pages))];
+  const out = new Set(RESERVED_ANCHORS);
+  for (const t of trees) for (const n of Object.values(t.nodes)) if (n.anchor && !(t === getTree(state, owner) && n.id === exceptNodeId)) out.add(n.anchor);
+  return out;
+}
+
+/** A managed definition places a placement's anchor on its root, unless that root is a code component. */
+export function anchorCapable(state: ProjectState, def: ComponentDefinition | undefined, depth = 0): boolean {
+  if (!def || def.kind !== 'managed' || !def.tree || depth > 10) return false;
+  const root = def.tree.nodes[def.tree.rootIds[0]];
+  return root?.kind !== 'instance' || anchorCapable(state, state.components[root.definitionId], depth + 1);
+}

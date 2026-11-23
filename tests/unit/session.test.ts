@@ -271,3 +271,62 @@ describe('copy and paste (#62)', () => {
     expect(r.error?.message).toMatch(/only for the editor/);
   });
 });
+
+describe('section links', () => {
+  it('saves a section pick as one step, and lets a linked section be deleted and reported', async () => {
+    const { s } = await make();
+    const contact = s.state.site.pageOrder.map((id) => s.state.pages[id]).find((p) => p.route === '/contact/')!;
+    const details = contact.rootIds[1];
+    const header = s.state.site.shell.header.rootIds[0];
+    const page = { kind: 'page' as const, id: contact.id };
+    const pick = await s.apply(
+      {
+        expectedRevision: s.revision,
+        operations: [
+          { type: 'node.setContent', owner: page, nodeId: details, field: 'anchor', value: 'get-in-touch' },
+          { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'ctaLink', value: { type: 'page', target: contact.id, anchor: 'get-in-touch' } }
+        ]
+      },
+      { label: 'Edit Action link' }
+    );
+    expect(pick.ok).toBe(true);
+    const missing = () => s.diagnostics().filter((d) => d.code === 'LINK_SECTION_MISSING');
+    expect(missing()).toEqual([]);
+    const cta = () => (s.state.site.shell.header.nodes[header] as { props: Record<string, unknown> }).props.ctaLink;
+    await s.undo();
+    expect(s.state.pages[contact.id].nodes[details].anchor).toBeUndefined();
+    expect(cta()).toEqual({ type: 'page', target: contact.id });
+    await s.redo();
+    expect(s.state.pages[contact.id].nodes[details].anchor).toBe('get-in-touch');
+    expect((cta() as { anchor?: string }).anchor).toBe('get-in-touch');
+
+    // Deleting the section is allowed; Project health then names the link that lost its destination.
+    const removed = await s.apply({ operations: [{ type: 'node.remove', owner: page, nodeId: details }] }, { label: 'Delete section' });
+    expect(removed.ok).toBe(true);
+    expect(missing()).toHaveLength(1);
+    expect(missing()[0].message).toContain('Book a call');
+    await s.undo();
+    expect(missing()).toEqual([]);
+  });
+
+  it('refuses a section pick planned against an older revision', async () => {
+    const { s } = await make();
+    const contact = s.state.site.pageOrder.map((id) => s.state.pages[id]).find((p) => p.route === '/contact/')!;
+    const planned = s.revision;
+    await s.apply({ operations: [{ type: 'site.update', name: 'Moved on' }] }, { label: 'Rename site' });
+    const header = s.state.site.shell.header.rootIds[0];
+    const r = await s.apply(
+      {
+        expectedRevision: planned,
+        operations: [
+          { type: 'node.setContent', owner: { kind: 'page', id: contact.id }, nodeId: contact.rootIds[1], field: 'anchor', value: 'get-in-touch' },
+          { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'ctaLink', value: { type: 'page', target: contact.id, anchor: 'get-in-touch' } }
+        ]
+      },
+      { label: 'Pick' }
+    );
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('STALE_REVISION');
+    expect(s.state.pages[contact.id].nodes[contact.rootIds[1]].anchor).toBeUndefined();
+  });
+});

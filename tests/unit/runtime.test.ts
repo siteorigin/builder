@@ -44,6 +44,21 @@ describe('production build worker', () => {
     expect(workers[0].killed).toBe(true);
   });
 
+  it('keeps what a failed build wrote to stderr', async () => {
+    const p = buildProject('/project');
+    workers[0].stderr.emit('data', 'no element with id="gone" exists on /contact/\n');
+    workers[0].emit('message', { type: 'built', ok: false, error: 'Prerendering failed', logs: ['vite warning'] });
+    expect(await p).toEqual({ ok: false, error: 'Prerendering failed', logs: ['vite warning', 'no element with id="gone" exists on /contact/'] });
+  });
+
+  it('keeps stderr that arrives after the worker reports a failure', async () => {
+    const p = buildProject('/project');
+    workers[0].emit('message', { type: 'built', ok: false, error: 'Prerendering failed', logs: [] });
+    workers[0].stderr.emit('data', 'The following pages contain links to /contact/#gone, ');
+    workers[0].stderr.emit('data', 'but no element with id="gone" exists on /contact/');
+    expect((await p).logs).toEqual(['The following pages contain links to /contact/#gone, but no element with id="gone" exists on /contact/']);
+  });
+
   it('fails promptly when the worker reports an error and never exits', async () => {
     vi.useFakeTimers();
     const p = buildProject('/project');
