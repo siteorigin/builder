@@ -4,6 +4,7 @@
  */
 import sharp from 'sharp';
 import { MAX_VARIANT_PIXELS } from './media-client';
+import { isAnimatedPng } from './media';
 
 /** Widths of the smaller copies, each made only when it is meaningfully smaller than the picture. */
 export const VARIANT_WIDTHS = [480, 960, 1440];
@@ -18,10 +19,12 @@ sharp.cache(false);
 
 /**
  * Deterministic smaller copies of a JPEG or PNG. `width` is the displayed width; the copies are turned the
- * way the picture's EXIF orientation says and written without metadata.
+ * way the picture's EXIF orientation says and written without metadata. An animated PNG gets none: a resized
+ * copy would be a single frame, and its srcset would mix the moving original with stills.
  */
 export async function renderVariants(buf: Buffer, mime: string, width: number): Promise<Variant[]> {
   if (mime !== 'image/jpeg' && mime !== 'image/png') return [];
+  if (mime === 'image/png' && isAnimatedPng(buf)) return [];
   // The decoder's own reading of the displayed width wins over the header's: a copy is never labelled wider
   // than the picture it was made from.
   const meta = await sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS }).metadata();

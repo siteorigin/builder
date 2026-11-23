@@ -1,7 +1,40 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { crc32 } from 'node:zlib';
 import sharp from 'sharp';
 import { renderVariants } from '../../src/main/project/image-variants';
 import { createVariantClient, type VariantReply, type VariantRequest, type WorkerHandle } from '../../src/main/project/media-client';
+
+const u32 = (n: number) => {
+  const b = Buffer.alloc(4);
+  b.writeUInt32BE(n);
+  return b;
+};
+const chunk = (type: string, data: Buffer) => Buffer.concat([u32(data.length), Buffer.from(type, 'ascii'), data, u32(crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])))]);
+
+/** Split a PNG into its chunks. */
+function chunksOf(png: Buffer): Array<{ type: string; data: Buffer }> {
+  const out: Array<{ type: string; data: Buffer }> = [];
+  for (let i = 8; i < png.length; i += 12 + png.readUInt32BE(i)) out.push({ type: png.toString('ascii', i + 4, i + 8), data: png.subarray(i + 8, i + 8 + png.readUInt32BE(i)) });
+  return out;
+}
+
+/** A real two-frame animated PNG: the picture's own pixels as both frames. */
+async function animatedPng(width: number, height: number): Promise<Buffer> {
+  const png = await sharp({ create: { width, height, channels: 3, background: { r: 200, g: 0, b: 0 } } }).png().toBuffer();
+  const [ihdr, ...rest] = chunksOf(png);
+  const idat = rest.filter((c) => c.type === 'IDAT');
+  const fctl = (seq: number) => chunk('fcTL', Buffer.concat([u32(seq), u32(width), u32(height), u32(0), u32(0), Buffer.from([0, 10, 0, 100, 0, 0])]));
+  return Buffer.concat([
+    png.subarray(0, 8),
+    chunk('IHDR', ihdr.data),
+    chunk('acTL', Buffer.concat([u32(2), u32(0)])),
+    fctl(0),
+    ...idat.map((c) => chunk('IDAT', c.data)),
+    fctl(1),
+    ...idat.map((c, i) => chunk('fdAT', Buffer.concat([u32(2 + i), c.data]))),
+    chunk('IEND', Buffer.alloc(0))
+  ]);
+}
 
 /** A stored picture: left half red, right half blue, optionally tagged with an EXIF orientation. */
 async function halves(width: number, height: number, format: 'jpeg' | 'png', orientation?: number): Promise<Buffer> {
@@ -62,6 +95,16 @@ describe('responsive copies', () => {
     const [v] = await renderVariants(clear, 'image/png', 1200);
     expect(await sharp(v.data).metadata()).toMatchObject({ format: 'png', width: 480, height: 240, hasAlpha: true });
     expect((await pixel(v.data, 10, 10)).a).toBe(0);
+  });
+
+  it('makes no copies of an animated PNG, whose resized copies would each be one still frame', async () => {
+    const moving = await animatedPng(1200, 600);
+    expect(chunksOf(moving).map((c) => c.type)).toContain('acTL');
+    expect(await renderVariants(moving, 'image/png', 1200)).toEqual([]);
+    // The same pixels as an ordinary still PNG are still resized.
+    const still = await sharp(moving).png().toBuffer();
+    expect(chunksOf(still).map((c) => c.type)).not.toContain('acTL');
+    expect((await renderVariants(still, 'image/png', 1200)).map((v) => v.width)).toEqual([480, 960]);
   });
 
   it('is deterministic, and leaves other formats alone', async () => {

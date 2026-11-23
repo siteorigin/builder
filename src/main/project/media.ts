@@ -47,6 +47,24 @@ export function imageInfo(buf: Buffer, mime: string): ImageInfo | null {
   return null;
 }
 
+/**
+ * Is this PNG animated (an APNG)? It has an animation control chunk (acTL) before its image data. Resizing
+ * decodes one frame, so a resized copy of such a picture would be a still. Any acTL counts, even a malformed
+ * one: wrongly calling a still animated only costs its copies, while missing an animation serves stills.
+ * Reads chunk headers only.
+ */
+export function isAnimatedPng(buf: Buffer): boolean {
+  if (!buf.subarray(0, 8).equals(PNG_SIGNATURE)) return false;
+  for (let i = 8; i + 8 <= buf.length; ) {
+    const len = buf.readUInt32BE(i);
+    const type = buf.toString('ascii', i + 4, i + 8);
+    if (type === 'acTL') return true;
+    if (type === 'IDAT' || type === 'IEND') return false;
+    i += 12 + len;
+  }
+  return false;
+}
+
 /** Back-compatible dimensions only. */
 export function imageSize(buf: Buffer, mime: string): { width: number; height: number } | null {
   const info = imageInfo(buf, mime);
