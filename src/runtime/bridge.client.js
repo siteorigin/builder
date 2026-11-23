@@ -492,13 +492,16 @@ function probe(url, deadline) {
  * the measuring frame missed it, not the site.
  */
 async function imageReport(deadline) {
-  const summary = { total: 0, loaded: 0, failed: 0, unverified: 0, failedFiles: [] };
+  // sources: the address each image was given (not the variant chosen), so the editor can tell a load that
+  // shows an image the page no longer has.
+  const summary = { total: 0, loaded: 0, failed: 0, unverified: 0, failedFiles: [], sources: [] };
   const issues = [];
   const checks = [];
   for (const img of document.querySelectorAll('img')) {
     const url = img.currentSrc || img.getAttribute('src') || '';
     if (!url) continue;
     summary.total++;
+    if (img.getAttribute('src') && summary.sources.length < 200) summary.sources.push(imagePath(img.getAttribute('src')));
     if (img.complete && img.naturalWidth > 0) {
       summary.loaded++;
       continue;

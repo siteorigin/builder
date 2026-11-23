@@ -523,6 +523,28 @@ describe('run budget, parallel calls and validation', () => {
     expect(result!.validation).toEqual(result!.checks!.map((c) => c.text));
   });
 
+  it('stops vouching for a check once a later edit changes its page', async () => {
+    let homeId = '';
+    let aboutId = '';
+    const env = await setup(
+      [
+        () => [calls(['i1', 'inspect_layout', { pageId: homeId, viewport: 'phone' }], ['i2', 'inspect_layout', { pageId: aboutId, viewport: 'phone' }])],
+        // Home changes after its check; About does not.
+        () => [call('p1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: homeId }, nodeId: env.session.state.pages[homeId].rootIds[0], prop: 'heading', value: 'A longer welcome' }] })],
+        () => finish('Changed the hero heading.')
+      ],
+      { inspectLayout: async () => ({ issues: [] }) }
+    );
+    homeId = env.session.state.site.homePageId;
+    aboutId = Object.values(env.session.state.pages).find((p) => p.route === '/about/')!.id;
+    const { result } = await env.run('Change the hero heading');
+    expect(result?.status).toBe('completed');
+    expect(result!.checks?.slice(0, 2)).toEqual([
+      { status: 'unverified', text: 'Fits the screen at phone width on Home, before later changes.' },
+      { status: 'pass', text: 'Fits the screen at phone width on About.' }
+    ]);
+  });
+
   it('reports a missing image as a problem with the site, even when the layout fits', async () => {
     let homeId = '';
     const env = await setup(

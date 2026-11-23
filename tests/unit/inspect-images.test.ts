@@ -36,6 +36,7 @@ interface ImageSummary {
   failed: number;
   unverified: number;
   failedFiles: string[];
+  sources: string[];
 }
 interface Report {
   images: ImageSummary;
@@ -102,7 +103,9 @@ describe('layout inspection images', () => {
     const report = await inspectAt(390, '<img alt="Gone" loading="lazy" src="/assets/missing.jpg">', {});
     // Hero (relative address on a nested route) and the lazy image load; the photo's phone variant and the
     // missing file do not.
-    expect(report.images).toEqual({ total: 4, loaded: 2, failed: 2, unverified: 0, failedFiles: expect.arrayContaining(['photo-640.jpg', 'missing.jpg']) });
+    expect(report.images).toEqual({ total: 4, loaded: 2, failed: 2, unverified: 0, failedFiles: expect.arrayContaining(['photo-640.jpg', 'missing.jpg']), sources: expect.any(Array) });
+    // The address each image was given, resolved on the nested route, for the editor's catch-up check.
+    expect(report.images.sources).toEqual(['/assets/hero.jpg', '/assets/photo.jpg', '/assets/lazy.jpg', '/assets/missing.jpg']);
     expect(brokenPaths(report)).toEqual(expect.arrayContaining(['Image /assets/photo-640.jpg failed to load.', 'Image /assets/missing.jpg failed to load.']));
     // Image results lead the issue list, so many layout findings cannot hide them.
     expect(report.issues[0].kind).toBe('broken-image');

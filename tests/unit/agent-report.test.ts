@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { describeOps, InspectionLog, inspectionChecks, joinWords } from '@agent/report';
+import { describeOps, InspectionLog, inspectionChecks, joinWords, pagesTouched } from '@agent/report';
 import { OPERATION_SCHEMAS, type EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 
@@ -163,5 +163,39 @@ describe('check results', () => {
     log.record(about, 'phone', true, { viewport: 'phone', report: { issues: [] } });
     const texts = log.checks(state).map((c) => c.text);
     expect(texts).toEqual([`Fits the screen at phone width on ${state.pages[home].title}.`, `The image loads at phone width on ${state.pages[home].title}.`, `Couldn't check the layout at desktop width on ${state.pages[home].title}.`, `Fits the screen at phone width on ${state.pages[about].title}.`]);
+  });
+
+  it('stops vouching for a page once a later edit changes it, until it is checked again', () => {
+    const state = createStarterState('business', 'Test', false);
+    const [home, about] = state.site.pageOrder;
+    const log = new InspectionLog();
+    log.record(home, 'phone', true, { viewport: 'phone', report: { issues: [], images: { total: 1, loaded: 0, failed: 1, unverified: 0, failedFiles: ['old.jpg'] } } });
+    log.record(about, 'phone', true, { viewport: 'phone', report: { issues: [] } });
+    // The broken image was replaced afterwards: the failure no longer describes the page.
+    log.invalidate(new Set([home]));
+    expect(log.checks(state)).toEqual([
+      { status: 'unverified', text: `Fits the screen at phone width on ${state.pages[home].title}, before later changes.` },
+      { status: 'unverified', text: `An image failed to load at phone width on ${state.pages[home].title} (old.jpg), before later changes.` },
+      { status: 'pass', text: `Fits the screen at phone width on ${state.pages[about].title}.` }
+    ]);
+    // Checked again: the latest result stands.
+    log.record(home, 'phone', true, { viewport: 'phone', report: { issues: [], images: { total: 1, loaded: 1, failed: 0, unverified: 0 } } });
+    expect(log.checks(state).slice(0, 2).map((c) => c.status)).toEqual(['pass', 'pass']);
+    // A site-wide change reaches every page.
+    log.invalidate('all');
+    expect(log.checks(state).every((c) => c.status === 'unverified')).toBe(true);
+  });
+
+  it('knows which pages an edit can change', () => {
+    const state = createStarterState('business', 'Test', false);
+    const [home, about] = state.site.pageOrder;
+    const page = (id: string) => ({ kind: 'page' as const, id });
+    const node = state.pages[home].rootIds[0];
+    expect(pagesTouched([{ type: 'node.setStyle', owner: page(home), nodeId: node, property: 'gap', value: '1rem' }])).toEqual(new Set([home]));
+    expect(pagesTouched([{ type: 'node.copy', owner: page(home), nodeId: node, toOwner: page(about) }])).toEqual(new Set([home, about]));
+    expect(pagesTouched([{ type: 'page.create', title: 'New' }])).toEqual(new Set());
+    expect(pagesTouched([{ type: 'page.create', title: 'New', addToNavigation: true }])).toBe('all');
+    expect(pagesTouched([{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: 'n', prop: 'x', value: 1 }])).toBe('all');
+    expect(pagesTouched([{ type: 'token.set', tokenId: 'color.brand', value: '#000' }])).toBe('all');
   });
 });

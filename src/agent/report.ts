@@ -339,23 +339,51 @@ export function inspectionChecks(ok: boolean, content: unknown, onPage = ''): Ch
 }
 
 /**
+ * The pages an edit can change the look of: the page it is on, or every page for what they share (header,
+ * footer, components, site styles and settings, the theme, the image library). A new page changes no other.
+ */
+export function pagesTouched(ops: EditOperation[]): Set<string> | 'all' {
+  const pages = new Set<string>();
+  for (const op of ops) {
+    if ('owner' in op) {
+      if (op.owner.kind !== 'page') return 'all';
+      pages.add(op.owner.id);
+      if (op.type === 'node.copy') {
+        if (op.toOwner.kind !== 'page') return 'all';
+        pages.add(op.toOwner.id);
+      }
+    } else if (op.type === 'page.create') {
+      if (op.addToNavigation) return 'all';
+    } else if (op.type === 'page.update' || op.type === 'page.remove' || op.type === 'page.setHome') pages.add(op.pageId);
+    else if (op.type !== 'page.duplicate' && op.type !== 'page.reorder') return 'all';
+  }
+  return pages;
+}
+
+/**
  * Inspections made during a run, keyed by page and width: a later check of the same page at the same width
- * replaces the earlier one, so the card shows each check's final state once.
+ * replaces the earlier one, so the card shows each check's final state once. A check made before a later edit
+ * to its page no longer describes the final page, so it is reported as not confirmed.
  */
 export class InspectionLog {
-  private latest = new Map<string, { pageId: string; ok: boolean; content: unknown }>();
+  private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; stale: boolean }>();
 
   record(pageId: string, viewport: string, ok: boolean, content: unknown) {
-    const key = `${pageId}\n${viewport}`;
-    // Re-inserting keeps the order of first inspection while the result is the latest one.
-    this.latest.set(key, { pageId, ok, content });
+    // Setting an existing key keeps the order of first inspection while the result is the latest one.
+    this.latest.set(`${pageId}\n${viewport}`, { pageId, ok, content, stale: false });
+  }
+
+  /** An edit landed on these pages (or on what every page shares) after their checks ran. */
+  invalidate(pages: Set<string> | 'all') {
+    for (const e of this.latest.values()) if (pages === 'all' || pages.has(e.pageId)) e.stale = true;
   }
 
   checks(state: ProjectState): ChatCheck[] {
     const pages = new Set([...this.latest.values()].map((e) => e.pageId));
     return [...this.latest.values()].flatMap((e) => {
       const title = state.pages[e.pageId]?.title;
-      return inspectionChecks(e.ok, e.content, pages.size > 1 && title ? ` on ${title}` : '');
+      const rows = inspectionChecks(e.ok, e.content, pages.size > 1 && title ? ` on ${title}` : '');
+      return e.stale ? rows.map((r): ChatCheck => ({ status: 'unverified', text: `${r.text.replace(/\.$/, '')}, before later changes.` })) : rows;
     });
   }
 }
