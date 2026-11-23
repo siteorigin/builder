@@ -5,7 +5,6 @@ import { api, setState, useStore } from '../store';
 import { Modal, Segmented, Spinner } from '../components/ui';
 
 const NO_EXPORTS: RecentExport[] = [];
-const homeRelative = (path: string) => path.replace(/^\/Users\/[^/]+/, '~');
 
 /** When an export finished: the time today, or the date and time on an earlier day. */
 function finishedAt(iso: string): string {
@@ -96,7 +95,7 @@ export function ExportModal() {
               <strong>{result.message}</strong>
 
             </div>
-            {result.path && <span style={{ wordBreak: 'break-all', userSelect: 'text', color: 'var(--text-2)' }}>{homeRelative(result.path)}</span>}
+            {result.path && <span style={{ wordBreak: 'break-all', userSelect: 'text', color: 'var(--text-2)' }}>{result.path}</span>}
             {result.warnings.map((w, i) => (
               <span key={i}>• {w}</span>
             ))}
@@ -105,9 +104,9 @@ export function ExportModal() {
         {recent.length > 0 && (
           <section className="export-history" aria-labelledby="export-history-title">
             <h3 id="export-history-title">Recent exports</h3>
-            <p className="faint">Each website export keeps its own preview until you close this project, so you can compare them side by side.</p>
+            <p className="faint">Each website folder keeps its own preview running until you close this project, so you can compare them side by side.</p>
             <ul>
-              {recent.map((e) => (
+              {recent.map((e, i) => (
                 <li key={`${e.path}\n${e.exportedAt}`}>
                   <div className="row export-history-head">
                     <strong className="grow">
@@ -118,13 +117,15 @@ export function ExportModal() {
                       <time dateTime={e.exportedAt}>{finishedAt(e.exportedAt)}</time> · revision {e.revision}
                     </span>
                   </div>
-                  <span className="export-history-path">{homeRelative(e.path)}</span>
+                  <span className="export-history-path" id={`export-history-path-${i}`}>
+                    {e.path}
+                  </span>
                   <div className="row">
-                    <button className="btn btn-sm" onClick={() => void api.projects.reveal(e.path)}>
+                    <button className="btn btn-sm" aria-describedby={`export-history-path-${i}`} onClick={() => void api.projects.reveal(e.path)}>
                       Show in folder
                     </button>
                     {e.previewUrl && (
-                      <button className="btn btn-sm" onClick={() => void api.app.openExternal(e.previewUrl!)}>
+                      <button className="btn btn-sm" aria-describedby={`export-history-path-${i}`} title={e.previewUrl} onClick={() => void api.app.openExternal(e.previewUrl!)}>
                         Preview in browser
                       </button>
                     )}

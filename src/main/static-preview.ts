@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { existsSync, lstatSync, promises as fs } from 'node:fs';
+import { existsSync, lstatSync, promises as fs, type BigIntStats } from 'node:fs';
 import { extname, isAbsolute, join, normalize, relative } from 'node:path';
 
 /**
@@ -19,8 +19,15 @@ export class StaticPreviews {
    */
   async serve(root: string, base = ''): Promise<string> {
     const generation = this.generation;
+    // The folder this export was written to. Whatever is at the path later (the folder moved away and another export,
+    // or anything else, put there) is not this proof, and is never served under its address.
+    const exported = await fs.stat(root, { bigint: true });
     const types: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.txt': 'text/plain', '.xml': 'application/xml', '.gif': 'image/gif', '.avif': 'image/avif' };
     const server = createServer(async (req, res) => {
+      if (!(await sameFolder(root, exported))) {
+        res.writeHead(410, { 'content-type': 'text/html; charset=utf-8' });
+        return res.end(MOVED);
+      }
       try {
         const url = new URL(req.url ?? '/', 'http://x');
         const pathname = decodeURIComponent(url.pathname);
@@ -92,6 +99,11 @@ export class StaticPreviews {
     return this.servers.size;
   }
 }
+
+const MOVED = '<!doctype html><meta charset="utf-8"><title>Export moved</title><p>This exported website is no longer in the folder it was saved to, so its preview has stopped. Open a current preview from the Export dialog in SiteOrigin Builder.</p>';
+
+/** Is the folder at `root` still the one that was exported there? */
+const sameFolder = (root: string, exported: BigIntStats) => fs.stat(root, { bigint: true }).then((now) => now.isDirectory() && now.dev === exported.dev && now.ino === exported.ino, () => false);
 
 /** Close the listener and the connections a browser keeps open, so the port is released now. */
 function stop(server: Server) {

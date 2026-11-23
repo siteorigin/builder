@@ -3,10 +3,10 @@
  * finish, so an author can compare successive proofs side by side, and the export dialog can list what the open
  * project exported until it closes.
  */
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { get as httpGet } from 'node:http';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { Server, get as httpGet } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const env = vi.hoisted(() => ({ userData: '' }));
@@ -92,9 +92,14 @@ describe('exported-site previews', () => {
     await expectProof(plain, 'At the root');
     await expectProof(nested, 'In a sub-folder', '/docs');
     expect(await get(nested.replace(/docs\/$/, ''))).toMatchObject({ status: 301, location: '/docs/' });
+    // A file that exists, asked for outside the base path, is not served.
+    expect((await get(nested.replace(/docs\/$/, 'about/'))).status).toBe(404);
   });
 
   it('stops one preview on its own, and every preview, including one still starting, when the project closes', async () => {
+    // Every server that starts listening in this test, so none can be left behind unseen.
+    const listen = vi.spyOn(Server.prototype, 'listen');
+    cleanups.push(() => listen.mockRestore());
     const p = previews();
     const [a, b] = [await p.serve(site('A')), await p.serve(site('B'))];
     p.stop(a);
@@ -106,6 +111,28 @@ describe('exported-site previews', () => {
     await expect(late).rejects.toThrow(/closed/);
     expect(await refused(b)).toBe('ECONNREFUSED');
     expect(p.size).toBe(0);
+    // The one that was still binding stopped too: no listener is left behind, listed or not.
+    const servers = listen.mock.contexts as Server[];
+    expect(servers).toHaveLength(3);
+    expect(servers.filter((server) => server.listening)).toEqual([]);
+  });
+
+  it('stops serving a proof whose folder was moved away, rather than serve whatever is at its path now', async () => {
+    const parent = temp('out');
+    const path = site('Proof 1', join(parent, 'site'));
+    writeFileSync(join(path, '404.html'), 'Proof 1 has no such page');
+    const url = await previews().serve(path);
+    await expectProof(url, 'Proof 1');
+    renameSync(path, join(parent, 'moved'));
+    expect((await get(url)).status).toBe(410);
+    // Another export (or anything else) now at the same path is not this proof, not even its 404 page.
+    site('Someone else', path);
+    writeFileSync(join(path, '404.html'), 'Someone else has no such page');
+    for (const page of ['', 'about/', 'missing/']) {
+      const r = await get(`${url}${page}`);
+      expect(r.status).toBe(410);
+      expect(r.body).toMatch(/no longer in the folder it was saved to/);
+    }
   });
 
   it('never serves files outside the exported folder', async () => {
@@ -115,7 +142,8 @@ describe('exported-site previews', () => {
     symlinkSync(secret, join(root, 'linked'));
     const url = await previews().serve(root);
     expect((await get(`${url}linked/key.txt`)).status).toBe(404);
-    expect((await get(`${url}..%2f..%2fetc/hosts`)).status).toBe(404);
+    // An existing file beside the exported folder, reached by climbing out of it.
+    expect(await get(`${url}..%2f${basename(secret)}%2fkey.txt`)).toMatchObject({ status: 404, body: expect.not.stringContaining('private') });
   });
 });
 
@@ -134,7 +162,11 @@ describe('recent exports', () => {
     await vi.waitFor(() => expect(c.snapshot()).not.toBeNull());
     return { c, dir, sent };
   }
-  type Internals = { previews: InstanceType<typeof StaticPreviews>; recordExport(s: unknown, r: object): void };
+  type Internals = {
+    previews: InstanceType<typeof StaticPreviews>;
+    recordExport(s: unknown, r: object): boolean;
+    previewAndRecord(s: unknown, r: object, base: string): Promise<string | undefined>;
+  };
 
   it('lists what this opening exported, newest first, and keeps the overwrite protection', async () => {
     const { c, sent } = await openProject();
@@ -159,9 +191,32 @@ describe('recent exports', () => {
     const again = await c.exportSourceTo(join(out, 'proof-1'));
     expect(again).toMatchObject({ ok: false, message: expect.stringMatching(/never overwrites/) });
     expect(c.snapshot()!.recentExports).toHaveLength(2);
-    // A ZIP file replaced (after the save dialog asked) is listed once, as the newer export.
+    // A ZIP file replaced (after the save dialog asked) is listed once, as the newer export of a later revision.
+    expect((await c.apply({ operations: [{ type: 'site.update', description: 'Revised for the second proof.' }] })).ok).toBe(true);
+    const revised = c.snapshot()!.revision;
+    expect(revised).toBeGreaterThan(list[0].revision);
     expect((await c.exportSourceTo(join(out, 'proof.zip'), 'zip')).ok).toBe(true);
-    expect(c.snapshot()!.recentExports.map((e) => e.path)).toEqual([join(out, 'proof.zip'), join(out, 'proof-1')]);
+    expect(c.snapshot()!.recentExports.map((e) => [e.path, e.revision])).toEqual([
+      [join(out, 'proof.zip'), revised],
+      [join(out, 'proof-1'), list[1].revision]
+    ]);
+  });
+
+  it('starts and lists a website folder preview only for the project that is still open', async () => {
+    const { c } = await openProject();
+    const internals = c as unknown as Internals;
+    const record = (path: string) => ({ kind: 'site', format: 'folder', path, revision: 1, exportedAt: new Date().toISOString() });
+    const live = await internals.previewAndRecord(c.session, record(site('Open')), '');
+    expect(live).toBeTruthy();
+    await expectProof(live!, 'Open');
+    expect(c.snapshot()!.recentExports.map((e) => e.previewUrl)).toEqual([live]);
+    // The project closed while its export was being put in place: no preview, nothing listed, nothing left serving.
+    const stale = c.session;
+    await c.close();
+    const size = internals.previews.size;
+    expect(await internals.previewAndRecord(stale, record(site('Closed')), '')).toBeUndefined();
+    expect(internals.previews.size).toBe(size);
+    expect(await refused(live!)).toBe('ECONNREFUSED');
   });
 
   it('stops a superseded proof whose folder a newer export now occupies, and keeps the others serving', async () => {
@@ -203,5 +258,20 @@ describe('recent exports', () => {
     expect(c.snapshot()!.recentExports).toEqual([]);
     expect(await refused(late)).toBe('ECONNREFUSED');
     expect(existsSync(dir)).toBe(true);
+  });
+
+  it('keeps the proofs serving and listed when a close fails before it goes ahead', async () => {
+    const { c } = await openProject();
+    const internals = c as unknown as Internals;
+    const url = await internals.previews.serve(site('Proof'));
+    internals.recordExport(c.session, { kind: 'site', format: 'folder', path: temp('out'), revision: 1, exportedAt: new Date().toISOString(), previewUrl: url });
+    c.onSessionClosing = async () => {
+      throw new Error('The workspace could not be saved.');
+    };
+    await expect(c.close()).rejects.toThrow(/could not be saved/);
+    expect(c.session).not.toBeNull();
+    expect(c.snapshot()!.recentExports.map((e) => e.previewUrl)).toEqual([url]);
+    await expectProof(url, 'Proof');
+    c.onSessionClosing = null;
   });
 });

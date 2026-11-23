@@ -374,6 +374,8 @@ export class Controller {
 
   /** Make `session` the open project, with its own workspace state installed in the same step. */
   private async attach(session: ProjectSession, workspace: LocalWorkspaceState) {
+    // A new opening lists only its own exports, even if an earlier one was never closed.
+    this.endExports();
     this.session = session;
     this.localState = workspace;
     this.localDirty = false;
@@ -1047,13 +1049,19 @@ export class Controller {
       this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt });
       return { ok: true, path: dest, message: `Exported ${pages} pages as a ZIP file.`, warnings, revision };
     }
-    // The export is done either way; a preview that cannot start only loses the preview button. Each export gets
-    // its own preview, so one still open in a browser keeps serving its own files.
-    const previewUrl = await this.previews.serve(dest, basePath(state)).catch(() => undefined);
-    // The project closed while the preview started: that stopped it, and the next project starts with no exports.
-    if (this.session !== s) return { ok: true, path: dest, message: `Exported ${pages} pages.`, warnings, revision };
-    this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt, previewUrl });
+    // The export is done either way; a preview that cannot start only loses the preview button.
+    const previewUrl = await this.previewAndRecord(s, { kind: 'site', format, path: dest, revision, exportedAt }, basePath(state));
     return { ok: true, path: dest, message: `Exported ${pages} pages.`, warnings, revision, previewUrl };
+  }
+
+  /**
+   * Start a website folder's own preview, so one still open in a browser keeps serving its files while later exports
+   * finish, and list the export. A project that closed while the export was put in place gets neither; one that
+   * closes while the preview binds stops it.
+   */
+  private async previewAndRecord(s: ProjectSession, record: RecentExport, base: string): Promise<string | undefined> {
+    const previewUrl = this.session === s ? await this.previews.serve(record.path, base).catch(() => undefined) : undefined;
+    return this.recordExport(s, { ...record, previewUrl }) ? previewUrl : undefined;
   }
 
   /**
@@ -1061,14 +1069,15 @@ export class Controller {
    * earlier one was (its folder deleted since, or a ZIP file replaced) supersedes it, and stops its preview, which
    * would otherwise serve the new files under the old proof's address.
    */
-  private recordExport(s: ProjectSession, record: RecentExport) {
+  private recordExport(s: ProjectSession, record: RecentExport): boolean {
     if (this.session !== s) {
       if (record.previewUrl) this.previews.stop(record.previewUrl);
-      return;
+      return false;
     }
     for (const old of this.recentExports) if (old.path === record.path && old.previewUrl) this.previews.stop(old.previewUrl);
     this.recentExports = [record, ...this.recentExports.filter((old) => old.path !== record.path)];
     this.broadcast();
+    return true;
   }
 
   /** Stop every exported-website preview and forget the exports: they belonged to the project that made them. */
