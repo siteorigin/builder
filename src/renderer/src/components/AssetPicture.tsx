@@ -16,7 +16,7 @@ export function fitFor(a: AssetRecord): { contain: boolean; alpha: boolean } {
  */
 export function Picture({ a, devUrl, lazy }: { a: AssetRecord; devUrl: string | null; lazy?: boolean }) {
   const [load, setLoad] = useState<'wait' | 'ok' | 'error'>('wait');
-  useEffect(() => setLoad('wait'), [a.file]);
+  useEffect(() => setLoad('wait'), [a.file, devUrl]);
   if (!devUrl || load === 'error') return <ImageIcon className="asset-noimg" aria-hidden="true" />;
   // Browsed at the size it is shown: the grid and the replace head load a small copy, the detail frame (176px
   // tall at most) a larger one. The original is kept and is what the preview, the canvas and the export use.
@@ -24,7 +24,7 @@ export function Picture({ a, devUrl, lazy }: { a: AssetRecord; devUrl: string | 
     <AssetImage
       asset={a}
       devUrl={devUrl}
-      fallbackWidth={lazy ? 110 : 320}
+      cover={lazy && !fitFor(a).contain}
       maxHeight={lazy ? undefined : 176}
       className={fitFor(a).alpha && load === 'ok' ? 'alpha' : undefined}
       alt=""

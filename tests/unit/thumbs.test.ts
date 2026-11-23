@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { previewFile } from '../../src/renderer/src/lib/thumbs';
+import { coverWidth, previewFile } from '../../src/renderer/src/lib/thumbs';
 
 const photo = {
   file: 'static/images/studio.png',
@@ -40,5 +40,26 @@ describe('previewFile', () => {
   it('does not depend on the order the copies are listed in', () => {
     const shuffled = { ...photo, variants: [...photo.variants].reverse() };
     expect(previewFile(shuffled, 300, 2)).toBe('static/images/studio-960.png');
+  });
+
+  it('skips a copy that failed to load for the next larger one, then the original', () => {
+    expect(previewFile(photo, 110, 2, new Set(['static/images/studio-480.png']))).toBe('static/images/studio-960.png');
+    expect(previewFile(photo, 110, 2, new Set(photo.variants.map((v) => v.file)))).toBe('static/images/studio.png');
+  });
+});
+
+describe('coverWidth', () => {
+  it('is the box width for a picture that is as tall as the box needs', () => {
+    expect(coverWidth({ width: 100, height: 100 }, { width: 2400, height: 2400 })).toBe(100);
+    expect(coverWidth({ width: 110, height: 110 }, { width: 3000, height: 2000 })).toBeCloseTo(165);
+  });
+
+  it('grows for a wide picture cropped into a short box', () => {
+    // An 8:1 panorama in a 72 x 54 box shows a 432px-wide slice of its height.
+    expect(coverWidth({ width: 72, height: 54 }, { width: 4000, height: 500 })).toBe(432);
+  });
+
+  it('uses the box when the shape is unknown', () => {
+    expect(coverWidth({ width: 72, height: 54 }, {})).toBe(72);
   });
 });
