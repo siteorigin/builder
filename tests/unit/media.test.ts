@@ -43,6 +43,14 @@ describe('image dimensions', () => {
     expect(imageInfo(avif(1), 'image/avif')).toMatchObject({ width: 800, height: 1200 });
   });
 
+  it('turns a PNG by the orientation in its eXIf chunk', async () => {
+    const sharp = (await import('sharp')).default;
+    const turned = await sharp({ create: { width: 1200, height: 600, channels: 3, background: '#c00' } }).withMetadata({ orientation: 6 }).png().toBuffer();
+    expect(imageInfo(turned, 'image/png')).toEqual({ width: 600, height: 1200, orientation: 6 });
+    const plain = await sharp({ create: { width: 1200, height: 600, channels: 3, background: '#c00' } }).png().toBuffer();
+    expect(imageInfo(plain, 'image/png')).toEqual({ width: 1200, height: 600, orientation: 1 });
+  });
+
   it('reads past fill bytes and damaged EXIF to the frame header', () => {
     const j = jpeg(800, 600);
     const padded = Buffer.concat([j.subarray(0, 2), Buffer.from([0xff, 0xff, 0xff]), j.subarray(2)]);
@@ -168,6 +176,8 @@ describe('web font metadata', async () => {
     await expect(fontInfo(woff([['name', big]]))).rejects.toThrow(/damaged/);
     // A WOFF2 stream that unpacks past the budget is stopped by the output limit, not read to the end.
     await expect(fontInfo(woff2([[5, Buffer.alloc(70 * 1024 * 1024)]]))).rejects.toThrow(/too large/);
+    // A real font's tables fit well within it: a 3 MB layout table (GSUB, index 28) reads fine.
+    await expect(fontInfo(woff2([[5, nameTable('Brand')], [6, os2Table(400, false)], [28, Buffer.alloc(3 * 1024 * 1024)]]))).resolves.toMatchObject({ family: 'Brand' });
     const collection = woff2([[5, nameTable('X')]]);
     collection.write('ttcf', 4, 'latin1');
     await expect(fontInfo(collection)).rejects.toThrow(/collection/);

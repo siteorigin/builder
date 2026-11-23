@@ -104,9 +104,12 @@ function fontName(f: NonNullable<AssetRecord['font']>): string {
   return [f.family, weight === 'Regular' && f.style === 'italic' ? '' : weight, f.style === 'italic' ? 'Italic' : ''].filter(Boolean).join(' ');
 }
 
-/** Only the editor's own code runs in the media worker, but it decodes files from anywhere: it gets no secrets. */
+/**
+ * Only the editor's own code runs in the media worker, but it decodes files from anywhere: it gets no secrets.
+ * The map is never empty, because Electron passes the whole environment on when it is.
+ */
 function workerEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = { SITEORIGIN_MEDIA_WORKER: '1' };
   for (const k of ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR']) if (process.env[k]) env[k] = process.env[k]!;
   return env;
 }

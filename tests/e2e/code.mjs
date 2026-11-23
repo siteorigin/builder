@@ -70,6 +70,8 @@ await win.locator('.rail [aria-label="Layers"]').click();
 await win.getByRole('treeitem', { name: /Counter/ }).first().click();
 await win.evaluate(() => window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: 'component' })));
 await win.locator('#dock-panel-inspect').getByRole('button', { name: 'Edit code' }).first().click();
+await win.getByRole('tab', { name: 'Svelte source', selected: true }).waitFor();
+await assertTabsResolve(win, 'component source, as opened');
 await win.getByRole('tab', { name: 'Properties' }).click();
 await assertTabsResolve(win, 'component source, properties');
 const label = win.getByLabel('prop1 label');

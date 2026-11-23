@@ -80,11 +80,12 @@ export const step = (m) => console.log(`\n== ${m}`);
 
 /**
  * Every tab on the page names, in aria-controls, exactly one element: its own tabpanel, labelled by it back,
- * shown only while the tab is selected.
+ * shown only while the tab is selected. At least two tabs must be found `within` the given element.
  */
-export async function assertTabsResolve(win, where) {
-  const problems = await win.evaluate(() => {
+export async function assertTabsResolve(win, where, within = '.modal') {
+  const problems = await win.evaluate((within) => {
     const out = [];
+    if (document.querySelectorAll(`${within} [role="tab"]`).length < 2) out.push(`fewer than two tabs in ${within}`);
     for (const tab of document.querySelectorAll('[role="tab"]')) {
       const id = tab.getAttribute('aria-controls');
       const panels = id ? document.querySelectorAll(`#${CSS.escape(id)}`) : [];
@@ -98,7 +99,7 @@ export async function assertTabsResolve(win, where) {
       if ((getComputedStyle(panel).display !== 'none') !== selected) out.push(`${tab.id}: its panel is ${selected ? 'hidden' : 'shown'} while the tab is ${selected ? '' : 'not '}selected`);
     }
     return out;
-  });
+  }, within);
   assert.deepEqual(problems, [], `every tab controls a panel on the page (${where})`);
 }
 

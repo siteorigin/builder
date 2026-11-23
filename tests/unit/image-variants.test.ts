@@ -30,8 +30,12 @@ describe('responsive copies', () => {
       expect(m).toMatchObject({ format: 'jpeg', width: v.width, height: v.width / 2 });
       expect(m.exif).toBeUndefined();
     }
-    // 1440 is not made for a picture only 1500 wide.
-    expect((await renderVariants(await halves(1500, 750, 'jpeg'), 'image/jpeg', 1500)).map((v) => v.width)).toEqual([480, 960]);
+    // A copy is made only when it is under 90% of the picture's width: 1440 is not, at 1600.
+    expect((await renderVariants(await halves(1600, 800, 'jpeg'), 'image/jpeg', 1600)).map((v) => v.width)).toEqual([480, 960]);
+    expect((await renderVariants(await halves(1602, 800, 'jpeg'), 'image/jpeg', 1602)).map((v) => v.width)).toEqual([480, 960, 1440]);
+    // A header that overstates the width never makes a copy larger than the picture.
+    const small = await renderVariants(await halves(600, 300, 'jpeg'), 'image/jpeg', 2000);
+    expect((await Promise.all(small.map(async (v) => (await sharp(v.data).metadata()).width))).every((w) => w! <= 600)).toBe(true);
   });
 
   it('turns a copy the way its EXIF orientation says, sized by its displayed width', async () => {
@@ -46,12 +50,16 @@ describe('responsive copies', () => {
     expect(top.b).toBeLessThan(60);
     expect(bottom.b).toBeGreaterThan(200);
     expect(bottom.r).toBeLessThan(60);
+    // Orientation 2 mirrors: red ends up on the right.
+    const [mirrored] = await renderVariants(await halves(1200, 600, 'jpeg', 2), 'image/jpeg', 1200);
+    expect((await pixel(mirrored.data, 400, 100)).r).toBeGreaterThan(200);
+    expect((await pixel(mirrored.data, 80, 100)).b).toBeGreaterThan(200);
   });
 
   it('keeps a PNG a PNG, transparency included', async () => {
     const clear = await sharp({ create: { width: 1200, height: 600, channels: 4, background: { r: 0, g: 128, b: 0, alpha: 0 } } }).png().toBuffer();
     const [v] = await renderVariants(clear, 'image/png', 1200);
-    expect(await sharp(v.data).metadata()).toMatchObject({ format: 'png', width: 480, hasAlpha: true });
+    expect(await sharp(v.data).metadata()).toMatchObject({ format: 'png', width: 480, height: 240, hasAlpha: true });
     expect((await pixel(v.data, 10, 10)).a).toBe(0);
   });
 
@@ -59,7 +67,7 @@ describe('responsive copies', () => {
     const photo = await halves(2000, 1000, 'jpeg');
     const [a, b] = [await renderVariants(photo, 'image/jpeg', 2000), await renderVariants(photo, 'image/jpeg', 2000)];
     expect(a.map((v) => v.data.equals(b.find((x) => x.width === v.width)!.data))).toEqual([true, true, true]);
-    expect(await renderVariants(photo, 'image/webp', 2000)).toEqual([]);
+    for (const mime of ['image/webp', 'image/gif', 'image/avif']) expect(await renderVariants(photo, mime, 2000)).toEqual([]);
   });
 });
 
@@ -67,23 +75,31 @@ describe('responsive copies', () => {
 class FakeWorker implements WorkerHandle {
   sent: VariantRequest[] = [];
   killed = false;
-  private listeners: { message: Array<(m: VariantReply) => void>; exit: Array<(code: number) => void> } = { message: [], exit: [] };
+  /** Whether the process has started; kill() fails before then, as Electron's does. */
+  started = true;
+  failSend = false;
+  private listeners: Record<'message' | 'exit' | 'error' | 'spawn', Array<(arg?: never) => void>> = { message: [], exit: [], error: [], spawn: [] };
   postMessage(m: VariantRequest) {
+    if (this.failSend) throw new Error('channel closed');
     this.sent.push(m);
   }
-  on(event: 'message' | 'exit', listener: never) {
-    (this.listeners[event] as unknown[]).push(listener);
+  on(event: 'message' | 'exit' | 'error' | 'spawn', listener: never) {
+    this.listeners[event].push(listener);
     return this;
   }
   kill() {
+    if (!this.started) return false;
     this.killed = true;
     return true;
   }
+  emit(event: 'message' | 'exit' | 'error' | 'spawn', arg?: unknown) {
+    for (const l of this.listeners[event]) l(arg as never);
+  }
   reply(m: VariantReply) {
-    for (const l of this.listeners.message) l(m);
+    this.emit('message', m);
   }
   exit(code = 1) {
-    for (const l of this.listeners.exit) l(code);
+    this.emit('exit', code);
   }
 }
 
@@ -167,6 +183,80 @@ describe('media worker client', () => {
     expect(await broken.variants(Buffer.from('c'), 'image/jpeg', 2000)).toEqual([]);
   });
 
+  it('reads copies that sit inside a larger buffer, and survives a failed send or a fatal worker error', async () => {
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn);
+    const sliced = client.variants(Buffer.from('a'), 'image/jpeg', 2000);
+    await tick();
+    const backing = new Uint8Array([0, 0, 5, 6, 7, 0]);
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [{ width: 480, data: backing.subarray(2, 5) }] });
+    expect((await sliced).map((v) => [...v.data])).toEqual([[5, 6, 7]]);
+    // An error event (a fatal failure in the worker) settles the request instead of being thrown.
+    const failing = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
+    await tick();
+    workers[0].emit('error');
+    expect(await failing).toEqual([]);
+    expect(workers[0].killed).toBe(true);
+    workers[0].exit(1);
+    // A send that fails gives up on that worker.
+    const unsent = client.variants(Buffer.from('c'), 'image/jpeg', 2000);
+    await tick();
+    expect(workers).toHaveLength(2);
+    workers[1].failSend = true;
+    const next = client.variants(Buffer.from('d'), 'image/jpeg', 2000);
+    workers[1].reply({ id: workers[1].sent[0].id, ok: true, variants: [] });
+    expect(await unsent).toEqual([]);
+    expect(await next).toEqual([]);
+    expect(workers[1].killed).toBe(true);
+    client.stop();
+  });
+
+  it('ends a worker that is stopped before it has started, once it starts', async () => {
+    vi.useFakeTimers();
+    const workers: FakeWorker[] = [];
+    const client = createVariantClient(() => {
+      const w = new FakeWorker();
+      w.started = false;
+      workers.push(w);
+      return w;
+    }, { timeoutMs: 1000 });
+    const p = client.variants(Buffer.from('a'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await p).toEqual([]);
+    expect(workers[0].killed).toBe(false);
+    workers[0].started = true;
+    workers[0].emit('spawn');
+    expect(workers[0].killed).toBe(true);
+    client.stop();
+  });
+
+  it('keeps a reused worker past the idle time of an earlier request, and ignores an old worker’s exit', async () => {
+    vi.useFakeTimers();
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { idleMs: 5000, timeoutMs: 8000 });
+    const first = client.variants(Buffer.from('a'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(0);
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [] });
+    await first;
+    await vi.advanceTimersByTimeAsync(4000);
+    // Reused before the idle time ran out: the idle stop and the first request's deadline must not end it.
+    const second = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(workers[0].killed).toBe(false);
+    workers[0].reply({ id: workers[0].sent[1].id, ok: true, variants: [{ width: 480, data: new Uint8Array([1]) }] });
+    expect(await second).toHaveLength(1);
+    // A worker that timed out exits late, while its replacement is busy: the replacement's request is unaffected.
+    const slow = client.variants(Buffer.from('c'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(await slow).toEqual([]);
+    const fresh = client.variants(Buffer.from('d'), 'image/jpeg', 2000);
+    await vi.advanceTimersByTimeAsync(0);
+    workers[0].exit(1);
+    workers[1].reply({ id: workers[1].sent[0].id, ok: true, variants: [{ width: 480, data: new Uint8Array([2]) }] });
+    expect(await fresh).toHaveLength(1);
+    client.stop();
+  });
+
   it('stops an idle worker, and settles a request in flight when stopped', async () => {
     vi.useFakeTimers();
     const { workers, spawn } = spawner();
@@ -180,9 +270,13 @@ describe('media worker client', () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(workers[0].killed).toBe(true);
     const pending = client.variants(Buffer.from('b'), 'image/jpeg', 2000);
+    const queued = client.variants(Buffer.from('c'), 'image/jpeg', 2000);
     await vi.advanceTimersByTimeAsync(0);
     client.stop();
     expect(await pending).toEqual([]);
     expect(workers[1].killed).toBe(true);
+    // Stopped for good: what was queued gets no copies and starts no new worker.
+    expect(await queued).toEqual([]);
+    expect(workers).toHaveLength(2);
   });
 });

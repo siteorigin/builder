@@ -121,6 +121,20 @@ describe('assistant code that imports project components', () => {
     expect(Object.values(s.state.components).some((d) => d.name === 'Hero')).toBe(false);
   });
 
+  it('refuses the import in an edit to existing code, and an import of a component the same batch removes', async () => {
+    const { s } = await make();
+    const map = await s.apply({ operations: [{ type: 'component.createCode', name: 'Map', source: FETCHES }] }, { label: 'Create' });
+    const mapId = map.results![0].definitionId as string;
+    const path = s.state.components[mapId].sourcePath!;
+    const hero = await s.apply({ operations: [{ type: 'component.createCode', name: 'Hero', source: '<p>hero</p>\n' }] }, { label: 'AI', source: 'ai' });
+    const heroId = hero.results![0].definitionId as string;
+    const edit = await s.apply({ operations: [{ type: 'component.updateSource', definitionId: heroId, source: importer(path) }] }, { label: 'AI', source: 'ai' });
+    expect(edit.error?.code).toBe('VALIDATION_FAILED');
+    expect(s.state.components[heroId].source).toBe('<p>hero</p>\n');
+    const gone = await s.apply({ operations: [{ type: 'component.remove', definitionId: mapId }, { type: 'component.createCode', name: 'After', source: importer(path) }] }, { label: 'AI', source: 'ai' });
+    expect(gone.error?.message).toMatch(/not a component in this project/);
+  });
+
   it('checks the imported component as the batch leaves it, whichever order the batch changes it in', async () => {
     const { s } = await make();
     const made = await s.apply({ operations: [{ type: 'component.createCode', name: 'Map', source: FETCHES }] }, { label: 'Create' });

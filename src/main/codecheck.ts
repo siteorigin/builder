@@ -64,8 +64,6 @@ const BROWSER_ONLY = new Set(['window', 'document', 'localStorage', 'sessionStor
 const EMBEDS = new Set(['iframe', 'frame', 'frameset', 'object', 'embed', 'portal', 'script', 'base', 'link', 'meta']);
 /** Attributes that load or submit to a URL. A link's href only navigates, so it may point anywhere safe. */
 const URL_ATTRS = new Set(['src', 'srcset', 'href', 'xlink:href', 'action', 'formaction', 'poster', 'data', 'background', 'ping', 'cite']);
-/** Attributes whose URL only opens a page; they may point anywhere a script URL does not. */
-const NAVIGATING_ATTRS = new Set(['href', 'xlink:href', 'cite']);
 /** Element properties that load, submit to or open a URL when assigned. */
 const DOM_URL_PROPS = new Set(['src', 'srcset', 'poster', 'action', 'formAction', 'href']);
 const SCRIPT_URL = /^\s*(javascript|vbscript|data:text\/html)/i;
@@ -102,38 +100,54 @@ export interface CheckOptions {
   resolve?: (path: string) => string | null | undefined;
 }
 
+/** The props a component passes on to places that load a URL, apply CSS or open a link. */
+interface PropSinks {
+  load: Set<string>;
+  css: Set<string>;
+  nav: Set<string>;
+}
+const noSinks = (): PropSinks => ({ load: new Set(), css: new Set(), nav: new Set() });
+
+/** A project component as the strict check found it. */
+interface Checked {
+  errors: CodeProblem[];
+  sinks: PropSinks;
+}
+
 /** Components already checked during one check, and those whose check is under way (an import cycle). */
 interface Reach {
   visiting: Set<string>;
-  done: Map<string, CodeProblem[]>;
+  done: Map<string, Checked>;
 }
 
 export async function checkSvelteSource(source: string, opts: CheckOptions = {}): Promise<CodeProblem[]> {
-  return check(source, opts, { visiting: new Set(opts.filename ? [opts.filename] : []), done: new Map() });
+  return (await check(source, opts, { visiting: new Set(opts.filename ? [opts.filename] : []), done: new Map() })).problems;
 }
 
-/** Strict errors of the project component saved at `path`, checked once per top-level check. */
-async function siblingErrors(path: string, opts: CheckOptions, reach: Reach): Promise<CodeProblem[] | null> {
+/** The project component saved at `path`, checked once per top-level check; null when there is none. */
+async function checkSibling(path: string, opts: CheckOptions, reach: Reach): Promise<Checked | null> {
   // A component already being checked further up an import cycle reports its own problems there.
-  if (reach.visiting.has(path)) return [];
+  if (reach.visiting.has(path)) return { errors: [], sinks: noSinks() };
   const known = reach.done.get(path);
   if (known) return known;
   const source = opts.resolve?.(path);
   if (source === null || source === undefined) return null;
   reach.visiting.add(path);
   try {
-    const errors = (await check(source, { strict: true, resolve: opts.resolve }, reach)).filter((p) => p.severity === 'error');
-    reach.done.set(path, errors);
-    return errors;
+    const r = await check(source, { strict: true, resolve: opts.resolve }, reach);
+    const checked = { errors: r.problems.filter((p) => p.severity === 'error'), sinks: r.sinks };
+    reach.done.set(path, checked);
+    return checked;
   } finally {
     reach.visiting.delete(path);
   }
 }
 
-async function check(source: string, opts: CheckOptions, reach: Reach): Promise<CodeProblem[]> {
+async function check(source: string, opts: CheckOptions, reach: Reach): Promise<{ problems: CodeProblem[]; sinks: PropSinks }> {
   const strict = !!opts.strict;
   const problems: CodeProblem[] = [];
-  if (source.length > 60_000) return [{ severity: 'error', message: 'This component is too large. Split it into smaller components.' }];
+  const sinks = noSinks();
+  if (source.length > 60_000) return { problems: [{ severity: 'error', message: 'This component is too large. Split it into smaller components.' }], sinks };
   const { compile, parse } = await import('svelte/compiler');
   // Both outputs must compile: pages are prerendered on the server and hydrated in the browser.
   for (const generate of ['client', 'server'] as const) {
@@ -144,14 +158,14 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
     } catch (e) {
       const err = e as { message: string; start?: { line: number; column: number } };
       problems.push({ severity: 'error', message: err.message.split('\n')[0], line: err.start?.line, column: err.start?.column });
-      return problems;
+      return { problems, sinks };
     }
   }
   let ast: Node;
   try {
     ast = parse(source, { modern: true }) as unknown as Node;
   } catch (e) {
-    return [...problems, { severity: 'error', message: (e as Error).message.split('\n')[0] }];
+    return { problems: [...problems, { severity: 'error', message: (e as Error).message.split('\n')[0] }], sinks };
   }
   const lineAt = (offset: number | undefined) => (offset === undefined ? undefined : source.slice(0, offset).split('\n').length);
   const seen = new Set<string>();
@@ -163,16 +177,10 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
     problems.push({ severity, message, ...(line ? { line } : {}) });
   };
   const forbid = (what: string, node: Node) => add('error', `Code written by the assistant may not use ${what}.`, node);
-  /** Project components the strict code imports, checked once the walk is done. */
-  const siblings: Array<{ spec: string; path: string; node: Node }> = [];
   const checkSpec = (spec: unknown, node: Node) => {
     if (typeof spec !== 'string') return;
     if (!importAllowed(spec)) add('error', `"${spec}" is not available in this project. Use relative imports inside src/lib, $lib, svelte or $app modules only.`, node);
     else if (strict && !importAllowed(spec, true)) forbid(`"${spec}"`, node);
-    else if (strict) {
-      const path = resolveSpec(spec);
-      if (path?.startsWith(`${COMPONENT_DIR}/`)) siblings.push({ spec, path, node });
-    }
   };
   /** Capability names reached as a property (obj.fetch) or by destructuring ({ fetch } = window). */
   const checkCapability = (name: string, node: Node, onGlobal: boolean, called: boolean) => {
@@ -192,33 +200,78 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
 
   /** Names the component imports: an imported Image component is not the browser's Image loader. */
   const imported = new Set<string>();
-  for (const st of ((ast.instance as { content?: { body?: Node[] } } | null)?.content?.body ?? []))
-    if (st.type === 'ImportDeclaration') for (const sp of st.specifiers as Node[]) imported.add(String((sp.local as Node).name));
+  const body = (ast.instance as { content?: { body?: Node[] } } | null)?.content?.body ?? [];
+  for (const st of body) if (st.type === 'ImportDeclaration') for (const sp of st.specifiers as Node[]) imported.add(String((sp.local as Node).name));
+
+  // A project component the assistant imports runs as part of its code, so it is held to the same policy,
+  // and what the assistant passes to its props is judged by where the component puts them.
+  const componentSinks = new Map<string, PropSinks>();
+  if (strict)
+    for (const st of body) {
+      const spec = st.type === 'ImportDeclaration' ? String((st.source as Node).value) : '';
+      const path = spec && importAllowed(spec, true) ? resolveSpec(spec) : null;
+      if (!path?.startsWith(`${COMPONENT_DIR}/`)) continue;
+      const checked = await checkSibling(path, opts, reach);
+      const refuse = (why: string) => add('error', `Code written by the assistant may not import "${spec}", ${why}.`, st);
+      if (checked === null) refuse(opts.resolve ? 'which is not a component in this project' : 'because that component cannot be checked here');
+      else if (checked.errors[0]) {
+        const first = checked.errors[0];
+        const reason = first.message.match(/^Code written by the assistant may not use (.*)\.$/)?.[1];
+        refuse(`which ${reason ? `uses ${reason}` : `has a problem: ${first.message.replace(/\.$/, '')}`}${first.line ? ` (line ${first.line})` : ''}`);
+      }
+      if (checked) for (const sp of st.specifiers as Node[]) if (sp.type === 'ImportDefaultSpecifier') componentSinks.set(String((sp.local as Node).name), checked.sinks);
+    }
 
   // What names in the code hold, so a URL kept in a variable is judged like one written in place.
-  const read = valueReader(collectBindings([ast.instance, ast.fragment]));
-  /** Every string an attribute or style value may be, as far as the code shows. */
-  const valueStrings = (values: Node[]): string[] =>
-    values.reduce<string[]>((acc, v) => joinStrings(acc, v.type === 'Text' ? [String(v.data)] : v.type === 'ExpressionTag' ? strings(read(v.expression as Node)) : [HIDDEN]), ['']);
-  /** URLs that load (or, when `navigates`, only open) a resource. */
-  const checkUrls = (urls: string[], navigates: boolean, node: Node) => {
+  const bindings = collectBindings([ast.instance, ast.fragment]);
+  const read = valueReader(bindings);
+  /** The strings a value may be, and the component props it comes from. */
+  type Seen = { strs: string[]; props: Set<string> };
+  const expression = (n: Node | undefined, scope: Node[]): Seen => {
+    const r = read(n, scope);
+    return { strs: strings(r.vals), props: r.props };
+  };
+  /** Every string an attribute or style value may join to, as far as the code shows. */
+  const fragments = (values: Node[], scope: Node[]): Seen => {
+    let strs = [''];
+    const props = new Set<string>();
+    for (const v of values) {
+      if (v.type === 'Text') strs = joinStrings(strs, [String(v.data)]);
+      else if (v.type === 'ExpressionTag') {
+        const r = expression(v.expression as Node, scope);
+        r.props.forEach((p) => props.add(p));
+        strs = joinStrings(strs, r.strs);
+      } else strs = joinStrings(strs, [HIDDEN]);
+    }
+    return { strs, props };
+  };
+  /** URLs that load (or, when `navigates`, only open) a resource. Props that reach them are recorded for importers. */
+  const checkUrls = (v: Seen, navigates: boolean, srcset: boolean, node: Node) => {
+    v.props.forEach((p) => (navigates ? sinks.nav : sinks.load).add(p));
+    const urls = srcset ? v.strs.flatMap((u) => u.split(',').map((c) => c.trim())) : v.strs;
     if (urls.some((u) => SCRIPT_URL.test(u))) forbid('script URLs', node);
     else if (!navigates && urls.some((u) => REMOTE_URL.test(u))) forbid('remote content (use an image from the project)', node);
   };
-  const checkCss = (texts: string[], node: Node) => {
-    if (texts.some((t) => CSS_REMOTE.test(t))) forbid('remote stylesheets or images in CSS', node);
+  const checkCss = (v: Seen, node: Node) => {
+    v.props.forEach((p) => sinks.css.add(p));
+    if (v.strs.some((t) => CSS_REMOTE.test(t))) forbid('remote stylesheets or images in CSS', node);
   };
-  const splitSrcset = (urls: string[]) => urls.flatMap((u) => u.split(',').map((c) => c.trim()));
+  /** Does setting `attr` on this element (named by bind:this) only open a link? Unknown elements get the benefit of the doubt. */
+  const opensOnly = (receiver: Node | undefined, attr: string) => {
+    const tag = receiver?.type === 'Identifier' ? bindings.elements.get(receiver.name as string) : undefined;
+    return attr === 'href' || attr === 'xlink:href' ? tag === undefined || tag === 'a' || tag === 'area' : attr === 'cite';
+  };
 
   let browserWarned = false;
   /**
    * Visit every node. `deferred` counts enclosing functions and browser-only guards (code that does not
-   * run while the page renders on the server); `key` is the property of `parent` holding this node.
+   * run while the page renders on the server); `key` is the property of `parent` holding this node; `scope`
+   * lists the each blocks it is inside, whose item names it can see.
    */
-  const visit = (node: unknown, deferred: number, parent: Node | null, key: string) => {
+  const visit = (node: unknown, deferred: number, parent: Node | null, key: string, scope: Node[]) => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
-      for (const child of node) visit(child, deferred, parent, key);
+      for (const child of node) visit(child, deferred, parent, key, scope);
       return;
     }
     const n = node as Node;
@@ -262,11 +315,9 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
         if (strict && callee.type === 'MemberExpression') {
           const method = nameOf(callee.property as Node, callee.computed);
           const name = literalText(args[0])?.toLowerCase();
-          if (method === 'setAttribute' && name && URL_ATTRS.has(name)) {
-            const urls = strings(read(args[1]));
-            checkUrls(name === 'srcset' ? splitSrcset(urls) : urls, NAVIGATING_ATTRS.has(name), n);
-          } else if (method === 'setAttribute' && name === 'style') checkCss(strings(read(args[1])), n);
-          else if (method === 'setProperty' && isStyleObject(callee.object as Node)) checkCss(strings(read(args[1])), n);
+          if (method === 'setAttribute' && name && URL_ATTRS.has(name)) checkUrls(expression(args[1], scope), opensOnly(callee.object as Node, name), name === 'srcset', n);
+          else if (method === 'setAttribute' && name === 'style') checkCss(expression(args[1], scope), n);
+          else if (method === 'setProperty' && isStyleObject(callee.object as Node)) checkCss(expression(args[1], scope), n);
         }
         break;
       }
@@ -275,10 +326,8 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
         const left = n.left as Node;
         if (!strict || left.type !== 'MemberExpression') break;
         const prop = nameOf(left.property as Node, left.computed);
-        if (prop && DOM_URL_PROPS.has(prop)) {
-          const urls = strings(read(n.right as Node));
-          checkUrls(prop === 'srcset' ? splitSrcset(urls) : urls, prop === 'href', n);
-        } else if (prop === 'cssText' || isStyleObject(left.object as Node)) checkCss(strings(read(n.right as Node)), n);
+        if (prop && DOM_URL_PROPS.has(prop)) checkUrls(expression(n.right as Node, scope), opensOnly(left.object as Node, prop.toLowerCase()), prop === 'srcset', n);
+        else if (prop === 'cssText' || isStyleObject(left.object as Node)) checkCss(expression(n.right as Node, scope), n);
         break;
       }
       case 'MemberExpression': {
@@ -336,8 +385,9 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
         break;
       }
       case 'StyleDirective': {
-        const values = n.value === true ? [] : Array.isArray(n.value) ? (n.value as Node[]) : [n.value as Node];
-        if (strict) checkCss(valueStrings(values), n);
+        // style:background on its own reads the variable of that name.
+        const values = n.value === true ? [{ type: 'ExpressionTag', expression: { type: 'Identifier', name: n.name } }] : Array.isArray(n.value) ? (n.value as Node[]) : [n.value as Node];
+        if (strict) checkCss(fragments(values, scope), n);
         break;
       }
       case 'SpreadAttribute':
@@ -353,32 +403,33 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
         const navigates = attr === 'href' && ['a', 'area'].includes(host.toLowerCase());
         if (attr.startsWith('on') && texts.some((t) => t !== null)) forbid('event handlers written as text', n);
         // Every value the attribute may take counts, including URLs held in variables, arrays and objects.
-        const full = valueStrings(values);
-        // srcset lists several URLs; each one counts.
-        if (URL_ATTRS.has(attr)) checkUrls(attr === 'srcset' ? splitSrcset(full) : full, navigates, n);
-        if (attr === 'style') checkCss(full, n);
+        const full = fragments(values, scope);
+        // A prop of an imported project component is judged by where that component puts it; any other
+        // attribute by its name.
+        const child = parent?.type === 'Component' ? componentSinks.get(String(parent.name)) : undefined;
+        if (!child) {
+          // srcset lists several URLs; each one counts.
+          if (URL_ATTRS.has(attr)) checkUrls(full, navigates, attr === 'srcset', n);
+          if (attr === 'style') checkCss(full, n);
+        } else {
+          const prop = String(n.name);
+          const any = (set: Set<string>) => set.has(prop) || set.has('*');
+          // The component may wrap a bare URL in url(…) itself, so one headed into its CSS loads too.
+          if (any(child.load) || any(child.css)) checkUrls(full, false, false, n);
+          if (any(child.css)) checkCss(full, n);
+          if (any(child.nav)) checkUrls(full, true, false, n);
+        }
         break;
       }
     }
     for (const k of Object.keys(n)) {
-      if (k === 'type' || k === 'loc' || k === 'metadata' || k === 'parent' || k === 'start' || k === 'end') continue;
-      visit(n[k], childDeferred + (guarded.has(k) ? 1 : 0), n, k);
+      if (SKIP_KEYS.has(k)) continue;
+      visit(n[k], childDeferred + (guarded.has(k) ? 1 : 0), n, k, n.type === 'EachBlock' && (k === 'body' || k === 'key') ? [...scope, n] : scope);
     }
   };
-  visit(ast.instance, 0, null, 'instance');
-  visit(ast.fragment, 0, null, 'fragment');
-
-  // A project component the assistant imports runs as part of its code, so it is held to the same policy.
-  for (const { spec, path, node } of siblings) {
-    const errors = await siblingErrors(path, opts, reach);
-    const refuse = (why: string) => add('error', `Code written by the assistant may not import "${spec}", ${why}.`, node);
-    if (errors === null) refuse(opts.resolve ? 'which is not a component in this project' : 'because that component cannot be checked here');
-    else if (errors[0]) {
-      const reason = errors[0].message.match(/^Code written by the assistant may not use (.*)\.$/)?.[1];
-      refuse(`which ${reason ? `uses ${reason}` : `has a problem: ${errors[0].message.replace(/\.$/, '')}`}${errors[0].line ? ` (line ${errors[0].line})` : ''}`);
-    }
-  }
-  return problems;
+  visit(ast.instance, 0, null, 'instance', []);
+  visit(ast.fragment, 0, null, 'fragment', []);
+  return { problems, sinks };
 }
 
 /** The text of a string literal or a template literal without expressions; null for anything computed. */
@@ -400,18 +451,38 @@ function isStyleObject(n: Node | undefined): boolean {
 
 /**
  * A value as far as the code shows it: a string, an array or object written out in the code, or unknown
- * (a prop, a function's result). Unknown values are allowed: the check judges only what the code itself spells out.
+ * (a function's result, a prop). Unknown values are allowed: the check judges only what the code spells out.
  */
-type Val = { kind: 'str'; s: string } | { kind: 'arr'; items: () => Val[] } | { kind: 'obj'; get: (key: string | null) => Val[] } | { kind: 'unknown' };
-/** Where a name's value comes from: an expression, a function, a property or an element of another source. */
-type Src = { expr: Node } | { fn: Node } | { member: Src; key: string | null } | { element: Src } | 'unknown';
+type Val =
+  | { kind: 'str'; s: string }
+  | { kind: 'arr'; items: () => Val[]; at: (i: number) => Val[] }
+  | { kind: 'obj'; get: (key: string | null) => Val[] }
+  | { kind: 'unknown' };
+/**
+ * Where a name's value comes from: an expression (read in the each blocks around it), a function, a property
+ * or an element of another source.
+ */
+type Src = { expr: Node; scope: Node[] } | { fn: Node } | { member: Src; key: string | null } | { element: Src; index?: number } | 'unknown';
+
+interface Bindings {
+  /** Names given values in the script or template, by name: scopes other than each blocks are merged. */
+  names: Map<string, Src[]>;
+  /** Names an each block gives its items, seen only inside that block. */
+  each: Map<Node, Map<string, Src[]>>;
+  /** Variables holding an element through bind:this, with the element's tag. */
+  elements: Map<string, string>;
+}
 
 const UNKNOWN: Val = { kind: 'unknown' };
 /** Stands for text the code does not show, so a URL is judged only by the part that is written out. */
 const HIDDEN = '\u0001';
 /** Values followed per expression; enough for any real component, and a bound on contrived ones. */
 const MAX_VALUES = 64;
-const MAX_DEPTH = 12;
+const MAX_DEPTH = 24;
+/** Steps one value read may take before the rest of it counts as unknown. */
+const MAX_STEPS = 20_000;
+/** Values worth keeping past the cap: they may be the remote URL the cap would otherwise hide. */
+const SUSPICIOUS = /\/\/|script:|url\(|@import/i;
 const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 const SKIP_KEYS = new Set(['type', 'loc', 'metadata', 'parent', 'start', 'end']);
 /** Array methods whose callback's first parameter is an element of the array. */
@@ -424,55 +495,76 @@ const PASS_THROUGH = new Set(['$state', '$derived', 'String', 'encodeURI', 'deco
 const STRING_METHODS = new Set(['trim', 'trimStart', 'trimEnd', 'toString', 'toLowerCase', 'toUpperCase', 'valueOf', 'normalize', 'concat']);
 
 const strings = (vals: Val[]): string[] => vals.map((v) => (v.kind === 'str' ? v.s : HIDDEN));
-const joinStrings = (a: string[], b: string[]): string[] => a.flatMap((x) => b.map((y) => x + y)).slice(0, MAX_VALUES);
-const capped = (vals: Val[]) => vals.slice(0, MAX_VALUES);
-
-function walk(node: unknown, visit: (n: Node) => void) {
-  if (!node || typeof node !== 'object') return;
-  if (Array.isArray(node)) {
-    for (const child of node) walk(child, visit);
-    return;
-  }
-  const n = node as Node;
-  if (typeof n.type !== 'string') return;
-  visit(n);
-  for (const k of Object.keys(n)) if (!SKIP_KEYS.has(k)) walk(n[k], visit);
+const keep = <T>(all: T[], suspicious: (v: T) => boolean): T[] => (all.length <= MAX_VALUES ? all : [...all.slice(0, MAX_VALUES), ...all.slice(MAX_VALUES).filter(suspicious).slice(0, MAX_VALUES)]);
+const capped = (vals: Val[]) => keep(vals, (v) => v.kind === 'str' && SUSPICIOUS.test(v.s));
+function joinStrings(a: string[], b: string[]): string[] {
+  const out: string[] = [];
+  for (const x of a) for (const y of b) out.push(x + y);
+  return keep(out, (v) => SUSPICIOUS.test(v));
 }
+const functionNode = (s: Src): Node | null => (s === 'unknown' ? null : 'fn' in s ? s.fn : 'expr' in s && FUNCTION_TYPES.has(s.expr.type) ? s.expr : null);
 
-/** Every place a name is given a value, by name: scopes are merged, so a name reused for a remote URL counts everywhere. */
-function collectBindings(roots: unknown[]): Map<string, Src[]> {
-  const bindings = new Map<string, Src[]>();
-  const add = (name: string, src: Src) => {
-    const list = bindings.get(name);
-    if (!list) bindings.set(name, [src]);
+function collectBindings(roots: unknown[]): Bindings {
+  const b: Bindings = { names: new Map(), each: new Map(), elements: new Map() };
+  const calls: Array<{ call: Node; scope: Node[] }> = [];
+  const add = (into: Map<string, Src[]>, name: string, src: Src) => {
+    const list = into.get(name);
+    if (!list) into.set(name, [src]);
     else if (list.length < MAX_VALUES) list.push(src);
   };
-  const bind = (pattern: Node | null | undefined, src: Src) => {
+  const bind = (into: Map<string, Src[]>, pattern: Node | null | undefined, src: Src, scope: Node[]) => {
     if (!pattern) return;
-    if (pattern.type === 'Identifier') add(pattern.name as string, src);
+    if (pattern.type === 'Identifier') add(into, pattern.name as string, src);
     else if (pattern.type === 'ObjectPattern')
-      for (const p of pattern.properties as Node[]) bind(p.type === 'RestElement' ? (p.argument as Node) : (p.value as Node), p.type === 'RestElement' ? src : { member: src, key: nameOf(p.key as Node, p.computed) });
+      for (const p of pattern.properties as Node[]) bind(into, p.type === 'RestElement' ? (p.argument as Node) : (p.value as Node), p.type === 'RestElement' ? src : { member: src, key: nameOf(p.key as Node, p.computed) }, scope);
     else if (pattern.type === 'ArrayPattern')
-      for (const el of pattern.elements as Array<Node | null>) bind(el?.type === 'RestElement' ? (el.argument as Node) : el, el?.type === 'RestElement' ? src : { element: src });
+      (pattern.elements as Array<Node | null>).forEach((el, index) => bind(into, el?.type === 'RestElement' ? (el.argument as Node) : el, el?.type === 'RestElement' ? src : { element: src, index }, scope));
     else if (pattern.type === 'AssignmentPattern') {
-      bind(pattern.left as Node, src);
-      bind(pattern.left as Node, { expr: pattern.right as Node });
-    } else if (pattern.type === 'RestElement') bind(pattern.argument as Node, src);
+      bind(into, pattern.left as Node, src, scope);
+      bind(into, pattern.left as Node, { expr: pattern.right as Node, scope }, scope);
+    } else if (pattern.type === 'RestElement') bind(into, pattern.argument as Node, src, scope);
   };
-  walk(roots, (n) => {
-    if (n.type === 'VariableDeclarator') bind(n.id as Node, n.init ? { expr: n.init as Node } : 'unknown');
-    else if (n.type === 'AssignmentExpression' && ['=', '+=', '||=', '??='].includes(String(n.operator))) bind(n.left as Node, { expr: n.right as Node });
-    else if (n.type === 'FunctionDeclaration' && n.id) add(String((n.id as Node).name), { fn: n });
-    else if (n.type === 'EachBlock') bind(n.context as Node, { element: { expr: n.expression as Node } });
-    else if (n.type === 'CallExpression') {
+  const go = (node: unknown, scope: Node[]) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const child of node) go(child, scope);
+      return;
+    }
+    const n = node as Node;
+    if (typeof n.type !== 'string') return;
+    if (n.type === 'VariableDeclarator') bind(b.names, n.id as Node, n.init ? { expr: n.init as Node, scope } : 'unknown', scope);
+    else if (n.type === 'AssignmentExpression' && ['=', '+=', '||=', '??='].includes(String(n.operator))) bind(b.names, n.left as Node, { expr: n.right as Node, scope }, scope);
+    else if (n.type === 'FunctionDeclaration' && n.id) add(b.names, String((n.id as Node).name), { fn: n });
+    else if (n.type === 'EachBlock') {
+      const own = new Map<string, Src[]>();
+      b.each.set(n, own);
+      bind(own, n.context as Node, { element: { expr: n.expression as Node, scope } }, scope);
+    } else if (n.type === 'CallExpression') {
+      calls.push({ call: n, scope });
       // items.map((item) => …): the callback's first parameter is an element of the array (reduce's second).
       const callee = n.callee as Node;
       const method = callee.type === 'MemberExpression' ? nameOf(callee.property as Node, callee.computed) : null;
       const fn = (n.arguments as Node[])[0];
-      if (method && ELEMENT_CALLBACKS.has(method) && fn && FUNCTION_TYPES.has(fn.type)) bind((fn.params as Node[])[method === 'reduce' ? 1 : 0], { element: { expr: callee.object as Node } });
+      if (method && ELEMENT_CALLBACKS.has(method) && fn && FUNCTION_TYPES.has(fn.type)) bind(b.names, (fn.params as Node[])[method === 'reduce' ? 1 : 0], { element: { expr: callee.object as Node, scope } }, scope);
+    } else if (n.type === 'RegularElement' || n.type === 'SvelteElement') {
+      const tag = n.type === 'RegularElement' ? String(n.name) : typeof n.tag === 'string' ? n.tag : String((n.tag as Node)?.value ?? '');
+      for (const a of n.attributes as Node[]) if (a.type === 'BindDirective' && a.name === 'this' && (a.expression as Node)?.type === 'Identifier') b.elements.set(String((a.expression as Node).name), tag.toLowerCase());
     }
-  });
-  return bindings;
+    for (const k of Object.keys(n)) if (!SKIP_KEYS.has(k)) go(n[k], n.type === 'EachBlock' && (k === 'body' || k === 'key') ? [...scope, n] : scope);
+  };
+  go(roots, []);
+  // What a local function is called with is what its parameters hold.
+  for (const { call, scope } of calls) {
+    const callee = call.callee as Node;
+    if (callee.type !== 'Identifier') continue;
+    for (const fn of (b.names.get(callee.name as string) ?? []).map(functionNode)) {
+      if (!fn) continue;
+      (call.arguments as Node[]).forEach((arg, i) => {
+        if (arg.type !== 'SpreadElement') bind(b.names, (fn.params as Node[])[i], { expr: arg, scope }, scope);
+      });
+    }
+  }
+  return b;
 }
 
 /** The expressions a function may return, not counting functions nested inside it. */
@@ -496,43 +588,55 @@ function returnsOf(fn: Node): Node[] {
   return out;
 }
 
-/** Reads what an expression may evaluate to, following names to where they are given values. */
-function valueReader(bindings: Map<string, Src[]>): (n: Node | undefined) => Val[] {
-  const memo = new Map<string, Val[]>();
-  const active = new Set<string>();
+/**
+ * Reads what an expression may evaluate to, following names to where they are given values, and which of the
+ * component's props it comes from. Every read is bounded: a cycle, a very deep chain or a very large value
+ * stops being followed and counts as unknown, and only reads that were followed to the end are remembered.
+ */
+function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { vals: Val[]; props: Set<string> } {
+  const memo = new Map<Src[], { vals: Val[]; props: Set<string> }>();
+  const active = new Set<unknown>();
+  let steps = 0;
+  let truncated = false;
+  let touched = new Set<string>();
+  const cut = (): Val[] => ((truncated = true), [UNKNOWN]);
+  /** Evaluate `f` unless `key` is already being evaluated (a value defined in terms of itself). */
+  const once = (key: unknown, f: () => Val[]): Val[] => {
+    if (active.has(key)) return cut();
+    active.add(key);
+    try {
+      return f();
+    } finally {
+      active.delete(key);
+    }
+  };
+  const lookup = (name: string, scope: Node[]): Src[] | undefined => {
+    for (let i = scope.length - 1; i >= 0; i--) {
+      const own = b.each.get(scope[i])?.get(name);
+      if (own) return own;
+    }
+    return b.names.get(name);
+  };
   const prop = (v: Val, key: string | null): Val[] =>
-    v.kind === 'obj' ? v.get(key) : v.kind === 'arr' ? (key === null || /^\d+$/.test(key) ? v.items() : [UNKNOWN]) : v.kind === 'str' && key === 'href' ? [v] : [UNKNOWN];
-  const elements = (v: Val): Val[] => (v.kind === 'arr' ? v.items() : [UNKNOWN]);
+    v.kind === 'obj' ? v.get(key) : v.kind === 'arr' ? (key === null ? v.items() : /^\d+$/.test(key) ? v.at(Number(key)) : [UNKNOWN]) : v.kind === 'str' && key === 'href' ? [v] : [UNKNOWN];
+  const elementsOf = (v: Val, index?: number): Val[] => (v.kind !== 'arr' ? [UNKNOWN] : index === undefined ? v.items() : v.at(index));
   const fromSrc = (src: Src, depth: number): Val[] =>
     src === 'unknown' || 'fn' in src
       ? [UNKNOWN]
       : 'expr' in src
-        ? evaluate(src.expr, depth)
+        ? evaluate(src.expr, depth, src.scope)
         : 'member' in src
           ? capped(fromSrc(src.member, depth + 1).flatMap((v) => prop(v, src.key)))
-          : capped(fromSrc(src.element, depth + 1).flatMap(elements));
-  /** The functions an expression names: written in place, or declared or assigned to a name. */
-  const functionsOf = (n: Node | undefined): Node[] =>
-    !n
-      ? []
-      : FUNCTION_TYPES.has(n.type)
-        ? [n]
-        : n.type === 'Identifier'
-          ? (bindings.get(n.name as string) ?? []).flatMap((s) => (s === 'unknown' ? [] : 'fn' in s ? [s.fn] : 'expr' in s && FUNCTION_TYPES.has(s.expr.type) ? [s.expr] : []))
-          : [];
-  const returned = (fn: Node | undefined, depth: number): Val[] => {
-    const fns = functionsOf(fn);
-    const key = fn?.type === 'Identifier' ? `call:${fn.name}` : null;
-    if (!fns.length || (key && active.has(key))) return [UNKNOWN];
-    if (key) active.add(key);
-    try {
-      return capped(fns.flatMap((f) => returnsOf(f).flatMap((r) => evaluate(r, depth))));
-    } finally {
-      if (key) active.delete(key);
-    }
+          : capped(fromSrc(src.element, depth + 1).flatMap((v) => elementsOf(v, src.index)));
+  /** What the functions an expression names may return. */
+  const returned = (fn: Node | undefined, depth: number, scope: Node[]): Val[] => {
+    const fns = !fn ? [] : FUNCTION_TYPES.has(fn.type) ? [fn] : fn.type === 'Identifier' ? (lookup(fn.name as string, scope) ?? []).map(functionNode).filter((f): f is Node => !!f) : [];
+    if (!fns.length) return [UNKNOWN];
+    return capped(fns.flatMap((f) => once(f, () => returnsOf(f).flatMap((r) => evaluate(r, depth, scope)))));
   };
-  const evaluate = (n: Node | undefined, depth: number): Val[] => {
-    if (!n || depth > MAX_DEPTH) return [UNKNOWN];
+  const evaluate = (n: Node | undefined, depth: number, scope: Node[]): Val[] => {
+    if (!n) return [UNKNOWN];
+    if (depth > MAX_DEPTH || ++steps > MAX_STEPS) return cut();
     const d = depth + 1;
     switch (n.type) {
       case 'Literal':
@@ -542,86 +646,125 @@ function valueReader(bindings: Map<string, Src[]>): (n: Node | undefined) => Val
         let out = [''];
         (n.quasis as Node[]).forEach((q, i) => {
           out = joinStrings(out, [String((q.value as { cooked?: string }).cooked ?? '')]);
-          if (exprs[i]) out = joinStrings(out, strings(evaluate(exprs[i], d)));
+          if (exprs[i]) out = joinStrings(out, strings(evaluate(exprs[i], d, scope)));
         });
         return out.map((s) => ({ kind: 'str', s }));
       }
       case 'BinaryExpression':
-        return n.operator === '+' ? joinStrings(strings(evaluate(n.left as Node, d)), strings(evaluate(n.right as Node, d))).map((s) => ({ kind: 'str', s })) : [UNKNOWN];
+        return n.operator === '+' ? joinStrings(strings(evaluate(n.left as Node, d, scope)), strings(evaluate(n.right as Node, d, scope))).map((s) => ({ kind: 'str', s })) : [UNKNOWN];
       case 'ConditionalExpression':
-        return capped([...evaluate(n.consequent as Node, d), ...evaluate(n.alternate as Node, d)]);
+        return capped([...evaluate(n.consequent as Node, d, scope), ...evaluate(n.alternate as Node, d, scope)]);
       case 'LogicalExpression':
-        return capped([...evaluate(n.left as Node, d), ...evaluate(n.right as Node, d)]);
+        return capped([...evaluate(n.left as Node, d, scope), ...evaluate(n.right as Node, d, scope)]);
       case 'SequenceExpression':
-        return evaluate((n.expressions as Node[]).at(-1), d);
+        return evaluate((n.expressions as Node[]).at(-1), d, scope);
       case 'AssignmentExpression':
-        return evaluate(n.right as Node, d);
+        return evaluate(n.right as Node, d, scope);
       case 'TSAsExpression':
       case 'TSSatisfiesExpression':
       case 'TSNonNullExpression':
       case 'ParenthesizedExpression':
       case 'ChainExpression':
       case 'AwaitExpression':
-        return evaluate((n.expression ?? n.argument) as Node, d);
-      case 'ArrayExpression':
-        return [{ kind: 'arr', items: () => capped((n.elements as Array<Node | null>).flatMap((el) => (!el ? [] : el.type === 'SpreadElement' ? evaluate(el.argument as Node, d).flatMap(elements) : evaluate(el, d)))) }];
+        return evaluate((n.expression ?? n.argument) as Node, d, scope);
+      case 'ArrayExpression': {
+        const els = n.elements as Array<Node | null>;
+        const one = (el: Node | null): Val[] => (!el ? [] : el.type === 'SpreadElement' ? evaluate(el.argument as Node, d, scope).flatMap((v) => elementsOf(v)) : evaluate(el, d, scope));
+        const all = () => once(n, () => capped(els.flatMap(one)));
+        return [
+          {
+            kind: 'arr',
+            items: all,
+            // A written-out position is that element alone, unless a spread before it shifts the positions.
+            at: (i) => (els.slice(0, i + 1).some((e) => e?.type === 'SpreadElement') ? all() : els[i] ? once(n, () => evaluate(els[i]!, d, scope)) : [UNKNOWN])
+          }
+        ];
+      }
       case 'ObjectExpression':
         return [
           {
             kind: 'obj',
-            get: (key) => {
-              const out: Val[] = [];
-              for (const p of n.properties as Node[]) {
-                if (p.type === 'SpreadElement') out.push(...evaluate(p.argument as Node, d).flatMap((v) => prop(v, key)));
-                else {
-                  const k = nameOf(p.key as Node, p.computed);
-                  if (key === null || k === null || k === key) out.push(...(p.kind === 'init' && !p.method ? evaluate(p.value as Node, d) : [UNKNOWN]));
+            get: (key) =>
+              once(n, () => {
+                const out: Val[] = [];
+                for (const p of n.properties as Node[]) {
+                  if (p.type === 'SpreadElement') out.push(...evaluate(p.argument as Node, d, scope).flatMap((v) => prop(v, key)));
+                  else {
+                    const k = nameOf(p.key as Node, p.computed);
+                    if (key === null || k === null || k === key) out.push(...(p.kind === 'init' && !p.method ? evaluate(p.value as Node, d, scope) : [UNKNOWN]));
+                  }
                 }
-              }
-              return out.length ? capped(out) : [UNKNOWN];
-            }
+                return out.length ? capped(out) : [UNKNOWN];
+              })
           }
         ];
       case 'Identifier': {
-        const name = n.name as string;
-        const known = memo.get(name);
-        if (known) return known;
-        const srcs = bindings.get(name);
-        if (!srcs || active.has(name)) return [UNKNOWN];
-        active.add(name);
-        try {
-          const out = capped(srcs.flatMap((src) => fromSrc(src, d)));
-          memo.set(name, out);
-          return out;
-        } finally {
-          active.delete(name);
+        const srcs = lookup(n.name as string, scope);
+        if (!srcs) return [UNKNOWN];
+        const known = memo.get(srcs);
+        if (known) {
+          known.props.forEach((p) => touched.add(p));
+          return known.vals;
         }
+        const [outerTruncated, outerTouched] = [truncated, touched];
+        truncated = false;
+        touched = new Set();
+        const vals = once(srcs, () => capped(srcs.flatMap((src) => fromSrc(src, d))));
+        const props = touched;
+        if (!truncated) memo.set(srcs, { vals, props });
+        truncated ||= outerTruncated;
+        touched = outerTouched;
+        props.forEach((p) => touched.add(p));
+        return vals;
       }
       case 'MemberExpression':
-        return capped(evaluate(n.object as Node, d).flatMap((v) => prop(v, nameOf(n.property as Node, n.computed))));
+        return capped(evaluate(n.object as Node, d, scope).flatMap((v) => prop(v, nameOf(n.property as Node, n.computed))));
       case 'NewExpression':
         // new URL(path, base) is the base, or the path when that is a full URL.
-        return (n.callee as Node).type === 'Identifier' && (n.callee as Node).name === 'URL' ? capped((n.arguments as Node[]).flatMap((a) => evaluate(a, d))) : [UNKNOWN];
+        return (n.callee as Node).type === 'Identifier' && (n.callee as Node).name === 'URL' ? capped((n.arguments as Node[]).flatMap((a) => evaluate(a, d, scope))) : [UNKNOWN];
       case 'CallExpression': {
         const callee = n.callee as Node;
         const args = n.arguments as Node[];
-        if (callee.type === 'Identifier') return PASS_THROUGH.has(callee.name as string) ? evaluate(args[0], d) : returned(callee, d);
-        if (FUNCTION_TYPES.has(callee.type)) return returned(callee, d);
+        if (callee.type === 'Identifier') {
+          const name = callee.name as string;
+          // The component's props: whoever uses the component decides them.
+          if (name === '$props')
+            return [
+              {
+                kind: 'obj',
+                get: (key) => {
+                  touched.add(key ?? '*');
+                  return [UNKNOWN];
+                }
+              }
+            ];
+          return PASS_THROUGH.has(name) ? evaluate(args[0], d, scope) : returned(callee, d, scope);
+        }
+        if (FUNCTION_TYPES.has(callee.type)) return returned(callee, d, scope);
         if (callee.type !== 'MemberExpression') return [UNKNOWN];
         const method = nameOf(callee.property as Node, callee.computed);
         const obj = callee.object as Node;
         // $state.raw(x), $derived.by(() => x)
-        if (obj.type === 'Identifier' && (obj.name === '$state' || obj.name === '$derived')) return method === 'by' ? returned(args[0], d) : evaluate(args[0], d);
-        if (method === 'map' || method === 'flatMap') return [{ kind: 'arr', items: () => returned(args[0], d) }];
-        const base = evaluate(obj, d);
+        if (obj.type === 'Identifier' && (obj.name === '$state' || obj.name === '$derived')) return method === 'by' ? returned(args[0], d, scope) : evaluate(args[0], d, scope);
+        if (method === 'map' || method === 'flatMap') {
+          const all = () => returned(args[0], d, scope);
+          return [{ kind: 'arr', items: all, at: all }];
+        }
+        const base = evaluate(obj, d, scope);
         if (method && SAME_ARRAY.has(method)) return base;
         if (method && ONE_ELEMENT.has(method)) return capped(base.flatMap((v) => (v.kind === 'arr' ? v.items() : [v])));
-        if (method && STRING_METHODS.has(method)) return capped([...base, ...args.flatMap((a) => evaluate(a, d))]);
+        if (method && STRING_METHODS.has(method)) return capped([...base, ...args.flatMap((a) => evaluate(a, d, scope))]);
         return [UNKNOWN];
       }
       default:
         return [UNKNOWN];
     }
   };
-  return (n) => evaluate(n, 0);
+  return (n, scope) => {
+    steps = 0;
+    truncated = false;
+    touched = new Set();
+    const vals = evaluate(n, 0, scope);
+    return { vals, props: touched };
+  };
 }

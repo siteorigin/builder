@@ -67,9 +67,22 @@ assert.equal(run.result.assetIds.length, PHOTOS, 'every photo becomes an asset')
 assert.ok(run.answers > 10, 'the window kept getting answers during the import');
 assert.ok(run.worst < MAX_STALL_MS, `the main process never stalls for ${MAX_STALL_MS} ms or more (longest: ${run.worst} ms)`);
 
-step('each photo has its responsive copies');
+step('each picture has its responsive copies, served by the preview under the development frame policy');
 const snap = await win.evaluate(() => window.builder.project.snapshot());
-for (const id of run.result.assetIds) assert.deepEqual(snap.state.assets.assets[id].variants?.map((v) => v.width), [480, 960, 1440], `${id} has its copies`);
+const preview = new URL(await win.locator('.frame-box iframe').getAttribute('src'));
+for (const id of run.result.assetIds) {
+  const asset = snap.state.assets.assets[id];
+  assert.deepEqual(asset.variants?.map((v) => v.width), [480, 960, 1440], `${id} has its copies`);
+  for (const v of asset.variants) {
+    const res = await fetch(new URL(`/${v.file.replace(/^static\//, '')}`, preview.origin), { signal: AbortSignal.timeout(30000) });
+    const data = Buffer.from(await res.arrayBuffer());
+    assert.equal(res.status, 200, `${v.file} is served`);
+    assert.equal(res.headers.get('content-security-policy'), 'frame-ancestors app://editor http://127.0.0.1:* http://localhost:*', `${v.file} carries the development frame policy`);
+    const meta = await sharp(data).metadata();
+    assert.equal(meta.width, v.width, `${v.file} decodes at its width`);
+    assert.equal(meta.format, asset.mime === 'image/png' ? 'png' : 'jpeg', `${v.file} keeps its format`);
+  }
+}
 assert.deepEqual(errors, [], 'no page errors');
 
 await app.close();

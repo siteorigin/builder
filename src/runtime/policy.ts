@@ -41,25 +41,41 @@ export function previewFsPolicy(dir: string) {
   return { strict: true, allow: [dir], deny: ['.env', '.env.*', '*.{crt,pem,key,p12,pfx,cer,der}', '.npmrc', '.yarnrc.yml', '**/.git/**', '**/.siteorigin/**'] };
 }
 
+type HeaderValue = string | number | readonly string[];
+type Res = { setHeader(k: string, v: HeaderValue): unknown };
+
+/**
+ * Give a response the frame policy, and keep it when the project sets a policy of its own: that one is sent
+ * alongside, never instead, and browsers enforce every policy a response carries.
+ */
+export function enforceFramePolicy(res: Res, csp: string) {
+  const set = res.setHeader;
+  set.call(res, 'Content-Security-Policy', csp);
+  res.setHeader = function (this: Res, name: string, value: HeaderValue) {
+    if (name.toLowerCase() !== 'content-security-policy') return set.call(this, name, value);
+    const theirs = (Array.isArray(value) ? value : [value]).map(String).filter((v) => v !== csp);
+    return set.call(this, name, [csp, ...theirs]);
+  };
+}
+
 /**
  * A Vite plugin that sends the frame-ancestors policy with every response: SvelteKit's rendered pages, the
- * project's static files and Vite's own. The header is set on the HTTP server itself, before any middleware
- * runs: SvelteKit serves `static/` from a middleware registered ahead of every other plugin's that never
- * passes the request on, and Vite's `server.headers` only covers the responses Vite itself writes.
+ * project's static files and Vite's own. It is set on the HTTP server itself, before any middleware runs:
+ * SvelteKit serves `static/` from a middleware registered ahead of every other plugin's that never passes the
+ * request on, and Vite's `server.headers` only covers the responses Vite itself writes.
  */
 export function framePolicyPlugin(csp: string) {
-  type Res = { setHeader(k: string, v: string): void };
   return {
     name: 'siteorigin-frame-policy',
     configureServer(server: {
       httpServer: { prependListener(event: 'request', fn: (req: unknown, res: Res) => void): unknown } | null;
       middlewares: { use: (fn: (req: unknown, res: Res, next: () => void) => void) => void };
     }) {
-      if (server.httpServer) server.httpServer.prependListener('request', (_req, res) => res.setHeader('Content-Security-Policy', csp));
+      if (server.httpServer) server.httpServer.prependListener('request', (_req, res) => enforceFramePolicy(res, csp));
       // Middleware mode has no server of its own; the earliest middleware is the closest.
       else
         server.middlewares.use((_req, res, next) => {
-          res.setHeader('Content-Security-Policy', csp);
+          enforceFramePolicy(res, csp);
           next();
         });
     }

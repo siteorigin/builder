@@ -13,7 +13,7 @@ export interface ImageInfo {
   /** Dimensions as the image is displayed (after EXIF orientation or AVIF rotation). */
   width: number;
   height: number;
-  /** EXIF orientation (1–8) of a JPEG; 1 when absent. Orientations 5–8 swap width and height. */
+  /** EXIF orientation (1–8) of a JPEG or PNG; 1 when absent. Orientations 5–8 swap width and height. */
   orientation: number;
 }
 
@@ -23,7 +23,7 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 export function imageInfo(buf: Buffer, mime: string): ImageInfo | null {
   try {
     // Each format is confirmed by its signature: the decoder goes by the bytes, whatever the file is named.
-    if (mime === 'image/png' && buf.subarray(0, 8).equals(PNG_SIGNATURE) && buf.readUInt32BE(12) === 0x49484452) return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), orientation: 1 };
+    if (mime === 'image/png' && buf.subarray(0, 8).equals(PNG_SIGNATURE) && buf.readUInt32BE(12) === 0x49484452) return pngInfo(buf);
     if (mime === 'image/gif' && /^GIF8[79]a$/.test(buf.toString('latin1', 0, 6))) return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8), orientation: 1 };
     if (mime === 'image/jpeg' && buf[0] === 0xff && buf[1] === 0xd8) return jpegInfo(buf);
     if (mime === 'image/webp' && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
@@ -51,6 +51,28 @@ export function imageInfo(buf: Buffer, mime: string): ImageInfo | null {
 export function imageSize(buf: Buffer, mime: string): { width: number; height: number } | null {
   const info = imageInfo(buf, mime);
   return info ? { width: info.width, height: info.height } : null;
+}
+
+/** PNG: the header's size, turned by the orientation in an eXIf chunk (before the image data) if there is one. */
+function pngInfo(buf: Buffer): ImageInfo {
+  const width = buf.readUInt32BE(16);
+  const height = buf.readUInt32BE(20);
+  let orientation = 1;
+  for (let i = 8; i + 8 <= buf.length; ) {
+    const len = buf.readUInt32BE(i);
+    const type = buf.toString('ascii', i + 4, i + 8);
+    if (type === 'IDAT' || type === 'IEND' || i + 12 + len > buf.length) break;
+    if (type === 'eXIf') {
+      try {
+        orientation = exifOrientation(buf.subarray(i + 8, i + 8 + len)) ?? 1;
+      } catch {
+        // Damaged metadata does not make the picture unreadable.
+      }
+      break;
+    }
+    i += 12 + len;
+  }
+  return orientation >= 5 ? { width: height, height: width, orientation } : { width, height, orientation };
 }
 
 function jpegInfo(buf: Buffer): ImageInfo | null {

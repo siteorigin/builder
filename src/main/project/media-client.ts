@@ -28,13 +28,16 @@ export interface WorkerHandle {
   postMessage(message: VariantRequest): void;
   on(event: 'message', listener: (message: VariantReply) => void): unknown;
   on(event: 'exit', listener: (code: number) => void): unknown;
+  /** A fatal error in the worker (an exit follows), or the worker having started. */
+  on(event: 'error' | 'spawn', listener: () => void): unknown;
+  /** False when the process has not started yet, or has already ended. */
   kill(): boolean;
 }
 
 export interface VariantClient {
   /** The picture's responsive copies, or none when the worker could not make them. Never rejects. */
   variants(buf: Buffer, mime: string, width: number): Promise<Variant[]>;
-  /** Stop the worker; a request in flight settles with no copies. */
+  /** Stop the worker for good (the app is quitting): requests in flight or still to come get no copies. */
   stop(): void;
 }
 
@@ -46,6 +49,7 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
   let idle: ReturnType<typeof setTimeout> | null = null;
   let queue: Promise<unknown> = Promise.resolve();
   let nextId = 0;
+  let stopped = false;
 
   const settle = (id: number, result: Variant[]) => {
     if (current?.id !== id) return;
@@ -57,8 +61,10 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
   const kill = () => {
     const w = worker;
     worker = null;
+    if (!w) return;
     try {
-      w?.kill();
+      // A process that has not started yet cannot be ended; end it as soon as it starts.
+      if (!w.kill()) w.on('spawn', () => w.kill());
     } catch {
       // Already gone.
     }
@@ -77,12 +83,19 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
       worker = null;
       if (current) settle(current.id, []);
     });
+    // Unhandled, an 'error' event would be thrown in the main process.
+    w.on('error', () => {
+      if (worker !== w) return;
+      kill();
+      if (current) settle(current.id, []);
+    });
     return w;
   };
   const run = (buf: Buffer, mime: string, width: number) =>
     new Promise<Variant[]>((resolve) => {
       if (idle) clearTimeout(idle);
       idle = null;
+      if (stopped) return resolve([]);
       const id = ++nextId;
       current = { id, resolve, timer: setTimeout(() => (kill(), settle(id, [])), timeoutMs) };
       try {
@@ -92,7 +105,7 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
         settle(id, []);
       }
     }).finally(() => {
-      if (current || idle) return;
+      if (current || idle || stopped) return;
       idle = setTimeout(() => ((idle = null), kill()), idleMs);
       idle.unref?.();
     });
@@ -104,6 +117,7 @@ export function createVariantClient(spawn: () => WorkerHandle, opts: { timeoutMs
       return p;
     },
     stop() {
+      stopped = true;
       if (idle) clearTimeout(idle);
       idle = null;
       kill();
