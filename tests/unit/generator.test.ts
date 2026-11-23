@@ -305,6 +305,112 @@ describe('SEO and performance', () => {
   });
 });
 
+describe('first-screen image loading through code components', () => {
+  const home = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
+  const sourceOf = (files: Map<string, string>, name: string) => [...files.entries()].find(([p]) => p.endsWith(name))![1];
+  /** The opening tag of a component placed on the page, found by the file it imports. */
+  const tagOf = (page: string, file: string) => {
+    const name = page.match(new RegExp(`import (C_\\w+) from "[^"]*${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`))![1];
+    const at = page.indexOf(`<${name}\n`);
+    return page.slice(at, page.indexOf('/>', at));
+  };
+  /** A file that forwards or reads `{so_eager}` must declare it, or rendering throws a ReferenceError. */
+  const expectEagerBound = (files: Map<string, string>) => {
+    for (const [path, src] of files) {
+      if (!path.endsWith('.svelte') || path === 'src/routes/+page.svelte') continue;
+      if (/[={]so_eager\}/.test(src)) expect(src, path).toContain('so_eager = false');
+    }
+  };
+
+  it('keeps a converted first hero eager and lower sections lazy', () => {
+    let s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    s = applyOperations(s, [{ type: 'component.convertToCode', owner: home(s), nodeId: hero.id, name: 'Hero code' }]).state;
+    const files = generateProject(s);
+    const page = files.get('src/routes/+page.svelte')!;
+    // Only the first section is told to load eagerly, and it is the converted component.
+    expect(page.match(/so_eager=\{true\}/g)).toHaveLength(1);
+    const code = Object.values(s.components).find((d) => d.name === 'Hero code')!;
+    expect(code.source).toContain('so_eager = false');
+    expect(code.source).toContain('eager={so_eager}');
+    expect(files.get(defFile(code))).toContain('eager={so_eager}');
+    expect(tagOf(page, defFile(code).split('/').pop()!)).toContain('so_eager={true}');
+    expect(sourceOf(files, 'media-gallery.svelte')).not.toContain('eager');
+    expectEagerBound(files);
+    expect(compileAll(files)).toEqual([]);
+  });
+
+  it('passes the flag on from a reusable component wrapping a converted hero', () => {
+    let s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const wrap = applyOperations(s, [{ type: 'component.createFromNode', owner: home(s), nodeId: hero.id, name: 'Wrapper' }]);
+    s = wrap.state;
+    const wrapId = wrap.results[0].definitionId as string;
+    const inner = Object.values(s.components[wrapId].tree!.nodes).find((n) => n.kind === 'instance')!;
+    s = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'component', id: wrapId }, nodeId: inner.id, name: 'Inner code' }]).state;
+    const files = generateProject(s);
+    const page = files.get('src/routes/+page.svelte')!;
+    expect(page.match(/so_eager=\{true\}/g)).toHaveLength(1);
+    expect(tagOf(page, defFile(s.components[wrapId]).split('/').pop()!)).toContain('so_eager={true}');
+    const wrapper = files.get(defFile(s.components[wrapId]))!;
+    expect(wrapper).toContain('so_eager = false');
+    expect(wrapper).toContain('so_eager={so_eager}');
+    expectEagerBound(files);
+    expect(compileAll(files)).toEqual([]);
+  });
+
+  it('does not make a wrapped hero eager lower on the page', () => {
+    let s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const wrap = applyOperations(s, [{ type: 'component.createFromNode', owner: home(s), nodeId: hero.id, name: 'Wrapper' }]);
+    s = wrap.state;
+    const page = s.pages[s.site.homePageId];
+    // Move the wrapper below another section: it is no longer the first screen.
+    const wrapperId = wrap.results[0].nodeId as string;
+    page.rootIds = page.rootIds.filter((id) => id !== wrapperId);
+    page.rootIds.push(wrapperId);
+    const out = generateProject(s).get('src/routes/+page.svelte')!;
+    expect(out).toContain('<C_proj_wrapper');
+    expect(out).not.toContain('so_eager');
+  });
+
+  it('forwards the flag for a hero placed both inside and outside a list, whichever comes first', () => {
+    const s = fresh();
+    const grid = defOf(s, 'features.grid');
+    const heroDef = defOf(s, 'hero.split');
+    const tree = grid.tree!;
+    const repeat = Object.values(tree.nodes).find((n) => n.kind === 'repeat')!;
+    const root = tree.nodes[tree.rootIds[0]] as Extract<GraphNode, { kind: 'element' }>;
+    const inList = makeInstance(heroDef, {});
+    const outside = makeInstance(heroDef, {});
+    // The placement inside the list is visited first.
+    tree.nodes = { [inList.id]: inList, ...tree.nodes, [outside.id]: outside };
+    (repeat as Extract<GraphNode, { kind: 'repeat' }>).children.push(inList.id);
+    root.children.push(outside.id);
+    const files = generateProject(s);
+    const out = files.get(defFile(grid))!;
+    expect(out).toContain('so_eager = false');
+    expect(out.match(/so_eager=\{so_eager\}/g)).toHaveLength(1);
+    expectEagerBound(files);
+  });
+
+  it('hands the flag to a code component however it writes its props, but not to one that never names it', () => {
+    let s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    s = applyOperations(s, [{ type: 'component.convertToCode', owner: home(s), nodeId: hero.id, name: 'Hero code' }]).state;
+    const code = Object.values(s.components).find((d) => d.name === 'Hero code')!;
+    const page = () => generateProject(s).get('src/routes/+page.svelte')!;
+    code.source = `<div {...rest}>Hi</div>\n<script>\n\tlet { ...rest } = $props();\n</script>\n`;
+    expect(page()).not.toContain('so_eager');
+    // Renamed on the way in, bound with const, and after a line that holds "//" inside a string.
+    code.source = `<div {...rest}>{eager}</div>\n<script>\n\tconst cdn = "//cdn.example/a//b.png"; const { so_eager: eager = false, ...rest } = $props();\n</script>\n`;
+    expect(page().match(/so_eager=\{true\}/g)).toHaveLength(1);
+    // A property the manifest declares is the author's own, and is never added twice.
+    code.properties.so_eager = { type: 'boolean', default: false } as never;
+    expect(page()).not.toContain('so_eager={true}');
+  });
+});
+
 describe('icons', () => {
   it('ships social icons and only the icons a project uses', () => {
     const s = fresh();
