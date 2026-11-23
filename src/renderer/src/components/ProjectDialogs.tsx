@@ -85,15 +85,15 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const [images, setImages] = useState(true);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Progress belongs to this dialog only while its own attempt runs: a project made from an earlier dialog (still
-  // starting its preview after it replaced the open one) reports nothing here. Once this dialog has gone, its
-  // attempt's answer changes nothing on screen.
-  const attempt = useRef(false);
+  // Progress belongs to this dialog's own attempt, named in its create call: another attempt still running (from a
+  // window closed meanwhile, or one that replaced the open project and is starting its preview) reports nothing
+  // here. Once this dialog has gone, its attempt's answer is only told as a notice.
+  const attempt = useRef<string | null>(null);
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
     void api.dialogs.defaultProjectsFolder().then(setParent);
-    const off = api.on('create:progress', (p) => attempt.current && setProgress(p));
+    const off = api.on('create:progress', (p) => !!attempt.current && p.attempt === attempt.current && setProgress(p));
     return () => {
       live.current = false;
       off();
@@ -104,18 +104,23 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
 
   const create = async () => {
     if (attempt.current) return;
-    attempt.current = true;
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    attempt.current = id;
     setError(null);
     setProgress({ step: 'files', message: 'Preparing files…' });
     let r: { ok: boolean; message?: string };
     try {
-      r = await api.projects.create({ name: name.trim(), parentDir: parent, starter, sampleImages: images });
+      r = await api.projects.create({ name: name.trim(), parentDir: parent, starter, sampleImages: images, attempt: id });
     } catch (e) {
       r = { ok: false, message: `The project could not be created: ${errorText(e)}` };
     } finally {
-      attempt.current = false;
+      attempt.current = null;
     }
-    if (!live.current) return;
+    // The dialog went with the project it was over (the switch happened), so a failure after that is told here.
+    if (!live.current) {
+      if (!r.ok && r.message) toast(r.message, 'error');
+      return;
+    }
     // Shown: the dialog has done its job (over the editor it would otherwise stay over the new project).
     if (r.ok) return onClose();
     // The project behind the dialog, if any, is still open and takes input again.

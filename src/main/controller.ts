@@ -117,6 +117,8 @@ export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
   private createAbort: AbortController | null = null;
+  /** Set from a switch's close until its replacement is attached. */
+  private handingOver = false;
   /** Set once the app is quitting: no project replaces the one being closed for it. */
   quitting = false;
   /** New projects being made, each until it is shown or has gone again. */
@@ -247,6 +249,7 @@ export class Controller {
 
   private async createProject(opts: CreateProjectOptions, abort: AbortController): Promise<{ ok: boolean; message?: string }> {
     const signal = abort.signal;
+    const progress = (p: ProgressEvent) => this.progress({ ...p, attempt: opts.attempt });
     const name = opts.name.trim();
     if (!name) return { ok: false, message: 'Enter a project name.' };
     let dir = join(opts.parentDir, slugify(name) || 'website');
@@ -274,9 +277,14 @@ export class Controller {
     const since = this.closings;
     // Why the switch did not happen, when the new project was ready but the open one stayed (Keep editing, quitting).
     let refused: { message?: string } | null = null;
+    // Set when another app took the new project over while it was set up.
+    let takenOver = false;
+    // Set once the open project closed for this one, and once this one was handed to the editor.
+    let committed = false;
+    let attached = false;
     try {
       if (signal.aborted) throw new Error('Cancelled');
-      this.progress({ step: 'files', message: 'Preparing project files…' });
+      progress({ step: 'files', message: 'Preparing project files…' });
       await fs.mkdir(dirname(dir), { recursive: true });
       try {
         await fs.mkdir(dir);
@@ -348,30 +356,39 @@ export class Controller {
       locked = true;
       const staged = session;
       // Taken over by another app while it is set up: the install into its folder stops at once.
-      const stop = () => abort.abort();
+      const stop = () => {
+        takenOver = true;
+        abort.abort();
+      };
       staged.on('lock-lost', stop);
       await trust(dir, await configHash(dir));
-      this.progress({ step: 'dependencies', message: 'Setting up website tools…', detail: 'Installing the tools that build and preview your site.' });
+      progress({ step: 'dependencies', message: 'Setting up website tools…', detail: 'Installing the tools that build and preview your site.' });
       own('node_modules');
-      await prepareDependencies(dir, (line) => this.progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner());
+      await prepareDependencies(dir, (line) => progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal, () => staged.stillOwner());
       if (signal.aborted) throw new Error('Cancelled');
       // From the moment the open project starts closing, the new one is replacing it: there is nothing left to cancel.
-      const way = await this.makeWay(since, signal, () => this.progress({ step: 'preview', message: 'Starting preview…' }));
+      const way = await this.makeWay(since, signal, () => progress({ step: 'preview', message: 'Starting preview…' }));
       if (!way.ok) {
         refused = way;
         throw new Error(way.message ?? 'The open project was kept.');
       }
+      committed = true;
       staged.off('lock-lost', stop);
+      // Taken over (or quitting) while the open project was closing for it: it is not shown, but rolled back.
+      if (signal.aborted) throw new Error('Cancelled');
       // The preview writes its own output into the folder.
       own('.svelte-kit');
+      attached = true;
       await this.attach(staged, {});
       // The project is open and working: a recent-projects list that cannot be saved must not undo it.
       await addRecent(dir, name).catch(() => undefined);
-      this.progress({ step: 'done', message: 'Ready' });
+      progress({ step: 'done', message: 'Ready' });
       return { ok: true };
     } catch (e) {
       // Keeping editing (or quitting) at the switch is no failure to explain: the dialog just makes way.
-      let msg = refused ? (refused.message ?? '') : friendlyError((e as Error).message);
+      // A handover that never reached the editor ends here, so later switches are not held up by it.
+      if (committed && !attached) this.handingOver = false;
+      let msg = refused ? (refused.message ?? '') : takenOver ? 'Another app opened the new project while it was being set up, so it was left to that app.' : friendlyError((e as Error).message);
       const note = (more: string) => (msg = msg ? `${msg} ${more}` : more);
       // Once the project's own documents are being written it may be another app's: it opened the project before this
       // attempt had the lock (a lock file this attempt never made), or took it over since (Unlock in another window).
@@ -405,7 +422,7 @@ export class Controller {
         createdDir = false;
       }
       if (!(await removeCreatedProject(dir, closed ? session : null, wrote, createdDir))) note(`Some of the new project’s files could not be removed from ${dir}.`);
-      this.progress({ step: 'error', message: msg === 'Cancelled' ? 'Project creation was cancelled.' : 'The project could not be created.', detail: msg });
+      progress({ step: 'error', message: msg === 'Cancelled' ? 'Project creation was cancelled.' : 'The project could not be created.', detail: msg });
       return msg ? { ok: false, message: msg } : { ok: false };
     }
   }
@@ -533,6 +550,8 @@ export class Controller {
 
   /** Make `session` the open project, with its own workspace state installed in the same step. */
   private async attach(session: ProjectSession, workspace: LocalWorkspaceState) {
+    // The handover that closed the open project for this one ends here, as this one becomes the open project.
+    this.handingOver = false;
     // A new opening lists only its own exports, even if an earlier one was never closed.
     this.endExports();
     this.session = session;
@@ -788,12 +807,18 @@ export class Controller {
     if (signal?.aborted) return { ok: false, message: friendlyError('Cancelled') };
     // An ordinary close already under way when this switch began is joined below; one since then, or quitting, wins.
     if (this.quitting || this.closings !== since) return { ok: false };
+    // One handover at a time: from the close until the replacement is attached, no other switch may close anything.
+    if (this.handingOver) return { ok: false, message: 'Another project is opening. Try again once it is open.' };
     committing?.();
+    this.handingOver = true;
     try {
       await this.close();
     } catch (e) {
       // A close that failed part way, with the project already gone, leaves nothing to go back to.
-      if (this.session) return { ok: false, message: `The open project could not be closed: ${(e as Error).message}` };
+      if (this.session) {
+        this.handingOver = false;
+        return { ok: false, message: `The open project could not be closed: ${(e as Error).message}` };
+      }
     }
     return { ok: true };
   }

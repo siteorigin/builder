@@ -208,6 +208,33 @@ describe('opening a project that cannot be read while another is open', () => {
     expect(c.session?.dir).toBe(next);
   });
 
+  it('lets one switch at a time close the open project: another arriving meanwhile is turned away, its project let go', async () => {
+    const current = await makeProject('current');
+    const next = await makeProject('next');
+    const other = await makeProject('other');
+    const { c } = controller();
+    await openCurrent(c, current);
+    // Hold the open project's close part way, after the switch has begun it.
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let closing!: () => void;
+    const closingStarted = new Promise<void>((r) => (closing = r));
+    c.onSessionClosing = async () => {
+      closing();
+      await held;
+    };
+    const first = c.trustAndOpen(next);
+    await closingStarted;
+    const second = await c.trustAndOpen(other);
+    expect(second.ok).toBe(false);
+    expect(second.message).toMatch(/Another project is opening/);
+    expect(existsSync(join(other, '.siteorigin/lock.json'))).toBe(false);
+    release();
+    expect((await first).ok).toBe(true);
+    expect(c.session?.dir).toBe(next);
+    c.onSessionClosing = null;
+  });
+
   it('tells the editor the open project closed even when putting it away fails at the end', async () => {
     const current = await makeProject('current');
     const next = await makeProject('next');
@@ -250,7 +277,7 @@ describe('a new project made while another is open', () => {
     const open = await openCurrent(c, current);
     sent.splice(0);
     const setup = holdSetup();
-    const created = c.create(orchid(parent));
+    const created = c.create({ ...orchid(parent), attempt: 'attempt-1' });
     const dir = await setup.started;
     // Setting up: the open project is untouched (still locked by this app), and the new one is already locked too.
     expect(c.session).toBe(open.session);
@@ -267,6 +294,10 @@ describe('a new project made while another is open', () => {
     const shownAt = sent.findIndex(([ch, p]) => ch === 'project:changed' && (p as { dir: string }).dir === dir);
     expect(closedAt).toBeGreaterThan(-1);
     expect(shownAt).toBeGreaterThan(closedAt);
+    // Every step names the attempt it is about, so only its own dialog follows it.
+    const steps = sent.filter(([ch]) => ch === 'create:progress').map(([, p]) => p as { attempt?: string });
+    expect(steps.length).toBeGreaterThan(2);
+    expect(steps.every((p) => p.attempt === 'attempt-1')).toBe(true);
     // Cancel ends (the dialog's last step starts) before the open project starts closing, not after.
     const committedAt = sent.findIndex(([ch, p]) => ch === 'create:progress' && (p as { step: string }).step === 'preview');
     expect(committedAt).toBeGreaterThan(-1);
@@ -354,6 +385,50 @@ describe('a new project made while another is open', () => {
     expect(c.session).toBe(open.session);
     expect(closedCount(sent)).toBe(0);
     expect(existsSync(join(parent, 'orchid-garden'))).toBe(false);
+  });
+
+  it('is rolled back when another app takes it over while the open project closes for it, and later switches still work', async () => {
+    const current = await makeProject('current');
+    const next = await makeProject('next');
+    const parent = temp('parent');
+    const { c } = controller();
+    await openCurrent(c, current);
+    const made: InstanceType<typeof ProjectSession>[] = [];
+    const create = ProjectSession.create.bind(ProjectSession);
+    const spy = vi.spyOn(ProjectSession, 'create').mockImplementation(async (...args) => {
+      const s = await create(...args);
+      made.push(s);
+      return s;
+    });
+    // The takeover is seen while the open project is being closed for the new one.
+    c.onSessionClosing = async () => void made[0]?.emit('lock-lost');
+    const r = await c.create(orchid(parent));
+    spy.mockRestore();
+    c.onSessionClosing = null;
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/Another app opened the new project/);
+    expect(c.session).toBeNull();
+    // The handover it began is over: the next switch is not turned away.
+    expect((await c.trustAndOpen(next)).ok).toBe(true);
+    expect(c.session?.dir).toBe(next);
+  });
+
+  it('is never shown once the app is quitting', async () => {
+    const current = await makeProject('current');
+    const parent = temp('parent');
+    const { c, sent } = controller();
+    const open = await openCurrent(c, current);
+    sent.splice(0);
+    const setup = holdSetup();
+    const created = c.create(orchid(parent));
+    const dir = await setup.started;
+    c.quitting = true;
+    setup.release();
+    expect((await created).ok).toBe(false);
+    expect(existsSync(dir)).toBe(false);
+    expect(c.session).toBe(open.session);
+    expect(closedCount(sent)).toBe(0);
+    c.quitting = false;
   });
 
   it('is called off with every other one being set up when the app quits, which waits until all have gone', async () => {
