@@ -43,9 +43,7 @@ Write end-to-end steps with `node:assert/strict` and the helpers in `tests/e2e/h
 
 ## Worktrees
 
-Parallel work uses git worktrees that share the main checkout's install through a `node_modules` link. In Daintree, `.daintree/config.json` runs `scripts/link-shared-node-modules.mjs` as each worktree's setup: it makes the link, checks each locked package is installed at its version, and refreshes the shared install with `npm ci` in the main checkout when that install is only behind. A refresh removes `node_modules` while it runs, so it interrupts anything else using the shared install. Never run `npm ci` or `npm install` through a linked `node_modules`: it rebuilds the install every other worktree is using. A worktree made outside Daintree needs the link by hand: `DAINTREE_PROJECT_ROOT=<main checkout> node scripts/link-shared-node-modules.mjs` from the worktree.
-
-Daintree runs a repository's setup commands only after they are approved on that machine. Before the first batch, open this project in Daintree, choose **Review commands** on any worktree card, read what will run, and approve it. Until then, every new worktree stops at `needs-approval`.
+Parallel work uses git worktrees, each with its own install. A new worktree starts without `node_modules`: run `npm ci` in it before building or testing. The repository has no Daintree setup command, so new worktrees are ready as soon as they are created.
 
 The Daintree assistant's `/work-batch` skill (`.daintree/assistant/.claude/skills/work-batch/`) works the issue backlog this way: `/next-batch` picks, one `/work` agent per issue opens a PR, and `/merge-prs` lands them on local checks, since the repository has no CI yet.
 
