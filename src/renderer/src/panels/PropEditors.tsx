@@ -13,7 +13,7 @@ import { announcementText } from '../lib/announce';
 const MOVE_PENDING_MS = 3000;
 import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
 import { importAndPlace } from '../lib/place';
-import { assetUrl } from '../lib/model';
+import { AssetImage } from '../components/AssetImage';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { pageIds, planSectionPick, sharedPageIds } from '@generator/checks';
 import { contactMismatch } from '@shared/contact-links';
@@ -345,7 +345,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
         </div>
       )}
       <div className="insp-image-top">
-        <div className={`insp-image-thumb${asset ? '' : ' empty'}`}>{asset && devUrl ? <img src={assetUrl(devUrl, asset.file)!} alt="" /> : <ImageOff aria-hidden="true" />}</div>
+        <div className={`insp-image-thumb${asset ? '' : ' empty'}`}>{asset && devUrl ? <AssetImage asset={asset} devUrl={devUrl} fallbackWidth={72} alt="" /> : <ImageOff aria-hidden="true" />}</div>
         <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
           <span className={`ellipsis insp-image-name${asset ? '' : ' none'}`} title={asset?.name}>{asset ? asset.name : over ? 'Drop to use this image' : 'No image chosen'}</span>
           <span className="row" style={{ gap: 4 }}>
@@ -390,7 +390,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
                     closeBrowser();
                   }}
                 >
-                  {devUrl ? <img src={assetUrl(devUrl, a.file)!} alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
+                  {devUrl ? <AssetImage asset={a} devUrl={devUrl} fallbackWidth={75} alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
                   <span className="ellipsis">{a.name}</span>
                 </button>
               ))}

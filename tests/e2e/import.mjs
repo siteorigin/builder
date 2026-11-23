@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp from 'sharp';
-import { createProject, launch, scratch, step, withTimeout } from './harness.mjs';
+import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 /**
  * The longest the main process may go without answering the window. With the pictures decoded in the media
@@ -84,6 +84,48 @@ for (const id of run.result.assetIds) {
     assert.equal(meta.format, asset.mime === 'image/png' ? 'png' : 'jpeg', `${v.file} keeps its format`);
   }
 }
+
+step('#223: the Assets grid and the image picker load the small copies, not the originals');
+/** What each shown picture loaded: its file name, and the size it decoded at against the size it is displayed at. */
+const shown = (sel) =>
+  win.locator(sel).evaluateAll((imgs) => imgs.filter((i) => i.complete && i.naturalWidth).map((i) => ({ src: new URL(i.currentSrc).pathname.split('/').pop(), natural: i.naturalWidth, shown: Math.round(i.getBoundingClientRect().width), dpr: window.devicePixelRatio })));
+const checkSmall = (list, where) => {
+  assert.equal(list.length, PHOTOS, `${where} shows every picture`);
+  for (const p of list) {
+    assert.match(p.src, /-480w\.(jpg|png)$/, `${where} loads the 480px copy (${p.src})`);
+    assert.equal(p.natural, 480, `${where} decoded the 480px copy`);
+    assert.ok(p.natural >= p.shown * p.dpr, `${where} has a pixel for every device pixel (${p.natural} for ${p.shown}px at ${p.dpr}x)`);
+  }
+};
+await win.locator('.rail [aria-label="Assets"]').click();
+await eventually(async () => checkSmall(await shown('.asset-grid .asset-thumb img'), 'the Assets grid'));
+
+const home = snap.state.site.homePageId;
+const added = await win.evaluate((h) => window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: h }, parentId: null, index: 0, componentId: 'hero.split' }] }, { label: 'Add hero' }), home);
+assert.equal(added.ok, true, `the hero is added: ${added.error?.message}`);
+await win.locator('.rail [aria-label="Layers"]').click();
+await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
+await win.getByRole('button', { name: /Choose image|Change/ }).first().click();
+await eventually(async () => checkSmall(await shown('.insp-pick-grid img'), 'the image picker'));
+// Choosing one keeps the original: the placed asset is the record, whatever size the picker showed.
+await win.locator('.insp-pick-tile').first().click();
+await eventually(async () => {
+  const nodes = JSON.stringify((await win.evaluate(() => window.builder.project.snapshot())).state.pages[home].nodes);
+  assert.ok(run.result.assetIds.some((id) => nodes.includes(id)), 'the picked image is the asset itself, not a copy');
+});
+await eventually(async () => {
+  const thumb = await shown('.insp-image-thumb img');
+  assert.equal(thumb.length, 1, 'the chosen image previews in the inspector');
+  assert.match(thumb[0].src, /-480w\.(jpg|png)$/, 'the inspector preview loads a small copy');
+});
+
+step('undo the hero and its image, so every imported picture is unused again');
+const hist = (await win.evaluate(() => window.builder.project.snapshot())).history;
+assert.equal(hist.entries[0]?.label, `Import ${PHOTOS} images`, 'the import is the first step');
+for (const e of hist.entries.slice(1).filter((x) => x.applied).reverse()) assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true, `undo ${e.label}`);
+const undone = await win.evaluate(() => window.builder.project.snapshot());
+assert.equal(undone.history.undoLabel, `Import ${PHOTOS} images`, 'only the import is left to undo');
+assert.ok(!run.result.assetIds.some((id) => JSON.stringify(undone.state.pages[home].nodes).includes(id)), 'no imported picture is placed');
 
 // Issue #253: removing every image leaves their files for Undo; the Assets panel says how much they take and frees
 // it on request, showing first which Undo steps go with them.
