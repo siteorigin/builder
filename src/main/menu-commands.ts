@@ -27,8 +27,11 @@ const PROJECT_COMMANDS: ReadonlySet<MenuCommand> = new Set(['export', 'close-pro
 
 export function createMenuCommands<W>(opts: MenuCommandOptions<W>) {
   let pending: { cmd: MenuCommand; opening: string | null } | null = null;
-  /** The window whose editor last said it is ready, until it reloads or goes. */
+  /** The window whose editor last said it is ready, until a new page replaces it or it goes. */
   let ready: W | null = null;
+  /** The window whose page is being navigated: until the new page commits (or the navigation is called off),
+   *  the outgoing editor may still say it is ready, and a command sent to it would be lost with it. */
+  let navigating: W | null = null;
 
   const flush = () => {
     if (!pending) return;
@@ -37,7 +40,7 @@ export function createMenuCommands<W>(opts: MenuCommandOptions<W>) {
       return;
     }
     const w = opts.window();
-    if (!w || w !== ready) return;
+    if (!w || w !== ready || w === navigating) return;
     const { cmd } = pending;
     // Cleared before sending, so a second ready message cannot send it again.
     pending = null;
@@ -60,13 +63,29 @@ export function createMenuCommands<W>(opts: MenuCommandOptions<W>) {
       ready = w;
       flush();
     },
-    /** The window's editor is going away (it reloads or crashed): commands wait for it to be ready again. */
+    /** A new page starts to load in the window (a reload): commands wait until it commits or is called off. */
+    navigating(w: W) {
+      navigating = w;
+    },
+    /** The window's navigation ended. A new page that `replaced` the editor must say it is ready itself; one that
+     *  was called off (a link or dropped file the editor refused) leaves the editor as it was, still ready. */
+    navigated(w: W, replaced: boolean) {
+      if (navigating === w) navigating = null;
+      if (replaced && ready === w) ready = null;
+      flush();
+    },
+    /** The window's editor crashed: commands wait until it has loaded again and is ready. */
     unready(w: W) {
       if (ready === w) ready = null;
     },
     /** The window closed. A command still waiting is dropped with it: it was meant for the window that went. */
     closed(w: W) {
       if (ready === w) ready = null;
+      if (navigating === w) navigating = null;
+      if (!opts.window()) pending = null;
+    },
+    /** No window could be brought up: the waiting command is dropped, so a window opened later does not act on it. */
+    windowFailed() {
       if (!opts.window()) pending = null;
     },
     /** The command waiting for an editor, if any. */

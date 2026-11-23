@@ -47,6 +47,7 @@ describe('File menu commands', () => {
     router.run('new-project');
     // The window is still being created: the caller joins that creation instead of starting another.
     router.run('open-project');
+    expect(router.pending).toBe('open-project');
     expect(state.opens).toBe(2);
     const w = { id: 3 };
     state.window = w;
@@ -57,15 +58,47 @@ describe('File menu commands', () => {
     expect(sent).toEqual([[3, 'new-project']]);
   });
 
-  it('waits again while the editor reloads, and sends once it is ready again', () => {
+  it('waits while the editor reloads, and sends to the new page once it is ready', () => {
     const w = { id: 4 };
+    const { router, sent } = setup({ window: w });
+    router.ready(w);
+    router.navigating(w);
+    router.run('new-project');
+    expect(sent).toEqual([]);
+    // The outgoing page, still starting up, says it is ready before the new one commits: it would lose the command.
+    router.ready(w);
+    expect(sent).toEqual([]);
+    router.navigated(w, true);
+    expect(sent).toEqual([]);
+    router.ready(w);
+    expect(sent).toEqual([[4, 'new-project']]);
+  });
+
+  it('a navigation the editor refused leaves it ready, and a command chosen meanwhile is sent', () => {
+    const w = { id: 15 };
+    const { router, sent } = setup({ window: w });
+    router.ready(w);
+    router.navigating(w);
+    router.run('open-project');
+    expect(sent).toEqual([]);
+    router.navigated(w, false);
+    expect(sent).toEqual([[15, 'open-project']]);
+    router.run('new-project');
+    expect(sent).toEqual([
+      [15, 'open-project'],
+      [15, 'new-project']
+    ]);
+  });
+
+  it('waits after the editor crashed until it has loaded again', () => {
+    const w = { id: 16 };
     const { router, sent } = setup({ window: w });
     router.ready(w);
     router.unready(w);
     router.run('new-project');
     expect(sent).toEqual([]);
     router.ready(w);
-    expect(sent).toEqual([[4, 'new-project']]);
+    expect(sent).toEqual([[16, 'new-project']]);
   });
 
   it('ignores readiness from a window that is not the current one', () => {
@@ -75,9 +108,17 @@ describe('File menu commands', () => {
     router.ready(old);
     router.run('open-project');
     expect(sent).toEqual([]);
-    router.unready(old);
     router.ready(current);
     expect(sent).toEqual([[6, 'open-project']]);
+    // The old window going away does not take the current one's readiness with it.
+    router.unready(old);
+    router.navigated(old, true);
+    router.closed(old);
+    router.run('new-project');
+    expect(sent).toEqual([
+      [6, 'open-project'],
+      [6, 'new-project']
+    ]);
     expect(state.opens).toBe(0);
   });
 
@@ -121,17 +162,40 @@ describe('File menu commands', () => {
     }
   });
 
+  it('drops a waiting command when no window could be brought up', () => {
+    const { router, state, sent } = setup();
+    router.run('new-project');
+    router.windowFailed();
+    expect(router.pending).toBeNull();
+    const w = { id: 17 };
+    state.window = w;
+    router.ready(w);
+    expect(sent).toEqual([]);
+  });
+
+  it('keeps a waiting command when the window exists but failed to load first time', () => {
+    const w = { id: 18 };
+    const { router, sent } = setup({ window: w });
+    router.run('open-project');
+    router.windowFailed();
+    expect(router.pending).toBe('open-project');
+    router.ready(w);
+    expect(sent).toEqual([[18, 'open-project']]);
+  });
+
   it('drops Export and Close Project when the project they were chosen for closes or another opens first', () => {
-    for (const next of [null, '/sites/b#2', '/sites/a#2']) {
-      const { router, state, sent } = setup({ opening: '/sites/a#1' });
-      router.run('close-project');
-      state.opening = next;
-      const w = { id: 12 };
-      state.window = w;
-      router.ready(w);
-      expect(sent).toEqual([]);
-      expect(router.pending).toBeNull();
-    }
+    for (const cmd of ['export', 'close-project'] as const)
+      for (const next of [null, '/sites/b#2', '/sites/a#2']) {
+        const { router, state, sent } = setup({ opening: '/sites/a#1' });
+        router.run(cmd);
+        expect(router.pending).toBe(cmd);
+        state.opening = next;
+        const w = { id: 12 };
+        state.window = w;
+        router.ready(w);
+        expect(sent).toEqual([]);
+        expect(router.pending).toBeNull();
+      }
   });
 
   it('does nothing for Export or Close Project with no project open', () => {
@@ -144,16 +208,21 @@ describe('File menu commands', () => {
     // Nor do they bring up a window when there is none.
     state.window = null;
     router.run('export');
+    router.run('close-project');
     expect(state.opens).toBe(0);
+    expect(router.pending).toBeNull();
   });
 
   it('New and Open do not depend on the open project', () => {
-    const { router, state, sent } = setup({ opening: '/sites/a#1' });
-    router.run('new-project');
-    state.opening = null;
-    const w = { id: 14 };
-    state.window = w;
-    router.ready(w);
-    expect(sent).toEqual([[14, 'new-project']]);
+    for (const cmd of ['new-project', 'open-project'] as const) {
+      const { router, state, sent } = setup({ opening: '/sites/a#1' });
+      router.run(cmd);
+      expect(router.pending).toBe(cmd);
+      state.opening = null;
+      const w = { id: 14 };
+      state.window = w;
+      router.ready(w);
+      expect(sent).toEqual([[14, cmd]]);
+    }
   });
 });

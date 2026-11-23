@@ -80,7 +80,11 @@ controller.beforeLeave = () => leaveGate.ask();
 // File menu commands reach the editor once it is ready for them, bringing up a window when there is none (macOS).
 const menuCommands = createMenuCommands<BrowserWindow>({
   window: () => (win && !win.isDestroyed() ? win : null),
-  openWindow: () => void createWindow(),
+  openWindow: () =>
+    void createWindow().catch((e: unknown) => {
+      console.error('The window could not be opened:', e);
+      menuCommands.windowFailed();
+    }),
   opening: () => controller.openingKey,
   send: (w, cmd) => w.webContents.send('menu:command', cmd)
 });
@@ -440,11 +444,13 @@ async function createWindow() {
   self.on('responsive', () => leaveGate.editorResponsive());
   self.webContents.on('did-start-navigation', (details) => {
     if (!details.isMainFrame || details.isSameDocument) return;
-    menuCommands.unready(self);
+    menuCommands.navigating(self);
     leaveGate.editorReplaced();
   });
-  // The new page has replaced the old one: only it may say it is ready for menu commands from here on.
-  self.webContents.on('did-navigate', () => menuCommands.unready(self));
+  // A new page has replaced the editor: only it may say it is ready for menu commands from here on. A navigation
+  // the editor refused (will-navigate) ends with no commit, only the loading stopping: the editor is still there.
+  self.webContents.on('did-navigate', () => menuCommands.navigated(self, true));
+  self.webContents.on('did-stop-loading', () => menuCommands.navigated(self, false));
   self.on('closed', () => {
     if (win === self) win = null;
     menuCommands.closed(self);
@@ -459,7 +465,7 @@ function chooseCommand(cmd: MenuCommand) {
   const w = win && !win.isDestroyed() ? win : null;
   // A crashed editor cannot act on it: it is loaded again, and the command waits until it is ready.
   if (w?.webContents.isCrashed()) w.webContents.reload();
-  else if (w && !headless) {
+  if (w && !headless) {
     if (w.isMinimized()) w.restore();
     if (w.isVisible()) w.focus();
   }

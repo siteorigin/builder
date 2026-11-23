@@ -223,10 +223,31 @@ describe('the opening the File menu follows (#255)', () => {
     const a = c.openingKey;
     expect(a).not.toBeNull();
     expect(seen).toEqual([a]);
-    await c.close();
+    // While the editor is still deciding whether the project may be left, it stays open and offered.
+    let allow!: (ok: boolean) => void;
+    c.beforeLeave = () => new Promise((r) => (allow = r));
+    const closing = c.closeProject();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toEqual([a]);
+    expect(c.openingKey).toBe(a);
+    allow(true);
+    expect(await closing).toEqual({ ok: true });
     // Export and Close Project are withdrawn before the project is unloaded, not after.
     expect(atClosing).toEqual([a, null]);
     expect(seen).toEqual([a, null]);
+  });
+
+  it('a close the editor turns down keeps the opening', async () => {
+    const { c, parent } = setup();
+    await create(c, parent, 'Harbour Bakery');
+    const a = c.openingKey;
+    const seen: (string | null)[] = [];
+    c.onOpeningChange = () => seen.push(c.openingKey);
+    c.beforeLeave = async () => false;
+    expect(await c.closeProject()).toEqual({ ok: false });
+    expect(seen).toEqual([]);
+    expect(c.openingKey).toBe(a);
+    c.beforeLeave = null;
   });
 
   it('a close that fails gives the opening back', async () => {
