@@ -12,6 +12,7 @@ import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget,
 import { assetUrl } from '../lib/model';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { pageIds, pageSections, planSectionPick, sharedPageIds } from '@generator/checks';
+import { contactMismatch } from '@shared/contact-links';
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
@@ -577,20 +578,32 @@ export interface ListItemNote {
   error?: string;
 }
 
-export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, annotate }: {
+/** An edit to a list: `repair` is an explicit fix the inspector offers, its own undo step under `label`. */
+export type ListOp =
+  | { kind: 'insert' }
+  | { kind: 'remove'; itemId: string }
+  | { kind: 'move'; itemId: string; index: number }
+  | { kind: 'field'; itemId: string; field: string; value: unknown; edit?: PendingEdit }
+  | { kind: 'repair'; itemId: string; field: string; value: unknown; label: string; revision?: number };
+
+/** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
+export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
+
+export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, annotate, linkPairs }: {
   name: string;
   schema: PropSchema;
   value: unknown;
   onChange: (v: unknown, edit?: PendingEdit) => void;
-  onList: (op: { kind: 'insert' } | { kind: 'remove'; itemId: string } | { kind: 'move'; itemId: string; index: number } | { kind: 'field'; itemId: string; field: string; value: unknown; edit?: PendingEdit }) => void;
+  onList: (op: ListOp) => void;
   state: ProjectState;
   focusItem?: string;
   /** A shorter visible label, when a group heading already says what the field belongs to. */
   label?: string;
   /** For a list: what to say about each item, such as the key a form field is sent under. */
   annotate?: (item: ListItem, index: number) => ListItemNote | undefined;
+  linkPairs?: LinkPairs;
 }) {
-  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} annotate={annotate} />;
+  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} annotate={annotate} linkPairs={linkPairs} />;
   return <ScalarField schema={schema} value={value} onChange={onChange} state={state} label={label} />;
   void name;
 }
@@ -659,13 +672,38 @@ export function FieldGroups<T>({ groups, render }: { groups: Array<PropGroup<T>>
 }
 
 /**
+ * Visible contact text and a link that open different addresses or numbers: both are shown, with one explicit
+ * repair that points the link at what visitors see. Nothing shows for a deliberate label ("Call reception").
+ */
+export function ContactMismatch({ text, link, onRepair }: { text: unknown; link: unknown; onRepair: (link: LinkValue, label: string, revision: number | undefined) => void }) {
+  // The repair is planned on the project this render shows, and applies only to it.
+  const revision = useStore((s) => s.snapshot?.revision);
+  const m = contactMismatch(text, link);
+  if (!m) return null;
+  const action = m.kind === 'email' ? 'Use displayed email as destination' : 'Use displayed number as destination';
+  return (
+    <div className="scope-note site contact-mismatch" role="note">
+      <TriangleAlert aria-hidden="true" />
+      <div className="grow">
+        <p className="insp-note">
+          Visitors see <strong>{m.shown}</strong>, but the link opens <strong>{m.opens}</strong>.
+        </p>
+        <button className="btn btn-sm" onClick={() => onRepair(m.repair, action, revision)}>
+          {action}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * A repeatable list. Focus follows the edit: a new item opens with its row focused, and removing an item moves
  * focus to the row that takes its place (or to Add when the list is empty). A moved item keeps focus on the button
  * that moved it, and on its own disclosure once that button is disabled at the end of the list; the new position is
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, state, focusItem, annotate }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: never) => void; state: ProjectState; focusItem?: string; annotate?: (item: ListItem, index: number) => ListItemNote | undefined }) {
+function ListEditor({ name, schema, items, onList, state, focusItem, annotate, linkPairs }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => void; state: ProjectState; focusItem?: string; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; linkPairs?: LinkPairs }) {
   const [open, setOpen] = useState<string | null>(null);
   const labelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -713,7 +751,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
     const t = schema.titleField ? it[schema.titleField] : Object.values(it).find((v) => typeof v === 'string' && v && v !== it.id);
     return (typeof t === 'string' && t) || `${schema.itemLabel} ${i + 1}`;
   };
-  const L = onList as (op: unknown) => void;
+  const L = onList;
   const move = (it: ListItem, i: number, direction: MoveDirection) => {
     const index = direction === 'up' ? i - 1 : i + 1;
     after.current = { kind: 'moved', id: it.id, direction, index, from: i, title: titleOf(it, i), at: Date.now() };
@@ -772,21 +810,26 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
             {/* The controlled region always exists, so aria-controls resolves while the item is closed. */}
             <div className="list-editor-body" id={`list-item-${it.id}`} hidden={openId !== it.id}>
               {openId === it.id && (
-                <FieldGroups
-                  groups={fields}
-                  render={({ key, schema: fs, label }) => (
-                    <ScalarField
-                      key={key}
-                      schema={fs as ScalarPropSchema}
-                      label={label}
-                      value={it[key]}
-                      onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })}
-                      state={state}
-                      hint={note?.field === key ? note.hint : undefined}
-                      error={note?.field === key ? note.error : undefined}
-                    />
-                  )}
-                />
+                <>
+                  <FieldGroups
+                    groups={fields}
+                    render={({ key, schema: fs, label }) => (
+                      <ScalarField
+                        key={key}
+                        schema={fs as ScalarPropSchema}
+                        label={label}
+                        value={it[key]}
+                        onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })}
+                        state={state}
+                        hint={note?.field === key ? note.hint : undefined}
+                        error={note?.field === key ? note.error : undefined}
+                      />
+                    )}
+                  />
+                  {linkPairs?.map((p) => (
+                    <ContactMismatch key={p.link} text={it[p.text]} link={it[p.link]} onRepair={(link, label, revision) => L({ kind: 'repair', itemId: it.id, field: p.link, value: link, label, revision })} />
+                  ))}
+                </>
               )}
             </div>
           </div>

@@ -207,8 +207,13 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const schema = propSchema(op.owner, op.nodeId, op.prop);
         const label = inSentence(schema?.label ?? op.prop);
         if (op.itemId) {
-          const field = schema?.type === 'list' && op.field ? schema.fields[op.field]?.label : op.field;
-          return contentEdit(op, field ? `${inSentence(field)} in ${label}` : label);
+          const fieldLabel = (f: string | undefined) => (schema?.type === 'list' && f ? (schema.fields[f]?.label ?? f) : f);
+          const field = fieldLabel(op.field);
+          contentEdit(op, field ? `${inSentence(field)} in ${label}` : label);
+          // An email or phone link that moved with its visible text is part of the same edit.
+          const followed = (results[i] as { followed?: unknown } | undefined)?.followed;
+          if (Array.isArray(followed)) for (const f of followed) contentEdit(op, `${inSentence(fieldLabel(String(f))!)} in ${label}`);
+          return;
         }
         if (schema?.type !== 'image') return contentEdit(op, label);
         const was = nodeIn(before, op.owner, op.nodeId);

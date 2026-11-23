@@ -27,7 +27,8 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { pageIds } from '@generator/checks';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, subtreeIds, allTrees } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, subtreeIds, allTrees } from './tree';
+import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { enclosingList, normalizeProperties } from './schema';
@@ -74,6 +75,8 @@ export interface Clipboard {
 /** State an operation can read that is not part of the project: what the editor has recently copied. */
 export interface ApplyContext {
   clipboards?: readonly Clipboard[];
+  /** List item fields the batch sets itself (see explicitItemFields). applyOperations fills it. */
+  explicitItemFields?: ReadonlySet<string>;
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
@@ -142,7 +145,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'node.setBinding':
       return nodeSetBinding(state, op);
     case 'instance.setProp':
-      return keepingFormKeys(state, op, () => instanceSetProp(state, op));
+      return keepingFormKeys(state, op, () => instanceSetProp(state, op, ctx));
     case 'instance.listInsert':
       return keepingFormKeys(state, op, () => listInsert(state, op));
     case 'instance.listRemove':
@@ -1060,25 +1063,77 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
 // Instance properties
 // ---------------------------------------------------------------------------
 
-function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>): OpResult {
+/** The key of one field of one list item, for the fields a batch sets itself. */
+const itemFieldKey = (owner: OwnerRef, nodeId: string, prop: string, itemId: string, field: string) => JSON.stringify([owner.kind, owner.id, nodeId, prop, itemId, field]);
+
+/**
+ * The list item fields a batch sets by name: a field edit, the fields of an item patch, and the fields of the
+ * items a whole list carries. A link set this way is the caller's choice, whatever order the batch puts it in,
+ * so an edit to its visible text in the same batch never moves it.
+ */
+function explicitItemFields(ops: EditOperation[]): Set<string> {
+  const out = new Set<string>();
+  const row = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  for (const op of ops) {
+    if (op.type !== 'instance.setProp') continue;
+    const add = (itemId: string, fields: string[]) => fields.forEach((f) => out.add(itemFieldKey(op.owner, op.nodeId, op.prop, itemId, f)));
+    if (op.itemId && op.field) add(op.itemId, [op.field]);
+    else if (op.itemId && row(op.value)) add(op.itemId, Object.keys(op.value));
+    else if (!op.itemId && Array.isArray(op.value)) for (const it of op.value) if (row(it) && typeof it.id === 'string') add(it.id, Object.keys(it));
+  }
+  return out;
+}
+
+/**
+ * Keep an item's email or phone link with the visible text an edit changed (`sent` holds the fields the edit
+ * names): when the old text showed what the link opens and the new text is an address or number too, the link
+ * opens the new one. A deliberate label ("Call reception"), a link the edit sets itself, and a pair that already
+ * disagreed stay as they are. Returns the link fields that moved.
+ */
+function followItemLinks(state: ProjectState, def: ComponentDefinition, op: Op<'instance.setProp'>, before: ListItem, next: ListItem, sent: Record<string, unknown>, ctx: ApplyContext): string[] {
+  const moved: string[] = [];
+  for (const { text, link } of itemLinkPairs(def, op.prop)) {
+    if (!Object.hasOwn(sent, text) || Object.hasOwn(sent, link) || ctx.explicitItemFields?.has(itemFieldKey(op.owner, op.nodeId, op.prop, before.id, link))) continue;
+    // Lines that are each a number are a list, even once a one-line field joins them.
+    const to = joinedLines(sent[text]) === null ? null : followText(before[text], next[text], before[link]);
+    if (!to) continue;
+    try {
+      next[link] = normalizeLink(to, state, `${def.name} → ${link}`);
+    } catch (e) {
+      // A link that cannot carry the new text (an old subject this version refuses) stays as it was.
+      if (e instanceof EngineError) continue;
+      throw e;
+    }
+    moved.push(link);
+  }
+  return moved;
+}
+
+function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: ApplyContext = {}): OpResult {
   const { node, def } = instanceTarget(state, op.owner, op.nodeId);
   const schema = def.properties[op.prop];
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
-    const list = (node.props[op.prop] as Array<Record<string, unknown> & { id: string }>) ?? [];
+    const list = (node.props[op.prop] as Array<ListItem>) ?? [];
     const idx = list.findIndex((i) => i.id === op.itemId);
     if (idx < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
+    const before = list[idx];
+    let next: ListItem;
+    let sent: Record<string, unknown>;
     if (op.field) {
       const f = schema.fields[op.field];
       if (!f) fail(`${schema.itemLabel} has no field "${op.field}". Fields: ${Object.keys(schema.fields).join(', ')}.`);
-      const next = normalizeItem(schema, { ...list[idx], [op.field]: op.value }, state, `${schema.itemLabel}`, { id: list[idx].id } as never, list[idx]);
-      list[idx] = next;
+      next = normalizeItem(schema, { ...before, [op.field]: op.value }, state, `${schema.itemLabel}`, { id: before.id } as never, before);
+      sent = { [op.field]: op.value };
     } else {
-      list[idx] = normalizeItem(schema, op.value as Record<string, unknown>, state, schema.itemLabel, list[idx] as never, list[idx]);
+      next = normalizeItem(schema, op.value as Record<string, unknown>, state, schema.itemLabel, before, before);
+      sent = op.value && typeof op.value === 'object' && !Array.isArray(op.value) ? (op.value as Record<string, unknown>) : {};
     }
+    const followed = followItemLinks(state, def, op, before, next, sent, ctx);
+    list[idx] = next;
     node.props[op.prop] = [...list];
-    return {};
+    return followed.length ? { followed } : {};
   }
   node.props[op.prop] = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`, node.props[op.prop]);
   return {};
@@ -1710,9 +1765,10 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
 export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): { state: ProjectState; results: OpResult[] } {
   const draft = clone(state);
   const results: OpResult[] = [];
+  const batch: ApplyContext = { ...ctx, explicitItemFields: explicitItemFields(ops) };
   for (const [i, op] of ops.entries()) {
     try {
-      results.push(applyOperation(draft, op, ctx));
+      results.push(applyOperation(draft, op, batch));
     } catch (e) {
       if (e instanceof EngineError) {
         e.message = ops.length > 1 ? `Operation ${i + 1} (${op.type}): ${e.message}` : e.message;

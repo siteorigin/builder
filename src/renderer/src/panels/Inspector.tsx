@@ -36,15 +36,14 @@ import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldsAsSent, formKeyNote, namesFormFields } from '@catalogue/foundation/form';
-import { codeTakesOverrides, enclosingRepeatProp, instancesOf } from '@engine/tree';
+import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import { applyOps, applyWith, setState, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
-import { FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, type ListItemNote } from './PropEditors';
+import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 
-type ListOp = { kind: 'insert' } | { kind: 'remove'; itemId: string } | { kind: 'move'; itemId: string; index: number } | { kind: 'field'; itemId: string; field: string; value: unknown; edit?: PendingEdit };
 type Tokens = ReturnType<typeof effectiveTokens>;
 type Tone = 'local' | 'shared' | 'definition';
 
@@ -67,8 +66,18 @@ function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): Edi
     case 'move':
       return { type: 'instance.listMove', owner, nodeId, prop, itemId: op.itemId, index: op.index };
     case 'field':
+    case 'repair':
       return { type: 'instance.setProp', owner, nodeId, prop, itemId: op.itemId, field: op.field, value: op.value };
   }
+}
+
+/**
+ * Apply a list edit. A field edit joins the same field's last edit (`coalesceKey`); a repair the inspector offered
+ * is its own undo step under its own name, on the project revision it was planned against.
+ */
+function applyListOp(owner: OwnerRef, nodeId: string, prop: string, op: ListOp, label: string, coalesceKey?: string) {
+  if (op.kind === 'repair') return void applyOps([listOps(owner, nodeId, prop, op)], op.label, undefined, op.revision);
+  void applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, nodeId, prop, op)], label, op.kind === 'field' ? coalesceKey : undefined);
 }
 
 /** Default styles a definition gives a node (base + selected variant), used as inherited placeholders. */
@@ -382,9 +391,10 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               label={label}
               value={node.props[key] ?? schema.default}
               onChange={(v, edit) => set(key, v, edit)}
-              onList={(op) => void applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, node.id, key, op)], `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+              onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
               state={state}
               annotate={key === 'fields' && namesFormFields(def) ? formKeyNotes(def, node.props.fields) : undefined}
+              linkPairs={schema.type === 'list' ? itemLinkPairs(def, key) : undefined}
             />
           )}
         />
@@ -553,6 +563,11 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
     </>
   );
   const hasContent = !nested && bindings.length > 0;
+  // A repeated link whose visible text and destination are two fields of the selected item (a contact method).
+  const textField = node.kind === 'link' && isBinding(node.label) && '$item' in node.label ? node.label.$item : undefined;
+  const linkField = node.kind === 'link' && isBinding(node.link) && '$item' in node.link ? node.link.$item : undefined;
+  const linkPair = !nested && listProp && textField && linkField ? itemLinkPairs(def, listProp).find((p) => p.text === textField && p.link === linkField) : undefined;
+  const pairedItem = linkPair && itemId ? listItems.find((x) => x.id === itemId) : undefined;
   // Content reach comes from the binding: an item field is per item, a section property is shared by every item.
   const perItem = bindings.some((b) => b.item);
   const contentReach = !hasContent || !listSchema ? '' : perItem ? (itemId ? `This ${itemLabel} only${itemIndex >= 0 ? ` (${itemIndex + 1} of ${n})` : ''}` : `Each ${itemLabel} has its own`) : `Same in every ${itemLabel}`;
@@ -591,7 +606,8 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
                   value={inst.props[b.prop] ?? schema.default}
                   state={state}
                   onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${instNodeId}:${b.prop}`)}
-                  onList={(op) => void applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(instOwner, instNodeId, b.prop!, op)], `Edit ${schema.label}`)}
+                  onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
+                  linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
                 />
               );
             }
@@ -604,6 +620,9 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
             }
             return null;
           })}
+          {linkPair && pairedItem && itemId && (
+            <ContactMismatch text={pairedItem[linkPair.text]} link={pairedItem[linkPair.link]} onRepair={(link, label, revision) => applyListOp(instOwner, instNodeId, listProp!, { kind: 'repair', itemId, field: linkPair.link, value: link, label, revision }, label)} />
+          )}
           {listSchema && perItem && !itemId && <p className="muted insp-note">Each {itemLabel} has its own text. Click one on the page to change it, or open the list to edit them all.</p>}
           {listSchema && (
             <button className="btn btn-sm insp-inline-btn" onClick={() => openList(parent, listProp!, itemId ?? (listItems[0]?.id as string | undefined), !!itemId)}>

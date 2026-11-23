@@ -9,6 +9,7 @@ import { importedFontStack, projectFontFamilies } from '@shared/fonts';
 import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
 import { normalizeLink } from '@engine/values';
+import { contactInText } from '@shared/contact-links';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -227,7 +228,9 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
         if (!link) continue;
         const existing = list.find((i) => (i.link as LinkValue | undefined)?.type === link.type);
         const owner = { kind: 'shell' as const, id: 'footer' };
-        if (existing) ops.push({ type: 'instance.setProp', owner, nodeId: footer.id, prop: 'contact', itemId: existing.id, value: { label: label!.trim(), link } });
+        // A deliberate label ("Call reception") stays: only the destination behind it changes.
+        const custom = typeof existing?.label === 'string' && existing.label.trim() !== '' && !contactInText(existing.label);
+        if (existing) ops.push({ type: 'instance.setProp', owner, nodeId: footer.id, prop: 'contact', itemId: existing.id, value: custom ? { link } : { label: label!.trim(), link } });
         else if (room-- > 0) ops.push({ type: 'instance.listInsert', owner, nodeId: footer.id, prop: 'contact', item: { label: label!.trim(), link } });
         else warnings.push(`The footer's contact list is full, so ${label} was not added.`);
       }

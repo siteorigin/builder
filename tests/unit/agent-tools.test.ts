@@ -103,6 +103,22 @@ const services = {
 };
 
 describe('upsert_page_with_sections', () => {
+  it('moves a contact link with the address a rewrite changes, unless the rewrite sends the link', async () => {
+    const items = [
+      { label: 'Email', value: 'bookings@kloof.example' },
+      { label: 'Phone', value: '+1 202 555 0142', link: 'tel:+15550134' },
+      { label: 'Studio', value: '12 Harbour Lane, Millbrook' },
+      { label: 'Hours', value: 'Monday to Friday, 9am – 5pm' }
+    ];
+    const { session, run } = await setup([() => [call('c1', 'upsert_page_with_sections', { slug: 'contact', sections: [{ componentId: 'contact.details', props: { items } }] })], () => finish()]);
+    await run('Our email is now bookings@kloof.example');
+    const page = pageAt(session.state, '/contact/')!;
+    const section = page.rootIds.map((id) => page.nodes[id] as InstanceNode).find((n) => Array.isArray(n.props.items) && (n.props.items as ListItem[]).some((i) => i.icon === 'mail'))!;
+    const stored = section.props.items as Array<ListItem & { link: LinkValue }>;
+    expect(stored.find((i) => i.label === 'Email')).toMatchObject({ value: 'bookings@kloof.example', link: { type: 'email', target: 'bookings@kloof.example' } });
+    expect(stored.find((i) => i.label === 'Phone')).toMatchObject({ value: '+1 202 555 0142', link: { type: 'tel', target: '+15550134' } });
+  });
+
   it('creates a whole page and wires navigation in one call, as one undo step', async () => {
     const { session, run } = await setup([() => [call('u1', 'upsert_page_with_sections', services)], () => finish()]);
     const before = session.historyInfo().entries.length;
@@ -466,6 +482,34 @@ describe('withStoredFields', () => {
 });
 
 describe('update_site_brand', () => {
+  it('keeps a deliberate footer label and changes only the number behind it', async () => {
+    const { session, run } = await setup(
+      [() => [call('b1', 'update_site_brand', { contactEmail: 'bookings@kloof.example', contactPhone: '+1 202 555 0142' })], () => finish()],
+      {},
+      'business',
+      (s) => {
+        const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+        const phone = (footer.props.contact as Array<ListItem & { link: LinkValue }>).find((c) => c.link.type === 'tel')!;
+        phone.label = 'Call reception';
+      }
+    );
+    await run('Our email is bookings@kloof.example and our number is +1 202 555 0142');
+    const contact = shellProps(session.state, 'footer').contact as Array<{ label: string; link: LinkValue }>;
+    expect(contact.find((c) => c.link.type === 'tel')).toMatchObject({ label: 'Call reception', link: { type: 'tel', target: '+12025550142' } });
+    // A footer label that showed the old address shows the new one.
+    expect(contact.find((c) => c.link.type === 'email')).toMatchObject({ label: 'bookings@kloof.example', link: { type: 'email', target: 'bookings@kloof.example' } });
+  });
+
+  it('keeps a deliberate footer email label too', async () => {
+    const { session, run } = await setup([() => [call('b1', 'update_site_brand', { contactEmail: 'bookings@kloof.example' })], () => finish()], {}, 'business', (s) => {
+      const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+      (footer.props.contact as Array<ListItem & { link: LinkValue }>).find((c) => c.link.type === 'email')!.label = 'Email the studio';
+    });
+    await run('Our email is bookings@kloof.example');
+    const contact = shellProps(session.state, 'footer').contact as Array<{ label: string; link: LinkValue }>;
+    expect(contact.find((c) => c.link.type === 'email')).toMatchObject({ label: 'Email the studio', link: { type: 'email', target: 'bookings@kloof.example' } });
+  });
+
   it('updates the site, header, footer and derived color tokens together', async () => {
     const { session, run } = await setup([
       () => [call('b1', 'update_site_brand', { siteName: 'Harbour Plumbing', tagline: 'Fast, honest repairs.', brandColor: '#0b5cad', headingFont: 'Lora', bodyFont: 'DM Sans', contactEmail: 'help@harbour.example', contactPhone: '+1 555 0199' })],
