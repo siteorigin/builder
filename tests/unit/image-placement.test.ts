@@ -7,7 +7,7 @@ import type { EditOperation } from '@shared/ops';
 import type { AssetRecord, ImageValue, InstanceNode, OwnerRef } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { ProjectSession } from '../../src/main/project/session';
-import { resetPendingForTests, savesInFlight } from '../../src/renderer/src/lib/pending';
+import { resetPendingForTests, savesInFlight, settle } from '../../src/renderer/src/lib/pending';
 
 /**
  * Choose image → Import on one section, then the author moves on before the import finishes (issue #262). The
@@ -29,7 +29,9 @@ interface StoreState {
   leftTab: string | null;
   selection: unknown;
 }
+type Checked = { kind: string; where?: string; what?: string; message?: string };
 interface StoreModule {
+  commitIfUnchanged(base: ProjectSnapshot, commit: () => unknown, opts?: { checkOnly?: boolean }): Promise<Checked>;
   applyOps(operations: EditOperation[], label: string, coalesceKey?: string): Promise<unknown>;
   applyWith(edit: undefined, operations: EditOperation[], label: string, coalesceKey?: string): Promise<unknown>;
   getState(): StoreState;
@@ -37,10 +39,12 @@ interface StoreModule {
 }
 type PlaceResult = { kind: 'none' } | { kind: 'placed' | 'kept'; assetId: string };
 interface PlaceModule {
-  importAndPlace(opts: { paths?: string[]; base: ProjectSnapshot | null; place: (asset: AssetRecord) => unknown; shown: () => boolean }): Promise<PlaceResult>;
+  importAndPlace(opts: { paths?: string[]; base: ProjectSnapshot | null; place: (asset: AssetRecord) => string | void; holds?: (asset: AssetRecord) => boolean; shown: () => boolean }): Promise<PlaceResult>;
   SHOW_ASSET_EVENT: string;
 }
 
+const STORE_PATH = '../../src/renderer/src/store';
+const PLACE_PATH = '../../src/renderer/src/lib/place';
 let store: StoreModule;
 let place: PlaceModule;
 let session: ProjectSession | null = null;
@@ -54,7 +58,7 @@ let quiet = false;
 /** Runs once, just before the next write from the renderer reaches the session: something that lands meanwhile. */
 let beforeApply: (() => Promise<unknown>) | null = null;
 /** The import the author started, released by the test: the picture is still being copied until then. */
-let importing: { paths?: string[]; release: (assetIds?: string[]) => Promise<void> } | null = null;
+let importing: { paths?: string[]; release: (assetIds?: string[], message?: string) => Promise<void> } | null = null;
 
 const key = () => `${session!.dir}#${opening}`;
 function snapshot(): ProjectSnapshot | null {
@@ -98,17 +102,17 @@ beforeAll(async () => {
             importing = {
               paths,
               // The file is copied and its record saved, then the main process answers with the new asset's ID.
-              release: async (assetIds) => {
+              release: async (assetIds, message) => {
                 const ids = assetIds ?? [(await write([{ type: 'asset.add', asset: photo }], 'Import images')) && photo.id];
-                resolve({ ok: true, assetIds: ids });
+                resolve({ ok: !message, assetIds: ids, message });
               }
             };
           })
       }
     }
   };
-  store = (await import(/* @vite-ignore */ '../../src/renderer/src/store')) as StoreModule;
-  place = (await import(/* @vite-ignore */ '../../src/renderer/src/lib/place')) as PlaceModule;
+  store = (await import(/* @vite-ignore */ STORE_PATH)) as StoreModule;
+  place = (await import(/* @vite-ignore */ PLACE_PATH)) as PlaceModule;
 });
 
 afterEach(async () => {
@@ -168,8 +172,9 @@ function startImport(write: (v: ImageValue) => void, opts: { shown?: () => boole
   const run = place.importAndPlace({
     base,
     shown: opts.shown ?? (() => false),
+    holds: (asset) => asset.id === start.assetId,
     place: (asset) => {
-      if (asset.id === start.assetId) return;
+      if (asset.id === start.assetId) return write(start);
       write({ assetId: asset.id, alt: asset.altSuggestion || start.alt || '', decorative: start.decorative });
     }
   });
@@ -264,6 +269,7 @@ describe('placing an imported image (issue #262)', () => {
     expect(await run).toEqual({ kind: 'kept', assetId: photo.id });
     expect(image(a)).toEqual({ assetId: null, alt: 'Typed elsewhere' });
     expect(applyCalls).toBe(1);
+    expect(lastToast()!.text).toBe('“Studio at sunrise.png” was added to Assets but not placed: the Split hero on Home was edited while it was being added.');
   });
 
   it('places the second of two imports into the same hero only if the first did not', async () => {
@@ -300,6 +306,7 @@ describe('placing an imported image (issue #262)', () => {
     await importing!.release();
     expect(await run).toEqual({ kind: 'kept', assetId: photo.id });
     expect(image(a).assetId).toBeNull();
+    expect(applyCalls).toBe(0);
     expect(lastToast()!.text).toBe('“Studio at sunrise.png” was added to Assets but not placed: the AI is making changes.');
   });
 
@@ -312,5 +319,77 @@ describe('placing an imported image (issue #262)', () => {
     expect(await run).toEqual({ kind: 'placed', assetId: photo.id });
     expect(applyCalls).toBe(0);
     expect(store.getState().toasts).toEqual([]);
+  });
+
+  it('checks the hero when the same picture comes back, and says so when the hero was removed meanwhile', async () => {
+    const { a, field, owner } = await setup();
+    await write([{ type: 'asset.add', asset: photo }]);
+    await write([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: photo.id, alt: 'Here' } }]);
+    const run = startImport(field(a), { start: { assetId: photo.id, alt: 'Here' } });
+    await write([{ type: 'node.remove', owner, nodeId: a }]);
+    await importing!.release([photo.id]);
+    expect(await run).toEqual({ kind: 'kept', assetId: photo.id });
+    expect(applyCalls).toBe(0);
+    expect(lastToast()).toMatchObject({ kind: 'error', text: '“Studio at sunrise.png” was added to Assets but not placed: the Split hero on Home was removed while it was being added.' });
+  });
+
+  it('asks the project before refusing on what this window last heard (the AI had already finished)', async () => {
+    const { a, image, field } = await setup();
+    const run = startImport(field(a));
+    // This window still thinks the AI is working, and has not heard of the imported picture yet.
+    store.setState({ snapshot: { ...snapshot()!, aiBusy: true } });
+    quiet = true;
+    await importing!.release();
+    quiet = false;
+    expect(await run).toEqual({ kind: 'placed', assetId: photo.id });
+    expect(image(a).assetId).toBe(photo.id);
+    expect(applyCalls).toBe(1);
+  });
+
+  it('tells a save waiting on it that the image the author asked for did not arrive', async () => {
+    const { a, field } = await setup();
+    const run = startImport(field(a));
+    const saving = settle({ blur: () => undefined, wait: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) });
+    await importing!.release([], 'Studio at sunrise.png is larger than 25 MB.');
+    expect(await run).toEqual({ kind: 'none' });
+    const { problems, finish } = await saving;
+    finish();
+    expect(problems).toEqual(['Studio at sunrise.png is larger than 25 MB.']);
+  });
+
+  it('tells a save waiting on it that the image was not placed', async () => {
+    const { a, owner, field } = await setup();
+    const run = startImport(field(a));
+    const saving = settle({ blur: () => undefined, wait: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)) });
+    await write([{ type: 'node.remove', owner, nodeId: a }]);
+    await importing!.release();
+    expect(await run).toMatchObject({ kind: 'kept' });
+    const { problems, finish } = await saving;
+    finish();
+    expect(problems).toEqual(['“Studio at sunrise.png” was added to Assets but not placed: the Split hero on Home was removed while it was being added.']);
+  });
+
+  it('never writes a checked edit into a project opened since, even when it was asked for there', async () => {
+    const { a, owner } = await setup();
+    const base = store.getState().snapshot!;
+    opening = 2;
+    publish();
+    const done = await store.commitIfUnchanged(base, () => store.applyOps([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: null, alt: 'Late' } }], 'Edit Image'));
+    expect(done).toEqual({ kind: 'closed' });
+    expect(applyCalls).toBe(0);
+  });
+
+  it('applies one edit per checked commit, and reports a commit that made none', async () => {
+    const { a, b, owner, image } = await setup();
+    const base = store.getState().snapshot!;
+    const set = (nodeId: string, alt: string) => store.applyOps([{ type: 'instance.setProp', owner, nodeId, prop: 'image', value: { assetId: null, alt } }], 'Edit Image');
+    const done = await store.commitIfUnchanged(base, () => (set(a, 'First'), set(b, 'Second')));
+    expect(done).toMatchObject({ kind: 'applied' });
+    expect(image(a).alt).toBe('First');
+    expect(image(b).alt).toBe('');
+    expect(await store.commitIfUnchanged(base, () => undefined)).toEqual({ kind: 'failed', message: 'That change could not be made.' });
+    // Outside a checked commit, edits apply as before.
+    await set(b, 'Plain');
+    expect(image(b).alt).toBe('Plain');
   });
 });

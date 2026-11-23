@@ -265,24 +265,34 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
     const start = latest.current;
     const write = onChange;
     let carry: boolean | null = null;
+    // Where focus may come back to the chooser from: the image browser this closes, the chooser, or nowhere.
+    const fromChooser = () => {
+      const at = document.activeElement;
+      return !at || at === document.body || at === chooseBtn.current || !!browser.current?.contains(at);
+    };
     try {
       const r = await importAndPlace({
         paths,
         base: snapshot,
-        shown: () => alive.current,
+        // On screen: mounted, and not in a dock tab that is hidden (AI, Site styles).
+        shown: () => alive.current && !!chooseBtn.current?.isConnected && chooseBtn.current.offsetParent !== null,
+        holds: (a) => a.id === start.assetId,
         place: (a) => {
-          if (a.id === start.assetId) return;
+          // The same picture again: the field is checked, not written.
+          if (a.id === start.assetId) return write(start);
           const next = chosen(start, a.id, a.altSuggestion);
           carry = next.carried;
           write(next.value);
+          if (next.carried) return 'Check its description still fits.';
         }
       });
       if (r.kind !== 'placed' || !alive.current) return;
       if (carry !== null) setCarried(carry);
-      // Focus returns to the chooser from the image browser this closes (or from nowhere), never from a field
-      // the author has moved to meanwhile, the description included.
-      const at = document.activeElement;
-      closeBrowser(!at || at === document.body || at === chooseBtn.current || !!browser.current?.contains(at));
+      // Never from a field the author has moved to meanwhile, the description included; checked again when the
+      // browser has closed, in case focus moved in between.
+      const refocus = fromChooser();
+      closeBrowser(false);
+      if (refocus) requestAnimationFrame(() => alive.current && fromChooser() && chooseBtn.current?.focus());
     } finally {
       if (alive.current) setImporting(false);
     }
