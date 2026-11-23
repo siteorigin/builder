@@ -952,7 +952,8 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
   };
   const shares: number[] = [];
   const columns = boxStyle(grid, 'columns', range);
-  if (typeof columns === 'number' && columns >= 1) shares.push(span(Array.from({ length: Math.floor(columns) }, () => 1)));
+  // A column count that is not a whole number makes no columns in CSS: one implicit column holds everything.
+  if (typeof columns === 'number' && columns >= 1) shares.push(Number.isInteger(columns) ? span(Array.from({ length: columns }, () => 1)) : 1);
   const template = boxStyle(grid, 'gridTemplate', range);
   if (typeof template === 'string') shares.push(/^\d+(\.\d+)?fr( \d+(\.\d+)?fr)*$/.test(template) ? span(template.split(' ').map((t) => parseFloat(t))) : 1);
   return shares.length ? Math.max(...shares) : 1;
@@ -1010,9 +1011,10 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
       const rawWidth = get('width');
       const width = length(rawWidth);
       const maxPx = px(get('maxWidth'));
-      const flexParent = ['row', 'stack'].includes(String(boxes[i + 1] ? boxStyle(boxes[i + 1], 'layout', range) : ''));
-      if (width?.unit === 'px' && flexParent && Number(get('flexGrow')) > 0) return null;
+      const parentLayout = boxes[i + 1] ? boxStyle(boxes[i + 1], 'layout', range) : undefined;
       const sized = rawWidth === undefined || rawWidth === 'fill' || (width?.unit === '%' && width.n === 100);
+      // Growing in a row or stack, a declared width is only where the box starts.
+      if (!sized && (parentLayout === 'row' || parentLayout === 'stack') && Number(get('flexGrow')) > 0) return null;
       // An image sized by its own picture stays inside its parent only through the theme's max-width: 100%, which a
       // max width of its own replaces.
       const intrinsic = i === 0 && (rawWidth === 'auto' || rawWidth === 'fit');
@@ -1039,14 +1041,22 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
         share = Infinity;
         frozen = true;
       }
+      // In a row, an element is at least as wide as its content needs (a wide sibling of the image can hold it open),
+      // so nothing further out bounds it: only a cap from inside it does. The image itself needs nothing of its own.
+      if (!frozen && i > 0 && parentLayout === 'row') {
+        share = Infinity;
+        frozen = true;
+      }
     }
     // A cropped picture: a fixed height needs the width that height gives the picture; otherwise the aspect ratio
     // its box is cut to does.
     let floor = 0;
     const fit = boxStyle(boxes[0], 'objectFit', range) ?? 'cover';
-    const height = boxStyle(boxes[0], 'height', range);
+    const height = boxStyle(boxes[0], 'height', range) === 'auto' ? undefined : boxStyle(boxes[0], 'height', range);
     const minHeight = boxStyle(boxes[0], 'minHeight', range);
     if (fit === 'cover' && aspect) {
+      // In a row the image stretches to the row's height, which is not known here.
+      if (height === undefined && boxes[1] && boxStyle(boxes[1], 'layout', range) === 'row') return null;
       for (const h of [height, minHeight]) {
         if (h === undefined || h === 'auto' || px(h) === 0) continue;
         if (px(h) === null) return null;

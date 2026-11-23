@@ -442,8 +442,8 @@ async function openProject(): Promise<{ c: InstanceType<typeof Controller>; dir:
   return { c, dir };
 }
 
-async function until(check: () => boolean, what: string) {
-  for (let i = 0; i < 300 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+async function until(check: () => boolean, what: string, ms = 3000) {
+  for (let i = 0; i < ms / 10 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
   if (!check()) throw new Error(`Timed out waiting for ${what}`);
 }
 
@@ -455,13 +455,18 @@ describe('a project whose picture was moved out of its folder', () => {
     const uses = c.snapshot()!.assetUsage.a_reading;
     expect(uses).toBeGreaterThan(0);
     expect(c.snapshot()!.missingAssets).toEqual([]);
+    // A check still running from opening the project would report the files it reached before they went; a newer
+    // check makes it change nothing.
+    await s.refreshAssetFiles();
     const outside = temp('moved');
     for (const f of [nook.file, ...(nook.variants ?? []).map((v) => v.file)]) {
       copyFileSync(join(dir, f), join(outside, f.split('/').pop()!));
       unlinkSync(join(dir, f));
     }
-    // The folder watcher notices; the library entry and its uses stay.
-    await until(() => !!c.snapshot()!.missingAssets.length, 'the missing files to be noticed');
+    // The folder watcher notices; the library entry and its uses stay. It can report while files are still going, so
+    // wait for all of them.
+    const gone = 1 + (nook.variants ?? []).length;
+    await until(() => c.snapshot()!.missingAssets.some((m) => m.assetId === 'a_reading' && (m.original ? 1 : 0) + m.variants.length === gone), 'the missing files to be noticed', 10_000);
     const snap = c.snapshot()!;
     expect(snap.missingAssets).toEqual([{ assetId: 'a_reading', original: true, variants: (nook.variants ?? []).map((v) => v.file) }]);
     expect(snap.diagnostics.find((d) => d.code === 'ASSET_FILE_MISSING')).toMatchObject({ severity: 'error', owner: { kind: 'asset', id: 'a_reading' }, message: expect.stringMatching(/^Reading nook is missing its original file/) });

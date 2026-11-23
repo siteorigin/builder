@@ -425,6 +425,9 @@ describe('SEO and performance', () => {
     gridNode.styles = { base: { layout: 'grid', gridTemplate: '1fr 2fr' } };
     wrap.styles = {};
     expect(gridSizes(s)).toEqual(['(min-width: 1024px) 800px, (min-width: 768px) 66.67vw, 66.67vw']);
+    // A column count that is not a whole number makes no columns.
+    gridNode.styles = { base: { layout: 'grid', columns: 2.5 } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
     // As many as fit: how many is unknown, so the whole width.
     gridNode.styles = { base: { layout: 'grid', gridTemplate: 'auto-fit-sm' } };
     expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
@@ -468,9 +471,26 @@ describe('SEO and performance', () => {
     for (const styles of [{ minWidth: '500px' }, { minWidth: '40rem' }, { width: '200%' }, { marginInlineStart: '-100%' }] as StyleProps[]) expect(only(styles)).toEqual([null]);
     g.styles = { base: { layout: 'row' } };
     for (const styles of [{ width: '200px', flexGrow: 1 }, { width: '25%', flexGrow: 1 }] as StyleProps[]) expect(only(styles)).toEqual([null]);
+    // Growing in a row from a viewport width too.
+    expect(only({ width: '20vw', flexGrow: 1 })).toEqual([null]);
+    // Straight in a row, a cropped picture stretches to the row's height; uncropped it is only as wide as the row.
+    expect(only({})).toEqual([null]);
+    expect(only({ objectFit: 'contain' })).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
+    // In a row, a wrapper is as wide as its content needs, so the row's width no longer bounds the image.
+    const page = home(s);
+    for (const id of photosOf(s, grid)) {
+      const wrap: GraphNode = { id: `w_${id}`, kind: 'element', tag: 'div', children: [id] };
+      page.nodes[wrap.id] = wrap;
+    }
+    (page.nodes[grid] as GraphNode & { children: string[] }).children = photosOf(s, grid).map((id) => `w_${id}`);
+    for (const id of Object.keys(page.nodes).filter((k) => k.startsWith('w_'))) page.nodes[id.slice(2)].styles = {};
+    expect(gridSizes(s)).toEqual([null]);
+    // Unless the image bounds itself.
+    for (const id of Object.keys(page.nodes).filter((k) => k.startsWith('w_'))) page.nodes[id.slice(2)].styles = { base: { maxWidth: '300px' } };
+    expect(gridSizes(s)).toEqual(['300px']);
     // A fixed width further in does not hide what an outer box does to it.
     g.styles = { base: { ...base, customCss: 'transform: scale(2)' } };
-    expect(only({ width: '300px' })).toEqual([null]);
+    expect(gridSizes(s)).toEqual([null]);
   });
 
   it('widens the estimate for a picture cropped to a narrower shape', () => {
@@ -480,6 +500,9 @@ describe('SEO and performance', () => {
     expect(gridSizes(s)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 150vw, 150vw']);
     for (const id of photosOf(s, grid)) home(s).nodes[id].styles = { base: { aspectRatio: '1/1', objectFit: 'contain' } };
     expect(gridSizes(s)).toEqual([DEFAULT]);
+    // An explicit automatic height is no height of its own: the aspect ratio still shapes the box.
+    for (const id of photosOf(s, grid)) home(s).nodes[id].styles = { base: { aspectRatio: '1/1', height: 'auto' } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 150vw, 150vw']);
     // A fixed height, or a minimum one, needs the width that height gives the photo; with a fixed height the aspect
     // ratio no longer shapes the box.
     for (const styles of [{ height: '500px' }, { minHeight: '500px' }, { height: '500px', aspectRatio: '1/1' }] as StyleProps[]) {
