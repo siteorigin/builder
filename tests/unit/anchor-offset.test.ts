@@ -176,7 +176,8 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
    * Opens a case the way a visitor does. `/live` mounts the site; `/` serves the markup it rendered, and the site's
    * script only takes over once the browser has loaded the page and jumped to any fragment. Before it does, it
    * returns to a saved position as SvelteKit does on a reload or (`?restore`) in a reopened tab. `?arrive=` names
-   * the navigation the header mounts in (a visit starts with `enter`); `?font` adds a web font the test holds back.
+   * the navigation the header mounts in (a visit starts with `enter`); `?font` adds a web font the test holds back;
+   * `?early` starts the script as soon as the document is parsed, before the browser's jump to the fragment.
    */
   async function withSite(name: keyof typeof sites, width: number, body: (site: Site) => Promise<void>, motion: 'reduce' | 'no-preference' = 'reduce') {
     // Reduced motion turns off the theme's smooth scrolling, so a jump has finished when it is measured.
@@ -196,7 +197,7 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
         return html(
           `${rendered}<script>
           addEventListener('pagehide', () => sessionStorage.setItem('saved-scroll', String(scrollY)));
-          addEventListener('load', () => requestAnimationFrame(() => requestAnimationFrame(() => {
+          const start = () => {
             const params = new URLSearchParams(location.search);
             const id = decodeURIComponent(location.hash.slice(1));
             window.beforeScript = id ? { top: document.getElementById(id).getBoundingClientRect().top, headerBottom: document.querySelector('header.so-header').getBoundingClientRect().bottom } : null;
@@ -214,7 +215,9 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
             s.src = '/site.js';
             s.onload = () => { const app = document.getElementById('app'); app.textContent = ''; mountCase(${JSON.stringify(name)}, params.get('arrive') ?? undefined); window.started = true; };
             document.body.append(s);
-          })));</script>`
+          };
+          if (location.search.includes('early')) addEventListener('DOMContentLoaded', start);
+          else addEventListener('load', () => requestAnimationFrame(() => requestAnimationFrame(start)));</script>`
         );
       });
       await page.goto(`${ORIGIN}/live`);
@@ -298,6 +301,10 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
         // The theme's smooth jump was still on its way when the script ran.
         expect(before.top, 'the jump was still moving when the script ran').toBeGreaterThan(200);
         expectLanded('after the smooth jump', after);
+        // A script that runs before the jump starts publishes the header's height in time for the jump to use it.
+        const early = await visit(page, HEADING, '?early');
+        expect(early.before.top, 'the jump had not started when the script ran').toBeGreaterThan(200);
+        expectLanded('after a jump that started once the script ran', early.after);
       },
       'no-preference'
     );
