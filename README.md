@@ -41,21 +41,42 @@ This is version 0.1: a working foundation to improve on, built to the [v0.1 spec
 
 ## Development
 
-Requires Node 22.22+ (only for developing the app; the packaged app bundles everything it needs).
+Requires Node 24.15+ (22.22.2+ and 26+ also work), only for developing the app; the packaged app bundles everything it needs.
 
 ```sh
 npm install
-npm run dev          # start the app with hot reload
-npm test             # unit and integration tests (engine, generator, themes, agent harness, sessions)
-npm run test:e2e     # drive the real app with Playwright (set SHOTS and WORK to scratch folders)
-npm run test:packaged # after `npm run pack`: create and preview a project with no system Node on PATH
-npm run pack         # build an unpacked app into dist/
-npm run dist         # build installers
+npm run dev               # start the app with hot reload
+npm run typecheck
+npm test                  # unit and integration tests (engine, generator, themes, agent harness, sessions)
+npm run build && npm run test:e2e   # drive the built app with Playwright; any failed step exits non-zero
+npm run test:export-build # export integrity plus a standalone `npm ci && npm run build` of the exported source
+npm run test:ai           # real-provider agent test; needs OPENAI_API_KEY and costs money
+npm run test:packaged     # after `npm run pack`: launch the packaged app with a minimal PATH (no system Node)
+npm run pack              # build an unpacked app into dist/
+npm run dist              # build installers (DMG, NSIS installer, AppImage)
 ```
+
+The end-to-end scripts run the app headless, each in a fresh scratch folder under the OS temp folder (or under `WORK`, if set) that is deleted when the script passes; screenshots go to `SHOTS`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full test guide.
 
 In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the environment are used when no key is saved in Settings. Packaged builds use keys saved in Settings, which are kept in `api-keys.json` in the app's data folder, readable only by your user account. The app never uses the operating system keychain, so it never asks for keychain access. `SITEORIGIN_USER_DATA` points the app at a separate settings and cache folder, which the tests use.
 
 macOS builds are signed and notarized automatically when a "Developer ID Application" certificate (or `CSC_LINK`) and Apple notarization credentials are available; otherwise they are unsigned.
+
+## Releasing
+
+Before a public release (spec §24 and §25.2):
+
+- [ ] Bump `version` in `package.json` and write release notes.
+- [ ] On macOS, Windows and Linux: `npm ci`, `npm run typecheck`, `npm test`, `npm run build`, `npm run test:e2e` (Linux under `xvfb-run -a`) and `npm run test:export-build`.
+- [ ] `npm run pack` and `npm run test:packaged` on each platform (the script launches the packaged app with no system Node on its `PATH`).
+- [ ] Smoke-test every advertised provider live (it costs money): `npm run test:ai` for OpenAI, reading the logged replies as well as the exit code; Anthropic has no live smoke script yet and needs one.
+- [ ] Wire-level adapter tests for the OpenAI Responses and Anthropic Messages streams: multi-turn tool loops, each provider's truncation signal (`incomplete`, `max_tokens`), OpenAI's `parallel_tool_calls: false`, rate-limit retries in the orchestrator and the fixer's `tools: []` request.
+- [ ] An agent benchmark: a fixed set of graded prompts (targeted copy edit, retheme, add a page with a nav link, a five-page site, fixing a broken code component, a phone-only spacing change) scored on completion, turns, invalid operations, scope violations and a clean project afterwards (spec §24.3).
+- [ ] Root `LICENSE` (GPL-3.0-or-later) and `CONTRIBUTING.md` present. Exports that redistribute the starter images include `resources/starter-assets/NOTICE.md` (they don't yet); check both the source and static exports.
+- [ ] **TODO: signing and notarization.** macOS: a Developer ID Application certificate (`CSC_LINK` / `CSC_KEY_PASSWORD`) and notarization credentials (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`), then mount the DMG on a second Mac and check the bundled `.app` with `spctl -a -vv` and `xcrun stapler validate`. Windows: an Authenticode certificate for the NSIS installer. Until then builds are ad-hoc signed or unsigned, and Gatekeeper and SmartScreen warn.
+- [ ] `npm run dist` on each platform; install the DMG and NSIS installer (and launch the AppImage) on a clean machine, create a project offline, export it and build the export.
+- [ ] Tag the release (`vX.Y.Z`) on `main`.
+- [ ] **Deferred until the project is open-sourced:** restore CI. `2aa4206` removed the GitHub Actions CI (typecheck, unit tests, packaged smoke on macOS, Windows and Linux) and the tag-triggered release workflow while the repository is private. When it opens, restore both and add full `test:e2e` jobs for macOS and for Linux under `xvfb-run`. Until then, the full suites run in the local macOS stabilization pass, and the checks above run by hand.
 
 ## Architecture
 

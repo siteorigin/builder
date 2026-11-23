@@ -17,6 +17,17 @@ This document defines the first version that someone can use to create, edit, pr
 
 The immediate objective is a usable editor with a coherent foundation. The initial release does not need a large catalogue, trained local models or a hosting business to demonstrate its value.
 
+### Decisions changed during implementation
+
+The v0.1 implementation deliberately departs from this draft in four places. The sections concerned have been updated to match, and each is marked *(changed in implementation)*.
+
+| Area | Draft | Implementation | Sections |
+| --- | --- | --- | --- |
+| First AI provider | Anthropic first, OpenAI next. | OpenAI is the default provider, through the Responses API with GPT-6.2 Sol (`gpt-6.2-sol`) as the default model; the Anthropic adapter ships beside it behind the same contract. | §2.1, §25.2 |
+| Stored API keys | OS-backed protection (`safeStorage`), session-only on Linux without a secret backend. | A plain `api-keys.json` in the app's data folder, written with mode `0600` (user-only) on macOS and Linux; on Windows the data folder's permissions apply. The OS keychain is never used, so users never see keychain access prompts. | §21.4, I10 |
+| Source editor | Monaco. | CodeMirror 6 with Svelte language support and live compiler diagnostics: much smaller, and enough for project code components. | §15.1 |
+| Catalogue location | A separate `siteorigin-builder-components` repository. | v0.1 bundles the Foundation theme from this repository (`src/catalogue/`, written in a small TypeScript DSL). A separate component repository and its build are future targets. | §9.1, §23 |
+
 ## Contents
 
 | Area | Sections |
@@ -87,7 +98,7 @@ That flow must work without opening a terminal. Manual editing and export must c
 | Export | Complete source project and static website build, with no application account or runtime service required. |
 | Reliability | Persistent edit history, grouped undo, conflict detection, schema validation and useful error recovery. |
 
-**Provider implementation default:** Use Anthropic for the first end-to-end implementation. OpenAI is the next adapter and may ship in the same release, but support for both is not a prerequisite for the first usable build. Every provider shown as available in the UI must work; unavailable adapters are not selectable placeholders. No particular model identifier is hard-coded into the project format.
+**Provider implementation default** *(changed in implementation)*: OpenAI is the default provider for the first end-to-end implementation (Responses API, default model GPT-6.2 Sol, `gpt-6.2-sol`), and the Anthropic adapter ships in the same release behind the same adapter contract. Support for both is not a prerequisite for a usable build. Every provider shown as available in the UI must work; unavailable adapters are not selectable placeholders. No particular model identifier is hard-coded into the project format.
 
 ### 2.2 Deliberately outside version 0.1
 
@@ -448,7 +459,7 @@ Use two repositories:
 | `siteorigin-builder` | Electron application, React UI, shared schemas, edit engine, generator, agent, bundled project template and packaging. |
 | `siteorigin-builder-components` | Theme manifests, canonical managed component definitions, code leaves, prop schemas, assets, previews, examples and compatibility tests. |
 
-Names are proposed implementation defaults. The component repository produces versioned release artifacts. The application bundles a pinned release of Foundation and can cache explicitly downloaded future packs. End users do not need Git or repository credentials.
+Names are proposed implementation defaults. *(Changed in implementation:)* v0.1 bundles Foundation from `siteorigin-builder` itself, under `src/catalogue/`. Its definition DSL uses the shared document types and schema version; starter assembly also uses the edit engine and ID helpers. The two-repository split, and the secondary-repository build in the implementation sequence, are future targets that follow once the definition format settles; the rest of this section describes that target. The component repository produces versioned release artifacts. The application bundles a pinned release of Foundation and can cache explicitly downloaded future packs. End users do not need Git or repository credentials.
 
 ### 9.2 Component copying
 
@@ -800,7 +811,7 @@ Store a baseline of pre-existing diagnostics when a run starts. New blocking err
 | Site generation | Deterministic TypeScript generator using the pinned Svelte compiler for validation. |
 | Site runtime | SvelteKit and its tested Vite integration. |
 | Site styles | CSS custom properties and scoped CSS; no requirement for a utility-class framework. |
-| Source editor | A focused Monaco integration with Svelte diagnostics. |
+| Source editor | A focused CodeMirror 6 integration with Svelte diagnostics *(changed in implementation; the draft proposed Monaco)*. |
 | AI transport | Official provider SDK behind application-owned adapters. |
 | Persistence | Local files, content-addressed history blobs and an append-only transaction/event journal. |
 | Tests | Unit/integration tests plus browser/Electron end-to-end tests. |
@@ -1207,7 +1218,7 @@ Only known bundled or explicitly installed compatible packs can be copied by the
 
 ### 21.4 Credentials and data
 
-Use OS-backed protection for stored API keys. On Linux, detect the `safeStorage` `basic_text` fallback and use session-only credentials if no actual secret backend is available. Electron documents that this fallback lacks meaningful protection. [T11]
+*(Changed in implementation.)* Store API keys in `api-keys.json` in the application's data folder, written atomically with mode `0600` so only the user's account can read it on macOS and Linux (never through a world-readable temporary file); on Windows the data folder's permissions apply. Do not use the OS keychain or `safeStorage`, so users never see keychain access prompts; on Linux its `basic_text` fallback would offer no meaningful protection anyway. [T11] The Settings UI must describe this storage accurately. In development builds, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the environment are used when no key is saved.
 
 Never put credentials in project files, public assets, tool results, logs, chat content or exports. Build-worker environments are explicitly constructed, not inherited wholesale from the process running provider calls.
 
@@ -1268,7 +1279,7 @@ Build in vertical slices. Each stage ends in a usable demonstration or a concret
 | 1. Project shell | Electron/React app, appearance, bundled runtime/template, project creation/open/recents and diagnostics. | Create a working project on a machine without a global Node installation. |
 | 2. Visual editing | Pages/layers, selection overlay, inspector, text/assets, styles and responsive ranges. | Manually build Home/About/Contact and produce different phone spacing without affecting desktop. |
 | 3. Components and history | Project components, slots, variants, shared definition mode, forks, tokens, persistent undo and recovery. | Create/reuse a component, edit its shared definition, make one unique, then close/reopen and undo. |
-| 4. Catalogue and themes | Complete Foundation, secondary-repository build, copy/dependency resolution, theme lock and alternate fixture. | Catalogue is usable offline; compatible theme fixture preserves content and custom forks. |
+| 4. Catalogue and themes | Complete Foundation, secondary-repository build (deferred past v0.1; see §9.1), copy/dependency resolution, theme lock and alternate fixture. | Catalogue is usable offline; compatible theme fixture preserves content and custom forks. |
 | 5. Agent | One real provider, chat, bounded tools, context, multistep execution, cancellation and repair. | Agent completes the services-page journey as one verified undo group. |
 | 6. Export and release hardening | Static build, clean source export, platform packages, accessibility/usability review and critical failure tests. | Acceptance suite passes on supported platforms and the five-page release demonstration is complete. |
 
@@ -1351,7 +1362,7 @@ Use deterministic unit tests for the document engine and generator, integration 
 | I07 | Source export on a clean machine. | Normal locked dependency installation and build work without Builder or catalogue access. |
 | I08 | Directly load a nested static route. | Initial HTML includes content; assets and navigation work. |
 | I09 | Scan production output and exported source archive. | No credentials, transcripts, history or editor bridge; static output also excludes authoring metadata. |
-| I10 | No Linux secret backend. | Keys remain session-only and the UI accurately describes storage. |
+| I10 | Save, replace and remove an API key on each platform. | Keys are stored only in `api-keys.json` (mode `0600` on macOS and Linux), never in projects or exports; the keychain is never touched; the UI accurately describes storage. *(Changed in implementation.)* |
 
 Critical data-loss, boundary and export failures block release. Model-quality evaluation is separate: use a fixed suite of targeted copy/style edits, section insertion, page creation and repair tasks. Record completion, unnecessary scope changes, invalid operations, repair rate and user-visible regressions. A strong model score cannot compensate for a broken transaction system.
 
@@ -1378,7 +1389,7 @@ Custom code generation can remain an optional stronger-model capability while sm
 | Visual source of truth | Managed documents; arbitrary Svelte has an explicit code-component boundary. |
 | Initial website type | Static brochure sites with interactive client-side components. |
 | Initial theme | Foundation, with 18 section families and basic primitives. |
-| First AI implementation | Anthropic, followed by OpenAI through the same adapter contract. |
+| First AI implementation | OpenAI by default, with Anthropic through the same adapter contract *(changed in implementation)*. |
 | Model access | User-supplied credentials; no required application account. |
 | Local inference | Future adapter/runtime milestone; no weights bundled initially. |
 | Editor layout | Two sidebars around one page; inspector/chat share the right dock. |
