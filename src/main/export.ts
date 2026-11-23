@@ -515,7 +515,8 @@ export async function editedGeneratedFile(dir: string): Promise<string | null> {
     return MANIFEST_PATH;
   }
   for (const [path, hash] of Object.entries(manifest.files ?? {}).sort()) {
-    const disk = await readIfExists(join(dir, path));
+    // Read as bytes: a theme's font files are generated output too.
+    const disk = await fs.readFile(join(dir, path)).catch(() => null);
     if (disk === null || sha(disk) !== hash) return path;
   }
   return null;

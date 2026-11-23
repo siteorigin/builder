@@ -10,18 +10,19 @@ import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { StorageInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '@engine/apply';
-import { listThemes } from '@catalogue/index';
+import { listThemes, themePinProblem } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
-import { generateProject, GENERATOR_VERSION } from '@generator/index';
+import { generateProject, GENERATOR_VERSION, packFileCopies } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
+import { readPackFile } from '../packs/files';
 import { checkSvelteSource, componentSources } from '../codecheck';
-import { atomicWrite, ensureDir, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
+import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 
 export const LOCAL_DIR = '.siteorigin';
@@ -337,7 +338,7 @@ export class ProjectSession extends EventEmitter {
    */
   private seenOnDisk = new Map<string, { stamp: string; hash: string }>();
   /** The hash of each generated file's latest content, by absolute path, so unchanged content is not hashed again. */
-  private contentHashes = new Map<string, { content: string; hash: string }>();
+  private contentHashes = new Map<string, { content: string | Buffer; hash: string }>();
   /**
    * How long a file must have been left alone before its stat alone is trusted to show a later change: well past the
    * coarsest timestamps (two seconds on FAT), so a change in the same tick as the last one is never missed.
@@ -455,6 +456,9 @@ export class ProjectSession extends EventEmitter {
     // Validate the final state (after any rollback) before generating anything from it.
     const fatal = validateState(s.state).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
     if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not opened to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
+    // Generating from another copy of the site's theme would restyle it before anyone edited anything.
+    const pin = themePinProblem(s.state);
+    if (pin) throw new ProjectFormatError(pin, true);
     // With a file in conflict the update waits: its stored version is the user's to choose first.
     if (s.migrationDue && !s.pending.size) await s.publishMigration();
     else await s.publishGenerated(false);
@@ -1213,19 +1217,30 @@ export class ProjectSession extends EventEmitter {
     const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
     const authored = new Set(stateToAuthoredSources(this.state).keys());
-    const hashes = new Map<string, { content: string; hash: string }>();
-    const hashOf = (abs: string, content: string) => {
+    const hashes = new Map<string, { content: string | Buffer; hash: string }>();
+    const hashOf = (abs: string, content: string | Buffer) => {
       const was = this.contentHashes.get(abs);
       const hash = was && was.content === content ? was.hash : sha(content);
       hashes.set(abs, { content, hash });
       return hash;
     };
     this.conflicts = this.conflicts.filter((c) => c.kind !== 'generated');
+    // The theme's font files are copied from its pack beside the generated text, under the same ownership rules.
+    const copies = new Map<string, string | Buffer>();
+    for (const c of packFileCopies(this.state)) {
+      if (authored.has(c.path) || clean.has(c.path)) continue;
+      try {
+        copies.set(c.path, await readPackFile(c.pack, c.file));
+      } catch (e) {
+        // A damaged or missing pack file costs that font (the site falls back to the next font in its stack), not the save.
+        console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
+      }
+    }
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
-    const project = [...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
+    const project = [...copies, ...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
     const seen = await inBatches(project, (f) => this.seenHash(f.abs));
     // Decide first which project files are someone else's now, so no editor variant shadows them in the preview.
-    const plan: Array<{ path: string; content: string; abs: string; hash: string; stamp: string | null }> = [];
+    const plan: Array<{ path: string; content: string | Buffer; abs: string; hash: string; stamp: string | null }> = [];
     const desired: Record<string, string> = {};
     for (const [i, { path, content, abs }] of project.entries()) {
       const was = this.contentHashes.get(abs)?.hash;
@@ -1377,7 +1392,8 @@ export class ProjectSession extends EventEmitter {
 
   private async restoreGeneratedLocked(path: string) {
     const clean = this.generate(this.state, false);
-    const content = clean.get(path);
+    const copy = packFileCopies(this.state).find((c) => c.path === path);
+    const content = clean.get(path) ?? (copy ? await readPackFile(copy.pack, copy.file) : undefined);
     if (content === undefined) throw new Error('That file is no longer generated.');
     const abs = safeJoin(this.dir, path);
     // Kept byte for byte before it is replaced; a file that cannot be read is never replaced unkept.
@@ -1499,8 +1515,9 @@ export class ProjectSession extends EventEmitter {
       const resolve = componentSources(next.components);
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
-        // Placing a theme's own component (the contact form, say) authors no code: it ships with the app.
-        if (def.owner === 'theme' && listThemes().some((t) => t.components.some((c) => c.id === def.id && c.source === def.source))) continue;
+        // Placing a theme's own component (the contact form, say) authors no code: it ships with the app. A pack the
+        // person installed is not the app's, so its code is checked like any other.
+        if (def.owner === 'theme' && listThemes().some((t) => t.source !== 'user' && t.components.some((c) => c.id === def.id && c.source === def.source))) continue;
         // Code the AI writes is held to a stricter policy than code a developer writes.
         const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai', filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
         if (errors.length)

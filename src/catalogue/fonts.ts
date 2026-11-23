@@ -1,47 +1,27 @@
 /**
- * The web fonts installed with the website template (self-hosted from @fontsource-variable packages, all under
- * the SIL Open Font License), and the rules for font stacks. A family the site cannot load would silently fall
- * back to a system font, so font tokens only accept installed fonts, a project's own fonts, or system fonts.
+ * The web fonts a site can use: those its theme pack ships (served from the pack's own .woff2 files through
+ * generated @font-face rules, so no package needs installing), and the rules for font stacks. A family the site
+ * cannot load would silently fall back to a system font, so font tokens only accept the theme's fonts, a
+ * project's own fonts, or system fonts.
  */
 import type { ProjectState } from '@shared/types';
 import { projectFontFamilies } from '@shared/fonts';
+import { getTheme, listThemes } from './index';
+import type { PackFont } from './pack';
 
-export interface BundledFont {
-  /** The CSS family name the package's @font-face rules declare. */
-  family: string;
-  /** The name a person would use. */
-  name: string;
-  package: string;
-  category: 'sans-serif' | 'serif';
-  /** A complete font stack, for font tokens. */
-  stack: string;
-}
-
-export const BUNDLED_FONTS: BundledFont[] = [
-  { family: 'Inter Variable', name: 'Inter', package: '@fontsource-variable/inter', category: 'sans-serif', stack: "'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif" },
-  { family: 'Fraunces Variable', name: 'Fraunces', package: '@fontsource-variable/fraunces', category: 'serif', stack: "'Fraunces Variable', 'Fraunces', Georgia, 'Times New Roman', serif" },
-  { family: 'Plus Jakarta Sans Variable', name: 'Plus Jakarta Sans', package: '@fontsource-variable/plus-jakarta-sans', category: 'sans-serif', stack: "'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', sans-serif" },
-  { family: 'DM Sans Variable', name: 'DM Sans', package: '@fontsource-variable/dm-sans', category: 'sans-serif', stack: "'DM Sans Variable', 'DM Sans', system-ui, -apple-system, 'Segoe UI', sans-serif" },
-  { family: 'Space Grotesk Variable', name: 'Space Grotesk', package: '@fontsource-variable/space-grotesk', category: 'sans-serif', stack: "'Space Grotesk Variable', 'Space Grotesk', system-ui, -apple-system, 'Segoe UI', sans-serif" },
-  { family: 'Playfair Display Variable', name: 'Playfair Display', package: '@fontsource-variable/playfair-display', category: 'serif', stack: "'Playfair Display Variable', 'Playfair Display', Georgia, 'Times New Roman', serif" },
-  { family: 'Lora Variable', name: 'Lora', package: '@fontsource-variable/lora', category: 'serif', stack: "'Lora Variable', 'Lora', Georgia, 'Times New Roman', serif" }
-];
+/** A font a theme ships. */
+export type BundledFont = PackFont;
 
 /** The template version new projects are created from. */
-export const TEMPLATE_VERSION = '0.2.0';
-/** What each template's lockfile installs. Any other project is only assumed to have the original two fonts. */
-const FONTS_BY_TEMPLATE: Record<string, string[]> = { '0.2.0': BUNDLED_FONTS.slice(0, 7).map((f) => f.package) };
-const ORIGINAL_FONTS = ['@fontsource-variable/inter', '@fontsource-variable/fraunces'];
+export const TEMPLATE_VERSION = '0.3.0';
 
-/** The bundled fonts this project's own package.json actually installs. */
-export function installedFonts(state: Pick<ProjectState, 'manifest'>): BundledFont[] {
-  const template = state.manifest.template;
-  const packages = (template?.id === 'sveltekit-brochure' && Object.hasOwn(FONTS_BY_TEMPLATE, template.version) ? FONTS_BY_TEMPLATE[template.version] : undefined) ?? ORIGINAL_FONTS;
-  return BUNDLED_FONTS.filter((f) => packages.includes(f.package));
+/** The fonts this site's theme ships, which every project can use whatever template it was created from. */
+export function installedFonts(state: Pick<ProjectState, 'site'>): BundledFont[] {
+  return getTheme(state.site.themeId).fonts;
 }
 
 /** Installed family names, for prompts and pickers ("Plus Jakarta Sans Variable"). */
-export function installedFontFamilies(state: Pick<ProjectState, 'manifest'>): string[] {
+export function installedFontFamilies(state: Pick<ProjectState, 'site'>): string[] {
   return installedFonts(state).map((f) => f.family);
 }
 
@@ -97,9 +77,12 @@ export function resolveFontStack(state: ProjectState, value: string): { stack: s
   const installed = installedFonts(state);
   if (!own.has(keys[0]) && !SYSTEM_FONTS.has(keys[0])) {
     const names = installed.map((f) => f.name).join(', ');
-    const bundled = BUNDLED_FONTS.find((f) => familyKey(f.family) === keys[0] || familyKey(f.name) === keys[0]);
-    if (!bundled) return { error: `"${unquoted(entries[0])}" is not installed, so visitors would see a fallback font instead. Installed fonts: ${names}. System fonts such as Georgia, Arial or system-ui also work, or import the font.` };
-    if (!installed.includes(bundled)) return { error: `${bundled.name} is not installed in this project, which was created with an earlier version. Installed fonts: ${names}.` };
+    const named = (f: BundledFont) => familyKey(f.family) === keys[0] || familyKey(f.name) === keys[0];
+    if (!installed.some(named)) {
+      const other = listThemes().find((t) => t.fonts.some(named));
+      if (other) return { error: `${other.fonts.find(named)!.name} comes with the ${other.name} theme, not this site's theme. Installed fonts: ${names}.` };
+      return { error: `"${unquoted(entries[0])}" is not installed, so visitors would see a fallback font instead. Installed fonts: ${names}. System fonts such as Georgia, Arial or system-ui also work, or import the font.` };
+    }
   }
   const alias = (key: string) => (own.has(key) ? undefined : installed.find((f) => familyKey(f.name) === key && !keys.includes(familyKey(f.family))));
   if (entries.length === 1 && alias(keys[0])) return { stack: alias(keys[0])!.stack };
@@ -108,13 +91,11 @@ export function resolveFontStack(state: ProjectState, value: string): { stack: s
 }
 
 /**
- * The font packages a project uses, so unused fonts are not built into the site. It reads tokens, styles and code
+ * The theme fonts a project uses, so unused fonts are not built into the site. It reads tokens, styles and code
  * component source for the family name; a code component that builds a family name at run time is not seen.
  */
-export function usedFontPackages(state: ProjectState, tokenValues: unknown[]): string[] {
+export function usedPackFonts(state: ProjectState, tokenValues: unknown[]): BundledFont[] {
   // Whitespace inside a name may be any run of spaces or tabs, which JSON writes as escapes.
   const haystack = JSON.stringify([tokenValues, state.site.shell, state.pages, state.components]).replace(/(\\[nrt]|\s)+/g, ' ').toLowerCase();
-  return installedFonts(state)
-    .filter((f) => haystack.includes(f.family.toLowerCase()))
-    .map((f) => f.package);
+  return installedFonts(state).filter((f) => haystack.includes(f.family.toLowerCase()));
 }

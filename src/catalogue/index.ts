@@ -1,104 +1,65 @@
-import type { ComponentDefinition, TokenDef } from '@shared/types';
-import type { ContrastPair } from '@shared/contrast';
-import { FOUNDATION_TOKENS } from './foundation/tokens';
-import { FOUNDATION_BASE_CSS } from './foundation/base.css';
-import { FOUNDATION_CONTRAST_PAIRS } from './foundation/contrast';
-import { heroCentered, heroSplit, pageIntro } from './foundation/heroes';
-import { container, featuresGrid, gallery, mediaSplit, pageList, stats, textSection } from './foundation/content';
-import { logoStrip, team, testimonials } from './foundation/people';
-import { contact, cta, faq, pricing } from './foundation/conversion';
-import { footer, header } from './foundation/shell';
-import { contactForm } from './foundation/form';
-import { dataTable } from './foundation/table';
-import { siteSearch } from './foundation/search';
-import { PACK_VERSION } from './dsl';
-import { BUNDLED_FONTS } from './fonts';
-import { makeAltTheme } from './foundation-alt';
-import { FOUNDATION_EXAMPLES, type AiExample } from './foundation/ai-examples';
+import type { ComponentDefinition } from '@shared/types';
+import type { ThemePack } from './pack';
 
-export interface ThemePack {
-  id: string;
-  name: string;
-  version: string;
-  description: string;
-  tokens: TokenDef[];
-  /** The colour tokens the theme sets against each other, so Site styles can say when a pair stops being readable. */
-  contrastPairs?: ContrastPair[];
-  baseCss: string;
-  /** Font packages the website template installs. The generated layout imports the ones a site uses. */
-  fontImports: string[];
-  components: ComponentDefinition[];
-  aiProfile: { guidance: string[]; examples?: AiExample[] };
-  /** Compatibility fixtures are only offered in development builds. */
-  devOnly?: boolean;
+export type { ThemePack } from './pack';
+
+/**
+ * The packs this app has loaded. Main loads and validates the installed releases once at startup, the editor
+ * receives the same list before it first renders, and tests register the authored packs directly; every lookup
+ * below then stays synchronous.
+ */
+let registry: ThemePack[] = [];
+let byId = new Map<string, ThemePack>();
+
+/** Replace the loaded packs. The first pack that is not a development fixture is the default theme. */
+export function registerPacks(packs: ThemePack[]): void {
+  const ids = new Set<string>();
+  for (const p of packs) {
+    if (ids.has(p.id)) throw new Error(`Two packs have the ID "${p.id}".`);
+    ids.add(p.id);
+  }
+  registry = [...packs];
+  byId = new Map(registry.map((p) => [p.id, p]));
 }
 
-const FOUNDATION: ThemePack = {
-  id: 'foundation',
-  name: 'Foundation',
-  version: PACK_VERSION,
-  description: 'Clean and restrained, for service businesses, studios and personal sites.',
-  tokens: FOUNDATION_TOKENS,
-  contrastPairs: FOUNDATION_CONTRAST_PAIRS,
-  baseCss: FOUNDATION_BASE_CSS,
-  fontImports: BUNDLED_FONTS.map((f) => f.package),
-  components: [
-    header,
-    footer,
-    heroCentered,
-    heroSplit,
-    pageIntro,
-    logoStrip,
-    featuresGrid,
-    mediaSplit,
-    textSection,
-    stats,
-    testimonials,
-    team,
-    pricing,
-    dataTable,
-    faq,
-    pageList,
-    gallery,
-    cta,
-    contact,
-    contactForm,
-    siteSearch,
-    container
-  ],
-  aiProfile: {
-    examples: FOUNDATION_EXAMPLES,
-    guidance: [
-      'Foundation is calm and restrained: generous whitespace, a serif display face for headings and a sans-serif body.',
-      'Alternate the tone axis (default, muted, inverse) to create rhythm; avoid two Dark sections in a row.',
-      'Begin the home page with a hero, inner pages with a Page introduction, and end most pages with a Call to action.',
-      'Prefer site tokens (color.*, space.*, text.*) over literal values so that brand changes stay consistent.',
-      'Keep headings short (under ten words) and supporting text to one or two sentences.',
-      'A page has one Heading 1, its title. A hero or Page introduction placed below another section heading takes headingLevel "h2"; headingLevel changes the outline, never the look.'
-    ]
-  }
-};
+/** The pack with this ID, if it is loaded. */
+export function findTheme(id: string): ThemePack | undefined {
+  return byId.get(id);
+}
 
-const ALT = makeAltTheme(FOUNDATION.components);
-const FOUNDATION_ALT: ThemePack = {
-  ...FOUNDATION,
-  id: 'foundation-alt',
-  name: 'Foundation Alt (development fixture)',
-  description: 'Alternate implementation of the Foundation contracts used to test theme switching.',
-  tokens: ALT.tokens,
-  baseCss: ALT.baseCss,
-  components: ALT.components,
-  devOnly: true
-};
+/** The default theme: the first loaded pack that is not a development fixture. */
+export function defaultTheme(): ThemePack {
+  const theme = registry.find((p) => !p.devOnly) ?? registry[0];
+  if (!theme) throw new Error('No theme packs are loaded.');
+  return theme;
+}
 
-const THEMES: Record<string, ThemePack> = { foundation: FOUNDATION, 'foundation-alt': FOUNDATION_ALT };
-
+/** The pack with this ID, or the default theme when it is not installed here. */
 export function getTheme(id: string): ThemePack {
-  return THEMES[id] ?? FOUNDATION;
+  return byId.get(id) ?? defaultTheme();
 }
 
 export function listThemes(): ThemePack[] {
-  return Object.values(THEMES);
+  return registry;
+}
+
+/** What a project's theme lock records for this pack: an installed pack is pinned to its exact release. */
+export function themeLockEntry(theme: ThemePack): { id: string; version: string; digest?: string } {
+  return { id: theme.id, version: theme.version, ...(theme.source === 'user' && theme.digest ? { digest: theme.digest } : {}) };
+}
+
+/**
+ * Why a project cannot be edited with the packs loaded here: its installed (pinned) pack is missing, or another
+ * copy has the same version with different contents. Editing would regenerate its styles from the wrong pack.
+ */
+export function themePinProblem(state: { site: { themeId: string }; themeLock?: { theme?: { id: string; version: string; digest?: string } } }): string | null {
+  const lock = state.themeLock?.theme;
+  if (!lock?.digest) return null;
+  const pack = findTheme(state.site.themeId);
+  if (!pack) return `This project uses the theme "${lock.id}" ${lock.version}, which is not installed. Put that pack in the packs folder and restart SiteOrigin Builder to edit it.`;
+  if (pack.version === lock.version && pack.digest !== lock.digest)
+    return `This project uses the theme "${lock.id}" ${lock.version}, but the installed pack with that version is a different copy. Reinstall the copy the site was made with, or a newer version, and restart SiteOrigin Builder to edit it.`;
+  return null;
 }
 
 export function catalogueComponent(themeId: string, componentId: string): ComponentDefinition | undefined {

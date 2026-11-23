@@ -2,6 +2,7 @@ import type { ApplyResult, EditBatch } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
+import type { ThemePack } from '@catalogue/pack';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic' | 'local';
@@ -400,10 +401,29 @@ export interface ImportChoices {
   files: Array<{ path: string; fingerprint: string; webCopy: boolean }>;
 }
 
+/** A theme pack that was found but not loaded, and why. */
+export interface PackRefusal {
+  dir: string;
+  packId?: string;
+  reason: string;
+}
+
+/** The theme packs loaded at startup, and those refused. */
+export interface PackCatalogue {
+  packs: ThemePack[];
+  refused: PackRefusal[];
+  /** Where a person installs packs. */
+  userDir: string;
+}
+
 export interface BuilderApi {
   platform: string;
   app: {
     info(): Promise<{ version: string; platform: string; dev: boolean }>;
+    /** The theme packs loaded at startup. The editor registers them before it first renders. */
+    catalogue(): Promise<PackCatalogue>;
+    /** A pack's preview image as a data URL, or null when it has none. */
+    packPreview(packId: string, file: string): Promise<string | null>;
     getSettings(): Promise<AppSettings>;
     setSettings(patch: SettingsPatch): Promise<AppSettings>;
     openExternal(url: string): Promise<void>;

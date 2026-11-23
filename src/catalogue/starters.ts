@@ -2,7 +2,7 @@ import type { GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, PageDoc,
 import { SCHEMA_VERSION, GENERATOR_VERSION } from '@shared/types';
 import { installComponent, makeInstance } from '@engine/install';
 import { newId } from '@shared/ids';
-import { getTheme } from './index';
+import { getTheme, themeLockEntry } from './index';
 import { canonicalRich } from './dsl';
 import { TEMPLATE_VERSION } from './fonts';
 
@@ -71,7 +71,7 @@ function emptyState(name: string, themeId = 'foundation'): ProjectState {
     components: {},
     tokens: { schemaVersion: SCHEMA_VERSION, overrides: {}, custom: [] },
     assets: { schemaVersion: SCHEMA_VERSION, assets: {} },
-    themeLock: { schemaVersion: SCHEMA_VERSION, theme: { id: theme.id, version: theme.version }, components: {} }
+    themeLock: { schemaVersion: SCHEMA_VERSION, theme: themeLockEntry(theme), components: {} }
   };
 }
 

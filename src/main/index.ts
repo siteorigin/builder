@@ -7,7 +7,8 @@ import type { ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } fr
 import { externalLink } from '@shared/links';
 import { visitorStepKey } from '@shared/preview-keys';
 import { checkLocalBaseURL } from '@shared/local';
-import { Controller, defaultProjectsFolder } from './controller';
+import { Controller, defaultProjectsFolder, resourcesDir } from './controller';
+import { installedCatalogue, loadInstalledPacks, packPreview, packRoots } from './packs/installed';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
@@ -206,6 +207,8 @@ function handle(channel: string, fn: (...args: never[]) => unknown) {
 
 function registerIpc() {
   handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, dev: !app.isPackaged }));
+  handle('app:catalogue', () => installedCatalogue());
+  handle('packs:preview', (packId: unknown, file: unknown) => packPreview(packId, file));
   handle('app:getSettings', async () => (await loadSettings()).settings);
   handle('app:setSettings', async (patch: SettingsPatch) => {
     const before = (await loadSettings()).settings.ai;
@@ -651,6 +654,8 @@ app.whenReady().then(async () => {
   // Deny unsolicited permission requests (camera, notifications, etc.).
   electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'clipboard-sanitized-write'));
   electronSession.defaultSession.on('will-download', (e) => e.preventDefault());
+  // Theme packs are loaded before anything can open a project or ask for the catalogue.
+  await loadInstalledPacks(packRoots(resourcesDir(), app.getPath('userData'), app.isPackaged));
   registerIpc();
   buildMenu();
   // Registered once, not per window: macOS brings up a new window after the last one closes.

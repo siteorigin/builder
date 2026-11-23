@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AiEvent, AppSettings, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
+import type { AiEvent, AppSettings, ChatMessage, ChatMode, Conversation, ImportReviewRow, LocalWorkspaceState, PackRefusal, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ResponsiveScope } from '@shared/types';
 import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatDrafts, type ChatImages } from './lib/chatDrafts';
@@ -90,6 +90,8 @@ export interface UndoTarget {
 
 interface State {
   screen: 'welcome' | 'editor';
+  /** Theme packs found at startup but refused, and where a person installs packs. */
+  packs: { refused: PackRefusal[]; userDir: string };
   snapshot: ProjectSnapshot | null;
   runtime: RuntimeState;
   settings: AppSettings | null;
@@ -149,6 +151,7 @@ interface State {
 
 export const useStore = create<State>((set) => ({
   screen: 'welcome',
+  packs: { refused: [], userDir: '' },
   snapshot: null,
   runtime: { state: 'idle' },
   settings: null,

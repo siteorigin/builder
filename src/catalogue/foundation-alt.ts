@@ -3,9 +3,9 @@
  * Same componentIds, properties, parts, slots and variants; different tokens and at least one changed
  * internal layout. It exists to exercise theme switching and is never offered in packaged builds.
  */
-import type { ComponentDefinition, TokenDef } from '@shared/types';
-import { FOUNDATION_TOKENS } from './foundation/tokens';
-import { FOUNDATION_BASE_CSS } from './foundation/base.css';
+import type { TokenDef } from '@shared/types';
+import { createPack } from './dsl';
+import type { AuthoredPack } from './pack';
 
 const TOKEN_CHANGES: Record<string, TokenDef['value']> = {
   'color.background': '#f6f7fb',
@@ -19,12 +19,18 @@ const TOKEN_CHANGES: Record<string, TokenDef['value']> = {
   'radius.md': '6px'
 };
 
-export function makeAltTheme(base: ComponentDefinition[]) {
-  const tokens: TokenDef[] = FOUNDATION_TOKENS.map((t) => (t.id in TOKEN_CHANGES ? { ...t, value: TOKEN_CHANGES[t.id] } : t));
-  const components = base.map((d) => {
-    const c: ComponentDefinition = structuredClone(d);
-    c.id = d.id.replace(/^foundation\./, 'foundation-alt.');
-    c.provenance = { ...c.provenance, pack: 'foundation-alt' };
+export function makeAltPack(base: AuthoredPack): AuthoredPack {
+  const { components: baseComponents, ...meta } = base;
+  const alt = createPack({
+    ...meta,
+    id: 'foundation-alt',
+    name: 'Foundation Alt (development fixture)',
+    description: 'Alternate implementation of the Foundation contracts used to test theme switching.',
+    tokens: meta.tokens.map((t) => (t.id in TOKEN_CHANGES ? { ...t, value: TOKEN_CHANGES[t.id] } : t)),
+    devOnly: true
+  });
+  const components = baseComponents.map((d) => {
+    const c = alt.adopt(d);
     if (c.componentId === 'hero.split' && c.tree) {
       // Changed internal layout: media stacked above centered copy, same public parts.
       const grid = c.tree.nodes['grid'];
@@ -39,5 +45,5 @@ export function makeAltTheme(base: ComponentDefinition[]) {
     }
     return c;
   });
-  return { tokens, baseCss: FOUNDATION_BASE_CSS, components };
+  return alt.define(components);
 }

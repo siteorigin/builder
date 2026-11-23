@@ -1,5 +1,8 @@
-import { P, managed, tok } from '../dsl';
+import { P, tok } from '../dsl';
+import { FOUNDATION } from './pack';
 import { headingBlock, headingLevel, mutedStyles, sectionShell, toneAxis } from './common';
+
+const { managed } = FOUNDATION;
 
 const img = { assetId: null, alt: '' };
 

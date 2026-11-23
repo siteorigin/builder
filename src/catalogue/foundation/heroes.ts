@@ -1,5 +1,8 @@
-import { P, managed, tok } from '../dsl';
+import { P, tok } from '../dsl';
+import { FOUNDATION } from './pack';
 import { eyebrowStyles, headingLevel, layoutAxis, mutedStyles, sectionShell, toneAxis } from './common';
+
+const { managed } = FOUNDATION;
 
 const actions = (b: import('../dsl').TreeBuilder, align: 'start' | 'center') =>
   b.el('actions', 'div', { name: 'Actions', collapseEmpty: true, styles: { base: { layout: 'row', wrap: true, gap: tok('space.sm'), justify: align, marginBlockStart: tok('space.sm') } } }, [

@@ -7,7 +7,7 @@ import type { InstanceNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { generateProject, pageFile } from '@generator/index';
+import { generateProject, packFileCopies, pageFile } from '@generator/index';
 import { ProjectSession, statTrusted, type SessionEvent } from '../../src/main/project/session';
 import { stateToAuthoredSources } from '../../src/main/project/documents';
 
@@ -91,7 +91,10 @@ describe('publishing only what an edit changes (#183)', () => {
     const { dir, s, about } = await make();
     // The first edits after opening look at every file once.
     for (const v of ['Warm one', 'Warm two']) expect((await s.apply({ operations: [headingEdit(s.state, about, v)] }, { label: v })).ok).toBe(true);
-    const generated = new Set([...generateProject(s.state).keys()].flatMap((p) => [p, 'dev:' + p]));
+    // The theme's font files, copied in beside the generated text, are looked at the same way.
+    const copies = packFileCopies(s.state).map((c) => c.path);
+    expect(copies.length).toBeGreaterThan(0);
+    const generated = new Set([...generateProject(s.state).keys(), ...copies].flatMap((p) => [p, 'dev:' + p]));
     let event: SessionEvent | undefined;
     s.on('changed', (e: SessionEvent) => (event = e));
     const { reads, replaced } = await watchFiles(dir, () => s.apply({ operations: [headingEdit(s.state, about, 'A new heading')] }, { label: 'Edit heading' }));

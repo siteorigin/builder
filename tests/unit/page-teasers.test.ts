@@ -7,7 +7,10 @@ import { describe, expect, it } from 'vitest';
 import type { AssetRecord, ComponentDefinition, InstanceNode, LinkValue, ListItem, ListProp, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent, getTheme } from '@catalogue/index';
-import { P, managed } from '@catalogue/dsl';
+import { P } from '@catalogue/dsl';
+import { FOUNDATION } from '@catalogue/foundation/pack';
+
+const { managed } = FOUNDATION;
 import { applyOperations, pageLinkReferences } from '@engine/apply';
 import { pageLinkUses } from '@engine/page-links';
 import { normalizePropSchema } from '@engine/schema';

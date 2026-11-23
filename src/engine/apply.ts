@@ -25,7 +25,7 @@ import { newId } from '@shared/ids';
 import { findVariant, variantOptions } from '@shared/variants';
 import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily } from '@shared/fonts';
 import { documentFormat, isDocumentMime } from '@shared/document-files';
-import { getTheme, listThemes } from '@catalogue/index';
+import { getTheme, listThemes, themeLockEntry } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { slotsInsideCards } from '@generator/card-links';
@@ -1920,7 +1920,7 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
     }
   }
   state.site.themeId = theme.id;
-  state.themeLock.theme = { id: theme.id, version: theme.version };
+  state.themeLock.theme = themeLockEntry(theme);
   return { rebound: mapping.size };
 }
 

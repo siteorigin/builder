@@ -1,5 +1,8 @@
-import { P, item, managed, tok } from '../dsl';
+import { P, item, tok } from '../dsl';
+import { FOUNDATION } from './pack';
 import { eyebrowStyles, headingBlock, headingLevel, layoutAxis, mutedStyles, sectionShell, toneAxis } from './common';
+
+const { managed } = FOUNDATION;
 
 const card = { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), background: tok('color.surface'), color: tok('color.text'), border: tok('border.default'), radius: tok('radius.lg') } as const;
 

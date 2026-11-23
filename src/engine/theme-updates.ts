@@ -13,7 +13,7 @@
 import type { ComponentDefinition, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
-import { getTheme } from '@catalogue/index';
+import { getTheme, themeLockEntry } from '@catalogue/index';
 import { definitionHash, matchesLock } from '@shared/migrations';
 import { variantOptions } from '@shared/variants';
 import { clone } from './install';
@@ -212,6 +212,6 @@ export function themeRefresh(state: ProjectState, op: Op<'theme.refresh'>): { up
   }
   // The lock's pack version says the whole installed set is current, so it moves only once nothing is left behind.
   const left = themeUpdates(state);
-  if (!left.available.length && !left.kept.length) state.themeLock.theme = { id: theme.id, version: theme.version };
+  if (!left.available.length && !left.kept.length) state.themeLock.theme = themeLockEntry(theme);
   return { updated: targets, kept: updates.kept };
 }

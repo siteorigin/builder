@@ -1,16 +1,6 @@
-/**
- * Worked examples for the assistant, one per component family (ai-profile, spec §9.4). A unit test runs every
- * example through the real component contract and value normalizers, so a catalogue change cannot leave one stale.
- */
-export interface AiExample {
-  id: string;
-  componentId: string;
-  /** Words in a request that make this example relevant. */
-  keywords: string[];
-  description: string;
-  variant?: string;
-  props: Record<string, unknown>;
-}
+import type { AiExample } from '../pack';
+
+export type { AiExample };
 
 const NO_IMAGE = { assetId: null, alt: '' };
 

@@ -109,6 +109,15 @@ export async function readIfExists(path: string): Promise<string | null> {
   }
 }
 
+/** A file's bytes, for comparing files that may not be text. */
+export async function readBytesIfExists(path: string): Promise<Buffer | null> {
+  try {
+    return await fs.readFile(path);
+  } catch {
+    return null;
+  }
+}
+
 export async function removeEmptyDirs(dir: string, stopAt: string): Promise<void> {
   let cur = dir;
   while (cur.startsWith(stopAt) && cur !== stopAt) {

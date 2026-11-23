@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ListItem, ListProp, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { BUNDLED_FONTS } from '@catalogue/fonts';
+import { getTheme } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
 import { applyOperations } from '@engine/apply';
-import { RUNTIME_DIR, defFile, generateProject, pageFile } from '@generator/index';
+import { RUNTIME_DIR, STYLES_DIR, defFile, generateProject, pageFile } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { usedIcons } from '@generator/runtime-files';
@@ -86,13 +86,13 @@ describe('incremental generation (#183)', () => {
     s = apply(s, { type: 'instance.setProp', owner: page(about), nodeId: inst.id, prop: propOf(s, inst), value: 'About us' });
     expect(check(s, cache).clean).toContain('icons.js');
 
-    // A font named in page text is imported by the layout.
-    const lora = BUNDLED_FONTS.find((f) => f.name === 'Lora')!;
+    // A font named in page text is served by the token stylesheet, its licence listed beside its files.
+    const lora = getTheme(s.site.themeId).fonts.find((f) => f.name === 'Lora')!;
     const homeInst = firstInstance(s, home);
     s = apply(s, { type: 'instance.setProp', owner: page(home), nodeId: homeInst.id, prop: propOf(s, homeInst), value: lora.family });
     made = check(s, cache);
-    expect(made.clean).toEqual(['layout#clean', `page:${home}#clean`]);
-    expect(generateProject(s).get('src/routes/+layout.svelte')).toContain(lora.package);
+    expect(made.clean).toEqual(['tokens.css', 'fonts/NOTICE.txt', `page:${home}#clean`]);
+    expect(generateProject(s).get(`${STYLES_DIR}/tokens.css`)).toContain(`font-family: '${lora.family}'`);
 
     // The shared header: the layout, never a page.
     const headerInst = Object.values(s.site.shell.header.nodes).find((n) => n.kind === 'instance') as InstanceNode;

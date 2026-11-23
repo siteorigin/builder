@@ -12,13 +12,14 @@ import { themeUpdates } from '@engine/theme-updates';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
 import { getTheme } from '@catalogue/index';
-import { managed } from '@catalogue/dsl';
+import { FOUNDATION } from '@catalogue/foundation/pack';
 import { makeInstance } from '@engine/install';
 import { examplesFor } from '@agent/examples';
 import { readProject, readState } from '../../src/main/project/documents';
 import { ProjectSession } from '../../src/main/project/session';
 import { sha, toJson } from '../../src/main/project/fsutil';
 
+const { managed } = FOUNDATION;
 const FIXTURE = join(__dirname, 'fixtures/v1-project');
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
