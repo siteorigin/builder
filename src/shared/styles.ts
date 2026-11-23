@@ -121,6 +121,27 @@ const FN_RE = /^(clamp|min|max|calc)\([0-9a-z.,%+\-*/ ()]+\)$/i;
 const COLOR_RE = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color-mix)\([0-9a-z.,%+\-/ ()#]+\)|transparent|currentcolor|white|black)$/i;
 const SAFE_RE = /^[^;{}<>\\]*$/;
 const TEXT_TOKEN_RE = /^text\.[a-z0-9-]+$/;
+/** CSS comments can swallow the rest of a stylesheet, and url() loads remote content: neither is a style value. */
+const INJECTION_RE = /\/\*|\*\/|url\(|expression\(|@import/i;
+
+/** Brackets and quotes must close, or the rest of the stylesheet is read as part of this value. */
+function balanced(value: string): boolean {
+  let depth = 0;
+  let quote = '';
+  for (const ch of value) {
+    if (quote) {
+      if (ch === quote) quote = '';
+    } else if (ch === '"' || ch === "'") quote = ch;
+    else if (ch === '(') depth++;
+    else if (ch === ')' && --depth < 0) return false;
+  }
+  return depth === 0 && !quote;
+}
+
+/** Whether a literal CSS value is free of characters and constructs that could escape its declaration. */
+export function isSafeCssValue(value: string): boolean {
+  return SAFE_RE.test(value) && !INJECTION_RE.test(value) && balanced(value);
+}
 
 /** Validate a literal style value. Returns an error message or null. */
 export function validateStyleValue(propId: string, value: StyleValue): string | null {
@@ -134,7 +155,7 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
     return null;
   }
   const s = String(value).trim();
-  if (!SAFE_RE.test(s)) return `Invalid characters in ${def.label}.`;
+  if (!isSafeCssValue(s)) return `Invalid characters in ${def.label}.`;
   switch (def.kind) {
     case 'boolean':
       return typeof value === 'boolean' ? null : `${def.label} must be true or false.`;

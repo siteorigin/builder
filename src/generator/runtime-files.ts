@@ -1,3 +1,4 @@
+import type { ProjectState } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 
 /**
@@ -6,44 +7,65 @@ import { ICONS } from '@catalogue/foundation/icons';
  */
 
 export const LINK_SVELTE = `<script>
-	/** Renders a resolved link. Buttons without a destination render as plain text. */
+	/**
+	 * Renders a resolved link. Site-relative links go through SvelteKit's resolve(), so the site also
+	 * works when it is published under a sub-path. A button without a destination renders as plain,
+	 * non-interactive text.
+	 */
+	import { resolve } from '$app/paths';
 	let { link = null, appearance = '', class: className = '', children, ...rest } = $props();
-	const href = $derived(link?.href || null);
+	const href = $derived(link?.href ? (link.href.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link.href) : null);
 	const BUTTONS = ['primary', 'secondary', 'text', 'light'];
-	const classes = $derived([
-		BUTTONS.includes(appearance) ? \`so-btn so-btn--\${appearance}\` : appearance === 'plain' ? 'so-plain-link' : 'so-link',
-		className
-	]);
+	const button = $derived(BUTTONS.includes(appearance));
+	const kind = $derived(button ? \`so-btn so-btn--\${appearance}\` : appearance === 'plain' ? 'so-plain-link' : 'so-link');
 </script>
 
 {#if href}
 	<a
 		{href}
-		class={classes}
+		class={[kind, className]}
 		target={link?.newTab ? '_blank' : undefined}
 		rel={link?.newTab ? 'noopener noreferrer' : undefined}
 		{...rest}>{@render children?.()}</a
 	>
 {:else}
-	<span class={[BUTTONS.includes(appearance) && classes, className]} {...rest}>{@render children?.()}</span>
+	<span class={[button && kind, button && 'so-btn--static', className]} {...rest}>{@render children?.()}</span>
 {/if}
 `;
 
 export const IMAGE_SVELTE = `<script>
-	/** Renders a resolved image, or a neutral placeholder when no image is chosen. */
-	let { image = null, class: className = '', eager = false, sizes = '(min-width: 1280px) 1200px, 100vw', ...rest } = $props();
+	/**
+	 * Renders a resolved image, or a neutral placeholder when no image is chosen.
+	 * Images in the first section of a page load eagerly with high priority (they are usually the
+	 * largest thing on screen); everything else is lazy.
+	 */
+	import { asset } from '$app/paths';
+	let { image = null, class: className = '', eager = false, sizes = '100vw', ...rest } = $props();
+	const url = (path) => (path.startsWith('/') && !path.startsWith('//') ? asset(path.slice(1)) : path);
+	const srcset = $derived(
+		image?.srcset
+			? image.srcset
+					.split(', ')
+					.map((candidate) => {
+						const [path, width] = candidate.split(' ');
+						return \`\${url(path)} \${width}\`;
+					})
+					.join(', ')
+			: undefined
+	);
 </script>
 
 {#if image?.src}
 	<img
-		src={image.src}
-		srcset={image.srcset || undefined}
-		sizes={image.srcset ? sizes : undefined}
+		src={url(image.src)}
+		{srcset}
+		sizes={srcset ? sizes : undefined}
 		alt={image.decorative ? '' : image.alt || ''}
 		width={image.width}
 		height={image.height}
 		loading={eager ? 'eager' : 'lazy'}
-		decoding="async"
+		fetchpriority={eager ? 'high' : undefined}
+		decoding={eager ? undefined : 'async'}
 		class={['so-img', className]}
 		{...rest}
 	/>
@@ -113,7 +135,7 @@ export function iconSvelte(): string {
 	import { ICONS } from './icons.js';
 	/** Inline SVG icon from the bundled icon set. */
 	let { name = '', class: className = '', label = '', ...rest } = $props();
-	const nodes = $derived(ICONS[name] ?? ICONS['sparkles']);
+	const nodes = $derived(ICONS[name] ?? ICONS['sparkles'] ?? []);
 </script>
 
 <svg
@@ -140,8 +162,49 @@ export function iconSvelte(): string {
 `;
 }
 
-export function iconsJs(): string {
-  return `/* Icon data from Lucide (https://lucide.dev), ISC licence. Copyright (c) Lucide contributors. */\nexport const ICONS = ${JSON.stringify(ICONS)};\n`;
+/** Licence notice carried with the icon data into every project. */
+export const ICON_NOTICE = `/*
+ * Icon data from Lucide (https://lucide.dev). ISC License. Copyright (c) Lucide Icons and Contributors.
+ * Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby
+ * granted, provided that the above copyright notice and this permission notice appear in all copies.
+ * Some icons are derived from Feather (https://feathericons.com). MIT License. Copyright (c) 2013-present Cole Bemis.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+ * documentation files (the "Software"), to deal in the Software without restriction, subject to the condition that
+ * the above copyright notice and this permission notice shall be included in all copies or substantial portions.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+ */`;
+
+/** The icon used when a name is unknown; always included. */
+export const FALLBACK_ICON = 'sparkles';
+
+/**
+ * Icon names a project can show: any string in its pages, shell and component definitions that names a
+ * bundled icon, plus quoted names in code component source. Over-inclusion is harmless; omission is not.
+ */
+export function usedIcons(state: ProjectState): string[] {
+  const found = new Set<string>([FALLBACK_ICON]);
+  const visit = (v: unknown) => {
+    if (typeof v === 'string') {
+      if (Object.hasOwn(ICONS, v)) found.add(v);
+    } else if (Array.isArray(v)) v.forEach(visit);
+    else if (v && typeof v === 'object') Object.values(v).forEach(visit);
+  };
+  visit(state.pages);
+  visit(state.site.shell);
+  for (const def of Object.values(state.components)) {
+    if (def.kind === 'code') {
+      for (const m of (def.source ?? '').matchAll(/['"`]([a-z0-9-]+)['"`]/g)) if (Object.hasOwn(ICONS, m[1])) found.add(m[1]);
+    }
+    visit(def.properties);
+    visit(def.tree);
+  }
+  return Object.keys(ICONS).filter((n) => found.has(n));
+}
+
+/** Icon data for the icons the project uses. */
+export function iconsJs(state: ProjectState): string {
+  const used = Object.fromEntries(usedIcons(state).map((n) => [n, ICONS[n]]));
+  return `${ICON_NOTICE}\nexport const ICONS = ${JSON.stringify(used)};\n`;
 }
 
 export const UTIL_JS = `/** Returns whether a resolved value should be shown. */

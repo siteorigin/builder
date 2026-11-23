@@ -32,9 +32,9 @@ address { font-style: normal; }
 .so-rich > * + * { margin-top: 1em; }
 .so-rich a { color: var(--so-color-brand); text-underline-offset: 3px; }
 
-.so-link { color: var(--so-color-brand); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.so-link { color: var(--so-color-brand); background: var(--so-btn-bg, none); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 
-.so-plain-link { text-decoration: none; }
+.so-plain-link { background: var(--so-btn-bg, none); text-decoration: none; }
 .so-plain-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 .so-btn {
@@ -43,18 +43,25 @@ address { font-style: normal; }
   border: 1px solid transparent; border-radius: var(--so-radius-pill);
   font-family: var(--so-font-body); font-size: 0.97rem; font-weight: 550; line-height: 1.2; letter-spacing: -0.005em;
   text-decoration: none; white-space: nowrap; cursor: pointer;
+  background: var(--so-btn-bg, transparent); color: var(--so-btn-fg, currentColor);
   transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
 }
-.so-btn:active { transform: translateY(1px); }
-.so-btn--primary { background: var(--so-color-brand); color: var(--so-color-on-brand); box-shadow: var(--so-shadow-sm); }
-.so-btn--primary:hover { background: var(--so-color-brand-strong); }
-.so-btn--secondary { background: transparent; color: currentColor; border-color: color-mix(in srgb, currentColor 28%, transparent); }
-.so-btn--secondary:hover { border-color: currentColor; }
-.so-btn--text { min-height: 0; padding: 0.2em 0; border-radius: 0; color: var(--so-color-brand); background: none; }
+/* Colours come from --so-btn-bg / --so-btn-fg, which the generator sets wherever a button's colours are styled
+   (resetting --so-btn-bg-hover), so the hover state follows the colour actually shown. */
+:is(a, button).so-btn:active { transform: translateY(1px); }
+.so-btn--primary { --so-btn-bg: var(--so-color-brand); --so-btn-fg: var(--so-color-on-brand); --so-btn-bg-hover: var(--so-color-brand-strong); box-shadow: var(--so-shadow-sm); }
+:is(a, button).so-btn--primary:hover { background: var(--so-btn-bg-hover, color-mix(in srgb, var(--so-btn-bg) 84%, #000)); }
+.so-btn--secondary { border-color: color-mix(in srgb, currentColor 28%, transparent); }
+:is(a, button).so-btn--secondary:hover { border-color: currentColor; }
+.so-btn--text { min-height: 0; padding: 0.2em 0; border-radius: 0; --so-btn-fg: var(--so-color-brand); background: none; }
 .so-btn--text::after { content: '→'; transition: transform 160ms ease; }
-.so-btn--text:hover::after { transform: translateX(3px); }
-.so-btn--light { background: var(--so-color-on-brand); color: var(--so-color-brand-strong); }
-.so-btn--light:hover { background: color-mix(in srgb, var(--so-color-on-brand) 88%, var(--so-color-brand)); }
+:is(a, button).so-btn--text:hover::after { transform: translateX(3px); }
+.so-btn--light { --so-btn-bg: var(--so-color-on-brand); --so-btn-fg: var(--so-color-brand-strong); --so-btn-bg-hover: color-mix(in srgb, var(--so-color-on-brand) 88%, var(--so-color-brand)); }
+:is(a, button).so-btn--light:hover { background: var(--so-btn-bg-hover, color-mix(in srgb, var(--so-btn-bg) 88%, var(--so-btn-fg))); }
+/* A button with no destination is shown as a label: no pointer, no hover or press feedback. */
+.so-btn--static { cursor: default; box-shadow: none; }
+.so-btn--static.so-btn--text::after { content: none; }
+[id] { scroll-margin-top: 5.5rem; }
 
 .so-img { width: 100%; height: auto; object-fit: cover; }
 .so-img--placeholder {

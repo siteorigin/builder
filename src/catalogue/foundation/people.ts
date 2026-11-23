@@ -82,7 +82,7 @@ export const testimonials = managed({
     card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow'] },
     quote: { nodeId: 'quote', label: 'Quote', styleControls: ['textStyle', 'color'] }
   },
-  variants: toneVariants(['lead', 'role']),
+  variants: toneVariants(['lead']),
   defaultVariant: 'muted',
   build: (b) =>
     sectionShell(b, [

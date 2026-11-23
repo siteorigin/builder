@@ -17,13 +17,14 @@ import type {
   PageDoc,
   ProjectState,
   PropSchema,
+  ResponsiveScope,
   ResponsiveStyles,
   TextStyleValue,
   TokenDef,
   TokenValue
 } from '@shared/types';
 import { GENERATOR_VERSION, isBinding } from '@shared/types';
-import { MEDIA_QUERIES, styleToCss, tokenVar } from '@shared/styles';
+import { MEDIA_QUERIES, isSafeCssValue, styleToCss, tokenVar } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs } from './runtime-files';
 import { routeDir } from '@shared/routes';
@@ -64,8 +65,60 @@ function relImport(fromFile: string, toFile: string): string {
   const rel = [...Array(up).fill('..'), ...to.slice(i)].join('/');
   return rel.startsWith('.') ? rel : `./${rel}`;
 }
-const js = (v: unknown) => JSON.stringify(v ?? null);
+/**
+ * A JavaScript literal for generated Svelte. `<` is escaped so that text such as "</script>" can never end
+ * the surrounding <script> element early.
+ */
+export const js = (v: unknown) => JSON.stringify(v ?? null).replace(/</g, '\\u003c');
 const attrJs = (v: unknown) => `{${js(v)}}`;
+
+const RESERVED_WORDS = new Set(
+  (
+    'break case catch class const continue debugger default delete do else enum export extends false finally for function if import in ' +
+    'instanceof new null return super switch this throw true try typeof var void while with yield let static implements interface ' +
+    'package private protected public await async of arguments eval undefined NaN Infinity'
+  ).split(' ')
+);
+/** Names a generated managed component declares itself. Properties never use them as local variables. */
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_id', 'so_eager', '__so', 'has', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon']);
+/** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
+const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_id', 'so_eager', '__so', 'children']);
+
+/**
+ * The key a managed component's property is passed under (instance attribute and `$props()` key). Names the
+ * component already uses for itself are renamed, avoiding the names of the definition's other properties.
+ */
+export function propKey(def: ComponentDefinition, name: string): string {
+  if (def.kind !== 'managed' || !(INTERNAL_KEYS.has(name) || name.startsWith('slot_'))) return name;
+  let key = `prop_${name}`;
+  while (Object.hasOwn(def.properties, key)) key = `prop_${key}`;
+  return key;
+}
+
+/** Local variable names for a managed component's properties: valid, not reserved, unique and collision-free. */
+export function propLocals(def: ComponentDefinition): Map<string, string> {
+  const out = new Map<string, string>();
+  const taken = new Set<string>();
+  for (const name of Object.keys(def.properties).sort()) {
+    let local = /^[a-zA-Z_$][\w$]*$/.test(name) ? name : `_${name.replace(/[^\w$]/g, '_')}`;
+    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || /^(\$|slot_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
+    let unique = local;
+    for (let i = 2; taken.has(unique); i++) unique = `${local}_${i}`;
+    taken.add(unique);
+    out.set(name, unique);
+  }
+  return out;
+}
+
+/** A Svelte attribute for a component prop; names that cannot be written as attributes are spread. */
+function propAttr(key: string, expr: string): string {
+  return /^[a-zA-Z_$][\w$-]*$/.test(key) ? `${key}={${expr}}` : `{...{ ${js(key)}: ${expr} }}`;
+}
+
+/** Property access on a repeated item. */
+function itemField(itemVar: string, field: string): string {
+  return /^[a-zA-Z_$][\w$]*$/.test(field) ? `${itemVar}.${field}` : `${itemVar}[${js(field)}]`;
+}
 
 // ---------------------------------------------------------------------------
 // Value resolution
@@ -143,7 +196,7 @@ export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx
 export function resolveInstanceProps(def: ComponentDefinition, node: InstanceNode, ctx: ResolveContext): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [name, schema] of Object.entries(def.properties)) {
-    const raw = name in node.props ? node.props[name] : schema.default;
+    const raw = Object.hasOwn(node.props, name) ? node.props[name] : schema.default;
     out[name] = resolveValue(schema, raw, ctx);
   }
   return out;
@@ -181,15 +234,55 @@ export function generateTokensCss(state: ProjectState): string {
     }
   }
   lines.push('}', '');
-  return lines.join('\n');
+  // Values come from validated documents, but a hand-edited document must still not break out of :root.
+  return lines.filter((l) => !l.startsWith('\t--') || safeDecl(l.slice(1, -1))).join('\n');
 }
 
 // ---------------------------------------------------------------------------
 // Style rules
 // ---------------------------------------------------------------------------
 
-type RuleSet = { base: string[]; phone: string[]; tablet: string[]; desktop: string[] };
-const newRules = (): RuleSet => ({ base: [], phone: [], tablet: [], desktop: [] });
+/** `wide` holds rules for tablet and desktop together (everything above phone width). */
+type RuleSet = { base: string[]; wide: string[]; phone: string[]; tablet: string[]; desktop: string[] };
+const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [] });
+const WIDE_QUERY = '(min-width: 768px)';
+
+/** Declarations that could escape their rule or load remote content are never written. */
+function safeDecl(decl: string): boolean {
+  const i = decl.indexOf(':');
+  return i > 0 && isSafeCssValue(decl.slice(i + 1).trim());
+}
+
+interface RuleOpts {
+  /** Link nodes: colours also set --so-btn-bg / --so-btn-fg so button hover states follow them. */
+  link?: boolean;
+  /**
+   * Instance overrides: a multi-column value set for all sizes applies from tablet up, so the component's
+   * own phone layout (usually one column) still applies unless a phone value is set explicitly.
+   */
+  wideColumns?: boolean;
+  /** Instance overrides: the display value that shows a part the definition hides, for `hidden: false`. */
+  unhide?: (scope: ResponsiveScope) => string | null;
+}
+
+function nodeDisplay(layout: unknown): string | null {
+  return layout === 'stack' || layout === 'row' ? 'flex' : layout === 'grid' ? 'grid' : layout === 'block' ? 'block' : null;
+}
+
+/**
+ * For a part shown again by an instance (`hidden: false`), the display value that undoes the definition's or
+ * variant's `display: none` at that scope, or null when nothing hides it there.
+ */
+function unhider(def: ComponentDefinition, nodeId: string, variant: string | undefined, override: ResponsiveStyles) {
+  const layers = [def.tree?.nodes[nodeId]?.styles, variant ? def.variants?.[variant]?.styles?.[nodeId] : undefined].filter(Boolean) as ResponsiveStyles[];
+  return (scope: ResponsiveScope): string | null => {
+    const scopes: ResponsiveScope[] = scope === 'base' ? ['base', 'phone', 'tablet', 'desktop'] : ['base', scope];
+    if (!layers.some((l) => scopes.some((s) => l[s]?.hidden === true))) return null;
+    let layout: unknown;
+    for (const l of [...layers, override]) for (const s of ['base', scope] as const) if (l[s]?.layout !== undefined) layout = l[s]!.layout;
+    return nodeDisplay(layout) ?? 'revert';
+  };
+}
 
 const ORDER = (k: string) => (k === 'textStyle' ? 0 : k === 'hidden' ? 2 : 1);
 
@@ -205,33 +298,52 @@ function resolveVisibility(styles: ResponsiveStyles): ResponsiveStyles {
   if (out.base) delete out.base.hidden;
   for (const r of ranges) {
     const visible = out[r]?.hidden === false;
+    const hidden = out[r]?.hidden === true;
     if (out[r]) delete out[r]!.hidden;
-    if (hiddenBase && !visible) out[r] = { ...(out[r] ?? {}), hidden: true };
+    if (hidden || (hiddenBase && !visible)) out[r] = { ...(out[r] ?? {}), hidden: true };
   }
   return out;
 }
 
-function addRules(rules: RuleSet, selector: string, input: ResponsiveStyles | undefined) {
+function addRules(rules: RuleSet, selector: string, input: ResponsiveStyles | undefined, opts: RuleOpts = {}) {
   if (!input) return;
   const styles = resolveVisibility(input);
   for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
-    const props = styles[scope];
+    // Showing a part the definition hides needs an explicit display value, decided before visibility folding.
+    const shown = input[scope]?.hidden === false && opts.unhide ? opts.unhide(scope) : null;
+    const props = styles[scope] ?? (shown ? {} : undefined);
     if (!props) continue;
-    const decls: string[] = [];
+    const decls: string[] = shown ? [`display: ${shown}`] : [];
+    const wide: string[] = [];
     // Composite text styles first so explicit typography wins; visibility last so it can override display.
     const keys = Object.keys(props).sort((a, b) => ORDER(a) - ORDER(b) || a.localeCompare(b));
     for (const k of keys) {
-      decls.push(...styleToCss(k, props[k]));
+      const out = styleToCss(k, props[k]);
+      // Links and buttons paint from --so-btn-bg / --so-btn-fg, so a styled button keeps its hover state
+      // whatever the specificity of the rule that styles it.
+      if (opts.link && k === 'background') out.splice(0, out.length, ...out.map((d) => d.replace(/^background:/, '--so-btn-bg:')), '--so-btn-bg-hover: initial');
+      if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
+      const target = opts.wideColumns && scope === 'base' && k === 'columns' && Number(props[k]) > 1 ? wide : decls;
+      target.push(...out.filter(safeDecl));
     }
     if (decls.length) rules[scope].push(`${selector} {\n${decls.map((d) => `\t${d};`).join('\n')}\n}`);
+    // Shown at all sizes: each range keeps the display its own layout gives it.
+    if (shown && scope === 'base')
+      for (const r of ['phone', 'tablet', 'desktop'] as const) {
+        const d = input[r]?.hidden === undefined ? opts.unhide!(r) : null;
+        if (d && d !== shown) rules[r].push(`${selector} {\n\tdisplay: ${d};\n}`);
+      }
+    if (wide.length) rules.wide.push(`${selector} {\n${wide.map((d) => `\t${d};`).join('\n')}\n}`);
   }
 }
 
 function emitRules(rules: RuleSet): string {
   const out: string[] = [...rules.base];
+  const block = (query: string, list: string[]) => `@media ${query} {\n${list.map((r) => r.replace(/^/gm, '\t')).join('\n')}\n}`;
+  if (rules.wide.length) out.push(block(WIDE_QUERY, rules.wide));
   for (const scope of ['phone', 'tablet', 'desktop'] as const) {
     if (!rules[scope].length) continue;
-    out.push(`@media ${MEDIA_QUERIES[scope]} {\n${rules[scope].map((r) => r.replace(/^/gm, '\t')).join('\n')}\n}`);
+    out.push(block(MEDIA_QUERIES[scope], rules[scope]));
   }
   return out.join('\n');
 }
@@ -258,7 +370,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
   const wrap = (sel: string) => (standalone ? `:global(${sel})` : sel);
   for (const id of Object.keys(def.tree.nodes).sort()) {
     const n = def.tree.nodes[id];
-    addRules(rules, wrap(`.${nodeClass(def, id)}`), n.styles);
+    addRules(rules, wrap(`.${nodeClass(def, id)}`), n.styles, { link: n.kind === 'link' });
     if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, n, `.${nodeClass(def, id)}`, wrap);
   }
   for (const vid of Object.keys(def.variants ?? {}).sort()) {
@@ -267,7 +379,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
     for (const nid of Object.keys(v.styles ?? {}).sort()) {
       const rootId = def.tree.rootIds[0];
       const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `${vc} .${nodeClass(def, nid)}`;
-      addRules(rules, wrap(sel), v.styles![nid]);
+      addRules(rules, wrap(sel), v.styles![nid], { link: def.tree.nodes[nid]?.kind === 'link' });
     }
   }
   return rules;
@@ -297,8 +409,17 @@ function addOverrideRules(rules: RuleSet, state: ProjectState, inst: InstanceNod
     // Doubled root selector: nested overrides must beat the nested definition's variant rules.
     const isRoot = partId === 'root' || !part || part.nodeId === def.tree?.rootIds[0];
     const sel = isRoot ? `${rootSelector}${rootSelector}${rootSelector}` : `${rootSelector}${rootSelector} .${nodeClass(def, part.nodeId)}`;
-    addRules(rules, wrap(sel), inst.overrides![partId]);
+    addRules(rules, wrap(sel), inst.overrides![partId], overrideOpts(def, inst, partId));
   }
+}
+
+function overrideOpts(def: ComponentDefinition, inst: InstanceNode, partId: string): RuleOpts {
+  const nodeId = def.parts[partId]?.nodeId ?? def.tree?.rootIds[0] ?? '';
+  return {
+    link: def.tree?.nodes[nodeId]?.kind === 'link',
+    wideColumns: true,
+    unhide: unhider(def, nodeId, inst.variant ?? def.defaultVariant, inst.overrides?.[partId] ?? {})
+  };
 }
 
 function treeOwners(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree }> {
@@ -322,10 +443,10 @@ export function generateSiteCss(state: ProjectState): string {
           const cls = overrideClass(n.id, partId);
           // A code component's own styles are scoped (one class plus Svelte's hash class), so its overrides
           // take one more class to win whatever order the stylesheets load in.
-          addRules(rules, def.kind === 'code' ? `.${cls}.${cls}.${cls}` : `.${cls}.${cls}`, n.overrides![partId]);
+          addRules(rules, def.kind === 'code' ? `.${cls}.${cls}.${cls}` : `.${cls}.${cls}`, n.overrides![partId], overrideOpts(def, n, partId));
         }
       } else {
-        addRules(rules, `.${pageNodeClass(id)}`, n.styles);
+        addRules(rules, `.${pageNodeClass(id)}`, n.styles, { link: n.kind === 'link' });
       }
     }
   }
@@ -354,6 +475,12 @@ interface EmitCtx {
   items: string[];
   rctx: ResolveContext;
   indent: number;
+  /** Property name -> local variable (definitions only). */
+  locals: Map<string, string>;
+  /** Page-level: the root currently emitted is the first section of the page. */
+  firstSection?: boolean;
+  /** Set when the markup refers to the per-instance `uid` from `$props.id()`. */
+  usesUid?: boolean;
 }
 
 function useImport(ctx: EmitCtx, name: string, path: string) {
@@ -362,13 +489,14 @@ function useImport(ctx: EmitCtx, name: string, path: string) {
 
 function bindExpr(ctx: EmitCtx, v: unknown, schema?: PropSchema): string {
   if (isBinding(v)) {
-    if ('$prop' in v) return safeIdent(v.$prop);
+    if ('$prop' in v) return ctx.locals.get(v.$prop) ?? 'undefined';
     const itemVar = ctx.items[ctx.items.length - 1] ?? 'item';
-    return `${itemVar}.${safeIdent(v.$item)}`;
+    return itemField(itemVar, v.$item);
   }
   return js(schema ? resolveValue(schema, v, ctx.rctx) : v);
 }
 
+/** Identifier suffix for slot snippet names (always prefixed, so reserved words are safe). */
 function safeIdent(name: string): string {
   return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) ? name : `_${name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
 }
@@ -438,6 +566,67 @@ function indentBlock(s: string): string {
   return s.replace(/^/gm, '\t');
 }
 
+/**
+ * A navigation landmark whose first child is a heading is labelled by that heading, so screen readers can
+ * tell several navigation regions apart. Only outside repeats, where the generated ID stays unique.
+ */
+function labellingHeading(ctx: EmitCtx, node: GraphNode): GraphNode | null {
+  if (!ctx.def || ctx.items.length || node.kind !== 'element' || node.tag !== 'nav') return null;
+  const first = ctx.tree.nodes[node.children[0]];
+  return first?.kind === 'text' && !first.rich && /^h[2-6]$/.test(first.tag) && !first.when && !first.unless ? first : null;
+}
+
+function headingIdExpr(ctx: EmitCtx, heading: GraphNode): string {
+  if (heading.anchor) return js(heading.anchor);
+  ctx.usesUid = true;
+  return `\`\${uid}-${heading.id}\``;
+}
+
+function parentMap(tree: NodeTree): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const n of Object.values(tree.nodes)) {
+    const kids = n.kind === 'element' || n.kind === 'repeat' ? n.children : [];
+    for (const c of kids) out.set(c, n.id);
+  }
+  return out;
+}
+
+/**
+ * A realistic `sizes` hint for an image inside a definition: its own fixed width, or its share of the
+ * nearest grid and content container at each breakpoint. Null keeps the runtime default (100vw).
+ */
+function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
+  const px = (v: unknown) => (typeof v === 'string' && /^\d+(\.\d+)?px$/.test(v) ? v : null);
+  const own = node.styles?.base ?? {};
+  const fixed = px(own.width) ?? px(own.maxWidth);
+  if (fixed) return fixed;
+  if (!ctx.def) return null;
+  const parents = parentMap(ctx.tree);
+  const tokenPx = (v: unknown): number | null => {
+    const raw = v && typeof v === 'object' && 'token' in v ? effectiveTokens(ctx.state).find((t) => t.id === (v as { token: string }).token)?.value : v;
+    const m = typeof raw === 'string' ? raw.match(/^(\d+(?:\.\d+)?)px$/) : null;
+    return m ? Number(m[1]) : null;
+  };
+  let cols: { base: number; phone?: number; tablet?: number; desktop?: number } | null = null;
+  let container: number | null = null;
+  const seen = new Set<string>();
+  for (let id = parents.get(node.id); id && !seen.has(id); id = parents.get(id)) {
+    seen.add(id);
+    const s = ctx.tree.nodes[id]?.styles ?? {};
+    if (!cols && (s.base?.layout === 'grid' || s.base?.columns !== undefined)) {
+      const n = (v: unknown) => (typeof v === 'number' && v > 0 ? v : undefined);
+      cols = { base: n(s.base?.columns) ?? 1, phone: n(s.phone?.columns), tablet: n(s.tablet?.columns), desktop: n(s.desktop?.columns) };
+    }
+    if (container === null && s.base?.maxWidth !== undefined) container = tokenPx(s.base.maxWidth);
+  }
+  if (!cols) return null;
+  // Each range is bounded (see MEDIA_QUERIES), so a range without its own value uses the base value.
+  const desktop = cols.desktop ?? cols.base;
+  const tablet = cols.tablet ?? cols.base;
+  const phone = cols.phone ?? cols.base;
+  return `(min-width: 1024px) ${Math.round((container ?? 1200) / desktop)}px, (min-width: 768px) ${Math.round(100 / tablet)}vw, ${Math.round(100 / phone)}vw`;
+}
+
 function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
   const p = pad(ctx);
   const ids = idAttrs(ctx, node.id);
@@ -446,7 +635,9 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       ctx.indent++;
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
-      return `${p}<${node.tag} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids}>${children ? `\n${children}\n${p}` : ''}</${node.tag}>`;
+      const heading = labellingHeading(ctx, node);
+      const label = heading ? ` aria-labelledby={${headingIdExpr(ctx, heading)}}` : '';
+      return `${p}<${node.tag} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${label}${ids}>${children ? `\n${children}\n${p}` : ''}</${node.tag}>`;
     }
     case 'text': {
       if (node.rich) {
@@ -456,12 +647,19 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
         return `${p}<SoRichText paragraphs={${val}}${listAttr} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
       }
       const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(Array.isArray(node.text) ? node.text.join('\n\n') : node.text);
-      return `${p}<${node.tag} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids}>{${val}}</${node.tag}>`;
+      const parentId = parentMap(ctx.tree).get(node.id);
+      const parent = parentId ? ctx.tree.nodes[parentId] : undefined;
+      const labels = !node.anchor && parent && labellingHeading(ctx, parent)?.id === node.id;
+      const idAttr = labels ? ` id={${headingIdExpr(ctx, node)}}` : anchorAttr(ctx, node);
+      return `${p}<${node.tag} class=${classExpr(ctx, node)}${idAttr}${ids}>{${val}}</${node.tag}>`;
     }
     case 'image': {
       useImport(ctx, 'SoImage', `${RUNTIME_DIR}/Image.svelte`);
       const val = isBinding(node.image) ? bindExpr(ctx, node.image) : js(resolveImage(node.image, ctx.rctx));
-      return `${p}<SoImage image={${val}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
+      // The first section's images (outside lists) are usually the largest content: load them eagerly.
+      const eager = ctx.def ? (ctx.items.length ? '' : ' eager={so_eager}') : ctx.firstSection ? ' eager' : '';
+      const sizes = imageSizes(ctx, node);
+      return `${p}<SoImage image={${val}}${eager}${sizes ? ` sizes=${js(sizes)}` : ''} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
     }
     case 'link': {
       useImport(ctx, 'SoLink', `${RUNTIME_DIR}/Link.svelte`);
@@ -503,15 +701,16 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // Class: definitions pass their node class; pages pass nothing (overrides use so_o).
   if (ctx.def) attrs.push(`class=${classExpr(ctx, node)}`);
   for (const [propName, schema] of Object.entries(def.properties).sort(([a], [b]) => a.localeCompare(b))) {
-    const raw = propName in node.props ? node.props[propName] : schema.default;
+    const raw = Object.hasOwn(node.props, propName) ? node.props[propName] : schema.default;
     const expr = isBinding(raw) ? bindExpr(ctx, raw) : js(resolveValue(schema, raw, ctx.rctx));
-    attrs.push(`${safeIdent(propName)}={${expr}}`);
+    attrs.push(propAttr(propKey(def, propName), expr));
   }
   const variant = node.variant ?? def.defaultVariant;
   if (variant && def.variants?.[variant]) attrs.push(`variant=${js(variant)}`);
   // A section's anchor lands on its component's root element.
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);
+  if (ctx.firstSection && !ctx.def && def.kind === 'managed' && hasEagerImages(def)) attrs.push('so_eager={true}');
   // Instance overrides at page level are applied through generated override classes. Code components get the
   // same map, and their root override also through `class`, which every code component places on its root.
   if (!ctx.def && node.overrides && Object.keys(node.overrides).length) {
@@ -562,9 +761,25 @@ function propDefaultExpr(schema: PropSchema, ctx: ResolveContext): string {
   return js(resolveValue(schema, schema.default, ctx));
 }
 
+/** Whether a definition has images outside lists, which take the page's `so_eager` flag. */
+function hasEagerImages(def: ComponentDefinition): boolean {
+  if (!def.tree) return false;
+  const parents = parentMap(def.tree);
+  return Object.values(def.tree.nodes).some((n) => {
+    if (n.kind !== 'image') return false;
+    const seen = new Set<string>();
+    for (let id = parents.get(n.id); id && !seen.has(id); id = parents.get(id)) {
+      seen.add(id);
+      if (def.tree!.nodes[id]?.kind === 'repeat') return false;
+    }
+    return true;
+  });
+}
+
 export function generateManagedComponent(state: ProjectState, def: ComponentDefinition, opts: GenerateOptions): string {
   const file = defFile(def);
   const tree = def.tree!;
+  const locals = propLocals(def);
   const ctx: EmitCtx = {
     state,
     file,
@@ -575,22 +790,30 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     ctxExpr: '',
     items: [],
     rctx: { state },
-    indent: 0
+    indent: 0,
+    locals
   };
   const markup = emitNodes(ctx, tree.rootIds);
   const propDecls = Object.entries(def.properties)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, schema]) => `\t\t${safeIdent(name)} = ${propDefaultExpr(schema, ctx.rctx)},`);
+    .map(([name, schema]) => {
+      const key = propKey(def, name);
+      const local = locals.get(name)!;
+      const head = key === local ? local : `${/^[a-zA-Z_$][\w$]*$/.test(key) ? key : js(key)}: ${local}`;
+      return `\t\t${head} = ${propDefaultExpr(schema, ctx.rctx)},`;
+    });
   if (def.variants && Object.keys(def.variants).length) propDecls.push(`\t\tvariant = ${js(def.defaultVariant ?? Object.keys(def.variants)[0])},`);
   for (const slotName of Object.keys(def.slots ?? {}).sort()) propDecls.push(`\t\tslot_${safeIdent(slotName)} = undefined,`);
   propDecls.push(`\t\tso_o = undefined,`);
   propDecls.push(`\t\tso_id = undefined,`);
+  if (hasEagerImages(def)) propDecls.push(`\t\tso_eager = false,`);
   if (opts.instrument) propDecls.push(`\t\t__so = '',`);
   propDecls.push(`\t\tclass: className = ''`);
   const imports = renderImports(ctx.imports);
+  const uid = ctx.usesUid ? `\tconst uid = $props.id();\n` : '';
   return (
     HEADER_NOTE(`siteorigin/components/${def.id}/component.json`) +
-    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n</script>\n\n${markup}\n`
+    `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n${uid}</script>\n\n${markup}\n`
   );
 }
 
@@ -630,25 +853,52 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
     ctxExpr: `page:${page.id}`,
     items: [],
     rctx: { state },
-    indent: 0
+    indent: 0,
+    locals: new Map()
   };
-  const markup = emitNodes(ctx, page.rootIds);
+  // The first section is usually what fills the first screen; its images load eagerly.
+  const markup = page.rootIds
+    .map((id, i) => {
+      ctx.firstSection = i === 0;
+      return emitNode(ctx, id);
+    })
+    .filter(Boolean)
+    .join('\n');
+  ctx.firstSection = false;
   const site = state.site;
   const title = page.seo.title || (page.id === site.homePageId ? site.name : `${page.title} · ${site.name}`);
   const description = page.seo.description || site.description;
   // User text is emitted as Svelte string literals, never as template text, so "{" cannot become code.
   const head: string[] = [`\t<title>{${js(title)}}</title>`];
   if (description) head.push(`\t<meta name="description" content={${js(description)}} />`);
+  head.push(`\t<meta property="og:type" content="website" />`);
   head.push(`\t<meta property="og:title" content={${js(title)}} />`);
   if (description) head.push(`\t<meta property="og:description" content={${js(description)}} />`);
-  const social = page.seo.socialImage ?? site.socialImage;
+  const socialId = page.seo.socialImage ?? site.socialImage;
+  const social = socialId ? state.assets.assets[socialId] : undefined;
   const base = site.baseUrl?.replace(/\/+$/, '');
   if (base) {
     head.push(`\t<link rel="canonical" href={${js(base + page.route)}} />`);
     head.push(`\t<meta property="og:url" content={${js(base + page.route)}} />`);
-    if (social && state.assets.assets[social]) head.push(`\t<meta property="og:image" content={${js(base + '/' + state.assets.assets[social].file.replace(/^static\//, ''))}} />`);
+    if (social) {
+      head.push(`\t<meta property="og:image" content={${js(base + '/' + social.file.replace(/^static\//, ''))}} />`);
+      if (social.width && social.height) {
+        head.push(`\t<meta property="og:image:width" content=${js(String(social.width))} />`);
+        head.push(`\t<meta property="og:image:height" content=${js(String(social.height))} />`);
+      }
+      const alt = social.altSuggestion || social.description || '';
+      if (alt) head.push(`\t<meta property="og:image:alt" content={${js(alt)}} />`);
+    }
   }
+  head.push(`\t<meta name="twitter:card" content=${js(base && social ? 'summary_large_image' : 'summary')} />`);
   if (page.seo.noindex) head.push(`\t<meta name="robots" content="noindex" />`);
+  // Structured data: the home page describes the website itself, once a public URL is known.
+  if (base && page.id === site.homePageId && !page.seo.noindex) {
+    const ld: Record<string, unknown> = { '@context': 'https://schema.org', '@type': 'WebSite', name: site.name, url: base + '/' };
+    if (site.description) ld.description = site.description;
+    if (/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(site.language)) ld.inLanguage = site.language;
+    head.push(`\t{@html ${js(`<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`)}}`);
+  }
   const imports = renderImports(ctx.imports);
   return (
     HEADER_NOTE(`siteorigin/pages/${page.id}.json`) +
@@ -670,7 +920,8 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     ctxExpr: `shell:${part}`,
     items: [],
     rctx: { state },
-    indent: 1
+    indent: 1,
+    locals: new Map()
   });
   const hctx = mk(state.site.shell.header, 'header');
   const header = emitNodes(hctx, state.site.shell.header.rootIds);
@@ -681,9 +932,11 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const noShell = state.site.pageOrder
     .map((id) => state.pages[id])
     .filter((p) => p && p.shell === 'none')
-    .map((p) => p.route)
+    .map((p) => routeId(p.route))
     .sort();
   const favicon = state.site.favicon && state.assets.assets[state.site.favicon];
+  const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
+  const iconType = favicon ? favicon.mime : 'image/svg+xml';
   const fontImports = theme.fontImports.map((f) => `\timport '${f}';`).join('\n');
   const devBridge = opts.instrument
     ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tonMount(() => {\n\t\timport('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => window.dispatchEvent(new CustomEvent('siteorigin:navigated')));`
@@ -697,15 +950,17 @@ ${fontImports}
 	import '../lib/siteorigin/styles/components.css';
 	import '../lib/siteorigin/styles/site.css';
 	import { page } from '$app/state';
+	import { asset } from '$app/paths';
 ${imports}${devBridge}
 
 	let { children } = $props();
 	const pagesWithoutShell = new Set(${js(noShell)});
-	const showShell = $derived(!pagesWithoutShell.has(page.url.pathname));
+	const showShell = $derived(!pagesWithoutShell.has(page.route.id ?? ''));
 </script>
 
 <svelte:head>
-${favicon ? `\t<link rel="icon" href={${js('/' + favicon.file.replace(/^static\//, ''))}} />\n` : ''}\t<meta property="og:site_name" content={${js(state.site.name)}} />
+	<link rel="icon" href={asset(${js(iconHref)})} type=${js(iconType)} />
+	<meta property="og:site_name" content={${js(state.site.name)}} />
 </svelte:head>
 
 <a class="so-skip-link" href="#main">Skip to content</a>
@@ -743,12 +998,17 @@ export function generateAppHtml(state: ProjectState): string {
 `;
 }
 
+/** SvelteKit route ID for a page route: "/about/" -> "/about". */
+export function routeId(route: string): string {
+  return '/' + routeDir(route);
+}
+
+/**
+ * Crawlers may fetch every page: hidden pages carry a noindex meta tag and are left out of the sitemap.
+ * Disallowing them here would stop crawlers from ever reading that tag.
+ */
 export function generateRobots(state: ProjectState): string {
   const lines = ['User-agent: *', 'Allow: /'];
-  for (const id of state.site.pageOrder) {
-    const p = state.pages[id];
-    if (p?.seo.noindex) lines.push(`Disallow: ${p.route}`);
-  }
   const base = state.site.baseUrl?.replace(/\/+$/, '');
   if (base) lines.push('', `Sitemap: ${base}/sitemap.xml`);
   return lines.join('\n') + '\n';
@@ -764,6 +1024,38 @@ export function generateSitemap(state: ProjectState): string | null {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
 }
 
+/** Served path of the generated favicon used until a favicon image is chosen. */
+export const DEFAULT_FAVICON = 'favicon.svg';
+
+/** A simple monogram favicon in the site's brand colours, so browsers never request a missing /favicon.ico. */
+export function generateFaviconSvg(state: ProjectState): string {
+  const tokens = effectiveTokens(state);
+  const color = (id: string, fallback: string) => {
+    const v = tokens.find((t) => t.id === id)?.value;
+    return typeof v === 'string' && /^#[0-9a-f]{3,8}$/i.test(v) ? v : fallback;
+  };
+  const letter = ([...state.site.name.trim()][0] ?? 'S').toUpperCase();
+  const esc = letter.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="${color('color.brand', '#1f5a4c')}"/><text x="32" y="43" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="34" font-weight="600" fill="${color('color.on-brand', '#ffffff')}">${esc}</text></svg>\n`;
+}
+
+/** Sub-path the site is published under, from the public URL ("https://example.com/my-site" -> "/my-site"). */
+export function basePath(state: ProjectState): string {
+  const url = state.site.baseUrl;
+  if (!url) return '';
+  try {
+    const path = new URL(url).pathname.replace(/\/+$/, '');
+    return /^(\/[\w.-]+)*$/.test(path) && !path.split('/').some((s) => s === '.' || s === '..') ? path : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Read by vite.config.js: SvelteKit's paths.base for production builds. */
+export function generatePathsJson(state: ProjectState): string {
+  return JSON.stringify({ base: basePath(state) }, null, '\t') + '\n';
+}
+
 // ---------------------------------------------------------------------------
 // Whole project
 // ---------------------------------------------------------------------------
@@ -776,7 +1068,7 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {})
   files.set(`${RUNTIME_DIR}/Image.svelte`, IMAGE_SVELTE);
   files.set(`${RUNTIME_DIR}/RichText.svelte`, RICHTEXT_SVELTE);
   files.set(`${RUNTIME_DIR}/Icon.svelte`, iconSvelte());
-  files.set(`${RUNTIME_DIR}/icons.js`, iconsJs());
+  files.set(`${RUNTIME_DIR}/icons.js`, iconsJs(state));
   files.set(`${RUNTIME_DIR}/util.js`, UTIL_JS);
   files.set(`${STYLES_DIR}/tokens.css`, generateTokensCss(state));
   files.set(`${STYLES_DIR}/theme.css`, theme.baseCss);
@@ -793,6 +1085,8 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {})
     const page = state.pages[id];
     if (page) files.set(pageFile(page), generatePage(state, page, opts));
   }
+  files.set(`${GEN_ROOT}/paths.json`, generatePathsJson(state));
+  if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, generateFaviconSvg(state));
   files.set('static/robots.txt', generateRobots(state));
   const sitemap = generateSitemap(state);
   if (sitemap) files.set('static/sitemap.xml', sitemap);

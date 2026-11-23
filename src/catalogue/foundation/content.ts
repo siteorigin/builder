@@ -1,7 +1,7 @@
 import { P, managed, tok } from '../dsl';
 import { eyebrowStyles, headingBlock, mutedStyles, sectionShell, toneVariants } from './common';
 
-const card = { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), background: tok('color.surface'), border: tok('border.default'), radius: tok('radius.lg') } as const;
+const card = { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), background: tok('color.surface'), color: tok('color.text'), border: tok('border.default'), radius: tok('radius.lg') } as const;
 
 export const featuresGrid = managed({
   componentId: 'features.grid',
@@ -40,7 +40,7 @@ export const featuresGrid = managed({
     cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] },
     cardIcon: { nodeId: 'card-icon', label: 'Card icon', styleControls: ['color', 'background'] }
   },
-  variants: toneVariants(['lead', 'card-text'], {
+  variants: toneVariants(['lead'], {
     'two-columns': { label: 'Two columns', styles: { grid: { desktop: { columns: 2 } } } },
     'four-columns': { label: 'Four columns', styles: { grid: { desktop: { columns: 4 } } } }
   }),

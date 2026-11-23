@@ -415,7 +415,8 @@ describe('create component from a selection (§2.3)', () => {
   it("hoists the owner component's properties, list fields and slots", async () => {
     const f = fork(fresh(), 'features.grid');
     const own = { kind: 'component' as const, id: f.id };
-    // The tone variants restyle the card text, which the new component could not follow.
+    // A variant that restyles the card text is something the new component could not follow.
+    f.state.components[f.id].variants!.inverse.styles!['card-text'] = { base: { opacity: 0.78 } };
     expect(() => applyOperations(f.state, [{ type: 'component.createFromNode', owner: own, nodeId: 'card', name: 'Card' }])).toThrow(/variant styles elements inside/);
     const styled = Object.entries(f.state.components[f.id].variants!).filter(([, v]) => v.styles?.['card-text']);
     const reset = applyOperations(

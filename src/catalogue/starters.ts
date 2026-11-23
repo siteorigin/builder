@@ -100,7 +100,7 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
     s.site.homePageId = home;
     s.site.pageOrder = [home];
     s.site.shell.header = tree(inst(s, 'shell.header', { siteName, links: [{ id: 'i1', label: 'Home', link: pageLink(home) }] }));
-    s.site.shell.footer = tree(inst(s, 'shell.footer', { siteName, links: [{ id: 'i1', label: 'Home', link: pageLink(home) }], copyright: `© ${new Date().getFullYear()} ${siteName}.` }));
+    s.site.shell.footer = tree(inst(s, 'shell.footer', { siteName, tagline: 'A short sentence about what you do.', links: [{ id: 'i1', label: 'Home', link: pageLink(home) }], copyright: `© ${new Date().getFullYear()} ${siteName}.` }));
     return s;
   }
 

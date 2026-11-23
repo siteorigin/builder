@@ -4,6 +4,8 @@ import { validateRoute } from '@shared/routes';
 import { allTrees, childLists, displayName, subtreeIds } from './tree';
 import { boundSchema } from './schema';
 import { declaredTokens, findTokenCycle } from './tokens';
+import { unlinkedButtons } from '@generator/checks';
+import { formConnected } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -109,6 +111,17 @@ export function validateState(state: ProjectState): Diagnostic[] {
       Object.values(o).forEach((x) => walk(x, nodeId));
     };
     for (const n of Object.values(tree.nodes)) walk(n, n.id);
+    if (owner.kind !== 'component')
+      for (const b of unlinkedButtons(state, tree))
+        out.push({ severity: 'warning', code: 'BUTTON_UNLINKED', message: `${label}: the “${b.label}” button has no link, so it shows as plain text. Choose a destination or clear its label.`, owner, nodeId: b.nodeId });
+    if (owner.kind !== 'component')
+      for (const n of Object.values(tree.nodes)) {
+        const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
+        if (n.kind !== 'instance' || def?.componentId !== 'contact.form' || def.kind !== 'code') continue;
+        const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
+        if (!formConnected(props))
+          out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. Add an HTTPS form endpoint or a Web3Forms access key, or choose Netlify Forms.`, owner, nodeId: n.id });
+      }
   }
   out.push(...structureDiagnostics(state));
   for (const a of Object.values(state.assets.assets)) {

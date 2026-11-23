@@ -107,6 +107,13 @@ export function definitionIdFor(componentId: string): string {
 export function managed(spec: ComponentSpec): ComponentDefinition {
   const b = new TreeBuilder();
   const rootId = spec.build(b);
+  // Shared variant helpers may style nodes a particular component does not have; keep only real nodes.
+  const variants = spec.variants && Object.fromEntries(
+    Object.entries(spec.variants).map(([id, v]) => [
+      id,
+      v.styles ? { ...v, styles: Object.fromEntries(Object.entries(v.styles).filter(([nid]) => nid in b.nodes)) } : v
+    ])
+  );
   return {
     schemaVersion: SCHEMA_VERSION,
     id: definitionIdFor(spec.componentId),
@@ -122,7 +129,7 @@ export function managed(spec: ComponentSpec): ComponentDefinition {
     properties: spec.properties,
     parts: spec.parts,
     slots: spec.slots,
-    variants: spec.variants,
+    variants,
     defaultVariant: spec.defaultVariant,
     tree: { rootIds: [rootId], nodes: b.nodes },
     provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: spec.componentId },

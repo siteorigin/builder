@@ -124,6 +124,9 @@ export const faq = managed({
       { width: 'reading' }
     )
 });
+// The toggle icon switches to the accent colour on the dark tone for contrast.
+faq.variants!.inverse.styles!['toggle-icon'] = { base: { color: tok('color.accent') } };
+
 export const cta = managed({
   componentId: 'cta.banner',
   name: 'Call to action',
@@ -196,7 +199,7 @@ export const contact = managed({
     list: { nodeId: 'list', label: 'Contact list', styleControls: ['gap', 'columns'] },
     method: { nodeId: 'method', label: 'Contact method', styleControls: ['background', 'border', 'radius'] }
   },
-  variants: toneVariants(['lead', 'method-label']),
+  variants: toneVariants(['lead']),
   defaultVariant: 'default',
   build: (b) =>
     sectionShell(b, [

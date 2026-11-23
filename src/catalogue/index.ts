@@ -6,6 +6,7 @@ import { container, featuresGrid, gallery, mediaSplit, stats, textSection } from
 import { logoStrip, team, testimonials } from './foundation/people';
 import { contact, cta, faq, pricing } from './foundation/conversion';
 import { footer, header } from './foundation/shell';
+import { contactForm } from './foundation/form';
 import { PACK_VERSION } from './dsl';
 import { makeAltTheme } from './foundation-alt';
 
@@ -50,6 +51,7 @@ const FOUNDATION: ThemePack = {
     gallery,
     cta,
     contact,
+    contactForm,
     container
   ],
   aiProfile: {

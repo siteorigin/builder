@@ -16,7 +16,7 @@ import type {
 import type { Binding } from '@shared/types';
 import { SCHEMA_VERSION, isBinding } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
-import { STYLE_PROP_MAP, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, isSafeCssValue, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { getTheme, listThemes } from '@catalogue/index';
@@ -955,7 +955,7 @@ function tokenSetInner(state: ProjectState, op: Op<'token.set'>): OpResult {
     const merged = { ...cur, ...(v as Record<string, unknown>) };
     for (const k of ['size', 'lineHeight', 'tracking'] as const) {
       const s = String(merged[k]);
-      if (!/^[0-9a-z.,%+\-*/ ()]+$/i.test(s)) fail(`Invalid ${k} "${s}".`);
+      if (!/^[0-9a-z.,%+\-*/ ()]+$/i.test(s) || !isSafeCssValue(s)) fail(`Invalid ${k} "${s}".`);
     }
     const w = Number(merged.weight);
     if (!Number.isFinite(w) || w < 100 || w > 900) fail('Weight must be between 100 and 900.');
@@ -973,7 +973,7 @@ function tokenSetInner(state: ProjectState, op: Op<'token.set'>): OpResult {
     if (!/^[\w\s'",.-]+$/.test(s) || s.length > 200) fail('Font stacks may contain names, quotes, commas and hyphens only.');
   } else {
     const s = String(v);
-    if (!/^[0-9a-z.,%+\-*/ ()#]+$/i.test(s) || s.length > 200) fail(`Invalid value "${s}".`);
+    if (!/^[0-9a-z.,%+\-*/ ()#]+$/i.test(s) || s.length > 200 || !isSafeCssValue(s)) fail(`Invalid value "${s}".`);
   }
   state.tokens.overrides[op.tokenId] = v as TokenValue;
   return {};

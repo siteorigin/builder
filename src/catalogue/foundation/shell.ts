@@ -9,6 +9,7 @@ const HEADER_SOURCE = `<script>
 	 * Foundation theme code component. Props are edited in SiteOrigin Builder.
 	 */
 	import { page } from '$app/state';
+	import { resolve } from '$app/paths';
 	import SoImage from '../runtime/Image.svelte';
 
 	let {
@@ -25,7 +26,14 @@ const HEADER_SOURCE = `<script>
 	} = $props();
 
 	let open = $state(false);
-	const current = $derived(page.url.pathname);
+	let header = $state();
+	let toggle = $state();
+	// Route IDs ("/about") do not depend on the base path the site is published under.
+	const current = $derived(page.route.id);
+
+	/** Site-relative links go through resolve() so the site works under a sub-path. */
+	const href = (link) => (link?.href?.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link?.href);
+	const isCurrent = (link) => !!link?.href?.startsWith('/') && !link.href.includes('#') && (link.href.length > 1 && link.href.endsWith('/') ? link.href.slice(0, -1) : link.href) === current;
 
 	$effect(() => {
 		void current;
@@ -33,16 +41,23 @@ const HEADER_SOURCE = `<script>
 	});
 
 	function onKeydown(event) {
-		if (event.key === 'Escape' && open) open = false;
+		if (event.key === 'Escape' && open) {
+			open = false;
+			toggle?.focus();
+		}
+	}
+
+	function onPointerdown(event) {
+		if (open && header && !header.contains(event.target)) open = false;
 	}
 </script>
 
-<svelte:window onkeydown={onKeydown} />
+<svelte:window onkeydown={onKeydown} onpointerdown={onPointerdown} />
 
-<header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', open && 'so-header--open', className]}>
+<header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', open && 'so-header--open', className]} bind:this={header}>
 	<div class="so-header__inner">
 		<!-- Without the visible name, the link is still named for screen readers. -->
-		<a class="so-header__brand" href="/" aria-label={logo?.src && !showSiteName ? siteName?.trim() || logo?.alt || 'Home' : undefined}>
+		<a class="so-header__brand" href={resolve('/')} aria-label={logo?.src && !showSiteName ? siteName?.trim() || logo?.alt || 'Home' : undefined}>
 			{#if logo?.src}
 				<SoImage image={logo} class="so-header__logo" eager />
 			{/if}
@@ -52,6 +67,7 @@ const HEADER_SOURCE = `<script>
 		</a>
 
 		<button
+			bind:this={toggle}
 			type="button"
 			class="so-header__toggle"
 			aria-expanded={open}
@@ -68,21 +84,29 @@ const HEADER_SOURCE = `<script>
 			</svg>
 		</button>
 
+		<!-- Choosing a link closes the menu, including links to the current page or an anchor on it. -->
 		<nav id="so-site-nav" class="so-header__nav" aria-label="Main">
 			<ul>
 				{#each links as item (item.id)}
 					<li>
 						<a
-							href={item.link?.href ?? '#'}
+							href={href(item.link) ?? '#'}
 							target={item.link?.newTab ? '_blank' : undefined}
 							rel={item.link?.newTab ? 'noopener noreferrer' : undefined}
-							aria-current={item.link?.href === current ? 'page' : undefined}>{item.label}</a
+							aria-current={isCurrent(item.link) ? 'page' : undefined}
+							onclick={() => (open = false)}>{item.label}</a
 						>
 					</li>
 				{/each}
 			</ul>
 			{#if ctaLabel && ctaLink?.href}
-				<a class={['so-btn', ctaStyle === 'secondary' ? 'so-btn--secondary' : 'so-btn--primary', 'so-header__cta']} href={ctaLink.href}>{ctaLabel}</a>
+				<a
+					class={['so-btn', ctaStyle === 'secondary' ? 'so-btn--secondary' : 'so-btn--primary', 'so-header__cta']}
+					href={href(ctaLink)}
+					target={ctaLink.newTab ? '_blank' : undefined}
+					rel={ctaLink.newTab ? 'noopener noreferrer' : undefined}
+					onclick={() => (open = false)}>{ctaLabel}</a
+				>
 			{/if}
 		</nav>
 	</div>
@@ -129,6 +153,8 @@ const HEADER_SOURCE = `<script>
 		display: inline-flex;
 		align-items: center;
 		gap: 10px;
+		min-width: 0;
+		overflow-wrap: anywhere;
 		color: inherit;
 		font-family: var(--so-font-display);
 		font-size: 1.35rem;
@@ -159,13 +185,23 @@ const HEADER_SOURCE = `<script>
 	}
 	.so-header__nav {
 		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 		align-items: center;
+		min-width: 0;
 		gap: var(--so-space-xl);
 	}
 	.so-header__nav ul {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--so-space-lg);
+	}
+	@media (min-width: 768px) and (max-width: 1023.98px) {
+		.so-header__nav,
+		.so-header__nav ul {
+			gap: var(--so-space-md);
+		}
 	}
 	.so-header__nav ul a {
 		position: relative;
@@ -195,7 +231,8 @@ const HEADER_SOURCE = `<script>
 		font-size: 0.92rem;
 	}
 
-	@media (max-width: 860px) {
+	/* Matches the phone breakpoint used by every other component (MEDIA_QUERIES.phone). */
+	@media (max-width: 767.98px) {
 		.so-header__toggle {
 			display: inline-flex;
 		}
@@ -303,7 +340,7 @@ export const footer = managed({
   build: (b) => {
     const linkGroup = (id: string, headingProp: string, listProp: string) =>
       b.el(`${id}-group`, 'nav', { name: 'Link group', styles: { layout: 'stack', gap: tok('space.md') } }, [
-        b.text(`${id}-heading`, 'h2', { $prop: headingProp }, { name: 'Group heading', styles: { textStyle: tok('text.eyebrow'), opacity: 0.6 } }),
+        b.text(`${id}-heading`, 'h2', { $prop: headingProp }, { name: 'Group heading', styles: { textStyle: tok('text.eyebrow'), opacity: 0.7 } }),
         b.el(`${id}-list`, 'ul', { name: 'Links', styles: { layout: 'stack', gap: tok('space.sm') } }, [
           b.repeat(`${id}-items`, listProp, [
             b.el(`${id}-item`, 'li', { name: 'Link item' }, [
@@ -322,7 +359,7 @@ export const footer = managed({
       linkGroup('contact', 'contactHeading', 'contact')
     ]);
     const bottom = b.el('bottom', 'div', { name: 'Bottom row', styles: { layout: 'row', wrap: true, justify: 'space-between', gap: tok('space.md'), paddingBlock: tok('space.lg'), border: '0', marginBlockStart: tok('space.2xl') } }, [
-      b.text('copyright', 'p', { $prop: 'copyright' }, { name: 'Copyright', styles: { textStyle: tok('text.small'), opacity: 0.6 } })
+      b.text('copyright', 'p', { $prop: 'copyright' }, { name: 'Copyright', styles: { textStyle: tok('text.small'), opacity: 0.7 } })
     ]);
     const inner = b.el('inner', 'div', { name: 'Container', styles: { layout: 'stack', width: 'fill', maxWidth: tok('container.content'), marginInline: 'auto' } }, [top, b.divider('rule', { name: 'Divider', styles: { opacity: 0.18, marginBlockStart: tok('space.2xl') } }), bottom]);
     return b.el('root', 'footer', { name: 'Footer', styles: { paddingBlock: tok('space.3xl'), paddingInline: tok('container.gutter'), background: tok('color.inverse'), color: tok('color.on-inverse') } }, [inner]);

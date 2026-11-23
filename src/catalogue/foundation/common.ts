@@ -46,17 +46,24 @@ export function sectionShell(
   );
 }
 
-/** Tone variants shared by most sections. Muted nodes are lightened on the inverse tone. */
+/**
+ * Tone variants shared by most sections. Muted nodes are lightened on the inverse tone, and brand-coloured
+ * accents (eyebrows) switch to the accent colour, which stays readable on dark backgrounds.
+ *
+ * Only pass nodes that sit directly on the section background: nodes inside surface cards keep the card's
+ * own colours, so lightening them would make them unreadable. Styles for nodes a component does not have
+ * are dropped by `managed()`.
+ */
 export function toneVariants(mutedNodes: string[] = [], extra: Record<string, VariantDef> = {}): Record<string, VariantDef> {
-  const inverseMuted: Record<string, ResponsiveStyles> = {};
-  for (const id of mutedNodes) inverseMuted[id] = { base: { color: tok('color.on-inverse'), opacity: 0.78 } };
+  const inverse: Record<string, ResponsiveStyles> = {
+    root: { base: { background: tok('color.inverse'), color: tok('color.on-inverse') } },
+    eyebrow: { base: { color: tok('color.accent') } }
+  };
+  for (const id of mutedNodes) inverse[id] = { base: { color: tok('color.on-inverse'), opacity: 0.78 } };
   return {
     default: { label: 'Default' },
     muted: { label: 'Soft background', styles: { root: { base: { background: tok('color.surface-alt') } } } },
-    inverse: {
-      label: 'Dark',
-      styles: { root: { base: { background: tok('color.inverse'), color: tok('color.on-inverse') } }, ...inverseMuted }
-    },
+    inverse: { label: 'Dark', styles: inverse },
     ...extra
   };
 }
