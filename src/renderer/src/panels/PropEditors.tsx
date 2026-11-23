@@ -5,6 +5,10 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { api, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
 import { isSettling } from '../lib/pending';
+import { announcementText } from '../lib/announce';
+
+const MOVE_PENDING_MS = 3000;
+import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
 import { assetUrl } from '../lib/model';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { pageIds, pageSections, planSectionPick, sharedPageIds } from '@generator/checks';
@@ -656,13 +660,19 @@ export function FieldGroups<T>({ groups, render }: { groups: Array<PropGroup<T>>
 
 /**
  * A repeatable list. Focus follows the edit: a new item opens with its row focused, and removing an item moves
- * focus to the row that takes its place (or to Add when the list is empty).
+ * focus to the row that takes its place (or to Add when the list is empty). A moved item keeps focus on the button
+ * that moved it, and on its own disclosure once that button is disabled at the end of the list; the new position is
+ * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
+ * with the reason once the list is full or at its minimum.
  */
 function ListEditor({ name, schema, items, onList, state, focusItem, annotate }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: never) => void; state: ProjectState; focusItem?: string; annotate?: (item: ListItem, index: number) => ListItemNote | undefined }) {
   const [open, setOpen] = useState<string | null>(null);
   const labelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
-  const after = useRef<{ kind: 'added'; before: string[] } | { kind: 'removed'; focus: string | null } | null>(null);
+  const after = useRef<{ kind: 'added'; before: string[] } | { kind: 'removed'; focus: string | null } | { kind: 'moved'; id: string; direction: MoveDirection; index: number; from: number; title: string; at: number } | null>(null);
+  const [said, setSaid] = useState({ text: '', count: 0 });
+  const addNoteId = useId();
+  const removeNoteId = useId();
   const ids = items.map((i) => i.id).join(',');
   useEffect(() => {
     const a = after.current;
@@ -675,6 +685,24 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
       after.current = null;
       setOpen(added.id);
       requestAnimationFrame(() => focusRow(added.id));
+    } else if (a.kind === 'moved') {
+      // The move lands with a later saved revision. Until then the item is still where it was (another item's move
+      // may land first) and the request stays pending. Once the item is anywhere but where the move put it, or the
+      // request is old, it was rejected or overtaken: it is dropped, so it can't claim a later change such as Undo.
+      const at = items.findIndex((x) => x.id === a.id);
+      if (Date.now() - a.at > MOVE_PENDING_MS || (at !== a.index && at !== a.from)) after.current = null;
+      if (at !== a.index) return;
+      after.current = null;
+      const target = moveFocusTarget(a.direction, a.index, items.length);
+      requestAnimationFrame(() => {
+        // Only put focus back where it was taken from: still on the button that moved the item, or on the page body
+        // (that button was moved in the DOM or went disabled). Someone who has tabbed elsewhere keeps their place.
+        const active = document.activeElement;
+        if (active && active !== document.body && active.id !== `list-${a.direction}-${a.id}`) return;
+        const el = root?.querySelector<HTMLElement>(`#list-${target}-${CSS.escape(a.id)}`) ?? root?.querySelector<HTMLElement>(`#list-head-${CSS.escape(a.id)}`);
+        el?.focus();
+      });
+      setSaid((p) => announcementText(moveAnnouncement(a.title, a.index, items.length), p.count) ?? p);
     } else {
       after.current = null;
       requestAnimationFrame(() => focusRow(a.focus));
@@ -686,13 +714,22 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
     return (typeof t === 'string' && t) || `${schema.itemLabel} ${i + 1}`;
   };
   const L = onList as (op: unknown) => void;
+  const move = (it: ListItem, i: number, direction: MoveDirection) => {
+    const index = direction === 'up' ? i - 1 : i + 1;
+    after.current = { kind: 'moved', id: it.id, direction, index, from: i, title: titleOf(it, i), at: Date.now() };
+    L({ kind: 'move', itemId: it.id, index });
+  };
+  const addNote = addLimitNote(items.length, schema.itemLabel, schema.max, schema.min);
+  const removeNote = removeLimitNote(items.length, schema.itemLabel, schema.min, schema.max);
+  // A fixed-size list gives one reason for both actions.
+  const removeNoteShared = removeNote !== null && removeNote === addNote;
   const fields = groupFields(Object.entries(schema.fields).map(([key, s]) => ({ key, schema: s, data: null })));
   return (
     <div className="field" role="group" aria-labelledby={labelId} data-list={name} ref={rootRef}>
       <div className="field-label" id={labelId}>
         <span className="grow">{schema.label}</span>
-        <span className="insp-count" aria-label={`${items.length} ${items.length === 1 ? schema.itemLabel.toLowerCase() : 'items'}`}>
-          {items.length}
+        <span className="insp-count" aria-label={countLabel(items.length, schema.itemLabel, schema.max)}>
+          {countText(items.length, schema.max)}
         </span>
       </div>
       <div className="list-editor">
@@ -718,13 +755,14 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
                   {note.error}
                 </span>
               )}
-              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} disabled={i === 0} onClick={() => L({ kind: 'move', itemId: it.id, index: i - 1 })}>
+              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} id={`list-up-${it.id}`} disabled={i === 0} onClick={() => move(it, i, 'up')}>
                 <ArrowUp />
               </button>
-              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} down`} disabled={i === items.length - 1} onClick={() => L({ kind: 'move', itemId: it.id, index: i + 1 })}>
+              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} down`} id={`list-down-${it.id}`} disabled={i === items.length - 1} onClick={() => move(it, i, 'down')}>
                 <ArrowDown />
               </button>
-              <button className="icon-btn sm" aria-label={`Remove ${titleOf(it, i)}`} disabled={schema.min !== undefined && items.length <= schema.min} onClick={() => {
+              <button className="icon-btn sm" aria-label={`Remove ${titleOf(it, i)}`} aria-disabled={removeNote ? true : undefined} aria-describedby={removeNote ? (removeNoteShared ? addNoteId : removeNoteId) : undefined} title={removeNote ?? undefined} onClick={() => {
+                  if (removeNote) return;
                   after.current = { kind: 'removed', focus: (items[i + 1] ?? items[i - 1])?.id ?? null };
                   L({ kind: 'remove', itemId: it.id });
                 }}>
@@ -754,12 +792,26 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate }:
           </div>
           );
         })}
-        <button className="btn btn-sm insp-add" disabled={schema.max !== undefined && items.length >= schema.max} onClick={() => {
+        <button className="btn btn-sm insp-add" aria-disabled={addNote ? true : undefined} aria-describedby={addNote ? addNoteId : undefined} title={addNote ?? undefined} onClick={() => {
+            if (addNote) return;
             after.current = { kind: 'added', before: items.map((x) => x.id) };
             L({ kind: 'insert' });
           }}>
           <Plus /> Add {schema.itemLabel.toLowerCase()}
         </button>
+        {addNote && (
+          <p className="insp-note muted" id={addNoteId}>
+            {addNote}
+          </p>
+        )}
+        {removeNote && !removeNoteShared && (
+          <p className="insp-note muted" id={removeNoteId}>
+            {removeNote}
+          </p>
+        )}
+        <span className="sr-only" role="status">
+          {said.text}
+        </span>
       </div>
     </div>
   );
