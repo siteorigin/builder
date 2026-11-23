@@ -214,14 +214,13 @@ export class DevServer {
         if (this.restarts < 1) {
           this.restarts++;
           this.log('warn', `Preview process exited (${code}); restarting once.`);
-          void this.mayRestart().then(
-            (ok) => {
+          void this.mayRestart()
+            .catch(() => false)
+            .then((ok) => {
               if (this.stopped || this.proc) return;
               if (ok) void this.start();
               else this.set({ state: 'error', message: 'The preview process stopped unexpectedly.', detail: this.logs.slice(-5).map((l) => l.message).join('\n') });
-            },
-            () => undefined
-          );
+            });
         } else {
           this.set({ state: 'error', message: 'The preview process stopped unexpectedly.', detail: this.logs.slice(-5).map((l) => l.message).join('\n') });
         }
