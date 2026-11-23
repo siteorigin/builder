@@ -64,7 +64,13 @@ export function ImageEditor({ value, onChange, state }: { value: ImageValue; onC
         }
       } },
       ...(Object.values(state.assets.assets).length ? [{ separator: true }] : []),
-      ...Object.values(state.assets.assets).map((a) => ({ label: a.name, onSelect: () => onChange({ assetId: a.id, alt: v.alt || a.altSuggestion || '', decorative: v.decorative }) })),
+      ...(Object.values(state.assets.assets).length ? [{ heading: 'Your images' }] : []),
+      ...Object.values(state.assets.assets).map((a) => ({
+        label: a.name,
+        checked: a.id === v.assetId,
+        icon: devUrl ? <img className="menu-thumb" src={assetUrl(devUrl, a.file)!} alt="" /> : undefined,
+        onSelect: () => onChange({ assetId: a.id, alt: v.alt || a.altSuggestion || '', decorative: v.decorative })
+      })),
       ...(v.assetId ? [{ separator: true }, { label: 'Remove image', icon: <ImageOff />, onSelect: () => onChange({ assetId: null, alt: v.alt }) }] : [])
     ]);
   return (
@@ -178,22 +184,23 @@ function ListEditor({ schema, items, onList, state, focusItem }: { schema: ListP
         {items.map((it, i) => (
           <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}`}>
             <div className="list-editor-head">
-              <ChevronRight size={12} className="faint" style={{ transform: openId === it.id ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
-              <button className="title" onClick={() => setOpen(open === it.id ? null : it.id)}>
-                {titleOf(it, i)}
+              {/* The chevron and title are one disclosure button, so the whole leading area opens the item. */}
+              <button className="title" aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} onClick={() => setOpen(open === it.id ? null : it.id)}>
+                <ChevronRight size={12} className="faint" style={{ transform: openId === it.id ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
+                <span className="ellipsis">{titleOf(it, i)}</span>
               </button>
-              <button className="icon-btn sm" aria-label="Move up" disabled={i === 0} onClick={() => L({ kind: 'move', itemId: it.id, index: i - 1 })}>
+              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} disabled={i === 0} onClick={() => L({ kind: 'move', itemId: it.id, index: i - 1 })}>
                 <ArrowUp />
               </button>
-              <button className="icon-btn sm" aria-label="Move down" disabled={i === items.length - 1} onClick={() => L({ kind: 'move', itemId: it.id, index: i + 1 })}>
+              <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} down`} disabled={i === items.length - 1} onClick={() => L({ kind: 'move', itemId: it.id, index: i + 1 })}>
                 <ArrowDown />
               </button>
-              <button className="icon-btn sm" aria-label={`Remove ${schema.itemLabel}`} disabled={schema.min !== undefined && items.length <= schema.min} onClick={() => L({ kind: 'remove', itemId: it.id })}>
+              <button className="icon-btn sm" aria-label={`Remove ${titleOf(it, i)}`} disabled={schema.min !== undefined && items.length <= schema.min} onClick={() => L({ kind: 'remove', itemId: it.id })}>
                 <Trash2 />
               </button>
             </div>
             {openId === it.id && (
-              <div className="list-editor-body">
+              <div className="list-editor-body" id={`list-item-${it.id}`}>
                 {Object.entries(schema.fields).map(([f, fs]) => (
                   <Field key={f} label={fs.type === 'boolean' ? undefined : fs.label}>
                     <ScalarEditor schema={fs} value={it[f]} onChange={(v) => L({ kind: 'field', itemId: it.id, field: f, value: v })} state={state} />

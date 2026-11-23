@@ -37,6 +37,8 @@ export function LayersPanel() {
   const definitionMode = useStore((s) => s.definitionMode);
   const menu = useMenu();
   const treeRef = useRef<HTMLDivElement>(null);
+  // The panel owns the tree's single tab stop; it re-reconciles whenever the selection changes.
+  useStore((s) => s.selection);
   useRovingTabStop(treeRef, 'treeitem');
   if (!snap || !pageId) return null;
   const st = snap.state;
@@ -113,7 +115,11 @@ export function LayersPanel() {
           ]
         : [])
     ];
-    if (el instanceof HTMLElement) menu.openAt(el, items, `${name} options`);
+    // A row (treeitem) is not a menu button: open at the row and return focus to it, without marking it expanded.
+    if (el instanceof HTMLElement && el.getAttribute('role') === 'treeitem') {
+      const r = el.getBoundingClientRect();
+      menu.open(r.left + 24, r.bottom, items, `${name} options`, el);
+    } else if (el instanceof HTMLElement) menu.openAt(el, items, `${name} options`);
     else menu.open(el.x, el.y, items, `${name} options`, document.activeElement as HTMLElement | null);
   };
 
@@ -187,7 +193,11 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, parentId }: { state: 
   // In component editing the canvas selects the definition's root through the placement; match it here.
   const defRoot = owner.kind === 'component' && !!definitionMode && !!selection && selection.instancePath.length === 1 && selection.nodeId === id;
   const selected = sameRef(selection, ref) || defRoot;
-  const containsSel = !!selection && selection.owner.id === owner.id && selection.instancePath[0] === id;
+  // Holds the selection: a part of this component, or any node nested inside this container.
+  // Holds the selection: a part of this component (at any depth), or anything nested inside this container,
+  // judged by where the selection's outermost component sits in this tree.
+  const anchor = selection && selection.owner.id === owner.id ? (selection.instancePath[0] ?? selection.nodeId) : null;
+  const containsSel = !!anchor && (anchor === id ? !!selection!.instancePath.length : subtreeIds(tree, id).includes(anchor));
   // Opening to reveal a selected part latches, so moving the selection back to the parent keeps the branch open.
   useEffect(() => {
     if (containsSel) setOpen(true);
@@ -245,7 +255,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, parentId }: { state: 
         aria-selected={selected}
         aria-expanded={expandable ? isOpen : undefined}
         aria-level={depth + 1}
-        tabIndex={selected ? 0 : -1}
+        tabIndex={-1}
         onClick={() => setState({ selection: ref })}
         onDoubleClick={() => setRenaming(true)}
         onMouseEnter={() => setState({ hover: ref })}
@@ -268,7 +278,10 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, parentId }: { state: 
           }
           if (e.key === 'ArrowLeft') {
             e.preventDefault();
-            if (isOpen && expandable) setOpen(false);
+            if (isOpen && expandable) {
+              if (containsSel) setState({ selection: ref });
+              setOpen(false);
+            }
             else if (parentId) {
               const up = document.querySelector<HTMLElement>(`[data-node="${parentId}"]`);
               up?.focus();
@@ -281,7 +294,20 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, parentId }: { state: 
         }}
       >
         {expandable ? (
-          <button className={`tree-toggle${isOpen ? ' open' : ''}`} tabIndex={-1} aria-label={isOpen ? 'Collapse' : 'Expand'} onClick={(e) => (e.stopPropagation(), setOpen(!isOpen))}>
+          <button
+            className={`tree-toggle${isOpen ? ' open' : ''}`}
+            tabIndex={-1}
+            aria-label={isOpen ? 'Collapse' : 'Expand'}
+            onClick={(e) => {
+              e.stopPropagation();
+              // Collapsing a branch that holds the selection moves the selection (and focus) to the branch.
+              if (isOpen && containsSel) {
+                setState({ selection: ref });
+                (e.currentTarget.closest('[role="treeitem"]') as HTMLElement | null)?.focus();
+              }
+              setOpen(!isOpen);
+            }}
+          >
             <ChevronRight />
           </button>
         ) : (
@@ -298,6 +324,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, parentId }: { state: 
             onClick={(e) => e.stopPropagation()}
             onBlur={(e) => {
               setRenaming(false);
+              requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-node="${id}"]`)?.focus());
               if (e.target.value !== (n.name ?? '')) void applyOps([{ type: 'node.rename', owner, nodeId: id, name: e.target.value }], 'Rename layer');
             }}
             onKeyDown={(e) => {
@@ -311,7 +338,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, parentId }: { state: 
         {isHidden(n) && <EyeOff />}
         {def?.owner === 'project' && <span className="badge" title="A component made in this project">Custom</span>}
         <span className="actions">
-          <button className="icon-btn sm" tabIndex={-1} aria-haspopup="menu" aria-label={`${displayName(state, n)} options`} title="Layer options" onClick={(e) => (e.stopPropagation(), onMenu(e.currentTarget, ref, true, () => setRenaming(true)))}>
+          <button className="icon-btn sm" tabIndex={-1} aria-haspopup="menu" aria-expanded="false" aria-label={`${displayName(state, n)} options`} title="Layer options" onClick={(e) => (e.stopPropagation(), onMenu(e.currentTarget, ref, true, () => setRenaming(true)))}>
             <Ellipsis />
           </button>
         </span>
@@ -330,10 +357,11 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, parentId }: { state: 
                 role="treeitem"
                 aria-selected={psel}
                 aria-level={depth + 2}
-                tabIndex={psel ? 0 : -1}
+                tabIndex={-1}
                 onClick={() => setState({ selection: pref })}
                 onKeyDown={(e) => {
                   if (e.key === 'ArrowLeft') (e.preventDefault(), setState({ selection: ref }), document.querySelector<HTMLElement>(`[data-node="${id}"]`)?.focus());
+                  if (e.key === 'Enter' || e.key === ' ') (e.preventDefault(), setState({ selection: pref }));
                   if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') (e.preventDefault(), onMenu(e.currentTarget, pref, false));
                 }}
                 onContextMenu={(e) => {
@@ -346,7 +374,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, parentId }: { state: 
                 <span className="layer-kind part">{def?.tree?.nodes[p.nodeId] ? kindIcon(def.tree.nodes[p.nodeId]) : <Box />}</span>
                 <span className="grow ellipsis">{p.label}</span>
                 <span className="actions">
-                  <button className="icon-btn sm" tabIndex={-1} aria-haspopup="menu" aria-label={`${p.label} options`} title="Part options" onClick={(e) => (e.stopPropagation(), onMenu(e.currentTarget, pref, false))}>
+                  <button className="icon-btn sm" tabIndex={-1} aria-haspopup="menu" aria-expanded="false" aria-label={`${p.label} options`} title="Part options" onClick={(e) => (e.stopPropagation(), onMenu(e.currentTarget, pref, false))}>
                     <Ellipsis />
                   </button>
                 </span>

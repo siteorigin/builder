@@ -12,6 +12,13 @@
  * theme; --border-control and --focus are at least 3:1. Use --text-3 for the quietest readable text;
  * --border and --border-strong are decorative dividers only, never a control's only edge.
  * Shape: --r-sm 6px (controls, rows, chips), --r-md 10px (cards, menus, popovers), --r-lg 14px (dialogs).
+ * Cards (Welcome actions, recent projects, Insert tiles, Export choices) are identified by their content and
+ * take a soft hairline and a lift; form controls take the 3:1 --border-control edge.
+ *
+ * No partial borders on rounded shapes. A rounded element has a complete border or ring, or none: never a
+ * single-edge bar (left, right, top or bottom) or edge shadow, which bends into a crescent at the corners.
+ * Mark state with a fill, a full 1px ring, a dot or an icon instead. Straight dividers between unrounded
+ * regions (panel edges, list rows, dialog footers) are fine, and so is a spinner's coloured arc.
  */
 :root {
   color-scheme: light dark;
@@ -157,7 +164,7 @@ p { text-wrap: pretty; }
 @media (prefers-color-scheme: dark) { .btn:disabled, .icon-btn:disabled { opacity: 0.6; } }
 .btn svg { width: 15px; height: 15px; flex: none; }
 .btn .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.btn-primary { background: var(--accent-fill); border-color: transparent; color: var(--on-accent); font-weight: 600; box-shadow: 0 1px 2px rgb(17 85 159 / 0.25), inset 0 1px 0 rgb(255 255 255 / 0.14); }
+.btn-primary { background: var(--accent-fill); border-color: transparent; color: var(--on-accent); font-weight: 600; box-shadow: 0 1px 2px rgb(17 85 159 / 0.25); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-fill-hover); border-color: transparent; }
 .btn-ghost { background: transparent; border-color: transparent; box-shadow: none; }
 .btn-ghost:hover:not(:disabled) { background: var(--hover); border-color: transparent; }
@@ -192,7 +199,7 @@ p { text-wrap: pretty; }
 .select { appearance: none; padding-right: 26px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23778' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
 .input.sm, .select.sm { height: 26px; font-size: 12px; }
 .input:read-only { background: var(--panel-2); }
-.input.overridden, .select.overridden { border-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.input.overridden, .select.overridden { border-color: var(--accent); background-color: color-mix(in srgb, var(--accent) 6%, var(--raised)); }
 .select.inherit, .input.inherit::placeholder { color: var(--text-3); }
 .select.inherit { background-color: transparent; }
 input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
@@ -237,7 +244,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 /* The highlight is a quiet accent tint, so icons, shortcuts and group labels stay readable on it. */
 .menu-item:hover:not(:disabled), .menu-item.focused, .menu-item:focus-visible { background: var(--accent-soft); color: var(--text); }
 .menu-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
-.cmdk .menu-item.focused { box-shadow: inset 3px 0 0 var(--accent); }
+.cmdk .menu-item.focused { box-shadow: inset 0 0 0 1px var(--accent); }
 .menu-item:is(:hover, .focused, :focus-visible) :is(.hint, .kbd) { color: var(--text-2); }
 .menu-item:hover:not(:disabled) svg, .menu-item.focused svg, .menu-item:focus-visible svg { color: var(--accent-text); }
 .menu-item .check { width: 15px; flex: none; color: var(--accent-text); }
@@ -371,7 +378,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .rail { width: 48px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; background: var(--panel); border-right: 1px solid var(--border); }
 .rail .icon-btn { width: 34px; height: 34px; border-radius: var(--r-sm); }
 .rail .icon-btn svg { width: 18px; height: 18px; }
-.rail .icon-btn[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 2px 0 0 var(--accent); }
+.rail .icon-btn[aria-pressed='true'] { background: var(--accent-soft); color: var(--accent-text); box-shadow: inset 0 0 0 1px var(--accent); }
 .rail-sep { height: 1px; width: 22px; background: var(--border); margin: 6px 0; }
 .side-panel { flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-right: 1px solid var(--border); position: relative; }
 .dock { flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-left: 1px solid var(--border); position: relative; }
@@ -410,7 +417,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 
 /* ---------- Canvas ---------- */
 .canvas { flex: 1; min-width: 0; position: relative; overflow: hidden; background-color: var(--canvas); background-image: radial-gradient(var(--canvas-dots) 1px, transparent 1px); background-size: 16px 16px; }
-.canvas-scroll { position: absolute; inset: 0; overflow: auto; display: flex; justify-content: safe center; padding: 20px 28px 28px; scrollbar-width: thin; }
+.canvas-scroll { position: absolute; inset: 0; overflow: auto; display: flex; justify-content: safe center; padding: 28px 28px 28px; scrollbar-width: thin; }
 .frame-wrap { position: relative; flex: none; }
 .frame-box { position: absolute; top: 0; left: 0; transform-origin: 0 0; border-radius: 6px; overflow: hidden; background: white; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), var(--shadow-md); }
 .frame-box iframe { display: block; border: 0; width: 100%; height: 100%; background: white; }
@@ -419,7 +426,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .frame-handle:hover::after, .frame-handle.dragging::after { background: var(--accent); }
 .frame-handle.right { right: -20px; }
 .frame-handle.left { left: -20px; }
-.frame-width-label { position: absolute; top: -19px; left: 0; right: 0; text-align: center; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.frame-width-label { position: absolute; top: -19px; left: 0; right: 0; text-align: right; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .frame-width-label b { color: var(--text); font-weight: 600; }
 .overlay-layer { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
 /* Outlines are clipped to the page so they never spill onto the pasteboard. */
@@ -457,9 +464,10 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .list { display: flex; flex-direction: column; padding: 4px 6px 12px; gap: 1px; }
 .list-item { position: relative; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 4px 0 8px; border-radius: var(--r-sm); border: 0; background: transparent; text-align: left; color: var(--text); width: 100%; outline-offset: -2px; }
 .list-item:hover { background: var(--hover); }
-.list-item.selected { background: var(--accent-soft); color: var(--accent-text); font-weight: 500; }
+.list-item.selected { background: var(--accent-soft); color: var(--accent-text); font-weight: 500; box-shadow: inset 0 0 0 1px var(--accent); }
 .list-item.menu-open:not(.selected) { background: var(--hover); box-shadow: inset 0 0 0 1px var(--border-strong); }
-.list-item.contains-sel > .label { font-weight: 500; }
+.list-item.contains-sel .grow { font-weight: 600; }
+.list-item.contains-sel .layer-kind { color: var(--accent-text); }
 .list-item.selected .faint, .list-item.selected .muted { color: inherit; }
 .list-item svg { width: 15px; height: 15px; flex: none; color: var(--text-3); }
 .list-item.selected svg { color: inherit; }
@@ -532,8 +540,8 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .scope-note strong { font-weight: 600; }
 .scope-note .link { border: 0; background: none; padding: 0; color: var(--accent-text); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
 .scope-note svg { width: 14px; height: 14px; flex: none; margin-top: 1px; }
-.scope-note.instance { background: var(--accent-soft); }
-.scope-note.instance > svg { color: var(--accent-text); }
+.scope-note.instance { background: var(--panel-2); }
+.scope-note.instance > svg { color: var(--text-2); }
 .scope-note.shared { background: var(--green-soft); }
 .scope-note.shared > svg { color: var(--green); }
 .scope-note.site { background: var(--amber-soft); }
@@ -553,10 +561,16 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 /* Label column wide enough for the longest label; the reset control appears only on rows that hold a
    value set here, and is always visible there (not on hover). */
-.style-row { display: grid; grid-template-columns: minmax(104px, 38%) minmax(0, 1fr) 24px; align-items: center; gap: 6px; min-height: 28px; }
-.style-row > label { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 5px; min-width: 0; line-height: 1.25; }
-.style-row > label > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.style-row.set > label { color: var(--text); font-weight: 500; }
+.style-row { display: grid; grid-template-columns: minmax(104px, 38%) minmax(0, 1fr); align-items: center; gap: 8px; min-height: 28px; }
+/* A changed value is marked by a small reset button beside its label (the mark is the action), so unset
+   rows keep their controls at full width. */
+.reset-dot { display: inline-grid; place-items: center; width: 24px; height: 24px; margin: -4px 0; flex: none; border: 0; border-radius: var(--r-xs); background: none; color: var(--accent-text); }
+.reset-dot svg { width: 13px; height: 13px; }
+.reset-dot:hover { background: var(--accent-soft); }
+.editor.defining .reset-dot { color: var(--plum); }
+.style-row > .style-label { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 4px; min-width: 0; line-height: 1.25; }
+.style-row > .style-label > span { min-width: 0; overflow-wrap: anywhere; }
+.style-row.set > .style-label { color: var(--text); font-weight: 500; }
 .style-row .ovr-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none; }
 .style-control { display: flex; gap: 4px; min-width: 0; }
 .style-control .input, .style-control .select { min-width: 0; }
@@ -651,7 +665,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .working .ellipsis { flex: 1; }
 
 /* ---------- Command menu & code ---------- */
-.cmdk { position: fixed; top: 14vh; left: 50%; transform: translateX(-50%); width: min(580px, calc(100vw - 40px)); border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); overflow: hidden; animation: pop-in 140ms ease-out; z-index: 1001; }
+.cmdk { position: fixed; top: 14vh; left: 50%; translate: -50% 0; width: min(580px, calc(100vw - 40px)); border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); overflow: hidden; animation: pop-in 140ms ease-out; z-index: 1001; }
 .cmdk-search { position: relative; border-bottom: 1px solid var(--border); }
 .cmdk-search:focus-within { box-shadow: inset 0 -2px 0 var(--accent); }
 .cmdk-search > svg { position: absolute; left: 18px; top: 17px; width: 16px; height: 16px; color: var(--text-3); }
@@ -687,9 +701,9 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 /* While editing a component everywhere, selection, the selected layer and set values use plum, so every
    cue agrees with the band. The page frame stays neutral: only the component is being edited. */
 .editor.defining { --select: #6a45c8; }
-.editor.defining .list-item.selected { background: var(--plum-soft); color: var(--plum); }
+.editor.defining .list-item.selected { background: var(--plum-soft); color: var(--plum); box-shadow: inset 0 0 0 1px var(--plum); }
 .editor.defining .style-row .ovr-dot { background: var(--plum); }
-.editor.defining .input.overridden, .editor.defining .select.overridden { border-color: var(--plum); box-shadow: inset 2px 0 0 var(--plum); }
+.editor.defining .input.overridden, .editor.defining .select.overridden { border-color: var(--plum); background-color: color-mix(in srgb, var(--plum) 6%, var(--raised)); }
 @media (prefers-color-scheme: dark) { .mode-band { background: color-mix(in srgb, var(--plum) 22%, var(--panel)); } }
 .link-btn { border: 0; background: none; padding: 0; color: var(--accent-text); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
 .link-btn:hover { text-decoration-color: currentColor; }
@@ -702,7 +716,7 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .history-list time { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .modal-foot .spacer { flex: 1; }
 .switch-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
-.switch-row label { font-weight: 500; color: var(--text); }
+.switch-row label { font-weight: 400; color: var(--text); }
 .switch-row .switch { margin-top: 1px; }
 .toast.success svg { color: #86e0b5; }
 @media (prefers-color-scheme: dark) { .toast.success svg { color: #0b6b45; } }
@@ -754,13 +768,13 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .ov-chip .name .of.link { min-height: 24px; }
 /* Shared header and footer: the canvas selection and selected layer turn green, matching the shared scope note. */
 .canvas.sel-shared { --select: #0b6b45; }
-.list-item.selected.shared { background: var(--green-soft); color: var(--green); }
+.list-item.selected.shared { background: var(--green-soft); color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
 /* Colour swatches keep a visible edge on both themes, even for near-black and near-white colours. */
 .swatch-lg, .token-chip .swatch, .color-input input[type='color'] { box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border-control); }
 .rail .icon-btn.shortcut[aria-pressed='true'] { box-shadow: none; }
 .first-steps li b svg { width: 22px; height: 22px; padding: 4px; border-radius: var(--r-sm); background: var(--accent-soft); }
 .recent-item.missing .recent-thumb { filter: grayscale(1); opacity: 0.6; }
-.recent-item.missing .where { color: var(--amber); }
+.recent-item.missing .where, .recent-item.missing .where span { color: var(--amber); }
 .dock-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .dock-panel[hidden] { display: none; }
 .crumbs button.def { color: var(--plum) !important; font-weight: 600; }
@@ -772,9 +786,55 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .preview-pill button:focus-visible { outline-color: var(--ink); }
 .composer:focus-within { outline: 2px solid var(--focus); outline-offset: -1px; }
 .toolbar-group { min-width: 0; }
-.insp-jump button { border: 1px solid var(--border-control); background: transparent; }
-.insp-jump button:hover { border-color: var(--accent); }
+.insp-jump button { background: transparent; color: var(--accent-text); padding: 0 6px; }
+.insp-jump button:hover { background: var(--accent-soft); }
 .ov-hover { box-shadow: inset 0 0 0 1px #1766c0; }
+.editor.defining .ov-hover { box-shadow: inset 0 0 0 1px var(--select); }
 @media (prefers-color-scheme: dark) { .icon-btn:disabled, .btn:disabled { opacity: 0.6; } }
 /* Keep keyboard-focused fields clear of the sticky inspector header. */
 .panel-body :is(input, select, textarea, button) { scroll-margin-top: 150px; scroll-margin-bottom: 24px; }
+.menu-item .menu-thumb { width: 32px; height: 24px; flex: none; border-radius: var(--r-xs); object-fit: cover; box-shadow: 0 0 0 1px var(--border); }
+.menu-item:has(.menu-thumb) { height: 34px; }
+.uses-toggle { align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; min-height: 22px; border: 0; border-radius: var(--r-xs); background: none; padding: 0 4px 0 0; font-size: 11px; color: var(--text-2); text-align: left; }
+.uses-toggle:hover { color: var(--text); }
+.uses-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
+.uses-list { color: var(--text-2) !important; }
+.frame-width-label.aside { text-align: right; }
+.chip.add { border: 1px dashed var(--border-control); background: none; color: var(--text-2); padding: 0 8px 0 4px; }
+.chip.add:hover { border-color: var(--accent); color: var(--accent-text); }
+.toast .btn { border: 1px solid rgb(255 255 255 / 0.45); color: inherit; background: transparent; }
+.toast .btn:hover:not(:disabled) { background: rgb(255 255 255 / 0.14); }
+@media (prefers-color-scheme: dark) { .toast .btn { border-color: rgb(35 48 79 / 0.4); } .toast .btn:hover:not(:disabled) { background: rgb(35 48 79 / 0.08); } }
+/* Title bar: every empty stretch between controls is a window drag region, so double-clicking it does the
+   system's title-bar action (Zoom on macOS: the window fills the screen without going full screen).
+   Controls opt out individually. */
+.toolbar-end > *, .toolbar-group > *, .toolbar-center > * { -webkit-app-region: no-drag; }
+#root, .editor, .welcome { width: 100%; }
+/* The top of Welcome's main area is a window drag strip; the scrolling pane itself is not. */
+.welcome-main::before { content: ''; position: fixed; top: 0; left: 340px; right: 0; height: 44px; -webkit-app-region: drag; }
+.frame-width-label.gone { visibility: hidden; }
+.toast button { opacity: 1; }
+.toast .btn { border-color: rgb(255 255 255 / 0.7); }
+@media (prefers-color-scheme: dark) { .toast .btn { border-color: rgb(35 48 79 / 0.65); } }
+
+@media (prefers-color-scheme: dark) { .select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); } }
+.chip:not(:has(button)) { padding-right: 8px; }
+.list-item.adding { background: var(--hover); }
+.list-editor-head button.title { display: flex; align-items: center; gap: 6px; align-self: stretch; padding: 0 4px; }
+
+/* Focus rings sit inside clipped rows so they are never cut off. */
+.list-editor-head :focus-visible, .status-bar :focus-visible, .crumbs :focus-visible { outline-offset: -2px; }
+/* While a dialog is open, toasts still announce, but their actions wait (they act on the page behind). */
+body.dialog-open .toast .btn { visibility: hidden; }
+.editor.page-quiet [role='listbox'][aria-label='Pages'] .list-item.selected { box-shadow: none; }
+.add-page-actions { display: flex; gap: 6px; padding: 4px 12px 6px 36px; }
+.asset-back { align-self: flex-start; margin: -4px 0 0 -6px; }
+.asset-preview { display: grid; place-items: center; height: 160px; border-radius: var(--r-sm); background: var(--canvas); overflow: hidden; }
+.asset-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.ov-chip .chip-text { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; margin: 0 2px; border: 0; border-radius: var(--r-xs); background: #fff; color: var(--select); font-size: 12px; font-weight: 600; }
+.ov-chip .chip-text svg { width: 13px; height: 13px; }
+.ov-chip .chip-text:hover { background: color-mix(in srgb, #fff 88%, var(--select)); }
+.token-title { display: flex; align-items: center; gap: 4px; min-height: 20px; }
+.token-row.set .token-title { color: var(--text); font-weight: 500; }
+/* The safe default in a dialog is visibly focused from the start, even when it was focused by the app. */
+.modal [data-autofocus]:focus { outline: 2px solid var(--focus); outline-offset: 2px; }

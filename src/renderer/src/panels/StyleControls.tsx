@@ -50,7 +50,8 @@ export function StyleControls({
   allowed,
   tokens,
   onSet,
-  onReset
+  onReset,
+  resetLabel = 'Reset all style changes'
 }: {
   styles: ResponsiveStyles | undefined;
   inherited: ResponsiveStyles | undefined;
@@ -58,6 +59,7 @@ export function StyleControls({
   tokens: TokenDef[];
   onSet: (prop: string, value: StyleValue | null) => void;
   onReset?: () => void;
+  resetLabel?: string;
 }) {
   const scope = useStore((s) => s.styleScope);
   const [showAll, setShowAll] = useState(false);
@@ -92,20 +94,19 @@ export function StyleControls({
             const inheritedValue = scope !== 'base' ? (styles?.base?.[p.id] ?? inherited?.[scope]?.[p.id] ?? inherited?.base?.[p.id]) : (inherited?.base?.[p.id]);
             return (
               <div className={`style-row${value !== undefined ? ' set' : ''}`} key={p.id}>
-                <label title={p.description ?? p.label}>
-                  {value !== undefined && <span className="ovr-dot" role="img" aria-label="Changed here" />}
+                {/* Not a <label>: the reset button beside the name must never be the target of a click on the name.
+                    Each control carries its own accessible name. */}
+                <div className="style-label" title={p.description ?? p.label}>
                   <span>{p.label}</span>
-                </label>
+                  {value !== undefined && (
+                    <button className="reset-dot" title="Changed here. Click to reset to the default." aria-label={`Reset ${p.label} to default`} onClick={() => onSet(p.id, null)}>
+                      <RotateCcw />
+                    </button>
+                  )}
+                </div>
                 <div className="style-control">
                   <Control def={p} value={value} placeholder={fmt(inheritedValue, tokens)} tokens={tokens} onSet={(v) => onSet(p.id, v)} />
                 </div>
-                {value !== undefined ? (
-                  <button className="icon-btn sm reset" title="Reset to default" aria-label={`Reset ${p.label} to default`} onClick={() => onSet(p.id, null)}>
-                    <RotateCcw />
-                  </button>
-                ) : (
-                  <span />
-                )}
               </div>
             );
           })}
@@ -121,9 +122,11 @@ export function StyleControls({
           Fewer style options
         </button>
       )}
-      {onReset && anyOverride && (
+      {/* The bulk reset clears every screen size, so it is offered only under All sizes, never while a
+          single range (Phone, Tablet, Desktop) is showing. */}
+      {onReset && anyOverride && scope === 'base' && (
         <button className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={onReset}>
-          <RotateCcw /> Reset all style changes
+          <RotateCcw /> {resetLabel}
         </button>
       )}
     </div>
@@ -149,7 +152,7 @@ function Control({ def, value, placeholder, tokens, onSet }: { def: StylePropDef
   if (def.kind === 'boolean') {
     return (
       <select className={cls} value={value === undefined ? '' : String(value)} onChange={(e) => onSet(e.target.value === '' ? null : e.target.value === 'true')} aria-label={def.label}>
-        <option value="">{placeholder ? `Default (${placeholder === 'true' ? 'yes' : 'no'})` : 'Default'}</option>
+        <option value="">{placeholder ? `${placeholder === 'true' ? 'Yes' : 'No'} · default` : 'Default'}</option>
         <option value="true">{def.id === 'hidden' ? 'Hidden' : 'Yes'}</option>
         <option value="false">{def.id === 'hidden' ? 'Visible' : 'No'}</option>
       </select>
@@ -158,7 +161,7 @@ function Control({ def, value, placeholder, tokens, onSet }: { def: StylePropDef
   if (def.kind === 'enum' || def.kind === 'ratio') {
     return (
       <select className={cls} value={value === undefined ? '' : String(value)} onChange={(e) => onSet(e.target.value === '' ? null : e.target.value)} aria-label={def.label}>
-        <option value="">{placeholder ? `Default (${def.options?.find((o) => o.value === placeholder)?.label ?? placeholder})` : 'Default'}</option>
+        <option value="">{placeholder ? `${def.options?.find((o) => o.value === placeholder)?.label ?? placeholder} · default` : 'Default'}</option>
         {value !== undefined && !def.options!.some((o) => o.value === String(value)) && <option value={String(value)}>{String(value)}</option>}
         {def.options!.map((o) => (
           <option key={o.value} value={o.value}>
@@ -173,7 +176,7 @@ function Control({ def, value, placeholder, tokens, onSet }: { def: StylePropDef
       <DraftInput
         className={`input sm grow${value !== undefined ? ' overridden' : ' inherit'}`}
         value={value === undefined ? '' : String(value)}
-        placeholder={placeholder ? `Default (${placeholder})` : 'Default'}
+        placeholder={placeholder ? `${placeholder} · default` : 'Default'}
         ariaLabel={def.label}
         onCommit={(t) => onSet(t.trim() === '' ? null : Number(t))}
       />
@@ -196,7 +199,7 @@ function Control({ def, value, placeholder, tokens, onSet }: { def: StylePropDef
         }}
         style={{ flex: selectValue === 'custom' ? '0 0 48%' : 1 }}
       >
-        <option value="">{placeholder ? `Default (${placeholder})` : 'Default'}</option>
+        <option value="">{placeholder ? `${placeholder} · default` : 'Default'}</option>
         {def.options?.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}

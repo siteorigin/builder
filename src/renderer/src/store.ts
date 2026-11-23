@@ -37,6 +37,8 @@ interface State {
   mode: 'edit' | 'preview';
   leftTab: LeftTab | null;
   rightTab: RightTab;
+  /** What Welcome should do when it appears after leaving a project: start a new one, or ask to trust one. */
+  welcomeIntent: null | { kind: 'new' } | { kind: 'trust'; dir: string; name: string };
   /** The preview page itself has loaded and connected (not just the website tools). */
   frameReady: boolean;
   /** Fields holding typed text that is not committed yet (the toolbar says "Editing…" rather than "Saved"). */
@@ -76,6 +78,7 @@ export const useStore = create<State>((set) => ({
   mode: 'edit',
   leftTab: 'pages',
   rightTab: 'inspect',
+  welcomeIntent: null,
   frameReady: false,
   drafting: 0,
   previewIssue: null,
@@ -154,4 +157,45 @@ export function markDraft(key: string, on: boolean) {
   if (on) drafts.add(key);
   else drafts.delete(key);
   useStore.setState({ drafting: drafts.size });
+  // A new draft retires any "saved" notice still on screen: it no longer describes what you are typing.
+  if (on) {
+    const toasts = useStore.getState().toasts;
+    if (toasts.some((t) => t.kind === 'success')) useStore.setState({ toasts: toasts.filter((t) => t.kind !== 'success') });
+  }
+}
+
+export interface ConfirmRequest {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+  /** A third, safe choice ("Keep editing") that resolves like a dismissal and takes the initial focus, so
+   *  a second Enter never discards anything. */
+  stayLabel?: string;
+  danger?: boolean;
+  /** true = confirm, false = the cancel button, null = dismissed (Escape, ×, backdrop): stay where you were. */
+  resolve: (ok: boolean | null) => void;
+}
+let confirmQueue: ConfirmRequest | null = null;
+const confirmListeners = new Set<() => void>();
+export function getConfirm() {
+  return confirmQueue;
+}
+export function onConfirmChange(fn: () => void) {
+  confirmListeners.add(fn);
+  return () => confirmListeners.delete(fn);
+}
+/** Ask a yes/no question in the app's own dialog (never the system's), resolving to the answer. */
+export function confirmDialog(req: Omit<ConfirmRequest, 'resolve'>): Promise<boolean | null> {
+  return new Promise((resolve) => {
+    confirmQueue = {
+      ...req,
+      resolve: (ok) => {
+        confirmQueue = null;
+        confirmListeners.forEach((f) => f());
+        resolve(ok);
+      }
+    };
+    confirmListeners.forEach((f) => f());
+  });
 }

@@ -34,14 +34,31 @@ export function PagesPanel() {
   const st = snap.state;
   const order = st.site.pageOrder;
 
+  // After an inline edit ends, keyboard focus goes back to the row it was about, unless the user has
+  // already clicked somewhere else.
+  const refocus = (sel: string) =>
+    requestAnimationFrame(() => {
+      if (document.activeElement && document.activeElement !== document.body) return;
+      listRef.current?.parentElement?.querySelector<HTMLElement>(sel)?.focus();
+    });
+
+  const cancelAdd = () => {
+    setTitle('');
+    setAdding(false);
+    refocus('.pages-add');
+  };
+
   const add = async () => {
     const t = title.trim();
     setAdding(false);
     setTitle('');
-    if (!t) return;
+    if (!t) return refocus('.pages-add');
     const r = await applyOps([{ type: 'page.create', title: t, afterPageId: pageId ?? undefined, starter: 'intro' }], `Add page ${t}`);
     const id = r?.[0]?.pageId as string | undefined;
-    if (id) selectPage(id);
+    if (id) {
+      selectPage(id);
+      setTimeout(() => refocus(`[data-page="${id}"]`), 50);
+    }
   };
   const reorder = async (ids: string[]) => applyOps([{ type: 'page.reorder', pageIds: ids }], 'Reorder pages');
 
@@ -86,9 +103,10 @@ export function PagesPanel() {
                 key={id}
                 className={`list-item${selected ? ' selected' : ''}${menu.isOpen && menuFor === id ? ' menu-open' : ''}${dropAt?.id === id ? (dropAt.after ? ' drop-after' : ' drop-before') : ''}`}
                 role="option"
+                data-page={id}
                 aria-selected={selected}
                 aria-label={id === st.site.homePageId ? `${p.title}, home page` : p.title}
-                tabIndex={selected ? 0 : -1}
+                tabIndex={-1}
                 title={id === st.site.homePageId ? `${p.title} (home page)` : `${p.title} · ${p.route}`}
                 draggable={!renaming}
                 onDragStart={() => setDragId(id)}
@@ -135,12 +153,13 @@ export function PagesPanel() {
                     onClick={(e) => e.stopPropagation()}
                     onBlur={(e) => {
                       setRenaming(null);
+                      refocus(`[data-page="${id}"]`);
                       const v = e.target.value.trim();
                       if (v && v !== p.title) void applyOps([{ type: 'page.update', pageId: id, title: v }], 'Rename page');
                     }}
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
-                      if (e.key === 'Escape') setRenaming(null);
+                      if (e.key === 'Escape') (setRenaming(null), refocus(`[data-page="${id}"]`));
                     }}
                   />
                 ) : (
@@ -152,7 +171,7 @@ export function PagesPanel() {
                   </span>
                 )}
                 <span className="actions">
-                  <button className="icon-btn sm" tabIndex={-1} aria-haspopup="menu" aria-label={`${p.title} options`} title="Page options" onClick={(e) => (e.stopPropagation(), pageMenu(e.currentTarget, id))}>
+                  <button className="icon-btn sm" tabIndex={-1} aria-haspopup="menu" aria-expanded="false" aria-label={`${p.title} options`} title="Page options" onClick={(e) => (e.stopPropagation(), pageMenu(e.currentTarget, id))}>
                     <MoreHorizontal />
                   </button>
                 </span>
@@ -160,7 +179,7 @@ export function PagesPanel() {
             );
           })}
           {adding && (
-            <div className="list-item selected">
+            <div className="list-item adding">
               <FileText />
               <input
                 className="input inline-edit grow"
@@ -169,10 +188,12 @@ export function PagesPanel() {
                 aria-label="New page title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                onBlur={() => void add()}
+                // Leaving the field never creates a page by itself: an empty row just goes away, a titled one
+                // waits for Add page or Cancel.
+                onBlur={() => !title.trim() && setAdding(false)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) (e.target as HTMLInputElement).blur();
-                  if (e.key === 'Escape') (setTitle(''), setAdding(false));
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) void add();
+                  if (e.key === 'Escape') cancelAdd();
                 }}
               />
               <span className="faint" style={{ fontSize: 12 }}>
@@ -180,10 +201,20 @@ export function PagesPanel() {
               </span>
             </div>
           )}
+          {adding && (
+            <div className="add-page-actions">
+              <button className="btn btn-sm btn-primary" disabled={!title.trim()} onMouseDown={(e) => e.preventDefault()} onClick={() => void add()}>
+                Add page
+              </button>
+              <button className="btn btn-sm btn-ghost" onMouseDown={(e) => e.preventDefault()} onClick={cancelAdd}>
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
         {!adding && (
           <div style={{ padding: '0 12px' }}>
-            <button className="btn btn-sm btn-ghost" onClick={() => setAdding(true)}>
+            <button className="btn btn-sm btn-ghost pages-add" onClick={() => setAdding(true)}>
               <Plus /> Add page
             </button>
           </div>

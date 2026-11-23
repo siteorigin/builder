@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { api, applyAiEvent, getState, setState, useStore } from './store';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
-import { Toasts } from './components/ui';
+import { ConfirmHost, Toasts } from './components/ui';
 import { runInspection } from './lib/inspect';
 import { handleShortcut } from './Editor';
 import { inlineEdit } from './panels/Canvas';
@@ -43,6 +43,7 @@ export function App() {
     <>
       {screen === 'welcome' ? <Welcome /> : <Editor />}
       <Toasts />
+      <ConfirmHost />
     </>
   );
 }

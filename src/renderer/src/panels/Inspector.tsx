@@ -1,10 +1,11 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Code, Component, Copy, FileCode2, FileText, House, Info, MousePointerClick, Palette, PanelTop, Pencil, Sparkles, Split, Trash2, Users } from 'lucide-react';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
-import { instancesOf } from '@engine/tree';
+import { catalogueComponent } from '@catalogue/index';
+import { findParent, instancesOf } from '@engine/tree';
 import { applyOps, setState, useStore } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow } from '../components/ui';
 import { ImageEditor, LinkEditor, PropField, ScalarEditor, IconPicker } from './PropEditors';
@@ -290,7 +291,20 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   if (node.kind === 'image') pushB(node.image, 'image');
   if (node.kind === 'link') (pushB(node.label, 'label'), pushB(node.link, 'link'));
   if (node.kind === 'icon') pushB(node.icon, 'icon');
-  const listProp = Object.entries(def.properties).find(([, p]) => p.type === 'list' && bindings.some((b) => b.item && b.item in (p as { fields: object }).fields))?.[0];
+  const contentList = Object.entries(def.properties).find(([, p]) => p.type === 'list' && bindings.some((b) => b.item && b.item in (p as { fields: object }).fields))?.[0];
+  // A structural part (a card itself) has no content binding, but it still repeats once per list item:
+  // find the list from the repeat that encloses it, so its Style scope says "All 3 cards" too.
+  const repeatList = (() => {
+    if (!def.tree) return undefined;
+    let id: string | null | undefined = node.id;
+    for (let guard = 0; id && guard < 50; guard++) {
+      const n = def.tree.nodes[id];
+      if (n && n.kind === 'repeat' && n.id !== node.id) return n.list.$prop;
+      id = findParent(def.tree, id)?.parentId;
+    }
+    return undefined;
+  })();
+  const listProp = contentList ?? (repeatList && def.properties[repeatList]?.type === 'list' ? repeatList : undefined);
   const instOwner = owner;
   const instNodeId = selection.instancePath[0];
 
@@ -304,7 +318,11 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
             <button className="link" onClick={() => setState({ selection: boundary })} title="Select the whole component (Esc)">
               {def.name}
             </button>
-            {listProp ? `, in all ${((inst.props[listProp] as unknown[]) ?? []).length} ${(def.properties[listProp] as { label: string }).label.toLowerCase()}` : ''}
+            {listProp
+              ? itemId
+                ? `, in one of its ${((inst.props[listProp] as unknown[]) ?? []).length} ${(def.properties[listProp] as { label: string }).label.toLowerCase()}`
+                : `, in all ${((inst.props[listProp] as unknown[]) ?? []).length} ${(def.properties[listProp] as { label: string }).label.toLowerCase()}`
+              : ''}
             {owner.kind === 'shell' ? `, in the shared ${owner.id}. Changes appear on every page that shows it.` : `, only on the ${ownerLabel(state, owner)} page.`}
           </span>
         </div>
@@ -314,7 +332,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
           <p className="muted" style={{ margin: 0 }}>This belongs to a component inside {def.name}. Change it with Edit everywhere on that component, or make {def.name} unique.</p>
         </Section>
       ) : bindings.length ? (
-        <Section title="Content" id="part-content">
+        <Section title="Content" id="part-content" scope={listProp ? (itemId ? `This ${(def.properties[listProp] as { itemLabel: string }).itemLabel.toLowerCase()} only` : undefined) : undefined}>
           {bindings.map((b, i) => {
             if (b.prop) {
               const schema = def.properties[b.prop];
@@ -527,13 +545,22 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const owner: OwnerRef = { kind: 'component', id: def.id };
   const uses = instancesOf(state, def.id).length;
   const partId = Object.entries(def.parts).find(([, p]) => p.nodeId === node.id)?.[0];
+  // A copy of a theme component compares against the theme's design, so only real changes show as changes.
+  const original = def.componentId ? catalogueComponent(state.site.themeId, def.componentId)?.tree?.nodes[node.id]?.styles : undefined;
+  const changed: ResponsiveStyles | undefined = original
+    ? Object.fromEntries(
+        Object.entries(node.styles ?? {})
+          .map(([sc, vals]) => [sc, Object.fromEntries(Object.entries(vals ?? {}).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify((original as ResponsiveStyles)[sc as keyof ResponsiveStyles]?.[k])))])
+          .filter(([, vals]) => Object.keys(vals as object).length)
+      )
+    : node.styles;
   return (
     <>
       <Header title={partId && partId !== 'root' ? def.parts[partId].label : def.tree?.rootIds[0] === node.id ? def.name : refLabel(state, { owner, instancePath: [], nodeId: node.id })} badge={<span className="badge plum">Everywhere</span>}>
         <div className="scope-note definition">
           <Component />
           <span>
-            <strong>Editing {def.name}.</strong> Changes apply {uses === 1 ? 'to its one placement' : `to all ${uses} placements`}, except where a placement has its own changes.
+            <strong>Editing {def.name}.</strong> {uses === 1 ? 'Used once. Layout and style changes apply there and wherever you add it later.' : `Layout and style changes apply to all ${uses} placements, except where one has its own changes.`}
           </span>
         </div>
       </Header>
@@ -545,12 +572,26 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       <Section title="Style" id="def-style" scope={uses === 1 ? '1 placement' : `${uses} placements`}>
         <ScopePicker />
         <StyleControls
-          styles={node.styles}
-          inherited={undefined}
+          styles={changed}
+          inherited={original}
           tokens={tokens}
           allowed={styleSetFor(node)}
-          onSet={(property, value) => void applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value }], `Edit ${def.name} definition`, `${def.id}:${node.id}:${scope}:${property}`)}
-          onReset={() => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id }], 'Reset definition styles')}
+          onSet={(property, value) => {
+            // Resetting a value restores the original design's value, when there is one.
+            const restore = value === null ? original?.[scope]?.[property] : undefined;
+            void applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value: restore ?? value }], `Edit ${def.name} definition`, `${def.id}:${node.id}:${scope}:${property}`);
+          }}
+          onReset={
+            original
+              ? () => {
+                  const ops: EditOperation[] = [];
+                  for (const sc of Object.keys(changed ?? {}) as Array<keyof ResponsiveStyles>)
+                    for (const prop of Object.keys(changed?.[sc] ?? {})) ops.push({ type: 'node.setStyle', owner, nodeId: node.id, scope: sc, property: prop, value: (original[sc]?.[prop] ?? null) as StyleValue | null });
+                  if (ops.length) void applyOps(ops, `Restore ${def.name} design`);
+                }
+              : () => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id }], 'Clear element styles')
+          }
+          resetLabel={original ? 'Restore original design' : 'Clear styles on this element'}
         />
       </Section>
     </>
@@ -559,6 +600,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
 
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
+  const [titleError, setTitleError] = useState<string | null>(null);
   if (!page) return null;
   const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], label);
   const isHome = page.id === state.site.homePageId;
@@ -570,8 +612,15 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         </span>
       </Header>
       <Section title="Page" id="page-basic">
-        <Field label="Title">
-          <DraftInput value={page.title} onCommit={(v) => v.trim() && upd({ title: v.trim() }, 'Rename page')} />
+        <Field label="Title" error={titleError}>
+          <DraftInput
+            value={page.title}
+            onCommit={(v) => {
+              if (!v.trim()) return setTitleError(`A page needs a title. Kept “${page.title}”.`);
+              setTitleError(null);
+              upd({ title: v.trim() }, 'Rename page');
+            }}
+          />
         </Field>
         <Field label="Address" hint={isHome ? 'The home page is always at /.' : 'Links to this page update automatically when you change it.'}>
           {isHome ? <input className="input" value="/" readOnly aria-label="Page address" /> : <DraftInput value={page.route} onCommit={(v) => upd({ route: v }, 'Change page address')} ariaLabel="Page address" />}

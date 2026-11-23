@@ -4,7 +4,7 @@ import { api, setState, useStore } from '../store';
 import { breadcrumb } from '../lib/model';
 import { Modal } from '../components/ui';
 
-function runtimeInfo(runtime: RuntimeState, pageIssue: string | null, frameReady = true) {
+function runtimeInfo(runtime: RuntimeState, pageIssue: string | null, frameReady: boolean) {
   const broken = runtime.state === 'error' || (runtime.state === 'ready' && !!pageIssue);
   // "Ready" means the page itself has loaded, not only that the website tools are running.
   const opening = runtime.state === 'ready' && !frameReady && !broken;
@@ -64,8 +64,11 @@ export function HealthModal() {
   const snap = useStore((s) => s.snapshot);
   const runtime = useStore((s) => s.runtime);
   const pageIssue = useStore((s) => s.previewIssue);
+  const frameReady = useStore((s) => s.frameReady);
   if (!snap) return null;
-  const { label } = runtimeInfo(runtime, pageIssue);
+  // The tools line describes the website tools only; a page problem is listed separately below.
+  const { label } = runtimeInfo(runtime, null, true);
+  void frameReady;
   const close = () => setState({ modal: null });
   return (
    <Modal

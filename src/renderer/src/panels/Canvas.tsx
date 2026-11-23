@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Component, Copy, Ellipsis, Eye, GripVertical, MousePointerClick, Pencil, RefreshCcw, Sparkles, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, Component, Copy, Ellipsis, Eye, GripVertical, MousePointerClick, PanelRight, Pencil, RefreshCcw, Sparkles, Trash2, TriangleAlert } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { applyOps } from '../store';
 import { treeFor } from '../lib/model';
 import type { ElementRef } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { api, getState, markDraft, setState, toast, useStore, type Rect } from '../store';
+import { api, confirmDialog, getState, markDraft, setState, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { boundaryOf, descOf, refLabel, resolveRef, selectionFromChain, type BridgeDesc } from '../lib/model';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateSelection, moveSelection, structuralTarget } from '../lib/actions';
@@ -46,6 +46,8 @@ export function Canvas() {
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
   const pendingEdit = useRef<{ ref: ElementRef; desc: string } | null>(null);
+  /** The route the editor last asked the page to show; its acknowledgement is the one that counts. */
+  const pendingNav = useRef<string | null>(null);
   const measureWaiters = useRef(new Map<string, (rects: Array<Rect | null>) => void>());
   const wrapRef = useRef<HTMLDivElement>(null);
   const [reorder, setReorder] = useState<{ rects: Rect[]; from: number; to: number } | null>(null);
@@ -66,7 +68,7 @@ export function Canvas() {
 
   const zoom = zoomSetting === 'fit' ? Math.min(1, (size.w - 56) / viewport) : zoomSetting;
   // The frame's whole footprint (20px top padding + 14px label margin + 28px bottom padding) fits at Fit, so the pasteboard never needs its own scrollbar.
-  const frameH = Math.max(300, (size.h - 62) / zoom);
+  const frameH = Math.max(300, (size.h - 70) / zoom);
 
   const post = (type: string, payload: unknown = {}) => postToFrame(frameRef.current, origin, session, type, payload);
 
@@ -92,19 +94,29 @@ export function Canvas() {
           setRetrying(false);
           post('mode', { mode: getState().mode });
           syncTrack();
-          syncPage(String(p.path));
+          // A page chosen while the preview was starting wins: the navigate effect opens it next.
+          if (!getState().pageId) syncPage(String(p.path));
           break;
-        case 'navigated':
+        case 'navigated': {
+          // While editing, only the reply for the page the editor last asked for counts: a late reply for an
+          // earlier request must not undo the page the user has since chosen. In Preview, a visitor's own
+          // link clicks move the editor along with them.
+          const path = String(p.path);
+          const same = (a: string, b: string | null) => !!b && (a === b || a === b + '/' || a + '/' === b);
+          if (getState().mode !== 'preview' && pendingNav.current && !same(path, pendingNav.current)) break;
+          pendingNav.current = path;
           pendingEdit.current = null;
-          syncPage(String(p.path));
+          setState({ frameReady: true });
+          syncPage(path);
           break;
+        }
         case 'rects':
           setState({ rects: { selected: (p.selected as Rect[]) ?? [], hovered: (p.hovered as Rect[]) ?? [] } });
           break;
         case 'select': {
           if (!st) return;
           const chain = p.chain as BridgeDesc[];
-          const next = chain.length ? selectionFromChain(st, chain, s.selection, !!p.alt || !!p.meta || !!s.definitionMode) : null;
+          const next = withinDefinition(chain.length ? selectionFromChain(st, chain, s.selection, !!p.alt || !!p.meta || !!s.definitionMode) : null);
           setState({ selection: next });
           if (next && s.rightTab === 'styles') setState({ rightTab: 'inspect' });
           break;
@@ -112,7 +124,7 @@ export function Canvas() {
         case 'dblclick': {
           if (!st) return;
           const chain = p.chain as BridgeDesc[];
-          const ref = selectionFromChain(st, chain, s.selection, true);
+          const ref = withinDefinition(selectionFromChain(st, chain, s.selection, true));
           if (ref && canInlineEdit(ref)) {
             setState({ selection: ref });
             const desc = descOf(st, ref);
@@ -149,7 +161,11 @@ export function Canvas() {
           break;
         case 'contextmenu': {
           if (!st) return;
-          const ref = selectionFromChain(st, p.chain as BridgeDesc[], s.selection, false);
+          const ref = withinDefinition(selectionFromChain(st, p.chain as BridgeDesc[], s.selection, false));
+          if (!ref && s.definitionMode) {
+            setState({ selection: null });
+            break;
+          }
           if (ref) setState({ selection: ref });
           const fr = frameRef.current!.getBoundingClientRect();
           const z = currentZoom();
@@ -157,10 +173,11 @@ export function Canvas() {
           break;
         }
         case 'externalLink':
-          if (window.confirm(`Open ${p.href} in your browser?`)) void api.app.openExternal(String(p.href));
+          void confirmDialog({ title: 'Open this link in your browser?', body: String(p.href), confirmLabel: 'Open in browser' }).then((ok) => ok === true && void api.app.openExternal(String(p.href)));
           break;
         case 'runtimeError':
           setFrameError(String(p.message).slice(0, 400));
+          setRetrying(false);
           setRetrying(false);
           break;
         case 'revisionApplied':
@@ -215,8 +232,22 @@ export function Canvas() {
   // Navigate when the current page changes.
   useEffect(() => {
     if (!ready || !page) return;
+    // Until the page confirms the navigation, it is "opening", not ready.
+    setState({ frameReady: false });
+    pendingNav.current = page.route;
     post('navigate', { path: page.route });
   }, [pageId, page?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /** While editing a component everywhere, a pick outside it selects nothing (the overview), so the
+   *  canvas, chip and inspector never describe a different section under the "everywhere" band. */
+  function withinDefinition(ref: ElementRef | null): ElementRef | null {
+    const dm = getState().definitionMode;
+    const st = getState().snapshot?.state;
+    if (!dm || !ref || !st) return ref;
+    if (ref.owner.kind === 'component' && ref.owner.id === dm.definitionId) return ref;
+    const inst = ref.instancePath.length ? resolveRef(st, { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] }).node : resolveRef(st, ref).node;
+    return inst?.kind === 'instance' && inst.definitionId === dm.definitionId ? (ref.instancePath.length ? ref : { ...ref, instancePath: [ref.nodeId], nodeId: st.components[dm.definitionId]?.tree?.rootIds[0] ?? ref.nodeId }) : null;
+  }
 
   function openContextMenu(x: number, y: number, ref: ElementRef | null, trigger?: HTMLElement) {
     if (!ref || !state) return;
@@ -227,7 +258,7 @@ export function Canvas() {
     const locked = !t || t.owner.kind === 'shell';
     const items = [
         { heading: refLabel(state, ref) },
-        ...(parent ? [{ label: `Select ${refLabel(state, parent)}`, icon: <Component />, shortcut: 'Esc', onSelect: () => setState({ selection: parent }) }] : []),
+        ...(parent ? [{ label: `Select ${refLabel(state, parent)}`, icon: <Component />, shortcut: 'Esc', onSelect: () => setState({ selection: withinDefinition(parent) }) }] : []),
         { label: 'Ask AI about this', icon: <Sparkles />, shortcut: '⌘J', onSelect: () => askAiAbout(ref) },
         ...(t
           ? [
@@ -383,8 +414,18 @@ export function Canvas() {
         </div>
       )}
       {runStatus && (
-        <div className="ai-veil" role="status">
-          <Sparkles size={15} className="spark" /> The AI is editing this site. You can look around while it works.
+        <div className="ai-veil" role="status" style={{ bottom: mode === 'preview' ? 64 : 18 }}>
+          <Sparkles size={15} className="spark" />{' '}
+          {runStatus === 'awaiting-input' ? (
+            <>
+              The AI has a question for you.{' '}
+              <button className="link-btn" onClick={() => setState({ dockOpen: true, rightTab: 'chat' })}>
+                Answer it
+              </button>
+            </>
+          ) : (
+            'The AI is editing this site. You can look around while it works.'
+          )}
           <button className="btn btn-sm" onClick={() => void api.ai.stop()}>
             Stop
           </button>
@@ -393,7 +434,7 @@ export function Canvas() {
       <div className="canvas-scroll" ref={scrollRef} onMouseDown={(e) => e.target === e.currentTarget && setState({ selection: null })}>
         {url && initialSrc && (
           <div className="frame-wrap" ref={wrapRef} style={{ width: viewport * z, height: frameH * z, marginTop: 14 }}>
-            <div className="frame-width-label" style={{ visibility: firstSel && isPart && !definitionMode ? 'hidden' : undefined }}>
+            <div className={`frame-width-label${firstSel && isPart && !definitionMode ? (firstSel.left + 360 > viewport * z - 190 ? ' gone' : ' aside') : ''}`}>
               <b>{viewport}</b> px {viewport < 768 ? '· Phone range' : viewport < 1024 ? '· Tablet range' : '· Desktop range'}
             </div>
             <div className="frame-box" style={{ width: viewport, height: frameH, transform: `scale(${z})` }}>
@@ -420,7 +461,7 @@ export function Canvas() {
                     </div>
                   ))}
                 {selBoxes.map((b, i) => (
-                  <div key={`s${i}`} className={`ov-box ov-selected${i > 0 ? ' dim' : ''}`} style={b} />
+                  <div key={`s${i}`} className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}`} style={b} />
                 ))}
                 {reorder && <ReorderIndicator rects={reorder.rects.map(toBox)} to={reorder.to} />}
               </div>
@@ -434,6 +475,7 @@ export function Canvas() {
                   everywhere={!!definitionMode}
                   topLevel={!selection.instancePath.length}
                   repeats={selBoxes.length}
+                  single={!!selection.itemPath?.length}
                   repeatsLabel={selLabel ? `${selLabel.toLowerCase()}${/s$/.test(selLabel) ? '' : 's'}` : 'items'}
                   onMore={(x, y, el) => openContextMenu(x, y, selection, el)}
                   onGrip={startReorder}
@@ -446,7 +488,8 @@ export function Canvas() {
         )}
       </div>
       {frameError && runtime.state === 'ready' && (
-        <div className="ai-veil issue" style={{ bottom: runStatus || mode === 'preview' ? 64 : 18 }} role="alert">
+        // Bottom bars stack: preview pill, then the AI run, then a page problem, each one step up.
+        <div className="ai-veil issue" style={{ bottom: 18 + (mode === 'preview' ? 46 : 0) + (runStatus ? 46 : 0) }} role="alert">
           <TriangleAlert size={15} />
           <span>
             <strong>This page couldn’t be previewed.</strong> Your work is safe.
@@ -479,8 +522,10 @@ function ReorderIndicator({ rects, to }: { rects: Array<{ left: number; top: num
  * never covers neighbouring content: above it when there is room, else inside its top edge for a tall
  * selection, else below it. It is kept inside the page frame horizontally and vertically.
  */
-function SelectionChip({ box, frameWidth, frameHeight, name, parent, repeats, repeatsLabel, everywhere, topLevel, onMore, onGrip }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; frameHeight: number; name: string; parent: string | null; repeats: number; repeatsLabel: string; everywhere: boolean; topLevel: boolean; onMore: (x: number, y: number, el?: HTMLElement) => void; onGrip: (e: React.PointerEvent) => void }) {
+function SelectionChip({ box, frameWidth, frameHeight, name, parent, repeats, repeatsLabel, single, everywhere, topLevel, onMore, onGrip }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; frameHeight: number; name: string; parent: string | null; repeats: number; repeatsLabel: string; single: boolean; everywhere: boolean; topLevel: boolean; onMore: (x: number, y: number, el?: HTMLElement) => void; onGrip: (e: React.PointerEvent) => void }) {
   const selection = useStore((s) => s.selection);
+  // With the inspector out of sight (dock closed, or AI / Site styles showing), the chip offers the way back.
+  const inspectorHidden = useStore((s) => !s.dockOpen || s.rightTab !== 'inspect');
   const ref = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(200);
   useLayoutEffect(() => {
@@ -496,7 +541,7 @@ function SelectionChip({ box, frameWidth, frameHeight, name, parent, repeats, re
   // strip above the page frame, lined up with the part; the outline marks the part itself.
   const parked = !topLevel && !everywhere;
   const inside = !parked && box.height > 120;
-  const top = parked ? -H - 8 : inside ? box.top + GAP + 2 : box.top >= H + GAP + 2 ? box.top - H - GAP : Math.min(box.top + box.height + GAP, frameHeight - H - GAP);
+  const top = parked ? -H - 6 : inside ? box.top + GAP + 2 : box.top >= H + GAP + 2 ? box.top - H - GAP : Math.min(box.top + box.height + GAP, frameHeight - H - GAP);
   const left = Math.max(0, Math.min(inside ? box.left + GAP + 2 : box.left, frameWidth - w));
   const parentRef = selection?.instancePath.length ? { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] } : null;
   const canEdit = !!t && t.owner.kind !== 'shell';
@@ -515,11 +560,21 @@ function SelectionChip({ box, frameWidth, frameHeight, name, parent, repeats, re
             in {parent}
           </button>
         )}
-        {repeats > 1 && <span className="of">· all {repeats} {repeatsLabel}</span>}
+        {/* One card picked on the page vs the part in every card (picked in Layers): say which. */}
+        {repeats > 1 && <span className="of">· {single ? `one of ${repeats}` : `all ${repeats} ${repeatsLabel}`}</span>}
       </span>
       <button className="icon-btn" title="Ask AI about this (⌘J)" aria-label="Ask AI about this" onClick={() => askAiAbout(selection)}>
         <Sparkles />
       </button>
+      {inspectorHidden && (
+        <button className="chip-text" title="Show this in the inspector" onClick={() => {
+            setState({ dockOpen: true, rightTab: 'inspect' });
+            // Focus follows into the inspector, landing on the selection's first control.
+            setTimeout(() => document.querySelector<HTMLElement>('#dock-panel-inspect :is(input, textarea, select, button.link, .insp-jump button)')?.focus(), 120);
+          }}>
+          <PanelRight /> Edit
+        </button>
+      )}
       {t && !selection?.instancePath.length && (
         <>
           <button className="icon-btn" title="Move up (⇧⌘↑)" aria-label="Move up" onClick={() => void moveSelection(-1)}>
@@ -544,7 +599,7 @@ function SelectionChip({ box, frameWidth, frameHeight, name, parent, repeats, re
         className="icon-btn"
         title="More actions"
         aria-label="More actions"
-        aria-haspopup="menu"
+        aria-haspopup="menu" aria-expanded="false"
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
           onMore(r.left, r.bottom + 4, e.currentTarget);

@@ -162,3 +162,10 @@ export function askAiAbout(ref: ElementRef | null) {
 export function setMode(mode: 'edit' | 'preview') {
   setState(mode === 'preview' ? { mode, selection: null } : { mode });
 }
+
+/** Open Site styles. Site styles are site-wide, so this leaves component editing first: the plum band
+ *  must never sit over site-wide controls. */
+export function openSiteStyles() {
+  const dm = getState().definitionMode;
+  setState(dm ? { definitionMode: null, pageId: dm.returnPageId, selection: null, rightTab: 'styles', dockOpen: true } : { rightTab: 'styles', dockOpen: true });
+}

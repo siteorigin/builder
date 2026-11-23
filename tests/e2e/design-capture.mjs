@@ -131,6 +131,21 @@ await frame.locator('h1').first().click();
 await pause(700);
 await shot('editor-part-selected', '.ov-selected');
 
+// A style changed here: its reset sits beside the name.
+{
+  const sel = win.locator('#dock-panel-inspect select[aria-label="Text style"]').first();
+  if (await sel.count()) {
+    const opts = await sel.locator('option').evaluateAll((os) => os.map((o) => o.value).filter(Boolean));
+    if (opts.length) {
+      await sel.selectOption(opts[Math.min(1, opts.length - 1)]);
+      await pause(700);
+      await shot('style-changed', '.reset-dot');
+      await win.locator('.reset-dot').first().click();
+      await pause(500);
+    }
+  }
+}
+
 // Layers with a repeated item selected.
 await win.locator('.rail [aria-label="Layers"]').click();
 const gridRow = win.locator('.list-item', { hasText: 'Services grid' });
@@ -138,6 +153,11 @@ await gridRow.locator('.tree-toggle').click();
 await win.locator('.list-item', { hasText: 'Card title' }).first().click();
 await pause(700);
 await shot('layers-part', '[role="tree"] .list-item.selected');
+
+// One card's title picked on the page: "one of 3", and "This card only" on Content.
+await frame.getByText('Materials & colour', { exact: true }).first().dispatchEvent('click');
+await pause(700);
+await shot('card-picked', '.ov-chip', ['light']);
 
 // Section context menu from the canvas overlay (shift-click on delete opens "more").
 await gridRow.click();
@@ -161,7 +181,7 @@ await shot('assets-panel', '.asset-grid');
 await win.locator('.asset-tile').first().click();
 await pause(400);
 await shot('asset-selected', '.asset-detail', ['light']);
-await win.locator('.asset-tile').first().click();
+await win.locator('.asset-back').click();
 
 // Pages panel with a page's options menu.
 await win.locator('.rail [aria-label="Pages"]').click();
@@ -176,6 +196,16 @@ await win.keyboard.press('Escape');
 await win.locator('.dock-tab', { hasText: 'Site styles' }).click();
 await pause(500);
 await shot('site-styles', '#dock-panel-styles .insp-head');
+// A site colour changed from the theme.
+{
+  const hex = win.locator('#dock-panel-styles input.hex').first();
+  await hex.fill('#2b5d8a');
+  await hex.press('Enter');
+  await pause(700);
+  await shot('site-style-changed', '#dock-panel-styles .reset-dot');
+  await win.locator('#dock-panel-styles .reset-dot').first().click();
+  await pause(500);
+}
 
 // AI assistant before a provider is connected, then with one.
 await win.locator('.dock-tab', { hasText: 'AI' }).click();
@@ -247,7 +277,19 @@ await shot('settings-general', '.modal');
 await win.getByRole('tab', { name: 'AI assistant' }).click();
 await pause(300);
 await shot('settings-ai', '.modal');
-await closeModal();
+// A typed key that was not saved: closing asks, with Keep editing first.
+{
+  const key = win.locator('.modal input[type="password"]').first();
+  if (await key.count()) {
+    await key.fill('sk-typed-but-not-saved');
+    await win.keyboard.press('Escape');
+    await pause(400);
+    await shot('settings-unsaved', '.modal >> text=Keep editing', ['light']);
+    await win.getByRole('button', { name: 'Discard', exact: true }).click();
+    await pause(300);
+  } else await closeModal();
+}
+if (await win.locator('.modal').count()) await closeModal();
 
 await win.getByRole('button', { name: 'Export', exact: true }).click();
 await pause(300);

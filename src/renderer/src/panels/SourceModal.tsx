@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { Code, Lock } from 'lucide-react';
-import { applyOps, api, setState, toast, useStore } from '../store';
+import { applyOps, api, setState, toast, useStore, confirmDialog } from '../store';
 import { Field, Modal, TabPanel, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
 import { prepareCodeForSave } from '../lib/code';
@@ -42,8 +42,12 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     });
   }, [definitionId, def]);
   if (!def) return null;
-  const close = () => setState({ modal: null });
   const dirty = !!src && draft !== src.source;
+  // Unsaved code is never lost to Escape, the backdrop or ×: ask first.
+  const close = () =>
+    dirty && src?.editable
+      ? void confirmDialog({ title: 'Discard your code changes?', body: 'Your edits to this component have not been saved.', confirmLabel: 'Discard changes', cancelLabel: 'Keep editing', danger: true }).then((ok) => ok === true && setState({ modal: null }))
+      : setState({ modal: null });
   const save = async () => {
     setErrors([]);
     const r = await prepareCodeForSave(draft, setStatus);
@@ -85,7 +89,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
         <Tabs value={tab} onChange={setTab} label="Source views" idBase="source" options={[{ value: 'source', label: 'Svelte source' }, { value: 'manifest', label: 'Properties' }]} />
         <TabPanel idBase="source" value={tab}>
           {tab === 'manifest' ? (
-            <pre className="code-view">{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.keys(def.variants ?? {}) }, null, 2)}</pre>
+            <pre className="code-view" tabIndex={0}>{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.keys(def.variants ?? {}) }, null, 2)}</pre>
           ) : src?.editable ? (
             <CodeEditor value={draft} onChange={setDraft} />
           ) : src ? (
@@ -162,6 +166,11 @@ export function NewCodeComponentModal() {
   const [source, setSource] = useState(STARTER);
   const [errors, setErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
+  // Every way out (×, Escape, backdrop, Cancel) goes through here, so unsaved code is never dropped silently.
+  const close = () =>
+    source !== STARTER || name.trim()
+      ? void confirmDialog({ title: 'Discard this new component?', body: 'Your code has not been saved.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', danger: true }).then((ok) => ok === true && setState({ modal: null }))
+      : setState({ modal: null });
   const create = async () => {
     setErrors([]);
     const checked = await prepareCodeForSave(source, setStatus);
@@ -182,11 +191,11 @@ export function NewCodeComponentModal() {
       wide
       title="New code component"
       icon={<Code />}
-      onClose={() => setState({ modal: null })}
+      onClose={close}
       footer={
         <>
           <span className="faint grow" style={{ fontSize: 12 }}>{status ?? 'Code is checked before it is saved, and fixed automatically when needed.'}</span>
-          <button className="btn" onClick={() => setState({ modal: null })}>
+          <button className="btn" onClick={close}>
             Cancel
           </button>
           <button className="btn btn-primary" disabled={!name.trim() || !!status} onClick={() => void create()}>

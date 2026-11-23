@@ -1,7 +1,9 @@
 import { Children, cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, X } from 'lucide-react';
-import { markDraft, useStore } from '../store';
+import { getConfirm, markDraft, onConfirmChange, useStore } from '../store';
+
+const setToasts = (toasts: ReturnType<typeof useStore.getState>['toasts']) => useStore.setState({ toasts });
 
 const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
@@ -29,9 +31,16 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
     const el = ref.current;
     if (!el) return;
     const opener = openerRef.current;
+    // If the opener is gone when the dialog closes (the panel re-rendered, say after connecting AI), focus
+    // lands in the same panel instead of jumping across the window.
+    const region = opener?.closest<HTMLElement>('[role="tabpanel"], .side-panel-view, .toolbar') ?? null;
     openDialogs.push(el);
     const root = document.getElementById('root');
     if (root && !root.contains(el)) root.inert = true;
+    // Only the top dialog is live: the one below (and toasts) wait until it closes.
+    const below = openDialogs[openDialogs.length - 2]?.closest<HTMLElement>('.overlay-backdrop');
+    if (below) below.inert = true;
+    document.body.classList.add('dialog-open');
     if (!el.contains(document.activeElement)) {
       const inBody = el.querySelector<HTMLElement>('.modal-body ' + FOCUSABLE.split(', ').join(', .modal-body '));
       const first = el.querySelector<HTMLElement>('[data-autofocus]') ?? inBody ?? el.querySelector<HTMLElement>('.modal-foot ' + FOCUSABLE.split(', ').join(', .modal-foot ')) ?? el;
@@ -49,8 +58,13 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
       window.removeEventListener('keydown', stray);
       openDialogs.splice(openDialogs.indexOf(el), 1);
       if (root && !openDialogs.length) root.inert = false;
-      const back = opener && document.contains(opener) && !opener.closest('[role="menu"]') ? opener : document.querySelector<HTMLElement>('.list-item.selected[tabindex="0"], [role="option"][aria-selected="true"]');
-      requestAnimationFrame(() => back?.focus());
+      if (below) below.inert = false;
+      if (!openDialogs.length) document.body.classList.remove('dialog-open');
+      const visible = (n: HTMLElement | null) => !!n && document.contains(n) && n.offsetParent !== null;
+      const inRegion = region && document.contains(region) ? [...region.querySelectorAll<HTMLElement>('textarea, input, [tabindex="0"], button:not([disabled])')].find(visible) : undefined;
+      const back = visible(opener) && !opener!.closest('[role="menu"]') ? opener : inRegion ?? [...document.querySelectorAll<HTMLElement>('[role="treeitem"][tabindex="0"], [role="option"][aria-selected="true"]')].find(visible) ?? null;
+      // Only restore when focus has nowhere better to be; a dialog action may have focused something new.
+      requestAnimationFrame(() => (!document.activeElement || document.activeElement === document.body) && back?.focus());
     };
   }, [ref]);
   return (e: React.KeyboardEvent) => {
@@ -324,15 +338,29 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
   const controlId = explicitId ?? (only ? ((only.props.id as string | undefined) ?? id) : undefined);
   const note = error || hint;
   const control = only && !explicitId ? cloneElement(only, { id: controlId, 'aria-describedby': note ? noteId : undefined, 'aria-invalid': error ? true : undefined }) : children;
+  // A composite child (a segmented control, a row of fields) is named as a group by the label instead.
+  const grouped = !controlId && !!label;
   return (
     <div className="field">
-      {label && (
-        <label htmlFor={controlId}>
-          <span className="grow">{label}</span>
-          {extra}
-        </label>
+      {label &&
+        (grouped ? (
+          <div className="field-label" id={`${id}-label`}>
+            <span className="grow">{label}</span>
+            {extra}
+          </div>
+        ) : (
+          <label htmlFor={controlId}>
+            <span className="grow">{label}</span>
+            {extra}
+          </label>
+        ))}
+      {grouped ? (
+        <div role="group" aria-labelledby={`${id}-label`} aria-describedby={note ? noteId : undefined}>
+          {control}
+        </div>
+      ) : (
+        control
       )}
-      {control}
       {error ? (
         <div className="field-error" id={noteId}>
           {error}
@@ -477,7 +505,13 @@ export function Toasts() {
           {t.kind === 'error' ? <CircleAlert /> : t.kind === 'success' ? <CircleCheck /> : <Info />}
           <span className="grow">{t.text}</span>
           {t.action && (
-            <button className="btn btn-sm btn-ghost" onClick={t.action.run}>
+            <button
+              className="btn btn-sm btn-ghost"
+              onClick={() => {
+                t.action!.run();
+                setToasts(useStore.getState().toasts.filter((x) => x.id !== t.id));
+              }}
+            >
               {t.action.label}
             </button>
           )}
@@ -500,6 +534,8 @@ export function Spinner({ large, decorative }: { large?: boolean; decorative?: b
  */
 export function rovingKeys(e: React.KeyboardEvent<HTMLElement>, role: 'option' | 'treeitem') {
   if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+  // Modified arrows belong to commands (⇧⌘↑/↓ moves the selection); only plain keys navigate.
+  if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
   const t = e.target as HTMLElement;
   if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return;
   const rows = [...e.currentTarget.querySelectorAll<HTMLElement>(`[role="${role}"]`)];
@@ -532,3 +568,50 @@ export function TabPanel({ idBase, value, children, className, style }: { idBase
     </div>
   );
 }
+
+/** Hosts confirmDialog(): the app's own confirmation, styled and themed like every other dialog. */
+export function ConfirmHost() {
+  const [req, setReq] = useState(getConfirm());
+  useEffect(() => {
+    const off = onConfirmChange(() => setReq(getConfirm()));
+    return () => void off();
+  }, []);
+  if (!req) return null;
+  return (
+    <Modal
+      title={req.title}
+      icon={req.danger ? <CircleAlert style={{ color: 'var(--red)' }} /> : <Info />}
+      onClose={() => req.resolve(null)}
+      describedBy="confirm-body"
+      footer={
+        <>
+          {req.stayLabel && (
+            <button className="btn btn-ghost" data-autofocus onClick={() => req.resolve(null)} style={{ marginRight: 'auto' }}>
+              {req.stayLabel}
+            </button>
+          )}
+          <button className="btn" data-autofocus={req.stayLabel ? undefined : true} onClick={() => req.resolve(false)}>
+            {req.cancelLabel ?? 'Cancel'}
+          </button>
+          <button className={`btn ${req.danger ? 'btn-danger-fill' : 'btn-primary'}`} onClick={() => req.resolve(true)}>
+            {req.confirmLabel}
+          </button>
+        </>
+      }
+    >
+      <p id="confirm-body" style={{ margin: 0, overflowWrap: 'anywhere' }}>
+        {req.body}
+      </p>
+    </Modal>
+  );
+}
+
+/** Run fn once the menu or dialog that launched it has closed (a command that opens its own flow, such as
+ *  New project, must not be refused by the guard that blocks shortcuts while an overlay is open). */
+export function afterOverlaysClose(fn: () => void) {
+  let frames = 0;
+  const go = () => (openDialogs.length || openMenus.count) && frames++ < 30 ? requestAnimationFrame(go) : fn();
+  requestAnimationFrame(go);
+}
+
+export const sendCommand = (detail: string) => afterOverlaysClose(() => window.dispatchEvent(new CustomEvent('builder-command', { detail })));

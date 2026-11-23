@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowUp, Check, Settings2, CircleAlert, CircleCheck, CircleSlash, FileText, History, KeyRound, MousePointerClick, Plus, RotateCcw, Sparkles, Square, Trash2, X } from 'lucide-react';
 import type { ChatContext, ChatMessage } from '@shared/api';
-import { api, getState, setState, toast, useStore } from '../store';
-import { refLabel } from '../lib/model';
+import { api, getState, setState, toast, useStore, confirmDialog } from '../store';
+import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
 import { Spinner, useMenu } from '../components/ui';
 
@@ -98,14 +98,14 @@ export function Chat() {
         <span className="faint ellipsis grow" style={{ fontSize: 12 }}>
           {conversation?.title && conversation.messages.length ? conversation.title : 'New conversation'}
         </span>
-        <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" aria-haspopup="menu" onClick={async (e) => {
+        <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" aria-haspopup="menu" aria-expanded="false" onClick={async (e) => {
           const el = e.currentTarget;
           const { list } = await api.ai.conversations();
           menu.openAt(el, [
             { heading: list.length ? 'Recent conversations' : 'No earlier conversations' },
             ...list.slice(0, 12).map((c) => ({ label: c.title, checked: c.id === conversation?.id, onSelect: () => void api.ai.openConversation(c.id).then((conv) => setState({ conversation: conv })) })),
             ...(list.length ? [{ separator: true }] : []),
-            ...(list.length ? [{ label: 'Clear conversation history…', icon: <Trash2 />, danger: true, onSelect: () => window.confirm('Clear every earlier AI conversation in this project? This cannot be undone.') && void api.ai.clearHistory().then((conv) => setState({ conversation: conv })) }] : [{ label: 'Start a new conversation', icon: <Plus />, onSelect: () => void api.ai.newConversation().then((c) => setState({ conversation: c })) }])
+            ...(list.length ? [{ label: 'Clear conversation history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every earlier AI conversation in this project will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && void api.ai.clearHistory().then((conv) => setState({ conversation: conv }))) }] : [{ label: 'Start a new conversation', icon: <Plus />, onSelect: () => void api.ai.newConversation().then((c) => setState({ conversation: c })) }])
           ]);
         }} disabled={running}>
           <History />
@@ -176,6 +176,11 @@ export function Chat() {
               <span className="chip" title="The AI works on the page you are viewing">
                 <FileText /> {page.title}
               </span>
+            )}
+            {selLabel && !ctxOn.selection && (
+              <button className="chip add" onClick={() => setState({ chatContextEnabled: { ...ctxOn, selection: true } })} title="Include the selected element in your request">
+                <Plus /> {selLabel}
+              </button>
             )}
             {selLabel && ctxOn.selection && (
               <span className="chip sel">
@@ -363,9 +368,38 @@ function ResultCard({ m }: { m: ChatMessage }) {
               const conv = getState().conversation;
               const i = conv?.messages.findIndex((x) => x.id === m.id) ?? -1;
               const user = conv?.messages[i - 1];
-              if (user) setState({ chatDraft: user.text });
+              if (user) {
+                // Retry with the original target: same page and same selection, not whatever is selected now.
+                // Both are checked against the project as it is now; a target that has since been deleted is
+                // dropped rather than restored, and the note below asks for a new one.
+                const ctx = user.context;
+                const st = getState().snapshot?.state;
+                const pageOk = !!ctx?.pageId && !!st?.pages[ctx.pageId];
+                const selOk = (() => {
+                  try {
+                    return pageOk && !!ctx?.selection && !!st && !!resolveRef(st, ctx.selection).node;
+                  } catch {
+                    return false;
+                  }
+                })();
+                setState({
+                  chatDraft: user.text,
+                  ...(pageOk ? { pageId: ctx!.pageId } : {}),
+                  selection: selOk ? ctx!.selection : null,
+                  chatContextEnabled: { page: true, selection: selOk }
+                });
+                if ((ctx?.selection && !selOk) || (ctx?.pageId && !pageOk))
+                  toast(`${ctx?.selectionLabel ?? ctx?.pageTitle ?? 'What this was about'} is no longer in the site. Choose what to change, then send again.`, 'info');
+              }
+              requestAnimationFrame(() => {
+                const ta = document.querySelector<HTMLTextAreaElement>('.composer textarea');
+                if (!ta) return;
+                ta.style.height = 'auto';
+                ta.style.height = `${Math.min(200, ta.scrollHeight)}px`;
+                ta.focus();
+              });
             }}>
-              Try again
+              Edit and try again
             </button>
           )}
           {r.error && /API key|Settings/.test(r.summary) && (

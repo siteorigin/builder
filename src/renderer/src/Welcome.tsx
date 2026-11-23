@@ -33,6 +33,12 @@ export function Welcome() {
   const refresh = () => void api.projects.recents().then(setRecents);
   useEffect(() => {
     refresh();
+    const intent = useStore.getState().welcomeIntent;
+    if (intent) {
+      setState({ welcomeIntent: null });
+      if (intent.kind === 'new') setCreating(true);
+      else setTrust({ dir: intent.dir, name: intent.name });
+    }
     const onCmd = (e: Event) => {
       if (openDialogs.length) return;
       const cmd = (e as CustomEvent).detail;
@@ -158,9 +164,11 @@ export function Welcome() {
                   className="icon-btn sm remove"
                   aria-label={`Remove ${r.name} from recent projects`}
                   title="Remove from this list (the folder is not deleted)"
+                  disabled={!!opening}
                   onClick={async () => {
                     await api.projects.removeRecent(r.dir);
                     refresh();
+                    toast(`${r.name} was removed from this list. Its folder is untouched.`);
                   }}
                 >
                   <X />
@@ -175,6 +183,7 @@ export function Welcome() {
       {trust && (
         <Modal
           title="Trust this project?"
+          describedBy="trust-body"
           icon={<ShieldAlert style={{ color: 'var(--amber)' }} />}
           onClose={() => setTrust(null)}
           busy={trusting}
@@ -201,7 +210,7 @@ export function Welcome() {
             </>
           }
         >
-          <p style={{ marginTop: 0 }}>
+          <p id="trust-body" style={{ marginTop: 0 }}>
             <strong>{trust.name}</strong> was made on another computer, or its setup files changed since you last opened it.
           </p>
           <p className="muted">
@@ -389,7 +398,7 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
           Everything needed is included, and nothing is downloaded. Your website is saved as a normal folder that you own.
         </p>
         {error && (
-          <div className="scope-note danger" role="alert">
+          <div className="scope-note danger" role="alert" ref={(el) => el?.scrollIntoView({ block: 'nearest' })}>
             <ShieldAlert />
             <span>{error}</span>
           </div>

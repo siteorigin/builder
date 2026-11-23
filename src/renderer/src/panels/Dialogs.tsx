@@ -122,7 +122,7 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
   };
   return (
     <Modal
-      title={`Change ${def.name} everywhere?`}
+      title={uses.length === 1 ? `Edit the ${def.name} design?` : `Change ${def.name} everywhere?`}
       icon={<Component style={{ color: 'var(--plum)' }} />}
       onClose={close}
       footer={
@@ -137,26 +137,31 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
       }
     >
       <div className="col" style={{ gap: 10 }}>
-        <p style={{ margin: 0 }}>
-          Changes to its layout and styles apply to <strong>{uses.length === 1 ? 'its one placement' : `all ${uses.length} placements`}</strong>. Each placement keeps its own text and images, and any changes made to it directly.
-        </p>
-        <div className="field-label">Used on</div>
-        <ul style={{ margin: '-6px 0 0', paddingLeft: 18 }}>
-          {[...new Set(uses.map((u) => u.label))].map((l) => (
-            <li key={l}>{l}</li>
-          ))}
-        </ul>
+        {uses.length === 1 ? (
+          <p style={{ margin: 0 }}>
+            Used once, on <strong>{uses[0].label}</strong>. This changes its layout and styles, here and anywhere you add it later. It keeps its text, images and changes made on the page.
+          </p>
+        ) : (
+          <>
+            <p style={{ margin: 0 }}>
+              This changes the layout and styles of <strong>all {uses.length} placements</strong>. Each keeps its own text, images and changes made on the page.
+            </p>
+            <div className="field-label">Used on</div>
+            <ul style={{ margin: '-6px 0 0', paddingLeft: 18 }}>
+              {[...new Set(uses.map((u) => u.label))].map((l) => (
+                <li key={l}>{l}</li>
+              ))}
+            </ul>
+          </>
+        )}
         {def.owner === 'theme' && (
           <div className="scope-note definition">
             <Component />
             <span>
-              {def.name} comes with the Foundation theme. Editing it makes your own copy and switches {uses.length === 1 ? 'that placement' : `these ${uses.length} placements`} to it. The original stays available in Insert.
+              It comes with the Foundation theme, so you edit your own copy. The original stays in Insert.
             </span>
           </div>
         )}
-        <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-          While editing, click parts on the page to change their styles. Choose Done editing in the bar at the top to return.
-        </p>
       </div>
     </Modal>
   );

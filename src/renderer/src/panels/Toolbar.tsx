@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Check, ChevronDown, CircleAlert, Copy, Eye, FolderOpen, History, House, LogOut, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
+import { Check, ChevronDown, CircleAlert, Copy, Plus, Eye, FolderOpen, History, House, LogOut, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { api, setState, toast, useStore } from '../store';
-import { useMenu } from '../components/ui';
+import { useMenu, sendCommand } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
 
@@ -50,7 +50,7 @@ export function Toolbar() {
         <span className="toolbar-mark" title="SiteOrigin Builder">
           <AppMark size={26} />
         </span>
-        <div className="toolbar-group no-drag">
+        <div className="toolbar-group">
           <button className="icon-btn" aria-pressed={!!leftTab} title="Show or hide the sidebar (⌘\)" aria-label="Sidebar" onClick={() => setState({ leftTab: leftTab ? null : 'pages' })}>
             <PanelLeft />
           </button>
@@ -70,6 +70,9 @@ export function Toolbar() {
                     hint: id === state.site.homePageId ? 'Home page' : undefined,
                     onSelect: () => selectPage(id)
                   })),
+                  { separator: true },
+                  { label: 'New project…', icon: <Plus />, onSelect: () => sendCommand('new-project') },
+                  { label: 'Open project…', icon: <FolderOpen />, onSelect: () => sendCommand('open-project') },
                   { separator: true },
                   { label: 'Show project folder', icon: <FolderOpen />, onSelect: () => void api.projects.reveal() },
                   { label: 'Duplicate project…', icon: <Copy />, onSelect: () => void api.projects.duplicate().then((r) => r.ok && toast(`Duplicated to ${r.dir}`)) },
@@ -94,7 +97,7 @@ export function Toolbar() {
         </div>
       </div>
 
-      <div className="toolbar-center no-drag">
+      <div className="toolbar-center">
         <div className="segmented" role="group" aria-label="Preview width">
           <button aria-pressed={preset === 'desktop'} title="Desktop (1280px)" aria-label="Desktop" onClick={() => setViewport(VIEWPORT_PRESETS.desktop)}>
             <Monitor />
@@ -156,7 +159,7 @@ export function Toolbar() {
         </div>
       </div>
 
-      <div className="toolbar-end no-drag">
+      <div className="toolbar-end">
         <button className="icon-btn" disabled={!snap.history.canUndo} title={snap.history.undoLabel ? `Undo ${snap.history.undoLabel} (⌘Z)` : 'Undo (⌘Z)'} aria-label={snap.history.undoLabel ? `Undo ${snap.history.undoLabel}` : 'Undo'} onClick={() => void api.project.undo().then((r) => !r.ok && r.error && toast(r.error.message, 'error'))}>
           <Undo2 />
         </button>

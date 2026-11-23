@@ -14,7 +14,7 @@ await win.evaluate((dir) => window.builder.projects.create({ name: 'Code Test', 
 const frame = win.frameLocator('.frame-box iframe');
 await frame.locator('h1').first().waitFor({ timeout: 60000 });
 await win.locator('[aria-label="Settings"]').click();
-await win.locator('[aria-label="Developer mode"]').click();
+await win.getByLabel('Developer mode', { exact: true }).click();
 await win.keyboard.press('Escape');
 await win.locator('.rail [aria-label="Insert"]').click();
 await win.getByRole('button', { name: 'New code component' }).click();

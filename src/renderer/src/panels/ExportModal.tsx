@@ -19,7 +19,7 @@ export function ExportModal() {
   };
   const blocked = aiBusy ? 'Wait for the AI to finish before exporting.' : conflicts ? 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.' : null;
   return (
-    <Modal title="Export your website" icon={<Upload />} onClose={close} footer={<button className="btn" onClick={close} disabled={!!busy}>Close</button>}>
+    <Modal title="Export your website" icon={<Upload />} onClose={close} busy={!!busy} footer={<button className="btn" onClick={close} disabled={!!busy}>Close</button>}>
       <div className="col" style={{ gap: 10 }}>
         <p className="muted" style={{ margin: '0 0 4px' }}>
           Your website belongs to you. Put it on any web host, or hand it to a developer. It does not need SiteOrigin Builder to work.

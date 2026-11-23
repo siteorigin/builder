@@ -18,7 +18,7 @@ import { ExportModal } from './panels/ExportModal';
 import { CommandMenu } from './panels/CommandMenu';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal } from './panels/Dialogs';
-import { deleteSelection, duplicateSelection, moveSelection, askAiAbout } from './lib/actions';
+import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles } from './lib/actions';
 
 const LEFT_TABS = [
   { id: 'pages', label: 'Pages', icon: <FileText /> },
@@ -48,7 +48,11 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     return true;
   }
   if (mod && key.toLowerCase() === 's') {
-    void api.project.flush().then(() => toast('All changes are saved on this computer.', 'success'));
+    // A save notice only describes the moment it was asked for: if a new edit has started by the time the
+    // save finishes, say nothing (the toolbar shows "Editing…"); the notice also leaves once editing resumes.
+    void api.project.flush().then(() => {
+      if (!getState().drafting) toast('All changes are saved on this computer.', 'success');
+    });
     return true;
   }
   if (mod && key.toLowerCase() === 'd') {
@@ -59,7 +63,8 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     askAiAbout(s.selection);
     return true;
   }
-  if (mod && key === '\\') {
+  // With Shift held, macOS reports the backslash key as "|".
+  if (mod && (key === '\\' || key === '|')) {
     if (shift) setState({ dockOpen: !s.dockOpen });
     else setState({ leftTab: s.leftTab ? null : 'pages' });
     return true;
@@ -162,8 +167,18 @@ export function Editor() {
       const cmd = (e as CustomEvent).detail;
       if (cmd === 'export') setState({ modal: { kind: 'export' } });
       if (cmd === 'close-project') void api.projects.close();
-      if (cmd === 'open-project') void api.projects.open().then((r) => r.message && toast(r.message, 'error'));
-      if (cmd === 'new-project') void api.projects.close();
+      // Switching projects from the editor uses the same New project and Trust dialogs as Welcome.
+      if (cmd === 'open-project')
+        void api.projects.open().then((r) => {
+          if (r.needsTrust) {
+            setState({ welcomeIntent: { kind: 'trust', ...r.needsTrust } });
+            void api.projects.close();
+          } else if (!r.ok && r.message) toast(r.message, 'error');
+        });
+      if (cmd === 'new-project') {
+        setState({ welcomeIntent: { kind: 'new' } });
+        void api.projects.close();
+      }
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('builder-command', onCmd);
@@ -195,13 +210,15 @@ export function Editor() {
   }, []);
 
   const defining = useStore((s) => s.definitionMode);
+  // The page row is outlined only while the page itself is what the inspector shows.
+  const pageInspected = useStore((s) => s.mode === 'edit' && !s.selection && s.rightTab === 'inspect');
   const defName = useStore((s) => (s.definitionMode ? s.snapshot?.state.components[s.definitionMode.definitionId]?.name ?? 'component' : null));
   const defPlaces = useStore((s) => (s.definitionMode && s.snapshot ? [...new Set(instancesOf(s.snapshot.state, s.definitionMode.definitionId).map((u) => u.label))].join(', ') : ''));
   const defUses = useStore((s) => (s.definitionMode && s.snapshot ? instancesOf(s.snapshot.state, s.definitionMode.definitionId).length : 0));
   const defInfo = defName ? { name: defName, uses: defUses, places: defPlaces } : null;
 
   return (
-    <div className={`editor${defining ? ' defining' : ''}`}>
+    <div className={`editor${defining ? ' defining' : ''}${pageInspected ? '' : ' page-quiet'}`}>
       <Toolbar />
       {defining && defInfo && (
         <div className="mode-band" role="status">
@@ -222,7 +239,7 @@ export function Editor() {
             </button>
           ))}
           <div className="rail-sep" role="presentation" />
-          <button className="icon-btn shortcut" aria-pressed={dockOpen && rightTab === 'styles'} title="Site styles" aria-label="Site styles" onClick={() => setState(dockOpen && rightTab === 'styles' ? { rightTab: 'inspect' } : { rightTab: 'styles', dockOpen: true })}>
+          <button className="icon-btn shortcut" aria-pressed={dockOpen && rightTab === 'styles'} title="Site styles" aria-label="Site styles" onClick={() => (dockOpen && rightTab === 'styles' ? setState({ rightTab: 'inspect' }) : openSiteStyles())}>
             <Palette />
           </button>
         </nav>
@@ -246,7 +263,7 @@ export function Editor() {
             label="Right panel views"
             idBase="dock"
             value={rightTab}
-            onChange={(v) => setState({ rightTab: v })}
+            onChange={(v) => (v === 'styles' ? openSiteStyles() : setState({ rightTab: v }))}
             options={[
               { value: 'inspect', label: 'Inspector', icon: <SlidersHorizontal /> },
               { value: 'chat', label: 'AI', icon: <Sparkles />, extra: aiBusy ? <span className="live" role="img" aria-label="Working" /> : undefined },

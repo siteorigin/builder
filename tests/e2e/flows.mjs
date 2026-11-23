@@ -46,8 +46,8 @@ await win.screenshot({ path: join(OUT, '11-inserted.png') });
 step('phone-only padding override on selected section');
 await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
 await win.waitForTimeout(800);
-await win.getByRole('button', { name: 'Style', exact: true }).click().catch(() => {});
-await win.locator('.segmented button', { hasText: 'Phone' }).last().click();
+await win.getByRole('button', { name: 'Style', exact: true }).last().click();
+await win.getByRole('group', { name: 'Style scope' }).getByRole('button', { name: 'Phone', exact: true }).click();
 const row = win.locator('.style-row', { hasText: 'Vertical padding' }).first();
 await row.locator('select').selectOption({ label: 'Large · 24px' }).catch(async () => { await row.locator('select').selectOption('token:space.lg'); });
 await win.waitForTimeout(1500);
@@ -56,10 +56,10 @@ console.log('phone media rule present:', /@media \(max-width: 767\.98px\)[\s\S]*
 await win.screenshot({ path: join(OUT, '12-phone.png') });
 
 step('undo / redo');
-await win.locator('[aria-label="Undo"]').click();
+await win.locator('[aria-label^="Undo"]').first().click();
 await win.waitForTimeout(1000);
 console.log('after undo phone rule present:', /padding-block: var\(--so-space-lg\)/.test(readFileSync(join(dir, 'src/lib/siteorigin/styles/site.css'), 'utf8')));
-await win.locator('[aria-label="Redo"]').click();
+await win.locator('[aria-label^="Redo"]').first().click();
 await win.waitForTimeout(1000);
 console.log('after redo phone rule present:', /padding-block: var\(--so-space-lg\)/.test(readFileSync(join(dir, 'src/lib/siteorigin/styles/site.css'), 'utf8')));
 
@@ -71,7 +71,7 @@ console.log('before:', (await order()).slice(0, 3).join(', '));
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('.list-item', { hasText: 'Split hero' }).click();
 await win.waitForTimeout(800);
-const grip = win.locator('[aria-label="Drag to reorder"]');
+const grip = win.locator('.ov-chip [aria-label="Drag to move"]');
 const gb = await grip.boundingBox();
 const wrap = await win.locator('.frame-wrap').boundingBox();
 await win.mouse.move(gb.x + gb.width / 2, gb.y + gb.height / 2);

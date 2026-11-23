@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Check, Info, KeyRound, Monitor, Moon, Settings, Shield, Sun } from 'lucide-react';
 import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
-import { api, setState, toast, useStore } from '../store';
+import { api, setState, toast, useStore, confirmDialog } from '../store';
 import { Field, Modal, Segmented, SwitchRow, Tabs } from '../components/ui';
 
 export function SettingsModal() {
@@ -16,7 +16,23 @@ export function SettingsModal() {
   const [listForced, setListForced] = useState(false);
   useEffect(() => void api.ai.providers().then((p) => setState({ providers: p })), []);
   if (!settings) return null;
-  const close = () => setState({ modal: null });
+  const unsavedProviders = (Object.keys(keys) as ProviderId[]).filter((p) => keys[p].trim());
+  // A pasted key is never dropped silently: closing with one typed asks first. Save keeps every typed key
+  // (for each provider), Discard drops them, and dismissing the question keeps Settings open.
+  const close = () =>
+    unsavedProviders.length
+      ? void confirmDialog({
+          title: unsavedProviders.length > 1 ? 'Save the API keys you entered?' : 'Save the API key you entered?',
+          body: `You typed ${unsavedProviders.length > 1 ? 'keys' : 'a key'} for ${unsavedProviders.map((p) => providers.find((x) => x.id === p)?.label ?? p).join(' and ')} but did not save ${unsavedProviders.length > 1 ? 'them' : 'it'}.`,
+          confirmLabel: 'Save and close',
+          cancelLabel: 'Discard',
+          stayLabel: 'Keep editing'
+        }).then(async (ok) => {
+          if (ok === null) return;
+          if (ok) for (const p of unsavedProviders) setState({ providers: await api.ai.setKey(p, keys[p].trim()) });
+          setState({ modal: null });
+        })
+      : setState({ modal: null });
   const update = async (patch: SettingsPatch) => setState({ settings: await api.app.setSettings(patch) });
   const provider = settings.ai.provider ?? 'openai';
   const status = providers.find((p) => p.id === provider);
@@ -125,9 +141,9 @@ export function SettingsModal() {
                     ))}
                   </select>
                 )}
-                <button className="btn" onClick={() => (custom || (!known && !listForced) ? (setCustom(false), setListForced(true)) : (setCustom(true), setListForced(false)))}>
+                {(settings.developerMode || custom || !known) && <button className="btn" onClick={() => (custom || (!known && !listForced) ? (setCustom(false), setListForced(true)) : (setCustom(true), setListForced(false)))}>
                   {custom || (!known && !listForced) ? 'Choose from list' : 'Other model…'}
-                </button>
+                </button>}
               </div>
             </Field>
             <div className="row">

@@ -157,6 +157,7 @@ export function InsertPanel() {
   const snap = useStore((s) => s.snapshot);
   const selection = useStore((s) => s.selection);
   const dev = useStore((s) => !!s.settings?.developerMode);
+  const pageIdNow = useStore((s) => s.pageId);
   const [q, setQ] = useState('');
   const entries = useMemo(() => (snap ? catalogueEntries(snap.state.site.themeId) : []), [snap?.state.site.themeId]);
   if (!snap) return null;
@@ -173,7 +174,7 @@ export function InsertPanel() {
   }
   const basics = BASICS.filter((b) => match(`${b.name} ${b.tags}`));
   const at = insertionPoint('section');
-  const page = st.pages[useStore.getState().pageId ?? ''];
+  const page = st.pages[pageIdNow ?? ''];
   const target = selection && at ? refLabel(st, { owner: selection.owner, instancePath: [], nodeId: selection.instancePath[0] ?? selection.nodeId }) : null;
   const hint = target ? (
     <>

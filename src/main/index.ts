@@ -210,7 +210,11 @@ async function createWindow() {
       spellcheck: true
     }
   });
-  win.once('ready-to-show', () => win?.show());
+  // Open maximized: the editor is used with as much room for the site preview as the screen allows.
+  win.once('ready-to-show', () => {
+    win?.maximize();
+    win?.show();
+  });
   // Restrict navigation and new windows from the editor.
   win.webContents.on('will-navigate', (e, url) => {
     if (!isEditorUrl(url)) e.preventDefault();

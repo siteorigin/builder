@@ -1,10 +1,10 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, History, Plus, Search, Settings, Sparkles, Upload, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House } from 'lucide-react';
-import { useDialogFocus } from '../components/ui';
+import { FileText, FolderOpen, History, Plus, Redo2, Search, Undo2, Settings, Sparkles, Upload, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House } from 'lucide-react';
+import { useDialogFocus, sendCommand } from '../components/ui';
 import { catalogueEntries } from '@catalogue/index';
 import { api, setState, useStore } from '../store';
-import { insert, selectPage, askAiAbout, setMode } from '../lib/actions';
+import { insert, selectPage, askAiAbout, setMode, openSiteStyles } from '../lib/actions';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { LucideIcon } from './InsertPanel';
 
@@ -13,6 +13,8 @@ interface Cmd {
   label: string;
   group: string;
   icon: React.ReactNode;
+  /** The keyboard shortcut, shown so the menu teaches it. */
+  kbd?: string;
   run: () => void;
 }
 
@@ -27,18 +29,22 @@ export function CommandMenu() {
       ...st.site.pageOrder.map((id) => ({ id: `page:${id}`, label: `Go to ${st.pages[id].title}`, group: 'Page', icon: id === st.site.homePageId ? <House /> : <FileText />, run: () => selectPage(id) })),
       ...catalogueEntries(st.site.themeId).map((e) => ({ id: `ins:${e.componentId}`, label: `Insert ${e.name}`, group: 'Insert', icon: <LucideIcon name={e.icon} />, run: () => void insert({ componentId: e.componentId }, e.name) })),
       { id: 'newpage', label: 'Add page…', group: 'Page', icon: <Plus />, run: () => (setState({ leftTab: 'pages' }), setTimeout(() => window.dispatchEvent(new Event('builder-add-page')), 0)) },
-      { id: 'ai', label: 'Ask AI…', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
-      { id: 'styles', label: 'Open site styles', group: 'View', icon: <Palette />, run: () => setState({ rightTab: 'styles', dockOpen: true }) },
+      { id: 'ai', kbd: '⌘J', label: 'Ask AI…', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
+      { id: 'styles', label: 'Open site styles: colours, fonts and spacing', group: 'View', icon: <Palette />, run: () => openSiteStyles() },
+      { id: 'undo', kbd: '⌘Z', label: 'Undo', group: 'Edit', icon: <Undo2 />, run: () => void api.project.undo() },
+      { id: 'redo', kbd: '⇧⌘Z', label: 'Redo', group: 'Edit', icon: <Redo2 />, run: () => void api.project.redo() },
+      { id: 'newproject', kbd: '⇧⌘N', label: 'New project…', group: 'Project', icon: <Plus />, run: () => sendCommand('new-project') },
+      { id: 'openproject', kbd: '⌘O', label: 'Open project…', group: 'Project', icon: <FolderOpen />, run: () => sendCommand('open-project') },
       { id: 'preview', label: 'Switch between edit and preview', group: 'View', icon: <Eye />, run: () => setMode(useStore.getState().mode === 'edit' ? 'preview' : 'edit') },
       { id: 'desktop', label: 'Preview at desktop width', group: 'View', icon: <Monitor />, run: () => setState({ viewport: VIEWPORT_PRESETS.desktop }) },
       { id: 'tablet', label: 'Preview at tablet width', group: 'View', icon: <Tablet />, run: () => setState({ viewport: VIEWPORT_PRESETS.tablet }) },
       { id: 'phone', label: 'Preview at phone width', group: 'View', icon: <Smartphone />, run: () => setState({ viewport: VIEWPORT_PRESETS.phone }) },
-      { id: 'export', label: 'Export…', group: 'Project', icon: <Upload />, run: () => setState({ modal: { kind: 'export' } }) },
+      { id: 'export', kbd: '⌘E', label: 'Export or publish your website…', group: 'Project', icon: <Upload />, run: () => setState({ modal: { kind: 'export' } }) },
       { id: 'settings', label: 'Settings', group: 'Project', icon: <Settings />, run: () => setState({ modal: { kind: 'settings' } }) },
       { id: 'history', label: 'History…', group: 'Project', icon: <History />, run: () => setState({ modal: { kind: 'history' } }) },
       { id: 'health', label: 'Project health', group: 'Project', icon: <Stethoscope />, run: () => setState({ modal: { kind: 'health' } }) },
-      { id: 'dock', label: 'Show or hide the right panel', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },
-      { id: 'close', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void api.projects.close() }
+      { id: 'dock', kbd: '⇧⌘\\', label: 'Show or hide the right panel', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },
+      { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void api.projects.close() }
     ];
   }, [snap]);
   const filtered = cmds.filter((c) => q.trim().toLowerCase().split(/\s+/).every((w) => c.label.toLowerCase().includes(w))).slice(0, 40);
@@ -83,6 +89,7 @@ export function CommandMenu() {
             <div key={c.id} id={`${listId}-${i}`} data-index={i} role="option" aria-selected={i === active} className={`menu-item${i === active ? ' focused' : ''}`} onMouseMove={() => i !== active && setActive(i)} onClick={() => pick(c)}>
               {c.icon}
               <span className="grow">{c.label}</span>
+              {c.kbd && <kbd className="kbd">{c.kbd}</kbd>}
               <span className="hint">{c.group}</span>
             </div>
           ))}
