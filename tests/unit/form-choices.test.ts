@@ -18,6 +18,7 @@ import { validateState } from '@engine/validate';
 import { MAX_CHOICES, normalizeChoices } from '@engine/values';
 import { EngineError } from '@engine/tree';
 import { generateProject } from '@generator/index';
+import { renderedContent } from '@generator/checks';
 import { applyChoiceAction, staleRename } from '../../src/renderer/src/lib/choices';
 
 const LEGACY: ComponentDefinition = JSON.parse(readFileSync(join(__dirname, 'fixtures/v1-project/siteorigin/components/foundation.contact.form/component.json'), 'utf8'));
@@ -235,6 +236,13 @@ describe('editing a form’s questions', () => {
     expect(formRefusesUnchoosable(contactForm)).toBe(true);
   });
 
+  it('leaves a placeholder its field’s type never shows out of the page’s words, so Find and Replace cannot reach it', () => {
+    const { s, nodeId } = withForm([{ id: 'f1', label: 'Copy', name: 'copy', type: 'text', required: false, placeholder: 'Zanzibar quill' }]);
+    const found = (state: ProjectState) => renderedContent(state, home(state)).filter((c) => c.value === 'Zanzibar quill');
+    expect(found(s).map((c) => c.source)).toEqual([{ kind: 'prop', prop: 'fields', itemId: 'f1', field: 'placeholder' }]);
+    for (const type of ['checkbox', 'choice']) expect(found(edit(s, nodeId, { type: 'instance.setProp', itemId: 'f1', field: 'type', value: type }))).toEqual([]);
+  });
+
   it('shows each type of field only the settings it uses, and offers the new types only where the form renders them', () => {
     expect(formFieldSettingsHidden({ type: 'choice' })).toEqual(['placeholder']);
     expect(formFieldSettingsHidden({ type: 'checkbox' })).toEqual(['placeholder', 'options']);
@@ -303,12 +311,14 @@ describe('the inspector’s changes to a set of choices', () => {
 
   it('refuses a rename typed over a label the choice no longer has, and applies one typed over its own', () => {
     const renamedByAi = saved.map((c) => (c.id === kitchen.id ? { ...c, label: 'Cuisine' } : c));
-    expect(staleRename(renamedByAi, { kind: 'rename', id: kitchen.id, label: 'Bath', from: 'Kitchen' })).toMatchObject({ label: 'Cuisine' });
-    expect(applyChoiceAction(renamedByAi, { kind: 'rename', id: kitchen.id, label: 'Bath', from: 'Kitchen' })).toBeNull();
-    expect(applyChoiceAction(renamedByAi, { kind: 'rename', id: kitchen.id, label: 'Bath', from: 'Cuisine' })).toEqual([{ ...kitchen, label: 'Bath' }, lighting, other]);
+    expect(staleRename(renamedByAi, { kind: 'rename', id: kitchen.id, label: 'Bath', from: ['Kitchen'] })).toMatchObject({ label: 'Cuisine' });
+    expect(applyChoiceAction(renamedByAi, { kind: 'rename', id: kitchen.id, label: 'Bath', from: ['Kitchen'] })).toBeNull();
+    expect(applyChoiceAction(renamedByAi, { kind: 'rename', id: kitchen.id, label: 'Bath', from: ['Cuisine'] })).toEqual([{ ...kitchen, label: 'Bath' }, lighting, other]);
     // A second rename typed over the first, which has landed meanwhile: back to the label it started with.
     const bath = saved.map((c) => (c.id === kitchen.id ? { ...c, label: 'Bath' } : c));
-    expect(applyChoiceAction(bath, { kind: 'rename', id: kitchen.id, label: 'Kitchen', from: 'Bath' })).toEqual(saved);
+    expect(applyChoiceAction(bath, { kind: 'rename', id: kitchen.id, label: 'Kitchen', from: ['Kitchen', 'Bath'] })).toEqual(saved);
+    // Typed over a rename the project then refused (a label already offered): the choice still has its saved label.
+    expect(applyChoiceAction(saved, { kind: 'rename', id: kitchen.id, label: 'Bath', from: ['Kitchen', 'Lighting'] })).toEqual(bath);
     expect(staleRename(saved, { kind: 'move', id: kitchen.id, by: 1 })).toBeUndefined();
   });
 

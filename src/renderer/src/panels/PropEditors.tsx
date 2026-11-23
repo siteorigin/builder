@@ -7,7 +7,7 @@ import { api, getState, setState, toast, useStore, type PendingEdit } from '../s
 import { isImeComposing } from '../lib/ime';
 import type { ListPlace } from '../lib/reveal';
 import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
-import { isSettling } from '../lib/pending';
+import { isSettling, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
 import { MAX_CHOICES as MAX_CHOICE_ROWS } from '@engine/values';
 import { applyChoiceAction, choiceText, sameChoice, staleRename, type ChoiceAction } from '../lib/choices';
@@ -596,14 +596,15 @@ const choiceRows = (value: unknown) => (Array.isArray(value) ? value : []).filte
  * A choice's label, edited as a draft: committed on Enter or on leaving it, put back on Escape or a refusal. A rename
  * says the label it was typed over, so one the AI changed meanwhile is not overwritten.
  */
-function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceOption; index: number; describedBy?: string; onRename: (label: string, from: string) => Promise<boolean> }) {
+function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceOption; index: number; describedBy?: string; onRename: (label: string, from: string[]) => Promise<boolean> }) {
   const [draft, setDraft] = useState(choice.label);
   const saved = useRef(choice.label);
   saved.current = choice.label;
   // The label most recently committed here, until the project has it: typing again starts from it.
   const sent = useRef<string | null>(null);
-  // The label the author started typing over, from the first keystroke until the commit.
-  const from = useRef<string | null>(null);
+  // From the first keystroke until the commit: the label shown when the author started typing over it, and every label
+  // the choice may have when the rename lands without anyone else touching it (the saved one, or one sent from here).
+  const from = useRef<{ shown: string; labels: string[] } | null>(null);
   // Follows the project until the author types, so typing always starts from what the project holds.
   useEffect(() => {
     if (from.current === null) setDraft(choice.label);
@@ -614,9 +615,9 @@ function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceO
     from.current = null;
     const text = choiceText(draft);
     // An emptied label puts the saved one back: a choice is removed with its own button.
-    if (!text || text === over) return setDraft(sent.current ?? saved.current);
+    if (!text || text === over.shown) return setDraft(sent.current ?? saved.current);
     sent.current = text;
-    void onRename(text, over).then((ok) => {
+    void onRename(text, over.labels).then((ok) => {
       if (sent.current === text) sent.current = null;
       if (!ok && from.current === null) setDraft(saved.current);
     });
@@ -629,7 +630,7 @@ function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceO
       aria-describedby={describedBy}
       data-choice-focus={`input-${choice.id}`}
       onChange={(e) => {
-        from.current ??= sent.current ?? saved.current;
+        from.current ??= { shown: sent.current ?? saved.current, labels: sent.current === null ? [saved.current] : [saved.current, sent.current] };
         setDraft(e.target.value);
       }}
       onBlur={commit}
@@ -672,12 +673,17 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
   const refocus = useRef<{ target: string; fallback: string } | null>(null);
   const pump = () => {
     while (!busy.current && queue.current.length) {
+      // Read once every save on its way has landed (the question's label, say), so the set and revision are current.
+      if (read && savesInFlight()) {
+        setTimeout(pump, 25);
+        return;
+      }
       const { action, done } = queue.current.shift()!;
       // The project's new state reaches the store before its reply, so this is the set the last change made.
       const now = read?.();
       const saved = now ? choiceRows(now.value) : shownRef.current;
       const stale = staleRename(saved, action);
-      if (stale && action.kind === 'rename') toast(`“${action.from}” became “${stale.label}” while you were typing, so it was not renamed to “${action.label}”.`, 'error');
+      if (stale && action.kind === 'rename') toast(`That choice became “${stale.label}” while you were typing, so it was not renamed to “${action.label}”.`, 'error');
       const next = applyChoiceAction(saved, action);
       if (!next) {
         done(false);

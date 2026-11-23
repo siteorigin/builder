@@ -5,8 +5,11 @@
  */
 import type { ChoiceOption } from '@shared/types';
 
-/** A rename says the label it was typed over (`from`): if the choice has had another since, the rename is stale. */
-export type ChoiceAction = { kind: 'add'; label: string } | { kind: 'rename'; id: string; label: string; from?: string } | { kind: 'move'; id: string; by: -1 | 1 } | { kind: 'remove'; id: string };
+/**
+ * A rename says the labels it was typed over (`from`): the one the project had, and one still on its way from the same
+ * field. If the choice has had another since (the AI renamed it), the rename is stale.
+ */
+export type ChoiceAction = { kind: 'add'; label: string } | { kind: 'rename'; id: string; label: string; from?: readonly string[] } | { kind: 'move'; id: string; by: -1 | 1 } | { kind: 'remove'; id: string };
 
 /** A choice as the inspector sends it: a saved one whole, by id, or a new one by its label alone. */
 export type ChoiceRow = ChoiceOption | { label: string };
@@ -49,5 +52,5 @@ export function applyChoiceAction(saved: readonly ChoiceOption[], action: Choice
 export function staleRename(saved: readonly ChoiceOption[], action: ChoiceAction): ChoiceOption | undefined {
   if (action.kind !== 'rename' || action.from === undefined) return undefined;
   const c = saved.find((x) => x.id === action.id);
-  return c && c.label !== action.from ? c : undefined;
+  return c && !action.from.includes(c.label) ? c : undefined;
 }

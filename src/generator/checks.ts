@@ -7,7 +7,7 @@ import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { anchorCapable, anchorsInUse, displayName } from '@engine/tree';
-import { namesFormFields } from '@catalogue/foundation/form';
+import { formFieldSettingsHidden, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 import { isDraftPage, liveRedirects, resolveLink, takesParagraphs } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 
@@ -503,9 +503,11 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
         for (const item of Array.isArray(props[key]) ? (props[key] as Array<Record<string, unknown>>) : []) {
           if (!item || typeof item !== 'object') continue;
           const itemId = typeof item.id === 'string' && item.id ? item.id : undefined;
+          // A form field's setting its type never shows (a checkbox's placeholder) is not on the page.
+          const unused = which === 'contact.form' && key === 'fields' && offersFormChoices(def) ? formFieldSettingsHidden(item) : [];
           for (const f of Object.keys(schema.fields)) {
             const source = field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined;
-            if (shows && !shows.has(`${key}.${f}`)) guard(source);
+            if ((shows && !shows.has(`${key}.${f}`)) || unused.includes(f)) guard(source);
             else take(schema.fields, item, f, source, `${placement}|${key}|${String(item.id ?? '')}|${f}`, !shows || keyless(key));
           }
           // A whole list handed in from a design is that design's field too.
