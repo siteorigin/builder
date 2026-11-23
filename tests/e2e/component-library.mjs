@@ -7,7 +7,7 @@ import { createProject, eventually, launch, scratch, step } from './harness.mjs'
 
 const { WORK, SHOTS, cleanup } = scratch('component-library');
 const { app, win, errors } = await launch(WORK);
-await createProject(win, { name: 'Expo Hall', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
+const frame = await createProject(win, { name: 'Expo Hall', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
 
 const snapshot = () => win.evaluate(async () => (await window.builder.project.snapshot()).state);
 const apply = (operations, label) =>
@@ -95,9 +95,10 @@ await win.keyboard.press('Escape');
 await menu.waitFor({ state: 'detached' });
 
 step('usage locations show where a component is placed, and a used one cannot be deleted');
-// A second page with its own card, so choosing a location has to switch pages.
+// A second page with its own card below the fold, so choosing a location has to switch pages and scroll there.
 const [{ pageId: floor }] = await apply([{ type: 'page.create', title: 'Floor plan', starter: 'intro' }], 'Add page');
 const card = Object.values((await snapshot()).components).find((d) => d.name === 'Exhibitor card').id;
+await apply([...Array(4)].map(() => ({ type: 'node.insert', owner: { kind: 'page', id: floor }, componentId: 'content.text' })), 'Insert text sections');
 const [{ nodeId: onFloor }] = await apply([{ type: 'node.insert', owner: { kind: 'page', id: floor }, definitionId: card }], 'Insert Exhibitor card');
 await manage('Exhibitor card').click();
 await menu.waitFor();
@@ -107,6 +108,13 @@ await win.screenshot({ path: join(SHOTS, 'component-library-menu.png'), clip: { 
 assert.equal(await menu.getByRole('menuitem', { name: /Delete component/ }).getAttribute('aria-disabled'), 'true', 'a used component cannot be deleted');
 await menu.getByRole('menuitem', { name: 'Floor plan' }).click();
 await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${onFloor}"]`).getAttribute('aria-selected'), 'true', 'choosing another page opens it and selects the placement there'));
+await eventually(async () => {
+  const box = await frame.locator(`[data-so-ctx$="|${onFloor}"]`).first().evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return { top: r.top, bottom: r.bottom, height: innerHeight };
+  });
+  assert.ok(box.top > 0 && box.top < box.height, `the preview scrolls to the placement on the new page (${JSON.stringify(box)})`);
+});
 await manage('Exhibitor card').click();
 await menu.getByRole('menuitem', { name: (await snapshot()).pages[pageId].title }).click();
 await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${first}"]`).getAttribute('aria-selected'), 'true', 'and back to the first page'));

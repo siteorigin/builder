@@ -175,6 +175,12 @@ export function Canvas() {
           syncPage(path);
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
+          // A selection made with the page change (a usage list showing a placement on another page) asked to be
+          // scrolled to before this page was there: now it is.
+          if (getState().mode !== 'preview') {
+            const desc = descFor(getState().selection);
+            if (desc) post('scrollTo', { desc });
+          }
           break;
         }
         case 'hover':
