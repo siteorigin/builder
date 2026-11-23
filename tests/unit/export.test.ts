@@ -143,13 +143,17 @@ describe('website export assets', () => {
       image('social', 'static/assets/share-bbbbbbbb.svg'),
       image('coded', 'static/assets/gallery-cccccccc.svg'),
       image('manifest', 'static/assets/app-icon-dddddddd.svg'),
+      // Code uses only its narrow copy: the original goes, the record still ships.
+      image('partial', 'static/assets/banner-77777777.svg', ['static/assets/banner-77777777-480w.svg']),
+      // A library file named before the importer added hashes: still the library's, so still left out when unused.
+      image('legacy', 'static/assets/old-draft.svg'),
       { id: 'font', name: 'Brand Sans', file: 'static/assets/brand-sans-eeeeeeee.woff2', mime: 'font/woff2', bytes: 1, hash: 'x', kind: 'font', createdAt: '', font: { family: 'Brand Sans', weight: '400', style: 'normal' } }
     ];
     for (const a of assets) state.assets.assets[a.id] = a;
     place(state, 'placed');
     state.site.favicon = 'favicon';
     state.site.socialImage = 'social';
-    state.components['code.x'] = { ...Object.values(state.components)[0], id: 'code.x', kind: 'code', sourcePath: 'src/lib/siteorigin/custom/Gallery.svelte', source: '<img src="/assets/gallery-cccccccc.svg" alt="" /><img src="/assets/no-record-ffffffff.svg" alt="" />' };
+    state.components['code.x'] = { ...Object.values(state.components)[0], id: 'code.x', kind: 'code', sourcePath: 'src/lib/siteorigin/custom/Gallery.svelte', source: '<img src="/assets/gallery-cccccccc.svg" alt="" /><img src="/assets/no-record-ffffffff.svg" alt="" /><img src="/assets/banner-77777777-480w.svg" alt="" />' };
     expect(assetUsages(state).draft, 'the panel shows the draft as not used').toBeUndefined();
 
     const dir = temp();
@@ -157,15 +161,16 @@ describe('website export assets', () => {
     for (const a of assets) for (const f of [a.file, ...(a.variants ?? []).map((v) => v.file)]) write(dir, f, '<svg/>');
     for (const f of ['static/assets/no-record-ffffffff.svg', 'static/assets/deleted-99999999.svg', 'static/assets/my-own-file.pdf']) write(dir, f, 'x');
     write(dir, 'static/site.webmanifest', JSON.stringify({ icons: [{ src: '/assets/app-icon-dddddddd.svg' }] }));
-    // The authoring documents list every asset; that is not a use.
+    // The authoring documents list every asset, and the README is not part of the site: neither is a use.
     write(dir, 'siteorigin/assets.json', JSON.stringify(state.assets));
+    write(dir, 'siteorigin.project.json', JSON.stringify({ cover: 'static/assets/sketch-12345678.svg' }));
+    write(dir, 'README.md', 'Drafts: sketch-12345678.svg, old-draft.svg');
 
     const omitted = await pruneWebsiteAssets(dir, state);
     const left = (f: string) => existsSync(join(dir, f));
-    expect(omitted.map((a) => a.id)).toEqual(['draft']);
-    expect(left('static/assets/sketch-12345678.svg')).toBe(false);
-    expect(left('static/assets/sketch-12345678-480w.svg')).toBe(false);
-    expect(left('static/assets/deleted-99999999.svg')).toBe(false);
+    expect(omitted.map((a) => a.id).sort()).toEqual(['draft', 'legacy']);
+    for (const f of ['static/assets/sketch-12345678.svg', 'static/assets/sketch-12345678-480w.svg', 'static/assets/old-draft.svg', 'static/assets/deleted-99999999.svg', 'static/assets/banner-77777777.svg'])
+      expect(left(f), f).toBe(false);
     for (const f of [
       'static/assets/big-sketch-12345678.svg',
       'static/assets/big-sketch-12345678-480w.svg',
@@ -173,19 +178,28 @@ describe('website export assets', () => {
       'static/assets/share-bbbbbbbb.svg',
       'static/assets/gallery-cccccccc.svg',
       'static/assets/app-icon-dddddddd.svg',
+      'static/assets/banner-77777777-480w.svg',
       'static/assets/brand-sans-eeeeeeee.woff2',
       'static/assets/no-record-ffffffff.svg',
       'static/assets/my-own-file.pdf',
       'siteorigin/assets.json'
     ])
       expect(left(f), f).toBe(true);
-    expect(omittedAssetsWarning(omitted)).toBe("draft.svg is not used anywhere on the site, so it was left out of the website. It stays in the project's assets.");
+    expect(omittedAssetsWarning(omitted)).toBe("Left out of the website because no page or code refers to them: draft.svg, legacy.svg. They stay in the project's assets.");
   });
 
-  it('names every asset it left out, and nothing when it left none out', () => {
+  it('lists every asset it left out, and says nothing when it left none out', () => {
     expect(omittedAssetsWarning([])).toBeUndefined();
+    expect(omittedAssetsWarning([image('a', 'static/assets/a-aaaaaaaa.svg')])).toBe("Left out of the website because no page or code refers to it: a.svg. It stays in the project's assets.");
     const many = ['g', 'b', 'f', 'a', 'e', 'c', 'd'].map((n) => image(n, `static/assets/${n}-aaaaaaaa.svg`));
-    expect(omittedAssetsWarning(many)).toBe("7 assets not used anywhere on the site were left out of the website: a.svg, b.svg, c.svg, d.svg, e.svg and 2 more. They stay in the project's assets.");
+    expect(omittedAssetsWarning(many)).toBe("Left out of the website because no page or code refers to them: a.svg, b.svg, c.svg, d.svg, e.svg, f.svg, g.svg. They stay in the project's assets.");
+  });
+
+  it('reads nothing and removes nothing when the library is empty', async () => {
+    const dir = temp();
+    write(dir, 'static/assets/my-own-file.pdf', 'x');
+    expect(await pruneWebsiteAssets(dir, createStarterState('blank', 'Test', false))).toEqual([]);
+    expect(existsSync(join(dir, 'static/assets/my-own-file.pdf'))).toBe(true);
   });
 });
 

@@ -76,7 +76,7 @@ const stat = await withTimeout(win.evaluate(() => window.builder.project.exportS
 assert.equal(stat.ok, true, `static export succeeds: ${stat.message} ${stat.warnings?.join(' ')}`);
 assert.equal(stat.path, staticOut, 'an existing folder is never replaced: the export takes the next free name');
 assert.ok(!stat.warnings.some((w) => /placeholder/.test(w)), `no placeholder warning when every visible image is chosen: ${stat.warnings.join(' ')}`);
-assert.ok(stat.warnings.some((w) => w.includes(draft.name) && /left out of the website/.test(w)), `the website export names the draft it left out: ${stat.warnings.join(' ')}`);
+assert.ok(stat.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website export names the draft it left out: ${stat.warnings.join(' ')}`);
 
 step('ZIP exports');
 const srcZip = await withTimeout(win.evaluate(() => window.builder.project.exportSource('zip')), 120000, 'Source ZIP export');
@@ -85,7 +85,7 @@ assert.equal(srcZip.path, sourceZip);
 const statZip = await withTimeout(win.evaluate(() => window.builder.project.exportStatic('zip')), 300000, 'Static ZIP export');
 assert.equal(statZip.ok, true, `static ZIP export succeeds: ${statZip.message}`);
 assert.equal(statZip.path, staticZip);
-assert.ok(statZip.warnings.some((w) => w.includes(draft.name) && /left out of the website/.test(w)), `the website ZIP export names the draft it left out: ${statZip.warnings.join(' ')}`);
+assert.ok(statZip.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website ZIP export names the draft it left out: ${statZip.warnings.join(' ')}`);
 for (const zip of [sourceZip, staticZip]) assert.equal(readFileSync(zip).subarray(0, 4).toString('hex'), '504b0304', `${basename(zip)} is a ZIP file`);
 const listing = (zip) => spawnSync('unzip', ['-Z1', zip], { encoding: 'utf8' });
 const siteList = listing(staticZip);
@@ -144,7 +144,8 @@ const staticFiles = scan(staticOut, 'static');
 assert.ok(staticFiles.includes('index.html') && staticFiles.includes('about/index.html'), 'static export has the prerendered pages');
 noDeletedImage(staticFiles, 'static');
 assert.deepEqual(staticFiles.filter((f) => draftNames.includes(basename(f))), [], 'the website has no files of the unused draft');
-for (const v of used.variants ?? []) assert.ok(staticFiles.some((f) => basename(f) === basename(v.file)), `the website keeps the responsive variants of an image it uses (${v.file})`);
+assert.ok(used.variants?.length, 'the starter image has responsive variants to check');
+for (const v of used.variants) assert.ok(staticFiles.some((f) => basename(f) === basename(v.file)), `the website keeps the responsive variants of an image it uses (${v.file})`);
 for (const f of draftFiles) assert.ok(existsSync(join(dir, f)), `the draft stays in the working project (${f})`);
 assert.ok(staticFiles.includes('favicon.svg'), 'static export has a favicon');
 assert.ok(staticFiles.some((f) => /lora.*\.woff2$/i.test(f)), 'the chosen font is built into the site');

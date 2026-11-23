@@ -64,7 +64,7 @@ export function exportedAssetFilter(state: ProjectState): (rel: string) => boole
 }
 
 /** Files the website build reads as text, searched for the asset file names they use. */
-const TEXT_FILE = /\.(svelte|[cm]?[jt]sx?|css|html?|json|webmanifest|xml|txt|svg|md)$/i;
+const TEXT_FILE = /\.(svelte|svx|[cm]?[jt]sx?|css|html?|json|webmanifest|xml|txt|svg|mdx?|csv|tsv|ya?ml|toml)$/i;
 
 /** Does `text` name `file` as a whole file name, so that `a-1234abcd.svg` is not found inside `ba-1234abcd.svg`? */
 function namesFile(text: string, file: string): boolean {
@@ -75,24 +75,26 @@ function namesFile(text: string, file: string): boolean {
 /**
  * Remove the library files the public website does not use from a staged copy of the project, before it is
  * built. A file in static/assets/ that belongs to an asset record, or is named like an imported file, ships
- * only when something the build reads names it: generated pages (images and their srcset variants, the
- * favicon, social images), the @font-face rules, code components, hand-written source and other public files.
- * The authoring documents under siteorigin/ list the whole library, so they do not count. Returns the asset
- * records none of whose files ship, so the export can say what it left out.
+ * only when something the build reads (src/ and static/) names it: generated pages (images and their srcset
+ * variants, the favicon, social images), the @font-face rules, code components, hand-written source and other
+ * public files. The authoring documents list the whole library, and the README is not part of the site, so
+ * neither counts. Returns the asset records none of whose files ship, so the export can say what it left out.
  */
 export async function pruneWebsiteAssets(project: string, state: ProjectState): Promise<AssetRecord[]> {
   const library = libraryAssetFiles(state);
   const files = (await listFiles(project)).map((f) => f.split(sep).join('/'));
   const candidate = (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length)));
+  const candidates = files.filter(candidate);
+  if (!candidates.length) return [];
   const texts: string[] = [];
   for (const rel of files) {
-    if (candidate(rel) || rel === 'siteorigin.project.json' || rel.startsWith('siteorigin/') || !TEXT_FILE.test(rel)) continue;
+    if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel)) continue;
     texts.push(await fs.readFile(join(project, rel), 'utf8'));
   }
   const text = texts.join('\n');
   const shipped = new Set<string>();
   const removed = new Set<string>();
-  for (const rel of files.filter(candidate)) {
+  for (const rel of candidates) {
     if (namesFile(text, basename(rel))) shipped.add(rel);
     else {
       await fs.rm(join(project, rel));
@@ -105,13 +107,16 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   });
 }
 
-/** The export note naming the library assets a website export left out, if any. */
+/**
+ * The export note listing every library asset a website export left out, if any. It says what was checked
+ * rather than claiming the asset is unused: code that builds an address at runtime cannot be followed.
+ */
 export function omittedAssetsWarning(omitted: AssetRecord[]): string | undefined {
   const names = omitted.map((a) => a.name).sort();
   if (!names.length) return undefined;
-  if (names.length === 1) return `${names[0]} is not used anywhere on the site, so it was left out of the website. It stays in the project's assets.`;
-  const shown = names.length > 5 ? `${names.slice(0, 5).join(', ')} and ${names.length - 5} more` : names.join(', ');
-  return `${names.length} assets not used anywhere on the site were left out of the website: ${shown}. They stay in the project's assets.`;
+  return names.length === 1
+    ? `Left out of the website because no page or code refers to it: ${names[0]}. It stays in the project's assets.`
+    : `Left out of the website because no page or code refers to them: ${names.join(', ')}. They stay in the project's assets.`;
 }
 
 /** Copy a finished export to `dest`, which must not exist yet. Only a folder created here is ever removed. */
