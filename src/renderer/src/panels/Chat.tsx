@@ -491,7 +491,10 @@ export function Chat() {
           {/* The message's images wait with it while a question is answered. */}
           {!asking && (
             <ImageChips
-              images={images.map((id) => ({ assetId: id, name: (st.assets.assets[id]?.kind === 'image' && st.assets.assets[id].name.trim()) || id }))}
+              images={images.map((id) => {
+                const a = st.assets.assets[id];
+                return { assetId: id, name: (a?.kind === 'image' && typeof a.name === 'string' && a.name.trim()) || id };
+              })}
               label="Images in your next message"
               onRemove={(id) => {
                 if (!conversation) return;
@@ -669,7 +672,7 @@ function AssistantMessage({ m, live, awaiting, undoable, asking, onContinue }: {
             <span className="answered-q">{q.text}</span>
             {picked ? (
               <span className="answered-image">
-                You chose: <ImageChips images={[picked]} label="The image you chose" />
+                You chose: <ImageChips images={[picked]} among={offered} label="The image you chose" />
               </span>
             ) : q.answered !== undefined ? (
               <span>

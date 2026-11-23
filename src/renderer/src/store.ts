@@ -208,7 +208,7 @@ export function attachToChat(opening: string, assetId: string) {
   if (!s.conversation) return toast('The AI conversation is still loading. Try again in a moment.', 'info');
   const r = attachImage(s.chatImages, s.conversation.id, assetId);
   if (r.outcome === 'full') toast('A message can carry up to 4 images. Remove one from the message first.', 'info');
-  else if (r.outcome === 'already') toast(`${asset.name.trim() || 'This image'} is already in your message.`, 'info');
+  else if (r.outcome === 'already') toast(`${(typeof asset.name === 'string' && asset.name.trim()) || 'This image'} is already in your message.`, 'info');
   setState({ chatImages: r.images, rightTab: 'chat', dockOpen: true });
   requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus());
 }

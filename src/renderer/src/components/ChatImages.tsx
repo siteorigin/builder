@@ -26,16 +26,19 @@ function useLibraryRefs(): ChatImageRef[] {
   return useMemo(() => Object.values(doc ?? {}).flatMap((a) => (a?.kind === 'image' && typeof a.name === 'string' ? [{ assetId: a.id, name: a.name }] : [])), [doc]);
 }
 
-/** Images as the library names them now (a renamed one by its new name), each told apart from any that share it. */
-function useLabelled<T extends ChatImageRef>(images: T[]) {
+/**
+ * Images as the library names them now (a renamed one by its new name), each told apart from any that share it in
+ * the library or `among` (the images they were shown with, such as a question's offer, as they were named then).
+ */
+function useLabelled<T extends ChatImageRef>(images: T[], among: ChatImageRef[] = []) {
   const library = useLibraryRefs();
   return useMemo(() => {
     const live = new Map(library.map((r) => [r.assetId, r.name.trim()]));
     return imageLabels(
       images.map((i) => ({ ...i, name: live.get(i.assetId) || i.name })),
-      library
+      [...library, ...among]
     );
-  }, [images, library]);
+  }, [images, library, among]);
 }
 
 /** Changes when an image's file goes missing or comes back, so a picture that failed to load tries again. */
@@ -81,8 +84,8 @@ export function ImageChip({ image, label, sharedName, onRemove }: { image: ChatI
 }
 
 /** Images named in a message, in order, each told apart from the others. */
-export function ImageChips({ images, onRemove, label }: { images: ChatImageRef[]; onRemove?: (assetId: string) => void; label: string }) {
-  const labelled = useLabelled(images);
+export function ImageChips({ images, onRemove, label, among }: { images: ChatImageRef[]; onRemove?: (assetId: string) => void; label: string; among?: ChatImageRef[] }) {
+  const labelled = useLabelled(images, among);
   if (!images.length) return null;
   return (
     <div className="image-chips" role="group" aria-label={label}>

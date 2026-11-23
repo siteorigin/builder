@@ -411,7 +411,8 @@ export class Orchestrator {
     const history = conv.messages.slice(-12);
     // The request a "continue" carries on with, read from the whole conversation: a long run of "continue"
     // messages can push it out of the history the model sees.
-    const request = [...conv.messages].reverse().find((m) => m.role === 'user' && !CONTINUE.test(m.text))?.text;
+    // A saved request whose text cannot be read is not one to carry on with.
+    const request = [...conv.messages].reverse().find((m) => m.role === 'user' && typeof m.text === 'string' && !CONTINUE.test(m.text))?.text;
     conv.messages.push(userMsg, assistant);
     if (conv.title === 'New conversation') conv.title = text.trim().slice(0, 60);
     this.run = { id: runId, abort: new AbortController(), status: 'preparing', pendingQuestion: null, message: assistant };

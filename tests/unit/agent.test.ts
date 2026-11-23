@@ -694,6 +694,29 @@ describe('library images in the chat (#12)', () => {
     expect(env.adapter.requests[0].items.slice(0, -1).map((i) => [i.kind, textOf(i)])).toEqual([['assistant', 'Done.']]);
   });
 
+  it('continues a saved request whose text cannot be read without failing the work', async () => {
+    const env = await setup([
+      () => [call('e1', 'apply_operations', { expectedRevision: env.session.revision, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#1f5130' }] })],
+      () => finish('Done.')
+    ]);
+    const dir = env.session.local('sessions', 'chat');
+    mkdirSync(dir, { recursive: true });
+    const saved = {
+      id: 'c_unread1',
+      title: 'Unfinished',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      messages: [
+        { id: 'm_u', role: 'user', text: ['Add pages'], time: '2026-01-01T00:00:00.000Z' },
+        { id: 'm_a', role: 'assistant', text: '', time: '2026-01-01T00:00:01.000Z', result: { status: 'completed', summary: 'Partly done.', changes: [], validation: [], canUndo: false, incomplete: true } }
+      ]
+    };
+    writeFileSync(join(dir, 'c_unread1.json'), JSON.stringify(saved));
+    await env.orch.openConversation('c_unread1');
+    const { result } = await env.run('Continue');
+    expect(result?.status).toBe('completed');
+    expect(env.session.state.tokens.overrides['color.brand']).toBe('#1f5130');
+  });
+
   it('lists only images when the assistant searches the library, before the limit', async () => {
     const env = await setup([() => [call('s1', 'search_assets', { limit: 2 })], () => finish('Found them.')]);
     await withLibrary(env);
