@@ -97,21 +97,15 @@ export async function trust(dir: string, configHash: string) {
   await saveSettings();
 }
 
-/** Folders whose trust was forgotten in memory but not yet on disk (the save failed). */
-const unsavedUntrust = new Set<string>();
-
 /**
  * Forget any trust given to `dir`: a new folder there (a project just unpacked) asks again before its tools run. The
- * settings are saved when a record goes, and again for a removal whose save failed earlier, so the old record cannot
- * come back after a restart. With nothing to forget, nothing is written.
+ * settings are always saved, even with no record in memory (a removal whose save failed, or settings that could not be
+ * read at start), so a record still on disk cannot come back after a restart. Trusting the folder needs the same save.
  */
 export async function untrust(dir: string) {
   const s = await loadSettings();
-  if (!(dir in s.trusted) && !unsavedUntrust.has(dir)) return;
   delete s.trusted[dir];
-  unsavedUntrust.add(dir);
   await saveSettings();
-  unsavedUntrust.delete(dir);
 }
 
 // ---------------------------------------------------------------------------

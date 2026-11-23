@@ -28,9 +28,8 @@ export const MAX_TOTAL_BYTES = 2 * 1024 ** 3;
 const MAX_MANIFEST_BYTES = 1024 ** 2;
 /** The archive's list of files is read whole, so it is held to what MAX_ENTRIES entries plausibly need. */
 const MAX_DIRECTORY_BYTES = 16 * 1024 ** 2;
-/** A path's length and depth: no file a computer can hold is longer or deeper. */
+/** A path's length: no file a computer can hold is longer (and so none is nested deeper than half of it). */
 const MAX_PATH_LENGTH = 4096;
-const MAX_DEPTH = 256;
 /** How many numbered folder names (cafe-2, cafe-3, …) are tried before giving up. */
 const MAX_NAMES = 1000;
 
@@ -100,7 +99,7 @@ export function safeEntryPath(raw: string, dosSeparators = false, windows = proc
   // A directory entry ends with a slash, and a doubled slash or a `.` changes nothing: those parts are dropped.
   const kept = name.split('/').filter((p) => p !== '' && p !== '.');
   if (kept.some((p) => p === '..')) throw outside();
-  if (!kept.length || kept.length > MAX_DEPTH) throw unusable();
+  if (!kept.length) throw unusable();
   if (kept.some((p) => p.includes(':') || WINDOWS_RESERVED.test(p) || /[. ]$/.test(p))) throw unusable();
   return kept.join('/');
 }
@@ -122,13 +121,17 @@ const CP437 =
  */
 export function decodeName(raw: Buffer, utf8: boolean, extra: Buffer = Buffer.alloc(0)): string {
   if (utf8) return raw.toString('utf8');
-  // The Unicode name wins over the legacy one, even a plain ASCII stand-in such as "cafe.png" for "café.png".
+  // The Unicode name wins over the legacy one, even a plain ASCII stand-in such as "cafe.png" for "café.png". Only
+  // the first such field counts, so a name is checked against at most one.
   for (let i = 0; i + 4 <= extra.length; ) {
     const id = extra.readUInt16LE(i);
     const length = extra.readUInt16LE(i + 2);
     if (i + 4 + length > extra.length) break;
-    // Version 1, then the CRC-32 of the legacy name it stands for, then the name in UTF-8.
-    if (id === UNICODE_PATH && length >= 5 && extra[i + 4] === 1 && extra.readUInt32LE(i + 5) === crc32(raw) >>> 0) return extra.toString('utf8', i + 9, i + 4 + length);
+    if (id === UNICODE_PATH) {
+      // Version 1, then the CRC-32 of the legacy name it stands for, then the name in UTF-8.
+      if (length >= 5 && extra[i + 4] === 1 && extra.readUInt32LE(i + 5) === crc32(raw) >>> 0) return extra.toString('utf8', i + 9, i + 4 + length);
+      break;
+    }
     i += 4 + length;
   }
   return Array.from(raw, (b) => (b < 0x80 ? String.fromCharCode(b) : CP437[b - 0x80])).join('');
@@ -146,9 +149,14 @@ function findEndRecord(tail: Buffer, size: number): number {
   return -1;
 }
 
-/** A folder (or file) in the archive's tree, keyed by each name as a case-insensitive disk would compare it. */
+/**
+ * A folder (or file) in the archive's tree, keyed by each name as a case-insensitive disk would compare it, with the
+ * spelling it was first seen with: every path is written with those spellings, so the folders made on any disk are
+ * exactly the ones counted here.
+ */
 interface TreeNode {
   kind: 'file' | 'dir';
+  name: string;
   children?: Map<string, TreeNode>;
 }
 
@@ -176,7 +184,7 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
     const entries: ZipEntry[] = [];
     // Every path, folders included, as a tree of names a case-insensitive disk would compare: each name is held once,
     // so a hostile list of long, deep paths costs no more than its own size.
-    const tree: TreeNode = { kind: 'dir', children: new Map() };
+    const tree: TreeNode = { kind: 'dir', name: '', children: new Map() };
     let folders = 0;
     let total = 0;
     let p = 0;
@@ -200,8 +208,10 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
       // Unix (3) and macOS (19) archives keep file types in the top 16 bits of the external attributes; MS-DOS (0),
       // NTFS (10) and VFAT (14) archives use backslashes as folder separators.
       const unix = madeBy === 3 || madeBy === 19;
-      const path = safeEntryPath(raw, madeBy === 0 || madeBy === 10 || madeBy === 14);
-      const directory = /[\\/]$/.test(raw);
+      const dos = madeBy === 0 || madeBy === 10 || madeBy === 14;
+      const path = safeEntryPath(raw, dos);
+      // A trailing backslash marks a folder only where backslashes are separators; elsewhere it ends a file's name.
+      const directory = raw.endsWith('/') || (dos && raw.endsWith('\\'));
       const unixMode = unix ? external >>> 16 : 0;
       const type = unixMode & 0o170000;
       const special = type !== 0 && type !== 0o100000 && !(directory && type === 0o040000);
@@ -217,6 +227,7 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
       // Two names one folder cannot tell apart (different case or accents, a file where a folder must go) would
       // overwrite each other. Every folder a path implies counts, so empty folders cannot multiply unseen.
       const parts = path.split('/');
+      const spelled: string[] = [];
       let node = tree;
       for (let i = 0; i < parts.length; i++) {
         const kind = i < parts.length - 1 || directory ? 'dir' : 'file';
@@ -226,15 +237,17 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
         if (before && before.kind !== kind) throw new ZipError(`That ZIP file contains ${where()} both as a file and as a folder, so it was not opened.`);
         if (before?.kind === 'file') throw new ZipError(`That ZIP file contains two files named ${where()} (perhaps with different capital letters or accents), so it was not opened.`);
         if (before) {
+          spelled.push(before.name);
           node = before;
           continue;
         }
         if (kind === 'dir' && ++folders > MAX_ENTRIES) throw new ZipError('That ZIP file holds more folders than a project can, so it was not opened.');
-        const added: TreeNode = kind === 'dir' ? { kind, children: new Map() } : { kind };
+        const added: TreeNode = kind === 'dir' ? { kind, name: parts[i], children: new Map() } : { kind, name: parts[i] };
         node.children!.set(key, added);
+        spelled.push(parts[i]);
         node = added;
       }
-      entries.push({ path, directory, special, executable: (unixMode & 0o111) !== 0, method, crc, compressedSize, size: entrySize, localOffset, dataLimit: cdOffset });
+      entries.push({ path: spelled.join('/'), directory, special, executable: (unixMode & 0o111) !== 0, method, crc, compressedSize, size: entrySize, localOffset, dataLimit: cdOffset });
     }
     // Each entry's data must end before the next entry starts: entries that share their bytes are refused when read.
     const byOffset = [...entries].sort((a, b) => a.localOffset - b.localOffset);

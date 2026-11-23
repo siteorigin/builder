@@ -3,7 +3,7 @@
  * and folder, leaves the folder untouched, and never rejects the call (which left the Open button disabled).
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, promises as fsp, readFileSync, statSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, promises as fsp, readFileSync, statSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -292,6 +292,33 @@ describe('opening a project ZIP file (#263)', () => {
     writeFileSync(file, saved);
     await untrust(dir);
     expect(JSON.parse(readFileSync(file, 'utf8')).trusted[dir]).toBeUndefined();
+  });
+
+  it('asks nothing when its window goes while the ZIP file is being read', async () => {
+    const zip = await editableZip();
+    const c = new Controller(() => null);
+    const open = fsp.open.bind(fsp);
+    vi.spyOn(fsp, 'open').mockImplementation(async (...args: Parameters<typeof fsp.open>) => {
+      if (String(args[0]) === zip) c.cancelOpen();
+      return open(...args);
+    });
+    expect(await c.open(zip)).toEqual({ ok: false });
+    expect(dialog.showOpenDialog).not.toHaveBeenCalled();
+  });
+
+  it('never unpacks into the open project, even through a link chosen as the folder', async () => {
+    const zip = await editableZip();
+    const projectDir = tmp('so-open-project-');
+    mkdirSync(join(projectDir, 'src', 'routes'), { recursive: true });
+    const link = join(tmp('so-links-'), 'routes-link');
+    symlinkSync(join(projectDir, 'src', 'routes'), link);
+    const c = new Controller(() => null);
+    c.session = { dir: projectDir } as never;
+    chooseFolder(link);
+    const r = await c.open(zip);
+    c.session = null;
+    expect(r).toEqual({ ok: false, message: 'Choose a location outside the open project’s folder.' });
+    expect(readdirSync(join(projectDir, 'src', 'routes'))).toEqual([]);
   });
 
   it('unpacks nothing when its window goes while the folder picker is up', async () => {

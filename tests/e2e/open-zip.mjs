@@ -32,7 +32,20 @@ const snapshot = () => win.evaluate(() => window.builder.project.snapshot());
 const sha = (f) => createHash('sha256').update(readFileSync(f)).digest('hex');
 /** Every library file of a project, with its hash. */
 const library = (dir, snap) => Object.fromEntries(Object.values(snap.state.assets.assets).map((a) => [a.file, sha(join(dir, a.file))]));
-const openProjectCommand = () => win.evaluate(() => window.dispatchEvent(new CustomEvent('builder-command', { detail: 'open-project' })));
+/** Choose File > Open Project… in the native menu, as the menu bar or its shortcut does. */
+const openProjectCommand = () =>
+  app.evaluate(({ Menu }) => {
+    const find = (items) => {
+      for (const i of items) {
+        if (i.label === 'Open Project…') return i;
+        const f = i.submenu && find(i.submenu.items);
+        if (f) return f;
+      }
+    };
+    const item = find(Menu.getApplicationMenu().items);
+    if (!item) throw new Error('No Open Project… menu item');
+    item.click();
+  });
 
 step('the sender exports the editable project as a ZIP file');
 await createProject(win, { name, parentDir: join(WORK, 'sender'), starter: 'business', sampleImages: true });

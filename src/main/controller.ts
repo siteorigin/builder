@@ -574,7 +574,8 @@ export class Controller {
       properties: ['openDirectory', 'createDirectory']
     });
     if (r.canceled || !r.filePaths[0] || this.quitting || abort.signal.aborted) return { ok: false };
-    const parent = r.filePaths[0];
+    // Resolved first: a link or shortcut chosen as the folder must not lead into the open project (whose preview runs).
+    const parent = canonicalDir(r.filePaths[0]);
     if (this.session && isInside(this.session.dir, parent)) return { ok: false, message: 'Choose a location outside the open project’s folder.' };
     // A trust given to an earlier folder of the same name (since deleted) never carries over to this one.
     const run = unpackProject(file, project, parent, slugify(name) || 'website', { signal: abort.signal, beforePublish: (dir) => untrust(canonicalDir(dir)) });

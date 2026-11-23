@@ -193,6 +193,8 @@ describe('telling ZIP files apart', () => {
     expect((await readZipEntries(zipFile([{ name: legacy, utf8: false, extra: field(Buffer.from('other')), data: 'x' }])))[0].path).toBe('cêaù.png');
     // A plain ASCII stand-in gives way to the real name too.
     expect((await readZipEntries(zipFile([{ name: 'cau.png', utf8: false, extra: field(Buffer.from('cau.png')), data: 'x' }])))[0].path).toBe('ĉaŭ.png');
+    // Only the first Unicode field is read: a matching one after a mismatched one is not looked for.
+    expect((await readZipEntries(zipFile([{ name: legacy, utf8: false, extra: Buffer.concat([field(Buffer.from('other')), field(legacy)]), data: 'x' }])))[0].path).toBe('cêaù.png');
   });
 
   it('refuses a file that is not a ZIP file, one cut short, and one whose list of files is damaged', async () => {
@@ -234,22 +236,25 @@ describe('an archive that could do harm', () => {
     expect(safeEntryPath('..\\evil.txt', false, false)).toBe('..\\evil.txt');
     expect(() => safeEntryPath('static/draft\\cover.svg', false, true)).toThrow(/cannot be used safely/);
     if (process.platform !== 'win32') {
-      const zip = zipFile([{ name: 'siteorigin.project.json', data: '{}' }, { name: 'static/draft\\cover.svg', data: 'x' }]);
+      // A name may end in one too: it is still a file, not a folder.
+      const zip = zipFile([{ name: 'siteorigin.project.json', data: '{}' }, { name: 'static/draft\\cover.svg', data: 'x' }, { name: 'static/note\\', data: 'y' }]);
       const dest = temp();
       await extractEntries(zip, await readZipEntries(zip), '', dest);
       expect(readFileSync(join(dest, 'static', 'draft\\cover.svg'), 'utf8')).toBe('x');
+      expect(readFileSync(join(dest, 'static', 'note\\'), 'utf8')).toBe('y');
     }
   });
 
-  it.each(['a\u0000b', 'static/CON', 'static/nul.txt', 'static/com1.js', 'static/LPT¹', 'static/photo.jpg:stream', 'static/trailing.', 'static/trailing ', `${'a/'.repeat(300)}x`, 'x'.repeat(4200)])(
+  it.each(['a\u0000b', 'static/CON', 'static/nul.txt', 'static/com1.js', 'static/LPT¹', 'static/photo.jpg:stream', 'static/trailing.', 'static/trailing ', 'x'.repeat(4200)])(
     'refuses the file name %j, which this computer or Windows could not use safely',
     async (name) => {
       await expect(readZipEntries(zipFile([{ name: 'siteorigin.project.json', data: '{}' }, { name, data: 'x' }]))).rejects.toThrow(/cannot be used safely/);
     }
   );
 
-  it('keeps ordinary names as they are, decomposed accents included', () => {
+  it('keeps ordinary names as they are, decomposed accents and deep folders included', () => {
     expect(safeEntryPath('./a//b/')).toBe('a/b');
+    expect(safeEntryPath(`${'a/'.repeat(300)}x`)).toBe(`${'a/'.repeat(300)}x`);
     expect(safeEntryPath('a\\b.txt', true)).toBe('a/b.txt');
     expect(safeEntryPath('cafe\u0301.svg')).toBe('cafe\u0301.svg');
     expect(() => safeEntryPath('./')).toThrow(ZipError);
@@ -262,8 +267,9 @@ describe('an archive that could do harm', () => {
     await refuses([{ name: 'p\\logo.png', data: 'a', host: 0 }, { name: 'p/logo.png', data: 'b', host: 0 }], /two files named/);
     await refuses([{ name: 'P/a', data: 'a' }, { name: 'p/a/b', data: 'b' }], /both as a file and as a folder/);
     await refuses([{ name: 'p/a/b', data: 'b' }, { name: 'P/a', data: 'a' }], /both as a file and as a folder/);
-    // The same folder spelled two ways is one folder: its files are different files.
-    expect(await readZipEntries(zipFile([{ name: 'p/' }, { name: 'P/a', data: 'a' }, { name: 'p/b', data: 'b' }]))).toHaveLength(3);
+    // The same folder spelled two ways is one folder, written the way it was first spelled on every disk.
+    const entries = await readZipEntries(zipFile([{ name: 'p/' }, { name: 'P/a', data: 'a' }, { name: 'p/b', data: 'b' }, { name: 'P/Q/' }, { name: 'p/q/c', data: 'c' }]));
+    expect(entries.map((e) => e.path)).toEqual(['p', 'p/a', 'p/b', 'p/Q', 'p/Q/c']);
   });
 
   it('never writes a link, whether made on Unix or on a Mac', async () => {
@@ -325,7 +331,7 @@ describe('an archive that could do harm', () => {
     const mkdir = fsp.mkdir.bind(fsp);
     vi.spyOn(fsp, 'mkdir').mockImplementation(async (p, o) => {
       // The second file's folder: the first file is written by now.
-      if (String(p).endsWith('/a')) abort.abort();
+      if (/[\\/]a$/.test(String(p))) abort.abort();
       return mkdir(p, o as never);
     });
     await expect(extractEntries(zip, contents.entries, contents.root, dest, abort.signal)).rejects.toMatchObject({ name: 'AbortError' });
