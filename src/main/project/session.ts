@@ -14,7 +14,7 @@ import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
 import { checkSvelteSource } from '../codecheck';
 import { atomicWrite, readIfExists, readJson, removeEmptyDirs, safeJoin, sha, toJson } from './fsutil';
-import { isCanonicalPath, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 
 export const LOCAL_DIR = '.siteorigin';
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -324,7 +324,7 @@ export class ProjectSession extends EventEmitter {
   }
 
   /** Before a write: is this session still the lock's owner? A takeover found here makes it read-only at once. */
-  private async stillOwner(): Promise<boolean> {
+  async stillOwner(): Promise<boolean> {
     if (this.readOnly) return false;
     if (!this.lockOwner) return true; // a session that never took a lock (project creation, tests)
     await this.refreshLock();
@@ -1411,6 +1411,10 @@ function settledOnDisk(path: string, disk: string | null, builder: string | null
 
 /** Refuse to open a project written by a newer version for editing (it can still be opened read-only). */
 async function assertKnownFormat(dir: string) {
+  // Every document file is scanned on its own first: the full read stops at the first broken document, which may
+  // sort before a newer one, and it keys documents by id, which a crafted id can hide.
+  const newest = await newestStoredVersion(dir);
+  if (newest > SCHEMA_VERSION) throw new ProjectFormatError(`This project was created by a newer version of SiteOrigin Builder (format ${newest}). Update the app to edit it.`, true);
   try {
     await readState(dir);
   } catch (e) {

@@ -64,21 +64,33 @@ export async function dependenciesReady(dir: string): Promise<boolean> {
  * Install the project's locked dependencies with the npm bundled inside the app, running on Electron's own Node.
  * Package lifecycle scripts are disabled; the template's dependencies do not need them.
  */
-export async function prepareDependencies(dir: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
+/**
+ * `mayWrite` is asked before each step that writes into the project (each npm run, the marker), so a project taken
+ * over meanwhile gets nothing more.
+ */
+export async function prepareDependencies(dir: string, onLine: (line: string) => void, signal?: AbortSignal, mayWrite: () => Promise<boolean> = async () => true): Promise<void> {
+  const stillMine = async () => {
+    if (signal?.aborted || !(await mayWrite()) || signal?.aborted) throw new Error('Cancelled');
+  };
   const npmCli = app.isPackaged ? join(process.resourcesPath, "npm", "bin", "npm-cli.js") : join(dirname(nodeRequire.resolve("npm/package.json")), "bin", "npm-cli.js");
   const cache = await seedCache();
   const base = [npmCli, existsSync(join(dir, 'package-lock.json')) ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error', `--cache=${cache}`];
   // Try the packages bundled with the app first (works offline); fall back to downloading what is missing.
   try {
+    await stillMine();
     await runNpm([...base, '--offline'], dir, onLine, signal);
     onLine('Installed from the tools bundled with SiteOrigin Builder.');
   } catch (e) {
-    if (signal?.aborted) throw e;
+    if (signal?.aborted || (e as Error).message === 'Cancelled') throw e;
     onLine('Some website tools are not bundled for this system; downloading them…');
+    await stillMine();
     await runNpm([...base, '--prefer-offline'], dir, onLine, signal);
   }
+  const marker = JSON.stringify({ lockHash: await lockHash(dir), preparedAt: new Date().toISOString() });
+  // Cancelled or taken over as the install finished: the project may belong to someone else now.
+  await stillMine();
   await fs.mkdir(join(dir, '.siteorigin', 'cache'), { recursive: true });
-  await fs.writeFile(join(dir, '.siteorigin', 'cache', 'deps.json'), JSON.stringify({ lockHash: await lockHash(dir), preparedAt: new Date().toISOString() }));
+  await fs.writeFile(join(dir, '.siteorigin', 'cache', 'deps.json'), marker);
 }
 
 /** The npm cache lives in the app's data folder; packaged builds seed it from the bundled cache once. */
@@ -95,6 +107,8 @@ async function seedCache(): Promise<string> {
 
 function runNpm(args: string[], dir: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
+    // Cancelled before it started (while the cache was being prepared): an abort event will not come again.
+    if (signal?.aborted) return reject(new Error('Cancelled'));
     const child = spawn(process.execPath, args, {
       cwd: dir,
       env: projectEnv({ ELECTRON_RUN_AS_NODE: '1', npm_config_update_notifier: 'false' }),
@@ -118,6 +132,9 @@ function runNpm(args: string[], dir: string, onLine: (line: string) => void, sig
   });
 }
 
+/** How long a stopping preview process gets: asked to stop, then terminated, then killed, then no longer waited for. */
+export const STOP_LIMITS = { termMs: 1500, killMs: 3000, giveUpMs: 5000 };
+
 /** Dev server for one project, in its own utility process. */
 export class DevServer {
   private proc: UtilityProcess | null = null;
@@ -126,8 +143,14 @@ export class DevServer {
   private listeners = new Set<(s: RuntimeStatus) => void>();
   logs: Array<{ level: string; message: string; time: number }> = [];
   private stopped = false;
+  /** Ends a start still waiting for its process: a stopped server has nothing left to wait for. */
+  private settleStart: (() => void) | null = null;
 
-  constructor(private dir: string) {}
+  /** `mayRestart` is asked before a process that stopped unexpectedly is started again in the same folder. */
+  constructor(
+    private dir: string,
+    private mayRestart: () => Promise<boolean> = async () => true
+  ) {}
 
   onStatus(fn: (s: RuntimeStatus) => void) {
     this.listeners.add(fn);
@@ -161,6 +184,10 @@ export class DevServer {
         this.set({ state: 'error', message: 'The preview server did not start in time.', detail: this.logs.slice(-5).map((l) => l.message).join('\n') });
         resolve();
       }, 60000);
+      this.settleStart = () => {
+        clearTimeout(timer);
+        resolve();
+      };
       proc.on('message', (m: { type: string; url?: string; message?: string; level?: string }) => {
         // A process that has been stopped or replaced no longer speaks for this server.
         if (this.proc !== proc) return;
@@ -187,7 +214,13 @@ export class DevServer {
         if (this.restarts < 1) {
           this.restarts++;
           this.log('warn', `Preview process exited (${code}); restarting once.`);
-          void this.start();
+          void this.mayRestart()
+            .catch(() => false)
+            .then((ok) => {
+              if (this.stopped || this.proc) return;
+              if (ok) void this.start();
+              else this.set({ state: 'error', message: 'The preview process stopped unexpectedly.', detail: this.logs.slice(-5).map((l) => l.message).join('\n') });
+            });
         } else {
           this.set({ state: 'error', message: 'The preview process stopped unexpectedly.', detail: this.logs.slice(-5).map((l) => l.message).join('\n') });
         }
@@ -203,18 +236,36 @@ export class DevServer {
   }
 
   private stopping: Promise<void> | null = null;
+  /** Settles when the last process this server stopped has really exited. */
+  exited: Promise<void> = Promise.resolve();
 
-  /** Stop the server and wait for its process to exit, so a restart never overlaps the old one. */
+  /**
+   * Stop the server and wait for its process to exit, so a restart never overlaps the old one: asked first, then
+   * terminated, then killed outright when it ignores both (a plugin still shutting down must not keep writing).
+   */
   stop(): Promise<void> {
     this.stopped = true;
     const p = this.proc;
     this.proc = null;
+    this.settleStart?.();
+    this.settleStart = null;
     if (p) {
       const exited = new Promise<void>((resolve) => p.once('exit', () => resolve()));
+      this.exited = exited;
       p.postMessage({ type: 'stop' });
-      const timer = setTimeout(() => p.kill(), 1500);
+      const term = setTimeout(() => p.kill(), STOP_LIMITS.termMs);
+      const kill = setTimeout(() => {
+        try {
+          if (p.pid) process.kill(p.pid, 'SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }, STOP_LIMITS.killMs);
       // Every caller waits for the same exit, including one that arrives after this.proc was cleared.
-      this.stopping = Promise.race([exited, new Promise<void>((r) => setTimeout(r, 3000))]).finally(() => clearTimeout(timer));
+      this.stopping = Promise.race([exited, new Promise<void>((r) => setTimeout(r, STOP_LIMITS.giveUpMs))]).finally(() => {
+        clearTimeout(term);
+        clearTimeout(kill);
+      });
     }
     const done = (this.stopping ?? Promise.resolve()).then(() => this.set({ state: 'idle' }));
     return done;

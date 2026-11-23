@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 /** A stand-in for Electron's utility process: tests decide what the worker says and when it exits. */
@@ -6,6 +9,7 @@ class FakeWorker extends EventEmitter {
   stderr = new EventEmitter();
   posted: unknown[] = [];
   killed = false;
+  pid?: number;
   /** A worker that ignores being killed (hung in native code). */
   stubborn = false;
   postMessage(m: unknown) {
@@ -29,7 +33,7 @@ vi.mock('electron', () => ({
   }
 }));
 
-const { BUILD_LIMITS, buildProject } = await import('../../src/main/runtime/manager');
+const { BUILD_LIMITS, STOP_LIMITS, DevServer, buildProject, prepareDependencies } = await import('../../src/main/runtime/manager');
 
 afterEach(() => {
   workers.splice(0);
@@ -104,5 +108,95 @@ describe('production build worker', () => {
     workers[0].stderr.emit('data', 'Segmentation fault');
     workers[0].emit('exit', 139);
     expect((await p).error).toMatch(/exited \(139\).*Segmentation/);
+  });
+});
+
+describe('preview worker', () => {
+  it('kills a worker that ignores both stop and terminate, and waits for it to exit', async () => {
+    vi.useFakeTimers();
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const dev = new DevServer('/project');
+      const started = dev.start();
+      const w = workers[0];
+      w.pid = 4242;
+      w.stubborn = true;
+      w.emit('message', { type: 'ready', url: 'http://127.0.0.1:1' });
+      await started;
+      let stopped = false;
+      void dev.stop().then(() => (stopped = true));
+      expect(w.posted.at(-1)).toEqual({ type: 'stop' });
+      await vi.advanceTimersByTimeAsync(STOP_LIMITS.termMs);
+      expect(w.killed).toBe(true);
+      expect(kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(STOP_LIMITS.killMs - STOP_LIMITS.termMs);
+      expect(kill).toHaveBeenCalledWith(4242, 'SIGKILL');
+      // A replacement must not start beside it: stopping waits for the exit.
+      expect(stopped).toBe(false);
+      w.emit('exit', null);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stopped).toBe(true);
+      expect(dev.status).toEqual({ state: 'idle' });
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it('stops waiting for a worker that never exits, after the last limit', async () => {
+    vi.useFakeTimers();
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const dev = new DevServer('/project');
+      const started = dev.start();
+      const w = workers[0];
+      w.pid = 4343;
+      w.stubborn = true;
+      w.emit('message', { type: 'ready', url: 'http://127.0.0.1:1' });
+      await started;
+      let stopped = false;
+      void dev.stop().then(() => (stopped = true));
+      await vi.advanceTimersByTimeAsync(STOP_LIMITS.giveUpMs - 1);
+      expect(kill).toHaveBeenCalledWith(4343, 'SIGKILL');
+      expect(stopped).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(stopped).toBe(true);
+    } finally {
+      kill.mockRestore();
+    }
+  });
+
+  it('ends a start still waiting for its process when the server is stopped', async () => {
+    vi.useFakeTimers();
+    const dev = new DevServer('/project');
+    let started = false;
+    void dev.start().then(() => (started = true));
+    const w = workers[0];
+    void dev.stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toBe(true);
+    expect(w.posted.at(-1)).toEqual({ type: 'stop' });
+  });
+
+  it('does not start a crashed preview again where it may no longer run', async () => {
+    const dev = new DevServer('/project', async () => false);
+    const started = dev.start();
+    workers[0].emit('message', { type: 'ready', url: 'http://127.0.0.1:1' });
+    await started;
+    workers[0].emit('exit', 1);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(workers).toHaveLength(1);
+    expect(dev.status.state).toBe('error');
+  });
+});
+
+describe('installing the website tools', () => {
+  it('runs nothing in a project that is no longer this app’s to write', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-install-'));
+    try {
+      await expect(prepareDependencies(dir, () => undefined, undefined, async () => false)).rejects.toThrow('Cancelled');
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

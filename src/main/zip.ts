@@ -50,7 +50,7 @@ async function listFiles(dir: string, base = ''): Promise<string[]> {
  * top-level `folder`). Symbolic links are skipped. The archive is written to a new temporary file beside its
  * destination and renamed into place, so a failed export never leaves a partial ZIP or damages an existing one.
  */
-export async function zipDirectory(dir: string, zipPath: string, folder = ''): Promise<{ files: number; bytes: number }> {
+export async function zipDirectory(dir: string, zipPath: string, folder = '', beforeCommit?: () => Promise<void>): Promise<{ files: number; bytes: number }> {
   if (folder && !/^[\w][\w.-]*$/.test(folder)) throw new Error('Invalid folder name for a ZIP export.');
   const files = (await listFiles(dir)).sort();
   if (files.length > 0xffff) throw new Error('Too many files for a ZIP export.');
@@ -121,6 +121,8 @@ export async function zipDirectory(dir: string, zipPath: string, folder = ''): P
     await write(end);
     await out.close();
     closed = true;
+    // The last chance to call the export off: an existing ZIP is left as it was.
+    await beforeCommit?.();
     await fs.rename(tmp, zipPath);
     return { files: files.length, bytes: offset };
   } catch (e) {

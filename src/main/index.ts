@@ -428,7 +428,8 @@ app.on('before-quit', (e) => {
   if (closedForQuit) return;
   // A second Quit while the project is still closing waits for it too, so its unsaved state is written first.
   if (quitting) return e.preventDefault();
-  if (controller.session) {
+  // A close already under way still has a preview to stop and its private copy to remove.
+  if (controller.session || controller.isClosing) {
     e.preventDefault();
     quitting = true;
     void controller.close().finally(() => {

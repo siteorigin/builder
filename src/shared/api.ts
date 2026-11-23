@@ -61,7 +61,9 @@ export type RuntimeState =
   | { state: 'preparing'; message: string }
   | { state: 'starting' }
   | { state: 'ready'; url: string }
-  | { state: 'error'; message: string; detail?: string };
+  | { state: 'error'; message: string; detail?: string }
+  /** No preview can run for this project here (a newer format); nothing to retry. */
+  | { state: 'unavailable'; message: string };
 
 export interface ProjectSnapshot {
   dir: string;

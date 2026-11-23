@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { watch, type FSWatcher } from 'node:fs';
 import { existsSync, lstatSync, mkdtempSync, promises as fs } from 'node:fs';
-import { basename, dirname, extname, isAbsolute, join, normalize, relative } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
@@ -16,16 +16,29 @@ import { basePath, generateManagedComponent, generatePage, defFile } from '@gene
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
 import { copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, sectionLinkWarnings, uniqueChild } from './export';
-import { ProjectLockedError, ProjectSession } from './project/session';
+import { LOCAL_DIR, ProjectLockedError, ProjectSession } from './project/session';
 import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies } from './runtime/manager';
+import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
 import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, trust } from './settings';
 import { newId } from '@shared/ids';
 
 const INSTANCE_ID = randomUUID();
+
+const READ_ONLY = 'This project is read-only.';
+const TRUST_CHANGED = "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them.";
+const PREVIEW_UNAVAILABLE = 'This project was made with a newer version of SiteOrigin Builder, which is needed to show its preview. Update the app to see and edit the site.';
+
+/** A project only a newer version can generate has no preview here (spec 16.6): its kind of read-only cannot be unlocked. */
+function previewUnavailable(s: ProjectSession): boolean {
+  return !!s.readOnly && !s.readOnly.canUnlock;
+}
+
+/** An export called off part way through: the project was taken over or closed. */
+class ExportStopped extends Error {}
 
 /** Where new projects go by default: Documents/SiteOrigin. */
 export function defaultProjectsFolder(): string {
@@ -88,6 +101,20 @@ export class Controller {
   private exportPaths = new Set<string>();
   private watchers: FSWatcher[] = [];
   private watchTimer: NodeJS.Timeout | null = null;
+  /** The private copy the preview runs from while the project may not be written to (spec 16.6, 18.1). */
+  private stage: string | null = null;
+  private stageSync: Promise<unknown> = Promise.resolve();
+  private stageTicket = 0;
+  /** Watches over the files the copy is made from, as the project's own dev server would watch them. */
+  private stageWatchers: FSWatcher[] = [];
+  private stageTimer: NodeJS.Timeout | null = null;
+  /** The project whose copy was already replaced once after a mirror failed, so a lasting failure cannot loop. */
+  private restaged: ProjectSession | null = null;
+  /** The last preview status sent while no preview process runs (setting up, copying, or why it cannot start). */
+  private pendingStatus: RuntimeState | null = null;
+  /** Cancels a dependency install into the project when another app takes it over. */
+  private prepareAbort: AbortController | null = null;
+  private closing: Promise<void> | null = null;
   onSessionOpened: ((s: ProjectSession) => Promise<void>) | null = null;
   onSessionClosing: (() => Promise<void>) | null = null;
   aiBusy = () => false;
@@ -112,7 +139,7 @@ export class Controller {
       revision: s.revision,
       history: s.historyInfo(),
       diagnostics: s.diagnostics(),
-      runtime: (this.dev?.status ?? { state: 'idle' }) as RuntimeState,
+      runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
       assetUsage: safeUsages(s),
@@ -127,6 +154,19 @@ export class Controller {
   broadcast() {
     const snap = this.snapshot();
     if (snap) this.send('project:changed', snap);
+  }
+
+  /** What the preview is doing; a project only a newer version can generate never has one. */
+  private runtimeStatus(): RuntimeState {
+    const s = this.session;
+    if (s && previewUnavailable(s)) return { state: 'unavailable', message: PREVIEW_UNAVAILABLE };
+    return (this.dev?.status ?? this.pendingStatus ?? { state: 'idle' }) as RuntimeState;
+  }
+
+  /** Report the preview's state while no preview process speaks for it. */
+  private status(s: RuntimeState) {
+    this.pendingStatus = s;
+    this.send('runtime:status', s);
   }
 
   // -------------------------------------------------------------------------
@@ -309,8 +349,17 @@ export class Controller {
     this.localState = workspace;
     this.localDirty = false;
     this.workspaceKey = `${session.dir}#${++this.openings}`;
+    // Another app took the project over and edits its folder now: stop the preview running there at once (and any
+    // install into it), then start it again from a private copy.
+    session.on('lock-lost', () => {
+      if (this.session !== session) return;
+      this.prepareAbort?.abort();
+      if (!this.stage) void this.dev?.stop();
+      void this.startRuntime().catch(() => undefined);
+    });
     session.on('changed', (ev) => {
-      this.dev?.notifyRevision(ev.revision);
+      if (this.stage) this.syncStage(session);
+      else this.dev?.notifyRevision(ev.revision);
       this.broadcast();
     });
     session.on('history', () => this.broadcast());
@@ -324,7 +373,12 @@ export class Controller {
 
   /** Start (or restart) the preview. Calls run one at a time, so overlapping retries never leave a second worker running. */
   startRuntime(): Promise<void> {
-    const run = this.runtimeQueue.then(() => this.startRuntimeNow());
+    return this.enqueue(() => this.startRuntimeNow());
+  }
+
+  /** Preview work runs one task at a time; closing waits for the task under way. */
+  private enqueue(fn: () => Promise<void>): Promise<void> {
+    const run = this.runtimeQueue.then(fn);
     this.runtimeQueue = run.catch(() => undefined);
     return run;
   }
@@ -332,35 +386,154 @@ export class Controller {
   private async startRuntimeNow() {
     const session = this.session;
     if (!session) return;
-    await this.dev?.stop();
-    // Executable configuration must still be what the user trusted.
-    if (!(await isTrusted(session.dir, await configHash(session.dir)))) {
-      this.send('runtime:status', { state: 'error', message: "This project's build settings changed outside SiteOrigin Builder. Close and reopen the project to review and trust them." });
+    await this.stopPreview();
+    if (this.session !== session) return;
+    // Nothing to start and nothing to retry: no worker is ever forked for it.
+    if (previewUnavailable(session)) {
+      this.send('runtime:status', this.runtimeStatus());
       return;
     }
-    if (!(await dependenciesReady(session.dir))) {
+    // Executable configuration must still be what the user trusted.
+    if (!(await isTrusted(session.dir, await configHash(session.dir)))) {
+      this.status({ state: 'error', message: TRUST_CHANGED });
+      return;
+    }
+    const ready = await dependenciesReady(session.dir);
+    // Closed or taken over meanwhile: never start an install into a folder that may be someone else's.
+    if (this.session !== session) return;
+    if (!ready) {
       if (session.readOnly) {
-        this.send('runtime:status', { state: 'error', message: 'The preview is not available while this project is read-only, because its website tools are not set up.' });
+        this.status({ state: 'error', message: 'The preview is not available while this project is read-only, because its website tools are not set up.' });
         return;
       }
-      const status: RuntimeState = { state: 'preparing', message: 'Setting up website tools…' };
-      this.send('runtime:status', status);
+      // The lock is read again first: a takeover the heartbeat has not seen yet must not get an install.
+      if (!(await session.stillOwner()) || this.session !== session) return;
+      this.status({ state: 'preparing', message: 'Setting up website tools…' });
+      const abort = (this.prepareAbort = new AbortController());
       try {
-        await prepareDependencies(session.dir, (line) => this.send('runtime:status', { state: 'preparing', message: line.slice(0, 120) }));
+        await prepareDependencies(session.dir, (line) => this.status({ state: 'preparing', message: line.slice(0, 120) }), abort.signal, async () => this.session === session && (await session.stillOwner()));
       } catch (e) {
-        this.send('runtime:status', { state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
+        // Taken over by another app or closed: a restart already queued previews it from a copy instead.
+        if (abort.signal.aborted) return;
+        this.status({ state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
         this.broadcast();
         return;
+      } finally {
+        if (this.prepareAbort === abort) this.prepareAbort = null;
       }
     }
+    // Read the lock again right before running anything in the folder: a takeover the heartbeat has not seen yet would
+    // otherwise get a live preview. A takeover found here has already queued a preview from a copy.
+    if (!session.readOnly && !(await session.stillOwner())) return;
     if (this.session !== session) return;
-    const dev = new DevServer(session.dir);
+    // A project this app may not write to runs from a private copy, so its tools write nothing into the folder.
+    // Decided with no wait before the fork: a takeover after this point stops the worker and queues a staged restart.
+    const stage = session.readOnly ? await this.stagePreview(session) : null;
+    if (session.readOnly && !stage) return;
+    // A preview that crashes is started again in the same folder only while that is still this app's to use; a copy is.
+    const dev: DevServer = new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
     this.dev = dev;
+    this.stage = stage;
+    this.pendingStatus = null;
+    if (stage) this.watchStageSources(session);
     dev.onStatus((s) => {
+      // A preview that was stopped or replaced no longer speaks for the project.
+      if (this.dev !== dev) return;
       this.send('runtime:status', s);
       this.broadcast();
     });
     await dev.start();
+    // Anything the other app wrote between the copy and the watches.
+    if (stage) this.syncStage(session);
+  }
+
+  /** Copy a project this app may not write to into a private folder to preview it from, or say why it cannot be. */
+  private async stagePreview(session: ProjectSession): Promise<string | null> {
+    const fail = (message: string, detail?: string) => {
+      if (this.session === session) this.status({ state: 'error', message, detail });
+      return null;
+    };
+    const root = join(app.getPath('userData'), 'preview-staging');
+    // The copies are made, cleared and swept inside this folder, so it must not be (or lead to) the project itself.
+    if (isInside(session.dir, root) || isInside(session.dir, canonicalDir(root)))
+      return fail('The preview is not available while this project is read-only, because SiteOrigin Builder keeps its own data inside the project folder.');
+    // Clearing old copies there must never reach a project that lives inside that folder.
+    if (isInside(canonicalDir(root), session.dir)) return fail('The preview is not available for a project kept inside SiteOrigin Builder’s own data folder.');
+    this.status({ state: 'preparing', message: 'Copying the project to preview it without changing it…' });
+    let stage: string;
+    try {
+      await sweepPreviewStages(root);
+      stage = await createPreviewStage(session.dir, root);
+    } catch (e) {
+      return fail('The read-only preview could not be prepared.', (e as Error).message);
+    }
+    // The copy runs the project's build settings, which the app editing it may have changed since they were trusted.
+    const trusted = await isTrusted(session.dir, await configHash(stage)).catch(() => false);
+    if (this.session !== session || !trusted) {
+      await removePreviewStage(stage).catch(() => undefined);
+      return trusted ? null : fail(TRUST_CHANGED);
+    }
+    return stage;
+  }
+
+  /**
+   * Mirror the project into the private copy, then tell the preview which revision it shows. Requests made while one
+   * runs collapse into the latest. A copy that cannot be brought up to date is replaced by a fresh one, which reports
+   * any problem.
+   */
+  private syncStage(session: ProjectSession) {
+    const stage = this.stage;
+    const ticket = ++this.stageTicket;
+    this.stageSync = this.stageSync
+      .then(async () => {
+        if (!stage || this.stage !== stage || this.session !== session || this.stageTicket !== ticket) return;
+        const revision = session.revision;
+        await syncPreviewStage(session.dir, stage);
+        if (this.stage === stage) this.dev?.notifyRevision(revision);
+      })
+      .catch(() => {
+        if (this.stage !== stage || this.session !== session || this.restaged === session) return;
+        this.restaged = session;
+        void this.startRuntime().catch(() => undefined);
+      });
+  }
+
+  /** Follow the files the copy is made from (generated pages, public files, the editor's variants), read-only. */
+  private watchStageSources(session: ProjectSession) {
+    const onChange = () => {
+      if (this.stageTimer) clearTimeout(this.stageTimer);
+      this.stageTimer = setTimeout(() => this.syncStage(session), 300);
+    };
+    for (const rel of ['src', 'static', join(LOCAL_DIR, 'cache', 'dev')]) {
+      try {
+        const dir = join(session.dir, rel);
+        if (!existsSync(dir)) continue;
+        const w = watch(dir, { recursive: true }, onChange);
+        // A watch that fails (the folder went, too many files) just stops; accepted document changes still sync.
+        w.on('error', () => w.close());
+        this.stageWatchers.push(w);
+      } catch {
+        /* watching is best-effort: accepted document changes still bring the copy up to date */
+      }
+    }
+  }
+
+  /** Stop the preview, then remove the private copy it ran from (again once its process has really gone). */
+  private async stopPreview() {
+    const dev = this.dev;
+    const stage = this.stage;
+    for (const w of this.stageWatchers) w.close();
+    this.stageWatchers = [];
+    if (this.stageTimer) clearTimeout(this.stageTimer);
+    this.stageTimer = null;
+    this.pendingStatus = null;
+    await dev?.stop();
+    if (this.dev === dev) this.dev = null;
+    if (this.stage === stage) this.stage = null;
+    if (!stage) return;
+    await this.stageSync;
+    await removePreviewStage(stage).catch(() => undefined);
+    if (dev) void dev.exited.then(() => removePreviewStage(stage)).catch(() => undefined);
   }
 
   /** Accept valid external edits to canonical documents and authored code components. */
@@ -372,7 +545,7 @@ export class Controller {
       this.watchTimer = setTimeout(async () => {
         if (this.session !== session || this.aiBusy()) return;
         const r = await session.reloadFromDisk();
-        if (!r.ok && r.message && r.message !== 'Busy') this.send('runtime:status', this.dev?.status ?? { state: 'idle' });
+        if (!r.ok && r.message && r.message !== 'Busy') this.send('runtime:status', this.runtimeStatus());
       }, 400);
     };
     // Watch src/lib/siteorigin (not just custom/) so a custom folder created later is still seen.
@@ -389,35 +562,68 @@ export class Controller {
     }
   }
 
-  /** Reinstall the website's tools from scratch (the dependency manager's repair action). */
-  async repairDependencies() {
-    const s = this.session;
-    if (!s || s.readOnly) return;
-    await this.dev?.stop();
-    this.dev = null;
-    this.send('runtime:status', { state: 'preparing', message: 'Reinstalling website tools…' });
-    await fs.rm(join(s.dir, 'node_modules'), { recursive: true, force: true });
-    await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
-    await this.startRuntime();
+  /**
+   * Reinstall the website's tools from scratch (the dependency manager's repair action). It runs with the other preview
+   * work, so closing waits for it, and stops at each step once the project is closed or taken over.
+   */
+  repairDependencies(): Promise<void> {
+    return this.enqueue(async () => {
+      const s = this.session;
+      if (!s || s.readOnly) return;
+      await this.stopPreview();
+      // The tools belong to whoever holds the project now.
+      const owned = async () => this.session === s && (await s.stillOwner());
+      if (!(await owned())) return;
+      this.status({ state: 'preparing', message: 'Reinstalling website tools…' });
+      try {
+        await fs.rm(join(s.dir, 'node_modules'), { recursive: true, force: true });
+        if (!(await owned())) return;
+        await fs.rm(join(s.dir, '.siteorigin', 'cache', 'deps.json'), { force: true });
+      } catch (e) {
+        this.status({ state: 'error', message: friendlyError((e as Error).message), detail: (e as Error).message });
+        return;
+      }
+      await this.startRuntimeNow();
+    });
   }
 
-  async close() {
+  /** Close the project. A close already under way is joined, so quitting waits for its preview copy to go too. */
+  close(): Promise<void> {
+    this.closing ??= this.closeNow().finally(() => (this.closing = null));
+    return this.closing;
+  }
+
+  get isClosing(): boolean {
+    return !!this.closing;
+  }
+
+  private async closeNow() {
     for (const w of this.watchers) w.close();
     this.watchers = [];
+    if (this.watchTimer) clearTimeout(this.watchTimer);
+    this.watchTimer = null;
     // The exported-site preview belongs to the project that exported it.
     this.staticServer?.close();
     this.staticServer = null;
-    if (!this.session) return;
+    const s = this.session;
+    if (!s) return;
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
     await this.onSessionClosing?.();
-    await this.dev?.stop();
-    this.dev = null;
+    // Written while this is still the open project, and only while it is still this app's: the lock is read again
+    // first, so a takeover the heartbeat has not seen yet makes it read-only, which writes nothing.
+    await s.stillOwner().catch(() => false);
     await this.flushLocalState();
     // One more try if that write failed: this is the last chance before the lock goes.
     if (this.localDirty) await this.flushLocalState();
-    await this.session.close();
-    this.session = null;
+    // From here preview work still under way finds the project gone and starts nothing; an install into the folder is
+    // cancelled. Close waits for that work (a copy being made, a removal) before letting the lock go.
+    if (this.session === s) this.session = null;
+    this.prepareAbort?.abort();
+    await this.stopPreview();
+    await this.runtimeQueue;
+    await this.stopPreview();
+    await s.close();
     // The next project loads its own workspace state, or starts empty.
     this.localState = {};
     this.send('project:closed');
@@ -429,6 +635,8 @@ export class Controller {
     const r = await dialog.showSaveDialog(this.getWindow()!, { title: 'Duplicate project', defaultPath: `${s.dir}-copy`, buttonLabel: 'Duplicate' });
     if (r.canceled || !r.filePath) return { ok: false };
     if (existsSync(r.filePath)) return { ok: false, message: 'Choose a new folder name; that location already exists.' };
+    // The copy would land inside the folder it copies, and write into a project that may be read-only here.
+    if (isInside(s.dir, r.filePath)) return { ok: false, message: 'Choose a location outside the project folder.' };
     await copyProjectSource(s.dir, r.filePath);
     const dest = canonicalDir(r.filePath);
     const manifestPath = join(dest, MANIFEST_FILE);
@@ -575,22 +783,28 @@ export class Controller {
   async exportSource(format: ExportFormat = 'folder'): Promise<ExportResult> {
     const blocked = this.exportBlocked();
     if (blocked) return blocked;
+    const s = this.session;
     const dest = await this.chooseExportTarget('source', format);
     if (!dest) return { ok: false, message: '', warnings: [] };
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
     return this.exportSourceTo(dest, format);
   }
 
   async exportStatic(format: ExportFormat = 'folder'): Promise<ExportResult> {
     const blocked = this.exportBlocked();
     if (blocked) return blocked;
+    const s = this.session;
     const dest = await this.chooseExportTarget('site', format);
     if (!dest) return { ok: false, message: '', warnings: [] };
+    if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
     return this.buildStaticTo(dest, format);
   }
 
   private exportBlocked(): ExportResult | null {
     const s = this.session;
     if (!s) return { ok: false, message: 'No project open.', warnings: [] };
+    // Export builds from the project folder and needs the writer lock (spec 20).
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason, warnings: [] };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish before exporting.', warnings: [] };
     if (s.conflicts.length) return { ok: false, message: 'Resolve file conflicts before exporting.', warnings: [] };
     return null;
@@ -622,25 +836,36 @@ export class Controller {
   /** Why `dest` cannot receive an export, or null. */
   private badExportTarget(s: ProjectSession, dest: string, format: ExportFormat): string | null {
     if (format === 'folder' && existsSync(dest)) return 'Choose a new folder; the export never overwrites an existing location.';
-    // Compared by real path: a linked parent folder can lead back into the project. The destination may not exist yet.
-    const rel = relative(s.dir, join(canonicalDir(dirname(dest)), basename(dest)));
-    if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return 'Choose a location outside the project folder.';
+    if (isInside(s.dir, dest)) return 'Choose a location outside the project folder.';
     return null;
   }
 
-  /** Put a finished folder in place, reporting a location that appeared in the meantime instead of merging into it. */
-  private async publish(from: string, dest: string): Promise<string | null> {
+  /**
+   * Put a finished folder or ZIP file in place, unless the project was taken over or closed meanwhile (only the lock's
+   * owner exports, spec 20). A folder that appeared in the meantime is reported instead of merged into.
+   */
+  private async publish(s: ProjectSession, from: string, dest: string, format: ExportFormat, zipFolder = ''): Promise<string | null> {
+    const stillOwned = async () => {
+      const closed = () => new ExportStopped('The project was closed before the export finished.');
+      if (this.session !== s) throw closed();
+      if (!(await s.stillOwner())) throw new ExportStopped(s.readOnly?.reason ?? READ_ONLY);
+      if (this.session !== s) throw closed();
+    };
     try {
-      await publishFolder(from, dest);
+      if (format === 'zip') await zipDirectory(from, dest, zipFolder, stillOwned);
+      else await publishFolder(from, dest, stillOwned);
       return null;
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'EEXIST') return 'Choose a new folder; the export never overwrites an existing location.';
+      if (e instanceof ExportStopped) return e.message;
+      if (format === 'folder' && (e as NodeJS.ErrnoException).code === 'EEXIST') return 'Choose a new folder; the export never overwrites an existing location.';
       throw e;
     }
   }
 
   /** Export the editable project to `dest` (a new folder, or a ZIP file). Used by export and tests. */
   async exportSourceTo(dest: string, format: ExportFormat = 'folder'): Promise<ExportResult> {
+    const blocked = this.exportBlocked();
+    if (blocked) return blocked;
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, format);
     if (bad) return { ok: false, message: bad, warnings: [] };
@@ -650,11 +875,8 @@ export class Controller {
       const snap = await this.snapshotSource(s, folder);
       if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
       warnings.push(...sectionLinkWarnings(snap.state));
-      if (format === 'zip') await zipDirectory(folder, dest, `${slugify(snap.state.site.name) || 'website'}-source`);
-      else {
-        const problem = await this.publish(folder, dest);
-        if (problem) return { ok: false, message: problem, warnings: [] };
-      }
+      const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
+      if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
       return { ok: true, path: dest, message: format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.', warnings, revision: snap.revision };
     });
@@ -662,6 +884,8 @@ export class Controller {
 
   /** Build the production site and copy it to `dest` (a new folder, or a ZIP file). Used by export and tests. */
   async buildStaticTo(dest: string, format: ExportFormat = 'folder'): Promise<ExportResult> {
+    const blocked = this.exportBlocked();
+    if (blocked) return blocked;
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, format);
     if (bad) return { ok: false, message: bad, warnings: [] };
@@ -694,6 +918,8 @@ export class Controller {
       if (this.session !== s) return stop('The project was closed before the export started.');
       const blocked = this.exportBlocked();
       if (blocked) return stop(blocked.message);
+      // Another app may have taken the project over meanwhile: only the lock's owner exports it (spec 20).
+      if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
       const before = await projectFingerprint(s.dir);
       const edited = await editedGeneratedFile(s.dir);
       if (edited) return stop(`${edited} was changed outside SiteOrigin Builder. Open Project health to restore it, then export again.`);
@@ -702,6 +928,7 @@ export class Controller {
         if (!(await isTrusted(s.dir, await configHash(dest)))) return stop("This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.");
       } else await finishExportedSource(dest, s.state, starterNotice());
       if ((await projectFingerprint(s.dir)) !== before) return stop('The project changed on disk while it was being exported. Export again.');
+      if (!(await s.stillOwner())) return stop(s.readOnly?.reason ?? READ_ONLY);
       return { ok: true as const, revision: s.revision, state: structuredClone(s.state) };
     });
   }
@@ -713,7 +940,13 @@ export class Controller {
     const { revision, state } = snap;
     // The snapshot keeps the whole library, as the editable project does; visitors get only the files the site uses.
     const omitted = await pruneWebsiteAssets(project, state);
-    await fs.symlink(join(s.dir, 'node_modules'), join(project, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+    // The build gets its own copy of the tools: what they write must not land in the project, which may have been
+    // taken over by the time the build starts.
+    try {
+      await copyProjectTools(s.dir, project);
+    } catch (e) {
+      return { ok: false, message: 'The website tools are not set up. Open Project health and reinstall them, then export again.', warnings: [(e as Error).message] };
+    }
     const build = await buildProject(project);
     if (!build.ok) return { ok: false, ...explainBuildFailure(state, [stripAnsi(build.error ?? ''), ...build.logs.map(stripAnsi)]) };
     const out = join(project, 'build');
@@ -736,13 +969,12 @@ export class Controller {
     const left = omittedAssetsWarning(omitted);
     if (left) warnings.push(left);
     const pages = state.site.pageOrder.length;
+    const problem = await this.publish(s, out, dest, format);
+    if (problem) return { ok: false, message: problem, warnings };
     if (format === 'zip') {
-      await zipDirectory(out, dest);
       this.exportPaths.add(dest);
       return { ok: true, path: dest, message: `Exported ${pages} pages as a ZIP file.`, warnings, revision };
     }
-    const problem = await this.publish(out, dest);
-    if (problem) return { ok: false, message: problem, warnings };
     this.exportPaths.add(dest);
     // The export is done either way; a preview that cannot start only loses the preview button.
     const previewUrl = await this.serveStatic(dest, basePath(state)).catch(() => undefined);
@@ -820,6 +1052,22 @@ export class Controller {
       if (this.exportPaths.has(p) || (dir && inside(dir) && (() => { const r = relative(dir, real); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); })())) shell.showItemInFolder(real);
     }, () => undefined);
   }
+}
+
+/**
+ * Would writing `path` write into the folder `dir`? Compared by real path, since a linked parent folder can lead
+ * back into the project. The entry itself is never resolved (a link there is what gets replaced), and parents that
+ * do not exist yet are resolved through the nearest one that does.
+ */
+export function isInside(dir: string, path: string): boolean {
+  let probe = dirname(path);
+  let rest = basename(path);
+  while (!existsSync(probe) && dirname(probe) !== probe) {
+    rest = join(basename(probe), rest);
+    probe = dirname(probe);
+  }
+  const rel = relative(canonicalDir(dir), join(canonicalDir(probe), rest));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 /** Asset usage counts; a project from a newer version (read-only) may not have shapes this version can count. */
