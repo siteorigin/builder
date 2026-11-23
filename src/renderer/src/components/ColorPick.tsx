@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { colorFromPicker, toHex6 } from '@shared/color';
+import { colorFromPicker, paintableColor, retirePicks, toHex6 } from '@shared/color';
 import { resolveCssColor } from '../lib/color';
+
+/** How long a pick may wait for its save to come back before the swatch goes back to the saved color. */
+const SAVE_WAIT_MS = 3000;
 
 /**
  * A colour swatch that shows the saved CSS colour as it renders (opacity over a checkerboard, wide-gamut
@@ -10,8 +13,10 @@ import { resolveCssColor } from '../lib/color';
  * project variable) opens on black, and choosing a colour replaces it.
  *
  * The native picker reports every step of a drag, and a save takes a moment to come back. So the input
- * shows what was last picked until the saved value changes, and each step is worked out from the last one
- * sent: dragging from red to blue and back to red before the first save lands ends on red.
+ * shows what was last picked while saves are in flight, and each step is worked out from the last one
+ * sent: dragging from red to blue and back to red before the first save lands ends on red. A save that
+ * lands mid-drag only retires the picks up to it; a value nobody here sent (an undo, an edit elsewhere)
+ * or a save that never lands puts the swatch back on the saved color.
  */
 export function ColorPick({
   value,
@@ -34,14 +39,21 @@ export function ColorPick({
   const rgba = resolveCssColor(value);
   const empty = !value.trim();
   const unreadable = !rgba && !empty;
-  // `currentcolor` would paint the panel's own text colour; every other value paints as the browser reads it.
-  const paints = !empty && !/currentcolor/i.test(value);
+  const paints = paintableColor(value);
   const [draft, setDraft] = useState<string | null>(null);
-  const sent = useRef<string | null>(null);
-  useEffect(() => {
+  /** What this swatch has sent that has not come back as the saved value yet, oldest first. */
+  const inflight = useRef<string[]>([]);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const settle = () => {
+    clearTimeout(timer.current);
+    inflight.current = [];
     setDraft(null);
-    sent.current = null;
+  };
+  useEffect(() => {
+    inflight.current = retirePicks(inflight.current, value);
+    if (!inflight.current.length) settle();
   }, [value]);
+  useEffect(() => () => clearTimeout(timer.current), []);
   const hint = unreadable && onPick && !disabled ? 'The picker cannot show this color. Choosing a color replaces it.' : undefined;
   const state = `${disabled ? ' linked' : ''}${!paints && !empty ? ' unpainted' : ''}`;
   return (
@@ -57,10 +69,13 @@ export function ColorPick({
           onChange={(e) => {
             const picked = e.target.value;
             setDraft(picked);
-            const base = sent.current ?? value;
-            const next = colorFromPicker(base, picked, sent.current === null ? rgba : undefined);
+            const last = inflight.current[inflight.current.length - 1];
+            const base = last ?? value;
+            const next = colorFromPicker(base, picked, last === undefined ? rgba : undefined);
             if (next === base) return;
-            sent.current = next;
+            inflight.current.push(next);
+            clearTimeout(timer.current);
+            timer.current = setTimeout(settle, SAVE_WAIT_MS);
             onPick(next);
           }}
         />

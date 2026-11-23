@@ -5,8 +5,9 @@
  * into a saved value without losing the opacity the original carried.
  *
  * Values the parser cannot resolve on its own (`currentcolor`, `var()`, `color-mix()`, relative colours)
- * give null: callers must treat that as "not editable visually", never as black.
+ * give null: callers must never mistake that for black.
  */
+import { isSafeCssValue } from './styles';
 
 /** A colour in sRGB: channels 0-255 (not rounded), alpha 0-1. */
 export interface Rgba {
@@ -26,7 +27,7 @@ function channel(s: string, full: number): number | null {
   if (s.toLowerCase() === 'none') return 0;
   if (s.endsWith('%')) {
     const n = s.slice(0, -1);
-    return NUMBER.test(n) ? (Number(n) * full) / 100 : null;
+    return NUMBER.test(n) ? Number(n) * (full / 100) : null;
   }
   return NUMBER.test(s) ? Number(s) : null;
 }
@@ -211,4 +212,23 @@ export function colorFromPicker(current: string, picked: string, resolved?: Rgba
   const [r, g, b] = [Math.round(next.r), Math.round(next.g), Math.round(next.b)];
   if (text.startsWith('rgba(') && text.includes(',')) return `rgba(${r}, ${g}, ${b}, ${alphaText(was.a)})`;
   return `rgb(${r} ${g} ${b} / ${alphaText(was.a)})`;
+}
+
+/**
+ * Whether a swatch may paint this text as a CSS background. Text still being typed has not been through the
+ * color check, so anything that could load a resource or escape its declaration stays unpainted; `currentcolor`
+ * would paint the panel's own text color.
+ */
+export function paintableColor(value: string): boolean {
+  return !!value.trim() && !/currentcolor/i.test(value) && isSafeCssValue(value);
+}
+
+/**
+ * The picks still waiting on a save once `saved` is the value on record. Picks go out oldest first and come
+ * back in that order, so the one that matches retires itself and every pick before it; a value nobody sent
+ * (an undo, an edit elsewhere) retires them all.
+ */
+export function retirePicks(inflight: string[], saved: string): string[] {
+  const at = inflight.indexOf(saved);
+  return at >= 0 ? inflight.slice(at + 1) : [];
 }

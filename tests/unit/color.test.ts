@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { colorFromPicker, opacityOf, parseColor, pickerHex, toHex6 } from '@shared/color';
+import { colorFromPicker, opacityOf, paintableColor, parseColor, pickerHex, retirePicks, toHex6 } from '@shared/color';
 import { validateStyleValue } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { createStarterState } from '@catalogue/starters';
@@ -39,6 +39,10 @@ describe('parseColor', () => {
     expect(opacityOf('rgb(209 65 49 / 0.25)')).toBe(0.25);
     expect(opacityOf('rgb(209 65 49 / 40%)')).toBe(0.4);
     expect(opacityOf('rgb(209, 65, 49)')).toBe(1);
+    expect(opacityOf('rgb(1 2 3/0.5)')).toBe(0.5);
+    expect(opacityOf('rgb(1 2 3 /0.5)')).toBe(0.5);
+    expect(opacityOf('rgb(1,2,3,.5)')).toBe(0.5);
+    expect(pickerHex('rgb(1,2,3,.5)')).toBe('#010203');
     expect(pickerHex('rgb(100% 0% 0% / 50%)')).toBe('#ff0000');
     expect(pickerHex('rgb(none 0 0)')).toBe('#000000');
     expect(pickerHex('rgb(none 255 0)')).toBe('#00ff00');
@@ -82,6 +86,9 @@ describe('parseColor', () => {
     expect(pickerHex('hsl(30 200% 120%)')).toBe('#ccffff');
     expect(pickerHex('hsl(30, 200%, 120%)')).toBe('#ffffff');
     expect(pickerHex('hsl(30 -50% 50%)')).toBe('#808080');
+    expect(pickerHex('hsl(30 200% -20%)')).toBe('#000000');
+    // A huge percentage is still a valid number: the maths must not overflow before it is divided.
+    expect(pickerHex('hsl(30 1e307% 50%)')).toBe('#ff8000');
   });
 
   it('reads the modern colour spaces, clamped into sRGB', () => {
@@ -104,6 +111,9 @@ describe('parseColor', () => {
     expect(pickerHex('lab(100 0 0)')).toBe('#ffffff');
     expect(pickerHex('lab(0 0 0)')).toBe('#000000');
     expect(opacityOf('oklch(0.628 0.2577 29.23 / 0.5)')).toBe(0.5);
+    expect(opacityOf('oklab(0.628 0.2249 0.1258 / 0.5)')).toBe(0.5);
+    expect(opacityOf('lab(54.2905 80.8049 69.891 / 0.5)')).toBe(0.5);
+    expect(opacityOf('lch(54.2905 106.8386 40.8526 / 0.5)')).toBe(0.5);
     // Out of gamut: it clips to the nearest channel values rather than failing.
     expect(parseColor('oklch(0.7 0.4 150)')).not.toBeNull();
   });
@@ -124,6 +134,9 @@ describe('parseColor', () => {
     }
     expect(parseColor('hsl(1e308turn 100% 50%)')).toBeNull();
     expect(parseColor('oklab(0.7 1e200 1e200)')).toBeNull();
+    // Only the blue channel overflows here: checking just the first would let it through.
+    expect(parseColor('oklab(0.7 1e200 -2.5e199)')).toBeNull();
+    expect(parseColor('lab(50 1e200 -2.5e199)')).toBeNull();
   });
 
   it('gives null, never black, for what it cannot resolve', () => {
@@ -158,6 +171,7 @@ describe('toHex6', () => {
     expect(toHex6({ r: 209.4, g: 64.5, b: 48.6, a: 0.2 })).toBe('#d14131');
     expect(toHex6({ r: 0, g: 127.5, b: 255, a: 1 })).toBe('#0080ff');
     expect(toHex6({ r: -4, g: 300, b: 0.4, a: 1 })).toBe('#00ff00');
+    expect(toHex6({ r: 0, g: 0, b: 300, a: 1 })).toBe('#0000ff');
   });
 });
 
@@ -177,6 +191,7 @@ describe('colorFromPicker', () => {
     expect(colorFromPicker('rgb(0 0 0 / 0)', '#c0392b')).toBe('rgb(192 57 43 / 0)');
     expect(colorFromPicker('rgba(0, 0, 0, 0)', '#c0392b')).toBe('rgba(192, 57, 43, 0)');
     expect(colorFromPicker('#d1413100', '#0000ff')).toBe('#0000ff00');
+    expect(colorFromPicker('#d130', '#0000ff')).toBe('#0000ff00');
   });
 
   it('saves a plain #rrggbb over a value it cannot resolve', () => {
@@ -196,6 +211,7 @@ describe('colorFromPicker', () => {
     expect(colorFromPicker('rgb(209 65 49 / 0.0004)', '#c0392b')).toBe('rgb(192 57 43 / 0.0004)');
     // A tiny alpha stays tiny: rounding it to 0 or 1 would change what the next pick does.
     expect(colorFromPicker('rgb(209 65 49 / 0.0000004)', '#c0392b')).toBe('rgb(192 57 43 / 4e-7)');
+    expect(colorFromPicker('rgb(209 65 49 / 0.123456789)', '#c0392b')).toBe('rgb(192 57 43 / 0.123456789)');
     expect(colorFromPicker('rgb(209 65 49 / 0.9999996)', '#c0392b')).toBe('rgb(192 57 43 / 0.9999996)');
     expect(colorFromPicker('  RGBA(209, 65, 49, 0.5) ', '#c0392b')).toBe('rgba(192, 57, 43, 0.5)');
     // A colour only a browser could resolve keeps its opacity too.
@@ -211,6 +227,24 @@ describe('colorFromPicker', () => {
   it('keeps the colour it was given for a picked value it cannot read', () => {
     expect(colorFromPicker('rgb(209, 65, 49)', 'not a color')).toBe('rgb(209, 65, 49)');
     expect(colorFromPicker('rgb(209, 65, 49)', '#xyz')).toBe('rgb(209, 65, 49)');
+  });
+});
+
+describe('paintableColor', () => {
+  it('paints colors and gradients, and nothing that could load a resource or has no color of its own', () => {
+    for (const v of ['#d14131', 'rgb(209, 65, 49)', 'rgba(209 65 49 / 0.5)', 'color-mix(in srgb, #f00 50%, #00f)', 'linear-gradient(red, blue)', 'var(--so-color-brand)']) expect(paintableColor(v), v).toBe(true);
+    for (const v of ['', '   ', 'currentcolor', 'CurrentColor', 'url(http://127.0.0.1:1/x.png)', 'url("x") red', 'image-set("a.png" 1x)', 'red; background: blue', '#fff /* x */', 'red}']) expect(paintableColor(v), v).toBe(false);
+  });
+});
+
+describe('retirePicks', () => {
+  it('retires the picks up to the saved one, and all of them for a value nobody here sent', () => {
+    expect(retirePicks(['#00f', '#0f0'], '#00f')).toEqual(['#0f0']);
+    expect(retirePicks(['#00f', '#0f0'], '#0f0')).toEqual([]);
+    expect(retirePicks(['#00f', '#0f0'], '#f00')).toEqual([]);
+    expect(retirePicks([], '#f00')).toEqual([]);
+    // Out and back to the same color: the first match retires itself, the rest are still on their way.
+    expect(retirePicks(['#00f', '#0f0', '#00f'], '#00f')).toEqual(['#0f0', '#00f']);
   });
 });
 
