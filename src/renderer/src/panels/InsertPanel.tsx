@@ -1,12 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component } from 'lucide-react';
 import type { ComponentDefinition, OwnerRef, ProjectState } from '@shared/types';
-import { childLists, placementCounts, placesOf } from '@engine/tree';
+import { placementCounts, placesOf } from '@engine/tree';
 import { dependentsOf } from '@engine/definitions';
 import { catalogueEntries, CATEGORY_LABELS } from '@catalogue/index';
 import { commitOps, getState, setState, toast, undoAction, useStore } from '../store';
-import { insert, insertionPoint, selectPage, type Primitive } from '../lib/actions';
-import { ownerLabel, refLabel, treeFor } from '../lib/model';
+import { elementWhere, insert, insertionPoint, nodeBefore, nodeLabel, selectPage, type Primitive, type Where } from '../lib/actions';
+import { ownerLabel } from '../lib/model';
 import { gridKeys, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 
 export function LucideIcon({ name, size = 15 }: { name?: string; size?: number }) {
@@ -179,23 +179,6 @@ interface Item {
   /** Project components: how many times it is placed. */
   uses?: number;
 }
-/** Where an insert lands, in words: "after" + "Split hero". */
-type Where = { lead: string; target: string } | null;
-
-/** The node just before an insertion index, in the list that index counts in. */
-function nodeBefore(st: ProjectState, owner: OwnerRef, parentId: string | null, slot: string | undefined, index: number | undefined): string | null {
-  if (!index) return null;
-  const tree = treeFor(st, owner);
-  if (!tree) return null;
-  if (!parentId) return tree.rootIds[index - 1] ?? null;
-  const parent = tree.nodes[parentId];
-  if (!parent) return null;
-  const lists = childLists(parent);
-  return ((slot ? lists.find((l) => l.slot === slot) : lists[0])?.ids ?? [])[index - 1] ?? null;
-}
-
-const nodeLabel = (st: ProjectState, owner: OwnerRef, nodeId: string) => refLabel(st, { owner, instancePath: [], nodeId });
-
 /** Where a section or a project component goes, read from the same insertion point insert() uses. */
 function sectionWhere(st: ProjectState): Where {
   const at = insertionPoint('section');
@@ -204,18 +187,6 @@ function sectionWhere(st: ProjectState): Where {
   if (before) return { lead: 'after', target: nodeLabel(st, at.owner, before) };
   if (at.parentId) return { lead: 'inside', target: nodeLabel(st, at.owner, at.parentId) };
   return { lead: at.index === 0 ? 'at the top of' : 'at the end of', target: ownerLabel(st, at.owner) };
-}
-
-/** Where a basic element goes. On a page with nowhere to put it, insert() wraps it in a new section. */
-function elementWhere(st: ProjectState): Where {
-  const at = insertionPoint('element');
-  if (!at) return null;
-  const before = nodeBefore(st, at.owner, at.parentId, at.slot, at.index);
-  if (at.owner.kind === 'page' && !at.parentId)
-    return before ? { lead: 'in a new section after', target: nodeLabel(st, at.owner, before) } : { lead: at.index === 0 ? 'in a new section at the top of' : 'in a new section at the end of', target: ownerLabel(st, at.owner) };
-  if (before) return { lead: 'after', target: nodeLabel(st, at.owner, before) };
-  if (at.parentId) return { lead: 'inside', target: nodeLabel(st, at.owner, at.parentId) };
-  return { lead: 'at the end of', target: ownerLabel(st, at.owner) };
 }
 
 /** Saved components shown before "Show all", so a large library never buries the built-in catalogue. */
@@ -403,7 +374,7 @@ export function InsertPanel() {
 
   const sectionTo = sectionWhere(st);
   // Project components insert the way sections do.
-  const where: Record<Kind, Where> = { section: sectionTo, element: elementWhere(st), component: sectionTo };
+  const where: Record<Kind, Where> = { section: sectionTo, element: elementWhere(st, insertionPoint('element')), component: sectionTo };
   const topKind: Kind = mine.length ? 'component' : 'section';
   const stripKind: Kind | 'new' = query ? (current?.kind ?? 'section') : (pointed ?? focused ?? scrolled ?? topKind);
 

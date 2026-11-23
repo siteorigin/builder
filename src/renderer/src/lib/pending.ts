@@ -81,6 +81,8 @@ export function trackApply(p: Promise<ApplyOutcome>): void {
 }
 
 export const savesInFlight = () => inflight.size;
+/** Resolves once every change on its way into the project now has landed or failed. */
+export const appliesLanded = (): Promise<unknown> => Promise.allSettled([...inflight]);
 export const isSettling = () => active.length > 0;
 
 /** Something typed was refused before it reached the project (a page with no title, text too long to send).

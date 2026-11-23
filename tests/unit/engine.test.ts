@@ -1158,3 +1158,61 @@ describe('making another page Home keeps its old address working (#37)', () => {
     expect(inText).toMatchObject({ part: 'footer', label: 'our story', pageId: about });
   });
 });
+
+describe('inserting a node the same batch fills (#13)', () => {
+  const photo = { id: 'img_nook', name: 'Reading nook', file: 'static/assets/reading-nook.png', mime: 'image/png', bytes: 10, hash: 'nook', kind: 'image' as const, createdAt: '2026-11-24T00:00:00.000Z', altSuggestion: 'A reading corner with an armchair' };
+  const withPhoto = () => applyOperations(fresh(), [{ type: 'asset.add', asset: photo }]).state;
+
+  it('puts a new section and a picture placed in it into one batch, with the asset’s suggested alt text', () => {
+    const s = withPhoto();
+    const o = owner(s);
+    const r = applyOperations(s, [
+      { type: 'node.insert', newNodeId: 'n_section1', owner: o, parentId: null, index: 1, componentId: 'layout.section' },
+      { type: 'node.insert', newNodeId: 'n_picture1', owner: o, parentId: 'n_section1', slot: 'content', primitive: 'image' },
+      { type: 'node.setContent', owner: o, nodeId: 'n_picture1', field: 'image', value: photo.id }
+    ]);
+    expect(r.results.slice(0, 2)).toEqual([{ nodeId: 'n_section1' }, { nodeId: 'n_picture1' }]);
+    const page = home(r.state);
+    expect(page.rootIds[1]).toBe('n_section1');
+    expect((page.nodes.n_section1 as InstanceNode).slots).toEqual({ content: ['n_picture1'] });
+    expect(page.nodes.n_picture1).toMatchObject({ id: 'n_picture1', kind: 'image', image: { assetId: photo.id, alt: photo.altSuggestion } });
+    expect(validateState(r.state).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('still names new nodes itself when no ID is given', () => {
+    const s = fresh();
+    const r = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, componentId: 'layout.section' }]);
+    expect(r.results[0].nodeId).toMatch(/^n_[a-z0-9]{8}$/);
+  });
+
+  it('refuses an ID already in the tree, and applies nothing of the batch', () => {
+    const s = withPhoto();
+    const o = owner(s);
+    const taken = home(s).rootIds[0];
+    expect(() => applyOperations(s, [{ type: 'node.insert', newNodeId: taken, owner: o, parentId: null, primitive: 'image' }])).toThrow(/already exists/);
+    // Or one inserted earlier in the same batch.
+    expect(() =>
+      applyOperations(s, [
+        { type: 'node.insert', newNodeId: 'n_twice1', owner: o, parentId: null, primitive: 'image' },
+        { type: 'node.insert', newNodeId: 'n_twice1', owner: o, parentId: null, componentId: 'layout.section' }
+      ])
+    ).toThrow(/already exists/);
+    // The batch is one change: a failure in its last step leaves the section it began with out too.
+    const before = structuredClone(s);
+    expect(() =>
+      applyOperations(s, [
+        { type: 'node.insert', newNodeId: 'n_section2', owner: o, parentId: null, componentId: 'layout.section' },
+        { type: 'node.insert', newNodeId: 'n_picture2', owner: o, parentId: 'n_section2', slot: 'content', primitive: 'image' },
+        { type: 'node.setContent', owner: o, nodeId: 'n_picture2', field: 'image', value: 'img_gone' }
+      ])
+    ).toThrow(/does not exist/);
+    expect(s).toEqual(before);
+  });
+
+  it('accepts only IDs shaped like the ones it makes', async () => {
+    const { validateOperation } = await import('@shared/ops');
+    const o = { kind: 'page', id: 'pg_home' };
+    for (const good of ['n_abcd', 'n_abc123', `n_${'a'.repeat(32)}`]) expect(validateOperation({ type: 'node.insert', newNodeId: good, owner: o, primitive: 'image' }).ok, good).toBe(true);
+    for (const bad of ['abc', 'n_', 'n_abc', `n_${'a'.repeat(33)}`, 'pg_abcdef', 'n_ABC123', '__proto__']) expect(validateOperation({ type: 'node.insert', newNodeId: bad, owner: o, primitive: 'image' }).ok, bad).toBe(false);
+  });
+});

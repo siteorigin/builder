@@ -281,8 +281,12 @@ export async function applyOps(operations: EditOperation[], label: string, coale
   return r ? (r.results ?? []) : null;
 }
 
-/** Like `applyOps`, but returns the whole result: with the history entry the change made, for an Undo beside it. */
-export async function commitOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<(ApplyResult & { workspaceKey: string }) | null> {
+/**
+ * Like `applyOps`, but returns the whole result: with the history entry the change made, for an Undo beside it.
+ * `replanStale`: an edit planned against `expectedRevision` that finds the project has moved on is answered quietly,
+ * with the refusal itself (`ok: false`), for the caller to plan again against the project's own copy.
+ */
+export async function commitOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number, opts: { replanStale?: boolean } = {}): Promise<(ApplyResult & { workspaceKey: string }) | null> {
   // Asked for earlier and checked before it is applied (commitIfUnchanged), whose caller follows it until it lands.
   if (checked) return applyChecked(checked, operations, label, coalesceKey, expectedRevision);
   // Followed until it lands, so saving and leaving the project wait for it and hear if it failed.
@@ -310,6 +314,10 @@ export async function commitOps(operations: EditOperation[], label: string, coal
   try {
     // Named by the opening of its project, so a change sent just as that project closes never lands in the next.
     const r = await api.project.apply(expectedRevision === undefined ? { operations } : { operations, expectedRevision }, { label, coalesceKey, opening: s.snapshot?.workspaceKey });
+    if (!r.ok && opts.replanStale && r.error?.code === 'STALE_REVISION') {
+      landed({ ok: true });
+      return { ...r, workspaceKey };
+    }
     if (!r.ok) {
       // The AI started between the last snapshot and this edit.
       const message =

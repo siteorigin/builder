@@ -81,6 +81,7 @@ export const OPERATION_SCHEMAS = {
 
   'node.insert': z.object({
     type: z.literal('node.insert'),
+    newNodeId: z.string().regex(/^n_[a-z0-9]{4,32}$/).optional().describe('Internal: lets one batch insert a node and fill it. Not offered to the model.'),
     owner,
     parentId: z.string().nullable().optional().describe('Parent element or instance node. Omit or null to insert a top-level section.'),
     slot: z.string().optional().describe('Slot name when inserting into a component instance slot (e.g. "content").'),

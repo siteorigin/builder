@@ -964,6 +964,20 @@ describe('review regressions', () => {
     expect(session.state.pages.pg_chosen1).toBeUndefined();
   });
 
+  it('rejects a model-supplied node ID, and never offers one', async () => {
+    let home = '';
+    const { session, adapter, run } = await setup([() => [call('x', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'node.insert', owner: { kind: 'page', id: home }, primitive: 'heading' }, { type: 'node.insert', newNodeId: 'n_chosen1', owner: { kind: 'page', id: home }, primitive: 'image' }, { type: 'node.insert', owner: { kind: 'page', id: home }, primitive: 'divider' }] })], () => finish()]);
+    home = session.state.site.homePageId;
+    await run('Add an image');
+    const offered = JSON.stringify(adapter.requests[0].tools.find((t) => t.name === 'apply_operations'));
+    expect(offered).toContain('node.insert');
+    expect(offered).not.toContain('newNodeId');
+    expect(JSON.stringify(adapter.requests[1].items.at(-1))).toContain('does not take a newNodeId');
+    expect(session.state.pages[home].nodes.n_chosen1).toBeUndefined();
+    // Nothing of the batch was applied.
+    expect(session.revision).toBe(0);
+  });
+
   it('keeps a mid-tone brand color readable and only renames a standard copyright line', async () => {
     const hex = (h: string): [number, number, number] => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
     const t = derivedBrandTokens('#777777', '#f1eee6');
