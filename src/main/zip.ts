@@ -1,16 +1,28 @@
 /**
  * A small ZIP writer for exports, built on Node's zlib (deflate and CRC-32). Writes standard ZIP files
  * (no ZIP64) with UTF-8 names, which every operating system's built-in extractor opens.
+ *
+ * It runs in Electron's main process, so compression happens on libuv's thread pool (the async `deflateRaw`),
+ * never on the main thread: a synchronous deflate of one large image held every IPC reply for hundreds of ms.
  */
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join, sep } from 'node:path';
-import { crc32, deflateRawSync } from 'node:zlib';
+import { extname, join, sep } from 'node:path';
+import { promisify } from 'node:util';
+import { crc32, deflateRaw } from 'node:zlib';
+
+const deflate = promisify(deflateRaw);
 
 const LIMIT = 0xffffffff;
 const LOCAL_HEADER = 30;
 const CENTRAL_HEADER = 46;
 const END_RECORD = 22;
+
+/**
+ * Formats that are always compressed. Deflating them again costs real time and saves next to nothing (a 14 MB
+ * PNG shrank by 13 KB), so they are stored as they are. ZIP is not one: its entries may be stored.
+ */
+const PRECOMPRESSED = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.woff', '.woff2', '.gz', '.br', '.mp3', '.mp4', '.webm']);
 
 /** DOS timestamps cover 1980 to 2107; anything else is clamped to that range. */
 function dosDateTime(d: Date): { time: number; date: number } {
@@ -58,8 +70,9 @@ export async function zipDirectory(dir: string, zipPath: string, folder = ''): P
       const [data, stat] = await Promise.all([fs.readFile(abs), fs.stat(abs)]);
       const name = Buffer.from((folder ? `${folder}/` : '') + rel.split(sep).join('/'), 'utf8');
       if (name.length > 0xffff) throw new Error('A file path is too long for a ZIP export.');
-      const deflated = deflateRawSync(data, { level: 9 });
-      const store = deflated.length >= data.length;
+      // zlib's default level: level 9 keeps a pool thread busy for longer and saves almost nothing more.
+      const deflated = PRECOMPRESSED.has(extname(rel).toLowerCase()) ? null : await deflate(data);
+      const store = !deflated || deflated.length >= data.length;
       const body = store ? data : deflated;
       // Everything still to be written must keep every offset and size within 32 bits.
       const projected = offset + LOCAL_HEADER + name.length + body.length + centralSize + CENTRAL_HEADER + name.length + END_RECORD;
