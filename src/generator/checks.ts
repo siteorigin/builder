@@ -278,6 +278,13 @@ export function pageIds(state: ProjectState, pageId: string, shell?: Set<string>
   return treeIds(state, [page], out);
 }
 
+/** The IDs a page's elements render, the shared header and footer's included when it shows them: not the layout's. */
+export function elementIds(state: ProjectState, pageId: string): Set<string> {
+  const page = state.pages[pageId];
+  if (!page) return new Set();
+  return treeIds(state, hasShell(page) ? [state.site.shell.header, page, state.site.shell.footer] : [page]);
+}
+
 /** The IDs every page that shows the shared header and footer has: where their "on this page" links can go. */
 export function sharedPageIds(state: ProjectState): Set<string> {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter((p) => p && hasShell(p));
@@ -311,7 +318,7 @@ function richLinks(value: unknown): RichSpan[] {
  * The property that names a link and decides whether it shows: `ctaLabel` for `ctaLink`, `linkLabel` for `link`.
  * Code reads it the way the generated components do, so a link whose label is empty does not render.
  */
-const labelKeyFor = (key: string) => (key.endsWith('Link') ? `${key.slice(0, -4)}Label` : `${key}Label`);
+export const labelKeyFor = (key: string) => (key.endsWith('Link') ? `${key.slice(0, -4)}Label` : `${key}Label`);
 
 /**
  * Links a code component receives: its link properties, the link fields of its lists, and the links in its rich
@@ -554,8 +561,9 @@ export function sectionAnchorFor(label: string, taken: Set<string>): string {
 /**
  * What choosing a section in a link picker does: reuse the ID the section already has, or give it one made from
  * its heading. The edit that gives it one goes in the same batch as the link change, so they save and undo together.
+ * `reserved` holds IDs a new one must not take: ones other edits in that batch give out or still mean something else.
  */
-export function planSectionPick(state: ProjectState, pageId: string, nodeId: string): { anchor: string; operations: EditOperation[] } | null {
+export function planSectionPick(state: ProjectState, pageId: string, nodeId: string, reserved: Iterable<string> = []): { anchor: string; operations: EditOperation[] } | null {
   const node = state.pages[pageId]?.nodes[nodeId];
   if (!node) return null;
   const section = pageSections(state, pageId).find((x) => x.nodeId === nodeId);
@@ -563,7 +571,7 @@ export function planSectionPick(state: ProjectState, pageId: string, nodeId: str
   // An ID the section already renders with is reused, never replaced: other links may jump to it.
   if (section.anchor) return { anchor: section.anchor, operations: [] };
   const owner = { kind: 'page' as const, id: pageId };
-  const anchor = sectionAnchorFor(section.label, new Set([...anchorsInUse(state, owner), ...pageIds(state, pageId)]));
+  const anchor = sectionAnchorFor(section.label, new Set([...anchorsInUse(state, owner), ...pageIds(state, pageId), ...reserved]));
   return { anchor, operations: [{ type: 'node.setContent', owner, nodeId, field: 'anchor', value: anchor }] };
 }
 
