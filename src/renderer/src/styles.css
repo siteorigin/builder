@@ -594,8 +594,8 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 /* Forms in Preview: what a send does, the practice reply, and a confirmed live test. Above the other bottom bars. */
 .form-practice { position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; width: min(560px, calc(100% - 24px)); display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 10px 14px; border-radius: 12px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; color: var(--text-2); }
 .form-practice p { margin: 0; }
-.form-practice-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 5px; color: var(--text); font-size: 13px; }
-.form-practice-title svg { width: 14px; height: 14px; align-self: center; color: var(--accent-text); flex: none; }
+.form-practice-title { color: var(--text); font-size: 13px; }
+.form-practice-title svg { display: inline; width: 14px; height: 14px; margin-right: 2px; vertical-align: -2px; color: var(--accent-text); }
 .form-practice-title strong { font-weight: 600; }
 .form-practice-where { overflow-wrap: anywhere; }
 .form-practice-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
