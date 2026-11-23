@@ -3,7 +3,7 @@ import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, Pr
 import { isBinding } from '@shared/types';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
 import { displayName } from '@engine/tree';
-import { effectiveTokens } from '@generator/index';
+import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { teaserFields } from '@shared/page-teasers';
 
@@ -38,7 +38,7 @@ export function projectSummary(state: ProjectState, revision: number) {
     homePageId: state.site.homePageId,
     pages: state.site.pageOrder.map((id) => {
       const p = state.pages[id];
-      return { id, title: p.title, route: p.route, sections: p.rootIds.length, shell: p.shell };
+      return { id, title: p.title, route: p.route, sections: p.rootIds.length, shell: p.shell, ...(isDraftPage(state, p) ? { draft: true } : {}) };
     }),
     shell: {
       header: state.site.shell.header.rootIds.map((id) => compactNode(state, state.site.shell.header, id)),
@@ -56,7 +56,7 @@ export function compactProjectSummary(state: ProjectState, revision: number) {
   return {
     revision,
     site: { name: state.site.name },
-    pages: state.site.pageOrder.map((id) => ({ id, title: state.pages[id].title, route: state.pages[id].route }))
+    pages: state.site.pageOrder.map((id) => ({ id, title: state.pages[id].title, route: state.pages[id].route, ...(isDraftPage(state, state.pages[id]) ? { draft: true } : {}) }))
   };
 }
 
@@ -116,6 +116,7 @@ export function pageDetail(state: ProjectState, pageId: string) {
     route: p.route,
     seo: p.seo,
     shell: p.shell,
+    ...(isDraftPage(state, p) ? { draft: true } : {}),
     owner: { kind: 'page', id: p.id },
     sections: p.rootIds.map((id) => compactNode(state, p, id))
   };

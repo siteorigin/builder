@@ -4,14 +4,15 @@
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, promises as fs } from 'node:fs';
-import { basename, join, relative, sep } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
-import { unlinkedButtons } from '@generator/checks';
-import { atomicWrite, readIfExists, sha } from './project/fsutil';
+import { describeDraftLink, publicationPlan, unlinkedButtons } from '@generator/checks';
+import { defFile, draftOnlyComponents, generateProject, liveRedirects, publishedState } from '@generator/index';
+import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 import { findMissingAssetFiles, missingParts } from './project/asset-files';
@@ -99,19 +100,40 @@ function namesFile(text: string, file: string): boolean {
  * public files. The authoring documents list the whole library, and the README is not part of the site, so
  * neither counts. Returns the asset records none of whose files ship, so the export can say what it left out.
  */
-/** A staged project's files, and which of them are library files: those the website ships only when it names them. */
-async function websiteFiles(project: string, state: ProjectState): Promise<{ files: string[]; candidate: (rel: string) => boolean }> {
+/**
+ * A staged project's files, which of them are library files (those the website ships only when it names them), and
+ * the files of components only drafts place: the published pages never import those, so a picture only they name
+ * stays out of the website with the drafts.
+ */
+async function websiteFiles(project: string, state: ProjectState): Promise<{ files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }> {
   const library = libraryAssetFiles(state);
   const files = (await listFiles(project)).map((f) => f.split(sep).join('/'));
-  return { files, candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
+  return { files, draftOnly: new Set(draftOnlyComponents(state).map(defFile)), candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
 }
 
-/** Everything the website build reads as text, apart from library files, to search for the file names it uses. */
-async function websiteText(project: string, { files, candidate }: { files: string[]; candidate: (rel: string) => boolean }): Promise<string> {
+/**
+ * Everything the website build reads as text, apart from library files, to search for the file names it uses. A
+ * draft-only component counts once anything else the website reads names its file (a code component importing it),
+ * and so on through what that one names.
+ */
+async function websiteText(project: string, { files, candidate, draftOnly }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }): Promise<string> {
   const texts: string[] = [];
+  const held = new Map<string, string>();
   for (const rel of files) {
     if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel)) continue;
-    texts.push(await fs.readFile(join(project, rel), 'utf8'));
+    const text = await fs.readFile(join(project, rel), 'utf8');
+    if (draftOnly.has(rel)) held.set(rel, text);
+    else texts.push(text);
+  }
+  for (let found = true; found && held.size; ) {
+    found = false;
+    const read = texts.join('\n');
+    for (const [rel, text] of held)
+      if (namesFile(read, basename(rel))) {
+        texts.push(text);
+        held.delete(rel);
+        found = true;
+      }
   }
   return texts.join('\n');
 }
@@ -487,6 +509,94 @@ export async function editedGeneratedFile(dir: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * Leave the drafts out of a staged copy of the project. The generated files become the published site's: a draft has
+ * no page file and no old address leading to it, links to drafts are left unlinked, and the layout, styles and sitemap
+ * carry no trace of them. generated-manifest.json then lists what the copy has, so it reopens without conflicts and
+ * SiteOrigin Builder writes the drafts' files back. The canonical documents keep every page, so the drafts are still
+ * there to edit. Only files the manifest says SiteOrigin Builder generated are touched.
+ */
+export async function leaveOutDrafts(dir: string, state: ProjectState): Promise<void> {
+  const live = publishedState(state);
+  if (live === state) return;
+  const full = generateProject(state, { instrument: false });
+  const published = generateProject(live, { instrument: false });
+  const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_PATH))) ?? '{}') as { files?: Record<string, string>; pending?: Record<string, string> };
+  const files = manifest.files ?? {};
+  for (const [path, content] of full) {
+    if (!Object.hasOwn(files, path) && !Object.hasOwn(manifest.pending ?? {}, path)) continue;
+    const next = published.get(path);
+    if (next === content) continue;
+    const abs = safeJoin(dir, path);
+    if (next === undefined) {
+      await fs.rm(abs, { force: true });
+      await removeEmptyDirs(dirname(abs), join(dir, 'src'));
+      delete files[path];
+      if (manifest.pending) delete manifest.pending[path];
+    } else {
+      await fs.writeFile(abs, next);
+      files[path] = sha(next);
+      if (manifest.pending) delete manifest.pending[path];
+    }
+  }
+  await fs.writeFile(join(dir, MANIFEST_PATH), toJson({ ...manifest, files: Object.fromEntries(Object.entries(files).sort()) }));
+}
+
+/** Why a website export stopped: published pages link to drafts, which the website leaves out. Null when none do. */
+export function draftLinksStop(state: ProjectState): { message: string; warnings: string[] } | null {
+  const { draftLinks } = publicationPlan(state);
+  if (!draftLinks.length) return null;
+  const warnings = draftLinks.map((l) => describeDraftLink(state, l));
+  const drafts = [...new Set(draftLinks.map((l) => state.pages[l.pageId]?.title ?? 'a draft page'))];
+  const message =
+    draftLinks.length === 1
+      ? `A published page links to ${drafts[0]}, which is a draft and is left out of the website. Change the link or publish the page, then export again.`
+      : `${draftLinks.length} links on published pages go to ${drafts.length === 1 ? `${drafts[0]}, a draft` : 'drafts'} the website leaves out. Change the links or publish ${drafts.length === 1 ? 'the page' : 'those pages'}, then export again.`;
+  return { message, warnings };
+}
+
+/**
+ * Why a website export stopped: the pages it would publish are not the ones the author was shown (a draft was
+ * published, or a page kept as a draft, while the export started). Null when they are, or when nothing was shown.
+ */
+export function publishedChanged(state: ProjectState, shown: string[] | undefined): { message: string; warnings: string[] } | null {
+  if (!shown) return null;
+  const now = publicationPlan(state).published.map((p) => p.id);
+  const was = new Set(shown);
+  if (now.length === was.size && now.every((id) => was.has(id))) return null;
+  return { message: 'The pages the website publishes changed while the export was starting. Check the list of pages and drafts, then export again.', warnings: [] };
+}
+
+/**
+ * Files of the project's own in static/ that a static host serves at a draft's address, or at an old address that
+ * leads to one: a build of an exported project would publish them there. Each with the address and the draft.
+ */
+export function withheldStaticFiles(dir: string, state: ProjectState): Array<{ file: string; route: string; draft: string }> {
+  const live = publishedState(state);
+  if (live === state) return [];
+  const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
+  const withheld = [
+    ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, draft: p.title })),
+    ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, draft: r.page.title }))
+  ];
+  const out: Array<{ file: string; route: string; draft: string }> = [];
+  for (const { route, draft } of withheld)
+    for (const file of [`static${route}index.html`, `static${route.replace(/\/$/, '')}.html`]) if (existsSync(join(dir, file))) out.push({ file, route, draft });
+  return out;
+}
+
+/** Notes for an editable project with drafts: they are kept to edit, and its own build leaves them out. */
+export function draftSourceNotes(state: ProjectState): string[] {
+  const { drafts, draftLinks } = publicationPlan(state);
+  if (!drafts.length) return [];
+  const names = drafts.map((p) => p.title);
+  const notes = [
+    `${names.length === 1 ? `The draft ${names[0]} is` : `The drafts ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} are`} kept in the project to edit in SiteOrigin Builder, and left out of its website build.`
+  ];
+  if (draftLinks.length) notes.push(`These links on published pages go to drafts, which the exported project's own build leaves out. Change them or publish the drafts before building it:`, ...draftLinks.map((l) => describeDraftLink(state, l)));
+  return notes;
+}
+
 /** Content hash of everything an export reads: source, public files and the canonical documents. */
 export async function projectFingerprint(dir: string): Promise<string> {
   const parts: string[] = [];
@@ -504,7 +614,7 @@ export const NODE_ENGINES = '>=22.17.0';
 export async function finishExportedSource(dest: string, state: ProjectState, noticePath: string) {
   const readmePath = join(dest, 'README.md');
   const readme = await readIfExists(readmePath);
-  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name));
+  if (readme === null || isGeneratedReadme(readme)) await fs.writeFile(readmePath, projectReadme(state.site.name, publicationPlan(state).drafts.length > 0));
   const usesSamples = STARTER_ASSETS.some((a) => state.assets.assets[a.id]);
   if (usesSamples && !existsSync(join(dest, 'NOTICE.md')) && existsSync(noticePath)) await fs.copyFile(noticePath, join(dest, 'NOTICE.md'));
   for (const [file, at] of [['package.json', (j: Record<string, any>) => j], ['package-lock.json', (j: Record<string, any>) => j.packages?.['']]] as const) {
@@ -537,10 +647,18 @@ export function isGeneratedReadme(text: string): boolean {
   const normalized = text.replace(/\r\n/g, '\n');
   const title = normalized.match(/^# (.*)\n/)?.[1];
   if (title === undefined) return false;
-  return normalized === projectReadme(title) || normalized === legacyReadme(title);
+  return [projectReadme(title), projectReadme(title, true), legacyReadme(title)].includes(normalized);
 }
 
-export function projectReadme(name: string): string {
+/** Why a README's build leaves pages out, and what opening the project in SiteOrigin Builder changes about that. */
+const DRAFTS_SECTION = `## Draft pages
+
+This project has draft pages. Their documents are in \`siteorigin/pages/\`, but this export has no page files for them, so \`npm run build\` leaves them out. Opening the project in SiteOrigin Builder writes their files back for editing and previewing, and from then on a build of that folder includes them: export the website from SiteOrigin Builder to publish without drafts.
+
+`;
+
+/** The README an exported project gets. One exported with drafts says how its build treats them. */
+export function projectReadme(name: string, drafts = false): string {
   return `# ${name}
 
 ${README_INTRO} It is a normal [SvelteKit](https://svelte.dev/docs/kit) project and does not need SiteOrigin Builder to run or build.
@@ -568,7 +686,7 @@ The static website is written to \`build/\`. Upload the contents of that folder 
 
 Files generated by SiteOrigin Builder start with a comment. If you edit them by hand, SiteOrigin Builder keeps your version and asks before regenerating them.
 
-## Notices
+${drafts ? DRAFTS_SECTION : ''}## Notices
 
 The Foundation theme is licensed under GPL-3.0-or-later. Icons come from Lucide (ISC licence). Fonts are licensed under the SIL Open Font License 1.1 and are installed from npm (@fontsource-variable). Sample images from the Business starter, where still used, are described in NOTICE.md.
 `;

@@ -33,7 +33,7 @@ import { isBinding } from '@shared/types';
 import { styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
-import { effectiveTokens } from '@generator/index';
+import { effectiveTokens, isDraftPage } from '@generator/index';
 import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, type FormServiceSetup } from '@catalogue/foundation/form';
@@ -1087,9 +1087,10 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   if (!page) return null;
   const upd = (patch: Record<string, unknown>, label = 'Update page settings') => void applyOps([{ type: 'page.update', pageId: page.id, ...patch } as EditOperation], label);
   const isHome = page.id === state.site.homePageId;
+  const draft = isDraftPage(state, page);
   return (
     <div className="panel-body insp">
-      <Header title={page.title} kind={`${isHome ? 'Home page' : 'Page'} · ${isHome ? '/' : page.route}`} icon={isHome ? <House /> : <FileText />}>
+      <Header title={page.title} kind={`${isHome ? 'Home page' : draft ? 'Draft page' : 'Page'} · ${isHome ? '/' : page.route}`} icon={isHome ? <House /> : <FileText />}>
         <Scope tone="local" icon={<MousePointerClick />}>
           {previewing ? 'Previewing. Page settings stay editable; switch to Edit to select things on the page.' : 'Nothing selected. Click anything on the page to edit it.'}
         </Scope>
@@ -1112,6 +1113,19 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           {isHome ? <input className="input" value="/" readOnly aria-label="Page address" /> : <DraftInput value={page.route} onCommit={(v) => upd({ route: v }, 'Change page address')} ariaLabel="Page address" />}
         </Field>
         <SwitchRow checked={page.shell !== 'none'} onChange={(v) => upd({ shell: v ? 'default' : 'none' })} label="Show shared header and footer" />
+        {/* The Home page is the website's front door: it is always published. */}
+        {!isHome && (
+          <SwitchRow
+            checked={draft}
+            onChange={(v) => upd({ draft: v }, v ? 'Keep page as draft' : 'Publish page')}
+            label="Keep as draft"
+            hint={
+              draft
+                ? 'Left out of the website when you export it. You can still edit and preview it, and it stays in the editable project.'
+                : 'Keep working on this page without publishing it. The website export leaves drafts out.'
+            }
+          />
+        )}
       </Section>
       <Section title="Search & sharing" id="page-seo" level={LEVEL}>
         <Field label="Browser title" hint={`Leave empty to use “${isHome ? state.site.name : `${page.title} · ${state.site.name}`}”.`}>
@@ -1132,7 +1146,16 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
               ))}
           </select>
         </Field>
-        <SwitchRow checked={!!page.seo.noindex} onChange={(v) => upd({ noindex: v })} label="Hide from search engines" hint="Search engines are asked not to list this page." />
+        <SwitchRow
+          checked={!!page.seo.noindex}
+          onChange={(v) => upd({ noindex: v })}
+          label="Hide from search engines"
+          hint={
+            draft
+              ? 'Once the page is published, search engines are asked not to list it. Anyone with its address can still open it.'
+              : 'The page is still published and anyone with its address can open it; search engines are only asked not to list it.'
+          }
+        />
       </Section>
       {dev && (
         <Section title="Advanced" id="page-adv" defaultOpen={false} level={LEVEL}>

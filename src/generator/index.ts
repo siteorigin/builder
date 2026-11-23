@@ -1373,6 +1373,54 @@ export function liveRedirects(state: ProjectState): Array<{ from: string; page: 
   return out;
 }
 
+/** Is the page a draft, left out of the website? The Home page never is, whatever its document says. */
+export function isDraftPage(state: ProjectState, page: PageDoc): boolean {
+  return page.draft === true && page.id !== state.site.homePageId;
+}
+
+/**
+ * The site as visitors get it: every draft left out, with the old addresses that lead to one. The old addresses are
+ * chosen on the whole site first, so a draft's route never frees an address another redirect could then take. Links
+ * to a draft resolve as links to a missing page. A site without drafts is returned as it is.
+ */
+export function publishedState(state: ProjectState): ProjectState {
+  const drafts = new Set(Object.values(state.pages).filter((p) => isDraftPage(state, p)).map((p) => p.id));
+  if (!drafts.size) return state;
+  const redirects = liveRedirects(state)
+    .filter((r) => !drafts.has(r.page.id))
+    .map((r) => ({ from: r.from, pageId: r.page.id }));
+  const site = { ...state.site, pageOrder: state.site.pageOrder.filter((id) => !drafts.has(id)) };
+  if (redirects.length) site.redirects = redirects;
+  else delete site.redirects;
+  return { ...state, site, pages: Object.fromEntries(Object.entries(state.pages).filter(([id]) => !drafts.has(id))) };
+}
+
+/**
+ * Managed components that only drafts place, directly or inside another component. The published site never imports
+ * them, so what their files name (a default image, say) is nothing visitors are shown. A site without drafts has none.
+ */
+export function draftOnlyComponents(state: ProjectState): ComponentDefinition[] {
+  const live = publishedState(state);
+  if (live === state) return [];
+  const placed = (s: ProjectState) => {
+    const seen = new Set<string>();
+    const walk = (tree: NodeTree) => {
+      for (const n of Object.values(tree.nodes)) {
+        if (n.kind !== 'instance' || seen.has(n.definitionId)) continue;
+        seen.add(n.definitionId);
+        const def = s.components[n.definitionId];
+        if (def?.kind === 'managed' && def.tree) walk(def.tree);
+      }
+    };
+    for (const id of s.site.pageOrder) if (s.pages[id]) walk(s.pages[id]);
+    walk(s.site.shell.header);
+    walk(s.site.shell.footer);
+    return seen;
+  };
+  const published = placed(live);
+  return [...placed(state)].filter((id) => !published.has(id)).map((id) => state.components[id]).filter((d) => d?.kind === 'managed');
+}
+
 export function redirectFile(from: string): string {
   return `src/routes/${routeDir(from)}/+page.svelte`;
 }
@@ -1417,7 +1465,8 @@ export function routeId(route: string): string {
 }
 
 /**
- * Crawlers may fetch every page: hidden pages carry a noindex meta tag and are left out of the sitemap.
+ * Crawlers may fetch every page: hidden pages carry a noindex meta tag and are left out of the sitemap. Drafts are
+ * not pages of the website at all.
  * Disallowing them here would stop crawlers from ever reading that tag.
  */
 export function generateRobots(state: ProjectState): string {
@@ -1432,7 +1481,7 @@ export function generateSitemap(state: ProjectState): string | null {
   if (!base) return null;
   const urls = state.site.pageOrder
     .map((id) => state.pages[id])
-    .filter((p) => p && !p.seo.noindex)
+    .filter((p) => p && !p.seo.noindex && !isDraftPage(state, p))
     .map((p) => `\t<url><loc>${escapeHtmlAttr(base + p.route)}</loc></url>`);
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
 }

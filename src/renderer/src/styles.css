@@ -732,6 +732,12 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .scope-note svg { width: 14px; height: 14px; flex: none; margin-top: 1px; }
 .scope-note.instance { background: var(--panel-2); }
 
+/* Export dialog: the pages the website publishes and the drafts it leaves out. */
+.export-pages { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); color: var(--text-2); font-size: 12.5px; }
+.export-pages p { display: flex; gap: 6px; align-items: flex-start; margin: 0; overflow-wrap: anywhere; }
+.export-pages p svg { flex: none; margin-top: 2px; }
+.export-pages strong { color: var(--text); font-weight: 600; }
+.export-draft-links { margin: 0; padding-left: 22px; overflow-wrap: anywhere; }
 /* Export dialog: what this opening of the project exported, newest first. */
 .export-history { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
 .export-history h3 { margin: 0; font-size: 12px; font-weight: 600; color: var(--text); }
@@ -1445,6 +1451,11 @@ body.dialog-open .toast .btn { visibility: hidden; }
 .pages-list .page-row .actions { align-self: center; }
 .page-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .page-title { line-height: 18px; }
+.page-title-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.page-title-line .page-title { min-width: 0; }
+.page-draft { flex: none; height: 16px; padding: 0 6px; font-size: 10.5px; }
+/* On the selected row's tint the badge keeps a solid fill, so its small text stays readable. */
+.pages-list .page-row.selected .page-draft { background: var(--panel); box-shadow: inset 0 0 0 1px currentColor; }
 .page-route { display: flex; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 11.5px; line-height: 15px; color: var(--text-3); }
 .page-route-dir { flex: 0 1 auto; min-width: 1.6em; overflow: hidden; text-overflow: ellipsis; }
 .page-route-leaf { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
@@ -1456,7 +1467,7 @@ body.dialog-open .toast .btn { visibility: hidden; }
 /* The dragged row keeps its text at full contrast; a dashed ring marks it as the one moving. */
 .pages-list .page-row.dragging { box-shadow: none; background: var(--panel-2); outline: 1px dashed var(--border-control); outline-offset: -1px; }
 .pages-list .page-row.renaming { box-shadow: none; }
-.pages-list .page-row.renaming .page-title, .pages-list .page-row.renaming .actions, .pages-list .page-row.dragging .actions { visibility: hidden; }
+.pages-list .page-row.renaming .page-title, .pages-list .page-row.renaming .page-draft, .pages-list .page-row.renaming .actions, .pages-list .page-row.dragging .actions { visibility: hidden; }
 .pages-rename.inline-edit { position: absolute; z-index: 1; height: 22px; }
 /* While a component definition is edited the page row keeps its own blue, without the ring. */
 .editor.defining .pages-list .page-row.selected { background: var(--accent-soft); color: var(--accent-text); box-shadow: none; }

@@ -515,6 +515,11 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
   if (op.seoTitle !== undefined) page.seo.title = op.seoTitle || undefined;
   if (op.description !== undefined) page.seo.description = op.description || undefined;
   if (op.noindex !== undefined) page.seo.noindex = op.noindex || undefined;
+  if (op.draft !== undefined) {
+    if (op.draft && page.id === state.site.homePageId) fail('The Home page cannot be a draft. Make another page Home first.');
+    if (op.draft) page.draft = true;
+    else delete page.draft;
+  }
   if (op.shell !== undefined) page.shell = op.shell;
   if (op.socialImage !== undefined) {
     if (op.socialImage && own(state.assets.assets, op.socialImage)?.kind !== 'image') fail('Social image asset not found.');
@@ -617,7 +622,10 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   const section = op.replacementPageId ? sectionsOnReplacement(state, page, op.replacementPageId, uses, op.sectionReplacements) : null;
   if (page.id === state.site.homePageId) {
     // The page replacing Home moves to "/". Its old address is not kept: this removes a page, it moves none.
-    const next = op.replacementPageId ?? state.site.pageOrder.find((id) => id !== page.id)!;
+    // Home is never a draft, so the first published page takes over unless another is chosen.
+    const next = op.replacementPageId ?? state.site.pageOrder.find((id) => id !== page.id && state.pages[id]?.draft !== true);
+    if (!next) fail('Every other page is a draft. Publish one before removing the Home page.');
+    if (state.pages[next].draft === true) fail(`"${state.pages[next].title}" is a draft and cannot become the Home page. Publish it first, or choose a published page.`);
     state.pages[next].route = '/';
     state.site.homePageId = next;
   }
@@ -653,6 +661,7 @@ export type HomeChange = { moved: RouteMove[]; kept?: string };
 function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolean): HomeChange {
   const page = own(state.pages, pageId) ?? fail(`Page "${pageId}" does not exist.`);
   if (state.site.homePageId === pageId) return { moved: [] };
+  if (page.draft === true) fail(`"${page.title}" is a draft. Publish it before making it the Home page.`);
   const old = own(state.pages, state.site.homePageId);
   const vacated = page.route;
   const moved: RouteMove[] = [{ pageId, from: vacated, to: '/' }];
@@ -660,6 +669,8 @@ function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolea
   state.site.homePageId = pageId;
   if (keepOldAddress) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from: vacated, pageId }];
   if (old) {
+    // Home was published whatever its document said: it stays published at its new address.
+    delete old.draft;
     const from = old.route;
     old.route = autoRoute(state, old.title, 'previous-home', old.id);
     claimRoute(state, old.route);

@@ -9,7 +9,7 @@ import { catalogueComponent, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolDefinition } from '@agent/types';
 import { toolsForRun } from '@agent/tools';
-import { withStoredFields } from '@agent/macros';
+import { upsertToolSchema, withStoredFields } from '@agent/macros';
 import { hasOpenSchema, propsJsonSchema } from '@agent/propschema';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { selectionTools } from '@agent/selection';
@@ -103,6 +103,33 @@ const services = {
 };
 
 describe('upsert_page_with_sections', () => {
+  it('creates a page as a draft, publishes it, and leaves the flag alone when not asked', async () => {
+    const sections = [
+      { componentId: 'intro.page', props: { heading: 'Winter stock' } },
+      { componentId: 'features.grid', props: { heading: 'Arriving soon', items: [{ icon: 'leaf', title: 'Atlases', description: 'New editions.' }] } }
+    ];
+    const { session, run } = await setup([
+      () => [call('d1', 'upsert_page_with_sections', { slug: 'winter', title: 'Winter stock', draft: true, sections })],
+      () => finish(),
+      () => [call('d2', 'upsert_page_with_sections', { slug: 'winter', sections: [{ ...sections[0], props: { heading: 'Winter stock, soon' } }] })],
+      () => finish(),
+      () => [call('d3', 'upsert_page_with_sections', { slug: 'winter', draft: false })],
+      () => finish()
+    ]);
+    await run('Start a winter stock page as a draft');
+    expect(pageAt(session.state, '/winter/')?.draft).toBe(true);
+    await run('Retitle the winter intro');
+    const winterPage = pageAt(session.state, '/winter/')!;
+    expect((winterPage.nodes[winterPage.rootIds[0]] as InstanceNode).props.heading).toBe('Winter stock, soon');
+    expect(winterPage.draft).toBe(true);
+    await run('Publish the winter page');
+    expect('draft' in pageAt(session.state, '/winter/')!).toBe(false);
+    // The model is told it can ask for this, as an optional yes or no.
+    const schema = upsertToolSchema(session.state) as { properties: Record<string, { type?: string }>; required: string[] };
+    expect(schema.properties.draft.type).toBe('boolean');
+    expect(schema.required).not.toContain('draft');
+  });
+
   it('moves a contact link with the address a rewrite changes, unless the rewrite sends the link', async () => {
     const items = [
       { label: 'Email', value: 'bookings@kloof.example' },

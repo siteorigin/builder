@@ -57,6 +57,7 @@ export const OPERATION_SCHEMAS = {
     seoTitle: z.string().max(120).optional(),
     description: z.string().max(320).optional(),
     noindex: z.boolean().optional(),
+    draft: z.boolean().optional().describe('true keeps the page as a draft: still editable and previewed, but left out of the exported website. false publishes it. The Home page cannot be a draft.'),
     shell: z.enum(['default', 'none']).optional(),
     socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.')
   }),
