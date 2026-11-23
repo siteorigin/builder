@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, Component, FileSearch, FileText, Globe, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Upload } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Component, FileSearch, FileText, Globe, ImageDown, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, attachToChat, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { Picture, Thumb } from '../components/AssetPicture';
-import { openSiteStyles, selectPage } from '../lib/actions';
+import { imagePlacement, openSiteStyles, placeAsset, selectPage } from '../lib/actions';
 import { SHOW_ASSET_EVENT } from '../lib/place';
 import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
@@ -203,6 +203,14 @@ function useRecordsLocation(a: AssetRecord | null): boolean {
 export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const snap = useStore((s) => s.snapshot);
   const runtime = useStore((s) => s.runtime);
+  // Where Place on page puts the image follows the page, its selection and the editing mode.
+  useStore((s) => s.selection);
+  useStore((s) => s.pageId);
+  useStore((s) => s.mode);
+  useStore((s) => s.definitionMode);
+  const [placing, setPlacing] = useState(false);
+  // A second click while the first placement is on its way places nothing more.
+  const placingNow = useRef(false);
   const [over, setOver] = useState(false);
   const dragDepth = useRef(0);
   const [selected, setSelected] = useState<string | null>(null);
@@ -575,6 +583,18 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     const shownPlaces = allPlaces ? places : places.slice(0, 4);
     const gone = missingOf.get(sel.id);
     const copies = gone?.variants.length ?? 0;
+    const placement = imagePlacement();
+    const place = async () => {
+      if (placingNow.current || !placement.at) return;
+      placingNow.current = true;
+      setPlacing(true);
+      try {
+        await placeAsset(sel.id, placement.key);
+      } finally {
+        placingNow.current = false;
+        setPlacing(false);
+      }
+    };
     body = (
       <div className="asset-detail" id="asset-detail">
         <div className="asset-detail-top">
@@ -654,6 +674,23 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             </span>
           </p>
         )}
+        <div className="asset-place">
+          <button className="btn btn-sm btn-primary" disabled={!placement.at || !!gone?.original} aria-describedby="asset-place-where" onClick={() => void place()}>
+            <ImageDown /> {placing ? 'Placing…' : 'Place on page'}
+          </button>
+          <p className="asset-why" id="asset-place-where" data-testid="asset-place-where">
+            {gone?.original ? (
+              'Locate the file to place this image.'
+            ) : placement.at ? (
+              <>
+                Goes {placement.where.lead} <b>{placement.where.target}</b>
+                {placement.where.node ? ` on ${placement.page}` : ''}. Select something on the page to put it elsewhere.
+              </>
+            ) : (
+              placement.reason
+            )}
+          </p>
+        </div>
         <section className="asset-uses" aria-labelledby="asset-uses-title">
           <h5 id="asset-uses-title">{used ? `Used in ${plural(places.length || used, 'place', 'places')}` : 'Not used anywhere yet'}</h5>
           {places.length > 0 && (

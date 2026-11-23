@@ -731,6 +731,7 @@ function insertionList(tree: NodeTree, parentId: string | null | undefined, slot
 
 function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   const tree = editableTree(state, op.owner);
+  if (op.newNodeId && Object.hasOwn(tree.nodes, op.newNodeId)) fail(`Node "${op.newNodeId}" already exists.`);
   const list = insertionList(tree, op.parentId, op.slot, state);
   let nodes: GraphNode[];
   if (op.primitive === 'slot' || op.primitive === 'repeat') {
@@ -764,6 +765,8 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
     }
     nodes = [inst];
   }
+  // The editor names the node it inserts when the same batch goes on to fill it (an image and its picture).
+  if (op.newNodeId) nodes[0].id = op.newNodeId;
   for (const n of nodes) tree.nodes[n.id] = n;
   const index = op.index === undefined ? list.length : Math.min(op.index, list.length);
   list.splice(index, 0, nodes[0].id);

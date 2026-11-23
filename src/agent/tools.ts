@@ -103,7 +103,7 @@ const DEFINITION_OPERATIONS = new Set<OperationType>([
 function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
     .filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)))
-    .map((t) => (t === 'page.create' ? OPERATION_SCHEMAS[t].omit({ pageId: true }) : OPERATION_SCHEMAS[t]));
+    .map((t) => (t === 'page.create' ? OPERATION_SCHEMAS[t].omit({ pageId: true }) : t === 'node.insert' ? OPERATION_SCHEMAS[t].omit({ newNodeId: true }) : OPERATION_SCHEMAS[t]));
   return z.discriminatedUnion('type', schemas as unknown as [z.ZodObject<{ type: z.ZodLiteral<string> }>, ...z.ZodObject<{ type: z.ZodLiteral<string> }>[]]);
 }
 
@@ -316,6 +316,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const ops = a.operations as unknown as EditOperation[];
       // Page IDs are allocated by the app; only its own page tool may pass one through.
       if (ops.some((o) => o.type === 'page.create' && o.pageId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'page.create does not take a pageId.' } };
+      // Node IDs too: the result of each node.insert names the node it made.
+      if (ops.some((o) => o.type === 'node.insert' && o.newNodeId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'node.insert does not take a newNodeId.' } };
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId);
       if (!res.ok) {
         // A batch that creates a page and refers to it in the same call cannot work: the page has no ID yet.

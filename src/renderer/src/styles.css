@@ -1513,6 +1513,8 @@ button.asset-use:hover { background: var(--hover); color: var(--text); }
 button.asset-use:hover svg.go { color: var(--text); }
 .asset-fields { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--border); }
 .asset-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
+.asset-place { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 14px; }
+.asset-place b { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
 .asset-why { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .asset-replace { display: flex; flex-direction: column; padding-bottom: 8px; }
 .asset-replace-top { flex: none; }

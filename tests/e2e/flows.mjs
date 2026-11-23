@@ -125,6 +125,50 @@ await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.ok((await sectionsOn('Home')).includes('Services grid'), 'a second undo restores the original'));
 await pageRow('Home').click();
 
+step('place a library image already used in the Gallery from Assets (#13)');
+const readingAlt = 'A reading corner with an armchair and shelves of books';
+const placedReading = () =>
+  win.evaluate(async () => {
+    const snap = await window.builder.project.snapshot();
+    const home = snap.state.pages[snap.state.site.homePageId];
+    return Object.values(home.nodes).filter((n) => n.kind === 'image' && n.image.assetId === 'a_reading').map((n) => n.image.alt);
+  });
+const homeSections = () => win.evaluate(async () => {
+  const snap = await window.builder.project.snapshot();
+  return snap.state.pages[snap.state.site.homePageId].rootIds.length;
+});
+assert.deepEqual(await placedReading(), [], 'the reading nook starts out only in the Gallery');
+const sectionsBefore = await homeSections();
+const previewReading = frame.locator(`img[alt="${readingAlt}"]`);
+await win.locator('.rail [aria-label="Assets"]').click();
+await win.locator('[data-asset="a_reading"]').click();
+// Its Gallery use selects the Gallery on Home: the copy goes right after it, in a section of its own.
+await win.locator('button.asset-use[title="Show Gallery on Home"]').click();
+const placeWhere = win.getByTestId('asset-place-where');
+await eventually(async () => assert.equal(await placeWhere.innerText(), 'Goes in a new section after Gallery on Home. Select something on the page to put it elsewhere.'));
+const shownBefore = await previewReading.count();
+await win.getByRole('button', { name: 'Place on page' }).click();
+await eventually(async () => assert.deepEqual(await placedReading(), [readingAlt], 'one new image on Home, with the suggested alt text'));
+assert.equal(await homeSections(), sectionsBefore + 1, 'in a new section');
+assert.equal(
+  await win.evaluate(async () => {
+    const snap = await window.builder.project.snapshot();
+    const home = snap.state.pages[snap.state.site.homePageId];
+    const at = home.rootIds.findIndex((id) => snap.state.components[home.nodes[id].definitionId]?.name === 'Gallery');
+    const next = home.nodes[home.rootIds[at + 1]];
+    return (next.slots?.content ?? []).map((id) => home.nodes[id].image?.assetId).join();
+  }),
+  'a_reading',
+  'the new section is the one right after the Gallery'
+);
+await eventually(async () => assert.equal(await previewReading.count(), shownBefore + 1, 'the preview shows the placed copy beside the Gallery’s'));
+await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Image' }).waitFor();
+await win.screenshot({ path: join(OUT, '16-placed-image.png') });
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(async () => assert.deepEqual(await placedReading(), [], 'one Undo takes the placed copy away'));
+assert.equal(await homeSections(), sectionsBefore, 'and its section with it');
+await eventually(async () => assert.equal(await previewReading.count(), shownBefore, 'the preview shows only the Gallery’s copy again'));
+
 step('drag to reorder: canvas grip and layers');
 await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
 await win.waitForTimeout(800);
