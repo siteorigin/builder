@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Check, FolderOpen, LayoutTemplate, Plus, Settings, ShieldAlert, Trash2, X } from 'lucide-react';
+import { Check, ChevronRight, Folder, FolderOpen, LayoutTemplate, MousePointerClick, Plus, Settings, ShieldAlert, Upload, X } from 'lucide-react';
 import type { ProgressEvent, RecentProject } from '@shared/api';
 import { api, setState, toast, useStore } from './store';
-import { Field, Modal, Spinner, Switch } from './components/ui';
+import { Field, Modal, openDialogs, Spinner, SwitchRow } from './components/ui';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark } from './components/AppMark';
 
@@ -23,15 +23,18 @@ function timeAgo(iso: string): string {
 }
 
 export function Welcome() {
-  const [recents, setRecents] = useState<RecentProject[]>([]);
+  // null until the first load, so returning users never see a flash of the first-run screen.
+  const [recents, setRecents] = useState<RecentProject[] | null>(null);
   const [creating, setCreating] = useState(false);
   const [trust, setTrust] = useState<{ dir: string; name: string } | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
+  const [trusting, setTrusting] = useState(false);
   const modal = useStore((s) => s.modal);
   const refresh = () => void api.projects.recents().then(setRecents);
   useEffect(() => {
     refresh();
     const onCmd = (e: Event) => {
+      if (openDialogs.length) return;
       const cmd = (e as CustomEvent).detail;
       if (cmd === 'new-project') setCreating(true);
       if (cmd === 'open-project') void open();
@@ -55,7 +58,9 @@ export function Welcome() {
         <div className="brand">
           <BrandMark />
           <div>
-            <h1>SiteOrigin Builder</h1>
+            <h1>
+              SiteOrigin <span>Builder</span>
+            </h1>
             <p>Websites you own, built visually</p>
           </div>
         </div>
@@ -64,19 +69,19 @@ export function Welcome() {
             <span className="ico">
               <Plus size={18} />
             </span>
-            <span>
+            <span className="grow">
               <strong>New project</strong>
-              <span>Start from a starter site</span>
+              <span>Start from a ready-made site</span>
             </span>
+            <ChevronRight className="chev" />
           </button>
-          <button className="welcome-action secondary" onClick={() => void open()}>
-            <span className="ico">
-              <FolderOpen size={18} />
-            </span>
-            <span>
+          <button className="welcome-action secondary" disabled={opening === 'dialog'} onClick={() => void open()}>
+            <span className="ico">{opening === 'dialog' ? <Spinner decorative /> : <FolderOpen size={18} />}</span>
+            <span className="grow">
               <strong>Open project…</strong>
               <span>Choose a project folder</span>
             </span>
+            <ChevronRight className="chev" />
           </button>
         </div>
         <div className="spacer" />
@@ -84,46 +89,75 @@ export function Welcome() {
           <button className="btn btn-ghost" style={{ justifyContent: 'flex-start' }} onClick={() => setState({ modal: { kind: 'settings' } })}>
             <Settings /> Settings
           </button>
-          <p className="faint" style={{ margin: '6px 12px 0', fontSize: 11.5 }}>
-            Free and open source. Every website you make is yours: a complete project folder on your computer that you can host anywhere.
+          <p className="faint" style={{ margin: '6px 12px 0', fontSize: 12 }}>
+            Free and open source, from the makers of Page Builder by SiteOrigin. Every website you make is a folder on your computer that you can host anywhere.
           </p>
         </div>
       </aside>
       <main className="welcome-main">
-        <h2>Recent projects</h2>
-        <p className="muted" style={{ margin: 0 }}>
-          Pick up where you left off.
-        </p>
-        {recents.length === 0 ? (
-          <div className="empty-state">
-            <span className="empty-icon">
-              <AppMark size={64} />
-            </span>
-            <strong>No projects yet</strong>
-            <span>Create your first website from a starter. It takes about a minute.</span>
-            <button className="btn btn-primary" onClick={() => setCreating(true)}>
-              <Plus /> New project
-            </button>
-          </div>
+        {recents === null ? null : recents.length === 0 ? (
+          <>
+            <h2>Welcome to SiteOrigin Builder</h2>
+            <p className="muted" style={{ margin: 0 }}>
+              Build a website for your business, visually. No code, no hosting account needed.
+            </p>
+            <div className="empty-state">
+              <span className="empty-icon">
+                <AppMark size={64} />
+              </span>
+              <strong>Make your first website</strong>
+              <span>Start from a ready-made site and make it yours. It takes about a minute to set up.</span>
+              <ol className="first-steps">
+                <li>
+                  <b>
+                    <LayoutTemplate /> Pick a starter
+                  </b>
+                  Pages, sections and sample images, ready to change.
+                </li>
+                <li>
+                  <b>
+                    <MousePointerClick /> Click to edit
+                  </b>
+                  Change text, images and colours right on the page.
+                </li>
+                <li>
+                  <b>
+                    <Upload /> Export anywhere
+                  </b>
+                  Your site is a folder you own. Host it anywhere.
+                </li>
+              </ol>
+              <button className="btn btn-primary btn-lg" onClick={() => setCreating(true)}>
+                <Plus /> New project
+              </button>
+            </div>
+          </>
         ) : (
+          <>
+            <h2>Recent projects</h2>
+            <p className="muted" style={{ margin: 0 }}>
+              Pick up where you left off.
+            </p>
           <div className="recent-grid">
             {recents.map((r) => (
-              <div key={r.dir} style={{ position: 'relative' }}>
-                <button className="recent-card" style={{ width: '100%' }} disabled={!!opening} onClick={() => (r.missing ? toast('That project folder could not be found. It may have been moved or deleted.', 'error') : void open(r.dir))}>
-                  <div className="recent-thumb">{opening === r.dir ? <Spinner large /> : initials(r.name)}</div>
+              <div key={r.dir} className={`recent-item${r.missing ? ' missing' : ''}`}>
+                <button className="recent-card" style={{ width: '100%' }} disabled={!!opening} title={`${r.name}\n${r.dir}`} onClick={() => (r.missing ? toast('That project folder could not be found. It may have been moved or deleted.', 'error', { label: 'Remove from list', run: () => void api.projects.removeRecent(r.dir).then(refresh) }) : void open(r.dir))}>
+                  <div className="recent-thumb" aria-hidden="true">{opening === r.dir ? <Spinner large decorative /> : initials(r.name)}</div>
                   <div className="recent-meta">
-                    <strong className="ellipsis">{r.name}</strong>
-                    <span className="ellipsis" title={r.dir}>
-                      {r.missing ? 'Folder not found' : r.dir.replace(/^\/Users\/[^/]+/, '~')}
+                    <strong>{r.name}</strong>
+                    <span className="where">
+                      <Folder />
+                      <span className="ellipsis" style={{ direction: 'rtl', textAlign: 'left' }}>
+                        <bdi>{r.missing ? 'Folder not found' : shortPath(r.dir.replace(/[\\/][^\\/]+$/, ''))}</bdi>
+                      </span>
                     </span>
-                    <span>Opened {timeAgo(r.openedAt)}</span>
+                    <span>{opening === r.dir ? 'Opening…' : `Opened ${timeAgo(r.openedAt)}`}</span>
                   </div>
                 </button>
                 <button
                   className="icon-btn sm remove"
-                  style={{ position: 'absolute', top: 8, right: 8 }}
-                  aria-label={`Remove ${r.name} from recents`}
-                  title="Remove from recent projects"
+                  aria-label={`Remove ${r.name} from recent projects`}
+                  title="Remove from this list (the folder is not deleted)"
                   onClick={async () => {
                     await api.projects.removeRecent(r.dir);
                     refresh();
@@ -134,47 +168,58 @@ export function Welcome() {
               </div>
             ))}
           </div>
+          </>
         )}
       </main>
       {creating && <NewProjectModal onClose={() => setCreating(false)} />}
       {trust && (
         <Modal
           title="Trust this project?"
-          icon={<ShieldAlert size={18} color="var(--amber)" />}
+          icon={<ShieldAlert style={{ color: 'var(--amber)' }} />}
           onClose={() => setTrust(null)}
+          busy={trusting}
           footer={
             <>
-              <button className="btn" onClick={() => setTrust(null)}>
+              <button className="btn" data-autofocus disabled={trusting} onClick={() => setTrust(null)}>
                 Cancel
               </button>
               <button
                 className="btn btn-primary"
+                disabled={trusting}
                 onClick={async () => {
                   const t = trust;
-                  setTrust(null);
+                  setTrusting(true);
                   const r = await api.projects.trustAndOpen(t.dir);
+                  setTrusting(false);
+                  setTrust(null);
                   if (!r.ok && r.message) toast(r.message, 'error');
                 }}
               >
-                Trust and open
+                {trusting ? <Spinner decorative /> : null}
+                {trusting ? 'Opening…' : 'Trust and open'}
               </button>
             </>
           }
         >
           <p style={{ marginTop: 0 }}>
-            <strong>{trust.name}</strong> was not created on this computer, or its build configuration changed since you last opened it.
+            <strong>{trust.name}</strong> was made on another computer, or its setup files changed since you last opened it.
           </p>
           <p className="muted">
-            Opening it runs the project's own build tools (Vite and SvelteKit) to show a preview. Only continue if you trust where this project came from.
+            To show a preview, SiteOrigin Builder runs the project's own website tools, which can run code on your computer. Only continue if you trust where this project came from.
           </p>
-          <p className="mono faint" style={{ wordBreak: 'break-all' }}>
-            {trust.dir}
+          <p className="trust-path">
+            <FolderOpen size={14} />
+            <span>{shortPath(trust.dir)}</span>
           </p>
         </Modal>
       )}
       {modal?.kind === 'settings' && <SettingsModal />}
     </div>
   );
+}
+
+function shortPath(dir: string) {
+  return dir.replace(/^\/Users\/[^/]+/, '~').replace(/^[A-Z]:\\Users\\[^\\]+/i, '~');
 }
 
 function initials(name: string) {
@@ -204,7 +249,7 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
     return api.on('create:progress', setProgress);
   }, []);
   const running = !!progress && progress.step !== 'error' && progress.step !== 'done';
-  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'website';
+  const slug = name.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, ' and ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'website';
 
   const create = async () => {
     setError(null);
@@ -221,7 +266,9 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
     return (
       <Modal
         title={`Creating ${name.trim()}`}
-        onClose={() => running && void api.projects.cancelCreate()}
+        icon={<LayoutTemplate />}
+        onClose={() => undefined}
+        busy
         footer={
           <button className="btn" onClick={() => void api.projects.cancelCreate()} disabled={!running}>
             Cancel
@@ -244,7 +291,7 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
   return (
     <Modal
       title="New project"
-      icon={<LayoutTemplate size={18} color="var(--accent)" />}
+      icon={<LayoutTemplate />}
       onClose={onClose}
       footer={
         <>
@@ -259,11 +306,11 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
     >
       <div className="col" style={{ gap: 16 }}>
         <Field label="Project name">
-          <input className="input" autoFocus placeholder="Harbour Lane Studio" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && name.trim() && void create()} />
+          <input className="input" autoFocus placeholder="For example, Harbour Lane Studio" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && name.trim() && void create()} />
         </Field>
-        <Field label="Location" hint={parent ? `The project will be created in ${parent.replace(/^\/Users\/[^/]+/, '~')}/${slug}` : undefined}>
+        <Field label="Location" hint={parent ? `Saved in ${shortPath(parent)}/${slug}` : undefined}>
           <div className="row">
-            <input className="input grow" value={parent} readOnly />
+            <input className="input grow" value={shortPath(parent)} readOnly aria-label="Location" title={parent} />
             <button
               className="btn"
               onClick={async () => {
@@ -276,13 +323,29 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
           </div>
         </Field>
         <Field label="Start from">
-          <div className="starter-grid">
-            <button className="starter-card" aria-pressed={starter === 'business'} onClick={() => setStarter('business')}>
+          <div
+            className="starter-grid"
+            role="radiogroup"
+            aria-label="Start from"
+            onKeyDown={(e) => {
+              if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
+              e.preventDefault();
+              const group = e.currentTarget;
+              setStarter(starter === 'business' ? 'blank' : 'business');
+              requestAnimationFrame(() => group.querySelector<HTMLElement>('[aria-checked="true"]')?.focus());
+            }}
+          >
+            <button className="starter-card" role="radio" aria-checked={starter === 'business'} tabIndex={starter === 'business' ? 0 : -1} onClick={() => setStarter('business')}>
+              {starter === 'business' && (
+                <span className="picked" aria-hidden="true">
+                  <Check />
+                </span>
+              )}
               <div className="art">
                 <i style={{ height: 8, width: '100%', opacity: 0.6 }} />
                 <div className="row" style={{ gap: 5, flex: 1 }}>
                   <div className="col" style={{ gap: 4, flex: 1 }}>
-                    <i style={{ height: 10, width: '80%', background: 'var(--accent)', opacity: 0.55 }} />
+                    <i className="hi" style={{ height: 10, width: '80%' }} />
                     <i style={{ height: 5, width: '90%' }} />
                     <i style={{ height: 5, width: '70%' }} />
                   </div>
@@ -295,11 +358,16 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
               <div className="copy">
-                <strong>Business starter</strong>
+                <strong>Business</strong>
                 <p>Home, About and Contact pages, ready to make your own.</p>
               </div>
             </button>
-            <button className="starter-card" aria-pressed={starter === 'blank'} onClick={() => setStarter('blank')}>
+            <button className="starter-card" role="radio" aria-checked={starter === 'blank'} tabIndex={starter === 'blank' ? 0 : -1} onClick={() => setStarter('blank')}>
+              {starter === 'blank' && (
+                <span className="picked" aria-hidden="true">
+                  <Check />
+                </span>
+              )}
               <div className="art">
                 <i style={{ height: 8, width: '100%', opacity: 0.6 }} />
                 <div style={{ flex: 1, display: 'grid', placeItems: 'center' }}>
@@ -315,16 +383,17 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
           </div>
         </Field>
         {starter === 'business' && (
-          <div className="row">
-            <Switch checked={images} onChange={setImages} label="Include sample images" />
-            <span>Include sample images</span>
-            <span className="faint">(fictional, replace any time)</span>
-          </div>
+          <SwitchRow checked={images} onChange={setImages} label="Include sample images" hint="Placeholder photos you can replace any time." />
         )}
         <p className="faint" style={{ margin: 0, fontSize: 12 }}>
-          Everything needed to build your site is included. Your website is saved as a normal folder you own. Theme: Foundation.
+          Everything needed is included, and nothing is downloaded. Your website is saved as a normal folder that you own.
         </p>
-        {error && <div className="scope-note site">{error}</div>}
+        {error && (
+          <div className="scope-note danger" role="alert">
+            <ShieldAlert />
+            <span>{error}</span>
+          </div>
+        )}
       </div>
     </Modal>
   );

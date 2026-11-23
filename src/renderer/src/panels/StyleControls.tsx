@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { RotateCcw } from 'lucide-react';
 import type { ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef } from '@shared/types';
 import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, type StylePropDef } from '@shared/styles';
@@ -32,11 +33,11 @@ export function ScopePicker() {
       />
       {scope === 'base' && current !== 'desktop' ? (
         <button className="btn btn-sm btn-ghost" style={{ alignSelf: 'flex-start' }} onClick={() => setState({ styleScope: current })}>
-          Override at this size ({current})
+          Change for {current} only
         </button>
       ) : scope !== 'base' ? (
         <span className="field-hint">
-          Changes apply only to {scope} widths ({scope === 'phone' ? 'below 768px' : scope === 'tablet' ? '768–1023px' : '1024px and wider'}).
+          Changes here apply only on {scope} screens ({scope === 'phone' ? 'narrower than 768px' : scope === 'tablet' ? '768 to 1023px' : '1024px and wider'}).
         </span>
       ) : null}
     </div>
@@ -59,39 +60,70 @@ export function StyleControls({
   onReset?: () => void;
 }) {
   const scope = useStore((s) => s.styleScope);
+  const [showAll, setShowAll] = useState(false);
   const props = allowed?.length ? allowed.map((id) => STYLE_PROP_MAP[id]).filter(Boolean) : STYLE_PROPS;
   const groups = new Map<StylePropDef['group'], StylePropDef[]>();
   for (const p of props) groups.set(p.group, [...(groups.get(p.group) ?? []), p]);
   const own = styles?.[scope] ?? {};
   const anyOverride = Object.values(styles ?? {}).some((s) => s && Object.keys(s).length);
+  // Layout controls that only mean something for a stack or grid are shown when the layout is one.
+  const effective = (id: string) => own[id] ?? styles?.base?.[id] ?? inherited?.[scope]?.[id] ?? inherited?.base?.[id];
+  const layout = effective('layout');
+  const relevant = (id: string) => {
+    if (own[id] !== undefined) return true;
+    if (id === 'order') return false;
+    if (id === 'columns') return layout === 'grid';
+    if (id === 'align' || id === 'justify' || id === 'gap' || id === 'wrap') return layout === 'stack' || layout === 'row' || layout === 'grid';
+    return true;
+  };
+  // Long lists show the first two groups plus anything already set; the rest sit behind one disclosure.
+  const entries = [...groups.entries()];
+  const long = entries.reduce((n, [, l]) => n + l.length, 0) > 10;
+  const primary = new Set(entries.slice(0, 2).map(([g]) => g));
+  const visible = (g: StylePropDef['group'], id: string) => showAll || !long || primary.has(g) || own[id] !== undefined;
+  const hiddenCount = long && !showAll ? entries.reduce((n, [g, l]) => n + l.filter((p) => relevant(p.id) && !visible(g, p.id)).length, 0) : 0;
   return (
     <div className="col" style={{ gap: 14 }}>
-      {[...groups.entries()].map(([g, list]) => (
+      {entries.filter(([g, list]) => list.some((p) => relevant(p.id) && visible(g, p.id))).map(([g, list]) => (
         <div key={g} className="col" style={{ gap: 6 }}>
           <div className="field-label">{STYLE_GROUP_LABELS[g]}</div>
-          {list.map((p) => {
+          {list.filter((p) => relevant(p.id) && visible(g, p.id)).map((p) => {
             const value = own[p.id];
             const inheritedValue = scope !== 'base' ? (styles?.base?.[p.id] ?? inherited?.[scope]?.[p.id] ?? inherited?.base?.[p.id]) : (inherited?.base?.[p.id]);
             return (
-              <div className="style-row" key={p.id}>
+              <div className={`style-row${value !== undefined ? ' set' : ''}`} key={p.id}>
                 <label title={p.description ?? p.label}>
-                  {value !== undefined && <span className="ovr-dot" title="Overridden here" />}
-                  {p.label}
+                  {value !== undefined && <span className="ovr-dot" role="img" aria-label="Changed here" />}
+                  <span>{p.label}</span>
                 </label>
                 <div className="style-control">
                   <Control def={p} value={value} placeholder={fmt(inheritedValue, tokens)} tokens={tokens} onSet={(v) => onSet(p.id, v)} />
                 </div>
-                <button className="icon-btn sm reset" title="Reset to inherited value" aria-label={`Reset ${p.label}`} disabled={value === undefined} onClick={() => onSet(p.id, null)}>
-                  <RotateCcw />
-                </button>
+                {value !== undefined ? (
+                  <button className="icon-btn sm reset" title="Reset to default" aria-label={`Reset ${p.label} to default`} onClick={() => onSet(p.id, null)}>
+                    <RotateCcw />
+                  </button>
+                ) : (
+                  <span />
+                )}
               </div>
             );
           })}
         </div>
       ))}
+      {hiddenCount > 0 && (
+        <button className="btn btn-sm btn-ghost" style={{ alignSelf: 'flex-start' }} aria-expanded={false} onClick={() => setShowAll(true)}>
+          More style options ({hiddenCount})
+        </button>
+      )}
+      {long && showAll && (
+        <button className="btn btn-sm btn-ghost" style={{ alignSelf: 'flex-start' }} aria-expanded={true} onClick={() => setShowAll(false)}>
+          Fewer style options
+        </button>
+      )}
       {onReset && anyOverride && (
         <button className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={onReset}>
-          <RotateCcw /> Reset all overrides
+          <RotateCcw /> Reset all style changes
         </button>
       )}
     </div>
@@ -113,11 +145,11 @@ function colorOf(tokens: TokenDef[], id: string, depth = 0): string {
 function Control({ def, value, placeholder, tokens, onSet }: { def: StylePropDef; value: StyleValue | undefined; placeholder: string; tokens: TokenDef[]; onSet: (v: StyleValue | null) => void }) {
   const tokOpts = tokenOptions(tokens, def.tokenGroup);
   const isToken = typeof value === 'object' && value !== null;
-  const cls = `select sm grow${value !== undefined ? ' overridden' : ''}`;
+  const cls = `select sm grow${value !== undefined ? ' overridden' : ' inherit'}`;
   if (def.kind === 'boolean') {
     return (
       <select className={cls} value={value === undefined ? '' : String(value)} onChange={(e) => onSet(e.target.value === '' ? null : e.target.value === 'true')} aria-label={def.label}>
-        <option value="">{placeholder ? `Inherit (${placeholder === 'true' ? 'yes' : 'no'})` : 'Inherit'}</option>
+        <option value="">{placeholder ? `Default (${placeholder === 'true' ? 'yes' : 'no'})` : 'Default'}</option>
         <option value="true">{def.id === 'hidden' ? 'Hidden' : 'Yes'}</option>
         <option value="false">{def.id === 'hidden' ? 'Visible' : 'No'}</option>
       </select>
@@ -126,7 +158,8 @@ function Control({ def, value, placeholder, tokens, onSet }: { def: StylePropDef
   if (def.kind === 'enum' || def.kind === 'ratio') {
     return (
       <select className={cls} value={value === undefined ? '' : String(value)} onChange={(e) => onSet(e.target.value === '' ? null : e.target.value)} aria-label={def.label}>
-        <option value="">{placeholder ? `Inherit (${def.options?.find((o) => o.value === placeholder)?.label ?? placeholder})` : 'Inherit'}</option>
+        <option value="">{placeholder ? `Default (${def.options?.find((o) => o.value === placeholder)?.label ?? placeholder})` : 'Default'}</option>
+        {value !== undefined && !def.options!.some((o) => o.value === String(value)) && <option value={String(value)}>{String(value)}</option>}
         {def.options!.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
@@ -138,16 +171,16 @@ function Control({ def, value, placeholder, tokens, onSet }: { def: StylePropDef
   if (def.kind === 'number') {
     return (
       <DraftInput
-        className={`input sm grow${value !== undefined ? ' overridden' : ''}`}
+        className={`input sm grow${value !== undefined ? ' overridden' : ' inherit'}`}
         value={value === undefined ? '' : String(value)}
-        placeholder={placeholder || 'Inherit'}
+        placeholder={placeholder ? `Default (${placeholder})` : 'Default'}
         ariaLabel={def.label}
         onCommit={(t) => onSet(t.trim() === '' ? null : Number(t))}
       />
     );
   }
   // Token-capable values: a token picker plus an optional custom value.
-  const selectValue = value === undefined ? '' : isToken ? `token:${(value as { token: string }).token}` : 'custom';
+  const selectValue = value === undefined ? '' : isToken ? `token:${(value as { token: string }).token}` : def.options?.some((o) => o.value === String(value)) ? String(value) : 'custom';
   return (
     <>
       <select
@@ -163,14 +196,14 @@ function Control({ def, value, placeholder, tokens, onSet }: { def: StylePropDef
         }}
         style={{ flex: selectValue === 'custom' ? '0 0 48%' : 1 }}
       >
-        <option value="">{placeholder ? `Inherit (${placeholder})` : 'Inherit'}</option>
+        <option value="">{placeholder ? `Default (${placeholder})` : 'Default'}</option>
         {def.options?.map((o) => (
           <option key={o.value} value={o.value}>
             {o.label}
           </option>
         ))}
         {tokOpts.length > 0 && (
-          <optgroup label="Site tokens">
+          <optgroup label="Site styles">
             {tokOpts.map((t) => (
               <option key={t.id} value={`token:${t.id}`}>
                 {t.label}
@@ -179,6 +212,7 @@ function Control({ def, value, placeholder, tokens, onSet }: { def: StylePropDef
             ))}
           </optgroup>
         )}
+        {selectValue.startsWith('token:') && !tokOpts.some((t) => `token:${t.id}` === selectValue) && <option value={selectValue}>{tokenLabel(tokens, selectValue.slice(6))}</option>}
         {def.kind !== 'textStyle' && <option value="custom">Custom value…</option>}
       </select>
       {selectValue === 'custom' &&

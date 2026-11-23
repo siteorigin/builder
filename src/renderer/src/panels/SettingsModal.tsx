@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Check, KeyRound, Monitor, Moon, Sun } from 'lucide-react';
+import { Check, Info, KeyRound, Monitor, Moon, Settings, Shield, Sun } from 'lucide-react';
 import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
 import { api, setState, toast, useStore } from '../store';
-import { Field, Modal, Segmented, Switch } from '../components/ui';
+import { Field, Modal, Segmented, SwitchRow, Tabs } from '../components/ui';
 
 export function SettingsModal() {
   const settings = useStore((s) => s.settings);
@@ -12,6 +12,8 @@ export function SettingsModal() {
   const [keys, setKeys] = useState<Record<ProviderId, string>>({ openai: '', anthropic: '' });
   const [testing, setTesting] = useState<ProviderId | null>(null);
   const [custom, setCustom] = useState(false);
+  // An unlisted saved model shows its ID until the user asks for the list.
+  const [listForced, setListForced] = useState(false);
   useEffect(() => void api.ai.providers().then((p) => setState({ providers: p })), []);
   if (!settings) return null;
   const close = () => setState({ modal: null });
@@ -20,14 +22,22 @@ export function SettingsModal() {
   const status = providers.find((p) => p.id === provider);
   const model = settings.ai.models[provider];
   const known = status?.models.some((m) => m.id === model);
+  const saveKey = async () => {
+    setState({ providers: await api.ai.setKey(provider, keys[provider].trim()) });
+    setKeys({ ...keys, [provider]: '' });
+    void update({ ai: { setupAcknowledged: true } });
+    toast('API key saved.', 'success');
+  };
+  const keyUrl = provider === 'anthropic' ? 'https://console.anthropic.com/settings/keys' : 'https://platform.openai.com/api-keys';
+  const unsavedKey = !!keys[provider].trim();
 
   return (
-    <Modal title="Settings" onClose={close} footer={<button className="btn btn-primary" onClick={close}>Done</button>}>
+    <Modal title="Settings" icon={<Settings />} onClose={close} footer={<button className="btn" onClick={close}>Close</button>}>
       <div className="col" style={{ gap: 16 }}>
-        <Segmented value={tab} onChange={setTab} options={[{ value: 'general', label: 'General' }, { value: 'ai', label: 'AI assistant' }]} />
+        <Tabs value={tab} onChange={setTab} label="Settings sections" idBase="settings" options={[{ value: 'general', label: 'General' }, { value: 'ai', label: 'AI assistant' }]} />
         {tab === 'general' ? (
-          <>
-            <Field label="Appearance" hint="Changes the editor only. Your website's colors are set in Site styles.">
+          <div className="col" style={{ gap: 18 }} role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general">
+            <Field label="Appearance" hint="Changes how SiteOrigin Builder looks. Your website's colours are set in Site styles.">
               <Segmented<AppSettings['appearance']>
                 value={settings.appearance}
                 onChange={(appearance) => void update({ appearance })}
@@ -38,26 +48,14 @@ export function SettingsModal() {
                 ]}
               />
             </Field>
-            <div className="row" style={{ justifyContent: 'space-between' }}>
-              <div>
-                <div>Press Enter to send chat messages</div>
-                <div className="field-hint">When off, use ⌘ Enter to send and Enter for a new line.</div>
-              </div>
-              <Switch checked={settings.ai.sendOnEnter} onChange={(v) => void update({ ai: { sendOnEnter: v } })} label="Enter sends" />
-            </div>
-            <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <div>
-                <div>Developer mode</div>
-                <div className="field-hint">Shows code components, source views and Convert to code. Only turn this on if you are comfortable editing Svelte code. Saved code is always checked and, when needed, fixed automatically.</div>
-              </div>
-              <Switch checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" />
-            </div>
+            <SwitchRow checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte code. Code is checked before it is saved." />
             <div className="scope-note info">
-              <span>Undo history keeps the latest 100 changes per project, stored in the project's private .siteorigin folder. It is never included in exports.</span>
+              <Info />
+              <span>Each project keeps your last 100 changes, so you can undo even after reopening it. This history stays on your computer and is never exported.</span>
             </div>
-          </>
+          </div>
         ) : (
-          <>
+          <div className="col" style={{ gap: 18 }} role="tabpanel" id="settings-panel-ai" aria-labelledby="settings-tab-ai">
             <Field label="Provider">
               <Segmented<ProviderId>
                 value={provider}
@@ -67,31 +65,30 @@ export function SettingsModal() {
             </Field>
             {status && (
               <Field
+                controlId="settings-api-key"
                 label={`${status.label} API key`}
                 hint={
                   status.configured && status.source === 'environment'
                     ? 'Using the key from your environment (development build).'
-                    : 'Saved in a file on this computer that only your user account can read. It is never put in your projects, exports or logs.'
+                    : 'Kept on this computer where only your user account can read it. It is never put in your projects, exports or logs.'
                 }
               >
                 <div className="row">
                   <input
+                    id="settings-api-key"
+                    aria-describedby="settings-api-key-note"
                     className="input grow mono"
                     type="password"
                     autoComplete="off"
                     placeholder={status.configured ? '•••••••••••••••• (saved)' : provider === 'openai' ? 'sk-…' : 'sk-ant-…'}
                     value={keys[provider]}
                     onChange={(e) => setKeys({ ...keys, [provider]: e.target.value })}
+                    onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && void saveKey()}
                   />
                   <button
                     className="btn"
                     disabled={!keys[provider].trim()}
-                    onClick={async () => {
-                      setState({ providers: await api.ai.setKey(provider, keys[provider].trim()) });
-                      setKeys({ ...keys, [provider]: '' });
-                      void update({ ai: { setupAcknowledged: true } });
-                      toast('API key saved.');
-                    }}
+                    onClick={() => void saveKey()}
                   >
                     <KeyRound /> Save
                   </button>
@@ -101,11 +98,22 @@ export function SettingsModal() {
                     </button>
                   )}
                 </div>
+                <div className="row" style={{ gap: 12, marginTop: 2 }}>
+                  {unsavedKey ? (
+                    <span className="field-hint" role="status" style={{ color: 'var(--text-2)' }}>
+                      Not saved yet. Press Save (or Enter) to keep this key.
+                    </span>
+                  ) : (
+                    <button className="link-btn" style={{ fontSize: 12 }} onClick={() => void api.app.openExternal(keyUrl)}>
+                      Where do I get {/^[aeiou]/i.test(status.label) ? 'an' : 'a'} {status.label} key?
+                    </button>
+                  )}
+                </div>
               </Field>
             )}
             <Field label="Model">
               <div className="row">
-                {custom || !known ? (
+                {custom || (!known && !listForced) ? (
                   <input className="input grow mono" defaultValue={model} onBlur={(e) => e.target.value.trim() && void update({ ai: { models: { ...settings.ai.models, [provider]: e.target.value.trim() } } })} aria-label="Custom model ID" />
                 ) : (
                   <select className="select grow" value={model} onChange={(e) => void update({ ai: { models: { ...settings.ai.models, [provider]: e.target.value } } })} aria-label="Model">
@@ -117,8 +125,8 @@ export function SettingsModal() {
                     ))}
                   </select>
                 )}
-                <button className="btn" onClick={() => setCustom(!custom)}>
-                  {custom ? 'Use list' : 'Custom ID'}
+                <button className="btn" onClick={() => (custom || (!known && !listForced) ? (setCustom(false), setListForced(true)) : (setCustom(true), setListForced(false)))}>
+                  {custom || (!known && !listForced) ? 'Choose from list' : 'Other model…'}
                 </button>
               </div>
             </Field>
@@ -136,12 +144,14 @@ export function SettingsModal() {
                 {testing ? 'Testing…' : 'Test connection'}
               </button>
             </div>
-            <div className="scope-note site">
+            <SwitchRow checked={settings.ai.sendOnEnter} onChange={(v) => void update({ ai: { sendOnEnter: v } })} label="Press Enter to send messages" hint="When off, use ⌘ Enter to send and Enter for a new line." />
+            <div className="scope-note info">
+              <Shield />
               <span>
-                When you use the assistant, your request plus relevant page text, structure and component source are sent to {status?.label ?? 'the provider'}. Images and screenshots are never sent. Provider usage may be charged to your account.
+                When you use the assistant, your request and the relevant page text and structure are sent to {status?.label ?? 'the provider'}. Images and screenshots are never sent. The provider may charge your account for usage.
               </span>
             </div>
-          </>
+          </div>
         )}
       </div>
     </Modal>

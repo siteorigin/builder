@@ -1,27 +1,100 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronDown, X } from 'lucide-react';
-import { useStore } from '../store';
+import { Children, cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import { Check, ChevronDown, CircleAlert, CircleCheck, Info, X } from 'lucide-react';
+import { markDraft, useStore } from '../store';
 
-export function Modal({ title, icon, onClose, children, footer, wide }: { title: ReactNode; icon?: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean }) {
+const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+/** Dialogs currently open, innermost last; global shortcuts stay out of the way while any is open. */
+export const openDialogs: HTMLElement[] = [];
+
+/**
+ * Keyboard model shared by every dialog (WAI-ARIA APG dialog pattern). Dialogs render in a portal and the
+ * app root is made inert while any is open, so nothing behind can be reached. Focus moves inside on open
+ * (explicit autofocus, else the first control in the body, else the footer's first action), Tab and
+ * Shift+Tab stay inside, Escape closes (unless a control inside already handled it), and focus returns to
+ * whatever opened the dialog. Attach the returned handler as the dialog's onKeyDown.
+ */
+export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  // Captured during render, before any autofocus inside the dialog moves focus.
+  const openerRef = useRef<HTMLElement | null>(null);
+  if (openerRef.current === null && typeof document !== 'undefined') {
+    const a = (document.activeElement as HTMLElement | null) ?? document.body;
+    // Opened from a menu item: return to what opened the menu, since the item is about to disappear.
+    openerRef.current = a.closest('[role="menu"]') ? (menuReturn.target ?? a) : a;
+  }
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-  return (
-    <div className="overlay-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined}>
+    const el = ref.current;
+    if (!el) return;
+    const opener = openerRef.current;
+    openDialogs.push(el);
+    const root = document.getElementById('root');
+    if (root && !root.contains(el)) root.inert = true;
+    if (!el.contains(document.activeElement)) {
+      const inBody = el.querySelector<HTMLElement>('.modal-body ' + FOCUSABLE.split(', ').join(', .modal-body '));
+      const first = el.querySelector<HTMLElement>('[data-autofocus]') ?? inBody ?? el.querySelector<HTMLElement>('.modal-foot ' + FOCUSABLE.split(', ').join(', .modal-foot ')) ?? el;
+      first.focus();
+    }
+    // If focus falls out of the dialog (a button inside disabled or unmounted itself), keys still belong
+    // to the dialog: Escape closes it and Tab brings focus back in.
+    const stray = (e: KeyboardEvent) => {
+      if (openDialogs[openDialogs.length - 1] !== el || el.contains(e.target as Node)) return;
+      if (e.key === 'Escape') (e.preventDefault(), closeRef.current());
+      else if (e.key === 'Tab') (e.preventDefault(), el.querySelector<HTMLElement>(FOCUSABLE)?.focus());
+    };
+    window.addEventListener('keydown', stray);
+    return () => {
+      window.removeEventListener('keydown', stray);
+      openDialogs.splice(openDialogs.indexOf(el), 1);
+      if (root && !openDialogs.length) root.inert = false;
+      const back = opener && document.contains(opener) && !opener.closest('[role="menu"]') ? opener : document.querySelector<HTMLElement>('.list-item.selected[tabindex="0"], [role="option"][aria-selected="true"]');
+      requestAnimationFrame(() => back?.focus());
+    };
+  }, [ref]);
+  return (e: React.KeyboardEvent) => {
+    const el = ref.current;
+    if (!el || openDialogs[openDialogs.length - 1] !== el || e.defaultPrevented) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeRef.current();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((n) => n.offsetParent !== null);
+    if (!items.length) return e.preventDefault();
+    const i = items.indexOf(document.activeElement as HTMLElement);
+    if (e.shiftKey && i <= 0) (e.preventDefault(), items[items.length - 1].focus());
+    else if (!e.shiftKey && (i === -1 || i === items.length - 1)) (e.preventDefault(), items[0].focus());
+  };
+}
+
+/** The one dialog shell. `footer` holds the actions: the dismiss-only action is always a secondary "Close". */
+export function Modal({ title, icon, onClose, children, footer, wide, describedBy, busy }: { title: ReactNode; icon?: ReactNode; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; describedBy?: string; busy?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  // While busy (creating a project, opening a trusted one), only the dialog's own buttons can end it.
+  const close = () => !busy && onClose();
+  const onKeyDown = useDialogFocus(ref, close);
+  return createPortal(
+    <div className="overlay-backdrop" onMouseDown={(e) => e.target === e.currentTarget && close()}>
+      <div ref={ref} tabIndex={-1} className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={describedBy} onKeyDown={onKeyDown}>
         <div className="modal-head">
           {icon}
-          <h2 className="grow">{title}</h2>
-          <button className="icon-btn" onClick={onClose} aria-label="Close">
+          <h2 className="grow" id={titleId}>
+            {title}
+          </h2>
+          <button className="icon-btn" onClick={close} disabled={busy} aria-label="Close" title="Close (Esc)">
             <X />
           </button>
         </div>
         <div className="modal-body">{children}</div>
         {footer && <div className="modal-foot">{footer}</div>}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -29,6 +102,8 @@ export interface MenuItem {
   label?: string;
   icon?: ReactNode;
   shortcut?: string;
+  hint?: string;
+  checked?: boolean;
   onSelect?: () => void;
   disabled?: boolean;
   danger?: boolean;
@@ -36,80 +111,183 @@ export interface MenuItem {
   heading?: string;
 }
 
-export function Menu({ x, y, items, onClose }: { x: number; y: number; items: MenuItem[]; onClose: () => void }) {
+/**
+ * Popup menu (WAI-ARIA APG menu pattern): focus moves to the first enabled item, arrow keys, Home/End and
+ * first letters move between items, Enter/Space choose, Escape or Tab closes and returns focus.
+ */
+/** Number of popup menus open; global editor shortcuts stay out of the way while one is. */
+export const openMenus = { count: 0 };
+/** The trigger of the most recently used menu, so a dialog opened from a menu item can return focus to it. */
+const menuReturn: { target: HTMLElement | null } = { target: null };
+const ITEM = '[role^="menuitem"]:not(:disabled)';
+
+export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger }: { x: number; y: number; items: MenuItem[]; onClose: () => void; label?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; trigger?: HTMLElement }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
+  const hasChecks = items.some((it) => it.checked !== undefined);
+  // Who gets focus back when the menu closes: the trigger, else whatever had focus when it opened.
+  const opener = useRef<HTMLElement | null>(returnTo ?? (document.activeElement as HTMLElement | null));
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setPos({ x: Math.min(x, window.innerWidth - r.width - 8), y: Math.min(y, window.innerHeight - r.height - 8) });
-  }, [x, y]);
+    const left = alignEnd ? x - r.width : x;
+    setPos({ x: Math.max(8, Math.min(left, window.innerWidth - r.width - 8)), y: Math.max(8, Math.min(y, window.innerHeight - r.height - 8)) });
+    (el.querySelector<HTMLElement>(`${ITEM}[aria-checked="true"]`) ?? el.querySelector<HTMLElement>(ITEM))?.focus();
+  }, [x, y, alignEnd]);
   useEffect(() => {
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose();
-    const key = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    openMenus.count++;
+    // A press on the menu's own trigger is left to the trigger, which toggles the menu closed.
+    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && !(trigger && trigger.contains(e.target as Node)) && onClose();
     setTimeout(() => window.addEventListener('mousedown', close), 0);
-    window.addEventListener('keydown', key);
     window.addEventListener('blur', onClose);
     return () => {
+      openMenus.count--;
       window.removeEventListener('mousedown', close);
-      window.removeEventListener('keydown', key);
       window.removeEventListener('blur', onClose);
+      const o = opener.current;
+      if (o && document.contains(o)) setTimeout(() => (document.activeElement === document.body || !document.activeElement) && o.focus(), 0);
     };
   }, [onClose]);
-  return (
-    <div className="menu" ref={ref} style={{ left: pos.x, top: pos.y }} role="menu">
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const list = [...(ref.current?.querySelectorAll<HTMLElement>(ITEM) ?? [])];
+    const i = list.indexOf(document.activeElement as HTMLElement);
+    const go = (n: number) => list[(n + list.length) % list.length]?.focus();
+    if (e.key === 'ArrowDown') go(i + 1);
+    else if (e.key === 'ArrowUp') go(i - 1);
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(list.length - 1);
+    else if (e.key === 'Escape' || e.key === 'Tab') onClose();
+    else if (e.key.length === 1 && /\S/.test(e.key)) {
+      const k = e.key.toLowerCase();
+      const next = [...list.slice(i + 1), ...list.slice(0, i + 1)].find((n) => n.textContent?.trim().toLowerCase().startsWith(k));
+      next?.focus();
+    } else return;
+    e.preventDefault();
+    e.stopPropagation();
+  };
+  return createPortal(
+    <div className="menu" ref={ref} style={{ left: pos.x, top: pos.y }} role="menu" aria-label={label} onKeyDown={onKeyDown}>
       {items.map((it, i) =>
         it.separator ? (
-          <div key={i} className="menu-sep" />
+          <div key={i} className="menu-sep" role="separator" />
         ) : it.heading ? (
-          <div key={i} className="menu-label">
+          <div key={i} className="menu-label" role="presentation">
             {it.heading}
           </div>
         ) : (
           <button
             key={i}
-            role="menuitem"
+            role={it.checked !== undefined ? 'menuitemradio' : 'menuitem'}
+            aria-checked={it.checked}
+            tabIndex={-1}
             className={`menu-item${it.danger ? ' danger' : ''}`}
             disabled={it.disabled}
             onClick={() => {
+              menuReturn.target = opener.current;
               onClose();
               it.onSelect?.();
             }}
           >
+            {hasChecks && <span className="check">{it.checked ? <Check size={15} /> : null}</span>}
             {it.icon}
             <span className="grow">{it.label}</span>
+            {it.hint && <span className="hint">{it.hint}</span>}
             {it.shortcut && <span className="kbd">{it.shortcut}</span>}
           </button>
         )
       )}
-    </div>
+    </div>,
+    document.body
   );
 }
 
-/** Hook that shows a menu at a position. */
+/** Hook that shows a menu at a position, or below its trigger (which gets aria-expanded while open). */
 export function useMenu() {
-  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
-  const node = menu ? <Menu {...menu} onClose={() => setMenu(null)} /> : null;
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[]; label?: string; trigger?: HTMLElement; alignEnd?: boolean; returnTo?: HTMLElement | null } | null>(null);
+  useEffect(() => {
+    if (!menu?.trigger) return;
+    const t = menu.trigger;
+    t.setAttribute('aria-expanded', 'true');
+    return () => t.setAttribute('aria-expanded', 'false');
+  }, [menu]);
+  const node = menu ? <Menu {...menu} returnTo={menu.trigger ?? menu.returnTo} onClose={() => setMenu(null)} /> : null;
   return {
     node,
-    open: (x: number, y: number, items: MenuItem[]) => setMenu({ x, y, items }),
-    openAt: (el: HTMLElement, items: MenuItem[]) => {
+    isOpen: !!menu,
+    /** Open at a point (right-click); focus returns to `returnTo` (the row) on close. */
+    open: (x: number, y: number, items: MenuItem[], label?: string, returnTo?: HTMLElement | null) => setMenu({ x, y, items, label, returnTo }),
+    /** Open below a trigger button; small icon triggers align the menu's right edge with theirs. */
+    openAt: (el: HTMLElement, items: MenuItem[], label?: string) => {
+      if (menu?.trigger === el) return setMenu(null);
       const r = el.getBoundingClientRect();
-      setMenu({ x: r.left, y: r.bottom + 4, items });
+      const narrow = r.width < 48;
+      setMenu({ x: narrow ? r.right : r.left, y: r.bottom + 4, items, label, trigger: el, alignEnd: narrow });
     }
   };
 }
 
-export function Section({ title, children, defaultOpen = true, actions, id }: { title: ReactNode; children: ReactNode; defaultOpen?: boolean; actions?: ReactNode; id?: string }) {
-  const key = id ? `section:${id}` : null;
-  const [open, setOpen] = useState(() => (key && localStorage.getItem(key) !== null ? localStorage.getItem(key) === '1' : defaultOpen));
+/**
+ * Tabs (WAI-ARIA APG tabs pattern): one tab stop, Left/Right/Home/End move and activate, each tab
+ * controls a tabpanel whose id is `${idBase}-panel-${value}`.
+ */
+export function Tabs<T extends string>({ value, options, onChange, label, idBase, className = 'tabs' }: { value: T; options: Array<{ value: T; label: ReactNode; icon?: ReactNode; extra?: ReactNode }>; onChange: (v: T) => void; label: string; idBase: string; className?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const move = (e: React.KeyboardEvent) => {
+    const i = options.findIndex((o) => o.value === value);
+    const n = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? options.length - 1 : null;
+    if (n === null) return;
+    e.preventDefault();
+    const next = options[(n + options.length) % options.length];
+    onChange(next.value);
+    requestAnimationFrame(() => ref.current?.querySelector<HTMLElement>(`#${CSS.escape(`${idBase}-tab-${next.value}`)}`)?.focus());
+  };
   return (
-    <div className="section">
+    <div ref={ref} className={className} role="tablist" aria-label={label} onKeyDown={move}>
+      {options.map((o) => (
+        <button key={o.value} id={`${idBase}-tab-${o.value}`} role="tab" className={className === 'tabs' ? 'tab' : 'dock-tab'} aria-selected={value === o.value} aria-controls={`${idBase}-panel-${o.value}`} tabIndex={value === o.value ? 0 : -1} onClick={() => onChange(o.value)}>
+          {o.icon}
+          {o.label}
+          {o.extra}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function Section({ title, children, defaultOpen = true, actions, id, scope }: { title: ReactNode; children: ReactNode; defaultOpen?: boolean; actions?: ReactNode; id?: string; scope?: ReactNode }) {
+  const key = id ? `section:${id}` : null;
+  const bodyId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(() => (key && localStorage.getItem(key) !== null ? localStorage.getItem(key) === '1' : defaultOpen));
+  useEffect(() => {
+    if (!id) return;
+    const onOpen = (e: Event) => {
+      if ((e as CustomEvent).detail !== id) return;
+      setOpen(true);
+      if (key) localStorage.setItem(key, '1');
+      requestAnimationFrame(() => {
+        const el = rootRef.current;
+        const scroller = el?.closest<HTMLElement>('.panel-body');
+        if (!el || !scroller) return;
+        // Land below the sticky inspector header, and only animate when motion is welcome.
+        const head = scroller.querySelector<HTMLElement>('.insp-head')?.offsetHeight ?? 0;
+        const top = el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - head;
+        const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        scroller.scrollTo({ top, behavior: reduce ? 'auto' : 'smooth' });
+        el.querySelector<HTMLElement>('.section-head')?.focus({ preventScroll: true });
+      });
+    };
+    window.addEventListener('inspector-open-section', onOpen);
+    return () => window.removeEventListener('inspector-open-section', onOpen);
+  }, [id, key]);
+  return (
+    <div className="section" ref={rootRef}>
       <div className="row" style={{ paddingRight: 8 }}>
         <button
           className="section-head grow"
           aria-expanded={open}
+          aria-controls={bodyId}
           onClick={() => {
             setOpen(!open);
             if (key) localStorage.setItem(key, open ? '0' : '1');
@@ -117,25 +295,53 @@ export function Section({ title, children, defaultOpen = true, actions, id }: { 
         >
           <ChevronDown className="chev" />
           {title}
+          {scope && <span className="scope">{scope}</span>}
         </button>
         {actions}
       </div>
-      {open && <div className="section-body">{children}</div>}
+      {open && (
+        <div className="section-body" id={bodyId}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }
 
-export function Field({ label, children, hint, error, extra }: { label?: ReactNode; children: ReactNode; hint?: ReactNode; error?: string | null; extra?: ReactNode }) {
+/** A labelled field. The label, hint and error are wired to the single control child (id, aria-describedby). */
+/** Open (and scroll to) a collapsible Section by its id. */
+export function openSection(id: string) {
+  window.dispatchEvent(new CustomEvent('inspector-open-section', { detail: id }));
+}
+
+export function Field({ label, children, hint, error, extra, controlId: explicitId }: { label?: ReactNode; children: ReactNode; hint?: ReactNode; error?: string | null; extra?: ReactNode; controlId?: string }) {
+  const generated = useId();
+  const id = explicitId ?? generated;
+  const noteId = `${id}-note`;
+  const labelable = (t: unknown) => t === 'input' || t === 'select' || t === 'textarea' || t === DraftInput;
+  const only = Children.count(children) === 1 && isValidElement(children) && labelable(children.type) ? (children as ReactElement<Record<string, unknown>>) : null;
+  // A composite child (a field plus its buttons) passes controlId and wires `${controlId}-note` itself.
+  const controlId = explicitId ?? (only ? ((only.props.id as string | undefined) ?? id) : undefined);
+  const note = error || hint;
+  const control = only && !explicitId ? cloneElement(only, { id: controlId, 'aria-describedby': note ? noteId : undefined, 'aria-invalid': error ? true : undefined }) : children;
   return (
     <div className="field">
       {label && (
-        <label>
+        <label htmlFor={controlId}>
           <span className="grow">{label}</span>
           {extra}
         </label>
       )}
-      {children}
-      {error ? <div className="field-error">{error}</div> : hint ? <div className="field-hint">{hint}</div> : null}
+      {control}
+      {error ? (
+        <div className="field-error" id={noteId}>
+          {error}
+        </div>
+      ) : hint ? (
+        <div className="field-hint" id={noteId}>
+          {hint}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -153,8 +359,28 @@ export function Segmented<T extends string>({ value, options, onChange, full, la
   );
 }
 
-export function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label?: string }) {
-  return <button className="switch" role="switch" aria-checked={checked} aria-label={label} onClick={() => onChange(!checked)} />;
+export function Switch({ checked, onChange, label, id, labelledBy, describedBy }: { checked: boolean; onChange: (v: boolean) => void; label?: string; id?: string; labelledBy?: string; describedBy?: string }) {
+  return <button id={id} className="switch" role="switch" aria-checked={checked} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} onClick={() => onChange(!checked)} />;
+}
+
+/** A switch with its visible label and optional hint, all clickable and wired together. */
+export function SwitchRow({ checked, onChange, label, hint }: { checked: boolean; onChange: (v: boolean) => void; label: ReactNode; hint?: ReactNode }) {
+  const id = useId();
+  return (
+    <div className="switch-row">
+      <div className="grow">
+        <label htmlFor={id} id={`${id}-l`}>
+          {label}
+        </label>
+        {hint && (
+          <div className="field-hint" id={`${id}-h`}>
+            {hint}
+          </div>
+        )}
+      </div>
+      <Switch id={id} checked={checked} onChange={onChange} labelledBy={`${id}-l`} describedBy={hint ? `${id}-h` : undefined} />
+    </div>
+  );
 }
 
 /** Text input that commits on blur/Enter and keeps a local draft while focused. */
@@ -167,8 +393,14 @@ export function DraftInput({
   placeholder,
   rows,
   ariaLabel,
-  autoFocus
+  autoFocus,
+  id,
+  'aria-describedby': describedBy,
+  'aria-invalid': invalid
 }: {
+  id?: string;
+  'aria-describedby'?: string;
+  'aria-invalid'?: boolean;
   value: string;
   onCommit: (v: string) => void;
   onLive?: (v: string) => void;
@@ -181,6 +413,14 @@ export function DraftInput({
 }) {
   const [draft, setDraft] = useState(value);
   const focused = useRef(false);
+  const cancelled = useRef(false);
+  // Report an uncommitted edit to the toolbar, so it never says "Saved" over text that is still a draft.
+  const draftKey = useId();
+  const mark = (on: boolean) => markDraft(draftKey, on);
+  useEffect(() => () => markDraft(draftKey, false), [draftKey]);
+  // A commit the project rejects (an empty title) leaves the stored value unchanged: show it again.
+  const valueRef = useRef(value);
+  valueRef.current = value;
   useEffect(() => {
     if (!focused.current) setDraft(value);
   }, [value]);
@@ -191,24 +431,35 @@ export function DraftInput({
     value: draft,
     placeholder,
     'aria-label': ariaLabel,
+    'aria-describedby': describedBy,
+    'aria-invalid': invalid,
+    id,
     autoFocus,
     onFocus: () => (focused.current = true),
     onBlur: () => {
       focused.current = false;
-      commit();
+      mark(false);
+      if (cancelled.current) cancelled.current = false;
+      else {
+        commit();
+        setTimeout(() => !focused.current && setDraft(valueRef.current), 400);
+      }
     },
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       setDraft(e.target.value);
+      mark(e.target.value !== value);
       onLive?.(e.target.value);
     },
     onKeyDown: (e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // Revert: blur must not commit the abandoned draft.
+        cancelled.current = true;
         setDraft(value);
         (e.target as HTMLElement).blur();
       }
-      if (e.key === 'Enter' && (!multiline || e.metaKey || e.ctrlKey)) {
+      if (e.key === 'Enter' && !e.nativeEvent.isComposing && (!multiline || e.metaKey || e.ctrlKey)) {
+        // Blur is the single commit path, so one Enter makes one edit.
         e.preventDefault();
-        commit();
         (e.target as HTMLElement).blur();
       }
     }
@@ -218,10 +469,12 @@ export function DraftInput({
 
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
-  return (
+  // Rendered outside the app root, so toasts stay readable (and actionable) while a dialog makes the root inert.
+  return createPortal(
     <div className="toasts" role="status" aria-live="polite">
       {toasts.map((t) => (
-        <div key={t.id} className={`toast ${t.kind}`}>
+        <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'error' ? 'alert' : undefined}>
+          {t.kind === 'error' ? <CircleAlert /> : t.kind === 'success' ? <CircleCheck /> : <Info />}
           <span className="grow">{t.text}</span>
           {t.action && (
             <button className="btn btn-sm btn-ghost" onClick={t.action.run}>
@@ -230,10 +483,52 @@ export function Toasts() {
           )}
         </div>
       ))}
-    </div>
+    </div>,
+    document.body
   );
 }
 
-export function Spinner({ large }: { large?: boolean }) {
-  return <span className={`spinner${large ? ' lg' : ''}`} role="progressbar" aria-label="Loading" />;
+/** A loading ring. Inside a labelled control pass `decorative`, so it does not add "Loading" to the control's name. */
+export function Spinner({ large, decorative }: { large?: boolean; decorative?: boolean }) {
+  return decorative ? <span className={`spinner${large ? ' lg' : ''}`} aria-hidden="true" /> : <span className={`spinner${large ? ' lg' : ''}`} role="progressbar" aria-label="Loading" />;
+}
+
+/**
+ * Keyboard model for a list or tree of rows (WAI-ARIA APG listbox / tree view): the container is one tab
+ * stop (the selected row, else the first), Up/Down/Home/End move focus and selection follows it, Enter
+ * activates. Rows are found by role; each row's own handler does Left/Right for expand and collapse.
+ */
+export function rovingKeys(e: React.KeyboardEvent<HTMLElement>, role: 'option' | 'treeitem') {
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+  const t = e.target as HTMLElement;
+  if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable) return;
+  const rows = [...e.currentTarget.querySelectorAll<HTMLElement>(`[role="${role}"]`)];
+  const i = rows.indexOf((document.activeElement as HTMLElement)?.closest(`[role="${role}"]`) as HTMLElement);
+  const n = e.key === 'Home' ? 0 : e.key === 'End' ? rows.length - 1 : e.key === 'ArrowDown' ? Math.min(rows.length - 1, i + 1) : Math.max(0, i - 1);
+  const next = rows[n];
+  if (!next || n === i) return;
+  e.preventDefault();
+  next.focus();
+  next.click();
+}
+
+/** After render, make sure exactly one row in the container is tabbable. */
+export function useRovingTabStop(ref: React.RefObject<HTMLElement | null>, role: 'option' | 'treeitem') {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rows = [...el.querySelectorAll<HTMLElement>(`[role="${role}"]`)];
+    if (!rows.length) return;
+    const keep = rows.find((r) => r.getAttribute('aria-selected') === 'true') ?? rows.find((r) => r.contains(document.activeElement)) ?? rows[0];
+    for (const r of rows) r.tabIndex = r === keep ? 0 : -1;
+  });
+}
+
+/** The panel half of Tabs: give it the same idBase and the value it shows. */
+export function TabPanel({ idBase, value, children, className, style }: { idBase: string; value: string; children: ReactNode; className?: string; style?: React.CSSProperties }) {
+  return (
+    <div role="tabpanel" id={`${idBase}-panel-${value}`} aria-labelledby={`${idBase}-tab-${value}`} className={className} style={style}>
+      {children}
+    </div>
+  );
 }

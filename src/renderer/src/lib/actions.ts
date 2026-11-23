@@ -154,6 +154,11 @@ export function selectPage(pageId: string) {
 }
 
 export function askAiAbout(ref: ElementRef | null) {
-  setState({ rightTab: 'chat', selection: ref ?? getState().selection, chatContextEnabled: { page: true, selection: true } });
+  setState({ rightTab: 'chat', dockOpen: true, selection: ref ?? getState().selection, chatContextEnabled: { page: true, selection: true } });
   setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 50);
+}
+
+/** The one way to switch Edit and Preview, so every entry point leaves the same selection and inspector state. */
+export function setMode(mode: 'edit' | 'preview') {
+  setState(mode === 'preview' ? { mode, selection: null } : { mode });
 }

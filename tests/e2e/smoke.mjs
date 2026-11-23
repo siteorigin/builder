@@ -29,7 +29,7 @@ await win.evaluate(() => window.builder.ai.setKey('anthropic', null));
 
 await win.getByRole('button', { name: /New project/ }).first().click();
 await win.waitForSelector('.modal');
-await win.fill('input[placeholder="Harbour Lane Studio"]', 'Harbour Lane Studio');
+await win.fill('input[placeholder^="For example"]', 'Harbour Lane Studio');
 await win.screenshot({ path: join(OUT, '02-new-project.png') });
 // The folder picker is a native dialog; create through the same IPC call the dialog uses.
 const t0 = Date.now();

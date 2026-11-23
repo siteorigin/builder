@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { Code, Lock } from 'lucide-react';
 import { applyOps, api, setState, toast, useStore } from '../store';
-import { Field, Modal, Segmented } from '../components/ui';
+import { Field, Modal, TabPanel, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
 import { prepareCodeForSave } from '../lib/code';
 import { CodeEditor } from '../components/CodeEditor';
@@ -56,7 +56,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     <Modal
       wide
       title={`${def.name} source`}
-      icon={<Code size={18} className="faint" />}
+      icon={<Code />}
       onClose={close}
       footer={
         src?.editable ? (
@@ -82,18 +82,20 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       }
     >
       <div className="col" style={{ gap: 10 }}>
-        <Segmented value={tab} onChange={setTab} options={[{ value: 'source', label: 'Svelte source' }, { value: 'manifest', label: 'Properties' }]} />
-        {tab === 'manifest' ? (
-          <pre className="code-view">{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.keys(def.variants ?? {}) }, null, 2)}</pre>
-        ) : src?.editable ? (
-          <CodeEditor value={draft} onChange={setDraft} />
-        ) : src ? (
-          <CodeEditor value={src.source} readOnly />
-        ) : (
-          <pre className="code-view">Loading…</pre>
-        )}
+        <Tabs value={tab} onChange={setTab} label="Source views" idBase="source" options={[{ value: 'source', label: 'Svelte source' }, { value: 'manifest', label: 'Properties' }]} />
+        <TabPanel idBase="source" value={tab}>
+          {tab === 'manifest' ? (
+            <pre className="code-view">{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.keys(def.variants ?? {}) }, null, 2)}</pre>
+          ) : src?.editable ? (
+            <CodeEditor value={draft} onChange={setDraft} />
+          ) : src ? (
+            <CodeEditor value={src.source} readOnly />
+          ) : (
+            <pre className="code-view">Loading…</pre>
+          )}
+        </TabPanel>
         {errors.map((e, i) => (
-          <div key={i} className="scope-note site mono">
+          <div key={i} className="scope-note danger mono">
             {e}
           </div>
         ))}
@@ -107,7 +109,22 @@ export function PageSourceModal({ pageId }: { pageId: string }) {
   const [src, setSrc] = useState('');
   useEffect(() => void api.project.generatedSource('page', pageId).then(setSrc), [pageId, page]);
   return (
-    <Modal wide title={`${page?.title ?? 'Page'} — generated source`} icon={<Lock size={16} className="faint" />} onClose={() => setState({ modal: null })}>
+    <Modal
+      wide
+      title={`${page?.title ?? 'Page'} — generated source`}
+      icon={<Lock />}
+      onClose={() => setState({ modal: null })}
+      footer={
+        <>
+          <span className="faint grow" style={{ fontSize: 12 }}>
+            Generated from the page; change it in the editor.
+          </span>
+          <button className="btn" onClick={() => setState({ modal: null })}>
+            Close
+          </button>
+        </>
+      }
+    >
       <CodeEditor value={src} readOnly />
     </Modal>
   );
@@ -164,7 +181,7 @@ export function NewCodeComponentModal() {
     <Modal
       wide
       title="New code component"
-      icon={<Code size={18} className="faint" />}
+      icon={<Code />}
       onClose={() => setState({ modal: null })}
       footer={
         <>
@@ -184,7 +201,7 @@ export function NewCodeComponentModal() {
         </Field>
         <CodeEditor value={source} onChange={setSource} height="46vh" />
         {errors.map((e, i) => (
-          <div key={i} className="scope-note site mono">
+          <div key={i} className="scope-note danger mono">
             {e}
           </div>
         ))}

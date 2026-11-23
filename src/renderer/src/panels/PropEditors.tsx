@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, ChevronRight, ImageOff, ImagePlus, Plus, Trash2 } f
 import type { ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, useStore } from '../store';
-import { DraftInput, Field, Switch, useMenu } from '../components/ui';
+import { DraftInput, Field, Switch, useMenu, SwitchRow } from '../components/ui';
 import { assetUrl } from '../lib/model';
 
 export function LinkEditor({ value, onChange, state }: { value: LinkValue; onChange: (v: LinkValue) => void; state: ProjectState }) {
@@ -41,9 +41,7 @@ export function LinkEditor({ value, onChange, state }: { value: LinkValue; onCha
         ) : null}
       </div>
       {v.type !== 'none' && (
-        <label className="row faint" style={{ fontSize: 12, gap: 6 }}>
-          <Switch checked={!!v.newTab} onChange={(n) => onChange({ ...v, newTab: n })} label="Open in a new tab" /> Open in a new tab
-        </label>
+        <SwitchRow checked={!!v.newTab} onChange={(n) => onChange({ ...v, newTab: n })} label="Open in a new tab" />
       )}
     </div>
   );
@@ -75,15 +73,13 @@ export function ImageEditor({ value, onChange, state }: { value: ImageValue; onC
         <div className="thumb">{asset && devUrl ? <img src={assetUrl(devUrl, asset.file)!} alt="" /> : <ImageOff />}</div>
         <div className="col grow" style={{ gap: 2, minWidth: 0 }}>
           <span className="ellipsis" style={{ fontSize: 12 }}>{asset ? asset.name : 'No image chosen'}</span>
-          <button className="btn btn-sm" style={{ alignSelf: 'flex-start' }} onClick={(e) => choose(e.currentTarget)}>
+          <button className="btn btn-sm" aria-haspopup="menu" style={{ alignSelf: 'flex-start' }} onClick={(e) => choose(e.currentTarget)}>
             {asset ? 'Change…' : 'Choose image…'}
           </button>
         </div>
       </div>
       {!v.decorative && <DraftInput className="input sm" value={v.alt} placeholder="Describe the image for screen readers" ariaLabel="Alt text" onCommit={(alt) => onChange({ ...v, alt })} />}
-      <label className="row faint" style={{ fontSize: 12, gap: 6 }}>
-        <Switch checked={!!v.decorative} onChange={(d) => onChange({ ...v, decorative: d })} label="Decorative image" /> Decorative (no alt text needed)
-      </label>
+      <SwitchRow checked={!!v.decorative} onChange={(d) => onChange({ ...v, decorative: d })} label="Decorative" hint="No description needed; screen readers skip it." />
       {menu.node}
     </div>
   );

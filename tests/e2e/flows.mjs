@@ -48,7 +48,7 @@ await win.getByRole('button', { name: 'Phone', exact: true }).first().click();
 await win.waitForTimeout(800);
 await win.getByRole('button', { name: 'Style', exact: true }).click().catch(() => {});
 await win.locator('.segmented button', { hasText: 'Phone' }).last().click();
-const row = win.locator('.style-row', { hasText: 'Padding (vertical)' }).first();
+const row = win.locator('.style-row', { hasText: 'Vertical padding' }).first();
 await row.locator('select').selectOption({ label: 'Large · 24px' }).catch(async () => { await row.locator('select').selectOption('token:space.lg'); });
 await win.waitForTimeout(1500);
 const css = readFileSync(join(dir, 'src/lib/siteorigin/styles/site.css'), 'utf8');

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Component, History, Sparkles, Trash2, User } from 'lucide-react';
+import { Component, History, Redo2, Sparkles, Trash2, Undo2, User } from 'lucide-react';
 import type { ElementRef } from '@shared/types';
 import { instancesOf } from '@engine/tree';
 import { pageLinkReferences } from '@engine/apply';
@@ -18,7 +18,7 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
   return (
     <Modal
       title="Create component"
-      icon={<Component size={18} color="var(--violet)" />}
+      icon={<Component />}
       onClose={close}
       footer={
         <>
@@ -33,7 +33,7 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
     >
       <div className="col" style={{ gap: 12 }}>
         <p className="muted" style={{ margin: 0 }}>
-          The selection becomes a reusable project component. Its text, images and buttons become properties, so each copy can have its own content while sharing layout and style.
+          Turn this into a component you can reuse. Each copy keeps its own text, images and buttons, while its layout and style stay in step everywhere.
         </p>
         <Field label="Component name">
           <input className="input" autoFocus value={name} placeholder="Feature highlight" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && name.trim() && void create()} />
@@ -55,7 +55,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   return (
     <Modal
       title={`Delete “${page.title}”?`}
-      icon={<Trash2 size={18} color="var(--red)" />}
+      icon={<Trash2 style={{ color: 'var(--red)' }} />}
       onClose={close}
       footer={
         <>
@@ -63,8 +63,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
             Cancel
           </button>
           <button
-            className="btn btn-primary"
-            style={{ background: 'var(--red)' }}
+            className="btn btn-danger-fill"
             onClick={async () => {
               if (await applyOps([{ type: 'page.remove', pageId, replacementPageId: refs || pageId === st.site.homePageId ? replacement : undefined }], `Delete page ${page.title}`)) {
                 setState({ modal: null });
@@ -78,7 +77,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
       }
     >
       <div className="col" style={{ gap: 12 }}>
-        <p style={{ margin: 0 }}>You can undo this from the toolbar.</p>
+        <p style={{ margin: 0 }}>The page and its content are removed from your site. You can undo this.</p>
         {(refs > 0 || pageId === st.site.homePageId) && (
           <Field
             label={pageId === st.site.homePageId ? 'New home page' : 'Point existing links to'}
@@ -123,8 +122,8 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
   };
   return (
     <Modal
-      title={`Edit ${def.name} definition`}
-      icon={<Component size={18} color="var(--violet)" />}
+      title={`Change ${def.name} everywhere?`}
+      icon={<Component style={{ color: 'var(--plum)' }} />}
       onClose={close}
       footer={
         <>
@@ -132,16 +131,17 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
             Cancel
           </button>
           <button className="btn btn-primary" onClick={() => void go()}>
-            {def.owner === 'theme' ? 'Create project copy and edit' : 'Edit definition'}
+            {def.owner === 'theme' ? 'Make a copy and edit' : 'Edit everywhere'}
           </button>
         </>
       }
     >
       <div className="col" style={{ gap: 10 }}>
         <p style={{ margin: 0 }}>
-          Changes to the definition's layout and default styles apply to <strong>{uses.length === 1 ? 'its 1 use' : `all ${uses.length} uses`}</strong>. Each use keeps its own content and its own overrides.
+          Changes to its layout and styles apply to <strong>{uses.length === 1 ? 'its one placement' : `all ${uses.length} placements`}</strong>. Each placement keeps its own text and images, and any changes made to it directly.
         </p>
-        <ul className="muted" style={{ margin: 0, paddingLeft: 18 }}>
+        <div className="field-label">Used on</div>
+        <ul style={{ margin: '-6px 0 0', paddingLeft: 18 }}>
           {[...new Set(uses.map((u) => u.label))].map((l) => (
             <li key={l}>{l}</li>
           ))}
@@ -150,12 +150,12 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
           <div className="scope-note definition">
             <Component />
             <span>
-              {def.name} comes from the Foundation theme. Editing it first makes a project-owned copy and switches {uses.length === 1 ? 'that use' : `these ${uses.length} uses`} to it. The original stays available in Insert.
+              {def.name} comes with the Foundation theme. Editing it makes your own copy and switches {uses.length === 1 ? 'that placement' : `these ${uses.length} placements`} to it. The original stays available in Insert.
             </span>
           </div>
         )}
-        <p className="faint" style={{ margin: 0, fontSize: 12 }}>
-          In definition mode, select parts on the canvas to change their default styles. Choose Done in the toolbar to return.
+        <p className="muted" style={{ margin: 0, fontSize: 13 }}>
+          While editing, click parts on the page to change their styles. Choose Done editing in the bar at the top to return.
         </p>
       </div>
     </Modal>
@@ -166,30 +166,45 @@ export function HistoryModal() {
   const snap = useStore((s) => s.snapshot);
   const entries = [...(snap?.history.entries ?? [])].reverse();
   return (
-    <Modal title="History" icon={<History size={18} className="faint" />} onClose={() => setState({ modal: null })}>
+    <Modal
+      title="History"
+      icon={<History />}
+      onClose={() => setState({ modal: null })}
+      footer={
+        <>
+          <button className="btn" disabled={!snap?.history.canUndo} onClick={() => void api.project.undo()}>
+            <Undo2 /> Undo
+          </button>
+          <button className="btn" disabled={!snap?.history.canRedo} onClick={() => void api.project.redo()}>
+            <Redo2 /> Redo
+          </button>
+          <span className="spacer" />
+          <button className="btn" onClick={() => setState({ modal: null })}>
+            Close
+          </button>
+        </>
+      }
+    >
       <p className="muted" style={{ marginTop: 0 }}>
-        Undo moves back one change at a time. Changes after the current point can be redone.
+        Your last 100 changes, newest first. Undo steps back one change at a time; anything undone can be redone until you make a new change.
       </p>
-      <div className="list" style={{ padding: 0 }}>
-        {entries.length === 0 && <p className="faint">No changes yet.</p>}
-        {entries.map((e) => (
-          <div key={e.id} className="list-item" style={{ opacity: e.applied ? 1 : 0.45 }}>
-            {e.source === 'ai' ? <Sparkles color="var(--violet)" /> : <User />}
-            <span className="grow ellipsis">{e.label}</span>
-            <span className="faint" style={{ fontSize: 11 }}>
-              {new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </span>
-          </div>
-        ))}
-      </div>
-      <div className="row" style={{ marginTop: 10 }}>
-        <button className="btn btn-sm" disabled={!snap?.history.canUndo} onClick={() => void api.project.undo()}>
-          Undo
-        </button>
-        <button className="btn btn-sm" disabled={!snap?.history.canRedo} onClick={() => void api.project.redo()}>
-          Redo
-        </button>
-      </div>
+      {entries.length === 0 ? (
+        <div className="empty-insp" style={{ padding: '28px 12px' }}>
+          <History />
+          <span>No changes yet. Your edits will appear here as you work.</span>
+        </div>
+      ) : (
+        <ol className="history-list">
+          {entries.map((e) => (
+            <li key={e.id} className={e.applied ? '' : 'undone'}>
+              {e.source === 'ai' ? <Sparkles aria-label="By AI" /> : <User aria-label="By you" />}
+              <span className="grow ellipsis">{e.label}</span>
+              {!e.applied && <span className="badge">Undone</span>}
+              <time>{new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+            </li>
+          ))}
+        </ol>
+      )}
     </Modal>
   );
 }

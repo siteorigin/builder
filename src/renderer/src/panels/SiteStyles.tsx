@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Globe, RotateCcw } from 'lucide-react';
+import { Globe, Palette, RotateCcw } from 'lucide-react';
 import type { TextStyleValue, TokenDef } from '@shared/types';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
@@ -15,6 +15,26 @@ const FONT_CHOICES = [
   { label: 'Helvetica / Arial', value: "'Helvetica Neue', Helvetica, Arial, sans-serif" },
   { label: 'Monospace', value: "ui-monospace, 'SF Mono', Menlo, Consolas, monospace" }
 ];
+
+/**
+ * Where the Foundation theme uses each colour, checked against its base CSS and component styles, so an
+ * owner can predict what a change affects. Shown as examples, not a complete list.
+ */
+const FOUNDATION_USES: Record<string, string> = {
+  'color.background': 'Page background',
+  'color.surface': 'Cards, price plans and contact boxes',
+  'color.surface-alt': 'Alternate sections and soft backdrops',
+  'color.text': 'Headings and body text',
+  'color.muted': 'Secondary text',
+  'color.brand': 'Primary buttons, links and highlights',
+  'color.brand-strong': 'Primary buttons on hover',
+  'color.on-brand': 'Text on primary buttons',
+  'color.accent': 'Decorative highlights',
+  'color.inverse': 'Dark sections and dark panels',
+  'color.on-inverse': 'Text in dark sections',
+  'color.border': 'Dividers',
+  'color.focus': 'Keyboard focus outline on your site'
+};
 
 function resolveColor(tokens: TokenDef[], v: unknown, depth = 0): string {
   if (v && typeof v === 'object' && 'token' in (v as object) && depth < 6) return resolveColor(tokens, tokens.find((t) => t.id === (v as { token: string }).token)?.value, depth + 1);
@@ -34,7 +54,7 @@ export function SiteStyles() {
   const group = (g: TokenDef['group']) => tokens.filter((t) => t.group === g);
   const Reset = ({ id }: { id: string }) =>
     id in overrides ? (
-      <button className="icon-btn sm" title="Use theme default" aria-label="Use theme default" onClick={() => set(id, null)}>
+      <button className="icon-btn sm" title="Back to the theme's value" aria-label="Back to the theme's value" onClick={() => set(id, null)}>
         <RotateCcw />
       </button>
     ) : null;
@@ -45,16 +65,19 @@ export function SiteStyles() {
     <div className="panel-body">
       <div className="insp-head">
         <div className="insp-title">
-          <Globe size={16} className="faint" />
+          <span className="layer-kind">
+            <Palette />
+          </span>
           <h3>Site styles</h3>
-          <span className="badge amber">Site-wide</span>
         </div>
         <div className="scope-note site">
           <Globe />
-          <span>Changes here apply to every page that uses these styles. Explicit overrides on individual elements are kept.</span>
+          <span>
+            <strong>Your whole site.</strong> Changes apply wherever a site style is used, on every page. Anything set to a site style (a button set to Brand) follows the change; anything given its own custom colour keeps it.
+          </span>
         </div>
       </div>
-      <Section title="Colors" id="tok-color">
+      <Section title="Colours" id="tok-color" scope="Every page">
         {group('color').map((t) => {
           const isRef = typeof t.value === 'object';
           const hex = resolveColor(tokens, t.value);
@@ -64,12 +87,15 @@ export function SiteStyles() {
                 <label className="color-input" style={{ flex: 'none' }}>
                   <input type="color" value={/^#[0-9a-f]{6}$/i.test(hex) ? hex : '#000000'} onChange={(e) => set(t.id, e.target.value)} aria-label={`${t.label} color`} />
                 </label>
-                <span>{t.label}</span>
-                {t.id in overrides && <span className="ovr-dot" style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--violet)', flex: 'none' }} title="Changed from theme default" />}
+                <span title={t.label} className="token-name">
+                  {t.label}
+                  {st.site.themeId === 'foundation' && FOUNDATION_USES[t.id] && <small>e.g. {FOUNDATION_USES[t.id]}</small>}
+                </span>
+                {t.id in overrides && <span className="ovr-dot" role="img" aria-label="Changed from the theme" title="Changed from the theme" />}
               </div>
               <div className="row" style={{ gap: 4 }}>
-                <DraftInput className="input sm mono" value={isRef ? `→ ${(t.value as { token: string }).token}` : String(t.value)} onCommit={(v) => set(t.id, v.trim())} ariaLabel={`${t.label} value`} />
-                <Reset id={t.id} />
+                <DraftInput className="input sm mono hex" value={isRef ? `= ${tokens.find((x) => x.id === (t.value as { token: string }).token)?.label ?? (t.value as { token: string }).token}` : String(t.value)} onCommit={(v) => set(t.id, v.trim())} ariaLabel={`${t.label} value`} />
+                {t.id in overrides ? <Reset id={t.id} /> : <span style={{ width: 24 }} />}
               </div>
             </div>
           );

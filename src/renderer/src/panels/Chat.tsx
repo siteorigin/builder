@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowUp, Check, CircleAlert, CircleCheck, CircleSlash, FileText, History, KeyRound, MousePointerClick, Plus, RotateCcw, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { ArrowUp, Check, Settings2, CircleAlert, CircleCheck, CircleSlash, FileText, History, KeyRound, MousePointerClick, Plus, RotateCcw, Sparkles, Square, Trash2, X } from 'lucide-react';
 import type { ChatContext, ChatMessage } from '@shared/api';
 import { api, getState, setState, toast, useStore } from '../store';
 import { refLabel } from '../lib/model';
@@ -16,7 +16,7 @@ function Md({ text }: { text: string }) {
   );
 }
 
-const SUGGESTIONS = ['Rewrite the home page hero to sound warmer and more confident', 'Add a Services page with three service cards and link it from the header', 'Make the brand color a deep navy blue', 'Add an FAQ section to the Contact page'];
+const SUGGESTIONS = ['Rewrite the home page hero to sound warmer and more confident', 'Add a Services page with three service cards and link it from the header', 'Make the brand colour a deep navy blue', 'Add an FAQ section to the Contact page'];
 
 const STATUS_LABEL: Record<string, string> = {
   preparing: 'Preparing',
@@ -65,6 +65,9 @@ export function Chat() {
   const st = snap.state;
   const page = pageId ? st.pages[pageId] : null;
   const selLabel = selection ? refLabel(st, selection) : null;
+  const model = provider ? settings?.ai.models[provider.id] : undefined;
+  const modelLabel = provider?.models.find((m) => m.id === model)?.label ?? model;
+  const suggestions = selLabel && ctxOn.selection ? [`Rewrite the ${selLabel.toLowerCase()} to sound warmer and more confident`, `Make the ${selLabel.toLowerCase()} shorter and easier to scan`, `Suggest a better layout for the ${selLabel.toLowerCase()}`] : SUGGESTIONS;
 
   const send = async (text = draft) => {
     if (!text.trim() || running || sending) return;
@@ -91,25 +94,26 @@ export function Chat() {
 
   return (
     <div className="chat">
-      <div className="row" style={{ padding: '6px 8px 0 14px' }}>
-        <span className="faint ellipsis grow" style={{ fontSize: 11.5 }}>
+      {(configured || msgs.length > 0) && <div className="row" style={{ padding: '6px 8px 0 14px' }}>
+        <span className="faint ellipsis grow" style={{ fontSize: 12 }}>
           {conversation?.title && conversation.messages.length ? conversation.title : 'New conversation'}
         </span>
-        <button className="icon-btn sm" title="Conversations" aria-label="Conversations" onClick={async (e) => {
+        <button className="icon-btn sm" title="Earlier conversations" aria-label="Earlier conversations" aria-haspopup="menu" onClick={async (e) => {
           const el = e.currentTarget;
           const { list } = await api.ai.conversations();
           menu.openAt(el, [
-            ...list.slice(0, 12).map((c) => ({ label: c.title, onSelect: () => void api.ai.openConversation(c.id).then((conv) => setState({ conversation: conv })) })),
+            { heading: list.length ? 'Recent conversations' : 'No earlier conversations' },
+            ...list.slice(0, 12).map((c) => ({ label: c.title, checked: c.id === conversation?.id, onSelect: () => void api.ai.openConversation(c.id).then((conv) => setState({ conversation: conv })) })),
             ...(list.length ? [{ separator: true }] : []),
-            { label: 'Clear conversation history', icon: <Trash2 />, danger: true, onSelect: () => void api.ai.clearHistory().then((conv) => setState({ conversation: conv })) }
+            ...(list.length ? [{ label: 'Clear conversation history…', icon: <Trash2 />, danger: true, onSelect: () => window.confirm('Clear every earlier AI conversation in this project? This cannot be undone.') && void api.ai.clearHistory().then((conv) => setState({ conversation: conv })) }] : [{ label: 'Start a new conversation', icon: <Plus />, onSelect: () => void api.ai.newConversation().then((c) => setState({ conversation: c })) }])
           ]);
         }} disabled={running}>
           <History />
         </button>
-        <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={running} onClick={() => void api.ai.newConversation().then((c) => setState({ conversation: c }))}>
+        <button className="icon-btn sm" title="New conversation" aria-label="New conversation" disabled={running || msgs.length === 0} onClick={() => void api.ai.newConversation().then((c) => setState({ conversation: c }))}>
           <Plus />
         </button>
-      </div>
+      </div>}
       <div className="chat-log" ref={logRef} aria-live="off" onScroll={(e) => {
         const el = e.currentTarget;
         nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -119,16 +123,27 @@ export function Chat() {
             <div className="spark">
               <Sparkles size={20} />
             </div>
-            <div>
-              <strong>Ask AI to edit your site</strong>
-              <p className="muted" style={{ margin: '4px 0 0' }}>
-                It uses the same editing tools you do, checks its work and every turn can be undone.
-              </p>
+            <div className="col" style={{ gap: 4 }}>
+              <h3>Ask AI to edit your site</h3>
+              <p>It uses the same editing tools you do and checks its work. Every change it makes can be undone.</p>
             </div>
             {configured ? (
               <div className="suggestions">
-                {SUGGESTIONS.map((s) => (
-                  <button key={s} className="suggestion" onClick={() => setState({ chatDraft: s })}>
+                {suggestions.map((s) => (
+                  <button
+                    key={s}
+                    className="suggestion"
+                    onClick={() => {
+                      setState({ chatDraft: s });
+                      requestAnimationFrame(() => {
+                        const ta = document.querySelector<HTMLTextAreaElement>('.composer textarea');
+                        if (!ta) return;
+                        ta.style.height = 'auto';
+                        ta.style.height = `${Math.min(200, ta.scrollHeight)}px`;
+                        ta.focus();
+                      });
+                    }}
+                  >
                     {s}
                   </button>
                 ))}
@@ -138,8 +153,8 @@ export function Chat() {
                 <KeyRound /> Connect an AI provider
               </button>
             )}
-            <p className="faint" style={{ fontSize: 11.5, margin: 0 }}>
-              Page text and structure are sent to your chosen provider. Images are never sent.
+            <p className="faint" style={{ fontSize: 12, margin: 0 }}>
+              Page text and structure are sent to {configured && provider ? provider.label : 'the provider you choose'}. Images are never sent.
             </p>
           </div>
         )}
@@ -154,15 +169,12 @@ export function Chat() {
           </span>
         </div>
       )}
-      <div className="composer">
+      {(configured || msgs.length > 0) && <div className={`composer${configured ? '' : ' off'}`}>
         {(page || selLabel) && (
           <div className="chips">
-            {page && ctxOn.page && (
-              <span className="chip">
+            {page && (
+              <span className="chip" title="The AI works on the page you are viewing">
                 <FileText /> {page.title}
-                <button aria-label="Remove page context" onClick={() => setState({ chatContextEnabled: { ...ctxOn, page: false } })}>
-                  <X />
-                </button>
               </span>
             )}
             {selLabel && ctxOn.selection && (
@@ -177,8 +189,9 @@ export function Chat() {
         )}
         <textarea
           value={draft}
-          placeholder={selLabel && ctxOn.selection ? `Ask about ${selLabel}…` : 'Describe a change…'}
+          placeholder={!configured ? 'Connect an AI provider to start' : selLabel && ctxOn.selection ? `Ask about ${selLabel}…` : 'Describe a change…'}
           aria-label="Message"
+          disabled={!configured}
           rows={1}
           onChange={(e) => {
             setState({ chatDraft: e.target.value });
@@ -194,20 +207,30 @@ export function Chat() {
           }}
         />
         <div className="composer-foot">
-          <span className="faint ellipsis grow" style={{ fontSize: 11 }}>
-            {provider ? `${provider.label} · ${settings?.ai.models[provider.id]}` : 'No provider'}
-          </span>
+          {configured && provider ? (
+            <button className="btn btn-sm btn-ghost" style={{ maxWidth: '72%', color: 'var(--text-2)', fontWeight: 500 }} title="Change AI provider or model" aria-haspopup="dialog" onClick={() => setState({ modal: { kind: 'settings', tab: 'ai' } })}>
+              <span className="label">
+                {provider.label} · {modelLabel}
+              </span>
+              <Settings2 size={12} />
+            </button>
+          ) : (
+            <button className="btn btn-sm btn-ghost" style={{ color: 'var(--accent-text)' }} onClick={() => setState({ modal: { kind: 'settings', tab: 'ai' } })}>
+              <KeyRound /> Not connected. Set up AI…
+            </button>
+          )}
+          <span className="grow" />
           {running ? (
             <button className="send-btn stop-btn" title="Stop" aria-label="Stop" onClick={() => void api.ai.stop()}>
               <Square size={12} fill="currentColor" />
             </button>
           ) : (
-            <button className="send-btn" disabled={!draft.trim() || sending} title="Send" aria-label="Send" onClick={() => void send()}>
+            <button className="send-btn" disabled={!configured || !draft.trim() || sending} title="Send" aria-label="Send" onClick={() => void send()}>
               <ArrowUp />
             </button>
           )}
         </div>
-      </div>
+      </div>}
       {menu.node}
     </div>
   );
@@ -263,7 +286,10 @@ function AssistantMessage({ m }: { m: ChatMessage }) {
                 ))}
               </div>
               <div className="row">
-                <input className="input sm grow" placeholder="Or type an answer" value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && answer.trim() && void api.ai.answer(m.runId!, answer.trim())} />
+                <input className="input sm grow" placeholder="Or type an answer" aria-label="Your answer" value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && answer.trim() && void api.ai.answer(m.runId!, answer.trim())} />
+                <button className="btn btn-sm btn-primary" disabled={!answer.trim()} onClick={() => void api.ai.answer(m.runId!, answer.trim())}>
+                  Answer
+                </button>
               </div>
             </>
           )}
@@ -276,6 +302,7 @@ function AssistantMessage({ m }: { m: ChatMessage }) {
 
 function ResultCard({ m }: { m: ChatMessage }) {
   const r = m.result!;
+  const devMode = useStore((s) => !!s.settings?.developerMode);
   const head = {
     completed: { icon: <CircleCheck />, label: 'Completed' },
     'no-changes': { icon: <CircleSlash />, label: 'No changes needed' },
@@ -289,7 +316,7 @@ function ResultCard({ m }: { m: ChatMessage }) {
         {head.icon}
         {head.label}
         <span className="spacer" />
-        {r.usage && <span className="faint" style={{ fontWeight: 400, fontSize: 11 }}>{(r.usage.inputTokens + r.usage.outputTokens).toLocaleString()} tokens</span>}
+        {r.usage && devMode && <span className="faint" style={{ fontWeight: 400, fontSize: 12 }}>{(r.usage.inputTokens + r.usage.outputTokens).toLocaleString()} tokens</span>}
       </div>
       <div className="result-body">
         <div style={{ whiteSpace: 'pre-wrap' }}><Md text={r.summary} /></div>

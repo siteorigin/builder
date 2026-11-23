@@ -41,8 +41,8 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'order', label: 'Order', group: 'layout', kind: 'number', min: -10, max: 10, step: 1, description: 'Visual order within its parent.' },
   { id: 'wrap', label: 'Wrap', group: 'layout', kind: 'boolean' },
   { id: 'gap', label: 'Gap', group: 'layout', kind: 'length', tokenGroup: 'space', placeholder: '24px' },
-  { id: 'paddingBlock', label: 'Padding (vertical)', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '64px' },
-  { id: 'paddingInline', label: 'Padding (horizontal)', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '24px' },
+  { id: 'paddingBlock', label: 'Vertical padding', description: 'Space inside, above and below the content.', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '64px' },
+  { id: 'paddingInline', label: 'Side padding', description: 'Space inside, left and right of the content.', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '24px' },
   { id: 'marginBlockStart', label: 'Space above', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '0' },
   { id: 'marginBlockEnd', label: 'Space below', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '0' },
   { id: 'width', label: 'Width', group: 'size', kind: 'length', options: [
@@ -50,7 +50,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   ], placeholder: 'fill' },
   { id: 'maxWidth', label: 'Max width', group: 'size', kind: 'length', tokenGroup: 'container', placeholder: '1200px' },
   { id: 'minHeight', label: 'Min height', group: 'size', kind: 'length', placeholder: '0' },
-  { id: 'marginInline', label: 'Horizontal position', group: 'size', kind: 'enum', options: [
+  { id: 'marginInline', label: 'Placement', description: 'Where it sits horizontally when narrower than its container.', group: 'size', kind: 'enum', options: [
     { value: 'auto', label: 'Centered' }, { value: '0', label: 'Start' }
   ] },
   { id: 'aspectRatio', label: 'Aspect ratio', group: 'size', kind: 'ratio', options: [
@@ -72,7 +72,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'textAlign', label: 'Alignment', group: 'typography', kind: 'enum', options: [
     { value: 'start', label: 'Left' }, { value: 'center', label: 'Center' }, { value: 'end', label: 'Right' }
   ] },
-  { id: 'color', label: 'Text color', group: 'appearance', kind: 'color', tokenGroup: 'color' },
+  { id: 'color', label: 'Text colour', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'background', label: 'Background', group: 'appearance', kind: 'color', tokenGroup: 'color' },
   { id: 'border', label: 'Border', group: 'appearance', kind: 'border', tokenGroup: 'border' },
   { id: 'radius', label: 'Corner radius', group: 'appearance', kind: 'length', tokenGroup: 'radius', placeholder: '8px' },

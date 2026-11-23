@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Copy, FileText, House, MoreHorizontal, Pencil, Plus, Settings2, Trash2, ArrowUp, ArrowDown, Code } from 'lucide-react';
 import { slugify } from '@shared/routes';
-import { applyOps, setState, useStore } from '../store';
-import { useMenu } from '../components/ui';
+import { applyOps, markDraft, setState, useStore } from '../store';
+import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { selectPage } from '../lib/actions';
 
 export function PagesPanel() {
@@ -14,6 +14,22 @@ export function PagesPanel() {
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropAt, setDropAt] = useState<{ id: string; after: boolean } | null>(null);
   const menu = useMenu();
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  useRovingTabStop(listRef, 'option');
+  useEffect(() => {
+    markDraft('page-add', adding);
+    return () => markDraft('page-add', false);
+  }, [adding]);
+  useEffect(() => {
+    markDraft('page-rename', !!renaming);
+    return () => markDraft('page-rename', false);
+  }, [renaming]);
+  useEffect(() => {
+    const start = () => setAdding(true);
+    window.addEventListener('builder-add-page', start);
+    return () => window.removeEventListener('builder-add-page', start);
+  }, []);
   if (!snap) return null;
   const st = snap.state;
   const order = st.site.pageOrder;
@@ -29,23 +45,27 @@ export function PagesPanel() {
   };
   const reorder = async (ids: string[]) => applyOps([{ type: 'page.reorder', pageIds: ids }], 'Reorder pages');
 
-  const pageMenu = (el: HTMLElement, id: string) => {
+  const pageMenu = (el: HTMLElement | { x: number; y: number; row: HTMLElement }, id: string) => {
     const i = order.indexOf(id);
-    menu.openAt(el, [
-      { label: 'Page settings', icon: <Settings2 />, onSelect: () => (selectPage(id), setState({ selection: null, rightTab: 'inspect' })) },
+    const isHome = id === st.site.homePageId;
+    setMenuFor(id);
+    const open = (items: Parameters<typeof menu.openAt>[1], label: string) => (el instanceof HTMLElement ? menu.openAt(el, items, label) : menu.open(el.x, el.y, items, label, el.row));
+    open([
+      { heading: st.pages[id].title },
+      { label: 'Page settings', icon: <Settings2 />, onSelect: () => (selectPage(id), setState({ selection: null, rightTab: 'inspect', dockOpen: true })) },
       { label: 'Rename', icon: <Pencil />, onSelect: () => setRenaming(id) },
       { label: 'Duplicate', icon: <Copy />, onSelect: async () => {
         const r = await applyOps([{ type: 'page.duplicate', pageId: id }], 'Duplicate page');
         if (r?.[0]?.pageId) selectPage(r[0].pageId as string);
       } },
-      { label: 'Make home page', icon: <House />, disabled: id === st.site.homePageId, onSelect: () => void applyOps([{ type: 'page.setHome', pageId: id }], 'Change home page') },
+      ...(isHome ? [] : [{ label: 'Make home page', icon: <House />, onSelect: () => void applyOps([{ type: 'page.setHome', pageId: id }], 'Change home page') }]),
       ...(useStore.getState().settings?.developerMode ? [{ label: 'View generated source', icon: <Code />, onSelect: () => setState({ modal: { kind: 'page-source', pageId: id } }) }] : []),
       { separator: true },
       { label: 'Move up', icon: <ArrowUp />, disabled: i === 0, onSelect: () => { const o = [...order]; o.splice(i - 1, 0, o.splice(i, 1)[0]); void reorder(o); } },
       { label: 'Move down', icon: <ArrowDown />, disabled: i === order.length - 1, onSelect: () => { const o = [...order]; o.splice(i + 1, 0, o.splice(i, 1)[0]); void reorder(o); } },
       { separator: true },
-      { label: 'Delete page…', icon: <Trash2 />, danger: true, disabled: order.length <= 1, onSelect: () => setState({ modal: { kind: 'delete-page', pageId: id } }) }
-    ]);
+      { label: `Delete ${st.pages[id].title}…`, icon: <Trash2 />, danger: true, disabled: order.length <= 1, onSelect: () => setState({ modal: { kind: 'delete-page', pageId: id } }) }
+    ], `${st.pages[id].title} options`);
   };
 
   return (
@@ -57,17 +77,19 @@ export function PagesPanel() {
         </button>
       </div>
       <div className="panel-body">
-        <div className="list" role="listbox" aria-label="Pages">
+        <div className="list" role="listbox" aria-label="Pages" ref={listRef} onKeyDown={(e) => rovingKeys(e, 'option')}>
           {order.map((id) => {
             const p = st.pages[id];
             const selected = id === pageId;
             return (
               <div
                 key={id}
-                className={`list-item${selected ? ' selected' : ''}${dropAt?.id === id ? (dropAt.after ? ' drop-after' : ' drop-before') : ''}`}
+                className={`list-item${selected ? ' selected' : ''}${menu.isOpen && menuFor === id ? ' menu-open' : ''}${dropAt?.id === id ? (dropAt.after ? ' drop-after' : ' drop-before') : ''}`}
                 role="option"
                 aria-selected={selected}
-                tabIndex={0}
+                aria-label={id === st.site.homePageId ? `${p.title}, home page` : p.title}
+                tabIndex={selected ? 0 : -1}
+                title={id === st.site.homePageId ? `${p.title} (home page)` : `${p.title} · ${p.route}`}
                 draggable={!renaming}
                 onDragStart={() => setDragId(id)}
                 onDragOver={(e) => {
@@ -88,18 +110,28 @@ export function PagesPanel() {
                 }}
                 onClick={() => selectPage(id)}
                 onDoubleClick={() => setRenaming(id)}
-                onKeyDown={(e) => e.key === 'Enter' && selectPage(id)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return;
+                  if (e.key === 'Enter') selectPage(id);
+                  if (e.key === 'F2') setRenaming(id);
+                  if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') {
+                    e.preventDefault();
+                    const r = e.currentTarget.getBoundingClientRect();
+                    pageMenu({ x: r.left + 24, y: r.bottom, row: e.currentTarget }, id);
+                  }
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault();
-                  pageMenu(e.currentTarget, id);
+                  pageMenu({ x: e.clientX, y: e.clientY, row: e.currentTarget }, id);
                 }}
               >
-                {id === st.site.homePageId ? <House /> : <FileText />}
+                {id === st.site.homePageId ? <House aria-label="Home page" /> : <FileText />}
                 {renaming === id ? (
                   <input
                     className="input inline-edit grow"
                     autoFocus
                     defaultValue={p.title}
+                    aria-label={`Rename ${p.title}`}
                     onClick={(e) => e.stopPropagation()}
                     onBlur={(e) => {
                       setRenaming(null);
@@ -114,9 +146,13 @@ export function PagesPanel() {
                 ) : (
                   <span className="grow ellipsis">{p.title}</span>
                 )}
-                {id === st.site.homePageId ? <span className="badge">Home</span> : <span className="faint mono" style={{ fontSize: 11 }}>{p.route}</span>}
+                {id !== st.site.homePageId && renaming !== id && (
+                  <span className="faint ellipsis" style={{ fontSize: 12, maxWidth: '40%' }}>
+                    {p.route}
+                  </span>
+                )}
                 <span className="actions">
-                  <button className="icon-btn sm" aria-label={`${p.title} options`} onClick={(e) => (e.stopPropagation(), pageMenu(e.currentTarget, id))}>
+                  <button className="icon-btn sm" tabIndex={-1} aria-haspopup="menu" aria-label={`${p.title} options`} title="Page options" onClick={(e) => (e.stopPropagation(), pageMenu(e.currentTarget, id))}>
                     <MoreHorizontal />
                   </button>
                 </span>
@@ -130,15 +166,16 @@ export function PagesPanel() {
                 className="input inline-edit grow"
                 autoFocus
                 placeholder="Page title"
+                aria-label="New page title"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 onBlur={() => void add()}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') void add();
-                  if (e.key === 'Escape') (setAdding(false), setTitle(''));
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) (e.target as HTMLInputElement).blur();
+                  if (e.key === 'Escape') (setTitle(''), setAdding(false));
                 }}
               />
-              <span className="faint mono" style={{ fontSize: 11 }}>
+              <span className="faint" style={{ fontSize: 12 }}>
                 /{slugify(title) || 'page'}/
               </span>
             </div>

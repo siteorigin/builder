@@ -6,18 +6,18 @@ const body = { token: 'font.body' };
 export const FOUNDATION_TOKENS: TokenDef[] = [
   // Colors
   { id: 'color.background', label: 'Background', group: 'color', value: '#fbfaf7' },
-  { id: 'color.surface', label: 'Surface', group: 'color', value: '#ffffff' },
-  { id: 'color.surface-alt', label: 'Alternate surface', group: 'color', value: '#f2efe8' },
+  { id: 'color.surface', label: 'Cards and panels', group: 'color', value: '#ffffff' },
+  { id: 'color.surface-alt', label: 'Alternate background', group: 'color', value: '#f2efe8' },
   { id: 'color.text', label: 'Primary text', group: 'color', value: '#191a18' },
   { id: 'color.muted', label: 'Muted text', group: 'color', value: '#5c5f59' },
   { id: 'color.brand', label: 'Brand', group: 'color', value: '#1f5a4c' },
   { id: 'color.brand-strong', label: 'Brand (strong)', group: 'color', value: '#16443a' },
-  { id: 'color.on-brand', label: 'On brand', group: 'color', value: '#ffffff' },
+  { id: 'color.on-brand', label: 'Text on brand colour', group: 'color', value: '#ffffff' },
   { id: 'color.accent', label: 'Accent', group: 'color', value: '#d98f48' },
-  { id: 'color.inverse', label: 'Inverse surface', group: 'color', value: '#14211d' },
-  { id: 'color.on-inverse', label: 'On inverse', group: 'color', value: '#f1eee6' },
+  { id: 'color.inverse', label: 'Dark sections', group: 'color', value: '#14211d' },
+  { id: 'color.on-inverse', label: 'Text on dark sections', group: 'color', value: '#f1eee6' },
   { id: 'color.border', label: 'Border', group: 'color', value: '#e3dfd5' },
-  { id: 'color.focus', label: 'Focus ring', group: 'color', value: '#2f6fed' },
+  { id: 'color.focus', label: 'Keyboard focus outline', group: 'color', value: '#2f6fed' },
 
   // Font families
   { id: 'font.body', label: 'Body font', group: 'font', value: "'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif" },

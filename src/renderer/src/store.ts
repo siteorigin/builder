@@ -7,7 +7,7 @@ export const api = window.builder;
 
 export type LeftTab = 'pages' | 'layers' | 'insert' | 'assets';
 export type RightTab = 'inspect' | 'chat' | 'styles';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'create-component'; ref: ElementRef } | { kind: 'delete-page'; pageId: string } | { kind: 'history' } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef };
+export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'create-component'; ref: ElementRef } | { kind: 'delete-page'; pageId: string } | { kind: 'history' } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' };
 
 export interface Rect {
   x: number;
@@ -19,7 +19,7 @@ export interface Rect {
 export interface Toast {
   id: number;
   text: string;
-  kind: 'info' | 'error';
+  kind: 'info' | 'success' | 'error';
   action?: { label: string; run: () => void };
 }
 
@@ -37,6 +37,14 @@ interface State {
   mode: 'edit' | 'preview';
   leftTab: LeftTab | null;
   rightTab: RightTab;
+  /** The preview page itself has loaded and connected (not just the website tools). */
+  frameReady: boolean;
+  /** Fields holding typed text that is not committed yet (the toolbar says "Editing…" rather than "Saved"). */
+  drafting: number;
+  /** A problem the preview page itself reported (a component that failed to render), in plain words. */
+  previewIssue: string | null;
+  /** Whether the right dock (Inspector / AI / Site styles) is shown. */
+  dockOpen: boolean;
   leftWidth: number;
   rightWidth: number;
   styleScope: ResponsiveScope;
@@ -68,6 +76,10 @@ export const useStore = create<State>((set) => ({
   mode: 'edit',
   leftTab: 'pages',
   rightTab: 'inspect',
+  frameReady: false,
+  drafting: 0,
+  previewIssue: null,
+  dockOpen: true,
   leftWidth: 260,
   rightWidth: 340,
   styleScope: 'base',
@@ -133,4 +145,13 @@ export function applyAiEvent(e: AiEvent) {
     const msgs = conv.messages.map((m): ChatMessage => (m.runId === e.runId && m.role === 'assistant' ? { ...m, text: e.text ?? '' } : m));
     setState({ conversation: { ...conv, messages: msgs } });
   }
+}
+
+const drafts = new Set<string>();
+/** Mark or clear an uncommitted edit (a field, an inline rename, canvas text) so the toolbar says "Editing…". */
+export function markDraft(key: string, on: boolean) {
+  if (on === drafts.has(key)) return;
+  if (on) drafts.add(key);
+  else drafts.delete(key);
+  useStore.setState({ drafting: drafts.size });
 }

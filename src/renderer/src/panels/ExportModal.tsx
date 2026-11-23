@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { CircleCheck, FolderCode, Globe, TriangleAlert } from 'lucide-react';
+import { ChevronRight, CircleCheck, Cloud, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
 import type { ExportResult } from '@shared/api';
 import { api, setState, useStore } from '../store';
 import { Modal, Spinner } from '../components/ui';
@@ -17,42 +17,56 @@ export function ExportModal() {
     setBusy(null);
     if (r.message || !r.ok) setResult(r);
   };
-  const blocked = aiBusy ? 'Wait for the AI to finish before exporting.' : conflicts ? 'Resolve file conflicts (see diagnostics) before exporting.' : null;
+  const blocked = aiBusy ? 'Wait for the AI to finish before exporting.' : conflicts ? 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.' : null;
   return (
-    <Modal title="Export" onClose={close} footer={<button className="btn" onClick={close} disabled={!!busy}>Close</button>}>
+    <Modal title="Export your website" icon={<Upload />} onClose={close} footer={<button className="btn" onClick={close} disabled={!!busy}>Close</button>}>
       <div className="col" style={{ gap: 10 }}>
         <p className="muted" style={{ margin: '0 0 4px' }}>
-          Your website belongs to you. Export it and put it on any web host, or hand the project to a developer. It does not need SiteOrigin Builder to work.
+          Your website belongs to you. Put it on any web host, or hand it to a developer. It does not need SiteOrigin Builder to work.
         </p>
-        {blocked && <div className="scope-note site">{blocked}</div>}
+        {blocked && (
+          <div className="scope-note site" role="status">
+            <TriangleAlert />
+            <span className="grow">{blocked}</span>
+            {conflicts > 0 && !aiBusy && (
+              <button className="btn btn-sm" onClick={() => setState({ modal: { kind: 'health' } })}>
+                Open project health
+              </button>
+            )}
+          </div>
+        )}
         <button className="welcome-action" disabled={!!busy || !!blocked} onClick={() => void run('static')}>
-          <span className="ico">{busy === 'static' ? <Spinner /> : <Globe size={18} />}</span>
+          <span className="ico">{busy === 'static' ? <Spinner decorative /> : <Globe size={18} />}</span>
           <span className="grow">
-            <strong>Static website</strong>
-            <span>Plain HTML, CSS and images for every page. Upload the folder to any web host.</span>
+            <strong>Website files, ready to upload</strong>
+            <span>Every page as a finished website folder. Upload it to any web host.</span>
           </span>
+          <ChevronRight className="chev" />
         </button>
         <button className="welcome-action secondary" disabled={!!busy || !!blocked} onClick={() => void run('source')}>
-          <span className="ico">{busy === 'source' ? <Spinner /> : <FolderCode size={18} />}</span>
+          <span className="ico">{busy === 'source' ? <Spinner decorative /> : <FolderCode size={18} />}</span>
           <span className="grow">
-            <strong>Source project</strong>
-            <span>The complete SvelteKit project. Builds with npm without SiteOrigin Builder.</span>
+            <strong>Editable project, for a developer</strong>
+            <span>The complete project, so a developer can keep building it with standard tools.</span>
           </span>
+          <ChevronRight className="chev" />
         </button>
-        {busy === 'static' && <p className="muted" style={{ margin: 0 }}>Building the production site and checking every page…</p>}
-        <div className="scope-note info">
-          <span>
-            <strong>Coming soon: SiteOrigin Hosting.</strong> Publish in one click, with your own domain. Until then, any static host works: upload the exported folder.
-          </span>
-        </div>
+        {busy === 'static' && (
+          <p className="muted" role="status" style={{ margin: 0 }}>
+            Building your website and checking every page…
+          </p>
+        )}
+        <p className="faint" style={{ margin: '2px 0 0', fontSize: 12, display: 'flex', gap: 6, alignItems: 'center' }}>
+          <Cloud size={14} /> One-click publishing with SiteOrigin Hosting is coming soon.
+        </p>
         {result && result.message && (
-          <div className={`scope-note ${result.ok ? 'shared' : 'site'}`} style={{ flexDirection: 'column', gap: 8 }}>
+          <div className={`scope-note ${result.ok ? 'shared' : 'danger'}`} role={result.ok ? 'status' : 'alert'} style={{ flexDirection: 'column', gap: 8 }}>
             <div className="row">
               {result.ok ? <CircleCheck size={15} /> : <TriangleAlert size={15} />}
               <strong>{result.message}</strong>
-              {result.revision !== undefined && <span className="faint">Revision {result.revision}</span>}
+
             </div>
-            {result.path && <span className="mono" style={{ wordBreak: 'break-all', userSelect: 'text' }}>{result.path}</span>}
+            {result.path && <span style={{ wordBreak: 'break-all', userSelect: 'text', color: 'var(--text-2)' }}>{result.path.replace(/^\/Users\/[^/]+/, '~')}</span>}
             {result.warnings.map((w, i) => (
               <span key={i}>• {w}</span>
             ))}

@@ -44,28 +44,19 @@ export function AssetsPanel() {
           else void importFiles();
         }}
       >
-        <button className={`dropzone${over ? ' over' : ''}`} style={{ width: 'calc(100% - 20px)' }} onClick={() => void importFiles()}>
-          Drop images here or click to import
-          <br />
-          <span style={{ fontSize: 11 }}>JPEG, PNG, WebP, GIF, AVIF or plain SVG</span>
+        <button className={`dropzone${over ? ' over' : ''}`} onClick={() => void importFiles()} title="JPEG, PNG, WebP, GIF, AVIF or SVG">
+          <ImagePlus />
+          <b>Add images</b>
+          <span>Drop them here, or click to choose</span>
         </button>
-        {assets.length === 0 ? (
-          <p className="faint" style={{ padding: '8px 16px' }}>
-            No images yet.
-          </p>
-        ) : (
-          <div className="asset-grid">
-            {assets.map((a) => (
-              <button key={a.id} className={`asset-tile${selected === a.id ? ' selected' : ''}`} onClick={() => setSelected(selected === a.id ? null : a.id)} title={a.name}>
-                <div className="thumb">{devUrl ? <img src={assetUrl(devUrl, a.file)!} alt="" loading="lazy" /> : null}</div>
-                <span className="ellipsis">{a.name}</span>
-                <span className={`badge uses${snap.assetUsage[a.id] ? ' accent' : ''}`}>{snap.assetUsage[a.id] ? `${snap.assetUsage[a.id]} use${snap.assetUsage[a.id] === 1 ? '' : 's'}` : 'Unused'}</span>
-              </button>
-            ))}
-          </div>
-        )}
         {sel && (
-          <div className="col" style={{ padding: '4px 12px 16px', gap: 10 }}>
+          <div className="asset-detail col" style={{ gap: 10 }}>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <strong className="ellipsis">{sel.name}</strong>
+              <span className="faint" style={{ fontSize: 12, flex: 'none' }}>
+                {snap.assetUsage[sel.id] ? `Used ${snap.assetUsage[sel.id] === 1 ? 'once' : `${snap.assetUsage[sel.id]} times`}` : 'Not used yet'}
+              </span>
+            </div>
             <Field label="Name">
               <DraftInput value={sel.name} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, name: v }], 'Rename image')} />
             </Field>
@@ -75,12 +66,12 @@ export function AssetsPanel() {
             <Field label="Suggested alt text" hint="Used as the starting alt text when you place this image.">
               <DraftInput value={sel.altSuggestion ?? ''} onCommit={(v) => void applyOps([{ type: 'asset.update', assetId: sel.id, altSuggestion: v }], 'Edit alt suggestion')} />
             </Field>
-            <p className="faint" style={{ margin: 0, fontSize: 11.5 }}>
+            <p className="faint" style={{ margin: 0, fontSize: 12 }}>
               {sel.width && sel.height ? `${sel.width} × ${sel.height}px · ` : ''}
-              {(sel.bytes / 1024).toFixed(0)} KB · {sel.mime}
+              {(sel.bytes / 1024).toFixed(0)} KB · {sel.mime.replace(/^image\//, '').toUpperCase()}
               {sel.bytes > 1_500_000 && <span style={{ color: 'var(--amber)' }}> · Large file</span>}
             </p>
-            <div className="row">
+            <div className="row wrap">
               <button
                 className="btn btn-sm"
                 onClick={async () => {
@@ -94,7 +85,7 @@ export function AssetsPanel() {
               <button
                 className="btn btn-sm btn-danger"
                 disabled={!!snap.assetUsage[sel.id]}
-                title={snap.assetUsage[sel.id] ? 'Remove its uses first' : 'Remove image'}
+                title={snap.assetUsage[sel.id] ? 'This image is in use. Replace or remove it on the page first.' : 'Remove image'}
                 onClick={async () => {
                   if (await applyOps([{ type: 'asset.remove', assetId: sel.id }], 'Remove image')) setSelected(null);
                 }}
@@ -102,6 +93,28 @@ export function AssetsPanel() {
                 <Trash2 /> Remove
               </button>
             </div>
+            {!!snap.assetUsage[sel.id] && <p className="field-hint" style={{ margin: 0 }}>To remove this image, replace it or take it off the page first.</p>}
+          </div>
+        )}
+        {assets.length === 0 ? (
+          <p className="muted" style={{ padding: '8px 16px', margin: 0 }}>
+            No images yet. Images you add are copied into this project, so the site keeps working wherever it goes.
+          </p>
+        ) : (
+          <div className="asset-grid">
+            {assets.map((a) => (
+              <button key={a.id} className={`asset-tile${selected === a.id ? ' selected' : ''}`} onClick={() => setSelected(selected === a.id ? null : a.id)} title={a.name}>
+                <div className="thumb">{devUrl ? <img src={assetUrl(devUrl, a.file)!} alt="" loading="lazy" /> : null}</div>
+                <span>
+                  <span className="ellipsis">{a.name}</span>
+                  {!snap.assetUsage[a.id] && (
+                    <span className="uses none" title="Not used on any page">
+                      Unused
+                    </span>
+                  )}
+                </span>
+              </button>
+            ))}
           </div>
         )}
         {unused.length > 1 && (

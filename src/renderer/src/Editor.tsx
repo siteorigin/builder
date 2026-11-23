@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
+import { instancesOf } from '@engine/tree';
+import { openDialogs, openMenus, Tabs } from './components/ui';
 import { api, getState, setState, toast, useStore } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas } from './panels/Canvas';
-import { StatusBar } from './panels/StatusBar';
+import { HealthModal, StatusBar } from './panels/StatusBar';
 import { PagesPanel } from './panels/PagesPanel';
 import { LayersPanel } from './panels/LayersPanel';
 import { InsertPanel } from './panels/InsertPanel';
@@ -46,7 +48,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     return true;
   }
   if (mod && key.toLowerCase() === 's') {
-    void api.project.flush().then(() => toast('All changes are saved.'));
+    void api.project.flush().then(() => toast('All changes are saved on this computer.', 'success'));
     return true;
   }
   if (mod && key.toLowerCase() === 'd') {
@@ -58,7 +60,8 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     return true;
   }
   if (mod && key === '\\') {
-    setState({ leftTab: s.leftTab ? null : 'pages' });
+    if (shift) setState({ dockOpen: !s.dockOpen });
+    else setState({ leftTab: s.leftTab ? null : 'pages' });
     return true;
   }
   if (mod && key.toLowerCase() === 'e') {
@@ -70,7 +73,12 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     return true;
   }
   if (!mod && key === 'Escape') {
+    const dm = s.definitionMode;
+    const inDef = !!dm && !!s.selection;
     if (s.modal) setState({ modal: null });
+    // While editing a component everywhere, Escape steps to the component overview, then leaves the mode;
+    // it never drops back to the placement's page-level editor.
+    else if (inDef) setState({ selection: null });
     else if (s.selection?.instancePath.length) {
       const sel = s.selection;
       setState({ selection: { owner: sel.owner, instancePath: sel.instancePath.slice(0, -1), nodeId: sel.instancePath[sel.instancePath.length - 1] } });
@@ -108,7 +116,16 @@ function Resizer({ side }: { side: 'left' | 'right' }) {
     },
     [side]
   );
-  return <div ref={ref} className="resizer" onPointerDown={onDown} role="separator" aria-orientation="vertical" aria-label={`Resize ${side} panel`} />;
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const s = getState();
+    const d = (e.key === 'ArrowRight' ? 16 : -16) * (side === 'left' ? 1 : -1);
+    if (side === 'left') setState({ leftWidth: Math.max(200, Math.min(420, s.leftWidth + d)) });
+    else setState({ rightWidth: Math.max(300, Math.min(560, s.rightWidth + d)) });
+  };
+  const width = useStore((s) => (side === 'left' ? s.leftWidth : s.rightWidth));
+  return <div ref={ref} className="resizer" tabIndex={0} onPointerDown={onDown} onKeyDown={onKey} role="separator" aria-orientation="vertical" aria-valuenow={width} aria-valuemin={side === 'left' ? 200 : 300} aria-valuemax={side === 'left' ? 420 : 560} aria-label={`Resize ${side === 'left' ? 'sidebar' : 'right panel'}`} />;
 }
 
 export function Editor() {
@@ -117,16 +134,31 @@ export function Editor() {
   const leftWidth = useStore((s) => s.leftWidth);
   const rightWidth = useStore((s) => s.rightWidth);
   const modal = useStore((s) => s.modal);
+  const dockOpen = useStore((s) => s.dockOpen);
   const aiBusy = useStore((s) => !!s.runStatus);
   const recovery = useStore((s) => s.snapshot?.recoveryNotes);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
-      if (isTyping(e) && !(mod && ['k', 'e', 'j'].includes(e.key.toLowerCase()))) return;
+      // An open dialog owns the keyboard; only Cmd/Ctrl+K (toggle the command menu) passes through.
+      // An open dialog owns the keyboard. Cmd/Ctrl+K only toggles the command menu itself; it never
+      // replaces another dialog (which could hold an unsaved draft).
+      if (openMenus.count) return;
+      if (openDialogs.length && !(mod && e.key.toLowerCase() === 'k' && getState().modal?.kind === 'cmdk')) return;
+      if (isTyping(e) && !(mod && ['k', 'e', 'j', 's'].includes(e.key.toLowerCase()))) return;
+      // Delete removes the canvas selection only when the canvas or Layers has the focus, never from a
+      // button or row in another panel (an Assets tile, a page row).
+      if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
+        const t = e.target as HTMLElement;
+        if (t !== document.body && !t.closest('[role="tree"], .canvas, .ov-chip')) return;
+      }
+      // Save from inside a field: commit the field first so the flush includes it.
+      if (mod && e.key.toLowerCase() === 's' && isTyping(e)) (e.target as HTMLElement).blur();
       if (handleShortcut(e.key, mod, e.shiftKey)) e.preventDefault();
     };
     const onCmd = (e: Event) => {
+      if (openDialogs.length || openMenus.count) return;
       const cmd = (e as CustomEvent).detail;
       if (cmd === 'export') setState({ modal: { kind: 'export' } });
       if (cmd === 'close-project') void api.projects.close();
@@ -145,6 +177,16 @@ export function Editor() {
     if (recovery?.length) recovery.forEach((n) => toast(n));
   }, [recovery]);
 
+  // In a small window, starting an edit gives the canvas the Pages list's width (the rail stays, and an
+  // explicit reopen is respected for the rest of the session).
+  useEffect(() => {
+    let userReopened = false;
+    return useStore.subscribe((s, prev) => {
+      if (s.leftTab && !prev.leftTab) userReopened = true;
+      if (!userReopened && s.selection && !prev.selection && s.leftTab === 'pages' && window.innerWidth < 1360) setState({ leftTab: null });
+    });
+  }, []);
+
   useEffect(() => {
     const unsub = useStore.subscribe((s, prev) => {
       if (s.leftTab !== prev.leftTab || s.rightTab !== prev.rightTab) void api.project.saveLocalState({ leftTab: s.leftTab ?? undefined, rightTab: s.rightTab });
@@ -152,9 +194,26 @@ export function Editor() {
     return unsub;
   }, []);
 
+  const defining = useStore((s) => s.definitionMode);
+  const defName = useStore((s) => (s.definitionMode ? s.snapshot?.state.components[s.definitionMode.definitionId]?.name ?? 'component' : null));
+  const defPlaces = useStore((s) => (s.definitionMode && s.snapshot ? [...new Set(instancesOf(s.snapshot.state, s.definitionMode.definitionId).map((u) => u.label))].join(', ') : ''));
+  const defUses = useStore((s) => (s.definitionMode && s.snapshot ? instancesOf(s.snapshot.state, s.definitionMode.definitionId).length : 0));
+  const defInfo = defName ? { name: defName, uses: defUses, places: defPlaces } : null;
+
   return (
-    <div className="editor">
+    <div className={`editor${defining ? ' defining' : ''}`}>
       <Toolbar />
+      {defining && defInfo && (
+        <div className="mode-band" role="status">
+          <Component />
+          <span className="grow">
+            <strong>Editing {defInfo.name} everywhere</strong> · used {defInfo.uses === 1 ? 'once' : `${defInfo.uses} times`}, on {defInfo.places || 'no pages yet'}. Placements keep their own text and any changes made to them directly.
+          </span>
+          <button className="btn btn-sm" onClick={() => setState({ definitionMode: null, pageId: defining.returnPageId, selection: null })}>
+            Done editing
+          </button>
+        </div>
+      )}
       <div className="workspace">
         <nav className="rail" aria-label="Sidebar">
           {LEFT_TABS.map((t) => (
@@ -162,40 +221,48 @@ export function Editor() {
               {t.icon}
             </button>
           ))}
-          <div style={{ height: 1, width: 22, background: 'var(--border)', margin: '6px 0' }} />
-          <button className="icon-btn" aria-pressed={rightTab === 'styles'} title="Site styles" aria-label="Site styles" onClick={() => setState({ rightTab: 'styles' })}>
+          <div className="rail-sep" role="presentation" />
+          <button className="icon-btn shortcut" aria-pressed={dockOpen && rightTab === 'styles'} title="Site styles" aria-label="Site styles" onClick={() => setState(dockOpen && rightTab === 'styles' ? { rightTab: 'inspect' } : { rightTab: 'styles', dockOpen: true })}>
             <Palette />
           </button>
         </nav>
-        {leftTab && (
-          <aside className="side-panel" style={{ width: leftWidth }}>
-            {leftTab === 'pages' && <PagesPanel />}
-            {leftTab === 'layers' && <LayersPanel />}
-            {leftTab === 'insert' && <InsertPanel />}
-            {leftTab === 'assets' && <AssetsPanel />}
-            <Resizer side="left" />
-          </aside>
-        )}
+        {/* Panels stay mounted while hidden, so a search, expanded layers or scroll position survive switching. */}
+        <aside className="side-panel" style={{ width: leftWidth, display: leftTab ? undefined : 'none' }} aria-label="Sidebar panel">
+          {(['pages', 'layers', 'insert', 'assets'] as const).map((t) => (
+            <div key={t} className="side-panel-view" hidden={leftTab !== t}>
+              {t === 'pages' && <PagesPanel />}
+              {t === 'layers' && <LayersPanel />}
+              {t === 'insert' && <InsertPanel />}
+              {t === 'assets' && <AssetsPanel />}
+            </div>
+          ))}
+          <Resizer side="left" />
+        </aside>
         <Canvas />
-        <aside className="dock" style={{ width: rightWidth }}>
+        <aside className="dock" style={{ width: rightWidth, display: dockOpen ? undefined : 'none' }}>
           <Resizer side="right" />
-          <div className="dock-tabs" role="tablist">
-            <button className="dock-tab" role="tab" aria-selected={rightTab === 'inspect'} onClick={() => setState({ rightTab: 'inspect' })}>
-              <SlidersHorizontal /> Inspector
-            </button>
-            <button className="dock-tab" role="tab" aria-selected={rightTab === 'chat'} onClick={() => setState({ rightTab: 'chat' })}>
-              <Sparkles /> AI {aiBusy && <span className="live" aria-label="Working" />}
-            </button>
-            <button className="dock-tab" role="tab" aria-selected={rightTab === 'styles'} onClick={() => setState({ rightTab: 'styles' })}>
-              <Palette /> Styles
-            </button>
-          </div>
+          <Tabs<'inspect' | 'chat' | 'styles'>
+            className="dock-tabs"
+            label="Right panel views"
+            idBase="dock"
+            value={rightTab}
+            onChange={(v) => setState({ rightTab: v })}
+            options={[
+              { value: 'inspect', label: 'Inspector', icon: <SlidersHorizontal /> },
+              { value: 'chat', label: 'AI', icon: <Sparkles />, extra: aiBusy ? <span className="live" role="img" aria-label="Working" /> : undefined },
+              { value: 'styles', label: 'Site styles', icon: <Palette /> }
+            ]}
+          />
           <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: rightTab === 'inspect' ? 'contents' : 'none' }}>{rightTab === 'inspect' && <Inspector />}</div>
-            <div style={{ display: rightTab === 'chat' ? 'flex' : 'none', flex: 1, minHeight: 0, flexDirection: 'column' }}>
+            <div id="dock-panel-inspect" className="dock-panel" role="tabpanel" aria-labelledby="dock-tab-inspect" hidden={rightTab !== 'inspect'}>
+              <Inspector />
+            </div>
+            <div id="dock-panel-chat" className="dock-panel" role="tabpanel" aria-labelledby="dock-tab-chat" hidden={rightTab !== 'chat'}>
               <Chat />
             </div>
-            {rightTab === 'styles' && <SiteStyles />}
+            <div id="dock-panel-styles" className="dock-panel" role="tabpanel" aria-labelledby="dock-tab-styles" hidden={rightTab !== 'styles'}>
+              <SiteStyles />
+            </div>
           </div>
         </aside>
       </div>
@@ -210,8 +277,8 @@ export function Editor() {
       {modal?.kind === 'delete-page' && <DeletePageModal pageId={modal.pageId} />}
       {modal?.kind === 'edit-definition' && <EditDefinitionModal target={modal.ref} />}
       {modal?.kind === 'history' && <HistoryModal />}
+      {modal?.kind === 'health' && <HealthModal />}
     </div>
   );
 }
 
-void Component;
