@@ -78,19 +78,23 @@ export function CommandMenu() {
           setState({ mode: 'edit', selection: x.ref, rightTab: 'inspect', dockOpen: true });
         }
       }));
-    const words = t.length < 2 ? [] : findContent(snap.state, t, {}, fields).slice(0, 5).map((m) => ({
+    const words = t.length < 2 ? [] : findContent(snap.state, t, { limit: 5 }, fields).map((m) => ({
       id: `find:${m.id}`,
       label: `${m.before}${m.match}${m.after}`.slice(0, 90),
-      group: `${m.field.where} › ${m.field.section}`,
+      detail: `${m.field.section} › ${m.field.label}`,
+      group: m.field.where,
       icon: m.kind === 'link' ? <Link2 /> : <TextSearch />,
       run: () => openContentMatch(m.field)
     }));
     return [...placed, ...words, { id: 'find:all', label: `Find “${t}” in site content…`, group: 'Edit', icon: <Replace />, run: () => setState({ modal: { kind: 'find', query: t } }) }];
   }, [snap, q, sections, fields]);
   const matched = exactDetailFirst(cmds.filter((c) => matchesWords(q, commandText(c.label, c.detail))), q);
-  // A page whose address was typed exactly stays first; then what is already on the site; then everything else.
-  const exact = matched.filter((c) => !!c.detail && c.detail.toLowerCase() === q.trim().toLowerCase());
-  const filtered = [...exact, ...found, ...matched.slice(exact.length)].slice(0, 40);
+  // An address typed exactly finds just that page. Otherwise a command named exactly comes first, then what is
+  // already on the site (and the way to search all of it), then everything else.
+  const typed = q.trim().toLowerCase();
+  const exactPage = matched.filter((c) => !!c.detail && c.detail.toLowerCase() === typed);
+  const exactName = matched.filter((c) => !exactPage.includes(c) && c.label.toLowerCase() === typed);
+  const filtered = (exactPage.length ? matched : [...exactName, ...found, ...matched.filter((c) => !exactName.includes(c))]).slice(0, 40);
   const pick = (c: Cmd | undefined) => {
     if (!c) return;
     if (useStore.getState().modal?.kind === 'cmdk') setState({ modal: null });

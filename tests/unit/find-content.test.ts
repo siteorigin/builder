@@ -53,6 +53,7 @@ describe('finding content', () => {
     // A page without the shared header and footer does not count.
     s.pages[pageAt(s, '/about/').id].shell = 'none';
     expect(findContent(s, 'hello@example.com').find((m) => m.field.where === 'Footer')?.field.sharedPages).toBe(2);
+    expect(findContent(s, 'Test Studio').find((m) => m.field.where === 'Header')?.field.sharedPages).toBe(2);
   });
 
   it('finds the starter’s contact details shown from a component’s defaults, and keeps settings out', () => {
@@ -63,6 +64,7 @@ describe('finding content', () => {
     const defaults = (def.properties.contact as { default: ListItem[] }).default;
     const ms = findContent(s, defaults[0].label as string).filter((m) => m.field.where === 'Footer');
     expect(ms.map((m) => m.kind)).toEqual(['text', 'link']);
+    expect(ms[0].field.label).toBe(`Contact links › ${defaults[0].label} › Label`);
     const { after } = apply(s, ms, 'books@example.org');
     const own = footerOf(after).props.contact as ListItem[];
     expect(own.map((x) => x.id)).toEqual(defaults.map((x) => x.id));
@@ -91,9 +93,10 @@ describe('finding content', () => {
   });
 
   it('matches the words in order across spacing, case-insensitively unless asked, and never as a pattern', () => {
-    const { s } = withParagraph([{ type: 'p', spans: [{ text: 'Reading group: the reading group meets at (7pm).' }] }]);
+    const { s } = withParagraph([{ type: 'p', spans: [{ text: 'Reading group: the reading \u00a0group meets at (7pm).' }] }]);
     expect(findContent(s, 'reading group').map((m) => m.start)).toEqual([0, 19]);
-    expect(findContent(s, 'reading group', { matchCase: true }).map((m) => m.start)).toEqual([19]);
+    expect(findContent(s, 'reading group', { limit: 1 })).toHaveLength(1);
+    expect(findContent(s, 'reading group', { matchCase: true }).map((m) => [m.start, m.end])).toEqual([[19, 33]]);
     expect(findContent(s, '(7pm)').map((m) => m.match)).toEqual(['(7pm)']);
     expect(findContent(s, '   ')).toEqual([]);
   });
@@ -105,6 +108,19 @@ describe('finding content', () => {
     expect(ms.every((m) => m.kind === 'link' && m.blocked)).toBe(true);
     const plan = planReplace(s, ms, '/team/');
     expect(plan).toMatchObject({ operations: [], skipped: ms.length });
+
+    // With its section, as it reads in an address.
+    const footer = footerOf(s);
+    const about = (footer.props.links as ListItem[]).find((x) => x.label === 'About')!;
+    (about.link as LinkValue).anchor = 'team';
+    expect(findContent(s, '/about/#team').map((m) => [m.field.label, !!m.blocked])).toEqual([['Links › About › Destination', true]]);
+
+    // A link to a page that is gone goes nowhere: its words are found, its old target is not.
+    const page = pageAt(s, '/about/');
+    page.nodes.n_gone = { id: 'n_gone', kind: 'link', label: 'Old offer', link: { type: 'page', target: 'pg_gone' }, appearance: 'link' } as GraphNode;
+    page.rootIds.push('n_gone');
+    expect(findContent(s, 'pg_gone')).toEqual([]);
+    expect(findContent(s, 'Old offer').map((m) => m.field.label)).toEqual(['Button label']);
   });
 
   it('lists the sections already placed, so a search reaches the existing one', () => {
@@ -152,10 +168,13 @@ describe('replacing content', () => {
     const s = fresh();
     const contact = pageAt(s, '/contact/');
     const details = instanceOf(s, 'contact.details', contact.id);
-    const start = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: contact.id }, nodeId: details.id, prop: 'actionLink', value: { type: 'email', target: 'hello@example.com?subject=Reading%20group', newTab: true } }]).state;
+    const start = applyOperations(s, [
+      { type: 'instance.setProp', owner: { kind: 'page', id: contact.id }, nodeId: details.id, prop: 'actionLabel', value: 'Ask the studio' },
+      { type: 'instance.setProp', owner: { kind: 'page', id: contact.id }, nodeId: details.id, prop: 'actionLink', value: { type: 'email', target: 'hello@example.com?subject=Reading%20group', newTab: true } }
+    ]).state;
     const { plan, after } = apply(start, only(findContent(start, 'hello@example.com'), 'Action link'), 'books@example.org');
     const placed = instanceOf(after, 'contact.details', contact.id);
-    expect(placed.props.actionLabel).toBe('Email us');
+    expect(placed.props.actionLabel).toBe('Ask the studio');
     expect(placed.props.actionLink).toEqual({ type: 'email', target: 'books@example.org?subject=Reading%20group', newTab: true });
     expect(plan.changes.map((c) => [c.field.label, c.kind, c.before, c.after])).toEqual([['Action link', 'link', 'Email hello@example.com?subject=Reading%20group', 'Email books@example.org?subject=Reading%20group']]);
   });
@@ -219,7 +238,7 @@ describe('replacing content', () => {
     const plan = planReplace(s, ms, '');
     expect(plan.error).toBeUndefined();
     expect(plan.changes.map((c) => [c.field.label, c.kind, c.before, c.after, !!c.knockOn])).toEqual([
-      ['Action label', 'text', 'Email us', '', false],
+      ['Action label', 'text', 'Email us', 'Not shown', false],
       ['Action link', 'link', 'Email hello@example.com', 'No link', true]
     ]);
   });
@@ -241,6 +260,97 @@ describe('replacing content', () => {
   });
 });
 
+describe('what replacing keeps safe', () => {
+  it('refuses to empty one link even when another run of the same text keeps a different link', () => {
+    const one: LinkValue = { type: 'url', target: 'https://example.org/one' };
+    const { s } = withParagraph([{ type: 'p', spans: [{ text: 'A', link: one }, { text: 'X', strong: true, link: one }, { text: 'B', link: one }, { text: ' and ' }, { text: 'X', link: { type: 'url', target: 'https://example.org/two' } }] }]);
+    const ms = findContent(s, 'X', { matchCase: true }).filter((m) => m.kind === 'text');
+    expect(ms).toHaveLength(2);
+    expect(planReplace(s, ms, '').error).toMatch(/would remove a link/);
+    // Emptying only the X inside the first link leaves it its other words.
+    expect(planReplace(s, [ms[0]], '').error).toBeUndefined();
+  });
+
+  it('keeps the formatting of words that already read as the replacement, and keeps a non-breaking space as a change', () => {
+    const { s, page } = withParagraph([{ type: 'p', spans: [{ text: 'Bo', strong: true }, { text: 'ok club and book night, 10 kg' }] }]);
+    const books = findContent(s, 'Book').filter((m) => m.field.nodeId === 'n_rich_para');
+    expect(books.map((m) => m.match)).toEqual(['Book', 'book']);
+    const { after, plan } = apply(s, books, 'Book');
+    expect((after.pages[page.id].nodes.n_rich_para as { text: RichText }).text).toEqual([{ type: 'p', spans: [{ text: 'Bo', strong: true }, { text: 'ok club and Book night, 10 kg' }] }]);
+    expect(plan.changes).toHaveLength(1);
+    // A replacement that starts in bold stays bold.
+    const bold = apply(s, findContent(s, 'Book club'), 'Reading circle').after.pages[page.id].nodes.n_rich_para as { text: RichText };
+    expect((bold.text[0] as { spans: unknown[] }).spans[0]).toEqual({ text: 'Reading circle', strong: true });
+    // Only a non-breaking space differs, and that is a change the page shows.
+    const nbsp = planReplace(s, findContent(s, '10 kg'), '10\u00a0kg');
+    expect(nbsp.operations).toHaveLength(1);
+    expect(nbsp.changes.map((c) => c.after)).toEqual(['Book club and book night, 10\u00a0kg']);
+  });
+
+  it('reviews a destination whose button the edit removes as no link at all', () => {
+    const s = fresh();
+    const contact = pageAt(s, '/contact/');
+    const details = instanceOf(s, 'contact.details', contact.id);
+    const start = applyOperations(s, [
+      { type: 'instance.setProp', owner: { kind: 'page', id: contact.id }, nodeId: details.id, prop: 'actionLabel', value: 'sale' },
+      { type: 'instance.setProp', owner: { kind: 'page', id: contact.id }, nodeId: details.id, prop: 'actionLink', value: { type: 'url', target: 'https://example.org/sale' } }
+    ]).state;
+    const plan = planReplace(start, findContent(start, 'sale'), '');
+    expect(plan.error).toBeUndefined();
+    expect(plan.changes.map((c) => [c.kind, c.before, c.after])).toEqual([
+      ['text', 'sale', 'Not shown'],
+      ['link', 'https://example.org/sale', 'No link']
+    ]);
+  });
+
+  it('keeps a contact form’s settings out of search after Make unique, and lists a custom code component’s words without changing them', () => {
+    const s = fresh();
+    const contact = pageAt(s, '/contact/');
+    const owner = { kind: 'page' as const, id: contact.id };
+    const added = applyOperations(s, [{ type: 'node.insert', owner, componentId: 'contact.form', props: { provider: 'netlify', formName: 'enquiries' } }]);
+    const formId = added.results[0].nodeId as string;
+    const unique = applyOperations(added.state, [{ type: 'component.makeUnique', owner, nodeId: formId, name: 'Booking form' }]).state;
+    expect(unique.components[(unique.pages[contact.id].nodes[formId] as InstanceNode).definitionId].owner).toBe('project');
+    expect(findContent(unique, 'enquiries')).toEqual([]);
+    expect(findContent(unique, 'Send message').map((m) => [m.field.label, !!m.blocked])).toEqual([['Button label', false]]);
+
+    const custom = applyOperations(unique, [{ type: 'component.createCode', name: 'Booking widget', source: '<script>let { apiUrl = "" } = $props();</script><p>Book</p>', properties: { apiUrl: { type: 'string', label: 'API address', default: 'https://booking.example.org/api' } } }]);
+    const defId = custom.results[0].definitionId as string;
+    const placed = applyOperations(custom.state, [{ type: 'node.insert', owner, definitionId: defId }]);
+    const m = findContent(placed.state, 'booking.example.org');
+    expect(m.map((x) => [x.field.label, x.blocked])).toEqual([['API address', expect.stringMatching(/custom code component/)]]);
+    expect(planReplace(placed.state, m, 'other.example.org')).toMatchObject({ operations: [], skipped: 1 });
+    expect(contentTarget(placed.state, m[0].field, contact.id)).toMatchObject({ section: 'content', focus: 'apiUrl' });
+  });
+
+  it('lists the header’s name and action only while visitors see them', () => {
+    const s = fresh();
+    const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+    s.assets.assets.logo1 = { id: 'logo1', name: 'Logo', file: 'static/assets/logo1.png', mime: 'image/png', bytes: 10, hash: 'x', kind: 'image', createdAt: '2026-01-01T00:00:00Z' };
+    Object.assign(header.props, { logo: { assetId: 'logo1', alt: 'Test Studio' }, showSiteName: false, ctaLabel: 'Book now', ctaLink: { type: 'none', target: '' } });
+    expect(findContent(s, 'Book now')).toEqual([]);
+    expect(findContent(s, 'Test Studio').filter((m) => m.field.where === 'Header')).toEqual([]);
+    header.props.ctaLink = { type: 'email', target: 'books@example.org' };
+    header.props.showSiteName = true;
+    expect(findContent(s, 'Book now').map((m) => m.field.label)).toEqual(['Action label']);
+    expect(findContent(s, 'books@example.org').map((m) => m.field.label)).toEqual(['Action link']);
+    expect(findContent(s, 'Test Studio').filter((m) => m.field.where === 'Header').map((m) => m.field.label)).toEqual(['Site name']);
+  });
+
+  it('keeps a form field’s submission key when its label changes and it has no name of its own', () => {
+    const s = fresh();
+    const contact = pageAt(s, '/contact/');
+    const added = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: contact.id }, componentId: 'contact.form' }]);
+    const formId = added.results[0].nodeId as string;
+    const form = added.state.pages[contact.id].nodes[formId] as InstanceNode;
+    const phone = (form.props.fields as ListItem[]).find((f) => f.label === 'Phone')!;
+    phone.name = '';
+    const { after } = apply(added.state, findContent(added.state, 'Phone').filter((m) => m.field.label === 'Fields › Phone › Label'), 'Telephone');
+    const fields = (after.pages[contact.id].nodes[formId] as InstanceNode).props.fields as ListItem[];
+    expect(fields.find((f) => f.id === phone.id)).toMatchObject({ label: 'Telephone', name: 'phone' });
+  });
+});
+
 describe('opening a match', () => {
   it('opens a shared footer item on a page that shows the footer, at the item’s part', () => {
     const s = fresh();
@@ -250,8 +360,13 @@ describe('opening a match', () => {
     const footer = footerOf(s);
     const target = contentTarget(s, m.field, about.id)!;
     expect(target.pageId).toBe(s.site.homePageId);
-    expect(target.selection).toMatchObject({ owner: { kind: 'shell', id: 'footer' }, instancePath: [footer.id], nodeId: m.field.defNodeId, itemPath: [m.field.source!.kind === 'prop' ? m.field.source.itemId : ''] });
+    expect(target.selection).toMatchObject({ owner: { kind: 'shell', id: 'footer' }, instancePath: [footer.id], nodeId: m.field.defNodeId, itemPath: [m.field.source?.kind === 'prop' ? m.field.source.itemId : ''] });
     expect(contentTarget(s, m.field, pageAt(s, '/contact/').id)!.pageId).toBe(pageAt(s, '/contact/').id);
+    // A part the component declares is selected as that part, with the field it shows focused.
+    const name = findContent(s, 'Test Studio').find((x) => x.field.where === 'Footer' && x.field.label === 'Site name')!;
+    const at = contentTarget(s, name.field, about.id)!;
+    expect(at.selection.partId).toBeTruthy();
+    expect(at).toMatchObject({ section: 'part-content', focus: 'siteName' });
   });
 
   it('opens a code component’s field by selecting the placement and naming the field to open', () => {
@@ -259,7 +374,13 @@ describe('opening a match', () => {
     const contact = pageAt(s, '/contact/');
     const added = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: contact.id }, componentId: 'contact.form' }]);
     const m = findContent(added.state, 'Send message')[0];
-    expect(contentTarget(added.state, m.field, null)).toEqual({ pageId: contact.id, selection: { owner: { kind: 'page', id: contact.id }, instancePath: [], nodeId: added.results[0].nodeId }, reveal: { prop: 'submitLabel' } });
+    const formId = added.results[0].nodeId as string;
+    expect(contentTarget(added.state, m.field, null)).toEqual({ pageId: contact.id, selection: { owner: { kind: 'page', id: contact.id }, instancePath: [], nodeId: formId }, section: 'content', focus: 'submitLabel' });
+    // A list item's field is opened in its list: the property, the item and the field.
+    const phone = findContent(added.state, 'Phone').find((x) => x.field.label === 'Fields › Phone › Label')!;
+    const item = phone.field.source?.kind === 'prop' ? phone.field.source.itemId : undefined;
+    expect(item).toBeTruthy();
+    expect(contentTarget(added.state, phone.field, null)?.reveal).toEqual({ prop: 'fields', itemId: item, field: 'label' });
   });
 
   it('keeps each field’s key across an edit, so a review compares like with like', () => {

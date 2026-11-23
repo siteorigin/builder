@@ -7,7 +7,6 @@ import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { anchorCapable, anchorsInUse } from '@engine/tree';
-import { FORM_SERVICES } from '@catalogue/foundation/form';
 import { resolveLink, takesParagraphs } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 
@@ -362,6 +361,10 @@ export interface RenderedContent {
   value: unknown;
   /** Where to change it. Absent for content fixed in a component's design, which no placement can change. */
   source?: ContentSource;
+  /** For content without a source: where it renders, which tells two such pieces apart. */
+  at?: string;
+  /** A custom code component's property: what its code shows is unknown, so it is listed but not changed from here. */
+  custom?: boolean;
   /** For content inside a component: the definition node showing it. */
   defNodeId?: string;
   /** Set when the placement places that definition directly, so its parts can be selected: the items, outermost first. */
@@ -373,26 +376,39 @@ export interface RenderedContent {
   richLinks?: boolean;
 }
 
+/** The shipped code component a definition is, or was copied from (Make unique keeps its code and properties). */
+function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
+  const known = (id: string | undefined) => (id === 'shell.header' || id === 'contact.form' ? id : undefined);
+  if (def.owner === 'theme') return known(def.componentId);
+  const from = def.provenance?.forkedFrom;
+  return from ? known(state.components[from]?.componentId ?? from.replace(/^[^.]+\./, '')) : undefined;
+}
+
 /**
- * Settings a code component takes that visitors never read as words: the form service's endpoint, access key and
- * form name, and the names its fields are sent under. Searching content leaves them alone.
+ * What a shipped code component shows visitors, as property names (and `list.field` for list items), read from its
+ * markup: the header's name only while it shows (not beside a logo set to show alone) and its action only with both
+ * a label and somewhere to go; the form's words, never its service settings or the names answers are sent under.
  */
-function codeSettings(def: ComponentDefinition): Set<string> {
-  if (def.componentId !== 'contact.form') return new Set();
-  return new Set([...Object.values(FORM_SERVICES).map((s) => s.prop), 'fields.name']);
+function shippedCodeShows(state: ProjectState, which: string, props: Record<string, unknown>): Set<string> {
+  if (which === 'contact.form') return new Set(['eyebrow', 'heading', 'lead', 'fields.label', 'fields.placeholder', 'submitLabel', 'successMessage', 'errorMessage']);
+  const out = new Set(['links.label', 'links.link']);
+  if (String(props.siteName ?? '').trim() && (props.showSiteName !== false || !shown(props.logo, state))) out.add('siteName');
+  if (String(props.ctaLabel ?? '').trim() && resolveLink(props.ctaLink as LinkValue | undefined, { state })) (out.add('ctaLabel'), out.add('ctaLink'));
+  return out;
 }
 
 /**
  * Every piece of visible content a page or shell tree renders, once per field that holds it: text and rich text,
  * button labels and destinations, and the content fields of the components placed there (a list item's fields
  * included, with the item's own value or its field's default). Content a component's design fixes is listed
- * without a source. Buttons the site leaves out (a styled button with no destination) are not listed.
+ * without a source. Buttons the site leaves out (a styled button with no destination) are not listed, and a link
+ * that goes nowhere lists only its words.
  */
 export function renderedContent(state: ProjectState, tree: NodeTree): RenderedContent[] {
   const out: RenderedContent[] = [];
   const seen = new Set<string>();
   const keyOf = (c: RenderedContent) =>
-    JSON.stringify([c.kind, c.nodeId, c.source ? [c.source.kind, 'field' in c.source ? c.source.field : null, 'prop' in c.source ? c.source.prop : null, 'itemId' in c.source ? (c.source.itemId ?? null) : null] : [c.defNodeId ?? null, c.itemPath ?? null]]);
+    JSON.stringify([c.kind, c.nodeId, c.source ? [c.source.kind, 'field' in c.source ? c.source.field : null, 'prop' in c.source ? c.source.prop : null, 'itemId' in c.source ? (c.source.itemId ?? null) : null] : [c.at ?? null]]);
   const push = (c: RenderedContent) => {
     const k = keyOf(c);
     if (seen.has(k)) return;
@@ -400,11 +416,12 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
     out.push(c);
   };
   /** Where content a definition node reads is stored, and how to select it. */
-  const from = (b: unknown, field: 'text' | 'label' | 'link', scope: Scope, defNodeId: string, inDef: boolean): Pick<RenderedContent, 'source' | 'defNodeId' | 'itemPath' | 'direct'> => {
+  const from = (b: unknown, field: 'text' | 'label' | 'link', scope: Scope, defNodeId: string, inDef: boolean): Pick<RenderedContent, 'source' | 'at' | 'defNodeId' | 'itemPath' | 'direct'> => {
     if (!inDef) return { source: { kind: 'node', field } };
     const f = placementField(b, scope);
     const direct = !!scope.placement;
-    return { ...(f ? { source: { kind: 'prop' as const, ...f } } : {}), defNodeId, direct, ...(direct && scope.path?.length ? { itemPath: scope.path } : {}) };
+    const at = `${scope.trail ?? ''}|${defNodeId}|${(scope.path ?? []).join(',')}|${field}`;
+    return { ...(f ? { source: { kind: 'prop' as const, ...f } } : { at }), defNodeId, direct, ...(direct && scope.path?.length ? { itemPath: scope.path } : {}) };
   };
   walkRendered(state, tree, {
     text: (n, scope, reportId, inDef) => {
@@ -418,39 +435,47 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
       // A styled button with nowhere to go is left out of the site; a plain link still shows its words.
       if (!goes && BUTTONS.has(String(evaluate(n.appearance, scope) ?? ''))) return;
       push({ nodeId: reportId, kind: 'text', value: label, ...from(n.label, 'label', scope, n.id, inDef) });
-      if (isLinkValue(link) && link.type !== 'none') push({ nodeId: reportId, kind: 'link', value: link, ...from(n.link, 'link', scope, n.id, inDef) });
+      if (goes && isLinkValue(link)) push({ nodeId: reportId, kind: 'link', value: link, ...from(n.link, 'link', scope, n.id, inDef) });
     },
-    code: (def, props, reportId, _placement, n, scope, inDef) => {
-      const settings = codeSettings(def);
+    code: (def, props, reportId, placement, n, scope, inDef) => {
+      const which = shippedCode(state, def);
+      const shows = which ? shippedCodeShows(state, which, props) : undefined;
       const rich = !takesParagraphs(def);
       // The placement's own field each property is: directly, or through the binding a design hands it.
       const fieldOf = (key: string): PlacementField | undefined => (inDef ? placementField(n.props[key], scope) : { prop: key });
-      const add = (kind: 'text' | 'link', value: unknown, source: PlacementField | undefined, schema: PropSchema) =>
-        push({ nodeId: reportId, kind, value, ...(source ? { source: { kind: 'prop', ...source } } : {}), ...(inDef ? { direct: false } : {}), ...(schema.type === 'richtext' ? { rich: true, richLinks: rich } : {}) });
-      const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, source: PlacementField | undefined) => {
+      const add = (kind: 'text' | 'link', value: unknown, source: PlacementField | undefined, schema: PropSchema, at: string) =>
+        push({
+          nodeId: reportId,
+          kind,
+          value,
+          ...(source ? { source: { kind: 'prop', ...source } } : { at }),
+          ...(shows ? {} : { custom: true }),
+          ...(inDef ? { direct: false } : {}),
+          ...(schema.type === 'richtext' ? { rich: true, richLinks: rich } : {})
+        });
+      const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, source: PlacementField | undefined, at: string) => {
         const schema = schemas[key];
         const v = Object.hasOwn(values, key) ? values[key] : (schema as { default?: unknown }).default;
-        if (schema.type === 'string' || schema.type === 'richtext') add('text', v, source, schema);
-        if (schema.type !== 'link' || !isLinkValue(v) || v.type === 'none') return;
+        if (schema.type === 'string' || schema.type === 'richtext') add('text', v, source, schema, at);
+        if (schema.type !== 'link' || !isLinkValue(v) || !resolveLink(v, { state })) return;
         // A link named by a label property shows only while that label has words, as the shipped header does.
         const labelKey = labelKeyFor(key);
         const named = Object.hasOwn(values, labelKey) ? values[labelKey] : (schemas[labelKey] as { default?: unknown } | undefined)?.default;
         if (schemas[labelKey]?.type === 'string' && !String(named ?? '').trim()) return;
-        add('link', v, source, schema);
+        add('link', v, source, schema, at);
       };
       for (const [key, schema] of Object.entries(def.properties)) {
-        if (settings.has(key)) continue;
         const field = fieldOf(key);
         if (schema.type !== 'list') {
-          take(def.properties, props, key, field);
+          if (!shows || shows.has(key)) take(def.properties, props, key, field, `${placement}|${key}`);
           continue;
         }
         for (const item of Array.isArray(props[key]) ? (props[key] as Array<Record<string, unknown>>) : []) {
           if (!item || typeof item !== 'object') continue;
           const itemId = typeof item.id === 'string' && item.id ? item.id : undefined;
           for (const f of Object.keys(schema.fields)) {
-            if (settings.has(`${key}.${f}`)) continue;
-            take(schema.fields, item, f, field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined);
+            if (shows && !shows.has(`${key}.${f}`)) continue;
+            take(schema.fields, item, f, field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined, `${placement}|${key}|${String(item.id ?? '')}|${f}`);
           }
         }
       }

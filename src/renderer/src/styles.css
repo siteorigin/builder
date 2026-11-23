@@ -1702,7 +1702,7 @@ button.asset-use:hover svg.go { color: var(--text); }
 .find-case { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--text-2); }
 .find-summary { margin: 0; }
 .find-results { display: flex; flex-direction: column; gap: 10px; max-height: 42vh; overflow-y: auto; padding-right: 2px; }
-.find-group { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.find-group { flex-shrink: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .find-group-head { display: flex; align-items: center; gap: 8px; margin: 0; padding: 7px 10px; font-size: 12px; font-weight: 600; background: var(--panel-2); border-bottom: 1px solid var(--border); }
 .find-group ul, .find-review ul { margin: 0; padding: 0; list-style: none; }
 .find-match { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; }

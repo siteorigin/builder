@@ -4,16 +4,22 @@ import { Modal, openSection } from '../components/ui';
 import { commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { selectPage } from '../lib/actions';
 import { contentFields, contentTarget, findContent, planReplace, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
+import { refKey, type ElementRef } from '@shared/types';
 
 /** The reveal waiting for the inspector, so a newer one replaces it. */
 let pendingReveal = 0;
 
-/** Runs `found` once `find` sees its element, checking each frame for about a second. */
-function whenShown(find: () => HTMLElement | null | undefined, found: (el: HTMLElement) => void, onTick?: (frame: number) => void) {
+/**
+ * Runs `found` once `find` sees its element, checking each frame for about a second. It stops when a newer reveal
+ * starts or the selection moves on, so it never focuses a field of something the author has since chosen.
+ */
+function whenShown(selection: ElementRef, find: () => HTMLElement | null | undefined, found: (el: HTMLElement) => void, onTick?: (frame: number) => void) {
   const token = ++pendingReveal;
+  const key = refKey(selection);
   let frame = 0;
   const tick = () => {
-    if (token !== pendingReveal) return;
+    const now = getState().selection;
+    if (token !== pendingReveal || !now || refKey(now) !== key) return;
     const el = find();
     if (el) return found(el);
     onTick?.(frame);
@@ -22,13 +28,15 @@ function whenShown(find: () => HTMLElement | null | undefined, found: (el: HTMLE
   requestAnimationFrame(tick);
 }
 
-const CONTROL = 'input, textarea, select, [contenteditable="true"]';
 const panel = () => document.getElementById('dock-panel-inspect');
+/** The control to type in for a field: its text box (a link's address, not its kind), else its first control. */
+const controlIn = (el: Element | null | undefined) => el?.querySelector<HTMLElement>('input:not([type="checkbox"]):not([type="radio"]), textarea, [contenteditable="true"]') ?? el?.querySelector<HTMLElement>('select, input, button') ?? null;
+const anchor = (name: string) => `[data-field="${CSS.escape(name)}"]`;
 
 /**
  * Show where a match is: its page (for the shared header and footer, the page on screen when it shows them), the
- * element in the inspector, and the field itself, focused. A field the selection alone does not show (a code
- * component's, or one list item's) is opened in the section's Content.
+ * element in the inspector with its Content open, and the field itself, focused. A list item's field the selection
+ * alone does not show (a code component's) is opened in its list.
  */
 export function openContentMatch(field: ContentField) {
   const s = getState();
@@ -39,29 +47,24 @@ export function openContentMatch(field: ContentField) {
   if (s.modal) setState({ modal: null });
   if (s.pageId !== target.pageId || s.definitionMode) selectPage(target.pageId);
   setState({ mode: 'edit', selection: target.selection, rightTab: 'inspect', dockOpen: true });
-  const reveal = target.reveal;
+  // Content may have been closed: open it once the new selection's inspector is there (and again, in case it was late).
+  const openContent = (frame: number) => (frame === 1 || frame === 12) && openSection(target.section);
+  const { reveal, focus } = target;
   if (!reveal) {
-    whenShown(
-      () => panel()?.querySelector<HTMLElement>(`.section-body :is(${CONTROL})`),
-      (el) => el.focus()
-    );
+    if (focus) whenShown(target.selection, () => controlIn(panel()?.querySelector(anchor(focus))), (el) => el.focus(), openContent);
+    else whenShown(target.selection, () => (openSection(target.section), panel()), () => undefined);
     return;
   }
-  // The Content section may be closed: open it (again, once the new selection's inspector is there).
-  const openContent = (frame: number) => (frame === 1 || frame === 12) && openSection('content');
-  if (!reveal.itemId) {
-    whenShown(() => panel()?.querySelector<HTMLElement>(`[data-field="${CSS.escape(reveal.prop)}"] :is(${CONTROL})`), (el) => el.focus(), openContent);
-    return;
-  }
-  const head = () => panel()?.querySelector<HTMLElement>(`[data-list="${CSS.escape(reveal.prop)}"] #list-head-${CSS.escape(reveal.itemId!)}`);
+  const list = () => panel()?.querySelector<HTMLElement>(`[data-list="${CSS.escape(reveal.prop)}"]`);
   whenShown(
-    head,
-    (h) => {
-      if (h.getAttribute('aria-expanded') !== 'true') h.click();
-      whenShown(
-        () => panel()?.querySelector<HTMLElement>(`#list-item-${CSS.escape(reveal.itemId!)} ${reveal.field ? `[data-field="${CSS.escape(reveal.field)}"] ` : ''}:is(${CONTROL})`),
-        (el) => el.focus()
-      );
+    target.selection,
+    () => list()?.querySelector<HTMLElement>(`#list-head-${CSS.escape(reveal.itemId!)}`),
+    (head) => {
+      if (head.getAttribute('aria-expanded') !== 'true') head.click();
+      whenShown(target.selection, () => {
+        const body = list()?.querySelector(`#list-item-${CSS.escape(reveal.itemId!)}`);
+        return controlIn(reveal.field ? body?.querySelector(anchor(reveal.field)) : body);
+      }, (el) => el.focus());
     },
     openContent
   );
@@ -107,8 +110,9 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
   const [matchCase, setMatchCase] = useState(false);
   const [replacement, setReplacement] = useState('');
   const [replacing, setReplacing] = useState(false);
-  // Matches the author unticked. Every other replaceable match is chosen, including ones a later edit adds.
-  const [unticked, setUnticked] = useState<Set<string>>(new Set());
+  // The matches the author chose, for one search. Until they choose, every replaceable match the list shows is chosen.
+  // Once they have, only what they ticked is: a match the site gains later (or one an edit moves) starts unticked.
+  const [picked, setPicked] = useState<{ search: string; ids: Set<string> } | null>(null);
   const [busy, setBusy] = useState(false);
   const findId = useId();
   const replaceId = useId();
@@ -117,7 +121,9 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
   const state = snap?.state;
   const fields = useMemo(() => (state ? contentFields(state) : []), [state]);
   const matches = useMemo(() => (state ? findContent(state, searched, { matchCase }, fields) : []), [state, searched, matchCase, fields]);
-  const chosen = useMemo(() => matches.filter((m) => !m.blocked && !unticked.has(m.id)), [matches, unticked]);
+  const search = `${searched}\u0000${matchCase}`;
+  const ticked = useMemo(() => (picked?.search === search ? picked.ids : new Set(matches.filter((m) => !m.blocked).map((m) => m.id))), [picked, search, matches]);
+  const chosen = useMemo(() => matches.filter((m) => !m.blocked && ticked.has(m.id)), [matches, ticked]);
   // The review is worked out on the project as this render shows it; Replace applies exactly that, or nothing.
   const plan = useMemo(() => (state && replacing && chosen.length ? { ...planReplace(state, chosen, replacement), revision: snap?.revision, workspaceKey: snap?.workspaceKey } : null), [state, replacing, chosen, replacement, snap?.revision, snap?.workspaceKey]);
   const groups = groupsOf(matches);
@@ -126,15 +132,17 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
   const aiBusy = !!snap?.aiBusy;
   const close = () => !busy && setState({ modal: null });
   const toggle = (id: string, on: boolean) => {
-    const next = new Set(unticked);
-    if (on) next.delete(id);
-    else next.add(id);
-    setUnticked(next);
+    const next = new Set(ticked);
+    if (on) next.add(id);
+    else next.delete(id);
+    setPicked({ search, ids: next });
   };
-  const setAll = (on: boolean) => setUnticked(on ? new Set() : new Set(matches.filter((m) => !m.blocked).map((m) => m.id)));
+  const setAll = (on: boolean) => setPicked({ search, ids: on ? new Set(matches.filter((m) => !m.blocked).map((m) => m.id)) : new Set() });
   const texts = plan?.changes.filter((c) => c.kind === 'text') ?? [];
   const destinations = plan?.changes.filter((c) => c.kind === 'link') ?? [];
-  const canReplace = !!plan && !plan.error && plan.operations.length > 0 && !busy && !readOnly && !aiBusy;
+  // The list must show the search as typed: Replace never applies the matches of a search being replaced.
+  const settled = searched === query;
+  const canReplace = !!plan && settled && !plan.error && plan.operations.length > 0 && !busy && !readOnly && !aiBusy;
   const replace = async () => {
     if (!plan || !canReplace) return;
     setBusy(true);
@@ -147,7 +155,9 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
     if (!done || getState().snapshot?.workspaceKey !== plan.workspaceKey) return;
     const n = chosen.length;
     toast(`Replaced ${n} match${n === 1 ? '' : 'es'}.`, 'info', undoAction(done));
-    setUnticked(new Set());
+    // Done: what is left (matches left unticked, or ones the edit made) waits for a new choice.
+    setReplacing(false);
+    setPicked(null);
   };
   const summary = !searched.trim()
     ? 'Search the words on every page, the shared header and footer, and where their links go.'
@@ -191,10 +201,10 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
             autoFocus
             value={query}
             placeholder="Words or an address, such as books@example.org"
-            onChange={(e) => (setQuery(e.target.value), setUnticked(new Set()))}
+            onChange={(e) => setQuery(e.target.value)}
           />
           <label className="find-case">
-            <input type="checkbox" checked={matchCase} onChange={(e) => (setMatchCase(e.target.checked), setUnticked(new Set()))} /> Match case
+            <input type="checkbox" checked={matchCase} onChange={(e) => setMatchCase(e.target.checked)} /> Match case
           </label>
         </div>
         {replacing && (
@@ -223,12 +233,14 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
                   <span className={`badge${g.shared ? ' plum' : ''}`}>{g.reach}</span>
                 </h3>
                 <ul>
-                  {g.matches.map((m) => {
+                  {g.matches.map((m, mi) => {
                     const name = `${m.field.section} › ${m.field.label}`;
+                    // Each row's words name its checkbox and describe its Open, so two matches in one field differ.
+                    const rowId = `${summaryId}-${groups.indexOf(g)}-${mi}`;
                     return (
                       <li key={m.id} className="find-match">
-                        {replacing && <input type="checkbox" aria-label={`Replace in ${name}`} checked={!m.blocked && !unticked.has(m.id)} disabled={!!m.blocked} title={m.blocked} onChange={(e) => toggle(m.id, e.target.checked)} />}
-                        <div className="grow find-match-text">
+                        {replacing && <input type="checkbox" aria-labelledby={rowId} checked={!m.blocked && ticked.has(m.id)} disabled={!!m.blocked} title={m.blocked} onChange={(e) => toggle(m.id, e.target.checked)} />}
+                        <div className="grow find-match-text" id={rowId}>
                           <span className="find-where">
                             {m.kind === 'link' && <Link2 aria-label="Destination:" />}
                             {name}
@@ -240,7 +252,7 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
                           </span>
                           {m.blocked && <span className="faint find-note">{m.blocked}</span>}
                         </div>
-                        <button className="btn btn-sm" onClick={() => openContentMatch(m.field)} title="Show it on the page and in the inspector">
+                        <button className="btn btn-sm" aria-describedby={rowId} onClick={() => openContentMatch(m.field)} title="Show it on the page and in the inspector">
                           <SquareArrowOutUpRight /> Open
                         </button>
                       </li>

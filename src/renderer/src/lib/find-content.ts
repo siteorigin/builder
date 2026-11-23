@@ -5,7 +5,7 @@
  */
 import type { ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, NodeTree, OwnerRef, ProjectState, RichListType, RichSpan, RichText } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { cleanBlocks, isListBlock, toRichText } from '@shared/richtext';
+import { cleanBlocks, cleanSpans, isListBlock, toRichText } from '@shared/richtext';
 import { renderedContent, type ContentSource, type RenderedContent } from '@generator/checks';
 import { applyOperations } from '@engine/apply';
 import { childLists, displayName, itemLinkPairs } from '@engine/tree';
@@ -26,6 +26,8 @@ export interface ContentField {
   plainAs?: RichListType;
   /** Where to change it. None: fixed in a component's design. */
   source?: ContentSource;
+  /** A custom code component's property: found and opened, but changed in the inspector. */
+  custom?: boolean;
   defNodeId?: string;
   itemPath?: string[];
   direct: boolean;
@@ -53,6 +55,8 @@ interface Part {
   item?: number;
   spans?: RichSpan[];
   span?: number;
+  /** For a link in rich text: the span after its linked run. */
+  spanEnd?: number;
 }
 
 export interface ContentMatch {
@@ -73,16 +77,20 @@ export interface ContentMatch {
 
 export interface FindOptions {
   matchCase?: boolean;
+  /** Stop after this many matches. */
+  limit?: number;
 }
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 const isLink = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && typeof (v as LinkValue).type === 'string' && typeof (v as LinkValue).target === 'string';
 const sameLink = (a: LinkValue | undefined, b: LinkValue | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const oneLine = (t: string) => t.replace(/\s+/g, ' ');
+/** Text as a page shows it: the whitespace HTML collapses, collapsed (a non-breaking space is deliberate and stays). */
+const shownText = (t: string) => t.replace(/[ \t\r\n\f]+/g, ' ').trim();
 
 function sourceKey(c: RenderedContent): unknown[] {
   const s = c.source;
-  if (!s) return ['design', c.defNodeId ?? null, c.itemPath ?? null];
+  if (!s) return ['design', c.at ?? null];
   return s.kind === 'node' ? ['node', s.field] : ['prop', s.prop, s.itemId ?? null, s.field ?? null];
 }
 
@@ -156,6 +164,7 @@ export function contentFields(state: ProjectState): ContentField[] {
         richLinks: !!c.richLinks,
         ...(plainAs ? { plainAs } : {}),
         ...(c.source ? { source: c.source } : {}),
+        ...(c.custom ? { custom: true } : {}),
         ...(c.defNodeId ? { defNodeId: c.defNodeId } : {}),
         ...(c.itemPath ? { itemPath: c.itemPath } : {}),
         direct: !!c.direct,
@@ -179,8 +188,10 @@ function linkPart(state: ProjectState, link: LinkValue, path: string): Part | nu
     case 'anchor':
       return { path, kind: 'link', text: `#${link.target}`, offset: 1 };
     case 'page': {
+      // A link to a page that is gone goes nowhere: the site shows only its words.
       const page = own(state.pages, link.target);
-      return { path, kind: 'link', text: (page?.route ?? link.target) + (link.anchor ? `#${link.anchor}` : ''), blocked: 'This goes to a page of the site. Choose another page for it in the inspector.' };
+      if (!page) return null;
+      return { path, kind: 'link', text: page.route + (link.anchor ? `#${link.anchor}` : ''), blocked: 'This goes to a page of the site. Choose another page for it in the inspector.' };
     }
     default:
       return null;
@@ -231,7 +242,9 @@ function partsOf(state: ProjectState, f: ContentField): Part[] {
       spans.forEach((sp, span) => {
         if (!sp.link || (span > 0 && sameLink(spans[span - 1].link, sp.link))) return;
         const p = linkPart(state, sp.link, `${path}@${span}`);
-        if (p) parts.push({ ...p, block, item, spans, span });
+        let spanEnd = span + 1;
+        while (spanEnd < spans.length && sameLink(spans[spanEnd].link, sp.link)) spanEnd++;
+        if (p) parts.push({ ...p, block, item, spans, span, spanEnd });
       });
     }
   });
@@ -261,6 +274,7 @@ function crossesLink(spans: RichSpan[], start: number, end: number): boolean {
 
 function blockedReason(f: ContentField, part: Part, start: number, end: number): string | undefined {
   if (!f.source) return 'This is part of a component’s design. Open it to change it everywhere, or to make this placement its own.';
+  if (f.custom) return 'This belongs to a custom code component, which may use it as a setting. Change it in the inspector.';
   if (part.blocked) return part.blocked;
   if (part.offset && start < part.offset) return 'Change the # of a section link in the inspector.';
   if (part.kind === 'text' && part.spans && crossesLink(part.spans, start, end)) return 'Part of this is a link and part is not. Change it in the inspector.';
@@ -275,10 +289,11 @@ export function findContent(state: ProjectState, query: string, opts: FindOption
   const re = contentPattern(query, opts);
   if (!re) return [];
   const out: ContentMatch[] = [];
+  const limit = opts.limit ?? Infinity;
   for (const f of fields) {
     for (const part of partsOf(state, f)) {
-      re.lastIndex = 0;
       for (const m of part.text.matchAll(re)) {
+        if (out.length >= limit) return out;
         const start = m.index ?? 0;
         const end = start + m[0].length;
         const from = Math.max(0, start - 40);
@@ -349,18 +364,29 @@ function spliceSpans(spans: RichSpan[], start: number, end: number, replacement:
   }
 }
 
-/** Linked runs with words in them: a replacement that empties one removes that link. */
-const linkRuns = (spans: RichSpan[]) => spans.filter((s, i) => s.link && s.text.trim() && !(i > 0 && sameLink(spans[i - 1].link, s.link) && spans[i - 1].text.trim())).length;
-
-function richPlain(spans: RichSpan[]): string {
-  return oneLine(spans.map((s) => s.text).join('')).trim();
+/** Each linked run of spans that has words: the spans it covers. Emptying every span of one removes that link. */
+function linkedRuns(spans: RichSpan[]): number[][] {
+  const runs: number[][] = [];
+  spans.forEach((sp, i) => {
+    if (!sp.link) return;
+    if (i > 0 && sameLink(spans[i - 1].link, sp.link)) runs[runs.length - 1].push(i);
+    else runs.push([i]);
+  });
+  return runs.filter((r) => r.some((i) => spans[i].text.trim()));
 }
+
+const spansText = (spans: RichSpan[]) => shownText(spans.map((s) => s.text).join(''));
 
 /** The field's next value with the chosen matches replaced, and what that changes in words. */
 function replaceIn(state: ProjectState, f: ContentField, matches: ContentMatch[], replacement: string): { value: unknown; changes: ContentChange[]; error?: string } | null {
   const parts = new Map(partsOf(state, f).map((p) => [p.path, p]));
   const byPart = new Map<string, ContentMatch[]>();
-  for (const m of matches) byPart.set(m.part, [...(byPart.get(m.part) ?? []), m]);
+  for (const m of matches) {
+    const part = parts.get(m.part);
+    // A match that already reads as the replacement changes nothing, and must not take another span's formatting.
+    if (!part || part.text.slice(m.start, m.end) === replacement) continue;
+    byPart.set(m.part, [...(byPart.get(m.part) ?? []), m]);
+  }
   if (f.kind === 'link') {
     const part = parts.get('l');
     const ms = byPart.get('l');
@@ -375,7 +401,7 @@ function replaceIn(state: ProjectState, f: ContentField, matches: ContentMatch[]
     if (typeof f.value !== 'string' || !ms) return null;
     const next = spliceText(f.value, ms, replacement);
     if (next === f.value) return null;
-    return { value: next, changes: [{ field: f, kind: 'text', before: oneLine(f.value).trim(), after: oneLine(next).trim() }] };
+    return { value: next, changes: [{ field: f, kind: 'text', before: shownText(f.value), after: shownText(next) }] };
   }
   const blocks = structuredClone(richOf(f));
   const spansAt = (p: Part): RichSpan[] => {
@@ -383,27 +409,28 @@ function replaceIn(state: ProjectState, f: ContentField, matches: ContentMatch[]
     return isListBlock(b) ? b.items[p.item!] : b.spans;
   };
   const changes: ContentChange[] = [];
-  // Destinations first: they keep every span's words, so the text ranges below still line up.
+  // Destinations first, each over the spans its run covered before any change: they keep every span's words, so
+  // the text ranges below still line up.
   for (const [path, ms] of byPart) {
     const part = parts.get(path);
     if (!part || part.kind !== 'link' || part.span === undefined) continue;
     const spans = spansAt(part);
-    const was = spans[part.span].link!;
+    const was = part.spans![part.span].link!;
     const next: LinkValue = { ...was, target: spliceText(part.text, ms, replacement).slice(part.offset ?? 0) };
     if (sameLink(next, was)) continue;
-    for (let i = part.span; i < spans.length && sameLink(spans[i].link, was); i++) spans[i].link = { ...next };
+    for (let i = part.span; i < (part.spanEnd ?? part.span + 1); i++) spans[i].link = { ...next };
     changes.push({ field: f, kind: 'link', before: describeLink(state, was), after: describeLink(state, next) });
   }
   for (const [path, ms] of byPart) {
     const part = parts.get(path);
     if (!part || part.kind !== 'text') continue;
     const spans = spansAt(part);
-    const before = richPlain(spans);
-    const links = linkRuns(spans);
+    const was = structuredClone(spans);
+    const runs = linkedRuns(spans);
     for (const m of [...ms].sort((a, b) => b.start - a.start)) spliceSpans(spans, m.start, m.end, replacement);
-    if (linkRuns(spans) < links) return { value: f.value, changes: [], error: `Replacing “${ms[0].match}” would remove a link from ${f.label} on ${f.where}. Leave that match out, or change it in the inspector.` };
-    const after = richPlain(spans);
-    if (after !== before) changes.push({ field: f, kind: 'text', before, after });
+    if (runs.some((r) => !r.some((i) => spans[i].text.trim()))) return { value: f.value, changes: [], error: `Replacing “${ms[0].match}” would remove a link from ${f.label} on ${f.where}. Leave that match out, or change it in the inspector.` };
+    // Compared as the project stores them: formatting and a non-breaking space are changes too.
+    if (JSON.stringify(cleanSpans(structuredClone(spans))) !== JSON.stringify(cleanSpans(was))) changes.push({ field: f, kind: 'text', before: spansText(was), after: spansText(spans) });
   }
   if (!changes.length) return null;
   return { value: cleanBlocks(blocks), changes };
@@ -432,8 +459,9 @@ function shownBy(state: ProjectState, fields: ContentField[]): Map<string, { fie
   const out = new Map<string, { field: ContentField; text: string; links: string[] }>();
   for (const f of fields) {
     const parts = partsOf(state, f);
-    const links = f.kind === 'link' ? [describeLink(state, f.value)] : f.richLinks ? richOf(f).flatMap((b) => (isListBlock(b) ? b.items.flat() : b.spans)).filter((s, i, all) => s.link && !(i > 0 && sameLink(all[i - 1].link, s.link))).map((s) => describeLink(state, s.link)) : [];
-    out.set(f.key, { field: f, text: parts.filter((p) => p.kind === 'text').map((p) => oneLine(p.text).trim()).join(' / '), links: links.sort() });
+    // One destination per linked run of each paragraph or list item, as search reads them.
+    const links = f.kind === 'link' ? [describeLink(state, f.value)] : parts.filter((p) => p.kind === 'link' && p.spans && p.span !== undefined).map((p) => describeLink(state, p.spans![p.span!].link));
+    out.set(f.key, { field: f, text: parts.filter((p) => p.kind === 'text').map((p) => shownText(p.text)).join(' / '), links: links.sort() });
   }
   return out;
 }
@@ -495,18 +523,26 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
   } catch (e) {
     return { operations: [], changes, error: plainError(e), skipped };
   }
-  // Anything else the edits change: a field that shows or hides with them, or a link the project moves itself.
   const was = shownBy(state, contentFields(state));
   const now = shownBy(after, contentFields(after));
+  // The chosen changes as the project stores and shows them: a field the edit hides is no longer shown, and one the
+  // project reads back as it was (after tidying it) is not a change.
+  const reviewed = changes.flatMap((c): ContentChange[] => {
+    const b = now.get(c.field.key);
+    if (c.field.rich) return [b ? c : { ...c, after: c.kind === 'link' ? 'No link' : 'Not shown' }];
+    const after = c.kind === 'link' ? (b?.links[0] ?? 'No link') : b ? b.text : 'Not shown';
+    return after === c.before ? [] : [{ ...c, after }];
+  });
+  // Anything else the edits change: a field that shows or hides with them, or a link the project moves itself.
   for (const key of new Set([...was.keys(), ...now.keys()])) {
     if (planned.has(key)) continue;
     const a = was.get(key);
     const b = now.get(key);
     const field = (b ?? a)!.field;
-    if ((a?.text ?? '') !== (b?.text ?? '')) changes.push({ field, kind: 'text', before: a?.text || 'Not shown', after: b?.text || 'Not shown', knockOn: true });
-    if (JSON.stringify(a?.links ?? []) !== JSON.stringify(b?.links ?? [])) changes.push({ field, kind: 'link', before: a?.links.join(', ') || 'No link', after: b?.links.join(', ') || 'No link', knockOn: true });
+    if ((a?.text ?? '') !== (b?.text ?? '')) reviewed.push({ field, kind: 'text', before: a ? a.text : 'Not shown', after: b ? b.text : 'Not shown', knockOn: true });
+    if (JSON.stringify(a?.links ?? []) !== JSON.stringify(b?.links ?? [])) reviewed.push({ field, kind: 'link', before: a?.links.join(', ') || 'No link', after: b?.links.join(', ') || 'No link', knockOn: true });
   }
-  return { operations, changes, skipped };
+  return { operations, changes: reviewed, skipped };
 }
 
 // ---------------------------------------------------------------------------
@@ -517,7 +553,11 @@ export interface ContentTarget {
   /** The page to show: the field's own, or for the header and footer one that shows them. */
   pageId: string;
   selection: ElementRef;
-  /** A field of the selected placement to open in the inspector (the selection alone does not show it). */
+  /** The inspector's Content section for that selection, opened so the field is there to focus. */
+  section: 'prim-content' | 'part-content' | 'content';
+  /** The field to focus there, by its anchor (`data-field`): a node's text, label or link, or a property. */
+  focus?: string;
+  /** A field of the selected placement's list to open in the inspector (the selection alone does not show it). */
   reveal?: { prop: string; itemId?: string; field?: string };
 }
 
@@ -532,19 +572,22 @@ export function contentTarget(state: ProjectState, field: ContentField, currentP
   const node: GraphNode | undefined = tree && own(tree.nodes, field.nodeId);
   if (!pageId || !node) return null;
   const s = field.source;
-  const whole = { pageId, selection: { owner: field.owner, instancePath: [], nodeId: field.nodeId } };
-  if (s?.kind === 'node' || node.kind !== 'instance') return whole;
+  const selection: ElementRef = { owner: field.owner, instancePath: [], nodeId: field.nodeId };
+  if (s?.kind === 'node' || node.kind !== 'instance') return { pageId, selection, section: 'prim-content', ...(s?.kind === 'node' ? { focus: s.field } : {}) };
   // A part of a section placed here shows its own content in the inspector (for the one list item it was found in).
   const def = own(state.components, node.definitionId);
   if (field.direct && field.defNodeId && def?.tree && own(def.tree.nodes, field.defNodeId)) {
-    const selection: ElementRef = { owner: field.owner, instancePath: [node.id], nodeId: field.defNodeId };
+    const part: ElementRef = { owner: field.owner, instancePath: [node.id], nodeId: field.defNodeId };
     const partId = partIdFor(def, field.defNodeId);
-    if (partId) selection.partId = partId;
-    if (field.itemPath?.length) selection.itemPath = field.itemPath;
-    return { pageId, selection };
+    if (partId) part.partId = partId;
+    if (field.itemPath?.length) part.itemPath = field.itemPath;
+    // The part shows a list item's field by the field's name, a property by its own.
+    const focus = s?.kind === 'prop' ? (s.itemId ? s.field : s.prop) : undefined;
+    return { pageId, selection: part, section: 'part-content', ...(focus ? { focus } : {}) };
   }
-  if (!s) return whole;
-  return { ...whole, reveal: { prop: s.prop, ...(s.itemId ? { itemId: s.itemId } : {}), ...(s.field ? { field: s.field } : {}) } };
+  if (!s) return { pageId, selection, section: 'content' };
+  if (!s.itemId) return { pageId, selection, section: 'content', focus: s.prop };
+  return { pageId, selection, section: 'content', reveal: { prop: s.prop, itemId: s.itemId, ...(s.field ? { field: s.field } : {}) } };
 }
 
 // ---------------------------------------------------------------------------

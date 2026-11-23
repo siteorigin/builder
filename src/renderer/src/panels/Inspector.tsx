@@ -663,8 +663,8 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
               const schema = def.properties[b.prop];
               if (!schema) return null;
               return (
+                <div key={i} data-field={b.prop} style={{ display: 'contents' }}>
                 <PropField
-                  key={i}
                   name={b.prop}
                   schema={schema}
                   value={inst.props[b.prop] ?? schema.default}
@@ -675,6 +675,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
                   {...flagged(b.kind)}
                   place={schema.type === 'list' ? { ref: parent, list: b.prop! } : undefined}
                 />
+                </div>
               );
             }
             if (listProp && listSchema && itemId) {
@@ -763,9 +764,11 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
                 </select>
               </Field>
             )}
-            <Field label="Text" hint="Or double-click the text on the page to edit it there.">
-              <DraftInput multiline rows={2} value={Array.isArray(node.text) ? richTextToMarkdown(toRichText(node.text), state.pages) : isBinding(node.text) ? '' : String(node.text)} onCommit={(v) => content('text', v)} />
-            </Field>
+            <div data-field="text" style={{ display: 'contents' }}>
+              <Field label="Text" hint="Or double-click the text on the page to edit it there.">
+                <DraftInput multiline rows={2} value={Array.isArray(node.text) ? richTextToMarkdown(toRichText(node.text), state.pages) : isBinding(node.text) ? '' : String(node.text)} onCommit={(v) => content('text', v)} />
+              </Field>
+            </div>
           </>
         )}
         {node.kind === 'image' && !isBinding(node.image) && (
@@ -775,11 +778,13 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
         )}
         {node.kind === 'link' && (
           <>
-            <Field label="Label">
-              <DraftInput value={isBinding(node.label) ? '' : String(node.label)} onCommit={(v) => content('label', v)} />
-            </Field>
+            <div data-field="label" style={{ display: 'contents' }}>
+              <Field label="Label">
+                <DraftInput value={isBinding(node.label) ? '' : String(node.label)} onCommit={(v) => content('label', v)} />
+              </Field>
+            </div>
             {!isBinding(node.link) && (
-              <div className="field" role="group" aria-labelledby={`${node.id}-dest`} aria-describedby={unlinked ? `${node.id}-dest-note` : undefined}>
+              <div className="field" data-field="link" role="group" aria-labelledby={`${node.id}-dest`} aria-describedby={unlinked ? `${node.id}-dest-note` : undefined}>
                 <div className="field-label" id={`${node.id}-dest`}>
                   Link
                 </div>
