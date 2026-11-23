@@ -17,15 +17,17 @@ export interface FocusImage {
   height?: number;
   /** The style rules under this element's own, in tiers, strongest first (see `cascadedStyle`). */
   below: Array<Array<ResponsiveStyles | undefined>>;
+  /** The element's complete styles, when the ones being edited list only its changes (Edit everywhere). */
+  own?: ResponsiveStyles;
   /** Why there is no picture to show, when there is none. */
   missing?: string;
 }
 
 const positive = (n: number | undefined): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0;
 
-/** "30", "30%" or "12.5 %" as a percentage between 0 and 100; null for anything else. */
+/** "30", "30%", ".5" or "12.5 %" as a percentage between 0 and 100; null for anything else. */
 function readPercent(text: string): number | null {
-  const m = /^\s*(\d+(?:\.\d+)?)\s*%?\s*$/.exec(text);
+  const m = /^\s*(\d+(?:\.\d+)?|\.\d+)\s*%?\s*$/.exec(text);
   if (!m) return null;
   const n = Number(m[1]);
   return n <= 100 ? n : null;
@@ -42,6 +44,9 @@ export function FocusEditor({
   under,
   scope,
   size,
+  previewed,
+  unreached,
+  custom,
   ratio,
   fit,
   image,
@@ -55,12 +60,19 @@ export function FocusEditor({
   scope: ResponsiveScope;
   /** The size whose crop is shown. */
   size: Size;
+  /** Whether the canvas is showing that size. */
+  previewed: boolean;
+  /** Under All sizes: every size keeps its own focus, so the all-sizes one shows nowhere. */
+  unreached?: boolean;
+  /** Custom CSS on these rules sets the crop too, so the site may not match the picture here. */
+  custom?: boolean;
   /** The box's width over height at that size, or null when the picture keeps its own shape. */
   ratio: number | null;
   /** The image fit at that size. */
   fit: StyleValue | undefined;
   image?: FocusImage;
-  onSet: (v: StyleValue | null, expectedRevision?: number) => void;
+  /** May return the change's promise, which settles to null when the project refuses the change. */
+  onSet: (v: StyleValue | null, expectedRevision?: number) => unknown;
 }) {
   const revision = useStore((s) => s.snapshot?.revision ?? 0);
   const captionId = useId();
@@ -72,22 +84,34 @@ export function FocusEditor({
   const libraryRatio = positive(image?.width) && positive(image?.height) ? image.width / image.height : null;
   const sourceRatio = libraryRatio ?? (measured && measured.src === src ? measured.w / measured.h : null);
 
-  // A drag keeps its point to itself until the pointer is released; then the committed value shows until the
-  // project moves on to the revision it made (or refused it).
+  // A drag keeps its point to itself until the pointer is released; then a committed value shows (and is what
+  // a typed coordinate builds on) until the project moves on to the revision it made, or refuses it.
   const gesture = useRef<{ pointer: number; key: string; revision: number } | null>(null);
   const [draft, setDraft] = useState<FocalPoint | null>(null);
   const [pending, setPending] = useState<{ text: string; revision: number } | null>(null);
+  // Escape cancels a drag: the pad never has focus, so it listens on the window for the drag's lifetime.
+  const escape = useRef<((e: KeyboardEvent) => void) | null>(null);
+  const stopEscape = () => {
+    if (escape.current) window.removeEventListener('keydown', escape.current, true);
+    escape.current = null;
+  };
+  const end = () => {
+    gesture.current = null;
+    setDraft(null);
+    stopEscape();
+  };
   const target = `${scope}|${src ?? ''}|${label}`;
   // Another size, picture or element ends a drag in progress without committing it.
   useEffect(() => {
-    gesture.current = null;
-    setDraft(null);
+    end();
     setPending(null);
   }, [target]);
+  useEffect(() => stopEscape, []);
 
   const stored = parseFocus(value) ?? parseFocus(under) ?? FOCUS_CENTER;
   const committed = pending && pending.revision === revision ? parseFocus(pending.text) : null;
-  const point = draft ?? committed ?? stored;
+  const latest = committed ?? stored;
+  const point = draft ?? latest;
   const cropped = fit !== 'contain' && ratio !== null && sourceRatio !== null ? cropAxis(sourceRatio, ratio) : null;
   const crop = cropped && sourceRatio !== null && ratio !== null ? coverCrop(sourceRatio, ratio, point) : null;
 
@@ -97,16 +121,32 @@ export function FocusEditor({
     const fy = r.height > 0 ? Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) : 0.5;
     return focusFromPoint(fx, fy);
   };
-  const end = () => {
-    gesture.current = null;
-    setDraft(null);
+  /** Commit a value; while it is on its way it shows here, and a refusal puts the saved value back. */
+  const commit = (text: string, expectedRevision?: number) => {
+    const mine = { text, revision };
+    setPending(mine);
+    void Promise.resolve(onSet(text, expectedRevision)).then((result) => {
+      if (result === null || result === false) setPending((p) => (p === mine ? null : p));
+    });
   };
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!crop || e.button !== 0 || gesture.current) return;
     e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    gesture.current = { pointer: e.pointerId, key: target, revision };
+    const el = e.currentTarget;
+    const id = e.pointerId;
+    el.setPointerCapture(id);
+    gesture.current = { pointer: id, key: target, revision };
     setDraft(pointAt(e));
+    stopEscape();
+    escape.current = (k) => {
+      if (k.key !== 'Escape') return;
+      k.preventDefault();
+      k.stopPropagation();
+      // Cleared first, so the capture's release finds no drag, and the pointer's release commits nothing.
+      end();
+      if (el.hasPointerCapture(id)) el.releasePointerCapture(id);
+    };
+    window.addEventListener('keydown', escape.current, true);
   };
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (gesture.current?.pointer !== e.pointerId) return;
@@ -120,10 +160,8 @@ export function FocusEditor({
     end();
     // The element, size or project changed under the drag (an Undo, say): the drag no longer applies.
     if (g.key !== target || g.revision !== revision) return;
-    const text = formatFocus(next);
     if (typeof value === 'string' && parseFocus(value) && sameFocus(parseFocus(value)!, next)) return;
-    setPending({ text, revision });
-    onSet(text, g.revision);
+    commit(formatFocus(next), g.revision);
   };
   const cancel = (e: React.PointerEvent<HTMLDivElement>) => {
     if (gesture.current?.pointer === e.pointerId) end();
@@ -133,12 +171,13 @@ export function FocusEditor({
     if (!text.trim()) return undefined;
     const n = readPercent(text);
     if (n === null) return false;
-    onSet(formatFocus({ ...stored, [axis]: n }));
+    // Built on the last value committed here, so Across then Down typed quickly keeps both.
+    commit(formatFocus({ ...latest, [axis]: n }));
   };
   const isCenter = typeof value === 'string' && parseFocus(value) !== null && sameFocus(parseFocus(value)!, FOCUS_CENTER);
   const setHere = value !== undefined;
   const sizeName = SIZE_NAME[size];
-  const where = scope === 'base' ? `In the ${sizeName} preview` : `On ${sizeName}`;
+  const where = scope === 'base' && previewed ? `In the ${sizeName} preview` : `On ${sizeName}`;
   const ratioPct = crop ? Math.round((cropped === 'y' ? crop.h : crop.w) * 100) : 0;
 
   let caption: string;
@@ -146,9 +185,13 @@ export function FocusEditor({
   else if (image.missing) caption = image.missing;
   else if (!src || failed === src) caption = 'The picture shows here once the preview is running.';
   else if (sourceRatio === null) caption = '';
+  else if (unreached) caption = `Phone, tablet and desktop each keep their own ${label.toLowerCase()}, so this one shows at no size.`;
   else if (fit === 'contain') caption = `${where}, Image fit shows the whole picture, so nothing is cropped.`;
   else if (!cropped) caption = `${where} the whole picture shows. Choose an aspect ratio to crop it.`;
   else caption = `${where} ${ratioPct}% of the picture’s ${cropped === 'y' ? 'height' : 'width'} shows. Drag to choose what stays in view.`;
+  // Under All sizes, a previewed size that keeps its own focus is why another size's crop is shown.
+  if (caption && scope === 'base' && !previewed && !unreached && !image?.missing) caption += ' The size in the preview keeps its own.';
+  if (caption && custom) caption += ' Custom CSS also sets the crop, so the site may differ.';
 
   return (
     <div className="focus-editor">
@@ -209,7 +252,7 @@ export function FocusEditor({
           />
           <span aria-hidden="true">%</span>
         </label>
-        <button type="button" className="btn btn-sm focus-center" disabled={isCenter} onClick={() => onSet(formatFocus(FOCUS_CENTER))} title={`Put the center of the picture in the middle${scope === 'base' ? '' : ` on ${sizeName}`}`}>
+        <button type="button" className="btn btn-sm focus-center" disabled={isCenter} onClick={() => commit(formatFocus(FOCUS_CENTER))} title={`Put the center of the picture in the middle${scope === 'base' ? '' : ` on ${sizeName}`}`}>
           <Crosshair aria-hidden="true" /> Center
         </button>
       </div>

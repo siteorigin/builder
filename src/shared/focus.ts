@@ -23,8 +23,8 @@ const KEYWORDS: Record<string, FocalPoint> = {
   right: { x: 100, y: 50 }
 };
 
-/** Two percentages, whole or with one decimal place, and nothing else. */
-const POINT_RE = /^(\d{1,3}(?:\.\d)?)%\s+(\d{1,3}(?:\.\d)?)%$/;
+/** Two percentages, whole or with one decimal place, apart by CSS whitespace (not a no-break space), and nothing else. */
+const POINT_RE = /^(\d{1,3}(?:\.\d)?)%[ \t\n\r\f]+(\d{1,3}(?:\.\d)?)%$/;
 
 const clampPct = (n: number) => Math.min(100, Math.max(0, n));
 const round1 = (n: number) => Math.round(n * 10) / 10;
@@ -33,7 +33,8 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
 export function parseFocus(value: unknown): FocalPoint | null {
   if (typeof value !== 'string') return null;
   const s = value.trim();
-  if (s in KEYWORDS) return { ...KEYWORDS[s] };
+  // Own keys only: "constructor" is not a keyword.
+  if (Object.hasOwn(KEYWORDS, s)) return { ...KEYWORDS[s] };
   const m = POINT_RE.exec(s);
   if (!m) return null;
   const x = Number(m[1]);
@@ -105,8 +106,9 @@ export function cropAxis(sourceRatio: number, boxRatio: number): 'x' | 'y' | nul
 }
 
 /**
- * The focus for a point picked on the picture (fractions across and down). That point then sits the same share
- * of the way across and down the crop, so it is always in view, and a point in the middle stays in the middle.
+ * The focus for a point picked on the picture (fractions across and down), rounded as it is stored. The point
+ * then sits the same share of the way across and down the crop, so it stays in view (to within that rounding),
+ * and a point in the middle stays in the middle.
  */
 export function focusFromPoint(px: number, py: number): FocalPoint {
   return normalizeFocus({ x: px * 100, y: py * 100 });

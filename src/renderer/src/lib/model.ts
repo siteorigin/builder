@@ -393,31 +393,6 @@ export function shownValue(state: ProjectState, ref: ElementRef, bound: unknown)
   return (schema?.type === 'list' ? effectiveItem(state, schema, item as Record<string, unknown>) : (item as Record<string, unknown>))[bound.$item];
 }
 
-/**
- * A value a node takes from its component's properties, read where the component is placed: the placement's own
- * value, else the component's default, and for a repeated item's field the selected item's. Unknown when it cannot
- * be told (a value the placement itself takes from an enclosing component, or an item that is gone).
- */
-export function boundValue(r: ReturnType<typeof resolveRef>, ref: ElementRef, v: unknown): { known: true; value: unknown } | { known: false } {
-  if (!isBinding(v)) return { known: true, value: v };
-  const { instance, def } = r;
-  if (!instance || !def) return { known: false };
-  const props = instance.props ?? {};
-  let value: unknown;
-  if ('$prop' in v) value = Object.hasOwn(props, v.$prop) ? props[v.$prop] : own(def.properties, v.$prop)?.default;
-  else {
-    const listProp = listPropFor(def, ref.nodeId);
-    const schema = listProp ? own(def.properties, listProp) : undefined;
-    const itemId = ref.itemPath?.[ref.itemPath.length - 1];
-    if (!listProp || schema?.type !== 'list' || !itemId) return { known: false };
-    const items = Object.hasOwn(props, listProp) ? props[listProp] : schema.default;
-    const item = Array.isArray(items) ? (items.find((i) => i && typeof i === 'object' && (i as { id?: unknown }).id === itemId) as Record<string, unknown> | undefined) : undefined;
-    if (!item) return { known: false };
-    value = Object.hasOwn(item, v.$item) ? item[v.$item] : schema.fields[v.$item]?.default;
-  }
-  return isBinding(value) ? { known: false } : { known: true, value };
-}
-
 /** A component's own reference as the page shows it, through one placement. */
 export function throughPlacement(ref: ElementRef, placement: ElementRef): ElementRef {
   return { ...ref, owner: placement.owner, instancePath: [...placement.instancePath, placement.nodeId, ...ref.instancePath] };

@@ -104,16 +104,32 @@ step('a drag released outside the picture stops at its edge');
 await drag([0.5, 0.5], [0.5, 1.4]);
 await eventually(() => assert.deepEqual(positions(block(siteCss(), PHONE)), [[50, 100]], 'the focus stops at the bottom edge'));
 
+step('Escape cancels a drag');
+{
+  const b = await pad.boundingBox();
+  await win.mouse.move(b.x + b.width * 0.5, b.y + b.height * 0.5);
+  await win.mouse.down();
+  await win.mouse.move(b.x + b.width * 0.5, b.y + b.height * 0.1, { steps: 4 });
+  await win.keyboard.press('Escape');
+  await win.mouse.up();
+  await win.waitForTimeout(600);
+  assert.deepEqual(positions(block(siteCss(), PHONE)), [[50, 100]], 'the cancelled drag wrote nothing');
+  await styleRow('Aspect ratio').waitFor({ timeout: 2000 });
+}
+
 step('type the focus with the keyboard');
-await down.click();
+// Across, then Tab straight on to Down: the second value builds on the first even before it has landed.
+await across.click();
+await across.fill('20');
+await across.press('Tab');
 await down.fill('75');
 await down.press('Enter');
-await eventually(() => assert.deepEqual(positions(block(siteCss(), PHONE)), [[50, 75]], 'the typed value is generated'));
+await eventually(() => assert.deepEqual(positions(block(siteCss(), PHONE)), [[20, 75]], 'both typed values are generated'));
 await across.click();
 await across.fill('140');
 await across.press('Enter');
 await win.waitForTimeout(500);
-assert.deepEqual(positions(block(siteCss(), PHONE)), [[50, 75]], 'a value outside the picture is refused');
+assert.deepEqual(positions(block(siteCss(), PHONE)), [[20, 75]], 'a value outside the picture is refused');
 await across.press('Escape');
 
 // The export restarts the preview, so nothing after it clicks in the canvas.
@@ -125,9 +141,16 @@ const exportedCss = readdirSync(exportDir, { recursive: true })
   .filter((f) => String(f).endsWith('.css'))
   .map((f) => readFileSync(join(exportDir, String(f)), 'utf8'))
   .join('\n');
+const ids = await win.evaluate(async () => {
+  const s = await window.builder.project.snapshot();
+  const page = s.state.pages[s.state.site.homePageId];
+  const of = (componentId) => page.rootIds.find((id) => s.state.components[page.nodes[id].definitionId]?.componentId === componentId);
+  return { hero: of('hero.split'), media: of('content.media') };
+});
+const rule = (id) => `\\.so-o-${id}-media\\.so-o-${id}-media\\{[^}]*`;
 // The minified query reads "(width<=767.98px)" or "(max-width:767.98px)", depending on the CSS minifier.
-assert.match(exportedCss, /@media \((?:width\s*<=\s*|max-width:\s*)767\.98px\)\{[^@]*object-position:\s*50% 75%/, 'the exported site carries the phone focal point');
-assert.match(exportedCss, /object-position:\s*20% 50%/, 'and the square photo’s');
+assert.match(exportedCss, new RegExp(`@media \\((?:width\\s*<=\\s*|max-width:\\s*)767\\.98px\\)\\{[^@]*${rule(ids.hero)}object-position:\\s*20% 75%`), 'the exported hero carries its phone focal point');
+assert.match(exportedCss, new RegExp(`(?:^|\\})${rule(ids.media)}object-position:\\s*20% 50%`), 'and the square photo its all-sizes one');
 
 step('Center');
 await win.getByRole('button', { name: 'Center', exact: true }).click();
@@ -137,7 +160,9 @@ assert.equal(positions(siteCss()).length, 2, 'only the hero and the square photo
 
 step('Undo takes back one change at a time');
 await undo();
-await eventually(() => assert.deepEqual(positions(block(siteCss(), PHONE)), [[50, 75]], 'Undo restores the typed value'));
+await eventually(() => assert.deepEqual(positions(block(siteCss(), PHONE)), [[20, 75]], 'Undo restores the typed values'));
+await undo();
+await eventually(() => assert.deepEqual(positions(block(siteCss(), PHONE)), [[20, 100]], 'Undo takes back Down alone, leaving Across on the last drag'));
 await undo();
 await eventually(() => assert.deepEqual(positions(block(siteCss(), PHONE)), [[50, 100]], 'Undo restores the second drag'));
 await undo();
@@ -148,6 +173,21 @@ assert.deepEqual(positions(siteCss()), [[20, 50]], 'the square photo keeps its o
 assert.match(block(siteCss(), PHONE), /aspect-ratio: 16\/9/, 'the crop itself stays');
 await eventually(async () => assert.equal(await across.inputValue(), '', 'the inspector shows the value as it is again'));
 await eventually(async () => assert.equal(await heroImg.evaluate((el) => getComputedStyle(el).objectPosition), '50% 50%', 'the canvas is back at the center'));
+// Then the hero's ratio and picture, and the square photo's focus, its crop staying.
+await undo();
+await eventually(() => assert.doesNotMatch(block(siteCss(), PHONE), /aspect-ratio: 16\/9/, 'Undo takes back the phone crop'));
+await undo();
+await eventually(async () => {
+  const assetId = await win.evaluate(async () => {
+    const s = await window.builder.project.snapshot();
+    const page = s.state.pages[s.state.site.homePageId];
+    return page.nodes[page.rootIds[0]].props.image?.assetId;
+  });
+  assert.notEqual(assetId, 'a_person1', 'Undo puts the hero’s own picture back');
+});
+await undo();
+await eventually(() => assert.deepEqual(positions(siteCss()), [], 'Undo removes the square photo’s focus'));
+assert.match(siteCss(), /aspect-ratio: 1\/1/, 'the square crop stays');
 
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();

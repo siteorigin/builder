@@ -180,8 +180,11 @@ export function StyleControls({
   inherited: ResponsiveStyles | undefined;
   allowed?: string[];
   tokens: TokenDef[];
-  /** `expectedRevision`: the change applies only to the project as it was then (a drag started there). */
-  onSet: (prop: string, value: StyleValue | null, expectedRevision?: number) => void;
+  /**
+   * `expectedRevision`: the change applies only to the project as it was then (a drag started there). What it
+   * returns may be the change's promise, settling to null when the project refused it.
+   */
+  onSet: (prop: string, value: StyleValue | null, expectedRevision?: number) => unknown;
   /** Clears this element's changes: at one size when a size is given, otherwise at every size. */
   onReset?: (scope?: ResponsiveScope) => void;
   /** Replaces the every-size reset's wording (for example, "Restore original design"). */
@@ -199,6 +202,8 @@ export function StyleControls({
   const scope = useStore((s) => s.styleScope);
   const viewport = useStore((s) => s.viewport);
   const preview = sizeForWidth(viewport);
+  // The selected element's box on the canvas, for a crop no aspect ratio declares (a fixed height, say).
+  const selectedBox = useStore((s) => (image ? s.rects.selected[0] : undefined));
   const [showAll, setShowAll] = useState(false);
   const moreId = useId();
   const resetHintId = useId();
@@ -321,15 +326,42 @@ export function StyleControls({
   // The crop a focal point is chosen in: the size being edited, or the previewed one under All sizes, worked
   // out the way the exported site applies the rules.
   const focusEditor = (p: StylePropDef, label: string, value: StyleValue | undefined) => {
-    const size = scope === 'base' ? preview : scope;
+    const own = image?.own ?? styles;
     const below = image?.below ?? (inherited ? [[inherited]] : []);
-    const tiers = [[styles], ...below];
-    const ratio = parseRatio(cascadedStyle(tiers, size, 'aspectRatio', (v) => v === 'auto' || parseRatio(v) !== null));
-    const fit = cascadedStyle(tiers, size, 'objectFit');
-    // What shows through when nothing is set here: this element's all-sizes value when a size is being
-    // edited, then whatever lies under it.
-    const under = cascadedStyle([[scope === 'base' ? undefined : { base: styles?.base }], ...below], size, p.id, (v) => parseFocus(v) !== null);
-    return <FocusEditor label={label} value={value} under={under} scope={scope} size={size} ratio={ratio} fit={fit} image={image} onSet={(v, rev) => onSet(p.id, v, rev)} />;
+    const tiers = [[own], ...below];
+    const validFocus = (v: StyleValue) => parseFocus(v) !== null;
+    // Under All sizes the crop shown is the previewed size's, unless that size keeps its own focus: then the
+    // first size the all-sizes value does reach. When every size keeps its own, it reaches none.
+    const keepsOwn = (z: Size) => own?.[z]?.[p.id] !== undefined && validFocus(own[z]![p.id]!);
+    const reached = scope === 'base' ? [preview, 'desktop' as const, 'tablet' as const, 'phone' as const].find((z) => !keepsOwn(z)) : scope;
+    const size = reached ?? preview;
+    // The box's shape: a declared ratio, else (auto, or none) the box on the canvas when it shows this size.
+    const measured = size === preview && selectedBox && selectedBox.width > 0 && selectedBox.height > 0 ? selectedBox.width / selectedBox.height : null;
+    const ratio = parseRatio(cascadedStyle(tiers, size, 'aspectRatio')) ?? measured;
+    const fitValue = cascadedStyle(tiers, size, 'objectFit');
+    const fit = typeof fitValue === 'string' ? fitValue.trim() : fitValue;
+    // Custom CSS is written after these properties, so it can set the crop itself.
+    const custom = tiers.some((t) => t.some((l) => [size, 'base' as const].some((sc) => /\b(object-position|object-fit|aspect-ratio)\s*:/i.test(String(l?.[sc]?.customCss ?? '')))));
+    // What shows when nothing is set here: this element's value at this size when only its changes are listed
+    // (Edit everywhere), its all-sizes value when a size is being edited, then whatever lies under it.
+    const current = value === undefined ? own?.[scope]?.[p.id] : undefined;
+    const under = (current !== undefined && validFocus(current) ? current : undefined) ?? cascadedStyle([[scope === 'base' ? undefined : { base: own?.base }], ...below], size, p.id, validFocus);
+    return (
+      <FocusEditor
+        label={label}
+        value={value}
+        under={under}
+        scope={scope}
+        size={size}
+        previewed={size === preview}
+        unreached={scope === 'base' && !reached}
+        custom={custom}
+        ratio={ratio}
+        fit={fit}
+        image={image}
+        onSet={(v, rev) => onSet(p.id, v, rev)}
+      />
+    );
   };
 
   const group = (g: StylePropDef['group'], list: StylePropDef[]) => (

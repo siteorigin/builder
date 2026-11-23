@@ -24,12 +24,15 @@ const ownerOf = (s: ProjectState, title: string) => ({ kind: 'page' as const, id
 const setStyle = (s: ProjectState, title: string, inst: InstanceNode, partId: string, scope: string, property: string, value: unknown): EditOperation =>
   ({ type: 'node.setStyle', owner: ownerOf(s, title), nodeId: inst.id, partId, scope, property, value }) as EditOperation;
 
-/** The declarations of the rule for one selector inside one media query of a stylesheet. */
-function ruleIn(css: string, media: string | null, selector: string): string | null {
-  const body = media === null ? css.split('@media')[0] : (css.split(`@media ${media}`)[1] ?? '').split('@media')[0];
-  const at = body.indexOf(`${selector} {`);
-  if (at < 0) return null;
-  return body.slice(at, body.indexOf('}', at) + 1);
+/** The rules outside any media query (null), or inside one media query, of a stylesheet. */
+const blockOf = (css: string, media: string | null) => (media === null ? css.split('@media')[0] : (css.split(`@media ${media}`)[1] ?? '').split('@media')[0]);
+
+/** The declarations of the rule whose whole selector is `selector`, inside one media query (or none). */
+function ruleIn(css: string, media: string | null, selector: string): string {
+  const body = blockOf(css, media);
+  const m = new RegExp(`(?:^|\\n)\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`).exec(body);
+  if (!m) throw new Error(`no rule for ${selector} in ${media ?? 'the base block'}`);
+  return m[1];
 }
 
 describe('focal point values', () => {
@@ -37,19 +40,24 @@ describe('focal point values', () => {
     expect(parseFocus('center')).toEqual({ x: 50, y: 50 });
     expect(parseFocus('top')).toEqual({ x: 50, y: 0 });
     expect(parseFocus('right')).toEqual({ x: 100, y: 50 });
+    expect(parseFocus('bottom')).toEqual({ x: 50, y: 100 });
+    expect(parseFocus('left')).toEqual({ x: 0, y: 50 });
     expect(parseFocus('30% 20%')).toEqual({ x: 30, y: 20 });
     expect(parseFocus(' 12.5% 100% ')).toEqual({ x: 12.5, y: 100 });
   });
 
   it('refuses anything else', () => {
-    for (const bad of ['150% 20%', '50%', '50% 20% 10%', '-10% 20%', '30px 20px', '12.55% 20%', 'left top', 'url(x) 1%', '', 'calc(50%) 20%'])
+    for (const bad of ['150% 20%', '50% 150%', '50% 100.1%', '50%', '50% 20% 10%', '-10% 20%', '30px 20px', '12.55% 20%', 'left top', 'url(x) 1%', '', 'calc(50%) 20%'])
       expect(parseFocus(bad), bad).toBeNull();
+    // Names an object inherits are not keywords, and a no-break space is not CSS whitespace.
+    for (const bad of ['constructor', 'toString', '__proto__', 'hasOwnProperty', '50%\u00A020%']) expect(parseFocus(bad), bad).toBeNull();
     expect(parseFocus(50)).toBeNull();
   });
 
   it('stores a point clamped to the picture and rounded to a tenth', () => {
     expect(formatFocus({ x: 33.333, y: 66.666 })).toBe('33.3% 66.7%');
     expect(formatFocus({ x: -5, y: 140 })).toBe('0% 100%');
+    expect(formatFocus({ x: 140, y: -5 })).toBe('100% 0%');
     expect(parseFocus(formatFocus({ x: 12.34, y: 0 }))).toEqual({ x: 12.3, y: 0 });
   });
 
@@ -59,6 +67,12 @@ describe('focal point values', () => {
     expect(validateStyleValue('objectPosition', '130% 20%')).toMatch(/percentages/);
     expect(validateStyleValue('objectPosition', 'top; color: red')).not.toBeNull();
     expect(styleToCss('objectPosition', '30% 20%')).toEqual(['object-position: 30% 20%']);
+    expect(styleToCss('objectPosition', 'top')).toEqual(['object-position: top']);
+    for (const bad of ['constructor', '50%\u00A020%']) {
+      expect(validateStyleValue('objectPosition', bad), bad).not.toBeNull();
+      expect(styleToCss('objectPosition', bad), bad).toEqual([]);
+    }
+    expect(validateStyleValue('objectPosition', { token: 'space.lg' })).not.toBeNull();
     // A hand-edited document with a value outside the grammar writes nothing.
     expect(styleToCss('objectPosition', '30% 20%; display: none')).toEqual([]);
     expect(styleToCss('objectPosition', '999% 0%')).toEqual([]);
@@ -70,11 +84,13 @@ describe('focal point values', () => {
     expect(parseRatio('1.5')).toBeCloseTo(1.5);
     expect(parseRatio('auto')).toBeNull();
     expect(parseRatio('0/1')).toBeNull();
+    expect(parseRatio('1/0')).toBeNull();
   });
 
   it('names a point for screen readers', () => {
     expect(describeFocus({ x: 50, y: 50 })).toBe('Center');
     expect(describeFocus({ x: 30, y: 12.5 })).toBe('30% from the left, 12.5% from the top');
+    expect(describeFocus({ x: 30.04, y: -2 })).toBe('30% from the left, 0% from the top');
   });
 });
 
@@ -88,6 +104,8 @@ describe('the crop a focal point gives', () => {
     expect(center.y).toBeCloseTo(0.275);
     expect(coverCrop(4 / 5, 16 / 9, { x: 50, y: 0 }).y).toBe(0);
     expect(coverCrop(4 / 5, 16 / 9, { x: 50, y: 100 }).y).toBeCloseTo(0.55);
+    expect(coverCrop(4 / 5, 16 / 9, { x: 50, y: 20 }).y).toBeCloseTo(0.11);
+    expect(coverCrop(4 / 5, 16 / 9, { x: 50, y: 12.5 }).y).toBeCloseTo(0.55 * 0.125);
     // Across makes no difference when nothing is cut from the sides.
     expect(coverCrop(4 / 5, 16 / 9, { x: 0, y: 20 })).toEqual(coverCrop(4 / 5, 16 / 9, { x: 100, y: 20 }));
   });
@@ -98,21 +116,33 @@ describe('the crop a focal point gives', () => {
     expect(crop.h).toBe(1);
     expect(crop.w).toBeCloseTo(2 / 3);
     expect(crop.x).toBeCloseTo((1 / 3) * 0.25);
+    // A 16:9 photo in a square keeps 56.25% of its width; at 80% across the crop starts 35% in.
+    const wide = coverCrop(16 / 9, 1, { x: 80, y: 0 });
+    expect(wide.w).toBeCloseTo(0.5625);
+    expect(wide.x).toBeCloseTo(0.35);
+    expect(wide.y).toBe(0);
   });
 
   it('keeps a picked point inside the crop', () => {
-    for (const [px, py] of [[0, 0], [0.1, 0.9], [0.5, 0.5], [1, 1], [0.73, 0.21]]) {
+    // To within the tenth of a percent a point is stored to.
+    for (const [px, py] of [[0, 0], [0.1, 0.9], [0.5, 0.5], [1, 1], [0.73, 0.21], [0.12345, 0.98765], [0.00051, 0.99949]]) {
       const crop = coverCrop(4 / 5, 16 / 9, focusFromPoint(px, py));
-      expect(py).toBeGreaterThanOrEqual(crop.y - 1e-9);
-      expect(py).toBeLessThanOrEqual(crop.y + crop.h + 1e-9);
+      expect(py).toBeGreaterThanOrEqual(crop.y - 1e-3);
+      expect(py).toBeLessThanOrEqual(crop.y + crop.h + 1e-3);
       const wide = coverCrop(3 / 2, 1, focusFromPoint(px, py));
-      expect(px).toBeGreaterThanOrEqual(wide.x - 1e-9);
-      expect(px).toBeLessThanOrEqual(wide.x + wide.w + 1e-9);
+      expect(px).toBeGreaterThanOrEqual(wide.x - 1e-3);
+      expect(px).toBeLessThanOrEqual(wide.x + wide.w + 1e-3);
     }
+    expect(focusFromPoint(0.12345, 0.98765)).toEqual({ x: 12.3, y: 98.8 });
   });
 
   it('calls a box of the picture’s own shape uncropped', () => {
     expect(cropAxis(1.5, 1.5)).toBeNull();
+    // Within half a percent of the picture's shape counts as uncropped; beyond it, the crop shows.
+    expect(cropAxis(1.5, 1.5 * 1.004)).toBeNull();
+    expect(cropAxis(1.5, 1.5 / 1.004)).toBeNull();
+    expect(cropAxis(1.5, 1.5 * 1.01)).toBe('y');
+    expect(cropAxis(1.5, 1.5 / 1.01)).toBe('x');
     expect(coverCrop(1.5, 1.5, { x: 10, y: 90 })).toEqual({ x: 0, y: 0, w: 1, h: 1 });
   });
 });
@@ -151,7 +181,9 @@ describe('where Image focus is offered', () => {
     expect(focus).toContain('"X% Y%"');
     const inst = instanceOf(s, 'Home', 'hero.split');
     const tools = selectionTools(s, selectionTarget({ owner: ownerOf(s, 'Home'), instancePath: [inst.id], nodeId: 'media', partId: 'media' }));
-    expect(tools?.find((t) => t.name === 'style_selected_element')?.description).toContain('"X% Y%"');
+    const style = tools?.find((t) => t.name === 'style_selected_element');
+    expect(style?.description).toContain('"X% Y%"');
+    expect(JSON.stringify(style?.parameters)).toContain('"objectPosition"');
   });
 });
 
@@ -169,30 +201,44 @@ describe('the rules a crop is worked out from', () => {
     expect(cascadedStyle([[placement], [{ base: { objectPosition: 'top' } }]], 'tablet', 'objectPosition')).toBe('top');
     expect(cascadedStyle([[{ base: { aspectRatio: '1/1' } }, { base: { aspectRatio: '3/2' } }]], 'desktop', 'aspectRatio')).toBe('3/2');
     expect(cascadedStyle([[{ phone: { aspectRatio: '1/1' } }, { base: { aspectRatio: '3/2' } }]], 'phone', 'aspectRatio')).toBe('1/1');
+    // Two layers with rules for the size: the later one wins, as two selected variant axes do.
+    expect(cascadedStyle([[{ phone: { aspectRatio: '1/1' } }, { phone: { aspectRatio: '3/2' } }]], 'phone', 'aspectRatio')).toBe('3/2');
+    // One layer with both: the size's rule wins.
+    expect(cascadedStyle([[{ base: { aspectRatio: '1/1' }, phone: { aspectRatio: '3/2' } }]], 'phone', 'aspectRatio')).toBe('3/2');
+    expect(cascadedStyle([[{ base: { aspectRatio: '1/1' }, phone: { aspectRatio: '3/2' } }]], 'desktop', 'aspectRatio')).toBe('1/1');
+    expect(cascadedStyle([[undefined]], 'phone', 'aspectRatio')).toBeUndefined();
   });
 
   it('skips a value the export would drop', () => {
     const tiers = [[{ phone: { objectPosition: '50% 10%; color: red' } }], [{ base: { objectPosition: 'bottom' } }]];
     expect(cascadedStyle(tiers, 'phone', 'objectPosition', (v) => parseFocus(v) !== null)).toBe('bottom');
+    const base = [[{ base: { objectPosition: 'constructor' } }], [{ base: { objectPosition: 'top' } }]];
+    expect(cascadedStyle(base, 'desktop', 'objectPosition', (v) => parseFocus(v) !== null)).toBe('top');
+    expect(cascadedStyle(base, 'desktop', 'objectPosition')).toBe('constructor');
   });
 });
 
 describe('a focal point on one placement', () => {
   it('exports a portrait-to-landscape crop for phones on that hero only', () => {
-    const s = fresh();
+    // A second split hero on About: another placement of the same component.
+    const start = fresh();
+    const s = applyOperations(start, [{ type: 'node.insert', owner: ownerOf(start, 'About'), parentId: null, componentId: 'hero.split' }]).state;
     const hero = instanceOf(s, 'Home', 'hero.split');
+    const otherHero = instanceOf(s, 'About', 'hero.split');
     const team = instanceOf(s, 'About', 'team.grid');
+    expect(otherHero.definitionId).toBe(hero.definitionId);
     const r = applyOperations(s, [setStyle(s, 'Home', hero, 'media', 'phone', 'aspectRatio', '16/9'), setStyle(s, 'Home', hero, 'media', 'phone', 'objectPosition', '50% 20%')]);
-    const heroAfter = instanceOf(r.state, 'Home', 'hero.split');
-    expect(heroAfter.overrides?.media).toEqual({ phone: { aspectRatio: '16/9', objectPosition: '50% 20%' } });
+    expect(instanceOf(r.state, 'Home', 'hero.split').overrides?.media).toEqual({ phone: { aspectRatio: '16/9', objectPosition: '50% 20%' } });
     const css = generateSiteCss(r.state);
     const cls = overrideClass(hero.id, 'media');
     const phone = ruleIn(css, MEDIA_QUERIES.phone, `.${cls}.${cls}`);
     expect(phone).toContain('object-position: 50% 20%');
     expect(phone).toContain('aspect-ratio: 16/9');
-    // Not at the other sizes, not on the team portraits, and not in the shared design.
-    expect(ruleIn(css, null, `.${cls}.${cls}`) ?? '').not.toContain('object-position');
+    // Not at the other sizes, not on the other hero or the team portraits, and not in the shared design.
+    for (const media of [null, MEDIA_QUERIES.tablet, MEDIA_QUERIES.desktop]) expect(blockOf(css, media)).not.toContain('object-position');
     expect(css.match(/object-position/g)).toHaveLength(1);
+    expect(css).not.toContain(overrideClass(otherHero.id, 'media'));
+    expect(instanceOf(r.state, 'About', 'hero.split').overrides).toEqual(otherHero.overrides);
     expect(instanceOf(r.state, 'About', 'team.grid').overrides).toEqual(team.overrides);
     expect(generateComponentsCss(r.state)).toBe(generateComponentsCss(s));
   });
@@ -202,9 +248,11 @@ describe('a focal point on one placement', () => {
     const media = instanceOf(s, 'Home', 'content.media');
     const r = applyOperations(s, [setStyle(s, 'Home', media, 'media', 'tablet', 'aspectRatio', '1/1'), setStyle(s, 'Home', media, 'media', 'tablet', 'objectPosition', '20% 50%')]);
     const cls = overrideClass(media.id, 'media');
-    const tablet = ruleIn(generateSiteCss(r.state), MEDIA_QUERIES.tablet, `.${cls}.${cls}`);
+    const css = generateSiteCss(r.state);
+    const tablet = ruleIn(css, MEDIA_QUERIES.tablet, `.${cls}.${cls}`);
     expect(tablet).toContain('aspect-ratio: 1/1');
     expect(tablet).toContain('object-position: 20% 50%');
+    for (const media of [null, MEDIA_QUERIES.phone, MEDIA_QUERIES.desktop]) expect(blockOf(css, media)).not.toContain('object-position');
     // The About page's own media section is another placement of the same component.
     const about = instanceOf(r.state, 'About', 'content.media');
     expect(about.overrides?.media).toBeUndefined();
