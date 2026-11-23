@@ -1463,10 +1463,6 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   // Replace the subtree with an instance.
   const inst: InstanceNode = { id: newId('n'), kind: 'instance', definitionId: def.id, props };
   if (anchor) inst.anchor = anchor;
-  // The root's conditions also stay on the placement, in the owner's terms, so a collapsing wrapper around it
-  // still sees when it renders.
-  if (ownerDef && root.when) inst.when = clone(root.when);
-  if (ownerDef && root.unless) inst.unless = clone(root.unless);
   if (Object.keys(instSlots).length) inst.slots = instSlots;
   const removed = new Set(subtreeIds(tree, op.nodeId));
   if (ownerDef) {

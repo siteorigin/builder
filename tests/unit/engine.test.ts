@@ -578,18 +578,6 @@ describe('definition editing operations (§2.5)', () => {
     expect(errors(s).map((d) => d.code)).toContain('BINDING_INVALID');
   });
 
-  it('keeps a selection root\'s conditions on its placement, so a collapsing row around it still collapses', () => {
-    const f = fork(fresh(), 'hero.split');
-    const own = { kind: 'component' as const, id: f.id };
-    const r = applyOperations(f.state, [{ type: 'component.createFromNode', owner: own, nodeId: 'primary', name: 'Primary action' }]);
-    const owner = r.state.components[f.id];
-    const placement = owner.tree!.nodes[r.results[0].nodeId as string] as InstanceNode;
-    expect(placement.when).toEqual({ $prop: 'primaryLabel' });
-    expect(errors(r.state)).toEqual([]);
-    const file = [...generateProject(r.state).entries()].find(([, src]) => src.includes(`siteorigin/components/${f.id}/`))![1];
-    expect(file).toContain('{#if has(primaryLabel) || has(secondaryLabel)}');
-  });
-
   it('inserts rich text, repeats and slots only where they make sense', async () => {
     const f = fork(fresh(), 'features.grid');
     let s = f.state;
