@@ -903,6 +903,24 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .ss-follows .link-btn { margin-left: 2px; font-size: 12px; min-height: 24px; }
 .ss-follows svg { width: 12px; height: 12px; flex: none; }
 .ss-hex { text-transform: lowercase; }
+/* Contrast: a sample in the pair's own colours, its ratio in words and an icon, and the offer to fix it. */
+.ss-contrast { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 6px; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); }
+.ss-contrast-flags { display: flex; flex-direction: column; gap: 6px; margin: 3px 0 2px; }
+.ss-contrast-block { display: flex; flex-direction: column; gap: 6px; }
+.ss-pairs { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ss-pair { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; font-size: 12px; }
+.ss-pair-use { grid-column: 1 / -1; color: var(--text-2); }
+.ss-sample { display: inline-flex; align-items: center; justify-content: center; min-width: 92px; min-height: 30px; padding: 4px 14px; border-radius: 999px; box-shadow: 0 0 0 1px var(--border-control); font: 550 13px/1.2 var(--font); }
+.ss-sample.none { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--border-control) 5px 6px), var(--raised); }
+.ss-verdict { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--text-2); }
+.ss-verdict svg, .ss-flag svg { width: 13px; height: 13px; flex: none; }
+.ss-verdict.pass, .ss-verdict.pass svg { color: var(--green); }
+.ss-verdict.fail, .ss-verdict.fail svg, .ss-flag, .ss-flag svg { color: var(--red); }
+.ss-flag { display: flex; align-items: flex-start; gap: 5px; font-size: 12px; line-height: 1.35; }
+.ss-flag svg { margin-top: 2px; }
+.ss-contrast-fix { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.ss-contrast-note { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+.ss-chip { width: 12px; height: 12px; flex: none; border-radius: 50%; box-shadow: 0 0 0 1px var(--border-control); }
 .ss-uses { display: flex; flex-direction: column; gap: 4px; margin: -4px 0 0; font-size: 12px; }
 .ss-uses > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 8px; }
 .ss-uses dt { color: var(--text-3); }

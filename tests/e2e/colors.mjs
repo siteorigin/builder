@@ -77,11 +77,11 @@ for (const c of cases) {
   await pick('#c0392b');
   await eventually(async () => assert.equal(await saved(), c.adjusted, `${c.label}: the adjusted color keeps its opacity`));
   await eventually(async () => assert.equal(await picker().inputValue(), '#c0392b', `${c.label}: the picker shows the adjusted color`));
-  assert.equal(await text().inputValue(), c.adjusted, `${c.label}: the text field follows the picker`);
+  await eventually(async () => assert.equal(await text().inputValue(), c.adjusted, `${c.label}: the text field follows the picker`));
   await undo();
   await eventually(async () => assert.equal(await saved(), c.value, `${c.label}: undo returns the typed text`));
   await eventually(async () => assert.equal(await picker().inputValue(), c.start, `${c.label}: the picker follows the undo`));
-  assert.equal(await text().inputValue(), c.value, `${c.label}: the text field follows the undo`);
+  await eventually(async () => assert.equal(await text().inputValue(), c.value, `${c.label}: the text field follows the undo`));
 }
 
 step('a fast drag that goes out and comes back ends where it was left, as one undo step');
@@ -107,6 +107,8 @@ const named = (name) => ({
   picker: section('Colors').locator(`input[type="color"][aria-label="${name} color"]`),
   fill: section('Colors').locator('.color-pick').filter({ has: win.locator(`input[aria-label="${name} color"]`) }).locator('.color-pick-fill')
 });
+/** A row in Colors by its own name: a note on another row can mention a color by name, so matching text would pick that row too. */
+const colorRow = (name) => section('Colors').locator('[data-ss-row]').filter({ has: win.locator('.ss-name', { hasText: new RegExp(`^${name.replace(/[()]/g, '\\$&')}\\s*$`) }) });
 const reopenCases = [
   { name: 'Accent', value: '#d43', start: '#dd4433', fill: 'rgb(221, 68, 51)' },
   { name: 'Cards and panels', value: '#d14131', start: '#d14131', fill: 'rgb(209, 65, 49)' },
@@ -158,11 +160,49 @@ await eventually(async () => assert.equal(await saved(), '#336699', 'a pick repl
 await paste('rgb(255, 0 0)');
 await eventually(async () => assert.equal(await swatch(), 'rgba(0, 0, 0, 0)', 'text that is not a color leaves nothing painted, not the color before it'));
 
+step('a white brand color is flagged where it is set, with a readable text color on offer');
+const overrideOf = (id) => win.evaluate(async (t) => (await window.builder.project.snapshot()).state.tokens.overrides[t], id);
+const overridesNow = () => win.evaluate(async () => (await window.builder.project.snapshot()).state.tokens.overrides);
+const basics = () => section('Basics').locator('.ss-contrast');
+const pairRow = (use) => basics().locator('.ss-pair').filter({ has: win.locator('.ss-pair-use', { hasText: new RegExp(`^${use}$`) }) });
+const headerCta = frame.locator('.so-header__cta').first();
+const colorsOf = (loc) => loc.evaluate((el) => ({ color: getComputedStyle(el).color, background: getComputedStyle(el).backgroundColor }));
+await paste('#ffffff');
+await eventually(async () => assert.match(await pairRow('Button text').innerText(), /1\.00:1\s+Low contrast/, 'the button at rest reads as unreadable beside the color that was just set'));
+assert.match(await pairRow('Button text on hover').innerText(), /10\.92:1\s+Readable/, 'the hover state is shown separately, and readable');
+assert.match(await pairRow('Brand-colored links on the page').innerText(), /Low contrast/, 'brand-colored text on the page is flagged too');
+await eventually(async () => assert.match(await win.locator('#dock-panel-styles .sr-only[role="status"]').innerText(), /Low contrast: .*Button text/, 'the unreadable pair is announced'));
+await eventually(async () => assert.deepEqual(await colorsOf(headerCta), { color: 'rgb(255, 255, 255)', background: 'rgb(255, 255, 255)' }, 'the header button in the preview really is white on white'), 20000);
+const onBrandRow = colorRow('Text on brand color');
+assert.equal(await onBrandRow.locator('.ss-flag').count(), 1, 'the Text on brand color row carries the flag too');
+await colorRow('Border').waitFor();
+assert.equal(await colorRow('Border').locator('.ss-flag').count(), 0, 'a color in no pair carries no flag');
+assert.match(await basics().innerText(), /Choosing it leaves .*hard to read\. Change Brand \(strong\)/, 'the offer says what it would leave hard to read, before it is taken');
+const rest = await settled();
+const before = await overridesNow();
+await basics().getByRole('button', { name: /Use dark ink for Text on brand color/ }).click();
+await eventually(async () => assert.equal(await overrideOf('color.on-brand'), '#14181a', 'the offer sets the foreground token'));
+assert.deepEqual(await overridesNow(), { ...before, 'color.on-brand': '#14181a' }, 'and changes nothing else');
+await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.getAttribute('aria-label')), 'Brand color value', 'focus lands on the Brand value, not on the page, when the offer goes'));
+await eventually(async () => assert.match(await pairRow('Button text').innerText(), /17\.86:1\s+Readable/, 'the button is readable at rest'));
+assert.match(await pairRow('Button text on hover').innerText(), /1\.63:1\s+Low contrast/, 'and the cost to the hover state is shown, not hidden');
+assert.match(await basics().innerText(), /Brand \(strong\)/, 'with the other color to change for it named');
+await eventually(async () => assert.match(await colorRow('Brand (strong)').innerText(), /Button text on hover is hard to read/, 'the hover color\'s own row carries the hover flag'));
+await eventually(async () => assert.deepEqual(await colorsOf(headerCta), { color: 'rgb(20, 24, 26)', background: 'rgb(255, 255, 255)' }, 'the header button in the preview now reads'), 20000);
+// The editor's overlay catches the pointer, so a real hover is out of reach; the :hover rule paints --so-btn-bg-hover, which is the color the hover ratio is measured on.
+await eventually(async () => assert.equal(await headerCta.evaluate((el) => getComputedStyle(el).getPropertyValue('--so-btn-bg-hover').trim()), '#16443a', 'the preview button hovers to the color the hover ratio is measured on'), 20000);
+await undo();
+await eventually(async () => assert.equal(await overrideOf('color.on-brand'), undefined, 'one undo takes back the offer'));
+assert.deepEqual(await overridesNow(), before, 'and only the offer');
+await eventually(async () => assert.match(await pairRow('Button text').innerText(), /1\.00:1\s+Low contrast/, 'the flag returns with it'));
+assert.ok((await settled()) > rest, 'the offer was a change of its own');
+await paste('rgba(209, 65, 49, 0.5)');
+
 step('a color that follows another stays linked');
 await paste('rgba(209, 65, 49, 0.5)');
-await section('Colors').locator('[data-ss-row]', { hasText: 'Brand (strong)' }).locator('.ss-disclose').click();
-await section('Colors').locator('[data-ss-row]', { hasText: 'Brand (strong)' }).getByRole('combobox').selectOption('color.brand');
-const linked = section('Colors').locator('[data-ss-row]', { hasText: 'Brand (strong)' });
+await colorRow('Brand (strong)').locator('.ss-disclose').click();
+await colorRow('Brand (strong)').getByRole('combobox').selectOption('color.brand');
+const linked = colorRow('Brand (strong)');
 await eventually(async () => assert.equal(await linked.locator('input[type="color"]').isDisabled(), true, 'a linked color has no picker of its own'));
 await eventually(async () => assert.equal(await linked.locator('.color-pick-fill').evaluate((el) => getComputedStyle(el).backgroundColor), 'rgba(209, 65, 49, 0.5)', 'it shows the color it follows, opacity included'));
 await eventually(async () => assert.equal(await linked.locator('input[type="color"]').inputValue(), '#d14131', 'and the picker value is the one it follows'));
