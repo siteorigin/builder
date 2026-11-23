@@ -3,7 +3,7 @@ import type { ElementRef, InstanceNode, Op, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { breadcrumb } from '../../src/renderer/src/lib/model';
-import { clip, everySizeEdits, hideHereEdits, layerLabel, ownVisibility, rowVisibility, showHereEdits, type Size, type VisibilityEdit } from '../../src/renderer/src/lib/layers';
+import { clip, everySizeEdits, eyeAction, hideHereEdits, layerLabel, ownVisibility, rowVisibility, showHereEdits, type Size, type VisibilityEdit } from '../../src/renderer/src/lib/layers';
 
 /** A home page whose first section holds a Grid with a paragraph in it: Section > Grid > Text. */
 function nested() {
@@ -221,5 +221,59 @@ describe('visibility at the previewed size', () => {
     expect(ownVisibility(t.s, t.node(fg), 'grid').hiddenAt).toEqual(['phone']);
     (t.node(fg) as InstanceNode).variants = { layout: 'two-columns' };
     expect(ownVisibility(t.s, t.node(fg), 'grid').hiddenAt).toEqual([]);
+  });
+});
+
+describe('the eye in Layers', () => {
+  const t0 = () => nested();
+  const set = (t: ReturnType<typeof nested>, scope: 'base' | Size, value: boolean | null) => t.run([{ type: 'node.setStyle', owner: t.owner, nodeId: t.para, scope, property: 'hidden', value }]);
+  const click = (t: ReturnType<typeof nested>, size: Size) => eyeAction(t.s, t.node(t.para), size).edits.forEach((e) => set(t, e.scope, e.value));
+  const hiddenAt = (t: ReturnType<typeof nested>) => ownVisibility(t.s, t.node(t.para)).hiddenAt;
+
+  it('is pressed for a phone-only hide in the phone preview, and shows it again on phone alone', () => {
+    const t = t0();
+    set(t, 'phone', true);
+    expect(eyeAction(t.s, t.node(t.para), 'phone')).toMatchObject({ pressed: true, action: 'Show on phone' });
+    expect(eyeAction(t.s, t.node(t.para), 'desktop')).toMatchObject({ pressed: false, action: 'Hide at every size' });
+    click(t, 'phone');
+    expect(hiddenAt(t)).toEqual([]);
+  });
+
+  it('still hides at every size from the default preview, and shows it everywhere again', () => {
+    const t = t0();
+    click(t, 'desktop');
+    expect(hiddenAt(t)).toEqual(['phone', 'tablet', 'desktop']);
+    expect(eyeAction(t.s, t.node(t.para), 'phone')).toMatchObject({ pressed: true, action: 'Show at every size' });
+    click(t, 'phone');
+    expect(hiddenAt(t)).toEqual([]);
+  });
+
+  it('shows it on this size alone when this size has its own hide, whatever every size says', () => {
+    const t = t0();
+    set(t, 'phone', true);
+    set(t, 'base', true);
+    expect(eyeAction(t.s, t.node(t.para), 'phone')).toMatchObject({ pressed: true, action: 'Show on phone' });
+    click(t, 'phone');
+    expect(hiddenAt(t)).toEqual(['tablet', 'desktop']);
+  });
+
+  it('shows a placement its design hides on this size when every size is shown again', () => {
+    const t = t0();
+    const def = t.s.components[(t.node(t.section) as InstanceNode).definitionId];
+    const root = def.tree!.rootIds[0];
+    def.tree!.nodes[root].styles = { ...def.tree!.nodes[root].styles, phone: { hidden: true } };
+    t.run([{ type: 'node.setStyle', owner: t.owner, nodeId: t.section, partId: 'root', scope: 'base', property: 'hidden', value: true }]);
+    const eye = eyeAction(t.s, t.node(t.section), 'phone');
+    expect(eye).toMatchObject({ pressed: true, action: 'Show at every size' });
+    expect(eye.edits).toEqual([{ partId: 'root', scope: 'base', value: null }, { partId: 'root', scope: 'phone', value: false }]);
+  });
+
+  it('hides it here when it showed here only as an exception', () => {
+    const t = t0();
+    set(t, 'base', true);
+    set(t, 'phone', false);
+    expect(eyeAction(t.s, t.node(t.para), 'phone')).toMatchObject({ pressed: false, action: 'Hide on phone' });
+    click(t, 'phone');
+    expect(hiddenAt(t)).toEqual(['phone', 'tablet', 'desktop']);
   });
 });

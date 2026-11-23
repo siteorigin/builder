@@ -266,3 +266,45 @@ export function rowVisibility(state: ProjectState, tree: NodeTree, n: GraphNode,
   if (hiddenBy) notes.push(`hidden ${sizesText([size])} because ${hiddenBy.name} is hidden ${sizesText(hiddenBy.sizes)}`);
   return { own, hiddenHere, hiddenBy, note: notes.join('; ') };
 }
+
+/** A copy of the node with the edits made, to see what they leave. */
+function withEdits(n: GraphNode, edits: VisibilityEdit[]): GraphNode {
+  const out = structuredClone(n);
+  for (const e of edits) {
+    let styles: ResponsiveStyles;
+    if (e.partId && out.kind === 'instance') styles = ((out.overrides ??= {})[e.partId] ??= {});
+    else styles = out.styles ??= {};
+    const props = (styles[e.scope] ??= {});
+    if (e.value === null) delete props.hidden;
+    else props.hidden = e.value;
+  }
+  return out;
+}
+
+export interface EyeAction {
+  /** The layer hides itself in the preview being shown. */
+  pressed: boolean;
+  /** What a click says it does ("Show on phone", "Hide at every size"). */
+  action: string;
+  edits: VisibilityEdit[];
+}
+
+/**
+ * What a row's eye does in the preview being shown. It is pressed when the layer hides itself there. Showing
+ * undoes what hides it there: a hide set for just this size is taken away on this size alone, and a hide set
+ * for every size is taken away everywhere (sizes with their own hide keep it). Hiding hides at every size, as
+ * the eye always has, unless the layer shows here only as an exception to such a hide: then the exception goes.
+ */
+export function eyeAction(state: ProjectState, n: GraphNode, size: Size): EyeAction {
+  const own = ownVisibility(state, n);
+  if (own.hiddenAt.includes(size)) {
+    if (own.by[size] === 'size') return { pressed: true, action: `Show on ${size}`, edits: showHereEdits(state, n, size) };
+    const all = everySizeEdits(state, n, false);
+    // Whatever still hides it here once every size shows it (the design's own hide for this size, say).
+    return { pressed: true, action: 'Show at every size', edits: [...all, ...showHereEdits(state, withEdits(n, all), size)] };
+  }
+  const all = everySizeEdits(state, n, true);
+  const rest = hideHereEdits(state, withEdits(n, all), size);
+  if (!all.length) return { pressed: false, action: `Hide on ${size}`, edits: rest };
+  return { pressed: false, action: 'Hide at every size', edits: [...all, ...rest] };
+}
