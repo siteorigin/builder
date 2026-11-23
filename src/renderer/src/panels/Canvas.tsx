@@ -11,6 +11,7 @@ import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, moveIndex } from '../lib/reorder';
+import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
@@ -42,6 +43,8 @@ export function Canvas() {
   const selection = useStore((s) => s.selection);
   const hover = useStore((s) => s.hover);
   const rects = useStore((s) => s.rects);
+  const revealedItem = useStore((s) => s.revealedItem);
+  const inspectorShown = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const runStatus = useStore((s) => s.runStatus);
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const definitionMode = useStore((s) => s.definitionMode);
@@ -65,6 +68,8 @@ export function Canvas() {
   const pendingEdits = useRef(new Map<string, { ref: ElementRef; desc: string; base: ReturnType<typeof getState>['snapshot']; ai: number }>());
   /** The route the editor last asked the page to show; its acknowledgement is the one that counts. */
   const pendingNav = useRef<string | null>(null);
+  /** The list item the page was last asked to reveal (see syncReveal). */
+  const sentReveal = useRef<RevealTarget | null>(null);
   /** The route the page last said it is showing, or null while a navigation the editor asked for is on its way. */
   const frameAt = useRef<string | null>(null);
   const measureWaiters = useRef(new Map<string, (rects: unknown) => void>());
@@ -156,6 +161,9 @@ export function Canvas() {
           endInlineEdit();
           post('mode', { mode: getState().mode });
           syncTrack();
+          // A new page starts with nothing revealed.
+          sentReveal.current = null;
+          syncReveal();
           // A page chosen while the preview was starting wins: the navigate effect opens it next.
           if (!getState().pageId) syncPage(String(p.path));
           break;
@@ -188,7 +196,7 @@ export function Canvas() {
           resolveHover();
           break;
         case 'rects':
-          setState({ rects: { selected: rectList(p.selected), hovered: rectList(p.hovered) } });
+          setState({ rects: { selected: rectList(p.selected), hovered: rectList(p.hovered), revealed: rectList(p.revealed) } });
           break;
         case 'select': {
           if (!st) return;
@@ -397,6 +405,24 @@ export function Canvas() {
     const desc = ready ? descFor(selection) : null;
     if (desc) post('scrollTo', { desc });
   }, [ready, selection && refKey(selection)]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * The list item open in the inspector, revealed on the page while it is edited (see lib/reveal): only while
+   * editing, with the inspector in view. The page is told only when that changes.
+   */
+  function syncReveal() {
+    const s = getState();
+    const st = s.snapshot?.state;
+    const r = s.revealedItem;
+    const ctx = st && r && s.mode === 'edit' && s.dockOpen && s.rightTab === 'inspect' ? descFor(r.ref)?.ctx : undefined;
+    const target = st && r && ctx ? revealTarget(st, r, ctx) : null;
+    if (sameTarget(target, sentReveal.current)) return;
+    sentReveal.current = target;
+    post('reveal', { target });
+  }
+  useEffect(() => {
+    if (ready) syncReveal();
+  }, [ready, revealedItem, mode, inspectorShown, snapshot?.revision, pageId, definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (ready) post('mode', { mode });
@@ -649,6 +675,10 @@ export function Canvas() {
   const pad = isPart ? 3 : 0;
   const selBoxes = mode === 'edit' && !stylesOpen ? rects.selected.map(toBox).map((b) => ({ left: b.left - pad, top: b.top - pad, width: b.width + pad * 2, height: b.height + pad * 2 })) : [];
   const hovBoxes = mode === 'edit' ? rects.hovered.map(toBox) : [];
+  // A part of a repeated item selected on the page, and outlined there, already marks its item: the item stays
+  // revealed, without a second outline.
+  const selShown = rects.selected.some((r) => r.y + r.height > 0 && r.y < frameH);
+  const revBoxes = mode === 'edit' && !(selection?.itemPath?.length && selShown) ? rects.revealed.map(toBox) : [];
   const selLabel = selection && state ? chromeLabel(state, selection) : '';
   const hovering = hover && !sameRef(hover, selection) && !reorder && !dragging && !menu.isOpen;
   const firstSel = selBoxes[0];
@@ -725,6 +755,9 @@ export function Canvas() {
                       )}
                     </div>
                   ))}
+                {revBoxes.map((b, i) => (
+                  <div key={`r${i}`} className="ov-box ov-revealed" style={b} />
+                ))}
                 {selBoxes.map((b, i) => (
                   <div key={`s${i}`} className={`ov-box ov-selected${i > 0 && selection?.itemPath?.length ? ' dim' : ''}`} style={b} />
                 ))}

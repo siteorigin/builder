@@ -69,13 +69,207 @@ function scheduleRects() {
   if (raf) return;
   raf = requestAnimationFrame(() => {
     raf = 0;
+    if (revealDirty) reconcileReveal();
     sendRects();
   });
 }
 function sendRects() {
   const sel = selected ? findAll(selected).map(rectOf).filter(Boolean) : [];
   const hov = hovered && mode === 'edit' ? findAll(hovered).slice(0, 1).map(rectOf).filter(Boolean) : [];
-  send('rects', { selected: sel, hovered: hov, hoveredDesc: hovered, viewport: { width: innerWidth, height: innerHeight, scrollY } });
+  // A divider between items is not part of the item it follows.
+  const rev = revealRoots().filter((el) => el.tagName !== 'HR').map(rectOf).filter(Boolean);
+  send('rects', { selected: sel, hovered: hov, hoveredDesc: hovered, revealed: rev, viewport: { width: innerWidth, height: innerHeight, scrollY } });
+}
+
+// ---------------------------------------------------------------------------
+// The list item open in the editor's inspector, revealed while it is edited
+// ---------------------------------------------------------------------------
+
+/** { ctx, list, items, nodes, within, text?, restore } from the editor (see lib/reveal.ts), or null. */
+let reveal = null;
+let revealKey = '';
+/**
+ * Scroll to the item once it is found, once per item and again after the page changes width ('resize': at once, not
+ * smoothly): an update or typed text never scrolls back to it.
+ */
+let revealScroll = false;
+/** Disclosures opened for the item. Only these are closed again; one the page or the author opened stays open. */
+const revealOpened = new Set();
+/**
+ * Disclosures the author closed on the page while their item was revealed, by where they are on the page (so one an
+ * update renders afresh stays closed too). They stay closed for that item until its text is typed again.
+ */
+let revealDeclined = new Set();
+/** Typed text arrived: a disclosure the author closed over it opens again, so what is typed can be seen. */
+let revealTyped = false;
+/** The page changed: the item is brought up to date once, before the next frame is drawn. */
+let revealDirty = false;
+/** Elements showing typed text in place of their own text node: el -> { ours, theirs, released } */
+const drafts = new Map();
+/** Typed text no longer wanted goes once the page shows the saved text, or after this long at most (a refused save). */
+const DRAFT_SETTLE_MS = 4000;
+let draftTimer = 0;
+
+function validReveal(t) {
+  const str = (v) => typeof v === 'string' && v.length <= 2000;
+  const strs = (v, max = 50) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(str);
+  const depths = (v) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    const out = new Map(Object.entries(v));
+    return out.size > 0 && out.size <= 2000 && [...out.values()].every((n) => Number.isInteger(n) && n >= 0 && n <= 50) ? out : null;
+  };
+  const within = t && typeof t === 'object' ? depths(t.within) : null;
+  if (!within || !str(t.ctx) || !str(t.list) || !t.items || !str(t.items) || !strs(t.nodes)) return null;
+  const text = t.text && strs(t.text.nodes) && typeof t.text.value === 'string' && t.text.value.length <= MAX_TEXT_CHARS ? { nodes: t.text.nodes, value: t.text.value } : null;
+  return { ctx: t.ctx, list: t.list, items: t.items, nodes: t.nodes, within, text, restore: strs(t.restore) ? t.restore : [] };
+}
+function setReveal(target) {
+  const before = reveal;
+  reveal = validReveal(target);
+  // The same item while its placement, list and id are: a change to the design only changes how it is found.
+  const key = reveal ? JSON.stringify([reveal.ctx, reveal.list, reveal.items]) : '';
+  if (key !== revealKey) {
+    revealKey = key;
+    revealScroll = !!reveal;
+    revealDeclined = new Set();
+  } else if (reveal && reveal.text && !(before && before.text && before.text.value === reveal.text.value)) revealTyped = true;
+  reconcileReveal();
+  scheduleRects();
+}
+/** Where a disclosure is on the page: its placement, node and item, or the element itself when it has none. */
+function occurrence(d) {
+  return d.hasAttribute('data-so-node') ? [d.getAttribute('data-so-ctx'), d.getAttribute('data-so-node'), d.getAttribute('data-so-items') || ''].join('\n') : d;
+}
+/** Every disclosure an element sits in, its own included. */
+function disclosuresOf(el) {
+  const out = [];
+  for (let d = el.closest('details'); d; d = d.parentElement && d.parentElement.closest('details')) out.push(d);
+  return out;
+}
+/**
+ * The item's elements in the placement asked for: those of the list's own nodes whose item ids put the item's id at
+ * the depth of that node's repeat. At the top of the design an element's item ids are the item's id exactly; in a list
+ * repeated inside another list's rows they are the outer rows' ids, then the item's, and the item shows in each row.
+ */
+function itemElements() {
+  if (!reveal || mode !== 'edit') return [];
+  const { items, within } = reveal;
+  return [...document.querySelectorAll(`[data-so-ctx="${cssEscape(reveal.ctx)}"][data-so-items]`)].filter((el) => {
+    const depth = within.get(el.getAttribute('data-so-node'));
+    if (depth === undefined) return false;
+    const path = el.getAttribute('data-so-items') || '';
+    if (depth === 0) return path === items;
+    const parts = path.split(',');
+    return parts.length === depth + 1 && parts[depth] === items;
+  });
+}
+const ofNodes = (els, nodes) => els.filter((el) => nodes.includes(el.getAttribute('data-so-node')));
+/** The item's outermost elements: what its repeat renders for it. */
+function revealRoots() {
+  return reveal ? ofNodes(itemElements(), reveal.nodes) : [];
+}
+/** Brings the page in line with the item asked for. Safe to repeat: it runs again after every re-render. */
+function reconcileReveal() {
+  revealDirty = false;
+  const els = itemElements();
+  const roots = reveal ? ofNodes(els, reveal.nodes) : [];
+  const textEls = reveal && reveal.text ? ofNodes(els, reveal.text.nodes) : [];
+  if (revealTyped) {
+    revealTyped = false;
+    for (const el of textEls) for (const d of disclosuresOf(el)) revealDeclined.delete(occurrence(d));
+  }
+  // Every disclosure the item's content sits in, whatever the design wraps it in.
+  const need = new Set();
+  for (const el of els) for (const d of disclosuresOf(el)) if (!revealDeclined.has(occurrence(d))) need.add(d);
+  for (const d of revealOpened) {
+    if (need.has(d)) continue;
+    revealOpened.delete(d);
+    // A detached one too: it may be put back.
+    d.open = false;
+  }
+  for (const d of need) {
+    if (d.open) continue;
+    d.open = true;
+    revealOpened.add(d);
+  }
+  showDrafts(textEls, reveal && reveal.text ? reveal.text.value : null, reveal ? ofNodes(els, reveal.restore) : []);
+  if (revealScroll) {
+    const el = roots.find((r) => r.tagName !== 'HR' && rectOf(r));
+    if (el) {
+      const r = el.getBoundingClientRect();
+      // Scrolling never moves focus: the author keeps typing in the inspector.
+      // 'instant', not 'auto': a site's own smooth scrolling would otherwise animate it.
+      const instant = revealScroll === 'resize' || matchMedia('(prefers-reduced-motion: reduce)').matches;
+      revealScroll = false;
+      if (r.top < 60 || r.bottom > innerHeight - 20) el.scrollIntoView({ block: r.height > innerHeight - 80 ? 'start' : 'center', behavior: instant ? 'instant' : 'smooth' });
+    }
+  }
+}
+/**
+ * Typed text (`value`, or null for none), shown in the given plain text elements in a text node of the bridge's own.
+ * The page's node is kept aside, not changed, so an update the page makes to it meanwhile is what shows once the
+ * typed text goes: at once in the `restoreNow` elements (typing there was cancelled) and in Preview, otherwise once
+ * the save has arrived.
+ */
+function showDrafts(els, value, restoreNow) {
+  const want = new Set(value === null ? [] : els);
+  const now = new Set(restoreNow);
+  for (const [el, d] of drafts) {
+    // The page replaced the text itself: nothing of the bridge's is left there.
+    if (d.ours.parentNode !== el) drafts.delete(el);
+    else if (!el.isConnected || mode !== 'edit' || (now.has(el) && !want.has(el))) restoreDraft(el);
+    else if (!want.has(el) && !d.released) {
+      d.released = Date.now();
+      scheduleSettle();
+    }
+  }
+  if (value === null) return;
+  for (const el of want) {
+    // The text being edited on the page itself is the inline edit's.
+    if (editing && editing.el === el) continue;
+    let d = drafts.get(el);
+    if (!d) {
+      const kids = [...el.childNodes];
+      if (kids.length > 1 || (kids[0] && kids[0].nodeType !== Node.TEXT_NODE)) continue;
+      d = { ours: document.createTextNode(value), theirs: kids[0] || null, released: 0 };
+      drafts.set(el, d);
+      if (d.theirs) el.replaceChild(d.ours, d.theirs);
+      else el.appendChild(d.ours);
+    }
+    d.released = 0;
+    if (d.ours.nodeValue !== value) d.ours.nodeValue = value;
+  }
+}
+/** Puts the page's own text node back. */
+function restoreDraft(el) {
+  const d = drafts.get(el);
+  if (!d) return;
+  drafts.delete(el);
+  if (d.ours.parentNode !== el) return;
+  if (d.theirs) el.replaceChild(d.theirs, d.ours);
+  else el.removeChild(d.ours);
+}
+/** The page's own text for an element showing typed text. */
+function pageText(el, d) {
+  return d.theirs ? d.theirs.nodeValue : [...el.childNodes].filter((n) => n !== d.ours).map((n) => n.textContent).join('');
+}
+/**
+ * Typed text no longer wanted goes once the page's own text says the same (the save arrived), so the old text never
+ * flashes back in between; or after DRAFT_SETTLE_MS when it never does.
+ */
+function settleDrafts() {
+  clearTimeout(draftTimer);
+  draftTimer = 0;
+  let waiting = false;
+  for (const [el, d] of drafts) {
+    if (!d.released) continue;
+    if (pageText(el, d) === d.ours.nodeValue || Date.now() - d.released >= DRAFT_SETTLE_MS) restoreDraft(el);
+    else waiting = true;
+  }
+  if (waiting) scheduleSettle();
+}
+function scheduleSettle() {
+  if (!draftTimer) draftTimer = setTimeout(settleDrafts, 150);
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +323,12 @@ document.addEventListener(
     const details = summary && summary.parentElement;
     if (details && details.tagName === 'DETAILS') {
       details.open = !details.open;
+      // Closed by the author while the inspector reveals its item: it stays closed, and is no longer the bridge's.
+      if (details.open) revealDeclined.delete(occurrence(details));
+      else {
+        revealDeclined.add(occurrence(details));
+        revealOpened.delete(details);
+      }
       scheduleRects();
     }
     send('select', { chain: chainFrom(e.target), alt: e.altKey, meta: e.metaKey || e.ctrlKey });
@@ -203,6 +403,8 @@ function beginTextEdit(desc, editId) {
   // The editor is waiting for this edit to end: tell it there is nothing to edit.
   if (!el) return send('textCancel', { desc, editId });
   if (editing) commitEdit();
+  // Typed text shown there from the inspector gives way to the page's own text, which the edit then works on.
+  restoreDraft(el);
   const rich = el.classList.contains('so-rich');
   // selectedAll: the whole text is still selected as the edit began (until a key or a press inside it).
   editing = { el, desc, editId, original: el.innerHTML, rich, selectedAll: true };
@@ -632,6 +834,8 @@ window.addEventListener('message', async (e) => {
       document.documentElement.toggleAttribute('data-so-editing', mode === 'edit');
       hovered = null;
       pointerAt = null;
+      // Preview shows the disclosures as visitors find them; editing reveals the item again.
+      reconcileReveal();
       scheduleRects();
       break;
     case 'track':
@@ -659,6 +863,9 @@ window.addEventListener('message', async (e) => {
       }
       break;
     }
+    case 'reveal':
+      setReveal(m.payload.target);
+      break;
     case 'beginTextEdit':
       beginTextEdit(m.payload.desc, m.payload.editId);
       break;
@@ -693,7 +900,17 @@ window.addEventListener('message', async (e) => {
 });
 
 window.addEventListener('scroll', scheduleRects, { passive: true });
-window.addEventListener('resize', scheduleRects);
+let revealWidth = innerWidth;
+window.addEventListener('resize', () => {
+  // The item is checked at another width: brought back into view if the new layout moved it out. A change of
+  // height alone (the editor window resized) leaves the page where the author put it.
+  if (reveal && innerWidth !== revealWidth) {
+    revealScroll = 'resize';
+    revealDirty = true;
+  }
+  revealWidth = innerWidth;
+  scheduleRects();
+});
 new ResizeObserver(scheduleRects).observe(document.documentElement);
 new MutationObserver(() => {
   // The page re-rendered the element being edited away (an update arrived): the edit is over.
@@ -702,6 +919,9 @@ new MutationObserver(() => {
     endEdit();
     send('textCancel', { desc, editId });
   }
+  // An update re-rendered the page: a revealed item comes back closed, and without the text being typed. Brought up
+  // to date once per frame, however many changes arrive.
+  if (reveal || revealOpened.size || drafts.size) revealDirty = true;
   scheduleRects();
 }).observe(document.body, { childList: true, subtree: true, characterData: true });
 window.addEventListener('error', (e) => {
@@ -723,7 +943,12 @@ window.addEventListener('popstate', reportNav);
 if (import.meta.hot) {
   import.meta.hot.on('siteorigin:revision', (data) => {
     revision = data.revision;
-    requestAnimationFrame(() => requestAnimationFrame(() => send('revisionApplied', { revision })));
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        settleDrafts();
+        send('revisionApplied', { revision });
+      })
+    );
   });
   import.meta.hot.on('vite:error', (data) => send('runtimeError', { message: data?.err?.message || 'Build error' }));
 }

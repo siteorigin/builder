@@ -213,7 +213,17 @@ export function Toolbar() {
       </div>
 
       <div className="toolbar-center">
-        <div className="segmented" role="group" aria-label="Preview width">
+        {/* A click leaves focus in an inspector text field, so text being typed there stays in its field while the page
+            is checked at another width. Anywhere else a click moves focus as usual; Tab still reaches the buttons. */}
+        <div
+          className="segmented"
+          role="group"
+          aria-label="Preview width"
+          onMouseDown={(e) => {
+            const at = document.activeElement;
+            if (e.button === 0 && e.target !== e.currentTarget && (at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement) && at.closest('#dock-panel-inspect')) e.preventDefault();
+          }}
+        >
           <button aria-pressed={preset === 'desktop'} title="Desktop (1280px)" aria-label="Desktop" onClick={() => setViewport(VIEWPORT_PRESETS.desktop)}>
             <Monitor />
           </button>

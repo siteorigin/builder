@@ -40,7 +40,7 @@ import { formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, type 
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import { applyOps, applyWith, setState, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
-import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, type ListItemNote, type ListOp } from './PropEditors';
+import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
@@ -440,6 +440,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                 linkPairs={schema.type === 'list' ? itemLinkPairs(def, key) : undefined}
                 error={found ? unlinkedNote({ hide: own?.hide }) : undefined}
                 action={hideAction(own)}
+                place={schema.type === 'list' ? { ref: selection, list: key } : undefined}
               />
             );
           }}
@@ -630,6 +631,9 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   // Content reach comes from the binding: an item field is per item, a section property is shared by every item.
   const perItem = bindings.some((b) => b.item);
   const contentReach = !hasContent || !listSchema ? '' : perItem ? (itemId ? `This ${itemLabel} only${itemIndex >= 0 ? ` (${itemIndex + 1} of ${n})` : ''}` : `Each ${itemLabel} has its own`) : `Same in every ${itemLabel}`;
+  // The item this part belongs to stays revealed on the page while it is selected: picking an answer inside a question
+  // the inspector opened must not close that question under the pointer.
+  const reveal = useRevealedItem(!nested && listProp && itemIndex >= 0 ? { ref: parent, list: listProp } : undefined, itemIndex >= 0 ? (listItems[itemIndex] as ListItem) : undefined, true);
 
   return (
     <>
@@ -668,6 +672,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
                   onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
                   linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
                   {...flagged(b.kind)}
+                  place={schema.type === 'list' ? { ref: parent, list: b.prop! } : undefined}
                 />
               );
             }
@@ -676,7 +681,11 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
               const item = listItems.find((x) => x.id === itemId);
               if (!field || !item) return null;
               const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${instNodeId}:${listProp}:${itemId}:${b.item}`);
-              return <ScalarField key={i} schema={field} value={item[b.item!]} state={state} onChange={edit} {...flagged(b.kind)} />;
+              return (
+                <div key={`${itemId}:${b.item}`} style={{ display: 'contents' }} {...reveal.handlers}>
+                  <ScalarField schema={field} value={item[b.item!]} state={state} onChange={edit} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
+                </div>
+              );
             }
             return null;
           })}
