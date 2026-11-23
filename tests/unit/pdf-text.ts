@@ -1,9 +1,9 @@
 /**
- * The text of each page of a PDF that Chromium printed (`page.pdf()`), in page order, one line per text run.
+ * The text of each page of a PDF that Chromium printed (`page.pdf()`), in page order, and the colours it is printed in.
  *
  * Chromium writes PDFs with Skia: plain indirect objects (no object streams), FlateDecode content streams that
  * show text with `Tj` and `TJ`, and Type0 fonts whose /ToUnicode CMap maps each glyph code back to text. This
- * reads exactly that, so a test can check what a printout says without a PDF library. Anything it cannot read
+ * reads exactly that, so a test can check what a printout says, and in what ink, without a PDF library. Anything it cannot read
  * (an object stream, an encrypted file, a font without a CMap) throws rather than returning less text.
  */
 import { inflateSync } from 'node:zlib';
@@ -163,8 +163,23 @@ function toUnicode(cmap: string): { map: Map<number, string>; bytes: number } {
   return { map, bytes };
 }
 
-/** The text of every page, in page order. Each text run (one `BT` … `ET` block) is a line. */
-export function pdfPages(pdf: Buffer): string[] {
+/** One run of text as printed: what it says and the colour it is filled with. */
+export interface PdfRun {
+  text: string;
+  /** The fill colour as `#rrggbb`. */
+  fill: string;
+}
+
+/** What one sheet shows: its runs of text in order, and every colour an area (a background, a rule) is filled with. */
+export interface PdfSheet {
+  runs: PdfRun[];
+  fills: Set<string>;
+}
+
+const hex = (parts: number[]) => '#' + parts.map((p) => Math.round(Math.min(1, Math.max(0, p)) * 255).toString(16).padStart(2, '0')).join('');
+
+/** Every sheet of the PDF, in page order. Each text run (one `BT` … `ET` block) is one run. */
+export function pdfSheets(pdf: Buffer): PdfSheet[] {
   const objects = readObjects(pdf);
   const get = (v: Value | undefined): Value | undefined => (isRef(v) ? objects.get(v.ref)?.value : v);
   const trailer = pdf.toString('latin1').lastIndexOf('trailer');
@@ -196,46 +211,69 @@ export function pdfPages(pdf: Buffer): string[] {
   };
 
   return pages.map((page) => {
-    const resources = get(page.Resources);
-    const fontDict = isDict(resources) ? get(resources.Font) : undefined;
     const contents = get(page.Contents);
     const streams = (Array.isArray(contents) ? contents : [page.Contents]).map((c) => (isRef(c) ? objects.get(c.ref)?.stream : undefined));
-    const lines: string[] = [];
-    for (const stream of streams) {
-      if (!stream) continue;
-      const src = stream.toString('latin1');
+    const sheet: PdfSheet = { runs: [], fills: new Set() };
+    // The fill colour is part of the graphics state, which q and Q save and restore.
+    let fill = '#000000';
+    const saved: string[] = [];
+    /** Runs a content stream. A form it draws (`Do`: text with opacity is drawn in one) runs with its own resources. */
+    const paint = (src: string, resourcesValue: Value | undefined, depth: number) => {
+      if (depth > 16) throw new Error('PDF forms nest too deeply');
+      const resources = get(resourcesValue);
+      const fontDict = isDict(resources) ? get(resources.Font) : undefined;
+      const xobjects = isDict(resources) ? get(resources.XObject) : undefined;
       let font: ReturnType<typeof fontFor> | undefined;
       let line = '';
-      const show = (hex: string) => {
+      const show = (code: string) => {
         if (!font) throw new Error('PDF text shown before a font was set');
         const step = font.bytes * 2;
-        for (let i = 0; i + step <= hex.length; i += step) line += font.map.get(parseInt(hex.slice(i, i + step), 16)) ?? '';
+        for (let i = 0; i + step <= code.length; i += step) line += font.map.get(parseInt(code.slice(i, i + step), 16)) ?? '';
       };
       // Operands and operators in order: names, hex strings, arrays of them, numbers, and operator words.
       const tokens = /\/([^\s/<>[\]()]+)|<([0-9a-fA-F\s]*)>|\[((?:[^\]\\]|\\.)*)\]|\((?:[^)\\]|\\.)*\)|(-?[\d.]+)|([A-Za-z'"*]+)/g;
       const operands: string[] = [];
-      for (const [, name, hex, array, , op] of src.matchAll(tokens)) {
+      const numbers: number[] = [];
+      for (const [, name, code, array, number, op] of src.matchAll(tokens)) {
         if (name !== undefined) operands.push(name);
-        else if (hex !== undefined) operands.push(hex.replace(/\s+/g, ''));
+        else if (code !== undefined) operands.push(code.replace(/\s+/g, ''));
         else if (array !== undefined) operands.push(array);
-        else if (op === undefined) continue;
-        else {
-          if (op === 'BT') line = '';
+        else if (number !== undefined) numbers.push(Number(number));
+        else if (op !== undefined) {
+          if (op === 'q') saved.push(fill);
+          else if (op === 'Q') fill = saved.pop() ?? fill;
+          else if (op === 'rg' || ((op === 'sc' || op === 'scn') && numbers.length === 3)) fill = hex(numbers.slice(-3));
+          else if (op === 'g') fill = hex([numbers[numbers.length - 1], numbers[numbers.length - 1], numbers[numbers.length - 1]]);
+          else if (['f', 'F', 'f*', 'B', 'B*', 'b', 'b*'].includes(op)) sheet.fills.add(fill);
+          else if (op === 'BT') line = '';
           else if (op === 'ET') {
-            if (line) lines.push(line);
+            if (line) sheet.runs.push({ text: line, fill });
             line = '';
-          } else if (op === 'Tf') {
-            const ref = isDict(fontDict) ? fontDict[operands[0]] : undefined;
-            font = fontFor(ref);
-          } else if (op === 'Tj' || op === "'" || op === '"') show(operands[operands.length - 1] ?? '');
+          } else if (op === 'Tf') font = fontFor(isDict(fontDict) ? fontDict[operands[0]] : undefined);
+          else if (op === 'Tj' || op === "'" || op === '"') show(operands[operands.length - 1] ?? '');
           else if (op === 'TJ') for (const [, part] of (operands[operands.length - 1] ?? '').matchAll(/<([0-9a-fA-F\s]*)>/g)) show(part.replace(/\s+/g, ''));
+          else if (op === 'Do') {
+            const ref = isDict(xobjects) ? xobjects[operands[0]] : undefined;
+            const form = isRef(ref) ? objects.get(ref.ref) : undefined;
+            if (form?.stream && isDict(form.value) && isName(form.value.Subtype) && form.value.Subtype.name === 'Form') {
+              // A form runs in a saved graphics state; a form without resources of its own uses the page's.
+              saved.push(fill);
+              paint(form.stream.toString('latin1'), form.value.Resources ?? resourcesValue, depth + 1);
+              fill = saved.pop() ?? fill;
+            }
+          }
           operands.length = 0;
+          numbers.length = 0;
         }
       }
-    }
-    return lines.join('\n');
+    };
+    for (const stream of streams) if (stream) paint(stream.toString('latin1'), page.Resources, 0);
+    return sheet;
   });
 }
+
+/** The text of every sheet, in page order, one line per text run. */
+export const pdfPages = (pdf: Buffer): string[] => pdfSheets(pdf).map((sheet) => sheet.runs.map((run) => run.text).join('\n'));
 
 /** Text with all whitespace removed, so wrapped lines and split runs still match a phrase. */
 export const squash = (text: string) => text.replace(/\s+/g, '');

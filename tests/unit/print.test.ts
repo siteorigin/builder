@@ -10,11 +10,11 @@ import { chromium, webkit, type Browser, type BrowserType, type Page } from 'pla
 import { compile } from 'svelte/compiler';
 import { build, type Rolldown } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { InstanceNode, ListItem } from '@shared/types';
+import type { GraphNode, InstanceNode, ListItem } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { STYLES_DIR, generateProject, pageFile } from '@generator/index';
-import { pdfPages, squash } from './pdf-text';
+import { pdfPages, pdfSheets, squash, type PdfSheet } from './pdf-text';
 
 const ORIGIN = 'https://site.test';
 const ENGINES = ([['chromium', chromium], ['webkit', webkit]] as Array<[string, BrowserType]>).filter(([, engine]) => existsSync(engine.executablePath()));
@@ -23,7 +23,11 @@ const CAN_PRINT = ENGINES.some(([name]) => name === 'chromium');
 const QUESTIONS = [
   ['How long does a typical project take?', 'Most design projects take six to ten weeks from the first meeting to final drawings. We agree a schedule with you at the start.'],
   ['Do you work outside the local area?', 'Yes. We regularly work across the region and can arrange remote consultations for early planning.'],
-  ['How are your fees calculated?', 'We quote a fixed fee for each stage once we understand the scope, so you always know the cost before work begins.'],
+  // Several lines long, so a page break could fall inside it.
+  [
+    'How are your fees calculated?',
+    'We quote a fixed fee for each stage once we understand the scope, so you always know the cost before work begins. Concept design, detailed design and tender drawings are priced separately, and you can stop after any stage. Site visits during construction are charged at an hourly rate that we confirm in writing before the first visit.'
+  ],
   ['Can you recommend builders?', 'We work with a small group of trusted contractors and are happy to introduce them, or to work with your own builder.']
 ] as const;
 const PLANS = [
@@ -35,14 +39,30 @@ const FORM_HEADING = 'Send us a message';
 const FIELDS = ['Your full name', 'Your email address', 'Best phone number', 'How can we help?'];
 const SUBMIT = 'Send the enquiry';
 const CONTACT_VALUES = ['hello@example.com', '+1 555 0134', '12 Harbour Lane, Millbrook', 'Monday to Friday, 9am – 5pm'];
+const HEADER_ACTION = 'Book a site visit';
+const COPYRIGHT = '© 2026 Test Studio. All rights reserved.';
+const PLAIN_HEADING = 'Getting to the studio';
+const PLAIN_TEXT = 'The studio is a short walk from Millbrook station, with parking on Harbour Lane.';
+const PLAIN_MORE = 'Visitors are welcome by appointment on weekdays.';
 /** Each section heading, with the first thing it introduces. */
 const HEADINGS: Array<[string, string]> = [
   ['Frequently asked questions', QUESTIONS[0][0]],
   ['Clear packages, no surprises', PLANS[0].description],
-  [FORM_HEADING, FIELDS[0]]
+  [FORM_HEADING, FIELDS[0]],
+  [PLAIN_HEADING, PLAIN_TEXT]
+];
+/** The sections the page-break sweep moves a sheet boundary through, by their root element. */
+const SECTIONS: Array<[string, string]> = [
+  ['the FAQ', '.so-foundation-faq-list__root'],
+  ['the pricing plans', '.so-foundation-pricing-plans__root'],
+  ['the contact form', 'section.so-form'],
+  ['a section of plain text', '.so-foundation-layout-section__root']
 ];
 
-/** The exported contact page: contact details and the FAQ from the starter, then pricing and a contact form. */
+/**
+ * The exported contact page: contact details and the FAQ from the starter, then pricing, a contact form, and a plain
+ * section whose heading is not in a heading group.
+ */
 function exportedSite() {
   const s = createStarterState('business', 'Test Studio', false);
   const contact = s.pages[s.site.pageOrder[2]];
@@ -53,6 +73,9 @@ function exportedSite() {
     contact.rootIds.push(node.id);
     return node;
   };
+  const faq = contact.rootIds.map((id) => contact.nodes[id]).find((n): n is InstanceNode => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'faq.list');
+  if (!faq) throw new Error("Expected the starter's contact page to hold an FAQ");
+  faq.props.items = (faq.props.items as ListItem[]).map((item, i) => ({ ...item, question: QUESTIONS[i][0], answer: QUESTIONS[i][1] }));
   const pricing = add('pricing.plans', {});
   // Each plan's action goes somewhere, so it is shown (a button without a destination is left out).
   pricing.props.plans = (pricing.props.plans as ListItem[]).map((plan) => ({ ...plan, actionLink: { type: 'email', target: 'hello@example.com' } }));
@@ -61,6 +84,15 @@ function exportedSite() {
     submitLabel: SUBMIT,
     fields: FIELDS.map((label, i) => ({ id: `f${i}`, label, name: '', type: i === 3 ? 'textarea' : 'text', required: i < 2, placeholder: '' }))
   });
+  const plain = add('layout.section', {});
+  const text = (id: string, tag: 'h2' | 'p', value: string): GraphNode => ({ id, kind: 'text', tag, text: value });
+  // A heading and its text. (Chromium can still part a heading from a lone last line when the section's bottom
+  // padding no longer fits on the sheet: it does not move the padded section on to the next sheet instead.)
+  const children = [text('n-plain-heading', 'h2', PLAIN_HEADING), text('n-plain-text', 'p', PLAIN_TEXT), text('n-plain-more', 'p', PLAIN_MORE)];
+  plain.slots = { content: children.map((c) => c.id) };
+  for (const child of children) contact.nodes[child.id] = child;
+  const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+  header.props = { ...header.props, ctaLabel: HEADER_ACTION, ctaLink: { type: 'email', target: 'hello@example.com' } };
   const files = generateProject(s);
   const css = ['tokens', 'theme', 'components', 'site'].map((n) => files.get(`${STYLES_DIR}/${n}.css`) ?? '').join('\n');
   return { files, css, pageFile: pageFile(contact) };
@@ -117,9 +149,9 @@ let script: Promise<string> | undefined;
 const bundled = () => (script ??= bundleSite(site.files, site.pageFile));
 
 /** Opens the mounted contact page with these FAQ questions (by position) opened as a visitor opens them. */
-async function openSite(browser: Browser, open: number[]): Promise<Page> {
+async function openSite(browser: Browser, open: number[], width = 1280): Promise<Page> {
   const code = await bundled();
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, reducedMotion: 'reduce' });
+  const context = await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: 'reduce' });
   context.setDefaultTimeout(15_000);
   const page = await context.newPage();
   await page.route(`${ORIGIN}/**`, (route) => {
@@ -138,11 +170,10 @@ async function openSite(browser: Browser, open: number[]): Promise<Page> {
 const openStates = (page: Page) => page.evaluate<boolean[]>("[...document.querySelectorAll('details')].map((d) => d.open)");
 const expected = (open: number[]) => QUESTIONS.map((_, i) => open.includes(i));
 
-/** Prints the page as Chrome's A4 print does (its default 0.4 inch margins), and returns each sheet's text. */
-async function print(page: Page): Promise<string[]> {
-  const pdf = await page.pdf({ format: 'A4', margin: { top: '0.4in', right: '0.4in', bottom: '0.4in', left: '0.4in' } });
-  return pdfPages(pdf);
-}
+/** Prints the page as Chrome's A4 print does by default (0.4 inch margins, no background graphics). */
+const printPdf = (page: Page) => page.pdf({ format: 'A4', margin: { top: '0.4in', right: '0.4in', bottom: '0.4in', left: '0.4in' }, printBackground: false });
+/** Each printed sheet's text. */
+const print = async (page: Page) => pdfPages(await printPdf(page));
 
 /** The sheets (by number) whose text holds this phrase, ignoring how it wrapped. */
 const sheetsWith = (sheets: string[], phrase: string) => sheets.flatMap((text, i) => (squash(text).includes(squash(phrase)) ? [i] : []));
@@ -180,7 +211,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(await openStates(page)).toEqual(expected(open));
       // Nor does the print preview switching to print media and back.
       await page.emulateMedia({ media: 'print' });
-      await page.emulateMedia({ media: 'screen' });
+      await page.emulateMedia({ media: null });
       expect(await openStates(page)).toEqual(expected(open));
     } finally {
       await page.context().close();
@@ -190,38 +221,148 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
   it('keeps the contact details and leaves out controls that only work on screen', async () => {
     const page = await openSite(browser, []);
     try {
+      // A button from the author's own component, which does nothing on paper either.
+      await page.evaluate(`(() => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = 'Copy the address';
+        document.querySelector('.so-foundation-layout-section__root p').after(button);
+      })()`);
       const text = squash((await print(page)).join('\n'));
       for (const value of CONTACT_VALUES) expect(text, value).toContain(squash(value));
       for (const field of FIELDS) expect(text, field).toContain(squash(field));
       for (const plan of PLANS) expect(text, plan.action).toContain(squash(plan.action));
-      for (const control of [SUBMIT, 'Open menu', 'Skip to content', 'This form is not connected to a form service yet']) expect(text, control).not.toContain(squash(control));
+      for (const control of [SUBMIT, HEADER_ACTION, 'Copy the address', 'Open menu', 'Skip to content', 'This form is not connected to a form service yet', 'Leave this field empty'])
+        expect(text, control).not.toContain(squash(control));
     } finally {
       await page.context().close();
     }
   }, 60_000);
 
-  it('keeps each plan, the contact form and each heading on one sheet wherever the page breaks fall', async () => {
+  it('hides the menu button and an open phone menu, the FAQ toggle icons, the form actions and messages, and unsticks the header in print', async () => {
+    const page = await openSite(browser, [], 390);
+    try {
+      await page.click('.so-header__toggle');
+      const styles = () =>
+        page.evaluate<Record<string, string>>(`(() => {
+          const display = (sel) => [...document.querySelectorAll(sel)].map((el) => getComputedStyle(el).display).join(',');
+          return {
+            toggle: display('.so-header__toggle'),
+            nav: display('.so-header__nav'),
+            icons: display('details > summary .so-icon'),
+            formActions: display('.so-form__actions'),
+            formMessages: display('.so-form__messages'),
+            header: getComputedStyle(document.querySelector('.so-header')).position
+          };
+        })()`);
+      // On screen the phone menu is open, below its button, in a header that sticks.
+      const screen = await styles();
+      expect(screen.toggle).not.toBe('none');
+      expect(screen.nav).not.toBe('none');
+      expect(screen.icons.split(',')).not.toContain('none');
+      expect(screen.formActions).not.toBe('none');
+      expect(screen.formMessages).not.toBe('none');
+      expect(screen.header).toBe('sticky');
+      await page.emulateMedia({ media: 'print' });
+      expect(await styles()).toEqual({ toggle: 'none', nav: 'none', icons: 'none,none,none,none', formActions: 'none', formMessages: 'none', header: 'static' });
+      const text = squash((await print(page)).join('\n'));
+      expect(text).not.toContain(squash(HEADER_ACTION));
+      expect(text).toContain(squash(QUESTIONS[3][1]));
+    } finally {
+      await page.context().close();
+    }
+  }, 60_000);
+
+  it('prints the whole of a closed answer longer than a sheet', async () => {
     const page = await openSite(browser, []);
     try {
-      // Pushes the content down in steps, so a sheet boundary crosses each plan, the form and each heading in turn.
-      for (let shift = 0; shift < 1040; shift += 80) {
+      const last = 'This is the last sentence of a very long answer.';
+      await page.evaluate(`(() => {
+        const answer = document.querySelectorAll('details > p')[3];
+        answer.textContent = Array.from({ length: 90 }, (_, i) => 'Sentence ' + (i + 1) + ' of a long answer about builders.').join(' ') + ' ${last}';
+      })()`);
+      const sheets = await print(page);
+      const [first, end] = [sheetsWith(sheets, 'Sentence 1 of a long answer'), sheetsWith(sheets, last)];
+      expect(first).toHaveLength(1);
+      expect(end).toHaveLength(1);
+      expect(end[0]).toBeGreaterThan(first[0]);
+      expect(await openStates(page)).toEqual(expected([]));
+    } finally {
+      await page.context().close();
+    }
+  }, 60_000);
+
+  it(`prints light text on a dark band (the footer, a plan's button and badge) in its own colours, not pale grey`, async () => {
+    const page = await openSite(browser, []);
+    try {
+      await page.emulateMedia({ media: 'print' });
+      // Each sample's text colour and the colour of the nearest background behind it, as the page styles them.
+      const samples = await page.evaluate<Array<{ text: string; color: string; background: string }>>(`(() => {
+        const rgb = (value) => {
+          const [r, g, b] = (value.match(/[\\d.]+/g) || []).map(Number);
+          return '#' + [r, g, b].map((v) => Math.round(value.startsWith('color(') ? v * 255 : v).toString(16).padStart(2, '0')).join('');
+        };
+        const behind = (el) => {
+          for (let node = el; node; node = node.parentElement) {
+            const bg = getComputedStyle(node).backgroundColor;
+            if (bg && bg !== 'transparent' && !/rgba\\(.*,\\s*0\\)$/.test(bg)) return rgb(bg);
+          }
+          return '#ffffff';
+        };
+        const find = (text) => [...document.querySelectorAll('body *')].find((el) => el.children.length === 0 && el.textContent.trim() === text);
+        return [${JSON.stringify(COPYRIGHT)}, ${JSON.stringify(PLANS[0].action)}, 'Most popular'].map((text) => {
+          const el = find(text);
+          if (!el) throw new Error('No element shows ' + text);
+          return { text, color: rgb(getComputedStyle(el).color), background: behind(el) };
+        });
+      })()`);
+      // Ends the emulation (an emulated screen medium would print with screen styles).
+      await page.emulateMedia({ media: null });
+      const sheets: PdfSheet[] = pdfSheets(await printPdf(page));
+      for (const { text, color, background } of samples) {
+        // Light on dark, as designed: the case a printer without background graphics turns pale grey.
+        expect(background, text).not.toBe('#ffffff');
+        const shows = (run: { text: string }) => squash(run.text).includes(squash(text));
+        const sheet = sheets.find((s) => s.runs.some(shows));
+        expect(sheet, text).toBeDefined();
+        const runs = sheet!.runs.filter(shows);
+        expect(runs.map((run) => run.fill), text).toEqual([color]);
+        expect([...sheet!.fills], text).toContain(background);
+      }
+    } finally {
+      await page.context().close();
+    }
+  }, 60_000);
+
+  it.each(SECTIONS)('keeps plans, the form, questions and headings whole on a sheet as a page break moves through %s', async (_name, root) => {
+    const page = await openSite(browser, []);
+    try {
+      // Pushes the section down in steps of a few lines, through a whole sheet, so a page boundary crosses each part.
+      for (let shift = 0; shift < 1080; shift += 40) {
         await page.evaluate(`(() => {
           let spacer = document.getElementById('print-shift');
-          if (!spacer) { spacer = document.createElement('div'); spacer.id = 'print-shift'; document.querySelector('main').prepend(spacer); }
+          if (!spacer) { spacer = document.createElement('div'); spacer.id = 'print-shift'; document.querySelector(${JSON.stringify(root)}).before(spacer); }
           spacer.style.height = '${shift}px';
         })()`);
         const sheets = await print(page);
+        const at = `${shift}px down`;
         for (const plan of PLANS) {
           const parts = [plan.description, ...plan.features, plan.action];
           const where = parts.map((part) => sheetsWith(sheets, part));
-          expect(where, `${plan.name} shifted ${shift}px`).toEqual(parts.map(() => where[0]));
-          expect(where[0], `${plan.name} shifted ${shift}px`).toHaveLength(1);
+          expect(where[0], `${plan.name} ${at}`).toHaveLength(1);
+          expect(where, `${plan.name} ${at}`).toEqual(parts.map(() => where[0]));
         }
         const form = [FORM_HEADING, ...FIELDS].map((part) => sheetsWith(sheets, part));
-        expect(form, `the form shifted ${shift}px`).toEqual(form.map(() => form[0]));
-        expect(form[0], `the form shifted ${shift}px`).toHaveLength(1);
-        for (const [question, answer] of QUESTIONS) expect(sheetsWith(sheets, answer), `${question} shifted ${shift}px`).toEqual(sheetsWith(sheets, question));
-        for (const [heading, first] of HEADINGS) expect(sheetsWith(sheets, first), `${heading} shifted ${shift}px`).toEqual(sheetsWith(sheets, heading));
+        expect(form[0], `the form ${at}`).toHaveLength(1);
+        expect(form, `the form ${at}`).toEqual(form.map(() => form[0]));
+        for (const [question, answer] of QUESTIONS) {
+          expect(sheetsWith(sheets, question), `${question} ${at}`).toHaveLength(1);
+          expect(sheetsWith(sheets, answer), `${question} ${at}`).toEqual(sheetsWith(sheets, question));
+        }
+        for (const [heading, first] of HEADINGS) {
+          expect(sheetsWith(sheets, heading), `${heading} ${at}`).toHaveLength(1);
+          expect(sheetsWith(sheets, first), `${heading} ${at}`).toEqual(sheetsWith(sheets, heading));
+        }
       }
     } finally {
       await page.context().close();
@@ -250,7 +391,7 @@ describe.each(ENGINES.filter(([name]) => name === 'webkit'))('printing a Foundat
       expect(await visible()).toEqual(expected([0]));
       await page.emulateMedia({ media: 'print' });
       expect(await visible()).toEqual(QUESTIONS.map(() => true));
-      await page.emulateMedia({ media: 'screen' });
+      await page.emulateMedia({ media: null });
       expect(await visible()).toEqual(expected([0]));
       expect(await openStates(page)).toEqual(expected([0]));
     } finally {

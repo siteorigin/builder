@@ -108,4 +108,22 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
 .so-visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 .so-container { width: 100%; max-width: calc(var(--so-container-content) + 2 * var(--so-container-gutter)); margin-inline: auto; padding-inline: var(--so-container-gutter); }
+
+/* Printed, a page is a handout. */
+@media print {
+  /* Colours print as designed. Without their backgrounds, light text on a dark band (the footer, a dark section,
+     a button) would print pale grey on white. */
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* Every disclosure prints its content without being opened, so the questions a visitor opened are still the
+     ones open after printing, or after cancelling the print dialog. */
+  details::details-content { content-visibility: visible; display: block; }
+  details > summary .so-icon { display: none; }
+  /* Controls that only work on screen. Components' own (scoped) styles show some of them, hence !important. */
+  .so-skip-link, button, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap { display: none !important; }
+  .so-header { position: static !important; }
+  /* Where the sheet has room: a heading, or a section's heading group, stays with what follows it, and short
+     units (a plan, a contact method, a question and its answer, the contact form) stay whole. */
+  h1, h2, h3, h4, h5, h6, summary, [class*='__intro'] { break-after: avoid; break-inside: avoid; }
+  li, details, figure, blockquote, tr, img, .so-form__inner, .so-form__form, .so-form__field { break-inside: avoid; }
+}
 `;
