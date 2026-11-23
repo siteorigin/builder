@@ -71,7 +71,10 @@ export function FocusEditor({
   /** The image fit at that size. */
   fit: StyleValue | undefined;
   image?: FocusImage;
-  /** May return the change's promise, which settles to null when the project refuses the change. */
+  /**
+   * May return the change's promise: settling to the result (with the revision the change made), or to null
+   * when the project refused it.
+   */
   onSet: (v: StyleValue | null, expectedRevision?: number) => unknown;
 }) {
   const revision = useStore((s) => s.snapshot?.revision ?? 0);
@@ -85,10 +88,11 @@ export function FocusEditor({
   const sourceRatio = libraryRatio ?? (measured && measured.src === src ? measured.w / measured.h : null);
 
   // A drag keeps its point to itself until the pointer is released; then a committed value shows (and is what
-  // a typed coordinate builds on) until the project moves on to the revision it made, or refuses it.
+  // a typed coordinate builds on) until the snapshot reaches the revision the change made, or it is refused.
+  // Other changes landing meanwhile don't end it.
   const gesture = useRef<{ pointer: number; key: string; revision: number } | null>(null);
   const [draft, setDraft] = useState<FocalPoint | null>(null);
-  const [pending, setPending] = useState<{ text: string; revision: number } | null>(null);
+  const [pending, setPending] = useState<{ text: string; until?: number } | null>(null);
   // Escape cancels a drag: the pad never has focus, so it listens on the window for the drag's lifetime.
   const escape = useRef<((e: KeyboardEvent) => void) | null>(null);
   const stopEscape = () => {
@@ -107,12 +111,15 @@ export function FocusEditor({
     setPending(null);
   }, [target]);
   useEffect(() => stopEscape, []);
+  useEffect(() => {
+    if (pending?.until !== undefined && revision >= pending.until) setPending(null);
+  }, [pending, revision]);
 
   const stored = parseFocus(value) ?? parseFocus(under) ?? FOCUS_CENTER;
-  const committed = pending && pending.revision === revision ? parseFocus(pending.text) : null;
+  const committed = pending && (pending.until === undefined || revision < pending.until) ? parseFocus(pending.text) : null;
   const latest = committed ?? stored;
   const point = draft ?? latest;
-  const cropped = fit !== 'contain' && ratio !== null && sourceRatio !== null ? cropAxis(sourceRatio, ratio) : null;
+  const cropped = !unreached && fit !== 'contain' && ratio !== null && sourceRatio !== null ? cropAxis(sourceRatio, ratio) : null;
   const crop = cropped && sourceRatio !== null && ratio !== null ? coverCrop(sourceRatio, ratio, point) : null;
 
   const pointAt = (e: React.PointerEvent): FocalPoint => {
@@ -123,15 +130,19 @@ export function FocusEditor({
   };
   /** Commit a value; while it is on its way it shows here, and a refusal puts the saved value back. */
   const commit = (text: string, expectedRevision?: number) => {
-    const mine = { text, revision };
+    const mine: { text: string; until?: number } = { text };
     setPending(mine);
     void Promise.resolve(onSet(text, expectedRevision)).then((result) => {
-      if (result === null || result === false) setPending((p) => (p === mine ? null : p));
+      const made = result && typeof result === 'object' && typeof (result as { revision?: unknown }).revision === 'number' ? (result as { revision: number }).revision : undefined;
+      // Refused, or no word of where it landed: the saved value shows again.
+      setPending((p) => (p !== mine ? p : made === undefined ? null : { ...mine, until: made }));
     });
   };
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!crop || e.button !== 0 || gesture.current) return;
     e.preventDefault();
+    // Keys typed into the preview never reach this window: take focus out of it, so Escape can cancel the drag.
+    if (document.activeElement instanceof HTMLIFrameElement) document.activeElement.blur();
     const el = e.currentTarget;
     const id = e.pointerId;
     el.setPointerCapture(id);

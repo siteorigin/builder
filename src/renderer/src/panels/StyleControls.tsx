@@ -333,13 +333,21 @@ export function StyleControls({
     // Under All sizes the crop shown is the previewed size's, unless that size keeps its own focus: then the
     // first size the all-sizes value does reach. When every size keeps its own, it reaches none.
     const keepsOwn = (z: Size) => own?.[z]?.[p.id] !== undefined && validFocus(own[z]![p.id]!);
-    const reached = scope === 'base' ? [preview, 'desktop' as const, 'tablet' as const, 'phone' as const].find((z) => !keepsOwn(z)) : scope;
+    const fitAt = (z: Size) => {
+      const v = cascadedStyle(tiers, z, 'objectFit');
+      return typeof v === 'string' ? v.trim() : v;
+    };
+    const declaredAt = (z: Size) => parseRatio(cascadedStyle(tiers, z, 'aspectRatio'));
+    // Among the sizes it reaches, one whose ratio crops it, so the pad has a crop to show.
+    const reachable = (['desktop', 'tablet', 'phone'] as const).filter((z) => !keepsOwn(z));
+    const reached = scope !== 'base' ? scope : !keepsOwn(preview) ? preview : (reachable.find((z) => declaredAt(z) !== null && fitAt(z) !== 'contain') ?? reachable[0]);
     const size = reached ?? preview;
-    // The box's shape: a declared ratio, else (auto, or none) the box on the canvas when it shows this size.
-    const measured = size === preview && selectedBox && selectedBox.width > 0 && selectedBox.height > 0 ? selectedBox.width / selectedBox.height : null;
-    const ratio = parseRatio(cascadedStyle(tiers, size, 'aspectRatio')) ?? measured;
-    const fitValue = cascadedStyle(tiers, size, 'objectFit');
-    const fit = typeof fitValue === 'string' ? fitValue.trim() : fitValue;
+    // The box's shape: a declared ratio; else, when a height (or custom CSS) can crop the picture, the box the
+    // canvas shows for this size. Otherwise the picture keeps its own shape.
+    const sized = tiers.some((t) => t.some((l) => [size, 'base' as const].some((sc) => ['height', 'maxHeight', 'minHeight', 'customCss'].some((k) => l?.[sc]?.[k] !== undefined))));
+    const measured = sized && size === preview && selectedBox && selectedBox.width > 0 && selectedBox.height > 0 ? selectedBox.width / selectedBox.height : null;
+    const ratio = declaredAt(size) ?? measured;
+    const fit = fitAt(size);
     // Custom CSS is written after these properties, so it can set the crop itself.
     const custom = tiers.some((t) => t.some((l) => [size, 'base' as const].some((sc) => /\b(object-position|object-fit|aspect-ratio)\s*:/i.test(String(l?.[sc]?.customCss ?? '')))));
     // What shows when nothing is set here: this element's value at this size when only its changes are listed

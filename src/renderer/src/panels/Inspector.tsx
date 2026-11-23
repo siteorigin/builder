@@ -40,12 +40,12 @@ import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
-import { applyOps, applyWith, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
+import { applyOps, applyWith, commitOps, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import type { FocusImage } from './FocusEditor';
-import { assetUrl, ownerLabel, placementsOn, refLabel, resolveRef, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
+import { assetUrl, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -138,6 +138,24 @@ const styleKey = (property: string, key: string) => (property === 'objectPositio
 
 /** Where the preview serves pictures from, once it is running. */
 const useDevUrl = () => useStore((s) => (s.runtime.state === 'ready' ? s.runtime.url : null));
+
+/**
+ * An image as the page shows it (`shownValue`), and for a repeated item stored without that field, the field's
+ * default, as the site shows it. Undefined when it can't be told.
+ */
+function shownImage(state: ProjectState, ref: ElementRef, bound: unknown): unknown {
+  const v = shownValue(state, ref, bound);
+  if (v !== undefined || !isBinding(bound) || !('$item' in bound)) return v;
+  const r = resolveRef(state, ref);
+  const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
+  const schema = list ? r.def!.properties[list] : undefined;
+  if (schema?.type !== 'list') return undefined;
+  const props = (r.instance?.props ?? {}) as Record<string, unknown>;
+  const items = Object.hasOwn(props, list!) ? props[list!] : schema.default;
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  const item = Array.isArray(items) ? (items.find((it) => (it as { id?: unknown } | null)?.id === itemId) as Record<string, unknown> | undefined) : undefined;
+  return item && !Object.hasOwn(item, bound.$item) ? (schema.fields[bound.$item] as { default?: unknown } | undefined)?.default : undefined;
+}
 
 /**
  * The picture an image shows, for choosing its focal point, with the style rules under its own. `value` is the
@@ -455,13 +473,13 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
   const set = (prop: string, value: unknown, edit?: PendingEdit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], `Edit ${def.properties[prop]?.label ?? prop}`, `${node.id}:${prop}`);
   const onStyle = (partId: string) => (property: string, value: StyleValue | null, expectedRevision?: number) =>
-    applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], `Style ${def.parts[partId]?.label ?? partId}`, styleKey(property, `${node.id}:${partId}:${scope}:${property}`), expectedRevision);
+    commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], `Style ${def.parts[partId]?.label ?? partId}`, styleKey(property, `${node.id}:${partId}:${scope}:${property}`), expectedRevision);
   // A component whose whole design is one image (made from a cropped page image) chooses its focus here.
   const rootNodeId = rootPart?.nodeId ?? def.tree?.rootIds[0];
   const rootNode = rootNodeId ? def.tree?.nodes[rootNodeId] : undefined;
   const rootImage =
     rootNode?.kind === 'image' && rootNodeId
-      ? focusImage(state, devUrl, shownValue(state, { owner, instancePath: [node.id], nodeId: rootNodeId }, rootNode.image), [selectedVariantStyles(def, node.variants, rootNodeId), [rootNode.styles]], 'This picture can’t be shown here.')
+      ? focusImage(state, devUrl, shownImage(state, { owner, instancePath: [node.id], nodeId: rootNodeId }, rootNode.image), [selectedVariantStyles(def, node.variants, rootNodeId), [rootNode.styles]], 'This picture can’t be shown here.')
       : undefined;
   const overrides = countStyles(node.overrides?.[styledPart]);
   const selectPart = (p: string) => selectAndFocus({ owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p });
@@ -774,7 +792,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   // over the rules the exported site puts under this placement's: the selected variants, then the design.
   const partImage =
     part && node.kind === 'image'
-      ? focusImage(state, devUrl, shownValue(state, selection, node.image), [selectedVariantStyles(def, inst.variants, part.nodeId), [def.tree?.nodes[part.nodeId]?.styles]], listSchema && !itemId ? `Select one ${itemLabel} on the page to see its picture here.` : 'This picture can’t be shown here.')
+      ? focusImage(state, devUrl, shownImage(state, selection, node.image), [selectedVariantStyles(def, inst.variants, part.nodeId), [def.tree?.nodes[part.nodeId]?.styles]], listSchema && !itemId ? `Select one ${itemLabel} on the page to see its picture here.` : 'This picture can’t be shown here.')
       : undefined;
 
   return (
@@ -862,7 +880,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
             tokens={tokens}
             image={partImage}
             onSet={(property, value, expectedRevision) =>
-              applyOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], `Style ${part.label}`, styleKey(property, `${instNodeId}:${partId}:${scope}:${property}`), expectedRevision)
+              commitOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], `Style ${part.label}`, styleKey(property, `${instNodeId}:${partId}:${scope}:${property}`), expectedRevision)
             }
             onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner: instOwner, nodeId: instNodeId, partId, scope: sc }], 'Reset part overrides')}
           />
@@ -973,8 +991,8 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
           inherited={undefined}
           allowed={styleSetFor(node)}
           tokens={tokens}
-          image={node.kind === 'image' ? focusImage(state, devUrl, shownValue(state, selection, node.image), [], 'This picture can’t be shown here.') : undefined}
-          onSet={(property, value, expectedRevision) => applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value }], `Style ${property}`, styleKey(property, `${node.id}:${scope}:${property}`), expectedRevision)}
+          image={node.kind === 'image' ? focusImage(state, devUrl, shownImage(state, selection, node.image), [], 'This picture can’t be shown here.') : undefined}
+          onSet={(property, value, expectedRevision) => commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value }], `Style ${property}`, styleKey(property, `${node.id}:${scope}:${property}`), expectedRevision)}
           onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], 'Reset styles')}
         />
       </Section>
@@ -1054,12 +1072,15 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
     : node.styles;
   // A part inside a repeat is styled once for every item, in every placement.
   const repeated = enclosingRepeat(def, node.id);
-  // The picture as the canvas shows it, through this component's placement on the page (with the item picked
-  // there); else the design's own picture, or its default for one each placement chooses. The crop follows the
+  // The picture as the canvas shows it, through this component's one placement on the page (with the item
+  // picked there); else the design's own picture, or its default for one each placement chooses. With several
+  // placements on the page the canvas's choice isn't known here, so the default stands. The crop follows the
   // node's complete styles: `changed` lists only what differs from the theme's design.
-  const placement = pageId ? placementsOn(state, def.id, pageId)[0] : undefined;
+  const onPage = pageId ? placementsOn(state, def.id, pageId) : [];
+  const placement = onPage.length === 1 ? onPage[0] : undefined;
   const bound = node.kind === 'image' && isBinding(node.image) ? node.image : undefined;
-  const placedImage = node.kind === 'image' && bound && placement && selection?.nodeId === node.id ? shownValue(state, throughPlacement(selection, placement), bound) : undefined;
+  const ownRef = selection?.owner.kind === 'component' && selection.owner.id === def.id && selection.nodeId === node.id ? selection : undefined;
+  const placedImage = node.kind === 'image' && bound && placement && ownRef ? shownImage(state, throughPlacement(ownRef, placement), bound) : undefined;
   const defImage =
     node.kind === 'image'
       ? focusImage(
@@ -1155,7 +1176,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           onSet={(property, value, expectedRevision) => {
             // Resetting a value restores the original design's value, when there is one.
             const restore = value === null ? original?.[scope]?.[property] : undefined;
-            return applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value: restore ?? value }], `Edit ${def.name} definition`, styleKey(property, `${def.id}:${node.id}:${scope}:${property}`), expectedRevision);
+            return commitOps([{ type: 'node.setStyle', owner, nodeId: node.id, scope, property, value: restore ?? value }], `Edit ${def.name} definition`, styleKey(property, `${def.id}:${node.id}:${scope}:${property}`), expectedRevision);
           }}
           onReset={
             original

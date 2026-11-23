@@ -96,6 +96,12 @@ await eventually(() => {
   near(at[0][1], 22, 'down follows the drag');
 });
 const dragged = positions(block(siteCss(), PHONE))[0];
+// The window moved with the focus: the hidden height is split dragged% above it and the rest below.
+await eventually(async () => {
+  const p = await pad.boundingBox();
+  const w = await win.locator('.focus-window').boundingBox();
+  near((w.y - p.y) / p.height, (1 - shown.natural / shown.box) * (dragged[1] / 100), 'the drawn crop moved with the focus', 0.02);
+});
 assert.deepEqual(positions(block(siteCss(), null)), [[20, 50]], 'other sizes keep their focus: only the square photo has one');
 await eventually(async () => assert.equal(await heroImg.evaluate((el) => getComputedStyle(el).objectPosition), `${dragged[0]}% ${dragged[1]}%`, 'the canvas shows the new focus'));
 await win.screenshot({ path: join(OUT, 'focus-03-dragged.png') });

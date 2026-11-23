@@ -44,6 +44,9 @@ describe('focal point values', () => {
     expect(parseFocus('left')).toEqual({ x: 0, y: 50 });
     expect(parseFocus('30% 20%')).toEqual({ x: 30, y: 20 });
     expect(parseFocus(' 12.5% 100% ')).toEqual({ x: 12.5, y: 100 });
+    // Any CSS whitespace separates them.
+    expect(parseFocus('12.5%\t100%')).toEqual({ x: 12.5, y: 100 });
+    expect(parseFocus('12.5%\n 100%')).toEqual({ x: 12.5, y: 100 });
   });
 
   it('refuses anything else', () => {
