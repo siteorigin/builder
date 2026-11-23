@@ -8,6 +8,8 @@ import { afterSend, draftFor, moveDraft, unsentDrafts, withDraft } from '../lib/
 import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf } from '../lib/result';
+import { composerAction, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
@@ -51,9 +53,6 @@ function outcome(r: NonNullable<ChatMessage['result']>) {
   }
 }
 
-/** The scope-widening choices the agent offers; answering them by typing would not grant anything. */
-const WIDEN_CHOICE = 'Yes, allow changes beyond the selection';
-
 /** A summary that only repeats its outcome ("Stopped.") says what happened to the site instead. */
 function summaryOf(r: NonNullable<ChatMessage['result']>) {
   if (r.status === 'cancelled' && /^stopped\.?$/i.test(r.summary.trim())) return r.changes.length ? 'You stopped this request. Its changes were undone.' : 'You stopped this request before it changed anything.';
@@ -83,11 +82,6 @@ export function Chat() {
   const providers = useStore((s) => s.providers);
   const settings = useStore((s) => s.settings);
   const logRef = useRef<HTMLDivElement>(null);
-  function showQuestion() {
-    const q = logRef.current?.querySelector<HTMLElement>('.question-card .question-text');
-    q?.scrollIntoView({ block: 'nearest' });
-    q?.focus();
-  }
   const taRef = useRef<HTMLTextAreaElement>(null);
   const nearBottom = useRef(true);
   const menu = useMenu();
@@ -113,6 +107,15 @@ export function Chat() {
   const msgs = conversation?.messages ?? [];
   const running = !!runStatus;
   const waiting = runStatus === 'awaiting-input';
+  // While the AI waits on a question, the composer answers it from its own box; the unsent message stays put.
+  const asking = waitingQuestion(conversation, activeRunId, runStatus);
+  const askingKey = asking ? `${asking.runId}:${asking.question.id}` : null;
+  const [answerBox, setAnswerBox] = useState({ key: '', text: '' });
+  const answerText = askingKey && answerBox.key === askingKey ? answerBox.text : '';
+  const composerText = asking ? answerText : draft;
+  const answering = useRef<string | null>(null);
+  /** When the last typed answer went in: an Enter right after it never sends the message that comes back. */
+  const answeredAt = useRef(0);
   const working = msgs.find((m) => m.runId === activeRunId && m.role === 'assistant');
   const workingUser = working ? msgs[msgs.indexOf(working) - 1] : null;
   // Undo turn is offered only while that turn is the newest step in the project's undo history: history
@@ -132,8 +135,9 @@ export function Chat() {
     if (el && nearBottom.current) el.scrollTop = el.scrollHeight;
   }, [conversation]);
 
-  // A restored draft (after a restart, a retry, or returning to its conversation) gets its full height back.
-  useLayoutEffect(() => sizeToFit(taRef.current), [configured, rightTab, conversation?.id]);
+  // A restored draft (after a restart, a retry, or returning to its conversation, or once a question is answered)
+  // gets its full height back.
+  useLayoutEffect(() => sizeToFit(taRef.current), [configured, rightTab, conversation?.id, askingKey]);
 
   // One polite status message per phase change, kept outside the (sometimes hidden) dock panel so it is
   // announced wherever focus is. Streamed text is never read out piece by piece. The outcome is announced
@@ -143,12 +147,10 @@ export function Chat() {
       trackedRun.current = activeRunId;
       const target = targetOf(workingUser?.context);
       if (runStatus === 'awaiting-input') {
-        const key = `${activeRunId}:${working?.question?.text ?? ''}`;
-        if (announcedRun.current !== key) {
-          announcedRun.current = key;
-          setAnnounce(`The AI needs your answer to continue: ${working?.question?.text ?? ''}`);
-          // If you were waiting in an empty composer, go straight to the question; never take focus from elsewhere.
-          if (document.activeElement === taRef.current && !selectChatDraft(getState()).trim()) requestAnimationFrame(showQuestion);
+        // Announced once per question, when it arrives; the composer is already where it is answered.
+        if (asking && announcedRun.current !== askingKey) {
+          announcedRun.current = askingKey;
+          setAnnounce(`The AI needs your answer to continue: ${asking.question.text}`);
         }
       } else if (runStatus === 'preparing' && announcedRun.current !== `${activeRunId}:start`) {
         announcedRun.current = `${activeRunId}:start`;
@@ -188,6 +190,27 @@ export function Chat() {
         : [`Make the ${sel} more polished and easier to scan`, `Rewrite the text in the ${sel} to sound warmer`, `Suggest a better layout for the ${sel}`];
   const openSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const focusComposer = () => requestAnimationFrame(() => taRef.current?.focus());
+
+  /** Answer the waiting question, with a choice or the composer's text. Each question takes one answer. */
+  const answer = async (q: WaitingQuestion, text: string, typed: boolean) => {
+    const key = `${q.runId}:${q.question.id}`;
+    if (!text.trim() || answering.current === key) return;
+    answering.current = key;
+    if (typed) answeredAt.current = Date.now();
+    const ok = await api.ai.answer(q.runId, q.question.id, text.trim()).catch(() => false);
+    if (!ok) {
+      if (answering.current === key) {
+        answering.current = null;
+        answeredAt.current = 0;
+      }
+      // Refused while the same question still waits (the app could not deliver it): say so, and keep the text.
+      const s = getState();
+      if (waitingQuestion(s.conversation, s.activeRunId, s.runStatus)?.question.id === q.question.id) toast('Your answer could not be sent. Try again.', 'error');
+      return;
+    }
+    // The typed answer is sent: clear it, unless more was typed meanwhile (that question is answered either way).
+    if (typed) setAnswerBox((b) => (b.key === key ? { key, text: '' } : b));
+  };
 
   const send = async (text = draft) => {
     if (!text.trim() || running || sending || !conversation) return;
@@ -337,7 +360,7 @@ export function Chat() {
             </p>
           </div>
         )}
-        {msgs.map((m) => (m.role === 'user' ? <UserMessage key={m.id} m={m} /> : <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} undoable={m.id === undoableId} onAnswered={focusComposer} />))}
+        {msgs.map((m) => (m.role === 'user' ? <UserMessage key={m.id} m={m} /> : <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} undoable={m.id === undoableId} asking={asking} />))}
       </div>
       {running && (
         <div className={`run-strip${waiting ? ' waiting' : ''}`}>
@@ -349,11 +372,6 @@ export function Chat() {
             {workingUser?.context && <span className="run-target">{targetOf(workingUser.context)}</span>}
           </span>
           <span className="run-actions">
-            {waiting && (
-              <button className="btn btn-sm" onClick={showQuestion}>
-                Go to question
-              </button>
-            )}
             <button
               className="btn btn-sm run-stop"
               disabled={runStatus === 'stopping'}
@@ -373,7 +391,40 @@ export function Chat() {
           <span>{provider.warning}</span>
         </div>
       )}
-      {configured ? (
+      {/* Shown whenever a question waits, even if the provider was changed meanwhile: the run still needs it. */}
+      {asking && (
+        // The question waiting for an answer sits by the composer, which answers it; a choice answers it in one click.
+        <div className="question-card" role="group" aria-labelledby="ai-question-text">
+          <div className="question-text" id="ai-question-text">
+            {asking.question.text}
+          </div>
+          {asking.question.choices.length > 0 && (
+            <div className="choices">
+              {asking.question.choices.map((c, i) => (
+                <button
+                  key={`${i}:${c}`}
+                  className="btn btn-sm choice"
+                  onClick={() => {
+                    void answer(asking, c, false);
+                    focusComposer();
+                  }}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          )}
+          <p className="question-hint" id="ai-question-hint">
+            {asking.question.widen
+              ? 'Choose an option, or type a reply below. Only the first option, or a plain “yes”, allows changes beyond the selection.'
+              : asking.question.choices.length
+                ? 'Choose an option, or type your own answer below.'
+                : 'Type your answer below.'}
+            {draft.trim() ? ' Your unsent message is kept for afterwards.' : ''}
+          </p>
+        </div>
+      )}
+      {configured || asking ? (
         <div className="composer">
           {(page || selLabel) && (
             <div className="chips" role="group" aria-label="Your next message applies to">
@@ -415,24 +466,34 @@ export function Chat() {
           )}
           <textarea
             ref={taRef}
-            value={draft}
-            placeholder={waiting ? 'Answer the question above to continue…' : running ? 'Draft your next message…' : selLabel && ctxOn.selection ? `Ask about the ${sel}…` : 'Describe a change…'}
-            aria-label="Message"
+            value={composerText}
+            placeholder={asking ? 'Type your answer…' : waiting ? 'Waiting for the question…' : running ? 'Draft your next message…' : selLabel && ctxOn.selection ? `Ask about the ${sel}…` : 'Describe a change…'}
+            aria-label={asking ? 'Your answer' : 'Message'}
+            aria-describedby={asking ? 'ai-question-text ai-question-hint' : undefined}
             rows={1}
             // Until the project's conversation has loaded, there is no thread to write in.
             readOnly={!conversation}
             onChange={(e) => {
-              setChatDraft(conversation?.id, e.target.value);
+              if (asking && askingKey) setAnswerBox({ key: askingKey, text: e.target.value });
+              else {
+                // Editing the message that came back makes its next Enter a deliberate send.
+                answeredAt.current = 0;
+                setChatDraft(conversation?.id, e.target.value);
+              }
               sizeToFit(e.target);
             }}
             onKeyDown={(e) => {
               const sendOnEnter = getState().settings?.ai.sendOnEnter ?? true;
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing && (sendOnEnter ? !e.shiftKey : e.metaKey || e.ctrlKey)) {
+              if (e.key === 'Enter' && !isImeComposing(e) && (sendOnEnter ? !e.shiftKey : e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
-                // Enter during a run says why nothing was sent, and takes you to a waiting question.
-                if (waiting) showQuestion();
-                else if (running && draft.trim()) toast('Your message is kept here. You can send it when the current request finishes.', 'info');
-                else void send();
+                // A held-down Enter submits once; and the message that comes back after an answer is never sent
+                // by an Enter meant for the answer.
+                if (e.repeat) return;
+                // An empty box sends nothing; a waiting question takes the text as its answer.
+                const action = composerAction({ text: composerText, waiting: !!asking, running, sinceAnswerMs: Date.now() - answeredAt.current });
+                if (action === 'answer') void answer(asking!, composerText, true);
+                else if (action === 'hold') toast('Your message is kept here. You can send it when the current request finishes.', 'info');
+                else if (action === 'send') void send();
               }
             }}
           />
@@ -447,9 +508,26 @@ export function Chat() {
               </button>
             )}
             <span className="grow" />
-            <button className="send-btn" disabled={running || !draft.trim() || sending} title={waiting ? 'Answer the question above first' : running ? 'You can send once this request finishes' : 'Send'} aria-label={waiting ? 'Send (answer the question above first)' : running ? 'Send (available when the current request finishes)' : 'Send'} onClick={() => void send()}>
-              <ArrowUp />
-            </button>
+            {asking ? (
+              <button
+                className="send-btn"
+                disabled={!answerText.trim()}
+                title="Send answer"
+                aria-label="Send answer"
+                onClick={(e) => {
+                  // The second click of a double click would land on Send once the question is answered.
+                  if (e.detail > 1) return;
+                  void answer(asking, answerText, true);
+                  focusComposer();
+                }}
+              >
+                <ArrowUp />
+              </button>
+            ) : (
+              <button className="send-btn" disabled={running || !draft.trim() || sending} title={running ? 'You can send once this request finishes' : 'Send'} aria-label={running ? 'Send (available when the current request finishes)' : 'Send'} onClick={(e) => e.detail <= 1 && void send()}>
+                <ArrowUp />
+              </button>
+            )}
           </div>
         </div>
       ) : (
@@ -518,20 +596,15 @@ function Steps({ items, waiting, stopped, recent }: { items: ChatActivity[]; wai
   );
 }
 
-function AssistantMessage({ m, live, undoable, onAnswered }: { m: ChatMessage; live: boolean; undoable: boolean; onAnswered: () => void }) {
-  const [answer, setAnswer] = useState('');
+function AssistantMessage({ m, live, undoable, asking }: { m: ChatMessage; live: boolean; undoable: boolean; asking: WaitingQuestion | null }) {
   const r = m.result;
   const activities = m.activities ?? [];
-  const asking = !!m.question && !m.question.answered && !r;
-  // Each new question starts with an empty typed answer.
-  useEffect(() => setAnswer(''), [m.question?.text]);
-  const reply = (a: string) => {
-    void api.ai.answer(m.runId!, a);
-    onAnswered();
-  };
+  const waitingHere = asking?.messageId === m.id;
+  // Every question of the turn stays with it, in order, with its answer.
+  const questions = shownQuestions(m, asking);
   return (
     <div className="msg-ai" aria-busy={live || undefined}>
-      {!r && activities.length > 0 && <Steps items={activities} waiting={asking} recent={4} />}
+      {!r && activities.length > 0 && <Steps items={activities} waiting={waitingHere} recent={4} />}
       {!r && m.text && (
         <div className="text">
           <Md text={m.text} />
@@ -547,37 +620,18 @@ function AssistantMessage({ m, live, undoable, onAnswered }: { m: ChatMessage; l
           </span>
         </div>
       )}
-      {m.question &&
-        (m.question.answered ? (
-          <div className="answered">
-            <span className="answered-q">{m.question.text}</span>
+      {questions.map((q) => (
+        <div key={q.key} className={`answered${q.answered === undefined ? ' unanswered' : ''}`}>
+          <span className="answered-q">{q.text}</span>
+          {q.answered !== undefined ? (
             <span>
-              You answered: <strong>{m.question.answered}</strong>
+              You answered: <strong>{q.answered}</strong>
             </span>
-          </div>
-        ) : (
-          asking && (
-            <div className="question-card" role="group" aria-labelledby={`${m.id}-q`}>
-              <div className="question-text" id={`${m.id}-q`} tabIndex={-1}>
-                {m.question.text}
-              </div>
-              <div className="choices">
-                {m.question.choices.map((c) => (
-                  <button key={c} className="btn btn-sm choice" onClick={() => reply(c)}>
-                    {c}
-                  </button>
-                ))}
-              </div>
-              {/* Permission to widen the scope is granted only by its exact choice, so it offers no typed answer. */}
-              {!m.question.choices.includes(WIDEN_CHOICE) && <div className="question-own">
-                <input className="input sm" placeholder="Or type your own answer" aria-label="Your answer" value={answer} onChange={(e) => setAnswer(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && answer.trim() && reply(answer.trim())} />
-                <button className={`btn btn-sm${answer.trim() ? ' btn-primary' : ''}`} disabled={!answer.trim()} onClick={() => reply(answer.trim())}>
-                  Answer
-                </button>
-              </div>}
-            </div>
-          )
-        ))}
+          ) : (
+            <span>Not answered</span>
+          )}
+        </div>
+      ))}
       {r && <ResultCard m={m} undoable={undoable} />}
     </div>
   );

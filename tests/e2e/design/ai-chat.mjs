@@ -271,11 +271,12 @@ await emit({
     ...liveAi,
     text: '',
     activities: [done('l1', `Reading ${home.title}`), done('l2', 'Inspecting the selected element'), { id: 'l4', label: 'Waiting for your answer', status: 'running' }],
-    question: { text: 'The shorter heading reads better without the small line above it. Can I change things outside the heading?', choices: ['Yes, allow changes beyond the selection', 'No, only change the selection'] }
+    questions: [{ id: 'q_seedwiden', text: 'The shorter heading reads better without the small line above it. Can I change things outside the heading?', choices: ['Yes, allow changes beyond the selection', 'No, only change the selection'], widen: true }]
   }
 });
 await pause(300);
-await shot('question', '.chat-log >> text=Can I change things outside the heading');
+// The waiting question sits above the composer, which answers it.
+await shot('question', '.question-card >> text=Can I change things outside the heading');
 
 await emit({
   runId,
@@ -285,7 +286,7 @@ await emit({
     ...liveAi,
     text: '',
     activities: [done('l1', `Reading ${home.title}`), done('l2', 'Inspecting the selected element')],
-    question: { text: 'The shorter heading reads better without the small line above it. Can I change things outside the heading?', choices: ['Yes, allow changes beyond the selection', 'No, only change the selection'], answered: 'Yes, allow changes beyond the selection' },
+    questions: [{ id: 'q_seedwiden', text: 'The shorter heading reads better without the small line above it. Can I change things outside the heading?', choices: ['Yes, allow changes beyond the selection', 'No, only change the selection'], widen: true, answered: 'Yes, allow changes beyond the selection' }],
     result: { status: 'failed', summary: 'The AI provider rejected the API key. Update it in Settings.', changes: [], validation: [], canUndo: false, error: 'Incorrect API key provided.' }
   }
 });

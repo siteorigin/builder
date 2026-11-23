@@ -18,6 +18,8 @@ export interface MockReply {
   dropAfter?: number;
   /** Leave the stream open after the last frame, as a server that never closes it would. */
   keepOpen?: boolean;
+  /** Wait this long before answering, as a model that takes a while to start would. */
+  delayMs?: number;
 }
 
 export interface MockRequest {
@@ -131,6 +133,8 @@ export class MockOpenAIServer {
       this.open.delete(res);
       if (!finished) this.disconnects++;
     });
+    if (reply.delayMs) await new Promise((resolve) => setTimeout(resolve, reply.delayMs));
+    if (res.destroyed) return;
     res.writeHead(200, { 'content-type': 'text/event-stream', ...reply.headers });
     res.flushHeaders();
     for (let i = 0; i < reply.frames.length; i++) {

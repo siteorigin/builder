@@ -286,7 +286,7 @@ function registerIpc() {
   handle('ai:send', (text: string, ctx, conversationId?: string) => (readOnlyReason() ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined)));
   // With a request ID, stop exactly that request and answer once it has ended and its changes are rolled back.
   handle('ai:stop', (runId?: unknown) => (typeof runId === 'string' ? orchestrator.stopRun(runId) : orchestrator.stop()));
-  handle('ai:answer', (runId: string, answer: string) => orchestrator.answer(runId, answer));
+  handle('ai:answer', (runId: string, questionId: string, answer: string) => orchestrator.answer(runId, questionId, answer));
   handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));
   handle('ai:fixCode', async (source: string) => {
     // One fix at a time; closing the code editor cancels it (ai:cancelFix). The controller is registered

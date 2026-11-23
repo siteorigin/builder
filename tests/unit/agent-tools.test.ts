@@ -61,7 +61,8 @@ async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, start
     adapter: async () => ({ adapter, model: 'fake', provider: 'openai' }),
     emit: (e) => {
       events.push(e);
-      if (e.kind === 'message' && e.message?.question && !e.message.question.answered) queueMicrotask(() => answers.length && orch.answer(e.runId, answers.shift()!));
+      const waiting = e.kind === 'message' ? e.message?.questions?.at(-1) : undefined;
+      if (waiting?.id && waiting.answered === undefined) queueMicrotask(() => answers.length && orch.answer(e.runId, waiting.id!, answers.shift()!));
     },
     compileAll: async () => [],
     inspectLayout: async () => ({ issues: [] }),
@@ -509,6 +510,19 @@ describe('update_site_brand', () => {
       expect(contrastRatio(hex(t['color.brand-strong']), hex(t['color.on-brand']))).toBeGreaterThanOrEqual(contrastRatio(hex(t['color.brand']), hex(t['color.on-brand'])) - 0.01);
       expect(contrastRatio(hex(t['color.inverse']), hex('#f1eee6'))).toBeGreaterThanOrEqual(7);
     }
+  });
+});
+
+describe('asking the user (#22)', () => {
+  it('tells a focused site run to ask with request_clarification, and lets it finish with advice', async () => {
+    const { adapter, run } = await setup([() => finish('Try: Talk to us, whenever suits you.')], { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' });
+    const { result } = await run('Interview me about the Contact page, then suggest a headline in chat only');
+    expect(result?.status).toBe('no-changes');
+    expect(result?.summary).toBe('Try: Talk to us, whenever suits you.');
+    const { system, tools } = adapter.requests[0];
+    expect(tools.map((t) => t.name)).toContain('request_clarification');
+    expect(system).toMatch(/request_clarification asks the user one question[^\n]*interview them[^\n]*one question per call/);
+    expect(system).toContain('when the user asked only for advice or ideas, with that advice');
   });
 });
 

@@ -39,12 +39,18 @@ export async function launch(WORK, env = {}, { viewport = { width: 1440, height:
     args: ['.'],
     env: { ...process.env, SITEORIGIN_USER_DATA: join(WORK, 'userdata'), OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '', ...env }
   });
-  const win = await app.firstWindow();
-  const errors = [];
-  win.on('pageerror', (e) => errors.push(String(e)));
-  if (viewport) await win.setViewportSize(viewport);
-  await win.waitForSelector('.welcome', { timeout: 60000 });
-  return { app, win, errors };
+  try {
+    const win = await app.firstWindow();
+    const errors = [];
+    win.on('pageerror', (e) => errors.push(String(e)));
+    if (viewport) await win.setViewportSize(viewport);
+    await win.waitForSelector('.welcome', { timeout: 60000 });
+    return { app, win, errors };
+  } catch (e) {
+    // An app that started but never became ready is closed here: the caller never gets a handle to it.
+    await app.close().catch(() => undefined);
+    throw e;
+  }
 }
 
 /** Create a project through the same IPC call the New project dialog uses, and wait for its preview. */

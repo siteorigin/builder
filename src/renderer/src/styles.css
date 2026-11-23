@@ -1014,15 +1014,17 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .result-body .checks li:has(> .checks-toggle) { gap: 0; }
 .result-body .checks .pass-detail { padding-left: 18px; }
 .result-foot { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--panel-2); }
-.question-card { padding: 12px; border-radius: var(--r-md); border: 1px solid var(--accent); background: var(--raised); box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px; }
+/* The question the AI is waiting on sits right above the composer, which answers it. */
+.question-card { flex: 0 1 auto; min-height: 72px; margin: 8px 12px 0; max-height: 45%; overflow: auto; padding: 12px; border-radius: var(--r-md); border: 1px solid var(--accent); background: var(--raised); box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; }
 .question-text { font-size: 13px; font-weight: 600; line-height: 1.45; color: var(--text); border-radius: var(--r-xs); }
-.question-text:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 .question-card .choices { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
 .question-card .choice { justify-content: flex-start; height: auto; min-height: 30px; padding: 5px 10px; text-align: left; white-space: normal; line-height: 1.35; }
-.question-own { display: flex; gap: 6px; }
-.question-own .input { flex: 1; min-width: 0; }
+.question-hint { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+/* On a short window the card scrolls before the conversation disappears. */
+.chat:has(> .question-card) .chat-log { min-height: 96px; }
 .answered { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .answered strong { color: var(--text); font-weight: 600; }
+.answered.unanswered > span:last-child { color: var(--text-3); font-style: italic; }
 .composer { flex: none; margin: 8px 12px 12px; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--raised); box-shadow: var(--shadow-sm); transition: border-color 120ms, box-shadow 120ms; }
 .composer:has(textarea:focus) { border-color: var(--accent); box-shadow: var(--ring); }
 .composer textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; padding: 9px 12px 3px; border: 0; background: transparent; resize: none; outline: none; line-height: 1.5; user-select: text; }
@@ -1055,10 +1057,6 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .run-phase { font-size: 12px; font-weight: 600; color: var(--accent-text); }
 .run-target { font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .run-actions { flex: none; display: flex; gap: 6px; }
-/* Waiting carries two actions, so they take their own row and the phase and target read in full. */
-.run-strip.waiting { flex-wrap: wrap; row-gap: 6px; }
-.run-strip.waiting .run-text { flex: 1 1 calc(100% - 32px); }
-.run-strip.waiting .run-actions { flex: 1 1 100%; justify-content: flex-end; }
 .run-stop svg { width: 10px; height: 10px; }
 .run-strip.waiting { box-shadow: inset 0 0 0 1px var(--accent); }
 .run-phase { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
