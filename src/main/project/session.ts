@@ -12,6 +12,8 @@ import { listThemes } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
+import { findMissingAssetFiles } from './asset-files';
+import type { MissingAssetFiles } from '@shared/api';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
 import { checkSvelteSource, componentSources } from '../codecheck';
 import { atomicWrite, ensureDir, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
@@ -1168,6 +1170,9 @@ export class ProjectSession extends EventEmitter {
       // Paste places what the editor copied; an AI run never sends it.
       if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'node.paste'))
         return { ok: false, revision: this.revision, error: { code: 'INVALID_ARGUMENT', message: 'node.paste is only for the editor. Use node.copy.', recoverable: true } };
+      // A library image's file is only ever one the importer checked and wrote.
+      if ((opts.source === 'ai' || opts.runId) && ops.some((o) => o.type === 'asset.relink'))
+        return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: 'Only the editor can give an image a new file. Ask the user to locate it in Assets.', recoverable: true } };
       let next: ProjectState;
       let results;
       try {
@@ -1203,6 +1208,22 @@ export class ProjectSession extends EventEmitter {
       if (opts.idempotencyKey) this.idempotency.set(opts.idempotencyKey, { fingerprint, result });
       return result;
     });
+  }
+
+  /** Library images whose files are missing from the project folder, as `refreshAssetFiles` last found them. */
+  missingAssets: MissingAssetFiles[] = [];
+  private assetCheck = 0;
+
+  /**
+   * Look for the library's image files again. True when what is missing changed; an older check that finishes after a
+   * newer one started changes nothing.
+   */
+  async refreshAssetFiles(): Promise<boolean> {
+    const check = ++this.assetCheck;
+    const found = await findMissingAssetFiles(this.dir, this.state.assets.assets);
+    if (check !== this.assetCheck || JSON.stringify(found) === JSON.stringify(this.missingAssets)) return false;
+    this.missingAssets = found;
+    return true;
   }
 
   /** Document problems. File conflicts are reported separately (`conflicts`), with their actions, never twice. */

@@ -195,16 +195,29 @@ function decodeEntities(s: string): string {
 /** Real drawings nest a few dozen levels; this keeps the parser's work linear in the file size. */
 const MAX_DEPTH = 256;
 
+const INCOMPLETE = 'it is incomplete: the end of the file is missing, so the copy or download was probably cut short. Copy or download it again, then import the new copy';
+
 /** Returns the sanitized SVG, or throws with a user-facing reason. */
 export function sanitizeSvg(bytes: Buffer): string {
   if (bytes.length >= 2 && ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff)))
     throw new Error('it is saved as UTF-16; save it as UTF-8');
   const text = bytes.toString('utf8').replace(/^﻿/, '');
   if (/<!ENTITY|<!DOCTYPE[^>]*\[/i.test(text)) throw new Error('it declares XML entities');
+  // A comment, instruction or CDATA section left open is a file cut short, and each opener left open would otherwise
+  // be searched to the end of the file. Each is skipped whole, so what one holds (CSS, text) is never taken for markup.
+  for (let i = text.indexOf('<'); i >= 0; i = text.indexOf('<', i + 1)) {
+    const close = text.startsWith('<!--', i) ? '-->' : text.startsWith('<![CDATA[', i) ? ']]>' : text.startsWith('<?', i) ? '?>' : '';
+    if (!close) continue;
+    const end = text.indexOf(close, i + 2);
+    if (end < 0) throw new Error(INCOMPLETE);
+    i = end;
+  }
   const out: string[] = [];
   const stack: Array<{ name: string; kept: boolean }> = [];
   let skipDepth = 0;
   let sawSvg = false;
+  // A file cut short leaves its root open; what is still open at the end would otherwise be closed for it.
+  let rootClosed = false;
   let styleText = '';
   const re = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>|<!DOCTYPE[^>]*>|<\/\s*([A-Za-z][\w:.-]*)\s*>|<([A-Za-z][\w:.-]*)((?:\s+[^\s=/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'))?)*)\s*(\/?)>|([^<]+)|</g;
   let m: RegExpExecArray | null;
@@ -221,6 +234,7 @@ export function sanitizeSvg(bytes: Buffer): string {
       const name = closeName.toLowerCase();
       const at = stack.map((e) => e.name).lastIndexOf(name);
       if (at < 0) continue;
+      if (at === 0 && stack[0].kept) rootClosed = true;
       while (stack.length > at) {
         const top = stack.pop()!;
         if (!top.kept) {
@@ -250,7 +264,11 @@ export function sanitizeSvg(bytes: Buffer): string {
         }
         continue;
       }
-      if (name === 'svg') sawSvg = true;
+      if (name === 'svg') {
+        sawSvg = true;
+        // Only the root closing itself finishes the file; a self-closing <svg/> inside it does not.
+        if (selfClose && !stack.length) rootClosed = true;
+      }
       const attrs: string[] = [];
       for (const a of (attrText ?? '').matchAll(/([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/g)) {
         const an = a[1].toLowerCase();
@@ -290,6 +308,7 @@ export function sanitizeSvg(bytes: Buffer): string {
     out.push(`</${CANONICAL[top.name] ?? top.name}>`);
   }
   if (!sawSvg) throw new Error('it does not contain an <svg> element');
+  if (!rootClosed) throw new Error(INCOMPLETE);
   let result = out.join('');
   if (!/^<svg[^>]*\sxmlns=/.test(result)) result = result.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
   return result + '\n';

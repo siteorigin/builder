@@ -587,7 +587,7 @@ export class Orchestrator {
       apply: async (operations, expectedRevision, label, key) => {
         if (signal.aborted) return { ok: false, revision: session.revision, error: { code: 'CANCELLED', message: 'Cancelled' } };
         // Asset records are created only by the verified importer, never by the model.
-        if (operations.some((o) => o.type === 'asset.add'))
+        if (operations.some((o) => o.type === 'asset.add' || o.type === 'asset.relink'))
           return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'The assistant cannot add images. Ask the user to import them, then use search_assets.' } };
         const codeOp = operations.find((o) => CODE_OPERATIONS.has(o.type));
         if (codeOp && !codeEnabled)

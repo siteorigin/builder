@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
-import type { ProjectState } from '@shared/types';
+import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { assetUsages, sourceHash } from '@engine/apply';
@@ -14,10 +14,11 @@ import { basePath, generateManagedComponent, generatePage, defFile, liveRedirect
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
+import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
+import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind, locateAssetFile, restoreAssetFiles } from './project/assets';
+import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { photoMetadata } from './project/photo-metadata';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies } from './runtime/manager';
@@ -43,6 +44,18 @@ class ExportStopped extends Error {}
 /** Where new projects go by default: Documents/SiteOrigin. */
 export function defaultProjectsFolder(): string {
   return join(app.getPath('documents'), 'SiteOrigin');
+}
+
+/** The image a recovery was made for changed (relinked, removed) before its files could be written. */
+class AssetChanged extends Error {}
+
+/** Project health's missing-file entries; a project from a newer version may not follow this version's shapes. */
+function safeMissingDiagnostics(s: ProjectSession) {
+  try {
+    return missingFileDiagnostics(s.state, s.missingAssets);
+  } catch {
+    return [];
+  }
 }
 
 export function resourcesDir(): string {
@@ -139,6 +152,7 @@ export class Controller {
   private exportPaths = new Set<string>();
   private watchers: FSWatcher[] = [];
   private watchTimer: NodeJS.Timeout | null = null;
+  private assetTimer: NodeJS.Timeout | null = null;
   /** The private copy the preview runs from while the project may not be written to (spec 16.6, 18.1). */
   private stage: string | null = null;
   private stageSync: Promise<unknown> = Promise.resolve();
@@ -181,12 +195,14 @@ export class Controller {
       state: s.state,
       revision: s.revision,
       history: s.historyInfo(),
-      diagnostics: s.diagnostics(),
+      // Missing image files are for the author, not the AI: it cannot bring them back, and its checks compare messages.
+      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s)],
       runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
       aiRunId: this.aiRunId(),
       assetUsage: safeUsages(s),
+      missingAssets: s.missingAssets,
       conflicts: s.conflicts,
       readOnly: s.readOnly,
       themeUpdates: s.readOnly ? undefined : themeUpdates(s.state),
@@ -572,11 +588,16 @@ export class Controller {
       if (this.stage) this.syncStage(session);
       else this.dev?.notifyRevision(ev.revision);
       this.broadcast();
+      // An import, a relink, an undo or an outside edit of the library may name files that are, or are not, there.
+      if (ev.changedDocs.includes('siteorigin/assets.json')) void this.checkAssetFiles(session);
     });
     session.on('history', () => this.broadcast());
     await this.onSessionOpened?.(session);
-    this.broadcast();
+    // Watching starts before the first look, so a file removed while it runs is seen too.
     this.watchExternalChanges(session);
+    // Project health lists missing image files from the first moment the project shows.
+    await session.refreshAssetFiles().catch(() => false);
+    this.broadcast();
     await this.startRuntime();
   }
 
@@ -747,10 +768,41 @@ export class Controller {
     if (dev) void dev.exited.then(() => removePreviewStage(stage)).catch(() => undefined);
   }
 
-  /** Accept valid external edits to canonical documents and authored code components. */
+  /** Look for the library's image files again, and tell the window when what is missing changed. */
+  private async checkAssetFiles(session: ProjectSession): Promise<void> {
+    const changed = await session.refreshAssetFiles().catch(() => false);
+    if (changed && this.session === session) this.broadcast();
+  }
+
+  /**
+   * Accept valid external edits to canonical documents and authored code components, and notice image files being
+   * moved out of (or back into) static/assets/.
+   */
   private watchExternalChanges(session: ProjectSession) {
     for (const w of this.watchers) w.close();
     this.watchers = [];
+    if (this.assetTimer) clearTimeout(this.assetTimer);
+    this.assetTimer = null;
+    const onAssetChange = () => {
+      if (this.assetTimer) clearTimeout(this.assetTimer);
+      this.assetTimer = setTimeout(() => {
+        this.assetTimer = null;
+        if (this.session === session) void this.checkAssetFiles(session);
+      }, 300);
+    };
+    // static/ rather than static/assets/, so the assets folder itself being removed or put back is seen too.
+    try {
+      const dir = join(session.dir, 'static');
+      if (existsSync(dir)) {
+        // An event without a file name may be about anything in static/, so it is looked at too.
+        const w = watch(dir, { recursive: true }, (_e, f) => (!f || /^assets([\\/]|$)/.test(String(f))) && onAssetChange());
+        // The folder going away can end the watch with an error (Windows); unhandled, it would be thrown.
+        w.on('error', () => w.close());
+        this.watchers.push(w);
+      }
+    } catch {
+      /* watching is best-effort: the check still runs when the library changes and before every export */
+    }
     const onChange = () => {
       if (this.watchTimer) clearTimeout(this.watchTimer);
       this.watchTimer = setTimeout(async () => {
@@ -856,6 +908,8 @@ export class Controller {
     this.watchers = [];
     if (this.watchTimer) clearTimeout(this.watchTimer);
     this.watchTimer = null;
+    if (this.assetTimer) clearTimeout(this.assetTimer);
+    this.assetTimer = null;
     const s = this.session;
     if (!s) return this.endExports();
     this.closings++;
@@ -1031,7 +1085,8 @@ export class Controller {
       const known = Object.values(s.state.assets.assets);
       for (const f of picked) {
         try {
-          const { record, existing, font } = await importAsset(s.dir, f, known);
+          // Written only while the project is still open and this app's; the decoding is done before.
+          const { record, existing, font } = await importAsset(s.dir, f, known, this.writeFence(s));
           if (!ids.includes(record.id)) ids.push(record.id);
           if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
           if (!existing) {
@@ -1053,6 +1108,108 @@ export class Controller {
       }
       return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined };
     });
+  }
+
+  /**
+   * Find the file of a library image whose original is missing. The same picture is put back where the library
+   * expects it, with its smaller copies, and the project itself does not change. A different picture becomes the
+   * image's file (one step that can be undone), so every use, with its alt text, shows it. `path` skips the dialog.
+   */
+  async locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false };
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
+    const gone = { ok: false, message: 'That image is no longer in the library.' };
+    const before = s.state.assets.assets[assetId];
+    if (before?.kind !== 'image') return gone;
+    let file = path;
+    if (!file) {
+      const r = await dialog.showOpenDialog(this.getWindow()!, { title: `Locate ${before.name || 'the image'}`, buttonLabel: 'Use this file', properties: ['openFile'], filters: [{ name: 'Images', extensions: IMAGE_EXTENSIONS }] });
+      if (r.canceled || !r.filePaths[0]) return { ok: false };
+      file = r.filePaths[0];
+    }
+    const closed = { ok: false, message: 'The project was closed, or another app took it over, before the image could be located.' };
+    if (this.session !== s) return closed;
+    // A new file is written before the record names it, so the session holds off sweeping assets meanwhile.
+    return s.withImport(async () => {
+      // The dialog gave the library time to change: a file chosen for what the image was then is not used for what it is now.
+      const record = s.state.assets.assets[assetId];
+      if (record?.kind !== 'image') return gone;
+      if (record.file !== before.file || record.hash !== before.hash) return { ok: false, message: `${record.name.trim() || 'The image'} changed while the file was being chosen. Look at it again in Assets.` };
+      const name = record.name.trim() || 'The image';
+      try {
+        const at = { revision: -1 };
+        const found = await locateAssetFile(s.dir, record, file, this.assetFence(s, record, at));
+        if (found.same) {
+          await this.checkAssetFiles(s);
+          if (found.failed.length) return { ok: false, message: `${name} is back, but ${missingParts({ original: false, variants: found.failed })} could not be made again. Make the copies again in Assets.` };
+          return { ok: true, message: `${name} is back in the project folder.` };
+        }
+        // Only on top of the project as it was when the files were written: a relink that landed meanwhile wins.
+        const relink = (expectedRevision: number) => s.apply({ operations: [{ type: 'asset.relink', assetId, ...found.stored }], expectedRevision }, { label: `Relink ${name}`, source: 'user' });
+        let r = await relink(at.revision);
+        // An unrelated change that landed meanwhile is no reason to fail, as long as the image itself is as it was.
+        const still = s.state.assets.assets[assetId];
+        if (r.error?.code === 'STALE_REVISION' && still?.file === record.file && still.hash === record.hash) r = await relink(s.revision);
+        if (r.error?.code === 'STALE_REVISION') return { ok: false, message: `The project changed while ${basename(file)} was being stored, so ${name} was left as it is. Locate the file again.` };
+        if (!r.ok) return { ok: false, message: r.error?.message ?? `${name} could not be given the new file.` };
+        return { ok: true, message: `${basename(file)} now shows wherever ${name} is used.` };
+      } catch (e) {
+        if (e instanceof AssetChanged) return { ok: false, message: `${name} changed while the file was being chosen. Look at it again in Assets.` };
+        return { ok: false, message: (e as Error).message };
+      }
+    });
+  }
+
+  /**
+   * Writes for one library image happen only while the project is still this one, open and owned by this app, and
+   * the image still has the file they were made for; the slow part (decoding, resizing) is done before.
+   */
+  private assetFence(s: ProjectSession, record: AssetRecord, at?: { revision: number }) {
+    return this.writeFence(s, () => {
+      const now = s.state.assets.assets[record.id];
+      if (now?.file !== record.file || now.hash !== record.hash) throw new AssetChanged();
+      // What the record change that follows the writes expects to build on: anything landing between is a conflict.
+      if (at) at.revision = s.revision;
+    });
+  }
+
+  /**
+   * Writes into the project run in its queue, only while it is still the open project, not closing, and owned by this
+   * app, all checked when the writes are about to happen. `check` may refuse by throwing.
+   */
+  private writeFence(s: ProjectSession, check?: () => void) {
+    return async (write: () => Promise<void>): Promise<boolean> => {
+      let wrote = false;
+      const open = () => this.session === s && !this.closing;
+      if (!open()) return false;
+      await s.whileOwner(async () => {
+        if (!open()) return;
+        check?.();
+        await write();
+        wrote = true;
+      });
+      return wrote;
+    };
+  }
+
+  /** Make again the smaller copies a library image lists that are missing from the project folder. */
+  async regenerateAssetCopies(assetId: string): Promise<{ ok: boolean; message?: string }> {
+    const s = this.session;
+    if (!s) return { ok: false };
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
+    const record = s.state.assets.assets[assetId];
+    if (record?.kind !== 'image') return { ok: false, message: 'That image is no longer in the library.' };
+    const name = record.name.trim() || 'The image';
+    try {
+      const r = await restoreAssetFiles(s.dir, record, undefined, this.assetFence(s, record));
+      await this.checkAssetFiles(s);
+      if (r.failed.length) return { ok: false, message: `${name} is still missing ${missingParts({ original: false, variants: r.failed })}, which could not be made again. Import the picture again, or choose another image.` };
+      return { ok: true, message: r.written.length ? `Made ${missingParts({ original: false, variants: r.written })} of ${name} again.` : `${name} has all its copies.` };
+    } catch (e) {
+      if (e instanceof AssetChanged) return { ok: false, message: `${name} changed while its copies were being made. Look at it again in Assets.` };
+      return { ok: false, message: (e as Error).message };
+    }
   }
 
   readSource(definitionId: string) {
@@ -1171,6 +1328,7 @@ export class Controller {
       warnings.push(...sectionLinkWarnings(snap.state), ...unlinkedButtonWarnings(snap.state));
       const kept = locationKeptNote(await locatedPhotos(folder, snap.state));
       if (kept) warnings.push(kept);
+      warnings.push(...missingSourceWarnings(snap.state, await findMissingAssetFiles(folder, snap.state.assets.assets)));
       const problem = await this.publish(s, folder, dest, format, `${slugify(snap.state.site.name) || 'website'}-source`);
       if (problem) return { ok: false, message: problem, warnings: [] };
       this.exportPaths.add(dest);
@@ -1235,6 +1393,14 @@ export class Controller {
     const snap = await this.snapshotSource(s, project, { forBuild: true });
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
     const { revision, state } = snap;
+    // An image file the site uses but the folder does not have fails the build without naming the picture: stop first,
+    // naming it. The staged copy is checked, not what Project health last saw, so the answer is right for this export.
+    const missingFiles = await missingWebsiteAssets(project, state);
+    const missing = missingFiles.filter((m) => m.used);
+    if (missing.length) {
+      void this.checkAssetFiles(s);
+      return { ok: false, ...missingAssetsStop(missing), assetId: missing[0].asset.id };
+    }
     // The snapshot keeps the whole library, as the editable project does; visitors get only the files the site uses.
     // Credits are read first: a page can use a responsive copy whose original is pruned.
     const credits = await variantCredits(project, state);
@@ -1277,7 +1443,9 @@ export class Controller {
     const placeholders = placeholderImageCount(state);
     if (placeholders) warnings.push(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
     warnings.push(...unlinkedButtonWarnings(state));
-    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a)) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+    const absent = new Set(missingFiles.filter((m) => m.missing.original).map((m) => m.asset.id));
+    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+    warnings.push(...missingUnusedWarnings(missingFiles));
     const left = omittedAssetsWarning(omitted);
     if (left) warnings.push(left);
     const located = locationRemovedNote(photos.located);

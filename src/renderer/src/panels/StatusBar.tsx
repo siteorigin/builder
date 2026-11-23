@@ -3,6 +3,7 @@ import { ChevronRight, CircleAlert, CircleCheck, Ellipsis, Lock, RefreshCw, Stet
 import type { RuntimeState } from '@shared/api';
 import { api, applyOps, confirmDialog, setState, toast, useStore } from '../store';
 import { breadcrumb } from '../lib/model';
+import { openAsset } from '../lib/actions';
 import { Modal, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 
@@ -228,12 +229,25 @@ export function HealthModal() {
           )}
           <div className="col" style={{ gap: 6 }}>
             {/* Conflicts are listed below with their actions, so their diagnostic copies are skipped here. */}
-            {snap.diagnostics.filter((d) => d.code !== 'CONFLICT').map((d, i) => (
-              <div key={i} className={`scope-note ${d.severity === 'error' ? 'danger' : 'site'}`}>
-                {d.severity === 'error' ? <CircleAlert /> : <TriangleAlert />}
-                <span className="grow">{d.message}</span>
-              </div>
-            ))}
+            {snap.diagnostics.filter((d) => d.code !== 'CONFLICT').map((d, i) => {
+              // An image whose files are missing keeps its uses: say how many, and open it where it can be fixed.
+              const asset = d.code === 'ASSET_FILE_MISSING' && d.owner?.kind === 'asset' ? d.owner.id : null;
+              const uses = asset ? (snap.assetUsage[asset] ?? 0) : 0;
+              return (
+                <div key={i} className={`scope-note ${d.severity === 'error' ? 'danger' : 'site'}`} style={asset ? { alignItems: 'center' } : undefined}>
+                  {d.severity === 'error' ? <CircleAlert /> : <TriangleAlert />}
+                  <span className="grow">
+                    {d.message}
+                    {asset && <> {uses ? `It is used ${uses === 1 ? 'once' : uses === 2 ? 'twice' : `${uses} times`}, and every use is kept.` : 'Nothing uses it.'}</>}
+                  </span>
+                  {asset && (
+                    <button className="btn btn-sm" onClick={() => openAsset(asset)}>
+                      Open in Assets
+                    </button>
+                  )}
+                </div>
+              );
+            })}
             {snap.conflicts.map((c) => (
               <div key={c.path} className="scope-note danger">
                 <CircleAlert />

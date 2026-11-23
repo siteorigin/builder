@@ -33,6 +33,10 @@ const link = z.object({
   newTab: z.boolean().optional()
 });
 
+/** Only files written by the importer, inside static/assets/. */
+const ASSET_FILE = z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png|webp|gif|avif|svg|woff2?)$/);
+const ASSET_VARIANTS = z.array(z.object({ width: z.number(), file: z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png)$/) }));
+
 export const OPERATION_SCHEMAS = {
   'page.create': z.object({
     type: z.literal('page.create'),
@@ -275,15 +279,20 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('asset.add'),
     asset: z.object({
       id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,60}$/), name: z.string().max(200),
-      // Only files written by the importer, inside static/assets/.
-      file: z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png|webp|gif|avif|svg|woff2?)$/), mime: z.string(), bytes: z.number(), width: z.number().optional(), height: z.number().optional(),
-      hash: z.string(), kind: z.enum(['image', 'font']), createdAt: z.string(), variants: z.array(z.object({ width: z.number(), file: z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png)$/) })).optional(), description: z.string().optional(), altSuggestion: z.string().optional(),
+      file: ASSET_FILE, mime: z.string(), bytes: z.number(), width: z.number().optional(), height: z.number().optional(),
+      hash: z.string(), kind: z.enum(['image', 'font']), createdAt: z.string(), variants: ASSET_VARIANTS.optional(), description: z.string().optional(), altSuggestion: z.string().optional(),
       font: FONT_FACE.optional()
     })
   }),
   'asset.update': z.object({ type: z.literal('asset.update'), assetId: z.string(), name: z.string().max(120).optional(), description: z.string().max(500).optional(), altSuggestion: z.string().max(300).optional(), font: FONT_FACE.optional() }),
   'asset.remove': z.object({ type: z.literal('asset.remove'), assetId: z.string() }),
-  'asset.replace': z.object({ type: z.literal('asset.replace'), assetId: z.string(), withAssetId: z.string() })
+  'asset.replace': z.object({ type: z.literal('asset.replace'), assetId: z.string(), withAssetId: z.string() }),
+  // Editor only: the image file an existing library image shows, after the author located or chose it. Its uses,
+  // name and descriptions stay; the file details are replaced as a whole.
+  'asset.relink': z.object({
+    type: z.literal('asset.relink'), assetId: z.string(), file: ASSET_FILE, mime: z.string().regex(/^image\//), bytes: z.number(), hash: z.string(),
+    width: z.number().optional(), height: z.number().optional(), variants: ASSET_VARIANTS.optional()
+  })
 } as const;
 
 export type OperationType = keyof typeof OPERATION_SCHEMAS;

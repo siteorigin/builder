@@ -76,7 +76,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'asset.add': 'wider',
   'asset.update': 'wider',
   'asset.remove': 'wider',
-  'asset.replace': 'wider'
+  'asset.replace': 'wider',
+  'asset.relink': 'wider'
 };
 
 /**

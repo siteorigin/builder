@@ -13,6 +13,8 @@ import { displayName } from '@engine/tree';
 import { unlinkedButtons } from '@generator/checks';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
+import { findMissingAssetFiles, missingParts } from './project/asset-files';
+import type { MissingAssetFiles } from '@shared/api';
 
 const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'build', '.git', '.DS_Store']);
 
@@ -96,18 +98,28 @@ function namesFile(text: string, file: string): boolean {
  * public files. The authoring documents list the whole library, and the README is not part of the site, so
  * neither counts. Returns the asset records none of whose files ship, so the export can say what it left out.
  */
-export async function pruneWebsiteAssets(project: string, state: ProjectState): Promise<AssetRecord[]> {
+/** A staged project's files, and which of them are library files: those the website ships only when it names them. */
+async function websiteFiles(project: string, state: ProjectState): Promise<{ files: string[]; candidate: (rel: string) => boolean }> {
   const library = libraryAssetFiles(state);
   const files = (await listFiles(project)).map((f) => f.split(sep).join('/'));
-  const candidate = (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length)));
-  const candidates = files.filter(candidate);
-  if (!candidates.length) return [];
+  return { files, candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
+}
+
+/** Everything the website build reads as text, apart from library files, to search for the file names it uses. */
+async function websiteText(project: string, { files, candidate }: { files: string[]; candidate: (rel: string) => boolean }): Promise<string> {
   const texts: string[] = [];
   for (const rel of files) {
     if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel)) continue;
     texts.push(await fs.readFile(join(project, rel), 'utf8'));
   }
-  const text = texts.join('\n');
+  return texts.join('\n');
+}
+
+export async function pruneWebsiteAssets(project: string, state: ProjectState): Promise<AssetRecord[]> {
+  const site = await websiteFiles(project, state);
+  const candidates = site.files.filter(site.candidate);
+  if (!candidates.length) return [];
+  const text = await websiteText(project, site);
   const shipped = new Set<string>();
   const removed = new Set<string>();
   for (const rel of candidates) {
@@ -120,6 +132,70 @@ export async function pruneWebsiteAssets(project: string, state: ProjectState): 
   return Object.values(state.assets.assets).filter((a) => {
     const own = [a.file, ...(a.variants ?? []).map((v) => v.file)];
     return own.some((f) => removed.has(f)) && !own.some((f) => shipped.has(f));
+  });
+}
+
+export interface MissingInExport {
+  asset: AssetRecord;
+  missing: MissingAssetFiles;
+  /** Something the build reads names a missing file, so the build would fail on it. */
+  used: boolean;
+}
+
+/**
+ * Library images with files missing from a staged copy of the project, and whether the website uses those files:
+ * generated pages, code components or other public files name one. The build would fail on a used one without
+ * saying which picture it was, so the export stops first and names it.
+ */
+export async function missingWebsiteAssets(project: string, state: ProjectState): Promise<MissingInExport[]> {
+  const missing = await findMissingAssetFiles(project, state.assets.assets);
+  if (!missing.length) return [];
+  const text = await websiteText(project, await websiteFiles(project, state));
+  // A missing file the site names would fail the build. A missing original matters too when the site names only a
+  // copy of it, since the copy's credits come from the original; a missing copy the site does not name does not.
+  return missing.map((m) => {
+    const asset = state.assets.assets[m.assetId];
+    const named = (f: string) => namesWholeFile(text, basename(f));
+    const used = [...(m.original ? [asset.file] : []), ...m.variants].some(named) || (m.original && (asset.variants ?? []).some((v) => named(v.file)));
+    return { asset, missing: m, used };
+  });
+}
+
+/** Like namesFile, and the name also ends there: `a-1234abcd.jpg` is not found inside `a-1234abcd.jpg.webp`. */
+function namesWholeFile(text: string, file: string): boolean {
+  for (let i = text.indexOf(file); i >= 0; i = text.indexOf(file, i + 1)) {
+    const end = i + file.length;
+    if ((i === 0 || !/[\w.-]/.test(text[i - 1])) && (end === text.length || !/[\w-]/.test(text[end]) && !(text[end] === '.' && /[\w]/.test(text[end + 1] ?? '')))) return true;
+  }
+  return false;
+}
+
+/** The export notes for library images with missing files that nothing on the site names, so the export went ahead. */
+export function missingUnusedWarnings(missing: MissingInExport[]): string[] {
+  return missing.filter((m) => !m.used).map(({ asset, missing: m }) => `${asset.name.trim() || 'An image'} is missing ${missingParts(m)} in the project folder. No page or code names ${them(m)}, so the website was exported without ${them(m)}.`);
+}
+
+/** "it" for one missing file, "them" for more. */
+const them = (m: MissingAssetFiles) => ((m.original ? 1 : 0) + m.variants.length > 1 ? 'them' : 'it');
+
+/** Why a website export stopped for images whose files are missing, and the files themselves for the details. */
+export function missingAssetsStop(used: MissingInExport[]): { message: string; warnings: string[] } {
+  const nameOf = (a: AssetRecord) => a.name.trim() || 'An image';
+  const warnings = used.map(({ asset, missing }) => `${nameOf(asset)}: ${[...(missing.original ? [asset.file] : []), ...missing.variants].join(', ')} not found.`);
+  if (used.length === 1) {
+    const { asset, missing } = used[0];
+    const fix = missing.original ? 'Locate the file in Assets' : 'Make the copies again in Assets';
+    return { message: `${nameOf(asset)} is missing ${missingParts(missing)} in the project folder, and the website uses ${them(missing)}. ${fix}, then export again.`, warnings };
+  }
+  const names = used.map((u) => nameOf(u.asset));
+  return { message: `${used.length} images the website uses are missing files in the project folder: ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}. Fix them in Assets, then export again.`, warnings };
+}
+
+/** The export notes for an editable project that leaves out image files missing from the project folder. */
+export function missingSourceWarnings(state: ProjectState, missing: MissingAssetFiles[]): string[] {
+  return missing.map((m) => {
+    const a = state.assets.assets[m.assetId];
+    return `${a?.name.trim() || 'An image'} is missing ${missingParts(m)} in the project folder, so the exported project does not have ${them(m)} either. Fix it in Assets and export again.`;
   });
 }
 

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { crc32 } from 'node:zlib';
 import sharp from 'sharp';
-import { renderVariants } from '../../src/main/project/image-variants';
+import { isReadable, renderVariants } from '../../src/main/project/image-variants';
 import { createVariantClient, type VariantReply, type VariantRequest, type WorkerHandle } from '../../src/main/project/media-client';
 
 const u32 = (n: number) => {
@@ -105,6 +105,31 @@ describe('responsive copies', () => {
     const still = await sharp(moving).png().toBuffer();
     expect(chunksOf(still).map((c) => c.type)).not.toContain('acTL');
     expect((await renderVariants(still, 'image/png', 1200)).map((v) => v.width)).toEqual([480, 960]);
+  });
+
+  it('leaves an AVIF image sequence to the browser, but not an AVIF whose brands nothing knows', async () => {
+    const avif = await sharp({ create: { width: 32, height: 16, channels: 3, background: { r: 9, g: 9, b: 9 } } }).avif().toBuffer();
+    expect(avif.toString('latin1', 4, 12)).toBe('ftypavif');
+    expect(await isReadable(avif, 'image/avif')).toBe(true);
+    const branded = (brand: string) => {
+      const b = Buffer.from(avif);
+      const end = b.readUInt32BE(0);
+      for (let p = 8; p + 4 <= end; p += 4) if (p !== 12) b.write(brand, p, 'latin1');
+      return b;
+    };
+    expect(await isReadable(branded('zzzz'), 'image/avif')).toBe(false);
+    expect(await isReadable(branded('avis'), 'image/avif')).toBe(true);
+    // A still with an unusual major brand that still declares itself AVIF.
+    const still = branded('zzzz');
+    still.write('MA1B', 8, 'latin1');
+    still.write('avif', 16, 'latin1');
+    expect(await isReadable(still, 'image/avif')).toBe(true);
+  });
+
+  it('makes exactly the widths asked for, never wider than the picture', async () => {
+    const variants = await renderVariants(await halves(1000, 500, 'jpeg'), 'image/jpeg', 1000, [960, 1000, 1440]);
+    expect(variants.map((v) => v.width)).toEqual([960, 1000]);
+    expect((await sharp(variants[0].data).metadata()).width).toBe(960);
   });
 
   it('is deterministic, and leaves other formats alone', async () => {
@@ -225,6 +250,38 @@ describe('media worker client', () => {
       throw new Error('no utility process');
     });
     expect(await broken.variants(Buffer.from('c'), 'image/jpeg', 2000)).toEqual([]);
+  });
+
+  it('says a picture is unreadable only when the decoder refused it, never because the worker failed', async () => {
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn, { timeoutMs: 1000 });
+    const refused = client.inspect(Buffer.from('a'), 'image/png', 100);
+    await tick();
+    expect(workers[0].sent[0]).toMatchObject({ check: true });
+    workers[0].reply({ id: workers[0].sent[0].id, ok: false, error: 'The picture could not be decoded.', unreadable: true });
+    expect(await refused).toEqual({ unreadable: true, variants: [] });
+    const failed = client.inspect(Buffer.from('b'), 'image/png', 100);
+    await tick();
+    workers[0].reply({ id: workers[0].sent[1].id, ok: false, error: 'out of memory' });
+    expect(await failed).toEqual({ unreadable: false, variants: [] });
+    const crashed = client.inspect(Buffer.from('c'), 'image/png', 100);
+    await tick();
+    workers[0].exit(1);
+    expect(await crashed).toEqual({ unreadable: false, variants: [] });
+    client.stop();
+    expect(await createVariantClient(() => { throw new Error('no utility process'); }).inspect(Buffer.from('d'), 'image/png', 100)).toEqual({ unreadable: false, variants: [] });
+  });
+
+  it('asks for exactly the widths a library image lists when making its copies again', async () => {
+    const { workers, spawn } = spawner();
+    const client = createVariantClient(spawn);
+    const p = client.variants(Buffer.from('a'), 'image/jpeg', 1000, [960]);
+    await tick();
+    expect(workers[0].sent[0]).toMatchObject({ widths: [960] });
+    expect(workers[0].sent[0].check).toBeUndefined();
+    workers[0].reply({ id: workers[0].sent[0].id, ok: true, variants: [] });
+    await p;
+    client.stop();
   });
 
   it('reads copies that sit inside a larger buffer, and survives a failed send or a fatal worker error', async () => {

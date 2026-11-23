@@ -4,6 +4,7 @@ import { sameRichText, toRichText } from '@shared/richtext';
 import { isBinding } from '@shared/types';
 import { findParent } from '@engine/tree';
 import { applyOps, commitOps, getState, saveLocal, setState, toast, undoAction } from '../store';
+import { showAsset } from './place';
 import { boundaryOf, listPropFor, refLabel, resolveRef, treeFor } from './model';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
@@ -208,6 +209,12 @@ export function setMode(mode: 'edit' | 'preview') {
 
 /** Open Site styles. Site styles are site-wide, so this leaves component editing first: the plum band
  *  must never sit over site-wide controls. */
+/** Show one library image in Assets, closing the dialog that asked for it (Project health, an export). */
+export function openAsset(assetId: string) {
+  setState({ modal: null });
+  showAsset(getState().snapshot?.workspaceKey ?? '', assetId);
+}
+
 export function openSiteStyles() {
   const dm = getState().definitionMode;
   setState(dm ? { definitionMode: null, pageId: dm.returnPageId, selection: null, rightTab: 'styles', dockOpen: true } : { rightTab: 'styles', dockOpen: true });
