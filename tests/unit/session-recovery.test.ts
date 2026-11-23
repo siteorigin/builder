@@ -199,7 +199,11 @@ describe('generated files edited outside the app', () => {
     await s.apply({ operations: [{ type: 'page.update', pageId: aboutId, title: 'About us' }] }, { label: 'Rename' });
     expect(s.conflicts).toEqual([expect.objectContaining({ path: rel, kind: 'generated' })]);
     expect(existsSync(join(dir, '.siteorigin/cache/dev', rel))).toBe(false);
+    // The preview compares the project file with this list to tell an outside edit from Builder's own file.
+    const hashes = () => JSON.parse(readFileSync(join(dir, '.siteorigin/cache/dev/.clean-hashes.json'), 'utf8'));
+    expect(hashes()[rel]).not.toBe(sha(readFileSync(join(dir, rel), 'utf8')));
     expect((await s.resolveConflict(rel, 'restore')).ok).toBe(true);
+    expect(hashes()[rel]).toBe(sha(readFileSync(join(dir, rel), 'utf8')));
     expect(existsSync(join(dir, '.siteorigin/cache/dev', rel))).toBe(true);
     expect(s.conflicts).toEqual([]);
   });

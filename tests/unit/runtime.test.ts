@@ -6,11 +6,14 @@ class FakeWorker extends EventEmitter {
   stderr = new EventEmitter();
   posted: unknown[] = [];
   killed = false;
+  /** A worker that ignores being killed (hung in native code). */
+  stubborn = false;
   postMessage(m: unknown) {
     this.posted.push(m);
   }
   kill() {
     this.killed = true;
+    if (!this.stubborn) queueMicrotask(() => this.emit('exit', null));
     return true;
   }
 }
@@ -66,6 +69,19 @@ describe('production build worker', () => {
     await vi.advanceTimersByTimeAsync(BUILD_LIMITS.timeoutMs);
     expect((await p).error).toMatch(/too long/);
     expect(workers[0].killed).toBe(true);
+  });
+
+  it('waits for the worker to exit before settling, but not forever', async () => {
+    vi.useFakeTimers();
+    const p = buildProject('/project');
+    workers[0].stubborn = true;
+    let settled = false;
+    void p.then(() => (settled = true));
+    workers[0].emit('message', { type: 'built', ok: true, logs: [] });
+    await vi.advanceTimersByTimeAsync(BUILD_LIMITS.exitWaitMs - 100);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(settled).toBe(true);
   });
 
   it('reports a worker that exits without a result', async () => {

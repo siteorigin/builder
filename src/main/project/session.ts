@@ -15,6 +15,8 @@ import { atomicWrite, readIfExists, readJson, removeEmptyDirs, safeJoin, sha, to
 import { isCanonicalPath, ProjectFormatError, readState, stateToAuthoredSources, stateToDocs } from './documents';
 
 export const LOCAL_DIR = '.siteorigin';
+/** In the dev cache: hashes of the generated project files the dev variants stand in for. */
+export const CLEAN_HASHES = '.clean-hashes.json';
 const HISTORY_LIMIT = 100;
 /** How often an open project refreshes its lock, and how long an unrefreshed lock is still trusted. */
 export const LOCK_HEARTBEAT_MS = 30_000;
@@ -111,6 +113,8 @@ export class ProjectSession extends EventEmitter {
    * exist). The in-memory state uses these versions; the external version stays on disk until the user chooses.
    */
   private pending = new Map<string, string | null>();
+  /** Holds read back from conflicts.json when the project opened. */
+  private loadedHolds = new Set<string>();
   recoveryNotes: string[] = [];
   /** Set when the project is open for inspection only: nothing is ever written. */
   readOnly: ReadOnlyInfo | null = null;
@@ -223,6 +227,7 @@ export class ProjectSession extends EventEmitter {
         if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
       }
       const existing = await readIfExists(lockPath);
+      const judgedAt = (await fs.stat(lockPath).catch(() => null))?.mtimeMs;
       const age = Date.now() - ((await fs.stat(lockPath).catch(() => null))?.mtimeMs ?? 0);
       let stale = true;
       try {
@@ -252,7 +257,8 @@ export class ProjectSession extends EventEmitter {
         continue;
       }
       // If it changed after it was judged, it is another opener's fresh lock: put it back.
-      if ((await readIfExists(aside)) !== existing) await fs.link(aside, lockPath).catch(() => undefined);
+      // (A heartbeat changes only the time, so that is compared too.)
+      if ((await readIfExists(aside)) !== existing || (await fs.stat(aside).catch(() => null))?.mtimeMs !== judgedAt) await fs.link(aside, lockPath).catch(() => undefined);
       await fs.rm(aside, { force: true });
     }
     return new ProjectLockedError('The project lock could not be acquired. Try again.', owner);
@@ -387,6 +393,7 @@ export class ProjectSession extends EventEmitter {
       // Already settled outside the app (the file was put back): nothing to choose.
       if (settledOnDisk(c.path, await this.diskContent(c.path), builder)) continue;
       this.holdConflict(c.path, builder, String(c.reason ?? 'Changed outside SiteOrigin Builder.'));
+      this.loadedHolds.add(c.path);
     }
   }
 
@@ -546,7 +553,8 @@ export class ProjectSession extends EventEmitter {
       }
       const before = d.before === null ? null : await this.getBlob(d.before).catch(() => undefined);
       // Any version the run itself wrote (an earlier batch, if it stopped between batches) is the run's to undo.
-      const runWrote = h === d.after || (Array.isArray(d.written) && d.written.includes(h));
+      // A hold saved by an earlier session is the user's pending choice: never decided for them here.
+      const runWrote = !this.loadedHolds.has(path) && (h === d.after || (Array.isArray(d.written) && d.written.includes(h)));
       if (!runWrote || before === undefined) {
         conflicts.push(path);
         // The pre-run version is what the project is restored to, so it is the version held for the user.
@@ -671,6 +679,11 @@ export class ProjectSession extends EventEmitter {
       const disk = await readIfExists(abs);
       if (disk !== content) await atomicWrite(abs, content);
     }
+    // The preview serves a variant only while the project file is the one generated here; written before the
+    // project files, so a file mid-publication is never mistaken for an edit made outside the app.
+    const cleanHashes: Record<string, string> = {};
+    for (const [path, content] of clean) if (!authored.has(path)) cleanHashes[path] = sha(content);
+    await atomicWrite(join(devRoot, CLEAN_HASHES), JSON.stringify(cleanHashes));
     for (const { path, content, abs } of plan) {
       await atomicWrite(abs, content);
       changedFiles.push(path);
@@ -696,7 +709,7 @@ export class ProjectSession extends EventEmitter {
   /** Restore a generated file from the managed documents, discarding the external edit. */
   restoreGeneratedFile(path: string): Promise<void> {
     return this.serialize(async () => {
-      if (this.readOnly) throw new Error(this.readOnly.reason);
+      if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? 'This project is read-only.');
       await this.restoreGeneratedLocked(path);
     });
   }
@@ -864,7 +877,7 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async sweep(): Promise<void> {
-    if (this.readOnly) return;
+    if (!(await this.stillOwner())) return;
     this.gcCountdown = 25;
     try {
       await this.collectGarbageNow();
@@ -918,8 +931,13 @@ export class ProjectSession extends EventEmitter {
 
   /** Delete imported files in static/assets/ that no retained version of assets.json and no code refers to. */
   private async collectAssets(blobs: Set<string>) {
-    const assetsDir = join(this.dir, 'static', 'assets');
-    // Only a real folder inside the project is ever swept, never one a link points elsewhere.
+    // Only a real folder inside the project is ever swept, never one a link (at any level) points elsewhere.
+    let assetsDir: string;
+    try {
+      assetsDir = safeJoin(this.dir, 'static/assets');
+    } catch {
+      return;
+    }
     if (!(await fs.lstat(assetsDir).catch(() => null))?.isDirectory()) return;
     const files = await fs.readdir(assetsDir).catch(() => [] as string[]);
     if (!files.length) return;
@@ -960,6 +978,8 @@ export class ProjectSession extends EventEmitter {
       const t = await readIfExists(f);
       if (t) for (const m of t.matchAll(/[a-f0-9]{64}/g)) if (blobs.has(m[0])) addDoc(await this.getBlob(m[0]).catch(() => null));
     }
+    // Both sides of a held conflict: the file on disk may be kept.
+    for (const p of this.pending.keys()) if (p.endsWith('.svelte')) code.push((await this.diskContent(p)) ?? '');
     const allCode = code.join('\n');
     for (const f of files) {
       if (!IMPORTED_ASSET_RE.test(f) || referenced.has(`static/assets/${f}`) || allCode.includes(f)) continue;
@@ -1099,7 +1119,7 @@ export class ProjectSession extends EventEmitter {
       const run = this.activeRun;
       if (!run) return false;
       // Another app took the project over: its own recovery decides what happens to this run's files.
-      if (this.readOnly) {
+      if (!(await this.stillOwner())) {
         this.activeRun = null;
         return false;
       }
@@ -1125,7 +1145,7 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(async () => {
       const run = this.activeRun;
       if (!run) return { restored: false };
-      if (this.readOnly) {
+      if (!(await this.stillOwner())) {
         this.activeRun = null;
         return { restored: false };
       }

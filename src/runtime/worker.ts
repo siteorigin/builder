@@ -4,7 +4,8 @@
  * Its environment is constructed explicitly by the main process and never contains provider credentials.
  */
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import bridgeSource from './bridge.client.js?raw';
@@ -26,6 +27,33 @@ async function loadVite(dir: string) {
   const req = createRequire(join(dir, 'package.json'));
   const entry = req.resolve('vite');
   return (await import(pathToFileURL(entry).href)) as typeof import('vite');
+}
+
+/**
+ * Hashes of the project files the dev variants stand in for, written by the editor next to the variants
+ * (before the project files themselves), re-read when they change.
+ */
+let manifest: { mtimeMs: number; files: Record<string, string> } | null = null;
+function generatedHashes(dir: string): Record<string, string> {
+  const file = join(dir, '.siteorigin', 'cache', 'dev', '.clean-hashes.json');
+  try {
+    const mtimeMs = statSync(file).mtimeMs;
+    if (manifest?.mtimeMs !== mtimeMs) manifest = { mtimeMs, files: JSON.parse(readFileSync(file, 'utf8')) ?? {} };
+    return manifest.files;
+  } catch {
+    return {};
+  }
+}
+
+/** Does the project file differ from what the editor generated for it? */
+function editedOutside(dir: string, rel: string): boolean {
+  const expected = generatedHashes(dir)[rel];
+  if (!expected) return false;
+  try {
+    return createHash('sha256').update(readFileSync(join(dir, ...rel.split('/')))).digest('hex') !== expected;
+  } catch {
+    return false;
+  }
 }
 
 function devPlugin(dir: string) {
@@ -51,8 +79,10 @@ function devPlugin(dir: string) {
       const rel = projectSrcPath(names, id);
       if (!rel) return null;
       const variant = join(devRoot, ...rel.split('/'));
-      if (existsSync(variant)) return readFileSync(variant, 'utf8');
-      return null;
+      if (!existsSync(variant)) return null;
+      // A generated file edited outside the app is shown as edited, not as the editor's instrumented copy.
+      if (editedOutside(dir, rel)) return null;
+      return readFileSync(variant, 'utf8');
     }
   };
 }

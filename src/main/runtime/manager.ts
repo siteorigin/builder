@@ -222,7 +222,7 @@ export class DevServer {
 }
 
 /** How long a build may take, and how long a build that reported an error may still finish on its own. */
-export const BUILD_LIMITS = { timeoutMs: 10 * 60_000, errorGraceMs: 5_000 };
+export const BUILD_LIMITS = { timeoutMs: 10 * 60_000, errorGraceMs: 5_000, exitWaitMs: 3_000 };
 
 /**
  * Run a production build of the project in a one-shot worker. It always settles: on the build's result, the
@@ -232,13 +232,21 @@ export function buildProject(dir: string): Promise<{ ok: boolean; error?: string
   return new Promise((resolve) => {
     const proc = utilityProcess.fork(workerPath(), [], { cwd: dir, env: projectEnv({ NODE_ENV: 'production' }), serviceName: 'SiteOrigin project build', stdio: 'pipe' });
     let done = false;
+    let exited = false;
+    const onExit: Array<() => void> = [];
     const errLines: string[] = [];
     const timers: NodeJS.Timeout[] = [];
+    /** Settle once the worker is gone (or has not left after a few seconds), so callers can clean up its folder. */
     const finish = (result: { ok: boolean; error?: string; logs: string[] }) => {
       if (done) return;
       done = true;
       for (const t of timers) clearTimeout(t);
-      resolve(result);
+      if (exited) return resolve(result);
+      const settle = setTimeout(() => resolve(result), BUILD_LIMITS.exitWaitMs);
+      onExit.push(() => {
+        clearTimeout(settle);
+        resolve(result);
+      });
       try {
         proc.kill();
       } catch {
@@ -255,7 +263,11 @@ export function buildProject(dir: string): Promise<{ ok: boolean; error?: string
         timers.push(setTimeout(() => finish({ ok: false, error: `The build stopped with an error: ${detail}`, logs: [] }), BUILD_LIMITS.errorGraceMs));
       }
     });
-    proc.on('exit', (code) => finish({ ok: false, error: `Build process exited (${code}). ${errLines.join('').slice(-800)}`, logs: [] }));
+    proc.on('exit', (code) => {
+      exited = true;
+      finish({ ok: false, error: `Build process exited (${code}). ${errLines.join('').slice(-800)}`, logs: [] });
+      for (const fn of onExit.splice(0)) fn();
+    });
     timers.push(setTimeout(() => finish({ ok: false, error: 'The build took too long and was stopped.', logs: [] }), BUILD_LIMITS.timeoutMs));
     proc.postMessage({ type: 'build', dir });
   });
