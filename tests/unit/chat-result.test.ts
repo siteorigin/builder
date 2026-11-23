@@ -20,9 +20,9 @@ describe('AI result card', () => {
   });
 
   it('still reads results stored before checks had a status from their wording', () => {
-    const r = checksOf({ validation: ['Fits the screen at phone width.', 'No horizontal overflow detected.', 'Content is wider than the screen at tablet width.', "Couldn't check the layout at desktop width.", '2 pre-existing issues remain.'] });
+    const r = checksOf({ validation: ['Fits the screen at phone width.', 'No horizontal overflow detected.', 'Content is wider than the screen at tablet width.', "Couldn't check the layout at desktop width.", '2 pre-existing issues remain.', 'Stopped at the limit of 40 tool calls before the request was finished.'] });
     expect(r.passes).toEqual(['Fits the screen at phone width.', 'No horizontal overflow detected.']);
-    expect(r.issues).toHaveLength(3);
+    expect(r.issues).toHaveLength(4);
     expect(r.unverified).toEqual([]);
   });
 

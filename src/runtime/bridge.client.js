@@ -496,8 +496,8 @@ function probe(url, deadline) {
  * the measuring frame missed it, not the site.
  */
 async function imageReport(deadline) {
-  // sources: the address each image was given (not the variant chosen) and its outcome, so the editor can
-  // tell a load that shows an image the page no longer has, and set its result aside.
+  // sources: the address each image was given (not the variant chosen), so the editor can tell a load that
+  // shows an image the page no longer has.
   const summary = { total: 0, loaded: 0, failed: 0, unverified: 0, failedFiles: [], sources: [] };
   const issues = [];
   const checks = [];
@@ -505,8 +505,7 @@ async function imageReport(deadline) {
     const url = img.currentSrc || img.getAttribute('src') || '';
     if (!url) continue;
     summary.total++;
-    const source = { path: imagePath(img.getAttribute('src') || url), outcome: 'loaded' };
-    if (summary.sources.length < 200) summary.sources.push(source);
+    if (summary.sources.length < 200) summary.sources.push(imagePath(img.getAttribute('src') || url));
     if (img.complete && img.naturalWidth > 0) {
       summary.loaded++;
       continue;
@@ -517,13 +516,11 @@ async function imageReport(deadline) {
         if (ok === true) summary.loaded++;
         else if (ok === false) {
           summary.failed++;
-          source.outcome = 'failed';
           if (summary.failedFiles.length < 10) summary.failedFiles.push(path.slice(path.lastIndexOf('/') + 1) || path);
-          issues.push({ kind: 'broken-image', source: source.path, message: `Image ${path} failed to load.` });
+          issues.push({ kind: 'broken-image', message: `Image ${path} failed to load.` });
         } else {
           summary.unverified++;
-          source.outcome = 'unverified';
-          issues.push({ kind: 'image-unverified', source: source.path, message: `Image ${path} was still loading when the check ran out of time, so it could not be checked. This is not a problem with the site.` });
+          issues.push({ kind: 'image-unverified', message: `Image ${path} was still loading when the check ran out of time, so it could not be checked. This is not a problem with the site.` });
         }
       })
     );

@@ -2,32 +2,25 @@
 import type { ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 
-type Outcome = 'loaded' | 'failed' | 'unverified';
-interface Source {
-  path: string;
-  outcome: Outcome;
-}
-interface Images {
-  total: number;
-  loaded: number;
-  failed: number;
-  unverified: number;
-  failedFiles?: string[];
-  sources?: unknown;
-}
 interface Report {
   error?: unknown;
   sections?: unknown;
-  images?: Images;
-  issues?: Array<{ kind?: string; source?: string }>;
+  images?: { failed?: unknown; sources?: unknown };
 }
 
-const sourcesOf = (r: Report | null): Source[] | null => (Array.isArray(r?.images?.sources) ? (r.images.sources as unknown[]).filter((s): s is Source => !!s && typeof (s as Source).path === 'string') : null);
+/** The bridge lists at most this many image addresses; a longer page cannot be compared image by image. */
+const MAX_SOURCES = 200;
+
+/** The address each image on the measured load was given, or null when the load cannot be compared. */
+function sourcesOf(r: Report | null): string[] | null {
+  const list = r && !r.error && Array.isArray(r.images?.sources) ? (r.images.sources as unknown[]).filter((s): s is string => typeof s === 'string') : null;
+  return list && list.length < MAX_SOURCES ? list : null;
+}
 const fileOf = (state: ProjectState, assetId: string) => {
   const asset = Object.hasOwn(state.assets.assets, assetId) ? state.assets.assets[assetId] : undefined;
   return asset ? '/' + asset.file.replace(/^static\//, '') : null;
 };
-const shows = (sources: Source[], path: string) => sources.some((s) => s.path === path || s.path.endsWith(path));
+const shows = (sources: string[], path: string) => sources.some((s) => s === path || s.endsWith(path));
 
 /** Top-level sections of the page that the measured load did not render. */
 export function missingSections(state: ProjectState | undefined, pageId: string, report: unknown): string[] {
@@ -53,7 +46,7 @@ export function missingImages(state: ProjectState | undefined, pageId: string, r
   const r = report as Report | null;
   const page = state?.pages[pageId];
   const sources = sourcesOf(r);
-  if (!r || r.error || !sources || !page || !state) return [];
+  if (!sources || !page || !state) return [];
   const out: string[] = [];
   for (const node of Object.values(page.nodes)) {
     if (node.kind !== 'image' || isBinding(node.image) || !node.image.assetId) continue;
@@ -87,48 +80,18 @@ function usedImageFiles(state: ProjectState, pageId: string): Set<string> {
 
 /**
  * Library images the measured load showed that the page no longer uses: the preview served the page before it
- * caught up with an image change, so their results describe an image that is not there any more. Files that
- * are not in the library (the site's own static files) are left alone.
+ * caught up with an image change. Files that are not in the library (the site's own static files) are left alone.
  */
 export function staleImages(state: ProjectState | undefined, pageId: string, report: unknown): string[] {
   const r = report as Report | null;
   const sources = sourcesOf(r);
-  if (!r || r.error || !sources || !state?.pages[pageId]) return [];
+  if (!sources || !state?.pages[pageId]) return [];
   const library = new Set(Object.values(state.assets.assets).map((a) => '/' + a.file.replace(/^static\//, '')));
   const used = usedImageFiles(state, pageId);
   const out: string[] = [];
   for (const s of sources) {
-    const path = [...library].find((p) => s.path === p || s.path.endsWith(p));
-    if (path && !used.has(path) && !out.includes(s.path)) out.push(s.path);
+    const path = [...library].find((p) => s === p || s.endsWith(p));
+    if (path && !used.has(path) && !out.includes(s)) out.push(s);
   }
   return out;
-}
-
-/**
- * The report with the image results that cannot speak for the page set right: results for `stale` images (the
- * page no longer shows them) are dropped, and each `missing` image (the load never showed it) counts as one that
- * could not be checked.
- */
-export function withUnconfirmedImages(report: unknown, missing: string[], stale: string[] = []): unknown {
-  const r = report as Report | null;
-  if ((!missing.length && !stale.length) || !r || typeof r !== 'object' || !r.images) return report;
-  const images = { ...r.images };
-  const gone = new Set(stale);
-  for (const s of sourcesOf(r) ?? []) {
-    if (!gone.has(s.path)) continue;
-    images.total--;
-    images[s.outcome]--;
-  }
-  const staleFiles = new Set(stale.map((p) => p.slice(p.lastIndexOf('/') + 1)));
-  if (images.failedFiles) images.failedFiles = images.failedFiles.filter((f) => !staleFiles.has(f));
-  images.total += missing.length;
-  images.unverified += missing.length;
-  return {
-    ...r,
-    images,
-    issues: [
-      ...(r.issues ?? []).filter((i) => !(i.source && gone.has(i.source))),
-      ...missing.map((p) => ({ kind: 'image-unverified', message: `The preview had not caught up with the change to image ${p}, so it could not be checked. This is not a problem with the site.` }))
-    ]
-  };
 }

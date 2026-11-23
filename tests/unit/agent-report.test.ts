@@ -177,6 +177,8 @@ describe('check results', () => {
     // The measured widths decide fit even when the capped issue list kept no overflow entry.
     const wide = { pageId: 'p', viewport: 'phone', report: { issues: Array(40).fill({ kind: 'broken-image' }), documentWidth: 600, viewportWidth: 390 } };
     expect(inspectionChecks(true, wide)[0]).toEqual({ status: 'issue', text: 'Content is wider than the screen at phone width.' });
+    // A pixel of rounding is not overflow.
+    expect(inspectionChecks(true, { ...wide, report: { issues: [], documentWidth: 391, viewportWidth: 390 } })[0].status).toBe('pass');
     // Reports from before images were counted still surface a broken image.
     expect(inspectionChecks(true, ok(undefined, [{ kind: 'broken-image', message: 'x' }]))[1]).toMatchObject({ status: 'issue' });
     // No images: no image line, and no pass claimed for images that are not there.
