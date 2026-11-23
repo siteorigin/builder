@@ -28,6 +28,17 @@ describe('project session', () => {
     expect(JSON.parse(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')).name).toBe('Persist');
   });
 
+  it('undoes definition and token operations like any other edit', async () => {
+    const { s } = await make();
+    const r = await s.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Teal', value: '#008080' }] }, { label: 'Add style' });
+    expect(r.ok).toBe(true);
+    expect(s.state.tokens.custom).toHaveLength(1);
+    await s.undo();
+    expect(s.state.tokens.custom).toHaveLength(0);
+    await s.redo();
+    expect(s.state.tokens.custom[0].id).toBe('color.custom-teal');
+  });
+
   it('rejects stale revisions', async () => {
     const { s } = await make();
     const r = await s.apply({ expectedRevision: 42, operations: [{ type: 'site.update', name: 'x' }] }, { label: 'x' });

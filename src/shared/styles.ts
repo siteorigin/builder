@@ -42,13 +42,13 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'wrap', label: 'Wrap', group: 'layout', kind: 'boolean' },
   { id: 'gap', label: 'Gap', group: 'layout', kind: 'length', tokenGroup: 'space', placeholder: '24px' },
   { id: 'paddingBlock', label: 'Vertical padding', description: 'Space inside, above and below the content.', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '64px' },
-  { id: 'paddingInline', label: 'Side padding', description: 'Space inside, left and right of the content.', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '24px' },
+  { id: 'paddingInline', label: 'Side padding', description: 'Space inside, left and right of the content.', group: 'spacing', kind: 'length', tokenGroup: ['space', 'container'], placeholder: '24px' },
   { id: 'marginBlockStart', label: 'Space above', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '0' },
   { id: 'marginBlockEnd', label: 'Space below', group: 'spacing', kind: 'length', tokenGroup: 'space', placeholder: '0' },
   { id: 'width', label: 'Width', group: 'size', kind: 'length', options: [
     { value: 'fill', label: 'Fill' }, { value: 'fit', label: 'Fit content' }, { value: 'auto', label: 'Auto' }
   ], placeholder: 'fill' },
-  { id: 'maxWidth', label: 'Max width', group: 'size', kind: 'length', tokenGroup: 'container', placeholder: '1200px' },
+  { id: 'maxWidth', label: 'Max width', group: 'size', kind: 'length', tokenGroup: ['container', 'space'], placeholder: '1200px' },
   { id: 'minHeight', label: 'Min height', group: 'size', kind: 'length', placeholder: '0' },
   { id: 'marginInline', label: 'Placement', description: 'Where it sits horizontally when narrower than its container.', group: 'size', kind: 'enum', options: [
     { value: 'auto', label: 'Centered' }, { value: '0', label: 'Start' }
@@ -82,6 +82,26 @@ export const STYLE_PROPS: StylePropDef[] = [
 ];
 
 export const STYLE_PROP_MAP: Record<string, StylePropDef> = Object.fromEntries(STYLE_PROPS.map((p) => [p.id, p]));
+
+/** The style properties that do something on a node of this kind; undefined offers all of them. */
+export function styleSetFor(node: { kind: string }): string[] | undefined {
+  const spacing = ['marginBlockStart', 'marginBlockEnd', 'paddingBlock', 'paddingInline'];
+  const appearance = ['color', 'background', 'border', 'radius', 'shadow', 'opacity', 'hidden'];
+  switch (node.kind) {
+    case 'text':
+      return ['textStyle', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textAlign', 'maxWidth', ...spacing, ...appearance];
+    case 'image':
+      return ['width', 'maxWidth', 'aspectRatio', 'objectFit', 'radius', 'shadow', 'marginBlockStart', 'marginBlockEnd', 'opacity', 'hidden'];
+    case 'link':
+      return ['width', 'marginBlockStart', 'marginBlockEnd', 'color', 'background', 'radius', 'hidden'];
+    case 'icon':
+      return ['color', 'fontSize', 'background', 'radius', 'hidden'];
+    case 'element':
+      return ['layout', 'columns', 'align', 'justify', 'wrap', 'gap', 'order', ...spacing, 'width', 'maxWidth', 'minHeight', 'marginInline', 'textAlign', 'color', 'background', 'border', 'radius', 'shadow', 'opacity', 'hidden'];
+    default:
+      return undefined;
+  }
+}
 
 export const STYLE_GROUP_LABELS: Record<StylePropDef['group'], string> = {
   layout: 'Layout',

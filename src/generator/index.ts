@@ -246,32 +246,45 @@ export function pageNodeClass(nodeId: string): string {
   return `so-n-${nodeId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
 
+/**
+ * A managed definition's node, nested-override and variant rules. `standalone` emits them for a component's own
+ * <style> block: selectors are global (the class prefix already makes them unique, and parts rendered by child
+ * components must match). Specificity matches components.css, so variant rules still beat node rules at every
+ * range; site.css gives code-component overrides one more class so they win wherever this stylesheet lands.
+ */
+function definitionRules(state: ProjectState, def: ComponentDefinition, standalone = false): RuleSet {
+  const rules = newRules();
+  if (!def.tree) return rules;
+  const wrap = (sel: string) => (standalone ? `:global(${sel})` : sel);
+  for (const id of Object.keys(def.tree.nodes).sort()) {
+    const n = def.tree.nodes[id];
+    addRules(rules, wrap(`.${nodeClass(def, id)}`), n.styles);
+    if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, n, `.${nodeClass(def, id)}`, wrap);
+  }
+  for (const vid of Object.keys(def.variants ?? {}).sort()) {
+    const v = def.variants![vid];
+    const vc = `.so-${defKey(def.id)}--${vid}`;
+    for (const nid of Object.keys(v.styles ?? {}).sort()) {
+      const rootId = def.tree.rootIds[0];
+      const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `${vc} .${nodeClass(def, nid)}`;
+      addRules(rules, wrap(sel), v.styles![nid]);
+    }
+  }
+  return rules;
+}
+
 export function generateComponentsCss(state: ProjectState): string {
   const parts: string[] = ['/* Component definition styles. Generated from siteorigin/components. */'];
   for (const def of sortedDefs(state)) {
     if (def.kind !== 'managed' || !def.tree) continue;
-    const rules = newRules();
-    for (const id of Object.keys(def.tree.nodes).sort()) {
-      const n = def.tree.nodes[id];
-      addRules(rules, `.${nodeClass(def, id)}`, n.styles);
-      if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, n, `.${nodeClass(def, id)}`);
-    }
-    for (const vid of Object.keys(def.variants ?? {}).sort()) {
-      const v = def.variants![vid];
-      for (const nid of Object.keys(v.styles ?? {}).sort()) {
-        const rootId = def.tree.rootIds[0];
-        const sel = nid === rootId ? `.so-${defKey(def.id)}--${vid}.${nodeClass(def, nid)}` : `.so-${defKey(def.id)}--${vid} .${nodeClass(def, nid)}`;
-        addRules(rules, sel, v.styles![nid]);
-      }
-    }
-    const css = emitRules(rules);
+    const css = emitRules(definitionRules(state, def));
     if (css) parts.push(`/* ${def.name} (${def.id}) */\n${css}`);
   }
   return parts.join('\n\n') + '\n';
 }
 
 /** Overrides set on an instance that sits inside a definition use descendant selectors from the nested instance root. */
-function addOverrideRules(rules: RuleSet, state: ProjectState, inst: InstanceNode, rootSelector: string) {
+function addOverrideRules(rules: RuleSet, state: ProjectState, inst: InstanceNode, rootSelector: string, wrap = (sel: string) => sel) {
   const def = state.components[inst.definitionId];
   if (!def) return;
   for (const partId of Object.keys(inst.overrides ?? {}).sort()) {
@@ -279,10 +292,12 @@ function addOverrideRules(rules: RuleSet, state: ProjectState, inst: InstanceNod
     // Inside a definition only a code component's root is reachable (through its class); its inner parts
     // take override classes only from a page.
     if (def.kind === 'code' && partId !== 'root') continue;
+    // An override for a part the definition no longer declares styles nothing.
+    if (partId !== 'root' && !part) continue;
     // Doubled root selector: nested overrides must beat the nested definition's variant rules.
     const isRoot = partId === 'root' || !part || part.nodeId === def.tree?.rootIds[0];
     const sel = isRoot ? `${rootSelector}${rootSelector}${rootSelector}` : `${rootSelector}${rootSelector} .${nodeClass(def, part.nodeId)}`;
-    addRules(rules, sel, inst.overrides![partId]);
+    addRules(rules, wrap(sel), inst.overrides![partId]);
   }
 }
 
@@ -577,6 +592,17 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
     HEADER_NOTE(`siteorigin/components/${def.id}/component.json`) +
     `<script>\n${imports ? imports + '\n\n' : ''}\tlet {\n${propDecls.join('\n')}\n\t} = $props();\n</script>\n\n${markup}\n`
   );
+}
+
+/**
+ * A managed definition as one self-contained Svelte file: its markup plus a <style> block with every node,
+ * responsive, nested-override and variant rule, under the definition's own class names. Used to convert a copy
+ * to code, so the result keeps its appearance without the original definition's stylesheet.
+ */
+export function generateStandaloneComponent(state: ProjectState, def: ComponentDefinition): string {
+  const body = generateManagedComponent(state, def, { instrument: false });
+  const css = emitRules(definitionRules(state, def, true));
+  return css ? `${body}\n<style>\n${indentBlock(css)}\n</style>\n` : body;
 }
 
 // ---------------------------------------------------------------------------

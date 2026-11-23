@@ -15,6 +15,7 @@ const owner = z
 
 const scope = z.enum(['base', 'phone', 'tablet', 'desktop']).describe('Responsive scope. "base" applies at all sizes.');
 const styleValue = z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() })]);
+const binding = z.union([z.object({ $prop: z.string() }), z.object({ $item: z.string() })]);
 const link = z.object({
   type: z.enum(['none', 'page', 'url', 'email', 'tel', 'anchor']),
   target: z.string().describe('Page ID for page links, https URL, email address, phone number or anchor ID.'),
@@ -40,7 +41,8 @@ export const OPERATION_SCHEMAS = {
     seoTitle: z.string().max(120).optional(),
     description: z.string().max(320).optional(),
     noindex: z.boolean().optional(),
-    shell: z.enum(['default', 'none']).optional()
+    shell: z.enum(['default', 'none']).optional(),
+    socialImage: z.string().nullable().optional().describe('Asset ID of the social sharing image; null uses the site image.')
   }),
   'page.duplicate': z.object({ type: z.literal('page.duplicate'), pageId: z.string(), title: z.string().optional() }),
   'page.reorder': z.object({ type: z.literal('page.reorder'), pageIds: z.array(z.string()) }),
@@ -59,7 +61,8 @@ export const OPERATION_SCHEMAS = {
     index: z.number().int().min(0).optional().describe('Position among siblings. Defaults to the end.'),
     componentId: z.string().optional().describe('Catalogue component ID such as "features.grid".'),
     definitionId: z.string().optional().describe('An installed project component definition ID.'),
-    primitive: z.enum(['container', 'stack', 'row', 'grid', 'heading', 'paragraph', 'image', 'button', 'icon', 'divider']).optional(),
+    primitive: z.enum(['container', 'stack', 'row', 'grid', 'heading', 'paragraph', 'richtext', 'image', 'button', 'icon', 'divider', 'slot', 'repeat']).optional(),
+    bind: z.string().optional().describe('Component definitions only: the list property a "repeat" repeats, or the declared slot a "slot" renders.'),
     props: z.record(z.string(), z.unknown()).optional().describe('Initial property values for a component.'),
     variant: z.string().optional(),
     text: z.string().optional().describe('Initial text for heading, paragraph or button primitives.')
@@ -91,6 +94,7 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     partId: z.string().optional().describe('For component instances: the public part to style. Defaults to "root".'),
+    variant: z.string().optional().describe('Component definitions only: set the rule for this variant.'),
     scope,
     property: z.string().describe('Style property ID, e.g. paddingBlock, background, textStyle, gap, columns.'),
     value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. null removes the override.')
@@ -100,6 +104,7 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     partId: z.string().optional(),
+    variant: z.string().optional(),
     scope: scope.optional()
   }),
   'node.setContent': z.object({
@@ -108,6 +113,14 @@ export const OPERATION_SCHEMAS = {
     nodeId: z.string(),
     field: z.enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'tag', 'anchor']),
     value: z.unknown()
+  }),
+  'node.setBinding': z.object({
+    type: z.literal('node.setBinding'),
+    owner,
+    nodeId: z.string(),
+    field: z.enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'when', 'unless', 'list', 'prop']),
+    prop: z.string().optional().describe('For field "prop": the nested instance property to bind.'),
+    binding: binding.nullable().describe('{"$prop": name} or {"$item": field}; null unbinds, keeping the current default.')
   }),
   'instance.setProp': z.object({
     type: z.literal('instance.setProp'),
@@ -135,6 +148,21 @@ export const OPERATION_SCHEMAS = {
     tokenId: z.string(),
     value: z.unknown().nullable().describe('New value, or null to use the theme default.')
   }),
+  'token.create': z.object({
+    type: z.literal('token.create'),
+    group: z.enum(['color', 'font', 'text', 'space', 'container', 'radius', 'shadow', 'border']),
+    label: z.string().min(1).max(60),
+    value: z.unknown(),
+    description: z.string().max(200).optional()
+  }),
+  'token.rename': z.object({ type: z.literal('token.rename'), tokenId: z.string(), label: z.string().min(1).max(60), description: z.string().max(200).optional() }),
+  'token.remove': z.object({
+    type: z.literal('token.remove'),
+    tokenId: z.string(),
+    replacementTokenId: z.string().optional().describe('Uses are pointed here.'),
+    detach: z.boolean().optional().describe('Uses keep the current value as a literal.')
+  }),
+  'token.replace': z.object({ type: z.literal('token.replace'), tokenId: z.string(), withTokenId: z.string() }),
   'site.update': z.object({
     type: z.literal('site.update'),
     name: z.string().min(1).max(80).optional(),
@@ -156,14 +184,45 @@ export const OPERATION_SCHEMAS = {
     name: z.string().min(1).max(60),
     description: z.string().max(300).optional(),
     source: z.string().max(60000),
-    properties: z.record(z.string(), z.unknown()).optional().describe('Property schema: { propName: { type, label, default } }.')
+    properties: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe('Property schema: { propName: { type, label, default } }. Types: string, richtext, number, boolean, enum (options), link, image, icon, list (itemLabel, fields).')
   }),
   'component.updateSource': z.object({
     type: z.literal('component.updateSource'),
     definitionId: z.string(),
     source: z.string().max(60000),
-    expectedHash: z.string().optional()
+    expectedHash: z.string().optional(),
+    properties: z.record(z.string(), z.unknown()).optional().describe('Replaces the whole property schema.')
   }),
+  'component.remove': z.object({ type: z.literal('component.remove'), definitionId: z.string() }),
+  'component.setPropSchema': z.object({
+    type: z.literal('component.setPropSchema'),
+    definitionId: z.string(),
+    prop: z.string(),
+    schema: z.record(z.string(), z.unknown()).describe('{ type, label, default, ... } as in component.createCode.')
+  }),
+  'component.removePropSchema': z.object({ type: z.literal('component.removePropSchema'), definitionId: z.string(), prop: z.string() }),
+  'component.setPart': z.object({
+    type: z.literal('component.setPart'),
+    definitionId: z.string(),
+    partId: z.string(),
+    nodeId: z.string(),
+    label: z.string().min(1).max(60),
+    styleControls: z.array(z.string()).optional()
+  }),
+  'component.removePart': z.object({ type: z.literal('component.removePart'), definitionId: z.string(), partId: z.string() }),
+  'component.setVariant': z.object({
+    type: z.literal('component.setVariant'),
+    definitionId: z.string(),
+    variant: z.string(),
+    label: z.string().min(1).max(60),
+    makeDefault: z.boolean().optional()
+  }),
+  'component.removeVariant': z.object({ type: z.literal('component.removeVariant'), definitionId: z.string(), variant: z.string() }),
+  'component.setSlot': z.object({ type: z.literal('component.setSlot'), definitionId: z.string(), slot: z.string(), label: z.string().min(1).max(60) }),
+  'component.removeSlot': z.object({ type: z.literal('component.removeSlot'), definitionId: z.string(), slot: z.string() }),
 
   'theme.apply': z.object({ type: z.literal('theme.apply'), themeId: z.string() }),
 
@@ -216,7 +275,7 @@ export interface ApplyResult {
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Fields whose string values are used as lookup keys. Content (text, labels) may contain any words. */
-const KEY_FIELDS = /(^id$|Id$|^prop$|^field$|^property$|^variant$|^slot$|^parentId$)/;
+const KEY_FIELDS = /(^id$|Id$|^prop$|^field$|^property$|^variant$|^slot$|^parentId$|^bind$|^\$prop$|^\$item$)/;
 function hasForbidden(v: unknown, depth = 0): boolean {
   if (depth > 12) return true;
   if (Array.isArray(v)) return v.some((x) => hasForbidden(x, depth + 1));

@@ -10,18 +10,38 @@ import type {
   PropSchema,
   ResponsiveScope,
   StyleValue,
+  TokenDef,
   TokenValue
 } from '@shared/types';
+import type { Binding } from '@shared/types';
 import { SCHEMA_VERSION, isBinding } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
-import { STYLE_PROP_MAP, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { getTheme, listThemes } from '@catalogue/index';
-import { effectiveTokens, generateManagedComponent, CUSTOM_DIR } from '@generator/index';
-import { EngineError, fail, findParent, getNode, getTree, headerMenu, instancesOf, subtreeIds, allTrees } from './tree';
-import { clone, freshListIds, installComponent, makeInstance } from './install';
+import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
+import { EngineError, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, subtreeIds, allTrees } from './tree';
+import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp } from './values';
+import { enclosingList, normalizeProperties } from './schema';
+import { forEachTokenRef, tokenUsageCounts } from './tokens';
+import {
+  componentRemove,
+  dependentsOf,
+  directDependencies,
+  dropPartOverrides,
+  nodeSetBinding,
+  removePart,
+  removePropSchema,
+  removeSlot,
+  removeVariant,
+  replaceProperties,
+  setPart,
+  setPropSchema,
+  setSlot,
+  setVariant
+} from './definitions';
 
 export type OpResult = Record<string, unknown>;
 
@@ -59,7 +79,11 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
       // In definition editing, parts and variant rules for removed elements go with them.
       if (op.owner.kind === 'component') {
         const def = state.components[op.owner.id];
-        for (const [pid, part] of Object.entries(def.parts)) if (pid !== 'root' && removed.has(part.nodeId)) delete def.parts[pid];
+        for (const [pid, part] of Object.entries(def.parts))
+          if (pid !== 'root' && removed.has(part.nodeId)) {
+            delete def.parts[pid];
+            dropPartOverrides(state, def.id, pid);
+          }
         for (const v of Object.values(def.variants ?? {})) for (const nid of Object.keys(v.styles ?? {})) if (removed.has(nid)) delete v.styles![nid];
       }
       return {};
@@ -82,6 +106,8 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
       return nodeResetStyles(state, op);
     case 'node.setContent':
       return nodeSetContent(state, op);
+    case 'node.setBinding':
+      return nodeSetBinding(state, op);
     case 'instance.setProp':
       return instanceSetProp(state, op);
     case 'instance.listInsert':
@@ -106,12 +132,27 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
     }
     case 'instance.setVariant': {
       const { node, def } = instanceTarget(state, op.owner, op.nodeId);
-      if (!def.variants?.[op.variant]) fail(`"${def.name}" has no variant "${op.variant}". Variants: ${Object.keys(def.variants ?? {}).join(', ') || 'none'}.`);
+      if (!own(def.variants ?? {}, op.variant)) fail(`"${def.name}" has no variant "${op.variant}". Variants: ${Object.keys(def.variants ?? {}).join(', ') || 'none'}.`);
       node.variant = op.variant;
       return {};
     }
     case 'token.set':
       return tokenSet(state, op);
+    case 'token.create':
+      return tokenCreate(state, op);
+    case 'token.rename': {
+      const t = customToken(state, op.tokenId);
+      t.label = op.label.trim();
+      if (op.description !== undefined) {
+        if (op.description.trim()) t.description = op.description.trim();
+        else delete t.description;
+      }
+      return {};
+    }
+    case 'token.remove':
+      return tokenRemove(state, op);
+    case 'token.replace':
+      return tokenReplace(state, op.tokenId, op.withTokenId);
     case 'site.update':
       return siteUpdate(state, op);
     case 'component.createFromNode':
@@ -141,9 +182,28 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
       const def = projectDef(state, op.definitionId);
       if (def.kind !== 'code') fail(`"${def.name}" is a managed component. Convert a copy to code before editing source.`);
       if (op.expectedHash && op.expectedHash !== sourceHash(def.source ?? '')) throw new EngineError('CONFLICT', 'The source changed since it was read. Read it again before patching.');
+      if (op.properties) replaceProperties(state, def, op.properties);
       def.source = op.source;
       return { hash: sourceHash(op.source) };
     }
+    case 'component.remove':
+      return componentRemove(state, op);
+    case 'component.setPropSchema':
+      return setPropSchema(state, op);
+    case 'component.removePropSchema':
+      return removePropSchema(state, op);
+    case 'component.setPart':
+      return setPart(state, op);
+    case 'component.removePart':
+      return removePart(state, op);
+    case 'component.setVariant':
+      return setVariant(state, op);
+    case 'component.removeVariant':
+      return removeVariant(state, op);
+    case 'component.setSlot':
+      return setSlot(state, op);
+    case 'component.removeSlot':
+      return removeSlot(state, op);
     case 'theme.apply':
       return themeApply(state, op.themeId);
     case 'asset.add': {
@@ -225,6 +285,7 @@ function listTarget(state: ProjectState, owner: OwnerRef, nodeId: string, prop: 
   const schema = def.properties[prop];
   if (!schema) fail(`"${def.name}" has no property "${prop}".`);
   if (schema.type !== 'list') fail(`"${prop}" is not a list property.`);
+  if (isBinding(node.props[prop])) fail(`${schema.label} comes from the enclosing component's own property; edit its items there.`);
   if (!Array.isArray(node.props[prop])) node.props[prop] = clone(schema.default);
   return { node, def, schema };
 }
@@ -336,6 +397,11 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
   if (op.description !== undefined) page.seo.description = op.description || undefined;
   if (op.noindex !== undefined) page.seo.noindex = op.noindex || undefined;
   if (op.shell !== undefined) page.shell = op.shell;
+  if (op.socialImage !== undefined) {
+    if (op.socialImage && own(state.assets.assets, op.socialImage)?.kind !== 'image') fail('Social image asset not found.');
+    if (op.socialImage) page.seo.socialImage = op.socialImage;
+    else delete page.seo.socialImage;
+  }
   return { route: page.route };
 }
 
@@ -425,6 +491,11 @@ function primitiveNode(kind: NonNullable<Op<'node.insert'>['primitive']>, text?:
       return [{ id, kind: 'text', tag: 'h2', text: text ?? 'New heading', styles: { base: { textStyle: space('text.h2') } } }];
     case 'paragraph':
       return [{ id, kind: 'text', tag: 'p', text: text ?? 'Write something here.', styles: { base: { textStyle: space('text.body') } } }];
+    case 'richtext':
+      return [{ id, kind: 'text', tag: 'div', rich: true, text: (text ?? 'Write something here.').split(/\n{2,}|\n/).map((s) => s.trim()).filter(Boolean), styles: { base: { textStyle: space('text.body') } } }];
+    case 'slot':
+    case 'repeat':
+      fail(`A ${kind} needs a component definition and "bind".`);
     case 'image':
       return [{ id, kind: 'image', image: { assetId: null, alt: '' }, styles: { base: { radius: space('radius.md') } } }];
     case 'button':
@@ -439,7 +510,7 @@ function primitiveNode(kind: NonNullable<Op<'node.insert'>['primitive']>, text?:
 function insertionList(tree: NodeTree, parentId: string | null | undefined, slot: string | undefined, state: ProjectState): string[] {
   if (!parentId) return tree.rootIds;
   const parent = getNode(tree, parentId);
-  if (parent.kind === 'element') {
+  if (parent.kind === 'element' || parent.kind === 'repeat') {
     if (slot) fail('Elements do not have slots.');
     return parent.children;
   }
@@ -460,7 +531,9 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   const tree = editableTree(state, op.owner);
   const list = insertionList(tree, op.parentId, op.slot, state);
   let nodes: GraphNode[];
-  if (op.primitive) {
+  if (op.primitive === 'slot' || op.primitive === 'repeat') {
+    nodes = [structuralNode(state, op.owner, op.primitive, op.bind)];
+  } else if (op.primitive) {
     nodes = primitiveNode(op.primitive, op.text);
   } else {
     let def: ComponentDefinition;
@@ -479,13 +552,28 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
         inst.props[k] = normalizeProp(schema, v, state, `${def.name} → ${schema.label}`);
       }
     }
-    if (op.variant && !def.variants?.[op.variant]) fail(`"${def.name}" has no variant "${op.variant}".`);
+    if (op.variant && !own(def.variants ?? {}, op.variant)) fail(`"${def.name}" has no variant "${op.variant}".`);
     nodes = [inst];
   }
   for (const n of nodes) tree.nodes[n.id] = n;
   const index = op.index === undefined ? list.length : Math.min(op.index, list.length);
   list.splice(index, 0, nodes[0].id);
   return { nodeId: nodes[0].id };
+}
+
+/** Slots and repeats belong to component definitions: a slot renders a declared slot, a repeat a list property. */
+function structuralNode(state: ProjectState, owner: OwnerRef, kind: 'slot' | 'repeat', bind: string | undefined): GraphNode {
+  if (owner.kind !== 'component') fail(`A ${kind} can only be added while editing a component definition.`);
+  const def = state.components[owner.id];
+  if (!bind) fail(kind === 'slot' ? 'Name the slot to render with "bind".' : 'Name the list property to repeat with "bind".');
+  if (kind === 'slot') {
+    if (!own(def.slots ?? {}, bind)) fail(`"${def.name}" has no slot "${bind}". Declare it with component.setSlot first.`);
+    if (Object.values(def.tree!.nodes).some((n) => n.kind === 'slot' && n.slot === bind)) fail(`The "${bind}" slot is already placed in this design.`);
+    return { id: newId('n'), kind: 'slot', slot: bind };
+  }
+  const schema = own(def.properties, bind);
+  if (schema?.type !== 'list') fail(`"${bind}" is not a list property of "${def.name}".`);
+  return { id: newId('n'), kind: 'repeat', list: { $prop: bind }, children: [], styles: { base: { layout: 'stack', gap: { token: 'space.md' } } } };
 }
 
 function dependsOn(state: ProjectState, defId: string, targetId: string, seen = new Set<string>()): boolean {
@@ -589,16 +677,38 @@ function checkTokenRef(state: ProjectState, value: StyleValue) {
   }
 }
 
+/** Style rules a definition's variant sets on one of its nodes. */
+function variantStyles(state: ProjectState, owner: OwnerRef, nodeId: string, variant: string, partId?: string) {
+  if (owner.kind !== 'component') fail('Variants belong to component definitions. Edit the component to style a variant.');
+  const tree = editableTree(state, owner);
+  const node = getNode(tree, nodeId);
+  if (partId) fail('partId does not apply to variant rules; target the node itself.');
+  if (node.kind === 'repeat' || node.kind === 'slot') fail('Repeats and slots render no element of their own; style an element inside them.');
+  if (tree.rootIds.indexOf(nodeId) > 0) fail('Only the first top-level element carries the variant; style an element inside it.');
+  const def = state.components[owner.id];
+  const v = own(def.variants ?? {}, variant) ?? fail(`"${def.name}" has no variant "${variant}". Variants: ${Object.keys(def.variants ?? {}).join(', ') || 'none'}.`);
+  v.styles ??= {};
+  return v;
+}
+
 function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
   const tree = editableTree(state, op.owner);
   const node = getNode(tree, op.nodeId);
-  if (!STYLE_PROP_MAP[op.property]) fail(`Unknown style property "${op.property}". Valid: ${Object.keys(STYLE_PROP_MAP).join(', ')}.`);
+  if (!own(STYLE_PROP_MAP, op.property)) fail(`Unknown style property "${op.property}". Valid: ${Object.keys(STYLE_PROP_MAP).join(', ')}.`);
   if (op.value !== null) {
     const err = validateStyleValue(op.property, op.value);
     if (err) fail(err);
     checkTokenRef(state, op.value);
   }
   const scope = op.scope as ResponsiveScope;
+  if (op.variant !== undefined) {
+    const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId);
+    v.styles![op.nodeId] ??= {};
+    setStyle(v.styles![op.nodeId] as Record<string, Record<string, StyleValue>>, scope, op.property, op.value);
+    if (!Object.keys(v.styles![op.nodeId]).length) delete v.styles![op.nodeId];
+    if (!Object.keys(v.styles!).length) delete v.styles;
+    return {};
+  }
   let target: { styles?: Record<string, Record<string, StyleValue>> };
   if (node.kind === 'instance') {
     const def = state.components[node.definitionId] ?? fail('Missing definition.');
@@ -635,6 +745,14 @@ function setStyle(styles: Record<string, Record<string, StyleValue>>, scope: str
 
 function nodeResetStyles(state: ProjectState, op: Op<'node.resetStyles'>): OpResult {
   const node = getNode(editableTree(state, op.owner), op.nodeId);
+  if (op.variant !== undefined) {
+    const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId);
+    const rules = v.styles![op.nodeId];
+    if (rules && op.scope) delete rules[op.scope];
+    if (rules && (!op.scope || !Object.keys(rules).length)) delete v.styles![op.nodeId];
+    if (!Object.keys(v.styles!).length) delete v.styles;
+    return {};
+  }
   if (node.kind === 'instance') {
     if (!node.overrides) return {};
     const parts = op.partId ? [op.partId] : Object.keys(node.overrides);
@@ -662,9 +780,10 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
   const setBound = (field: unknown, schemaFix: (s: PropSchema) => unknown): boolean => {
     if (!isBinding(field)) return false;
     if (!def || !('$prop' in field)) fail('This content is bound to a repeated item; edit the list item instead.');
-    const schema = def.properties[field.$prop];
+    const schema = own(def.properties, field.$prop);
     if (!schema) fail(`Missing property ${field.$prop}.`);
-    (schema as { default: unknown }).default = schemaFix(schema);
+    // The default must still fit its schema (a number or choice can be bound to text).
+    (schema as { default: unknown }).default = normalizeProp(schema, schemaFix(schema), state, `${def.name} → ${schema.label}`);
     return true;
   };
   const v = op.value;
@@ -756,8 +875,8 @@ function listInsert(state: ProjectState, op: Op<'instance.listInsert'>): OpResul
   const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
   const list = [...(node.props[op.prop] as Array<{ id: string }>)];
   if (schema.max !== undefined && list.length >= schema.max) fail(`${schema.label} allows at most ${schema.max} items.`);
-  const template = list.length ? clone(list[list.length - 1]) : undefined;
-  const item = normalizeItem(schema, op.item ?? (template as Record<string, unknown>), state, schema.itemLabel);
+  // New items start from the schema's field defaults, never from another item's content.
+  const item = normalizeItem(schema, op.item, state, schema.itemLabel);
   item.id = newId('i');
   list.splice(op.index === undefined ? list.length : Math.min(op.index, list.length), 0, item);
   node.props[op.prop] = list;
@@ -784,7 +903,21 @@ function assertNoTokenCycles(state: ProjectState) {
 }
 
 function tokenSet(state: ProjectState, op: Op<'token.set'>): OpResult {
+  const v = op.value as Record<string, unknown> | null;
+  if (v && typeof v === 'object' && 'token' in v) {
+    // A reference is exactly { token } naming a style of the same kind.
+    const target = effectiveTokens(state).find((t) => t.id === v.token);
+    const self = effectiveTokens(state).find((t) => t.id === op.tokenId);
+    if (typeof v.token !== 'string' || Object.keys(v).length !== 1) fail('A site style reference must be { "token": "group.name" }.');
+    if (target && self && target.group !== self.group) fail(`"${self.label}" can only follow another ${self.group} style.`);
+  }
   const r = tokenSetInner(state, op);
+  // A custom style has no theme default to return to: its value is its own, not an override.
+  const custom = state.tokens.custom.find((t) => t.id === op.tokenId);
+  if (custom && Object.hasOwn(state.tokens.overrides, op.tokenId)) {
+    custom.value = state.tokens.overrides[op.tokenId];
+    delete state.tokens.overrides[op.tokenId];
+  }
   assertNoTokenCycles(state);
   return r;
 }
@@ -844,6 +977,101 @@ function tokenSetInner(state: ProjectState, op: Op<'token.set'>): OpResult {
   }
   state.tokens.overrides[op.tokenId] = v as TokenValue;
   return {};
+}
+
+function customToken(state: ProjectState, tokenId: string): TokenDef {
+  const t = state.tokens.custom.find((x) => x.id === tokenId);
+  if (t) return t;
+  if (getTheme(state.site.themeId).tokens.some((x) => x.id === tokenId)) fail(`"${tokenId}" belongs to the theme. Only your own site styles can be renamed or removed.`);
+  fail(`Token "${tokenId}" does not exist.`);
+}
+
+function tokenCreate(state: ProjectState, op: Op<'token.create'>): OpResult {
+  if (state.tokens.custom.length >= 200) fail('A project can have at most 200 custom site styles.');
+  if (op.value === null || op.value === undefined || op.value === '') fail('A new site style needs a value.');
+  if (op.group === 'text') {
+    const v = op.value as Record<string, unknown>;
+    const missing = ['family', 'size', 'lineHeight', 'weight', 'tracking'].filter((k) => !v || typeof v !== 'object' || v[k] === undefined || v[k] === '');
+    if (missing.length) fail(`A text style needs ${missing.join(', ')}.`);
+    // Only the text-style keys are kept, so nothing else can change how the style is generated.
+    op = { ...op, value: Object.fromEntries(['family', 'size', 'lineHeight', 'weight', 'tracking', 'transform'].filter((k) => v[k] !== undefined).map((k) => [k, v[k]])) };
+  }
+  // Custom IDs carry a "custom-" step so a later theme token can never take the same name.
+  const base = `${op.group}.custom-${slugify(op.label) || 'style'}`;
+  const taken = new Set(effectiveTokens(state).map((t) => t.id));
+  let id = base;
+  for (let i = 2; taken.has(id); i++) id = `${base}-${i}`;
+  const def: TokenDef = { id, label: op.label.trim(), group: op.group, value: op.value as TokenValue };
+  if (op.description?.trim()) def.description = op.description.trim();
+  state.tokens.custom.push(def);
+  // The value passes the same checks as token.set, which keeps it as the style's own value.
+  tokenSet(state, { type: 'token.set', tokenId: id, value: op.value });
+  return { tokenId: id };
+}
+
+/** A token's value with references followed, for turning its uses into explicit values. */
+/** Places CSS text names a token's variable: code component sources and literal style or token values. */
+function literalTokenUses(state: ProjectState, tokenId: string): string[] {
+  const re = new RegExp(`var\\(\\s*${tokenVar(tokenId).replace(/[-]/g, '\\-')}\\s*[,)]`);
+  const out = new Set<string>();
+  for (const d of Object.values(state.components)) if (d.owner === 'project' && d.kind === 'code' && d.source && re.test(d.source)) out.add(`the source of "${d.name}"`);
+  for (const t of allTrees(state)) {
+    if (t.owner.kind === 'component' && state.components[t.owner.id]?.owner !== 'project') continue;
+    const hit = (rs: unknown) => Object.values((rs ?? {}) as Record<string, Record<string, unknown>>).some((sc) => Object.values(sc ?? {}).some((x) => typeof x === 'string' && re.test(x)));
+    for (const n of Object.values(t.tree.nodes)) if (hit(n.styles) || (n.kind === 'instance' && Object.values(n.overrides ?? {}).some(hit))) out.add(t.label);
+  }
+  for (const [id, v] of [...Object.entries(state.tokens.overrides), ...state.tokens.custom.map((c) => [c.id, c.value] as const)])
+    if (id !== tokenId && typeof v === 'string' && re.test(v)) out.add(`the site style "${id}"`);
+  return [...out];
+}
+
+function resolvedTokenValue(state: ProjectState, tokenId: string): TokenValue | undefined {
+  const tokens = effectiveTokens(state);
+  let v = tokens.find((t) => t.id === tokenId)?.value;
+  const seen = new Set([tokenId]);
+  while (v && typeof v === 'object' && 'token' in v) {
+    const ref = (v as { token: string }).token;
+    if (seen.has(ref)) fail('That site style refers to itself in a loop.');
+    seen.add(ref);
+    v = tokens.find((t) => t.id === ref)?.value;
+  }
+  if (v === undefined) fail('That site style refers to a style that does not exist.');
+  return v;
+}
+
+function tokenRemove(state: ProjectState, op: Op<'token.remove'>): OpResult {
+  const t = customToken(state, op.tokenId);
+  const uses = tokenUsageCounts(state)[t.id] ?? 0;
+  // CSS text (code component sources, literal values) can name the variable; it cannot be rewritten safely.
+  const literal = literalTokenUses(state, t.id);
+  if (literal.length) fail(`"${t.label}" is written into ${literal.join(', ')}. Change those first.`);
+  if (op.replacementTokenId) tokenReplace(state, t.id, op.replacementTokenId);
+  else if (uses) {
+    if (!op.detach)
+      throw new EngineError('VALIDATION_FAILED', `"${t.label}" is used ${uses} time${uses === 1 ? '' : 's'}. Choose a replacement style, or keep its current value where it is used.`, { references: uses });
+    if (t.group === 'text') fail('A text style cannot be kept as a plain value. Choose a replacement text style.');
+    const literal = resolvedTokenValue(state, t.id);
+    forEachTokenRef(state, (id, site) => id === t.id && site.replace(clone(literal)));
+  }
+  state.tokens.custom = state.tokens.custom.filter((x) => x.id !== t.id);
+  delete state.tokens.overrides[t.id];
+  return {};
+}
+
+function tokenReplace(state: ProjectState, fromId: string, toId: string): OpResult {
+  const tokens = effectiveTokens(state);
+  const from = tokens.find((t) => t.id === fromId) ?? fail(`Token "${fromId}" does not exist.`);
+  const to = tokens.find((t) => t.id === toId) ?? fail(`Token "${toId}" does not exist.`);
+  if (from.id === to.id) fail('Choose a different site style to replace it with.');
+  if (from.group !== to.group) fail(`"${from.label}" is a ${from.group} style and "${to.label}" is a ${to.group} style; replace it with a ${from.group} style.`);
+  let replaced = 0;
+  forEachTokenRef(state, (id, site) => {
+    if (id !== from.id) return;
+    site.replace({ token: to.id });
+    replaced++;
+  });
+  assertNoTokenCycles(state);
+  return { replaced };
 }
 
 function siteUpdate(state: ProjectState, op: Op<'site.update'>): OpResult {
@@ -907,7 +1135,11 @@ export function ensureProjectOwned(state: ProjectState, defId: string): string {
   const copy = copyDefinition(state, def, def.name);
   copy.componentId = def.componentId;
   copy.category = def.category;
-  for (const { node } of instancesOf(state, def.id)) node.definitionId = copy.id;
+  // Theme-owned definitions are fixed theme data: uses inside them stay on the theme original.
+  for (const { node, owner } of instancesOf(state, def.id)) {
+    if (owner.kind === 'component' && state.components[owner.id]?.owner !== 'project') continue;
+    node.definitionId = copy.id;
+  }
   return copy.id;
 }
 
@@ -922,9 +1154,13 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   const tree = editableTree(state, op.owner);
   const root = getNode(tree, op.nodeId);
   const info = findParent(tree, op.nodeId) ?? fail('Node is not attached.');
+  if (root.kind === 'slot' || root.kind === 'repeat') fail('Select an element rather than a slot or repeat to create a component.');
+  const ownerDef = op.owner.kind === 'component' ? state.components[op.owner.id] : undefined;
   const defTree: NodeTree = { rootIds: [], nodes: {} };
   const properties: Record<string, PropSchema> = {};
   const props: Record<string, unknown> = {};
+  const slots: NonNullable<ComponentDefinition['slots']> = {};
+  const instSlots: NonNullable<InstanceNode['slots']> = {};
   const used = new Set<string>();
   const propName = (base: string) => {
     let n = base;
@@ -936,34 +1172,100 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   const parts: ComponentDefinition['parts'] = {};
   const rootCopy = copySubtree(tree, defTree, op.nodeId, state);
   defTree.rootIds = [rootCopy];
-  parts.root = { nodeId: rootCopy, label: root.name ?? 'Root' };
+  const rootNode = defTree.nodes[rootCopy];
+  // A component can be placed many times, so its root cannot hold a page-unique anchor: the placement keeps it.
+  const anchor = rootNode.anchor;
+  delete rootNode.anchor;
+  parts.root = { nodeId: rootCopy, label: root.name ?? 'Root', ...withControls(rootNode) };
+
+  if (ownerDef) {
+    // Inside a definition the selection may already show the owner's properties, list item fields and slots.
+    // They become properties and slots of the new component, passed straight through by the new instance.
+    const outerList = enclosingList(ownerDef, op.nodeId);
+    const hoisted = new Map<string, string>();
+    const hoist = (b: Binding): Binding => {
+      const isProp = '$prop' in b;
+      const key = isProp ? `p:${b.$prop}` : `i:${b.$item}`;
+      let name = hoisted.get(key);
+      if (!name) {
+        const src = isProp ? b.$prop : b.$item;
+        const schema = isProp ? own(ownerDef.properties, b.$prop) : outerList ? own(outerList.fields, b.$item) : undefined;
+        if (!schema) fail(`The selection uses "${src}", which "${ownerDef.name}" does not define.`);
+        name = propName(src);
+        properties[name] = clone(schema);
+        props[name] = clone(b);
+        hoisted.set(key, name);
+      }
+      return { $prop: name };
+    };
+    const walk = (id: string, innerRepeat: boolean) => {
+      const n = defTree.nodes[id];
+      if (!n) return;
+      // List item fields inside a repeat that is part of the selection still belong to that repeat.
+      const fix = <T,>(v: T): T => (isBinding(v) && !('$item' in v && innerRepeat) ? (hoist(v) as T) : v);
+      if (n.when) n.when = fix(n.when);
+      if (n.unless) n.unless = fix(n.unless);
+      if (n.kind === 'text') n.text = fix(n.text);
+      else if (n.kind === 'image') n.image = fix(n.image);
+      else if (n.kind === 'link') {
+        n.link = fix(n.link);
+        n.label = fix(n.label);
+        n.appearance = fix(n.appearance);
+      } else if (n.kind === 'icon') n.icon = fix(n.icon);
+      else if (n.kind === 'repeat') n.list = fix(n.list);
+      else if (n.kind === 'instance') for (const k of Object.keys(n.props)) n.props[k] = fix(n.props[k]);
+      else if (n.kind === 'slot') {
+        const decl = own(ownerDef.slots ?? {}, n.slot);
+        if (decl && !slots[n.slot]) {
+          slots[n.slot] = clone(decl);
+          const through: GraphNode = { id: newId('n'), kind: 'slot', slot: n.slot };
+          tree.nodes[through.id] = through;
+          instSlots[n.slot] = [through.id];
+        }
+      }
+      for (const cl of childLists(n)) cl.ids.forEach((c) => walk(c, innerRepeat || n.kind === 'repeat'));
+    };
+    walk(rootCopy, false);
+  }
+
   for (const n of Object.values(defTree.nodes)) {
+    const part = (name: string) => (parts[name] = { nodeId: n.id, label: titleCase(name), ...withControls(n) });
     if (n.kind === 'text' && !isBinding(n.text)) {
       const isHeading = /^h\d$/.test(n.tag);
       const name = propName(n.rich ? 'body' : isHeading ? 'heading' : 'text');
       properties[name] = n.rich
-        ? { type: 'richtext', label: titleCase(name), default: n.text as string[] }
+        ? { type: 'richtext', label: titleCase(name), default: clone(n.text as string[]) }
         : { type: 'string', label: titleCase(name), default: String(n.text), multiline: !isHeading };
       props[name] = clone(n.text);
       n.text = { $prop: name };
-      parts[name] = { nodeId: n.id, label: titleCase(name) };
+      part(name);
     } else if (n.kind === 'image' && !isBinding(n.image)) {
       const name = propName('image');
       properties[name] = { type: 'image', label: titleCase(name), default: clone(n.image) };
       props[name] = clone(n.image);
       n.image = { $prop: name };
-      parts[name] = { nodeId: n.id, label: titleCase(name) };
-    } else if (n.kind === 'link' && !isBinding(n.link)) {
+      part(name);
+    } else if (n.kind === 'link' && (!isBinding(n.label) || !isBinding(n.link))) {
       const name = propName('button');
-      properties[`${name}Label`] = { type: 'string', label: `${titleCase(name)} label`, default: String(n.label) };
-      properties[`${name}Link`] = { type: 'link', label: `${titleCase(name)} link`, default: clone(n.link as LinkValue) };
-      props[`${name}Label`] = String(n.label);
-      props[`${name}Link`] = clone(n.link);
-      n.label = { $prop: `${name}Label` };
-      n.link = { $prop: `${name}Link` };
-      parts[name] = { nodeId: n.id, label: titleCase(name) };
-    } else if (n.kind === 'instance' && n.slots) {
-      // Slot contents become part of the definition's structure.
+      if (!isBinding(n.label)) {
+        const key = propName(`${name}Label`);
+        properties[key] = { type: 'string', label: `${titleCase(name)} label`, default: String(n.label) };
+        props[key] = String(n.label);
+        n.label = { $prop: key };
+      }
+      if (!isBinding(n.link)) {
+        const key = propName(`${name}Link`);
+        properties[key] = { type: 'link', label: `${titleCase(name)} link`, default: clone(n.link) };
+        props[key] = clone(n.link);
+        n.link = { $prop: key };
+      }
+      part(name);
+    } else if (n.kind === 'icon' && !isBinding(n.icon)) {
+      const name = propName('icon');
+      properties[name] = { type: 'icon', label: titleCase(name), default: String(n.icon) };
+      props[name] = String(n.icon);
+      n.icon = { $prop: name };
+      part(name);
     }
   }
   const def: ComponentDefinition = {
@@ -984,13 +1286,45 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
     provenance: { createdBy: 'user' },
     license: 'Project'
   };
+  if (Object.keys(slots).length) def.slots = slots;
+  const deps = directDependencies(def);
+  if (deps.length) def.dependencies = deps;
   state.components[def.id] = def;
   // Replace the subtree with an instance.
   const inst: InstanceNode = { id: newId('n'), kind: 'instance', definitionId: def.id, props };
-  for (const id of subtreeIds(tree, op.nodeId)) delete tree.nodes[id];
+  if (anchor) inst.anchor = anchor;
+  if (Object.keys(instSlots).length) inst.slots = instSlots;
+  const removed = new Set(subtreeIds(tree, op.nodeId));
+  if (ownerDef) {
+    // The owner's parts and variant rules on the selection's root now target the new instance; those deeper
+    // inside move into the new component, so placements must not still be styling them.
+    for (const [pid, p] of Object.entries(ownerDef.parts)) {
+      if (p.nodeId === op.nodeId) p.nodeId = inst.id;
+      else if (removed.has(p.nodeId)) {
+        const styled = instancesOf(state, ownerDef.id).filter((u) => u.node.overrides?.[pid]);
+        if (styled.length) fail(`"${p.label}" has its own styles in ${styled.length} placement${styled.length === 1 ? '' : 's'}. Reset them first, or create the component from a different element.`);
+        delete ownerDef.parts[pid];
+      }
+    }
+    for (const v of Object.values(ownerDef.variants ?? {})) {
+      if (!v.styles) continue;
+      // Variant rules inside the selection would need the new component to know the owner's variant.
+      const inner = Object.keys(v.styles).filter((nid) => nid !== op.nodeId && removed.has(nid));
+      if (inner.length) fail(`The "${v.label}" variant styles elements inside the selection. Remove those variant styles first, or create the component from a different element.`);
+      if (v.styles[op.nodeId]) v.styles[inst.id] = v.styles[op.nodeId];
+      delete v.styles[op.nodeId];
+    }
+  }
+  for (const id of removed) delete tree.nodes[id];
   tree.nodes[inst.id] = inst;
   info.list.splice(info.index, 1, inst.id);
   return { definitionId: def.id, nodeId: inst.id };
+}
+
+/** The style controls a part offers: only those that do something on its kind of node. */
+function withControls(node: GraphNode): { styleControls?: string[] } {
+  const controls = styleSetFor(node);
+  return controls ? { styleControls: controls } : {};
 }
 
 function titleCase(s: string): string {
@@ -1003,8 +1337,14 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   const name = op.name?.trim() || `${def.name} (code)`;
   const newId = projectDefId(name, 'code');
   const sourcePath = `${CUSTOM_DIR}/${pascal(name)}-${newId.slice(-5).replace(/[^A-Za-z0-9]/g, '')}.svelte`;
-  // Generate as if the file already lives at its final path, so relative imports resolve.
-  const source = generateManagedComponent(state, { ...def, kind: 'code', sourcePath }, { instrument: false }).replace(/^<!-- Generated by[^\n]*\n/, `<!-- Code component converted from "${def.name}". Edit freely; declared properties stay editable in SiteOrigin Builder. -->\n`);
+  // Generate as if the file already lives at its final path under its own ID, so relative imports resolve and
+  // the markup and its <style> block use the new component's class names: the code no longer depends on the
+  // original definition's stylesheet.
+  const source = generateStandaloneComponent(state, { ...clone(def), id: newId, kind: 'code', sourcePath }).replace(
+    /^<!-- Generated by[^\n]*\n/,
+    `<!-- Code component converted from "${def.name}". Edit freely; declared properties stay editable in SiteOrigin Builder. -->\n`
+  );
+  const deps = [...new Set([...(def.dependencies ?? []), ...directDependencies(def)])].sort();
   const copy: ComponentDefinition = {
     ...clone(def),
     id: newId,
@@ -1018,22 +1358,19 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
     provenance: { ...def.provenance, forkedFrom: def.id, createdBy: 'user' }
   };
   copy.sourcePath = sourcePath;
-  copy.parts = { root: { nodeId: 'root', label: 'Root' } };
+  // Parts keep their node IDs: the converted source keeps each part's class and so_o hook, so existing
+  // placement overrides still reach the same elements.
+  // Variant styles now live in the source; the variant names remain the component's contract.
+  if (copy.variants) copy.variants = Object.fromEntries(Object.entries(copy.variants).map(([k, v]) => [k, { label: v.label }]));
+  if (deps.length) copy.dependencies = deps;
+  else delete copy.dependencies;
   state.components[copy.id] = copy;
   node.definitionId = copy.id;
   return { definitionId: copy.id, sourcePath: copy.sourcePath };
 }
 
 function createCode(state: ProjectState, op: Op<'component.createCode'>): OpResult {
-  const properties: Record<string, PropSchema> = {};
-  for (const [k, raw] of Object.entries(op.properties ?? {})) {
-    if (!/^[a-z][a-zA-Z0-9]*$/.test(k)) fail(`Property names must be camelCase identifiers ("${k}").`);
-    const p = raw as Partial<PropSchema> & { type?: string };
-    if (!p || typeof p !== 'object' || !['string', 'richtext', 'number', 'boolean', 'link', 'image', 'icon'].includes(String(p.type)))
-      fail(`Property "${k}" needs a type of string, richtext, number, boolean, link, image or icon.`);
-    const defaults: Record<string, unknown> = { string: '', richtext: [], number: 0, boolean: false, link: { type: 'none', target: '' }, image: { assetId: null, alt: '' }, icon: 'sparkles' };
-    properties[k] = { type: p.type, label: String(p.label ?? k), default: p.default ?? defaults[p.type as string] } as PropSchema;
-  }
+  const properties = normalizeProperties(op.properties, state);
   // Source safety (imports, module scripts, raw HTML) is checked from the syntax tree when the session saves it.
   const id = projectDefId(op.name, 'code');
   const def: ComponentDefinition = {
@@ -1076,34 +1413,78 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
       conflicts.push(`${def.name}: not provided by ${theme.name}.`);
       continue;
     }
-    for (const p of Object.keys(def.properties)) if (!next.properties[p] || next.properties[p].type !== def.properties[p].type) conflicts.push(`${def.name}: property "${p}" is not compatible.`);
-    for (const p of Object.keys(def.parts)) if (!next.parts[p]) conflicts.push(`${def.name}: part "${p}" is missing.`);
-    for (const v of Object.keys(def.variants ?? {})) if (!next.variants?.[v]) conflicts.push(`${def.name}: variant "${v}" is missing.`);
-    for (const sl of Object.keys(def.slots ?? {})) if (!next.slots?.[sl]) conflicts.push(`${def.name}: slot "${sl}" is missing.`);
+    for (const [p, was] of Object.entries(def.properties)) {
+      const now = own(next.properties, p);
+      if (!now || now.type !== was.type) {
+        conflicts.push(`${def.name}: property "${p}" is not compatible.`);
+        continue;
+      }
+      if (was.type === 'list' && now.type === 'list') {
+        for (const [f, field] of Object.entries(was.fields)) {
+          const nf = own(now.fields, f);
+          if (!nf || nf.type !== field.type) conflicts.push(`${def.name}: "${p}" item field "${f}" is not compatible.`);
+          else if (nf.type === 'enum') for (const v of usedValues(state, def.id, p, f)) if (!nf.options.some((o) => o.value === v)) conflicts.push(`${def.name}: "${p}" item field "${f}" has no option "${String(v)}".`);
+        }
+      }
+      if (now.type === 'enum') for (const v of usedValues(state, def.id, p)) if (!now.options.some((o) => o.value === v)) conflicts.push(`${def.name}: property "${p}" has no option "${String(v)}".`);
+    }
+    for (const p of Object.keys(def.parts)) if (!own(next.parts, p)) conflicts.push(`${def.name}: part "${p}" is missing.`);
+    for (const v of Object.keys(def.variants ?? {})) if (!own(next.variants ?? {}, v)) conflicts.push(`${def.name}: variant "${v}" is missing.`);
+    for (const sl of Object.keys(def.slots ?? {})) if (!own(next.slots ?? {}, sl)) conflicts.push(`${def.name}: slot "${sl}" is missing.`);
     mapping.set(def.id, next);
   }
   if (conflicts.length) throw new EngineError('CONFLICT', `${theme.name} is not compatible with this project: ${conflicts.join(' ')}`, { conflicts });
-  for (const [oldId, next] of mapping) {
-    const installed = clone(next);
-    state.components[installed.id] = installed;
-    state.themeLock.components[installed.id] = { componentId: installed.componentId, version: theme.version, hash: sourceHash(JSON.stringify(next)) };
-    for (const t of allTrees(state)) {
-      // Project-owned components keep their pinned dependencies.
-      if (t.owner.kind === 'component' && state.components[t.owner.id]?.owner === 'project') continue;
-      for (const n of Object.values(t.tree.nodes)) if (n.kind === 'instance' && n.definitionId === oldId) n.definitionId = installed.id;
+  const install = (next: ComponentDefinition) => {
+    const existing = own(state.components, next.id);
+    if (existing?.owner === 'project') fail(`"${next.id}" is already a project component.`);
+    // A definition kept for a project component must not change under it.
+    if (existing && definitionHash(existing) !== definitionHash(next) && (instancesOf(state, next.id).length || dependentsOf(state, next.id).length))
+      throw new EngineError('CONFLICT', `${theme.name} has a different "${next.name}" than the one your components use.`);
+    state.components[next.id] = clone(next);
+    state.themeLock.components[next.id] = { componentId: next.componentId, version: theme.version, hash: definitionHash(next) };
+    for (const dep of next.dependencies ?? []) {
+      const d = theme.components.find((c) => c.id === dep) ?? fail(`${theme.name} is missing "${dep}", which "${next.name}" needs.`);
+      if (!own(state.components, d.id) || definitionHash(state.components[d.id]) !== definitionHash(d)) install(d);
     }
+  };
+  for (const next of mapping.values()) install(next);
+  // Only pages and the shared shell move to the new theme. Project components keep their pinned theme
+  // dependencies, and theme definitions retained for them stay exactly as they were.
+  for (const t of allTrees(state)) {
+    if (t.owner.kind === 'component') continue;
+    for (const n of Object.values(t.tree.nodes)) if (n.kind === 'instance' && mapping.has(n.definitionId)) n.definitionId = mapping.get(n.definitionId)!.id;
   }
-  // Old theme definitions are dropped once nothing references them (code converted from them still uses their CSS).
-  const stillNeeded = new Set(Object.values(state.components).filter((d) => d.kind === 'code' && d.provenance?.forkedFrom).map((d) => d.provenance!.forkedFrom!));
-  for (const oldId of mapping.keys()) {
-    if (!instancesOf(state, oldId).length && !stillNeeded.has(oldId)) {
+  // Old theme definitions are dropped once nothing places or needs them, repeating until the set is stable
+  // because dropping one can free the definitions it placed.
+  let dropped = true;
+  while (dropped) {
+    dropped = false;
+    for (const oldId of mapping.keys()) {
+      const old = state.components[oldId];
+      if (!old || old.owner !== 'theme' || mapping.get(oldId)!.id === oldId) continue;
+      if (instancesOf(state, oldId).length || dependentsOf(state, oldId).length) continue;
       delete state.components[oldId];
       delete state.themeLock.components[oldId];
+      dropped = true;
     }
   }
   state.site.themeId = theme.id;
   state.themeLock.theme = { id: theme.id, version: theme.version };
   return { rebound: mapping.size };
+}
+
+/** Values instances set explicitly for a property (or for one field of a list property's items). */
+function usedValues(state: ProjectState, defId: string, prop: string, field?: string): unknown[] {
+  const out = new Set<unknown>();
+  // Placements inside project components stay pinned to the old definition, so only pages and the shell count.
+  for (const { node, owner } of instancesOf(state, defId)) {
+    if (owner.kind === 'component') continue;
+    const v = node.props[prop];
+    if (v === undefined || isBinding(v)) continue;
+    if (field === undefined) out.add(v);
+    else if (Array.isArray(v)) for (const it of v as Array<Record<string, unknown>>) if (it?.[field] !== undefined && !isBinding(it[field])) out.add(it[field]);
+  }
+  return [...out];
 }
 
 export function applyOperations(state: ProjectState, ops: EditOperation[]): { state: ProjectState; results: OpResult[] } {
@@ -1118,6 +1499,14 @@ export function applyOperations(state: ProjectState, ops: EditOperation[]): { st
       }
       throw e;
     }
+  }
+  // A managed project component's dependencies are the components its tree places: keep them current.
+  for (const d of Object.values(draft.components)) {
+    if (d.owner !== 'project' || d.kind !== 'managed' || !d.tree) continue;
+    const deps = directDependencies(d);
+    if (JSON.stringify(deps) === JSON.stringify(d.dependencies ?? [])) continue;
+    if (deps.length) d.dependencies = deps;
+    else delete d.dependencies;
   }
   return { state: draft, results };
 }

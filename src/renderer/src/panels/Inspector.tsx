@@ -33,7 +33,7 @@ import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf } from '@engine/tree';
-import { applyOps, setState, useStore } from '../store';
+import { applyOps, setState, toast, useStore } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker } from './PropEditors';
 import { StyleControls } from './StyleControls';
@@ -311,10 +311,16 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
   const makeUnique = () => void applyOps([{ type: 'component.makeUnique', owner, nodeId: node.id }], 'Make unique');
   const viewSource = () => setState({ modal: { kind: 'source', definitionId: def.id } });
+  // The copy's structure is now edited in source, so offer to open it straight away.
+  const convertToCode = async () => {
+    const r = await applyOps([{ type: 'component.convertToCode', owner, nodeId: node.id }], 'Convert to code');
+    const id = r?.[0]?.definitionId as string | undefined;
+    if (id) toast('Converted to a code component. Its properties stay editable here.', 'info', { label: 'Open code', run: () => setState({ modal: { kind: 'source', definitionId: id } }) });
+  };
   const items: MenuItem[] = [
     ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
     ...(canMakeUnique ? [{ label: 'Make unique', icon: <Split />, hint: 'Separate copy', onSelect: makeUnique }] : []),
-    ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void applyOps([{ type: 'component.convertToCode', owner, nodeId: node.id }], 'Convert to code') }] : []),
+    ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void convertToCode() }] : []),
     ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
     ...(partIds.length ? [{ separator: true }, { heading: 'Select a part' }, ...partIds.map((p) => ({ label: def.parts[p].label, onSelect: () => selectPart(p) }))] : []),
     ...(!shell
@@ -448,7 +454,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
             </button>
           )}
           {dev && def.kind === 'managed' && (
-            <button className="btn btn-sm" onClick={() => void applyOps([{ type: 'component.convertToCode', owner, nodeId: node.id }], 'Convert to code')} title="Create an editable Svelte copy">
+            <button className="btn btn-sm" onClick={() => void convertToCode()} title="Create an editable Svelte copy">
               <Code /> Convert to code
             </button>
           )}

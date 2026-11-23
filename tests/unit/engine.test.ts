@@ -274,3 +274,494 @@ describe('follow-up regressions', () => {
     expect(validateOperation({ type: 'toString' }).ok).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Component and engine operations (review 04 §1.5, §2)
+// ---------------------------------------------------------------------------
+
+const defOf = (s: ProjectState, componentId: string) => Object.values(s.components).find((d) => d.componentId === componentId && d.owner === 'theme')!;
+const errors = (s: ProjectState) => validateState(s).filter((d) => d.severity === 'error');
+const fork = (s: ProjectState, componentId: string) => {
+  const r = applyOperations(s, [{ type: 'component.fork', definitionId: firstInstance(s, componentId).definitionId }]);
+  return { state: r.state, id: r.results[0].definitionId as string };
+};
+async function compiles(path: string, src: string) {
+  const { compile } = await import('svelte/compiler');
+  return compile(src, { filename: path, generate: 'server', runes: true });
+}
+
+describe('style token groups (§1.5)', () => {
+  it('lets side padding use the page gutter and max width use a spacing step', () => {
+    const s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    const r = applyOperations(s, [
+      { type: 'node.setStyle', owner: owner(s), nodeId: hero.id, scope: 'base', property: 'paddingInline', value: { token: 'container.gutter' } },
+      { type: 'node.setStyle', owner: owner(s), nodeId: hero.id, scope: 'base', property: 'maxWidth', value: { token: 'space.2xl' } }
+    ]).state;
+    expect((home(r).nodes[hero.id] as InstanceNode).overrides?.root?.base).toMatchObject({ paddingInline: { token: 'container.gutter' }, maxWidth: { token: 'space.2xl' } });
+    expect(() => applyOperations(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: hero.id, scope: 'base', property: 'paddingInline', value: { token: 'color.brand' } }])).toThrow(/space or container/);
+  });
+});
+
+describe('convert to code (§2.1)', () => {
+  it('carries its own styles, so deleting the original keeps the appearance', async () => {
+    let s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    // A project copy used once, so it can be deleted after converting.
+    const u = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: hero.id, name: 'Hero copy' }]);
+    s = u.state;
+    const managedId = u.results[0].definitionId as string;
+    const c = applyOperations(s, [{ type: 'component.convertToCode', owner: owner(s), nodeId: hero.id, name: 'Hero code' }]);
+    s = c.state;
+    const code = s.components[c.results[0].definitionId as string];
+    const src = code.source!;
+    const prefix = `so-${code.id.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()}`;
+    expect(src).toContain('<style>');
+    expect(src).toContain(`:global(.${prefix}__`);
+    expect(src).toMatch(/@media \(min-width: 1024px\)/);
+    expect(src).toContain(`:global(.${prefix}--`);
+    // Parts keep their hooks, so placement overrides still reach the same elements.
+    expect(Object.keys(code.parts)).toEqual(Object.keys(s.components[managedId].parts));
+    expect(src).toContain('so_o?.["heading"]');
+    expect(src).not.toContain(`so-${managedId.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()}__`);
+    s = applyOperations(s, [{ type: 'component.remove', definitionId: managedId }]).state;
+    expect(s.components[managedId]).toBeUndefined();
+    expect(generateProject(s).get('src/lib/siteorigin/styles/components.css')).not.toContain('Hero copy');
+    expect(s.components[code.id].source).toBe(src);
+    const out = await compiles(code.sourcePath!, src);
+    expect(out.css?.code ?? '').toContain(`.${prefix}__`);
+    expect(errors(s)).toEqual([]);
+  });
+});
+
+describe('code component schemas (§2.2)', () => {
+  it('accepts full property schemas and rejects invalid ones', () => {
+    const s = fresh();
+    const r = applyOperations(s, [
+      {
+        type: 'component.createCode',
+        name: 'Plans',
+        source: '<p>x</p>\n',
+        properties: {
+          tone: { type: 'enum', label: 'Tone', options: [{ value: 'light', label: 'Light' }, 'dark'], default: 'dark' },
+          count: { type: 'number', label: 'Count', min: 1, max: 5, default: 3 },
+          intro: { type: 'string', label: 'Intro', multiline: true, maxLength: 200, default: 'a\nb' },
+          rows: { type: 'list', label: 'Rows', itemLabel: 'Row', titleField: 'name', min: 1, fields: { name: { type: 'string', label: 'Name', default: 'Row' } } }
+        }
+      }
+    ]);
+    const def = r.state.components[r.results[0].definitionId as string];
+    expect(def.properties.tone).toMatchObject({ type: 'enum', default: 'dark', options: [{ value: 'light' }, { value: 'dark', label: 'dark' }] });
+    expect(def.properties.count).toMatchObject({ min: 1, max: 5, default: 3 });
+    expect(def.properties.intro).toMatchObject({ multiline: true, maxLength: 200, default: 'a\nb' });
+    const rows = def.properties.rows as unknown as { default: Array<{ id: string; name: string }>; min: number };
+    expect(rows.min).toBe(1);
+    expect(rows.default).toHaveLength(1);
+    expect(rows.default[0]).toMatchObject({ name: 'Row' });
+    expect(rows.default[0].id).toMatch(/^i_/);
+    const bad = (properties: Record<string, unknown>) => () => applyOperations(s, [{ type: 'component.createCode', name: 'X', source: '', properties }]);
+    expect(bad({ t: { type: 'enum', options: [] } })).toThrow(/1 to 50 options/);
+    expect(bad({ n: { type: 'number', min: 5, max: 1 } })).toThrow(/min is greater/);
+    expect(bad({ n: { type: 'number', max: 2, default: 9 } })).toThrow(/at most 2/);
+    expect(bad({ default: { type: 'string' } })).toThrow(/reserved/);
+    expect(bad({ l: { type: 'list', fields: { inner: { type: 'list', fields: {} } } } })).toThrow(/type of/);
+  });
+
+  it('edits a schema and moves instance content to it', () => {
+    let s = fresh();
+    const c = applyOperations(s, [{ type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties: { label: { type: 'string', label: 'Label', default: 'Hi' } } }]);
+    s = c.state;
+    const id = c.results[0].definitionId as string;
+    const ins = applyOperations(s, [{ type: 'node.insert', owner: owner(s), definitionId: id, props: { label: 'dark' } }]);
+    s = ins.state;
+    const nodeId = ins.results[0].nodeId as string;
+    s = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: id, prop: 'label', schema: { type: 'enum', label: 'Tone', options: ['light', 'dark'] } }]).state;
+    expect((home(s).nodes[nodeId] as InstanceNode).props.label).toBe('dark');
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: id, prop: 'label', schema: { type: 'enum', label: 'Tone', options: ['light'] } }])).toThrow(/must be one of/);
+    s = applyOperations(s, [{ type: 'component.updateSource', definitionId: id, source: '<p>y</p>\n', properties: { size: { type: 'number', label: 'Size', default: 2 } } }]).state;
+    expect(Object.keys(s.components[id].properties)).toEqual(['size']);
+    expect((home(s).nodes[nodeId] as InstanceNode).props.label).toBeUndefined();
+    s = applyOperations(s, [{ type: 'component.removePropSchema', definitionId: id, prop: 'size' }]).state;
+    expect(s.components[id].properties).toEqual({});
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: defOf(s, 'cta.banner').id, prop: 'x', schema: { type: 'string' } }])).toThrow(/Fork it first/);
+  });
+});
+
+describe('create component from a selection (§2.3)', () => {
+  it('turns icons into properties, keeps the anchor on the placement and records dependencies', () => {
+    let s = createStarterState('blank', 'Blank', false);
+    const section = home(s).rootIds[0];
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'stack' }]).state;
+    const stackId = (home(s).nodes[section] as InstanceNode).slots!.content.at(-1)!;
+    s = applyOperations(s, [
+      { type: 'node.insert', owner: owner(s), parentId: stackId, primitive: 'icon' },
+      { type: 'node.insert', owner: owner(s), parentId: stackId, componentId: 'stats.row' },
+      { type: 'node.setContent', owner: owner(s), nodeId: stackId, field: 'anchor', value: 'offer' }
+    ]).state;
+    const r = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: stackId, name: 'Offer' }]);
+    const def = r.state.components[r.results[0].definitionId as string];
+    const inst = home(r.state).nodes[r.results[0].nodeId as string] as InstanceNode;
+    expect(def.properties.icon).toEqual({ type: 'icon', label: 'Icon', default: 'sparkles' });
+    expect(inst.props.icon).toBe('sparkles');
+    expect(inst.anchor).toBe('offer');
+    expect(Object.values(def.tree!.nodes).some((n) => n.anchor)).toBe(false);
+    expect(def.dependencies).toEqual([defOf(r.state, 'stats.row').id]);
+    expect(def.parts.icon.styleControls).toContain('color');
+    expect(def.parts.icon.styleControls).not.toContain('columns');
+    expect(def.parts.root.styleControls).toContain('gap');
+    expect(errors(r.state)).toEqual([]);
+  });
+
+  it("hoists the owner component's properties, list fields and slots", async () => {
+    const f = fork(fresh(), 'features.grid');
+    const own = { kind: 'component' as const, id: f.id };
+    // The tone variants restyle the card text, which the new component could not follow.
+    expect(() => applyOperations(f.state, [{ type: 'component.createFromNode', owner: own, nodeId: 'card', name: 'Card' }])).toThrow(/variant styles elements inside/);
+    const styled = Object.entries(f.state.components[f.id].variants!).filter(([, v]) => v.styles?.['card-text']);
+    const reset = applyOperations(
+      f.state,
+      styled.map(([vid]) => ({ type: 'node.resetStyles' as const, owner: own, nodeId: 'card-text', variant: vid }))
+    ).state;
+    for (const [vid] of styled) expect(reset.components[f.id].variants![vid].styles?.['card-text']).toBeUndefined();
+    const r = applyOperations(reset, [{ type: 'component.createFromNode', owner: own, nodeId: 'card', name: 'Card' }]);
+    const s = r.state;
+    const card = s.components[r.results[0].definitionId as string];
+    expect(Object.keys(card.properties).sort()).toEqual(['description', 'icon', 'link', 'linkLabel', 'title']);
+    expect(card.properties.title).toMatchObject({ type: 'string', label: 'Title' });
+    const inst = s.components[f.id].tree!.nodes[r.results[0].nodeId as string] as InstanceNode;
+    expect(inst.props.title).toEqual({ $item: 'title' });
+    expect(JSON.stringify(s.components[f.id])).not.toContain('[object Object]');
+    expect(errors(s)).toEqual([]);
+    for (const [path, src] of generateProject(s)) if (path.endsWith('.svelte')) await compiles(path, src);
+
+    const sec = fork(createStarterState('blank', 'Blank', false), 'layout.section');
+    const w = applyOperations(sec.state, [{ type: 'component.createFromNode', owner: { kind: 'component', id: sec.id }, nodeId: 'inner', name: 'Inner' }]);
+    const inner = w.state.components[w.results[0].definitionId as string];
+    expect(inner.slots).toEqual({ content: { label: 'Content' } });
+    const through = w.state.components[sec.id].tree!.nodes[w.results[0].nodeId as string] as InstanceNode;
+    expect(through.slots?.content).toHaveLength(1);
+    expect(errors(w.state)).toEqual([]);
+  });
+});
+
+describe('fork keeps theme data fixed (§2.4)', () => {
+  it('does not rebind uses inside theme-owned definitions', () => {
+    const s = fresh();
+    const cta = defOf(s, 'cta.banner');
+    const hero = defOf(s, 'hero.split');
+    // A theme definition that places another one.
+    hero.tree!.nodes.nested = { id: 'nested', kind: 'instance', definitionId: cta.id, props: {} };
+    (hero.tree!.nodes[hero.tree!.rootIds[0]] as { children: string[] }).children.push('nested');
+    const r = applyOperations(s, [{ type: 'component.fork', definitionId: cta.id }]);
+    const forked = r.results[0].definitionId as string;
+    expect((r.state.components[hero.id].tree!.nodes.nested as InstanceNode).definitionId).toBe(cta.id);
+    expect(instancesOf(r.state, forked).every((u) => u.owner.kind !== 'component')).toBe(true);
+    expect(instancesOf(r.state, forked).length).toBeGreaterThan(0);
+  });
+});
+
+describe('definition editing operations (§2.5)', () => {
+  it('removes only unused components', () => {
+    let s = fresh();
+    const cta = firstInstance(s, 'cta.banner');
+    expect(() => applyOperations(s, [{ type: 'component.remove', definitionId: cta.definitionId }])).toThrow(/is used/);
+    const d = applyOperations(s, [{ type: 'component.duplicate', definitionId: cta.definitionId, name: 'Spare' }]);
+    s = applyOperations(d.state, [{ type: 'component.remove', definitionId: d.results[0].definitionId as string }]).state;
+    expect(s.components[d.results[0].definitionId as string]).toBeUndefined();
+  });
+
+  it('adds and removes parts, variants and slots', () => {
+    const f = fork(fresh(), 'features.grid');
+    let s = f.state;
+    const id = f.id;
+    const grid = firstInstance(s, 'features.grid');
+    const own = { kind: 'component' as const, id };
+    s = applyOperations(s, [
+      { type: 'component.setPart', definitionId: id, partId: 'cardText', nodeId: 'card-text', label: 'Card text' },
+      { type: 'node.setStyle', owner: owner(s), nodeId: grid.id, partId: 'cardText', scope: 'base', property: 'color', value: '#ff0000' },
+      { type: 'component.setVariant', definitionId: id, variant: 'compact', label: 'Compact' },
+      { type: 'node.setStyle', owner: own, nodeId: 'grid', variant: 'compact', scope: 'desktop', property: 'gap', value: { token: 'space.sm' } },
+      { type: 'instance.setVariant', owner: owner(s), nodeId: grid.id, variant: 'compact' },
+      { type: 'component.setSlot', definitionId: id, slot: 'footer', label: 'Footer' },
+      { type: 'node.insert', owner: own, parentId: 'inner', primitive: 'slot', bind: 'footer' }
+    ]).state;
+    const def = s.components[id];
+    expect(def.parts.cardText.styleControls).toContain('textStyle');
+    expect(def.variants!.compact.styles!.grid.desktop!.gap).toEqual({ token: 'space.sm' });
+    const css = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
+    expect(css).toMatch(/--compact \.so-[^{]*__grid \{\n\t\tgap: var\(--so-space-sm\)/);
+    expect(errors(s)).toEqual([]);
+    expect(() => applyOperations(s, [{ type: 'component.setPart', definitionId: id, partId: 'again', nodeId: 'card-text', label: 'x' }])).toThrow(/already the "cardText" part/);
+    expect(() => applyOperations(s, [{ type: 'component.removePart', definitionId: id, partId: 'root' }])).toThrow();
+    s = applyOperations(s, [
+      { type: 'component.removePart', definitionId: id, partId: 'cardText' },
+      { type: 'node.resetStyles', owner: own, nodeId: 'grid', variant: 'compact' },
+      { type: 'component.removeVariant', definitionId: id, variant: 'compact' },
+      { type: 'component.removeSlot', definitionId: id, slot: 'footer' }
+    ]).state;
+    const after = home(s).nodes[grid.id] as InstanceNode;
+    expect(after.overrides?.cardText).toBeUndefined();
+    expect(after.variant).toBeUndefined();
+    expect(s.components[id].variants?.compact).toBeUndefined();
+    expect(s.components[id].slots).toBeUndefined();
+    expect(Object.values(s.components[id].tree!.nodes).some((n) => n.kind === 'slot')).toBe(false);
+    expect(errors(s)).toEqual([]);
+  });
+
+  it('refuses to remove a slot that holds content', () => {
+    const f = fork(createStarterState('blank', 'Blank', false), 'layout.section');
+    let s = f.state;
+    const section = home(s).rootIds[0];
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'heading' }]).state;
+    expect(() => applyOperations(s, [{ type: 'component.removeSlot', definitionId: f.id, slot: 'content' }])).toThrow(/has content/);
+  });
+
+  it('binds and unbinds node fields with type checks', () => {
+    const f = fork(fresh(), 'features.grid');
+    let s = f.state;
+    const id = f.id;
+    const own = { kind: 'component' as const, id };
+    s = applyOperations(s, [
+      { type: 'component.setPropSchema', definitionId: id, prop: 'note', schema: { type: 'string', label: 'Note', default: 'Hello' } },
+      { type: 'node.insert', owner: own, parentId: 'inner', primitive: 'paragraph' }
+    ]).state;
+    const pid = (s.components[id].tree!.nodes.inner as { children: string[] }).children.at(-1)!;
+    s = applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: pid, field: 'text', binding: { $prop: 'note' } }]).state;
+    expect(generateProject(s).get(`src/lib/siteorigin/generated/${id.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()}.svelte`)).toContain('{note}');
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: pid, field: 'text', binding: { $prop: 'items' } }])).toThrow(/list property cannot/);
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: pid, field: 'text', binding: { $item: 'title' } }])).toThrow(/inside a repeat/);
+    expect(() => applyOperations(s, [{ type: 'component.removePropSchema', definitionId: id, prop: 'note' }])).toThrow(/still shown/);
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: id, prop: 'note', schema: { type: 'image', label: 'Note' } }])).toThrow(/Unbind it first/);
+    s = applyOperations(s, [
+      { type: 'node.setBinding', owner: own, nodeId: 'card-title', field: 'when', binding: { $item: 'title' } },
+      { type: 'node.setBinding', owner: own, nodeId: pid, field: 'text', binding: null }
+    ]).state;
+    expect(s.components[id].tree!.nodes[pid]).toMatchObject({ text: 'Hello' });
+    expect(s.components[id].tree!.nodes['card-title'].when).toEqual({ $item: 'title' });
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: owner(s), nodeId: home(s).rootIds[0], field: 'when', binding: { $prop: 'x' } }])).toThrow(/component definitions/);
+    expect(errors(s)).toEqual([]);
+  });
+
+  it('inserts rich text, repeats and slots only where they make sense', async () => {
+    const f = fork(fresh(), 'features.grid');
+    let s = f.state;
+    const own = { kind: 'component' as const, id: f.id };
+    const r = applyOperations(s, [{ type: 'node.insert', owner: own, parentId: 'inner', primitive: 'repeat', bind: 'items' }]);
+    s = r.state;
+    const rep = r.results[0].nodeId as string;
+    s = applyOperations(s, [
+      { type: 'node.insert', owner: own, parentId: rep, primitive: 'richtext', text: 'One\n\nTwo' },
+      { type: 'node.insert', owner: own, parentId: rep, primitive: 'heading' }
+    ]).state;
+    const repNode = s.components[f.id].tree!.nodes[rep] as { children: string[] };
+    expect(s.components[f.id].tree!.nodes[repNode.children[0]]).toMatchObject({ kind: 'text', rich: true, text: ['One', 'Two'] });
+    s = applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: repNode.children[1], field: 'text', binding: { $item: 'title' } }]).state;
+    expect(errors(s)).toEqual([]);
+    for (const [path, src] of generateProject(s)) if (path.endsWith('.svelte')) await compiles(path, src);
+    expect(() => applyOperations(s, [{ type: 'node.insert', owner: own, parentId: 'inner', primitive: 'repeat', bind: 'heading' }])).toThrow(/not a list/);
+    expect(() => applyOperations(s, [{ type: 'node.insert', owner: own, parentId: 'inner', primitive: 'slot', bind: 'nope' }])).toThrow(/setSlot/);
+    expect(() => applyOperations(s, [{ type: 'node.insert', owner: owner(s), primitive: 'repeat', bind: 'items' }])).toThrow(/editing a component/);
+  });
+
+  it('builds new list items from field defaults', () => {
+    const s = fresh();
+    const grid = firstInstance(s, 'features.grid');
+    const r = applyOperations(s, [{ type: 'instance.listInsert', owner: owner(s), nodeId: grid.id, prop: 'items' }]);
+    const items = (home(r.state).nodes[grid.id] as InstanceNode).props.items as Array<{ id: string; title: string; icon: string }>;
+    const added = items.find((i) => i.id === r.results[0].itemId)!;
+    expect(added).toMatchObject({ title: 'Service', icon: 'sparkles' });
+  });
+
+  it('sets and clears a page social image', () => {
+    let s = fresh();
+    s = applyOperations(s, [
+      { type: 'asset.add', asset: { id: 'a_one', name: 'One', file: 'static/assets/one.png', mime: 'image/png', bytes: 10, hash: 'h', kind: 'image', createdAt: 'now' } },
+      { type: 'page.update', pageId: s.site.homePageId, socialImage: 'a_one' }
+    ]).state;
+    expect(home(s).seo.socialImage).toBe('a_one');
+    expect(() => applyOperations(s, [{ type: 'page.update', pageId: s.site.homePageId, socialImage: 'a_missing' }])).toThrow(/not found/);
+    s = applyOperations(s, [{ type: 'page.update', pageId: s.site.homePageId, socialImage: null }]).state;
+    expect(home(s).seo.socialImage).toBeUndefined();
+  });
+});
+
+describe('custom site styles (§2.5, spec §7.2)', () => {
+  it('creates, uses, renames, replaces and removes custom tokens', async () => {
+    const { tokenUsageCounts } = await import('@engine/tokens');
+    let s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    const c = applyOperations(s, [{ type: 'token.create', group: 'color', label: 'Sea green', value: '#2e8b57' }]);
+    s = c.state;
+    const id = c.results[0].tokenId as string;
+    expect(id).toBe('color.custom-sea-green');
+    expect(s.tokens.custom.find((t) => t.id === id)?.value).toBe('#2e8b57');
+    expect(s.tokens.overrides[id]).toBeUndefined();
+    expect(generateProject(s).get('src/lib/siteorigin/styles/tokens.css')).toContain('--so-color-custom-sea-green: #2e8b57;');
+    expect(() => applyOperations(s, [{ type: 'token.create', group: 'color', label: 'Bad', value: 'red; x' }])).toThrow();
+    expect(() => applyOperations(s, [{ type: 'token.create', group: 'text', label: 'Bad', value: { size: '1rem' } }])).toThrow(/needs family/);
+    s = applyOperations(s, [
+      { type: 'node.setStyle', owner: owner(s), nodeId: hero.id, scope: 'base', property: 'background', value: { token: id } },
+      { type: 'token.create', group: 'color', label: 'Sea green', value: { token: id } },
+      { type: 'token.rename', tokenId: id, label: 'Ocean' }
+    ]).state;
+    const follower = s.tokens.custom[1].id;
+    expect(follower).toBe('color.custom-sea-green-2');
+    expect(tokenUsageCounts(s)[id]).toBe(2);
+    expect(s.tokens.custom[0].label).toBe('Ocean');
+    // Changing a custom style changes its own value; there is no theme default to override.
+    const changed = applyOperations(s, [{ type: 'token.set', tokenId: id, value: '#225544' }]).state;
+    expect(changed.tokens.custom[0].value).toBe('#225544');
+    expect(changed.tokens.overrides[id]).toBeUndefined();
+    expect(() => applyOperations(s, [{ type: 'token.rename', tokenId: 'color.brand', label: 'x' }])).toThrow(/belongs to the theme/);
+    expect(() => applyOperations(s, [{ type: 'token.remove', tokenId: id }])).toThrow(/used 2 times/);
+    expect(() => applyOperations(s, [{ type: 'token.replace', tokenId: id, withTokenId: 'space.md' }])).toThrow(/color style/);
+    expect(() => applyOperations(s, [{ type: 'token.replace', tokenId: id, withTokenId: follower }])).toThrow(/loop/);
+    const detached = applyOperations(s, [{ type: 'token.remove', tokenId: id, detach: true }]).state;
+    expect((home(detached).nodes[hero.id] as InstanceNode).overrides?.root?.base?.background).toBe('#2e8b57');
+    expect(detached.tokens.custom.map((t) => t.value)).toEqual(['#2e8b57']);
+    s = applyOperations(s, [{ type: 'token.remove', tokenId: id, replacementTokenId: 'color.brand' }]).state;
+    expect((home(s).nodes[hero.id] as InstanceNode).overrides?.root?.base?.background).toEqual({ token: 'color.brand' });
+    expect(s.tokens.custom.find((t) => t.id === follower)?.value).toEqual({ token: 'color.brand' });
+    expect(errors(s)).toEqual([]);
+  });
+});
+
+describe('validateState catches external corruption (§2.5)', () => {
+  it('reports token cycles, missing tokens, bad tags, stray slots and component cycles', () => {
+    const s = fresh();
+    s.tokens.overrides['color.brand'] = { token: 'color.accent' };
+    s.tokens.overrides['color.accent'] = { token: 'color.brand' };
+    const page = home(s);
+    const hero = firstInstance(s, 'hero.split');
+    hero.overrides = { root: { base: { background: { token: 'color.nope' } } } };
+    page.nodes.bad = { id: 'bad', kind: 'element', tag: 'script' as never, children: [] };
+    page.nodes.slot = { id: 'slot', kind: 'slot', slot: 'content' };
+    page.rootIds.push('bad', 'slot');
+    const def = structuredClone(s.components[firstInstance(s, 'cta.banner').definitionId]);
+    def.id = 'proj.loop';
+    def.owner = 'project';
+    def.tree!.nodes.self = { id: 'self', kind: 'instance', definitionId: def.id, props: {} };
+    (def.tree!.nodes[def.tree!.rootIds[0]] as { children: string[] }).children.push('self');
+    s.components[def.id] = def;
+    const codes = new Set(errors(s).map((d) => d.code));
+    for (const c of ['TOKEN_CYCLE', 'TOKEN_MISSING', 'TAG_INVALID', 'SLOT_INVALID', 'DEF_CYCLE']) expect(codes.has(c), c).toBe(true);
+  });
+});
+
+describe('theme switching contracts (§2.5)', () => {
+  it('blocks a switch when an enum value in use has no option in the new theme', () => {
+    const s = fresh();
+    const hero = firstInstance(s, 'hero.split');
+    const def = s.components[hero.definitionId];
+    def.properties.mood = { type: 'enum', label: 'Mood', default: 'calm', options: [{ value: 'calm', label: 'Calm' }, { value: 'loud', label: 'Loud' }] };
+    hero.props.mood = 'loud';
+    expect(() => applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }])).toThrow(/property "mood" is not compatible/);
+  });
+
+  it('leaves pinned theme definitions untouched and uses one lock hash format', async () => {
+    const { definitionHash } = await import('@engine/install');
+    let s = fresh();
+    const cta = defOf(s, 'cta.banner');
+    const stats = defOf(s, 'stats.row');
+    // A theme definition (CTA) placing another (Stats), pinned by a project component that places the CTA.
+    cta.tree!.nodes.nested = { id: 'nested', kind: 'instance', definitionId: stats.id, props: {} };
+    (cta.tree!.nodes[cta.tree!.rootIds[0]] as { children: string[] }).children.push('nested');
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, index: 0, componentId: 'layout.section' }]).state;
+    const section = home(s).rootIds[0];
+    s = applyOperations(s, [{ type: 'node.move', owner: owner(s), nodeId: firstInstance(s, 'cta.banner').id, parentId: section, slot: 'content', index: 0 }]).state;
+    s = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: section, name: 'Pinned' }]).state;
+    s = applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state;
+    expect(s.components[cta.id]).toBeDefined();
+    expect((s.components[cta.id].tree!.nodes.nested as InstanceNode).definitionId).toBe(stats.id);
+    expect(s.components[stats.id]).toBeDefined();
+    const alt = s.components['foundation-alt.hero.split'];
+    expect(s.themeLock.components[alt.id].hash).toBe(definitionHash(alt));
+  });
+});
+
+describe('review follow-ups for definition editing', () => {
+  it('rejects names generated code already uses, and inherited object keys', () => {
+    const s = fresh();
+    const bad = (properties: Record<string, unknown>) => () => applyOperations(s, [{ type: 'component.createCode', name: 'X', source: '', properties }]);
+    for (const name of ['has', 'item2', 'toString', 'constructor']) expect(bad({ [name]: { type: 'string' } }), name).toThrow(/reserved|camelCase/);
+    expect(bad({ rows: { type: 'list', fields: { id: { type: 'string' } } } })).toThrow(/reserved/);
+    const f = fork(s, 'features.grid');
+    expect(() => applyOperations(f.state, [{ type: 'component.setSlot', definitionId: f.id, slot: 'toString', label: 'x' }])).toThrow(/camelCase/);
+    expect(() => applyOperations(f.state, [{ type: 'component.setPart', definitionId: f.id, partId: 'x', nodeId: 'card-text', label: 'x', styleControls: ['toString'] }])).toThrow(/Unknown style/);
+    expect(() => applyOperations(f.state, [{ type: 'node.setStyle', owner: owner(s), nodeId: firstInstance(s, 'hero.split').id, scope: 'base', property: 'toString', value: '1' }])).toThrow(/Unknown style/);
+    expect(() => applyOperations(f.state, [{ type: 'node.setStyle', owner: owner(s), nodeId: firstInstance(s, 'hero.split').id, scope: 'base', property: 'maxWidth', value: { token: 'color.brand' } }])).toThrow(/container or space/);
+  });
+
+  it('refuses type changes that would lose placed content', () => {
+    let s = fresh();
+    s = applyOperations(s, [{ type: 'asset.add', asset: { id: 'a_pic', name: 'Pic', file: 'static/assets/pic.png', mime: 'image/png', bytes: 10, hash: 'h', kind: 'image', createdAt: 'now' } }]).state;
+    const c = applyOperations(s, [{ type: 'component.createCode', name: 'Pic', source: '<p>x</p>\n', properties: { photo: { type: 'image', label: 'Photo' } } }]);
+    s = c.state;
+    const id = c.results[0].definitionId as string;
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), definitionId: id, props: { photo: { assetId: 'a_pic', alt: 'A' } } }]).state;
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: id, prop: 'photo', schema: { type: 'link', label: 'Photo' } }])).toThrow(/cannot keep/);
+  });
+
+  it('checks item fields when a repeat changes list, and when an element moves out of its list', () => {
+    const f = fork(fresh(), 'features.grid');
+    const own = { kind: 'component' as const, id: f.id };
+    const s = applyOperations(f.state, [{ type: 'component.setPropSchema', definitionId: f.id, prop: 'names', schema: { type: 'list', label: 'Names', fields: { name: { type: 'string', label: 'Name' } } } }]).state;
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'cards', field: 'list', binding: { $prop: 'names' } }])).toThrow(/items do not have/);
+    expect(s.components[f.id].tree!.nodes.cards).toMatchObject({ list: { $prop: 'items' } });
+  });
+
+  it('drops placement overrides of a part whose element is removed from the definition', () => {
+    const f = fork(fresh(), 'hero.split');
+    const hero = firstInstance(f.state, 'hero.split');
+    let s = applyOperations(f.state, [{ type: 'node.setStyle', owner: owner(f.state), nodeId: hero.id, partId: 'eyebrow', scope: 'base', property: 'color', value: '#ff0000' }]).state;
+    expect((home(s).nodes[hero.id] as InstanceNode).overrides?.eyebrow).toBeDefined();
+    s = applyOperations(s, [{ type: 'node.remove', owner: { kind: 'component', id: f.id }, nodeId: 'eyebrow' }]).state;
+    expect((home(s).nodes[hero.id] as InstanceNode).overrides?.eyebrow).toBeUndefined();
+  });
+
+  it('keeps managed dependencies current and blocks removing what code imports or names', () => {
+    let s = createStarterState('blank', 'Blank', false);
+    const section = home(s).rootIds[0];
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'stack' }]).state;
+    const stackId = (home(s).nodes[section] as InstanceNode).slots!.content.at(-1)!;
+    s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: stackId, componentId: 'stats.row' }]).state;
+    const r = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: stackId, name: 'Wrap' }]);
+    s = r.state;
+    const wrap = s.components[r.results[0].definitionId as string];
+    const nested = Object.values(wrap.tree!.nodes).find((n) => n.kind === 'instance')!;
+    s = applyOperations(s, [{ type: 'node.remove', owner: { kind: 'component', id: wrap.id }, nodeId: nested.id }]).state;
+    expect(s.components[wrap.id].dependencies).toBeUndefined();
+    // A code component importing the wrapper's generated file keeps it installed.
+    const target = `${wrap.id.replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase()}.svelte`;
+    s = applyOperations(s, [
+      { type: 'node.remove', owner: owner(s), nodeId: r.results[0].nodeId as string },
+      { type: 'component.createCode', name: 'Uses wrap', source: `<script>\n\timport W from '../generated/${target}';\n</script>\n<W />\n<p style="color: var(--so-color-custom-teal)">x</p>\n` },
+      { type: 'token.create', group: 'color', label: 'Teal', value: '#008080' }
+    ]).state;
+    expect(() => applyOperations(s, [{ type: 'component.remove', definitionId: wrap.id }])).toThrow(/needed by/);
+    expect(() => applyOperations(s, [{ type: 'token.remove', tokenId: 'color.custom-teal' }])).toThrow(/written into the source/);
+  });
+
+  it('rejects variant rules on elements that render nothing', () => {
+    const f = fork(fresh(), 'features.grid');
+    const variant = Object.keys(f.state.components[f.id].variants!)[0];
+    expect(() => applyOperations(f.state, [{ type: 'node.setStyle', owner: { kind: 'component', id: f.id }, nodeId: 'cards', variant, scope: 'base', property: 'gap', value: '1px' }])).toThrow(/render no element/);
+  });
+
+  it('checks enum options in use against the new theme, ignoring pinned placements', async () => {
+    const { getTheme } = await import('@catalogue/index');
+    const altHero = getTheme('foundation-alt').components.find((c) => c.componentId === 'hero.split')!;
+    altHero.properties.mood = { type: 'enum', label: 'Mood', default: 'calm', options: [{ value: 'calm', label: 'Calm' }] };
+    try {
+      const s = fresh();
+      const hero = firstInstance(s, 'hero.split');
+      s.components[hero.definitionId].properties.mood = { type: 'enum', label: 'Mood', default: 'calm', options: [{ value: 'calm', label: 'Calm' }, { value: 'loud', label: 'Loud' }] };
+      hero.props.mood = 'loud';
+      expect(() => applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }])).toThrow(/has no option "loud"/);
+      hero.props.mood = 'calm';
+      expect(applyOperations(s, [{ type: 'theme.apply', themeId: 'foundation-alt' }]).state.site.themeId).toBe('foundation-alt');
+    } finally {
+      delete altHero.properties.mood;
+    }
+  });
+});

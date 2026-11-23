@@ -89,7 +89,10 @@ describe('code component overrides', () => {
 
   it('never gives a code component a second class attribute', () => {
     let s = fresh();
-    s = applyOperations(s, [{ type: 'component.createCode', name: 'Badge', source: '<script>\n\tlet { class: cls = \'\' } = $props();\n</script>\n<span class={cls}>Hi</span>\n', properties: { class: { type: 'string', label: 'Class', default: '' } } }]).state;
+    const source = '<script>\n\tlet { class: cls = \'\' } = $props();\n</script>\n<span class={cls}>Hi</span>\n';
+    // "class" can never be a declared property, so it cannot be emitted twice that way either.
+    expect(() => applyOperations(s, [{ type: 'component.createCode', name: 'Badge', source, properties: { class: { type: 'string', label: 'Class', default: '' } } }])).toThrow(/reserved/);
+    s = applyOperations(s, [{ type: 'component.createCode', name: 'Badge', source }]).state;
     const defId = Object.values(s.components).find((d) => d.name === 'Badge')!.id;
     const ins = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, definitionId: defId }]);
     s = ins.state;

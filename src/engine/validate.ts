@@ -1,7 +1,9 @@
-import type { ProjectState } from '@shared/types';
-import { isBinding } from '@shared/types';
+import type { ProjectState, ResponsiveStyles } from '@shared/types';
+import { ELEMENT_TAGS, TEXT_TAGS, isBinding } from '@shared/types';
 import { validateRoute } from '@shared/routes';
-import { allTrees, childLists, displayName } from './tree';
+import { allTrees, childLists, displayName, subtreeIds } from './tree';
+import { boundSchema } from './schema';
+import { declaredTokens, findTokenCycle } from './tokens';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -60,6 +62,8 @@ export function validateState(state: ProjectState): Diagnostic[] {
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: an element uses the property "${b.$prop}", which the component does not have.`, owner, nodeId: id });
         if ('$item' in b && !inRepeat)
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: an element shows a list item field outside its list.`, owner, nodeId: id });
+        else if ('$item' in b && !boundSchema(def, id, b))
+          out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: an element shows the item field "${b.$item}", which its list does not have.`, owner, nodeId: id });
       }
       for (const cl of childLists(n)) cl.ids.forEach((c) => check(c, inRepeat || n.kind === 'repeat'));
     };
@@ -106,8 +110,99 @@ export function validateState(state: ProjectState): Diagnostic[] {
     };
     for (const n of Object.values(tree.nodes)) walk(n, n.id);
   }
+  out.push(...structureDiagnostics(state));
   for (const a of Object.values(state.assets.assets)) {
     if (a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
+  }
+  return out;
+}
+
+const ELEMENT_TAG_SET = new Set<string>(ELEMENT_TAGS);
+const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
+
+/**
+ * Checks that catch documents edited outside the editor: unknown HTML tags, slots that do not match their
+ * definition, definitions that contain themselves, and site styles that loop or point at nothing.
+ */
+function structureDiagnostics(state: ProjectState): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const tokenIds = new Set(declaredTokens(state).map((t) => t.id));
+  const groupOf = new Map(declaredTokens(state).map((t) => [t.id, t.group]));
+  const checkStyles = (rs: ResponsiveStyles | undefined, label: string, owner: Diagnostic['owner'], nodeId?: string) => {
+    for (const scope of Object.values(rs ?? {})) {
+      for (const v of Object.values(scope ?? {})) {
+        if (v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' && !tokenIds.has((v as { token: string }).token))
+          out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${label}: a style uses the site style "${(v as { token: string }).token}", which does not exist.`, owner, nodeId });
+      }
+    }
+  };
+  for (const { owner, tree, label } of allTrees(state)) {
+    const def = owner.kind === 'component' ? state.components[owner.id] : undefined;
+    // Theme definitions are fixed theme data, checked when the theme is built.
+    if (def?.owner === 'theme') continue;
+    for (const n of Object.values(tree.nodes)) {
+      if (n.kind === 'element' && !ELEMENT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported element tag.`, owner, nodeId: n.id });
+      if (n.kind === 'text' && !TEXT_TAG_SET.has(n.tag)) out.push({ severity: 'error', code: 'TAG_INVALID', message: `${label}: "${String(n.tag)}" is not a supported text tag.`, owner, nodeId: n.id });
+      if (n.kind === 'slot' && !def) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: slots can only be placed inside a component definition.`, owner, nodeId: n.id });
+      else if (n.kind === 'slot' && !Object.hasOwn(def!.slots ?? {}, n.slot))
+        out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });
+      if (n.kind === 'instance') {
+        const target = state.components[n.definitionId];
+        for (const s of Object.keys(n.slots ?? {}))
+          if (target && !Object.hasOwn(target.slots ?? {}, s))
+            out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: content is placed in "${s}", which ${target.name} does not have.`, owner, nodeId: n.id });
+        for (const o of Object.values(n.overrides ?? {})) checkStyles(o, label, owner, n.id);
+      }
+      checkStyles(n.styles, label, owner, n.id);
+    }
+    if (def) {
+      for (const v of Object.values(def.variants ?? {})) for (const [nid, st] of Object.entries(v.styles ?? {})) checkStyles(st, label, owner, nid);
+      const reachable = new Set(tree.rootIds.flatMap((r) => subtreeIds(tree, r)));
+      if (def.kind === 'managed')
+        for (const s of Object.keys(def.slots ?? {}))
+          if (!Object.values(tree.nodes).some((n) => n.kind === 'slot' && n.slot === s && reachable.has(n.id)))
+            out.push({ severity: 'warning', code: 'SLOT_UNPLACED', message: `${label}: the "${def.slots![s].label}" slot is declared but not placed, so content put there will not show.`, owner });
+    }
+  }
+  for (const [id, v] of [...Object.entries(state.tokens.overrides), ...state.tokens.custom.map((t) => [t.id, t.value] as const)]) {
+    const isFamily = !!v && typeof v === 'object' && 'family' in v;
+    const r = (isFamily ? (v as { family: unknown }).family : v) as unknown;
+    if (!r || typeof r !== 'object' || !('token' in (r as object))) continue;
+    const ref = (r as { token: unknown }).token;
+    const want = isFamily ? 'font' : groupOf.get(id);
+    if (typeof ref !== 'string') out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `The site style "${id}" has a malformed reference.` });
+    else if (!tokenIds.has(ref)) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `The site style "${id}" refers to "${ref}", which does not exist.` });
+    else if (want && groupOf.get(ref) !== want) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `The site style "${id}" refers to "${ref}", which is not a ${want} style.` });
+  }
+  const cycle = findTokenCycle(state);
+  if (cycle) out.push({ severity: 'error', code: 'TOKEN_CYCLE', message: `The site style "${cycle}" refers back to itself through other styles.` });
+  // Definitions that place themselves, directly or through others, can never render.
+  const deps = (id: string): string[] => {
+    const d = state.components[id];
+    if (!d) return [];
+    // Managed definitions depend on what their tree places; code declares its dependencies.
+    const ids = new Set(d.kind === 'code' ? (d.dependencies ?? []) : []);
+    for (const n of Object.values(d.tree?.nodes ?? {})) if (n.kind === 'instance') ids.add(n.definitionId);
+    return [...ids];
+  };
+  const state_ = new Map<string, 'open' | 'done'>();
+  const visit = (id: string, path: string[]): string[] | null => {
+    if (state_.get(id) === 'done') return null;
+    if (state_.get(id) === 'open') return [...path.slice(path.indexOf(id)), id];
+    state_.set(id, 'open');
+    for (const dep of deps(id)) {
+      const c = visit(dep, [...path, id]);
+      if (c) return c;
+    }
+    state_.set(id, 'done');
+    return null;
+  };
+  for (const id of Object.keys(state.components).sort()) {
+    const c = visit(id, []);
+    if (c) {
+      out.push({ severity: 'error', code: 'DEF_CYCLE', message: `${c.map((x) => state.components[x]?.name ?? x).join(' → ')}: a component cannot contain itself.`, owner: { kind: 'component', id: c[0] } });
+      break;
+    }
   }
   return out;
 }
