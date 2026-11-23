@@ -167,8 +167,8 @@ function registerIpc() {
   handle('project:redo', () => controller.session?.redo());
   handle('project:importAssets', (paths?: string[]) => controller.importAssets(paths));
   // Export builds from the project folder and needs the writer lock (spec 20).
-  handle('project:exportSource', () => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportSource()));
-  handle('project:exportStatic', () => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportStatic()));
+  handle('project:exportSource', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportSource(format === 'zip' ? 'zip' : 'folder')));
+  handle('project:exportStatic', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportStatic(format === 'zip' ? 'zip' : 'folder')));
   handle('project:retryPreview', () => controller.startRuntime());
   handle('project:repairDependencies', () => controller.repairDependencies());
   handle('project:readSource', (id: string) => controller.readSource(id));
@@ -185,7 +185,8 @@ function registerIpc() {
   handle('project:flush', async () => undefined);
   // Development-only hooks used by the end-to-end tests in place of native save dialogs.
   if (!app.isPackaged) {
-    handle('test:exportStatic', (dest: string) => controller.buildStaticTo(dest));
+    handle('test:exportStatic', (dest: string, format?: unknown) => controller.buildStaticTo(dest, format === 'zip' ? 'zip' : 'folder'));
+    handle('test:exportSource', (dest: string, format?: unknown) => controller.exportSourceTo(dest, format === 'zip' ? 'zip' : 'folder'));
   }
   handle('ai:providers', () => providerStatuses());
   handle('ai:setKey', async (p: ProviderId, key: string | null) => {

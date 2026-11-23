@@ -744,6 +744,11 @@ export class ProjectSession extends EventEmitter {
   // Commands
   // -------------------------------------------------------------------------
 
+  /** Run `fn` while holding the writer lock, so no edit or regeneration lands while it reads the project. */
+  exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    return this.serialize(fn);
+  }
+
   private serialize<T>(fn: () => Promise<T>): Promise<T> {
     const p = this.writing.then(fn, fn);
     this.writing = p.catch(() => undefined);

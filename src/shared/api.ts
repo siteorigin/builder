@@ -97,6 +97,9 @@ export interface ProgressEvent {
   detail?: string;
 }
 
+/** Exports are written as a new folder or a single ZIP file. */
+export type ExportFormat = 'folder' | 'zip';
+
 export interface ExportResult {
   ok: boolean;
   path?: string;
@@ -204,8 +207,8 @@ export interface BuilderApi {
     undo(): Promise<ApplyResult>;
     redo(): Promise<ApplyResult>;
     importAssets(paths?: string[]): Promise<{ ok: boolean; assetIds: string[]; message?: string }>;
-    exportSource(): Promise<ExportResult>;
-    exportStatic(): Promise<ExportResult>;
+    exportSource(format?: ExportFormat): Promise<ExportResult>;
+    exportStatic(format?: ExportFormat): Promise<ExportResult>;
     retryPreview(): Promise<void>;
     repairDependencies(): Promise<void>;
     readSource(definitionId: string): Promise<{ source: string; hash: string; path: string; editable: boolean }>;

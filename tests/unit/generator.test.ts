@@ -6,7 +6,8 @@ import { installComponent, makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
 import { validateStyleValue } from '@shared/styles';
 import { applyOperations } from '@engine/apply';
-import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, generateManagedComponent, generateProject, js, propLocals } from '@generator/index';
+import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, generateManagedComponent, generateProject, js, propLocals, resolveLink } from '@generator/index';
+import { externalLink } from '@shared/links';
 import { usedIcons } from '@generator/runtime-files';
 import { placeholderImageCount } from '@generator/checks';
 
@@ -224,6 +225,28 @@ describe('links and buttons', () => {
     expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{`\$\{uid\}-explore-heading`\}/);
     expect(footer).toMatch(/<h2 [^>]*id=\{`\$\{uid\}-explore-heading`\}/);
     expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{`\$\{uid\}-contact-heading`\}/);
+  });
+});
+
+describe('email links', () => {
+  const href = (target: string) => resolveLink({ type: 'email', target }, { state: fresh() })!.href;
+
+  it('writes valid mailto: URLs that the preview link check accepts', () => {
+    expect(href('hello@example.com')).toBe('mailto:hello@example.com');
+    expect(href('first.last+news@example.com')).toBe('mailto:first.last+news@example.com');
+    expect(href('100%off@example.com')).toBe('mailto:100%25off@example.com');
+    expect(externalLink(href('100%off@example.com'))).toMatchObject({ kind: 'email', target: '100%off@example.com' });
+    expect(externalLink(href('a@example.com,b@example.com'))).toMatchObject({ kind: 'email', target: 'a@example.com, b@example.com' });
+  });
+
+  it('keeps a subject, escaping only what is unsafe', () => {
+    expect(href('hi@example.com?subject=50% off today')).toBe('mailto:hi@example.com?subject=50%25%20off%20today');
+    expect(href('hi@example.com?subject=Hello%20there')).toBe('mailto:hi@example.com?subject=Hello%20there');
+    expect(externalLink(href('hi@example.com?subject=50% off #1'))).toMatchObject({ kind: 'email' });
+  });
+
+  it('cannot smuggle extra recipients or a fragment through the address', () => {
+    expect(href('a#b@example.com')).toBe('mailto:a%23b@example.com');
   });
 });
 

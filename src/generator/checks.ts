@@ -107,7 +107,10 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
 /** How many images on the site's pages and shell render as placeholders because no image is chosen yet. */
 export function placeholderImageCount(state: ProjectState): number {
   let count = 0;
-  const trees = [state.site.shell.header, state.site.shell.footer, ...state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean)];
+  const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
+  // The header and footer only render when at least one page uses them.
+  const shell = pages.some((p) => p.shell !== 'none') ? [state.site.shell.header, state.site.shell.footer] : [];
+  const trees = [...shell, ...pages];
   for (const tree of trees)
     walkRendered(state, tree, {
       image: (n, scope) => {

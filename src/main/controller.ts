@@ -1,20 +1,25 @@
 import { app, BrowserWindow, dialog, shell } from 'electron';
 import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { watch, type FSWatcher } from 'node:fs';
 import { existsSync, lstatSync, mkdtempSync, promises as fs } from 'node:fs';
-import { basename, extname, isAbsolute, join, normalize, relative, sep } from 'node:path';
+import { basename, extname, isAbsolute, join, normalize, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CreateProjectOptions, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RuntimeState } from '@shared/api';
+import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
+import type { ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { assetUsages, sourceHash } from '@engine/apply';
-import { generateManagedComponent, generatePage, defFile } from '@generator/index';
+import { basePath, generateManagedComponent, generatePage, defFile } from '@generator/index';
+import { placeholderImageCount } from '@generator/checks';
+import { zipDirectory } from './zip';
+import { copyProjectSource, editedGeneratedFile, exportedAssetFilter, finishExportedSource, listFiles, projectFingerprint, projectReadme, publishFolder, uniqueChild } from './export';
 import { ProjectLockedError, ProjectSession } from './project/session';
 import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { importAsset } from './project/assets';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
-import { DevServer, buildProject, dependenciesReady, freePort, prepareDependencies } from './runtime/manager';
+import { DevServer, buildProject, dependenciesReady, prepareDependencies } from './runtime/manager';
 import { addRecent, isTrusted, loadSettings, trust } from './settings';
 import { newId } from '@shared/ids';
 
@@ -27,6 +32,11 @@ export function defaultProjectsFolder(): string {
 
 export function resourcesDir(): string {
   return app.isPackaged ? process.resourcesPath : app.getAppPath();
+}
+
+/** Licence notice for the Business starter's sample images. */
+function starterNotice(): string {
+  return join(resourcesDir(), 'resources', 'starter-assets', 'NOTICE.md');
 }
 
 async function configHash(dir: string): Promise<string> {
@@ -113,6 +123,7 @@ export class Controller {
       if (lock.packages?.['']) lock.packages[''].name = pkg.name;
       await fs.writeFile(lockPath, JSON.stringify(lock, null, '\t') + '\n');
       await fs.writeFile(join(dir, 'README.md'), projectReadme(name));
+      const notice = starterNotice();
       const assetsDir = join(resourcesDir(), 'resources', 'starter-assets');
       const withImages = opts.starter === 'business' && opts.sampleImages && existsSync(assetsDir);
       const state = createStarterState(opts.starter, name, withImages);
@@ -127,6 +138,7 @@ export class Controller {
           record.description = 'Sample image bundled with the Business starter. Replace it with your own.';
           state.assets.assets[a.id] = record;
         }
+        if (existsSync(notice)) await fs.copyFile(notice, join(dir, 'NOTICE.md'));
       }
       if (signal.aborted) throw new Error('Cancelled');
       const session = await ProjectSession.create(dir, state);
@@ -444,60 +456,151 @@ export class Controller {
   // Export
   // -------------------------------------------------------------------------
 
-  async exportSource(): Promise<ExportResult> {
+  async exportSource(format: ExportFormat = 'folder'): Promise<ExportResult> {
+    const blocked = this.exportBlocked();
+    if (blocked) return blocked;
+    const dest = await this.chooseExportTarget('source', format);
+    if (!dest) return { ok: false, message: '', warnings: [] };
+    return this.exportSourceTo(dest, format);
+  }
+
+  async exportStatic(format: ExportFormat = 'folder'): Promise<ExportResult> {
+    const blocked = this.exportBlocked();
+    if (blocked) return blocked;
+    const dest = await this.chooseExportTarget('site', format);
+    if (!dest) return { ok: false, message: '', warnings: [] };
+    return this.buildStaticTo(dest, format);
+  }
+
+  private exportBlocked(): ExportResult | null {
     const s = this.session;
     if (!s) return { ok: false, message: 'No project open.', warnings: [] };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish before exporting.', warnings: [] };
     if (s.conflicts.length) return { ok: false, message: 'Resolve file conflicts before exporting.', warnings: [] };
-    const r = await dialog.showSaveDialog(this.getWindow()!, { title: 'Export source project', defaultPath: join(app.getPath('documents'), `${slugify(s.state.site.name) || 'website'}-source`), buttonLabel: 'Export' });
-    if (r.canceled || !r.filePath) return { ok: false, message: '', warnings: [] };
-    if (existsSync(r.filePath)) return { ok: false, message: 'Choose a new folder; the export never overwrites an existing location.', warnings: [] };
-    await copyProjectSource(s.dir, r.filePath);
-    this.exportPaths.add(r.filePath);
-    return { ok: true, path: r.filePath, message: 'Source project exported.', warnings: ['Private files such as .env, keys and credentials were left out.'], revision: s.revision };
+    return null;
   }
 
-  async exportStatic(): Promise<ExportResult> {
-    const s = this.session;
-    if (!s) return { ok: false, message: 'No project open.', warnings: [] };
-    if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish before exporting.', warnings: [] };
-    if (s.conflicts.length) return { ok: false, message: 'Resolve file conflicts before exporting.', warnings: [] };
-    const r = await dialog.showSaveDialog(this.getWindow()!, { title: 'Export static website', defaultPath: join(app.getPath('documents'), `${slugify(s.state.site.name) || 'website'}-site`), buttonLabel: 'Export' });
-    if (r.canceled || !r.filePath) return { ok: false, message: '', warnings: [] };
-    return this.buildStaticTo(r.filePath);
-  }
-
-  /** Build the production site and copy it to `dest`. Used by export and tests. */
-  async buildStaticTo(dest: string): Promise<ExportResult> {
+  /**
+   * Folders: pick a parent folder and export into a new folder inside it (my-site-site, my-site-site-2, …), so
+   * there is no "Replace?" prompt that the export would then refuse. ZIP files: a normal save dialog, which asks
+   * before replacing; a name typed without ".zip" never lands on an existing file unasked.
+   */
+  private async chooseExportTarget(kind: 'site' | 'source', format: ExportFormat): Promise<string | null> {
     const s = this.session!;
-    if (existsSync(dest)) return { ok: false, message: 'Choose a new folder; the export never overwrites an existing location.', warnings: [] };
-    const revision = s.revision;
-    const before = await this.sourceFingerprint();
+    const base = `${slugify(s.state.site.name) || 'website'}-${kind}`;
+    const docs = app.getPath('documents');
+    const what = kind === 'site' ? 'website' : 'source project';
+    if (format === 'zip') {
+      const r = await dialog.showSaveDialog(this.getWindow()!, { title: `Export ${what} as a ZIP file`, defaultPath: join(docs, `${base}.zip`), filters: [{ name: 'ZIP archive', extensions: ['zip'] }], buttonLabel: 'Export', properties: ['showOverwriteConfirmation', 'createDirectory'] });
+      if (r.canceled || !r.filePath) return null;
+      if (/\.zip$/i.test(r.filePath)) return r.filePath;
+      let zip = `${r.filePath}.zip`;
+      for (let i = 2; existsSync(zip); i++) zip = `${r.filePath}-${i}.zip`;
+      return zip;
+    }
+    const r = await dialog.showOpenDialog(this.getWindow()!, { title: `Choose where to save the ${what} folder`, defaultPath: docs, buttonLabel: 'Export here', properties: ['openDirectory', 'createDirectory'] });
+    if (r.canceled || !r.filePaths[0]) return null;
+    return uniqueChild(r.filePaths[0], base);
+  }
+
+  /** Why `dest` cannot receive an export, or null. */
+  private badExportTarget(s: ProjectSession, dest: string, format: ExportFormat): string | null {
+    if (format === 'folder' && existsSync(dest)) return 'Choose a new folder; the export never overwrites an existing location.';
+    const rel = relative(s.dir, dest);
+    if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return 'Choose a location outside the project folder.';
+    return null;
+  }
+
+  /** Put a finished folder in place, reporting a location that appeared in the meantime instead of merging into it. */
+  private async publish(from: string, dest: string): Promise<string | null> {
+    try {
+      await publishFolder(from, dest);
+      return null;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'EEXIST') return 'Choose a new folder; the export never overwrites an existing location.';
+      throw e;
+    }
+  }
+
+  /** Export the editable project to `dest` (a new folder, or a ZIP file). Used by export and tests. */
+  async exportSourceTo(dest: string, format: ExportFormat = 'folder'): Promise<ExportResult> {
+    const s = this.session!;
+    const bad = this.badExportTarget(s, dest, format);
+    if (bad) return { ok: false, message: bad, warnings: [] };
+    const warnings = ['Private files such as .env, keys and credentials were left out.'];
+    return this.withStaging(async (staging) => {
+      const folder = join(staging, 'project');
+      const snap = await this.snapshotSource(s, folder);
+      if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
+      if (format === 'zip') await zipDirectory(folder, dest, `${slugify(snap.state.site.name) || 'website'}-source`);
+      else {
+        const problem = await this.publish(folder, dest);
+        if (problem) return { ok: false, message: problem, warnings: [] };
+      }
+      this.exportPaths.add(dest);
+      return { ok: true, path: dest, message: format === 'zip' ? 'Source project exported as a ZIP file.' : 'Source project exported.', warnings, revision: snap.revision };
+    });
+  }
+
+  /** Build the production site and copy it to `dest` (a new folder, or a ZIP file). Used by export and tests. */
+  async buildStaticTo(dest: string, format: ExportFormat = 'folder'): Promise<ExportResult> {
+    const s = this.session!;
+    const bad = this.badExportTarget(s, dest, format);
+    if (bad) return { ok: false, message: bad, warnings: [] };
     // Build an isolated snapshot so the running preview and later edits cannot mix into the output.
-    if (!(await isTrusted(s.dir, await configHash(s.dir)))) return { ok: false, message: "This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.", warnings: [] };
+    return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format));
+  }
+
+  /** A fresh staging folder per export: only the folder created here is ever removed. */
+  private async withStaging(fn: (staging: string) => Promise<ExportResult>): Promise<ExportResult> {
     const stagingRoot = join(app.getPath('userData'), 'build-staging');
     await fs.mkdir(stagingRoot, { recursive: true });
-    // A fresh folder per export: only the folder created here is ever removed.
     const staging = mkdtempSync(join(stagingRoot, 'export-'));
     try {
-      return await this.buildFromStaging(s, staging, dest, revision, before);
+      return await fn(staging);
     } finally {
       await fs.rm(staging, { recursive: true, force: true });
     }
   }
 
-  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, revision: number, before: string): Promise<ExportResult> {
-    await copyProjectSource(s.dir, staging);
-    await fs.symlink(join(s.dir, 'node_modules'), join(staging, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
-    const build = await buildProject(staging);
+  /**
+   * Copy a consistent snapshot of the project while holding the writer lock: generated files must match their
+   * manifest, and nothing may change on disk while the copy runs. A snapshot that will be built must carry the
+   * build configuration the user trusted, because the build runs the copy. The state returned is the one the
+   * files were copied from, so everything said about the export describes this snapshot.
+   */
+  private snapshotSource(s: ProjectSession, dest: string, opts: { forBuild?: boolean } = {}): Promise<{ ok: true; revision: number; state: ProjectState } | { ok: false; message: string }> {
+    const stop = (message: string) => ({ ok: false as const, message });
+    return s.exclusive(async () => {
+      // The native dialog and the queue for the lock both give the project time to change.
+      if (this.session !== s) return stop('The project was closed before the export started.');
+      const blocked = this.exportBlocked();
+      if (blocked) return stop(blocked.message);
+      const before = await projectFingerprint(s.dir);
+      const edited = await editedGeneratedFile(s.dir);
+      if (edited) return stop(`${edited} was changed outside SiteOrigin Builder. Open Project health to restore it, then export again.`);
+      await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
+      if (opts.forBuild) {
+        if (!(await isTrusted(s.dir, await configHash(dest)))) return stop("This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.");
+      } else await finishExportedSource(dest, s.state, starterNotice());
+      if ((await projectFingerprint(s.dir)) !== before) return stop('The project changed on disk while it was being exported. Export again.');
+      return { ok: true as const, revision: s.revision, state: structuredClone(s.state) };
+    });
+  }
+
+  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat): Promise<ExportResult> {
+    const project = join(staging, 'project');
+    const snap = await this.snapshotSource(s, project, { forBuild: true });
+    if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
+    const { revision, state } = snap;
+    await fs.symlink(join(s.dir, 'node_modules'), join(project, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+    const build = await buildProject(project);
     if (!build.ok) return { ok: false, message: 'The production build failed.', warnings: [stripAnsi(build.error ?? ''), ...build.logs.map(stripAnsi)].filter(Boolean).slice(0, 8) };
-    if (s.revision !== revision || (await this.sourceFingerprint()) !== before)
-      return { ok: false, message: 'The project changed during the build. Export again.', warnings: [] };
-    const out = join(staging, 'build');
+    const out = join(project, 'build');
     const warnings: string[] = [];
     // Verify page inventory.
-    for (const id of s.state.site.pageOrder) {
-      const p = s.state.pages[id];
+    for (const id of state.site.pageOrder) {
+      const p = state.pages[id];
       const file = join(out, p.route === '/' ? 'index.html' : join(p.route, 'index.html'));
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings };
       const html = await fs.readFile(file, 'utf8');
@@ -506,40 +609,61 @@ export class Controller {
     for (const f of await listFiles(out)) {
       if (/\.js$/.test(f) && /siteorigin-bridge|data-so-ctx/.test(await fs.readFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings };
     }
-    if (!s.state.site.baseUrl) warnings.push('No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.');
-    const placeholders = Object.values(s.state.pages).some((p) => JSON.stringify(p).includes('"assetId":null'));
-    if (placeholders) warnings.push('Some images have not been chosen yet and show placeholders.');
-    for (const a of Object.values(s.state.assets.assets)) if (a.bytes > 1_500_000) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
-    await fs.cp(out, dest, { recursive: true });
+    if (!state.site.baseUrl) warnings.push('No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.');
+    const placeholders = placeholderImageCount(state);
+    if (placeholders) warnings.push(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
+    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+    const pages = state.site.pageOrder.length;
+    if (format === 'zip') {
+      await zipDirectory(out, dest);
+      this.exportPaths.add(dest);
+      return { ok: true, path: dest, message: `Exported ${pages} pages as a ZIP file.`, warnings, revision };
+    }
+    const problem = await this.publish(out, dest);
+    if (problem) return { ok: false, message: problem, warnings };
     this.exportPaths.add(dest);
-    const previewUrl = await this.serveStatic(dest);
-    return { ok: true, path: dest, message: `Exported ${s.state.site.pageOrder.length} pages.`, warnings, revision, previewUrl };
+    // The export is done either way; a preview that cannot start only loses the preview button.
+    const previewUrl = await this.serveStatic(dest, basePath(state)).catch(() => undefined);
+    return { ok: true, path: dest, message: `Exported ${pages} pages.`, warnings, revision, previewUrl };
   }
 
-  private async sourceFingerprint(): Promise<string> {
-    const s = this.session!;
-    const files = (await listFiles(join(s.dir, 'src'))).sort();
-    const parts: string[] = [];
-    for (const f of files) parts.push(f + ':' + sha(await fs.readFile(join(s.dir, 'src', f))));
-    return sha(parts.join('\n'));
-  }
-
-  /** Serve an exported folder over loopback HTTP so it can be previewed as a real static site. */
-  private async serveStatic(root: string): Promise<string> {
+  /**
+   * Serve an exported folder over loopback HTTP so it can be previewed as a real static site, under the
+   * site's base path when it is published in a sub-folder.
+   */
+  private async serveStatic(root: string, base = ''): Promise<string> {
     this.staticServer?.close();
-    const port = await freePort();
+    this.staticServer = null;
     const types: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.woff2': 'font/woff2', '.txt': 'text/plain', '.xml': 'application/xml', '.gif': 'image/gif', '.avif': 'image/avif' };
-    this.staticServer = createServer(async (req, res) => {
+    const server = createServer(async (req, res) => {
       try {
-        let p = decodeURIComponent(new URL(req.url ?? '/', 'http://x').pathname);
-        if (p.endsWith('/')) p += 'index.html';
-        const abs = normalize(join(root, p));
+        const url = new URL(req.url ?? '/', 'http://x');
+        const pathname = decodeURIComponent(url.pathname);
+        if (base && (pathname === '/' || pathname === base)) {
+          res.writeHead(301, { location: `${base}/${url.search}` });
+          return res.end();
+        }
+        if (base && !pathname.startsWith(`${base}/`)) throw new Error('outside base');
+        let p = base ? pathname.slice(base.length) : pathname;
         const realRoot = await fs.realpath(root);
-        const real = await fs.realpath(abs);
-        const rel = relative(realRoot, real);
-        if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('denied');
+        const contained = async (path: string) => {
+          const real = await fs.realpath(normalize(join(root, path)));
+          const rel = relative(realRoot, real);
+          if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('denied');
+          return real;
+        };
+        let real = await contained(p);
+        if ((await fs.stat(real)).isDirectory()) {
+          // Pages are folders with an index.html: "/about" redirects to "/about/" as static hosts do.
+          if (!p.endsWith('/')) {
+            res.writeHead(301, { location: `${url.pathname}/${url.search}` });
+            return res.end();
+          }
+          p += 'index.html';
+          real = await contained(p);
+        }
         const data = await fs.readFile(real);
-        res.writeHead(200, { 'content-type': types[extname(abs)] ?? 'application/octet-stream' });
+        res.writeHead(200, { 'content-type': types[extname(real)] ?? 'application/octet-stream' });
         res.end(data);
       } catch {
         const nfPath = join(root, '404.html');
@@ -547,8 +671,16 @@ export class Controller {
         res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
         res.end(nf ?? 'Not found');
       }
-    }).listen(port, '127.0.0.1');
-    return `http://127.0.0.1:${port}/`;
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
+    this.staticServer = server;
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}${base}/`;
   }
 
   /** Only the open project, files inside it, or folders this app exported can be revealed. */
@@ -589,74 +721,3 @@ export function friendlyError(msg: string): string {
 }
 
 const stripAnsi = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, '');
-
-const EXCLUDE_TOP = new Set(['node_modules', '.siteorigin', '.svelte-kit', 'build', '.git', '.DS_Store']);
-
-/** Private files that never leave the project folder. */
-const PRIVATE_FILE = /^(\.env(\..*)?|\.npmrc|\.netrc|\.git-credentials|id_rsa.*|id_ed25519.*|id_ecdsa.*|id_dsa.*|.*\.(pem|key|p12|pfx|ppk|keystore|jks|asc|gpg))$/i;
-
-async function copyProjectSource(src: string, dest: string) {
-  await fs.cp(src, dest, {
-    recursive: true,
-    verbatimSymlinks: true,
-    filter: (p) => {
-      const rel = relative(src, p);
-      if (!rel) return true;
-      const top = rel.split(sep)[0];
-      if (EXCLUDE_TOP.has(top) || /\.tmp$/.test(p)) return false;
-      if (PRIVATE_FILE.test(basename(p))) return false;
-      try {
-        if (lstatSync(p).isSymbolicLink()) return false;
-      } catch {
-        return false;
-      }
-      return true;
-    }
-  });
-  // A clean, credential-free npm configuration.
-  await fs.writeFile(join(dest, '.npmrc'), 'engine-strict=true\n');
-}
-
-async function listFiles(dir: string, base = ''): Promise<string[]> {
-  const out: string[] = [];
-  for (const e of await fs.readdir(join(dir, base), { withFileTypes: true }).catch(() => [])) {
-    const rel = base ? join(base, e.name) : e.name;
-    if (e.isDirectory()) out.push(...(await listFiles(dir, rel)));
-    else out.push(rel);
-  }
-  return out;
-}
-
-function projectReadme(name: string): string {
-  return `# ${name}
-
-This website was created with [SiteOrigin Builder](https://siteorigin.com). It is a normal [SvelteKit](https://svelte.dev/docs/kit) project and does not need SiteOrigin Builder to run or build.
-
-## Requirements
-
-- Node.js 22.22 or newer (24 LTS recommended)
-
-## Commands
-
-\`\`\`sh
-npm ci          # install the locked dependencies
-npm run dev     # start a local development server
-npm run build   # build the static website into build/
-npm run preview # preview the production build
-\`\`\`
-
-The static website is written to \`build/\`. Upload the contents of that folder to any static host.
-
-## Project layout
-
-- \`src/routes/\` and \`src/lib/siteorigin/\`: generated SvelteKit pages, components and styles.
-- \`src/lib/siteorigin/custom/\`: code components you wrote. These are yours to edit.
-- \`siteorigin/\` and \`siteorigin.project.json\`: SiteOrigin Builder's editable documents. Keep them if you want to keep editing visually.
-
-Files generated by SiteOrigin Builder start with a comment. If you edit them by hand, SiteOrigin Builder keeps your version and asks before regenerating them.
-
-## Notices
-
-The Foundation theme is licensed under GPL-3.0-or-later. Icons come from Lucide (ISC licence). Inter and Fraunces fonts are licensed under the SIL Open Font License 1.1 and are installed from npm (@fontsource-variable).
-`;
-}

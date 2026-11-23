@@ -128,6 +128,19 @@ export interface ResolveContext {
   state: ProjectState;
 }
 
+/**
+ * An email target as a valid mailto: URL. Addresses are percent-encoded (keeping "@", "+" and the commas between
+ * recipients readable); an optional ?subject=… keeps its existing escapes and gains the ones it is missing.
+ */
+export function encodeMailto(target: string): string {
+  const q = target.indexOf('?');
+  const address = (q < 0 ? target : target.slice(0, q)).trim();
+  const encoded = encodeURIComponent(address).replace(/%40/g, '@').replace(/%2B/g, '+').replace(/%2C/g, ',');
+  if (q < 0) return encoded;
+  const query = target.slice(q + 1).replace(/%(?![0-9a-f]{2})/gi, '%25').replace(/[\s"<>#]/g, (c) => encodeURIComponent(c));
+  return `${encoded}?${query}`;
+}
+
 export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveContext): { href: string; newTab?: boolean } | null {
   if (!link || link.type === 'none' || !link.target) return null;
   let href = '';
@@ -143,7 +156,7 @@ export function resolveLink(link: LinkValue | null | undefined, ctx: ResolveCont
       href = link.target;
       break;
     case 'email':
-      href = `mailto:${link.target}`;
+      href = `mailto:${encodeMailto(link.target)}`;
       break;
     case 'tel':
       href = `tel:${link.target.replace(/[^+0-9]/g, '')}`;

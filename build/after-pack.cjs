@@ -21,7 +21,7 @@ exports.default = async function afterPack(context) {
   const work = mkdtempSync(join(tmpdir(), 'so-deps-'));
   const cache = join(resources, 'npm-cache');
   rmSync(cache, { recursive: true, force: true });
-  for (const f of ['package.json', 'package-lock.json', '.npmrc']) cpSync(join(root, 'templates/sveltekit-brochure/files', f), join(work, f));
+  for (const f of ['package.json', 'package-lock.json']) cpSync(join(root, 'templates/sveltekit-brochure/files', f), join(work, f));
   const npmCli = join(root, 'node_modules', 'npm', 'bin', 'npm-cli.js');
   const cpus = arch === 'universal' ? ['x64', 'arm64'] : [arch];
   for (const cpu of cpus) {

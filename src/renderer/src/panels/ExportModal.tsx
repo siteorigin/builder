@@ -1,21 +1,27 @@
 import { useState } from 'react';
 import { ChevronRight, CircleCheck, Cloud, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
-import type { ExportResult } from '@shared/api';
+import type { ExportFormat, ExportResult } from '@shared/api';
 import { api, setState, useStore } from '../store';
-import { Modal, Spinner } from '../components/ui';
+import { Modal, Segmented, Spinner } from '../components/ui';
 
 export function ExportModal() {
   const aiBusy = useStore((s) => !!s.runStatus);
   const conflicts = useStore((s) => s.snapshot?.conflicts.length ?? 0);
   const [busy, setBusy] = useState<'static' | 'source' | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
+  const [format, setFormat] = useState<ExportFormat>('folder');
   const close = () => !busy && setState({ modal: null });
   const run = async (kind: 'static' | 'source') => {
     setBusy(kind);
     setResult(null);
-    const r = kind === 'static' ? await api.project.exportStatic() : await api.project.exportSource();
-    setBusy(null);
-    if (r.message || !r.ok) setResult(r);
+    try {
+      const r = kind === 'static' ? await api.project.exportStatic(format) : await api.project.exportSource(format);
+      if (r.message || !r.ok) setResult(r);
+    } catch (e) {
+      setResult({ ok: false, message: 'The export could not be completed.', warnings: [(e as Error).message] });
+    } finally {
+      setBusy(null);
+    }
   };
   const blocked = aiBusy ? 'Wait for the AI to finish before exporting.' : conflicts ? 'A project file changed outside SiteOrigin Builder. Resolve it in Project health before exporting.' : null;
   return (
@@ -24,6 +30,18 @@ export function ExportModal() {
         <p className="muted" style={{ margin: '0 0 4px' }}>
           Your website belongs to you. Put it on any web host, or hand it to a developer. It does not need SiteOrigin Builder to work.
         </p>
+        <div className="row" style={{ gap: 8, alignItems: 'center' }}>
+          <span className="muted" id="export-format-label">Save as</span>
+          <Segmented
+            label="Save as"
+            value={format}
+            onChange={(v) => !busy && setFormat(v)}
+            options={[
+              { value: 'folder', label: 'Folder' },
+              { value: 'zip', label: 'ZIP file' }
+            ]}
+          />
+        </div>
         {blocked && (
           <div className="scope-note site" role="status">
             <TriangleAlert />
@@ -39,7 +57,7 @@ export function ExportModal() {
           <span className="ico">{busy === 'static' ? <Spinner decorative /> : <Globe size={18} />}</span>
           <span className="grow">
             <strong>Website files, ready to upload</strong>
-            <span>Every page as a finished website folder. Upload it to any web host.</span>
+            <span>{format === 'zip' ? 'Every page as a finished website, in one ZIP file to upload to any web host.' : 'Every page as a finished website folder. Upload it to any web host.'}</span>
           </span>
           <ChevronRight className="chev" />
         </button>

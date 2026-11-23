@@ -4,9 +4,9 @@
 // `npm ci && npm run build`, as on a clean machine (slow, and needs the npm registry).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, delimiter, join, sep } from 'node:path';
-import { createProject, knownFailure, launch, scratch, step, withTimeout } from './harness.mjs';
+import { createProject, launch, scratch, step, withTimeout } from './harness.mjs';
 
 const BUILD = process.argv.includes('--build');
 const { WORK, cleanup } = scratch('export');
@@ -39,19 +39,41 @@ assert.ok(used, 'the starter uses at least one image');
 const usedFile = basename(used.file);
 
 step('export through the controller');
-const sourceOut = join(WORK, 'export-source');
-const staticOut = join(WORK, 'export-static');
-// Stand in for the native save dialogs: each call answers with the next destination.
-await app.evaluate(({ dialog }, paths) => {
-  const queue = [...paths];
+// Folder exports ask for a parent folder and create a new folder inside it, so nothing is ever replaced.
+const exportsDir = join(WORK, 'exports');
+mkdirSync(join(exportsDir, 'harbour-lane-studio-site'), { recursive: true });
+const sourceOut = join(exportsDir, 'harbour-lane-studio-source');
+const staticOut = join(exportsDir, 'harbour-lane-studio-site-2');
+const sourceZip = join(exportsDir, 'source.zip');
+const staticZip = join(exportsDir, 'site.zip');
+// Stand in for the native dialogs: folder pickers answer with the parent, save dialogs with the next ZIP.
+await app.evaluate(({ dialog }, { parent, zips }) => {
+  const queue = [...zips];
+  dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [parent] });
   dialog.showSaveDialog = async () => ({ canceled: false, filePath: queue.shift() });
-}, [sourceOut, staticOut]);
+}, { parent: exportsDir, zips: [sourceZip, staticZip] });
 const src = await withTimeout(win.evaluate(() => window.builder.project.exportSource()), 120000, 'Source export');
 assert.equal(src.ok, true, `source export succeeds: ${src.message}`);
 assert.equal(src.path, sourceOut);
 const stat = await withTimeout(win.evaluate(() => window.builder.project.exportStatic()), 300000, 'Static export');
 assert.equal(stat.ok, true, `static export succeeds: ${stat.message} ${stat.warnings?.join(' ')}`);
-assert.equal(stat.path, staticOut);
+assert.equal(stat.path, staticOut, 'an existing folder is never replaced: the export takes the next free name');
+assert.ok(!stat.warnings.some((w) => /placeholder/.test(w)), `no placeholder warning when every visible image is chosen: ${stat.warnings.join(' ')}`);
+
+step('ZIP exports');
+const srcZip = await withTimeout(win.evaluate(() => window.builder.project.exportSource('zip')), 120000, 'Source ZIP export');
+assert.equal(srcZip.ok, true, `source ZIP export succeeds: ${srcZip.message}`);
+assert.equal(srcZip.path, sourceZip);
+const statZip = await withTimeout(win.evaluate(() => window.builder.project.exportStatic('zip')), 300000, 'Static ZIP export');
+assert.equal(statZip.ok, true, `static ZIP export succeeds: ${statZip.message}`);
+assert.equal(statZip.path, staticZip);
+for (const zip of [sourceZip, staticZip]) assert.equal(readFileSync(zip).subarray(0, 4).toString('hex'), '504b0304', `${basename(zip)} is a ZIP file`);
+const listing = (zip) => spawnSync('unzip', ['-Z1', zip], { encoding: 'utf8' });
+const siteList = listing(staticZip);
+if (!siteList.error) {
+  assert.ok(siteList.stdout.split('\n').includes('about/index.html'), 'the site ZIP holds the prerendered pages at its root');
+  assert.ok(listing(sourceZip).stdout.split('\n').includes('harbour-lane-studio-source/package.json'), 'the source ZIP holds the project in one named folder');
+}
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 
@@ -84,12 +106,18 @@ const srcFiles = scan(sourceOut, 'source');
 for (const f of ['package.json', 'package-lock.json', 'siteorigin.project.json', 'vite.config.js', 'README.md']) assert.ok(srcFiles.includes(f), `source export includes ${f}`);
 assert.ok(!srcFiles.some((f) => /^(node_modules|build|\.svelte-kit)\//.test(f)), 'source export has no installed packages or build output');
 assert.ok(!srcFiles.some((f) => /(^|\/)\.env(\.|$)/.test(f)), 'source export has no .env files');
-await knownFailure('I09: deleted images ship in exports; export work in progress', () => noDeletedImage(srcFiles, 'source'));
+noDeletedImage(srcFiles, 'source');
+for (const f of ['jsconfig.json', 'NOTICE.md', 'src/lib/siteorigin/paths.json']) assert.ok(srcFiles.includes(f), `source export includes ${f}`);
+assert.ok(!srcFiles.includes('svelte.config.js'), 'no svelte.config.js: SvelteKit 3 reads its config from vite.config.js and rejects that file');
+assert.ok(!srcFiles.includes('.npmrc'), 'no engine-strict .npmrc in the export');
+assert.equal(JSON.parse(readFileSync(join(sourceOut, 'package.json'), 'utf8')).engines.node, '>=22.17.0');
+assert.match(readFileSync(join(sourceOut, 'README.md'), 'utf8'), /^# Harbour Lane Studio\n[^]*Node\.js 22\.17/);
 
 step('I09: scan the static export');
 const staticFiles = scan(staticOut, 'static');
 assert.ok(staticFiles.includes('index.html') && staticFiles.includes('about/index.html'), 'static export has the prerendered pages');
-await knownFailure('I09: deleted images ship in exports; export work in progress', () => noDeletedImage(staticFiles, 'static'));
+noDeletedImage(staticFiles, 'static');
+assert.ok(staticFiles.includes('favicon.svg'), 'static export has a favicon');
 const authoring = staticFiles.filter((f) => f === 'siteorigin.project.json' || f.startsWith('siteorigin/') || f.endsWith('.svelte'));
 assert.deepEqual(authoring, [], 'static export has no authoring metadata or sources');
 
