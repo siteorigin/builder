@@ -406,11 +406,23 @@ describe('a new project made while another is open', () => {
     spy.mockRestore();
     c.onSessionClosing = null;
     expect(r.ok).toBe(false);
-    expect(r.message).toMatch(/Another app opened the new project/);
+    expect(r.message).toMatch(/lock was taken or removed while it was being set up/);
     expect(c.session).toBeNull();
     // The handover it began is over: the next switch is not turned away.
     expect((await c.trustAndOpen(next)).ok).toBe(true);
     expect(c.session?.dir).toBe(next);
+  });
+
+  it('finishes the switch when a Cancel arrives while the open project is closing for it', async () => {
+    const current = await makeProject('current');
+    const parent = temp('parent');
+    const { c } = controller();
+    await openCurrent(c, current);
+    c.onSessionClosing = async () => c.cancelCreate();
+    const r = await c.create(orchid(parent));
+    c.onSessionClosing = null;
+    expect(r).toEqual({ ok: true });
+    expect(c.session?.dir).toBe(join(parent, 'orchid-garden'));
   });
 
   it('is never shown once the app is quitting', async () => {

@@ -374,8 +374,9 @@ export class Controller {
       }
       committed = true;
       staged.off('lock-lost', stop);
-      // Taken over (or quitting) while the open project was closing for it: it is not shown, but rolled back.
-      if (signal.aborted) throw new Error('Cancelled');
+      // Its lock lost while the open project was closing for it: it is not shown, but rolled back. A Cancel or a quit
+      // arriving now is too late to undo the switch, which finishes.
+      if (takenOver) throw new Error('Cancelled');
       // The preview writes its own output into the folder.
       own('.svelte-kit');
       attached = true;
@@ -388,7 +389,7 @@ export class Controller {
       // Keeping editing (or quitting) at the switch is no failure to explain: the dialog just makes way.
       // A handover that never reached the editor ends here, so later switches are not held up by it.
       if (committed && !attached) this.handingOver = false;
-      let msg = refused ? (refused.message ?? '') : takenOver ? 'Another app opened the new project while it was being set up, so it was left to that app.' : friendlyError((e as Error).message);
+      let msg = refused ? (refused.message ?? '') : takenOver ? 'The new project’s lock was taken or removed while it was being set up, so it was not opened.' : friendlyError((e as Error).message);
       const note = (more: string) => (msg = msg ? `${msg} ${more}` : more);
       // Once the project's own documents are being written it may be another app's: it opened the project before this
       // attempt had the lock (a lock file this attempt never made), or took it over since (Unlock in another window).
