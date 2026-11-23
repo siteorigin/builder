@@ -10,7 +10,7 @@ import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ModelCapabilities, ToolDefinition } from './types';
-import { catalogueIndex, compactNode, componentDetail, pageDetail, projectSummary, tokensSummary } from './context';
+import { agentProps, catalogueIndex, compactNode, componentDetail, pageDetail, projectSummary, tokensSummary } from './context';
 import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
@@ -145,7 +145,7 @@ const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...SELECTION_TOOLS, 'locat
  * plain question to the author. Nothing that changes the site, measures the live preview or builds the project.
  */
 export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'locate_field', 'request_clarification'];
-export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'style_selected_element']);
+export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element']);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export const FOCUSED_WINDOW_TOKENS = 64_000;
@@ -305,7 +305,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
         const out: Record<string, unknown> = {
           revision: host.revision(),
           owner: a.owner,
-          node: { ...n },
+          // Full props, with a table too large to show whole given every row ID and its cells shortened.
+          node: n.kind === 'instance' ? { ...n, props: agentProps(state.components[n.definitionId], n.props, state.pages, true) } : { ...n },
           displayName: displayName(state, n),
           parent: parent ? { parentId: parent.parentId, slot: parent.slot, index: parent.index, siblings: parent.list.length } : null
         };
@@ -443,6 +444,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       return runBrand(args as z.infer<typeof BRAND_ARGS>, host, callId);
     case 'update_selected_props':
     case 'edit_selected_list':
+    case 'edit_selected_table':
     case 'style_selected_element':
     case 'request_wider_scope':
       return runSelectionTool(name as keyof typeof SELECTION_ARGS, args, host, callId);

@@ -47,6 +47,7 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'instance.listInsert': 'node',
   'instance.listRemove': 'node',
   'instance.listMove': 'node',
+  'instance.editTable': 'node',
   'instance.setVariant': 'node',
   'token.set': 'wider',
   'token.create': 'wider',

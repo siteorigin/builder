@@ -44,9 +44,10 @@ function compileAll(files: Map<string, string>) {
 }
 
 describe('generated Svelte compiles', () => {
-  it('compiles every file of both starters, including the contact form', () => {
+  it('compiles every file of both starters, including the contact form and the data table', () => {
     const s = fresh();
     addToHome(s, 'contact.form');
+    addToHome(s, 'data.table', { rowHeaders: true });
     expect(compileAll(generateProject(s))).toEqual([]);
     expect(compileAll(generateProject(s, { instrument: true }))).toEqual([]);
     expect(compileAll(generateProject(createStarterState('blank', 'Blank', false)))).toEqual([]);

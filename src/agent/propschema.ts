@@ -6,6 +6,7 @@
 import type { ComponentDefinition, PropSchema, ScalarPropSchema } from '@shared/types';
 import { teaserFields } from '@shared/page-teasers';
 import { MAX_CHOICES } from '@engine/values';
+import { TABLE_LIMITS } from '@engine/table';
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -74,7 +75,26 @@ function scalarSchema(s: ScalarPropSchema): JsonSchema {
   }
 }
 
+/**
+ * A whole table in its short form: column names, then each row's texts in column order. Writing it replaces
+ * the table; one cell, row or column is changed by ID with instance.editTable instead.
+ */
+function tableSchema(description?: string): JsonSchema {
+  const text = (max: number): JsonSchema => (description ? { type: 'string', maxLength: max } : { type: 'string' });
+  return {
+    type: 'object',
+    ...(description ? { description: `${description}. Column names, then one row per entry with one text per column, in column order. Replaces the whole table.` } : {}),
+    properties: {
+      columns: { type: 'array', minItems: 1, maxItems: TABLE_LIMITS.columns, items: text(TABLE_LIMITS.label) },
+      rows: { type: 'array', maxItems: TABLE_LIMITS.rows, items: { type: 'array', maxItems: TABLE_LIMITS.columns, items: text(TABLE_LIMITS.cell) } }
+    },
+    required: ['columns', 'rows'],
+    additionalProperties: false
+  };
+}
+
 export function propJsonSchema(s: PropSchema): JsonSchema {
+  if (s.type === 'table') return tableSchema(s.label);
   if (s.type !== 'list') return scalarSchema(s);
   const properties: Record<string, JsonSchema> = { id: { type: 'string', description: 'Keep the existing item ID when editing an item. Omit it for a new item.' } };
   // A page list's fields left empty show the linked page's own values, which follow that page's later edits.
@@ -110,6 +130,10 @@ export function propsJsonSchema(def: Pick<ComponentDefinition, 'properties'>): J
 export function compactPropsSchema(def: Pick<ComponentDefinition, 'properties'>): JsonSchema {
   const properties: Record<string, JsonSchema> = {};
   for (const [k, s] of Object.entries(def.properties)) {
+    if (s.type === 'table') {
+      properties[k] = tableSchema();
+      continue;
+    }
     if (s.type !== 'list') {
       properties[k] = compactScalar(s);
       continue;

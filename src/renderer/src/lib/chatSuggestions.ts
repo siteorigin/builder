@@ -128,7 +128,15 @@ function contentOf(state: ProjectState, tree: NodeTree, rootIds: string[], top =
   };
   const field = (schema: PropSchema, v: unknown, key: string, traits: Map<string, ImageTraits>) => {
     if (schema.type === 'string' || schema.type === 'richtext') copy(v);
-    else if (schema.type === 'image') {
+    else if (schema.type === 'table') {
+      // A table's column names and cells are its copy, counted as one piece of text.
+      const t = (v && typeof v === 'object' ? v : schema.default) as { columns?: unknown; rows?: unknown };
+      const texts = [
+        ...(Array.isArray(t.columns) ? t.columns : []).map((c) => (c && typeof c === 'object' ? (c as { label?: unknown }).label : '')),
+        ...(Array.isArray(t.rows) ? t.rows : []).flatMap((r) => Object.values((r && typeof r === 'object' && (r as { cells?: object }).cells) || {}))
+      ];
+      copy(texts.filter((x) => typeof x === 'string' && x.trim()).join(' '));
+    } else if (schema.type === 'image') {
       const slot = slotOf(state, v, traits.get(key));
       if (slot) out.images.push(slot);
     } else if (schema.type === 'list' && Array.isArray(v)) {

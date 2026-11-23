@@ -536,6 +536,104 @@ if (!(await win.locator('[role="tree"]').first().isVisible())) await win.locator
 await win.waitForTimeout(300);
 await win.screenshot({ path: join(OUT, '15-layers.png') });
 
+step('a data table on About: find, insert, edit, undo, reopen and fit a phone (issue #179)');
+await win.locator('.rail [aria-label="Pages"]').click();
+await pageRow('About').click();
+await frame.locator('text=A small studio with a long view').first().waitFor();
+await win.getByRole('button', { name: 'Insert', exact: true }).click();
+const search = win.getByLabel('Search items to add');
+const firstResult = win.getByRole('listbox', { name: 'Results' }).getByRole('option').first();
+for (const q of ['comparison', 'timetable', 'table']) {
+  await search.fill(q);
+  await eventually(async () => assert.match(await firstResult.innerText(), /^Data table/, `"${q}" finds the Data table first`));
+}
+await search.press('Enter');
+await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Data table' }).waitFor();
+const tableEd = win.locator('#dock-panel-inspect [data-table="table"]');
+const previewRows = () => frame.locator('.so-table__table tbody tr');
+const headers = async () => (await frame.locator('.so-table__table thead th').allInnerTexts()).map((t) => t.trim());
+await eventually(async () => assert.equal(await previewRows().count(), 3, 'the table starts with three workshops'));
+assert.deepEqual(await headers(), ['Day', 'Workshop', 'Start time'], 'every column has a header cell');
+const activeLabel = () => win.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.labels?.[0]?.textContent?.trim() ?? '');
+
+// Add a fourth workshop, undo the addition, and redo it.
+await tableEd.getByRole('button', { name: 'Add row' }).click();
+await eventually(async () => assert.equal(await previewRows().count(), 4, 'a fourth row is added'));
+await eventually(async () => assert.equal(await activeLabel(), 'Day', 'focus lands in the new row\'s first cell'));
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(async () => assert.equal(await previewRows().count(), 3, 'undo takes the new row away'));
+await win.locator('[aria-label^="Redo"]').first().click();
+await eventually(async () => assert.equal(await previewRows().count(), 4, 'redo brings it back'));
+const rowHeads = tableEd.locator('.list-editor-head button.title');
+if ((await rowHeads.nth(3).getAttribute('aria-expanded')) !== 'true') await rowHeads.nth(3).click();
+await tableEd.getByLabel('Day', { exact: true }).fill('Friday');
+await win.keyboard.press('Tab');
+await tableEd.getByLabel('Workshop', { exact: true }).fill('Raku');
+await win.keyboard.press('Tab');
+await tableEd.getByLabel('Start time', { exact: true }).fill('17:00');
+await win.keyboard.press('Enter');
+await eventually(async () => assert.deepEqual((await previewRows().nth(3).locator('td').allInnerTexts()).map((t) => t.trim()), ['Friday', 'Raku', '17:00'], 'the new workshop shows in its row'));
+
+// A cell typed and then left by clicking a column's move button keeps what was typed (each step names its cell).
+await rowHeads.nth(0).click();
+await tableEd.getByLabel('Start time', { exact: true }).fill('11:00');
+await tableEd.getByRole('button', { name: 'Move column Start time left' }).click();
+await eventually(async () => assert.deepEqual(await headers(), ['Day', 'Start time', 'Workshop'], 'the column moves with its header'));
+await eventually(async () => assert.deepEqual((await previewRows().nth(0).locator('td').allInnerTexts()).map((t) => t.trim()), ['Monday', '11:00', 'Wheel throwing'], 'the typed time moved with its column'));
+await eventually(async () => assert.match(await tableEd.locator('[role="status"]').innerText(), /Column Start time moved to position 2 of 3/, 'the new place is announced'));
+assert.equal(await activeLabel(), 'Move column Start time left', 'focus stays on the button that moved the column');
+await tableEd.getByLabel('Column 3 name').fill('Class');
+await win.keyboard.press('Enter');
+await eventually(async () => assert.deepEqual(await headers(), ['Day', 'Start time', 'Class'], 'a renamed column keeps its cells'));
+// Remove row takes the row out and focus moves to the next row; Undo brings it back.
+await tableEd.getByRole('button', { name: 'Remove row Wednesday · 18:30' }).click();
+await eventually(async () => assert.equal(await previewRows().count(), 3, 'Remove row takes the row out'));
+await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.textContent?.trim()), 'Saturday · 09:30', 'focus moves to the next row'));
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(async () => assert.deepEqual((await previewRows().nth(1).locator('td').allInnerTexts()).map((t) => t.trim()), ['Wednesday', '18:30', 'Hand building'], 'undo puts the row back where it was'));
+await win.locator('#dock-panel-inspect').getByLabel('Caption', { exact: true }).fill('Weekly workshops');
+await win.keyboard.press('Enter');
+
+// The saved table survives closing and reopening the project.
+const savedTable = () => win.evaluate(async () => {
+  const s = await window.builder.project.snapshot();
+  const about = Object.values(s.state.pages).find((p) => p.title === 'About');
+  const node = Object.values(about.nodes).find((n) => n.kind === 'instance' && s.state.components[n.definitionId]?.componentId === 'data.table');
+  return node.props.table;
+});
+await eventually(async () => assert.equal((await savedTable()).rows.length, 4));
+const before179 = await savedTable();
+await win.evaluate(() => window.builder.projects.close());
+await win.waitForSelector('.welcome');
+const reopened = await win.evaluate((d) => window.builder.projects.open(d), dir);
+assert.ok(reopened.ok, `the project reopens: ${JSON.stringify(reopened)}`);
+await win.waitForSelector('.editor');
+assert.deepEqual(await savedTable(), before179, 'the reopened table has the same columns, rows, cells and IDs');
+await win.locator('.rail [aria-label="Pages"]').click();
+await pageRow('About').click();
+await eventually(async () => assert.equal(await previewRows().count(), 4, 'the reopened preview shows all four workshops'));
+
+// On a narrow phone the table scrolls inside its own region, and the page does not scroll sideways.
+const width = win.getByLabel('Preview width in pixels');
+await width.fill('320');
+await width.press('Enter');
+await eventually(async () => {
+  const fit = await frame.locator('html').evaluate(() => {
+    const region = document.querySelector('.so-table__scroll');
+    region.scrollLeft = region.scrollWidth;
+    const last = region.querySelector('thead th:last-child').getBoundingClientRect();
+    const box = region.getBoundingClientRect();
+    return { page: document.documentElement.scrollWidth, view: document.documentElement.clientWidth, region: region.scrollWidth, shown: region.clientWidth, last: [last.left, last.right], box: [box.left, box.right], focusable: region.tabIndex };
+  });
+  assert.equal(fit.view, 320, 'the preview is phone width');
+  assert.ok(fit.page <= fit.view, `the page does not scroll sideways (${fit.page} > ${fit.view})`);
+  assert.ok(fit.region > fit.shown, 'the table is wider than the phone, so its region scrolls');
+  assert.ok(fit.last[0] >= fit.box[0] - 1 && fit.last[1] <= fit.box[1] + 1, `the last column can be scrolled into view (${fit.last} within ${fit.box})`);
+  assert.equal(fit.focusable, 0, 'the scrolling region takes keyboard focus');
+});
+await win.screenshot({ path: join(OUT, '16-table-phone.png') });
+await win.getByRole('button', { name: 'Desktop', exact: true }).first().click();
+
 step('export static');
 const t0 = Date.now();
 const exportDir = join(WORK, 'export-static');
@@ -545,6 +643,10 @@ assert.equal(er.ok, true, `static export succeeds: ${er.message} ${er.warnings?.
 const about = readFileSync(join(exportDir, 'about/index.html'), 'utf8');
 assert.ok(about.includes('A small studio with a long view'), 'the About page is prerendered with its content');
 assert.doesNotMatch(about, /data-so-|siteorigin-bridge/, 'no editor markup in the export');
+assert.deepEqual([...about.matchAll(/<th scope="col"[^>]*>([^<]*)<\/th>/g)].map((m) => m[1]), ['Day', 'Start time', 'Class'], 'each exported column has a header cell');
+assert.match(about, /<caption id="([^"]+)"[^>]*>Weekly workshops<\/caption>/, 'the exported table has its caption');
+assert.match(about, /role="region" tabindex="0" aria-labelledby="[^"]+"/, 'the exported table scrolls in a named, focusable region');
+assert.match(about.replace(/<!--[\s\S]*?-->/g, ''), /<td[^>]*>Friday<\/td><td[^>]*>17:00<\/td><td[^>]*>Raku<\/td>/, 'the fourth workshop is exported with each cell under its column');
 assert.ok(readFileSync(join(exportDir, 'index.html'), 'utf8').includes('Rooms that work beautifully'), 'the exported home page has the edited heading');
 assert.ok(!readdirSync(exportDir).includes('.siteorigin'), 'no editor state in the export');
 

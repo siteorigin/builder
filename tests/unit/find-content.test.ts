@@ -90,6 +90,12 @@ describe('finding content', () => {
     expect(st.components[(st.site.shell.header.nodes[header] as InstanceNode).definitionId].kind).toBe('code');
     expect(named('header', header).every((k) => ['siteName', 'links.label', 'links.link', 'ctaLabel', 'ctaLink'].includes(k))).toBe(true);
     expect(named('header', header)).toContain('links.link');
+    // The data table's words around it are site content, never a custom code component's settings (issue #179).
+    const table = applyOperations(st, [{ type: 'node.insert', owner: { kind: 'page', id: contact.id }, componentId: 'data.table' }]);
+    const tableId = table.results[0].nodeId as string;
+    const tableFields = contentFields(table.state).filter((f) => f.owner.id === contact.id && f.nodeId === tableId);
+    expect([...new Set(tableFields.map((f) => (f.source?.kind === 'prop' ? f.source.prop : '?')))].sort()).toEqual(['caption', 'eyebrow', 'heading', 'lead']);
+    expect(tableFields.some((f) => f.custom)).toBe(false);
   });
 
   it('matches the words in order across spacing, case-insensitively unless asked, and never as a pattern', () => {

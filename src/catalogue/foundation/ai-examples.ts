@@ -197,5 +197,24 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
       ],
       submitLabel: 'Send enquiry'
     }
+  },
+  {
+    id: 'data-table-plans',
+    componentId: 'data.table',
+    keywords: ['table', 'timetable', 'schedule', 'comparison', 'compare', 'plans', 'hours', 'price list', 'rows', 'columns'],
+    description: 'A side-by-side plan comparison, with the first column naming each row',
+    props: {
+      heading: 'Compare plans',
+      caption: 'What each plan includes',
+      rowHeaders: true,
+      table: {
+        columns: ['Feature', 'Starter', 'Studio'],
+        rows: [
+          ['Monthly sessions', '2', 'Unlimited'],
+          ['Materials included', 'No', 'Yes'],
+          ['Kiln firings', '4', '12']
+        ]
+      }
+    }
   }
 ];

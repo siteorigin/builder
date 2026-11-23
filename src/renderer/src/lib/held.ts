@@ -1,5 +1,5 @@
 import type { EditOperation } from '@shared/ops';
-import type { GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import type { GraphNode, NodeTree, OwnerRef, ProjectState, TableValue } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { displayName } from '@engine/tree';
 import { followsPage, inheritedValue } from '@shared/page-teasers';
@@ -109,6 +109,29 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const teaser = schema?.type === 'list' && schema.pageTeaser ? { page: row[schema.pageTeaser.link], shows: op.field ? inheritedValue(state, schema, row, op.field) : undefined } : {};
       return withRoutes(state, op.value, { definitionId: node.definitionId, schema, value: op.field ? row[op.field] : item, ...teaser });
     }
+    case 'instance.editTable': {
+      // A cell's text and a column's name are typed fields. Adding, removing and moving rows or columns are
+      // gestures, and are refused while the AI works like any other.
+      if (op.action !== 'setCell' && op.action !== 'renameColumn') return null;
+      const node = nodeOf(state, op.owner, op.nodeId);
+      if (typeof node === 'string') return gone(node);
+      if (node.kind !== 'instance') return gone('element');
+      const schema = has(has(state.components, node.definitionId)?.properties, op.prop);
+      // A placement without its own table shows (and edits) the definition's.
+      const own = has(node.props, op.prop);
+      const table = (own === undefined && schema?.type === 'table' ? schema.default : own) as Partial<TableValue> | undefined;
+      const column = (Array.isArray(table?.columns) ? table.columns : []).find((c) => c && c.id === op.columnId);
+      if (!column) return gone('table column');
+      if (op.action === 'renameColumn') return found({ definitionId: node.definitionId, value: column.label });
+      const row = (Array.isArray(table?.rows) ? table.rows : []).find((r) => r && r.id === op.rowId);
+      if (!row) return gone('table row');
+      // A cell is its row and column by ID, and its row is also known by its name (its first cell), so a row given
+      // other content under the same ID is not the one the author edited. Other cells may change (another held edit
+      // to the same row) without making this a different field.
+      const first = (Array.isArray(table?.columns) ? table.columns : []).find((c) => c && typeof c.id === 'string');
+      const name = first && first.id !== column.id ? { name: row.cells?.[first.id] ?? '' } : {};
+      return found({ definitionId: node.definitionId, value: row.cells?.[column.id] ?? '', ...name });
+    }
     case 'node.setStyle': {
       // A variant rule lives on the component definition with every other rule of that option: not one field.
       if (op.variant !== undefined) return null;
@@ -191,7 +214,7 @@ export function checkHeld(state: ProjectState, operations: EditOperation[], base
 }
 
 /** Keys that say which field an operation writes; every other key is the value written. */
-const TARGET_KEYS = new Set(['owner', 'nodeId', 'pageId', 'prop', 'itemId', 'field', 'partId', 'variant', 'axis', 'scope', 'property', 'tokenId', 'assetId', 'definitionId']);
+const TARGET_KEYS = new Set(['owner', 'nodeId', 'pageId', 'prop', 'itemId', 'field', 'partId', 'variant', 'axis', 'scope', 'property', 'tokenId', 'assetId', 'definitionId', 'action', 'rowId', 'columnId']);
 
 /** Identifies the fields a batch writes, so a newer edit of the same fields replaces an older held one. */
 export function fieldKey(operations: EditOperation[]): string {

@@ -7,6 +7,8 @@ import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
  */
 /** What rich text accepts, for models writing a value. */
 const RICH_TEXT_VALUE = 'For richtext: a string or string[] with **bold**, *italic*, [label](/route/ or URL), and line prefixes "- ", "1. ", "- [x] ", "### ", "#### ", "> ".';
+/** What a table property accepts, for models writing a whole table. */
+const TABLE_VALUE = 'For table: { "columns": ["Day", "Workshop"], "rows": [["Monday", "Clay basics"]] }; to change one cell, row or column use instance.editTable.';
 
 export const OPS_VERSION = 1;
 
@@ -173,7 +175,7 @@ export const OPERATION_SCHEMAS = {
     prop: z.string(),
     itemId: z.string().optional().describe('For list properties: the stable item ID to edit.'),
     field: z.string().optional().describe('For list properties: the item field to set.'),
-    value: z.unknown().describe(`${RICH_TEXT_VALUE} For choices: the whole set in order, { label } for a new choice and the saved { id, label, value } for one kept or renamed.`)
+    value: z.unknown().describe(`${RICH_TEXT_VALUE} For choices: the whole set in order, { label } for a new choice and the saved { id, label, value } for one kept or renamed. ${TABLE_VALUE}`)
   }),
   'instance.listInsert': z.object({
     type: z.literal('instance.listInsert'),
@@ -185,6 +187,20 @@ export const OPERATION_SCHEMAS = {
   }),
   'instance.listRemove': z.object({ type: z.literal('instance.listRemove'), owner, nodeId: z.string(), prop: z.string(), itemId: z.string() }),
   'instance.listMove': z.object({ type: z.literal('instance.listMove'), owner, nodeId: z.string(), prop: z.string(), itemId: z.string(), index: z.number().int().min(0) }),
+  'instance.editTable': z
+    .object({
+      type: z.literal('instance.editTable'),
+      owner,
+      nodeId: z.string().describe('Instance node ID.'),
+      prop: z.string().describe('The table property.'),
+      action: z.enum(['setCell', 'renameColumn', 'insertRow', 'removeRow', 'moveRow', 'insertColumn', 'removeColumn', 'moveColumn']),
+      rowId: z.string().optional().describe('The row to change (setCell, removeRow, moveRow).'),
+      columnId: z.string().optional().describe('The column to change (setCell, renameColumn, removeColumn, moveColumn).'),
+      index: z.number().int().min(0).optional().describe('Position for insert or move. Inserts default to the end.'),
+      value: z.string().optional().describe("setCell: the cell's text. renameColumn and insertColumn: the column's name."),
+      cells: z.array(z.string()).optional().describe("insertRow: the new row's cells in column order.")
+    })
+    .describe('Change one cell, row or column of a table property by its ID. Other cells stay where they are. Replace a whole table with instance.setProp.'),
   'instance.setVariant': z.object({
     type: z.literal('instance.setVariant'),
     owner,
@@ -237,7 +253,7 @@ export const OPERATION_SCHEMAS = {
     properties: z
       .record(z.string(), z.unknown())
       .optional()
-      .describe('Property schema: { propName: { type, label, default } }. Types: string, richtext, number, boolean, enum (options), link, image, icon, choices, list (itemLabel, fields).')
+      .describe('Property schema: { propName: { type, label, default } }. Types: string, richtext, number, boolean, enum (options), link, image, icon, choices, list (itemLabel, fields), table (default { columns, rows }).')
   }),
   'component.updateSource': z.object({
     type: z.literal('component.updateSource'),

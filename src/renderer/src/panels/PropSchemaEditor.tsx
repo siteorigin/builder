@@ -26,7 +26,8 @@ const TYPES: Array<[PropSchema['type'], string]> = [
   ['link', 'Link'],
   ['image', 'Image'],
   ['icon', 'Icon'],
-  ['list', 'List']
+  ['list', 'List'],
+  ['table', 'Table']
 ];
 
 let rowSeq = 0;

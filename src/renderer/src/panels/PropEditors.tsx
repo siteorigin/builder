@@ -23,6 +23,8 @@ import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
 import { effectiveItem } from '@shared/page-teasers';
 import { groupFields, listRowTitle, type PropGroup } from '@shared/fields';
+import type { TableEdit } from '@engine/table';
+import { TableEditor } from './TableEditor';
 
 export { groupFields };
 
@@ -914,12 +916,14 @@ export interface ListReveal {
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onList, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place }: {
+export function PropField({ name, schema, value, onChange, onList, onTable, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place }: {
   name: string;
   schema: PropSchema;
   value: unknown;
   onChange: (v: unknown, edit?: PendingEdit) => unknown;
   onList: (op: ListOp) => unknown;
+  /** A table edit: one cell, row or column by ID. Resolves to whether it was applied. */
+  onTable: (edit: TableEdit) => Promise<boolean>;
   /** The value as the project holds it now and its revision, for an edit built after earlier ones land. */
   read?: () => ReadValue | undefined;
   state: ProjectState;
@@ -942,6 +946,7 @@ export function PropField({ name, schema, value, onChange, onList, read, state, 
   place?: ListPlace;
 }) {
   if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} />;
+  if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
   return <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} />;
   void name;
 }

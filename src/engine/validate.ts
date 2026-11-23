@@ -3,7 +3,8 @@ import { effectiveItem, followsPage } from '@shared/page-teasers';
 import { ELEMENT_TAGS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { validateRoute } from '@shared/routes';
 import { variantIdsValid, variantOptions } from '@shared/variants';
-import { allTrees, childLists, displayName, subtreeIds } from './tree';
+import { EngineError, allTrees, childLists, displayName, subtreeIds } from './tree';
+import { normalizeTable } from './table';
 import { bindingProblem, bindingSlots, boundSchema } from './schema';
 import { cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle } from './tokens';
@@ -29,6 +30,10 @@ export const blocksSaving = (d: Diagnostic) => d.severity === 'error' && !CONTEN
 
 /** "Home", "Home and About", "Home, About and Contact". */
 const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? ''));
+
+/** JSON with object keys in order, so two values that differ only in key order compare equal. */
+const sortedJson = (v: unknown): string =>
+  JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 
 /**
  * Schema and reference validation: IDs, references, nesting and routes, and links to sections that do not exist.
@@ -131,6 +136,19 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       if (n.kind === 'instance') {
         const def = state.components[n.definitionId];
         if (!def) out.push({ severity: 'error', code: 'DEF_MISSING', message: `${label}: ${n.definitionId} is not installed.`, owner, nodeId: n.id });
+        // A table changed by hand into a shape it cannot have shows only the rows it can, so it is reported.
+        else
+          for (const [k, schema] of Object.entries(def.properties)) {
+            if (schema.type !== 'table' || !Object.hasOwn(n.props, k) || isBinding(n.props[k])) continue;
+            // A pure check of a saved value: whatever it throws, the project still opens and says what is wrong.
+            let problem: string | null = null;
+            try {
+              if (sortedJson(normalizeTable(n.props[k], schema.label)) !== sortedJson(n.props[k])) problem = 'it is not saved in the form the editor shows';
+            } catch (e) {
+              problem = e instanceof EngineError ? e.message : 'it has a value that is not a table';
+            }
+            if (problem) out.push({ severity: 'warning', code: 'TABLE_DAMAGED', message: `${label}: part of a table in ${displayName(state, n)} cannot be read (${problem}). Editing the table keeps the rows and columns that can.`, owner, nodeId: n.id });
+          }
       }
       if (!seen.has(n.id)) out.push({ severity: 'warning', code: 'NODE_DETACHED', message: `${label}: ${displayName(state, n)} is not attached to the tree.`, owner, nodeId: n.id });
     }

@@ -173,7 +173,28 @@ export interface PageTeaser {
   description?: string;
   image?: string;
 }
-export type PropSchema = ScalarPropSchema | ListProp;
+/**
+ * A table of plain text: named columns and rows whose cells are keyed by column ID, so moving or removing a
+ * column keeps every other cell where it belongs. IDs are local to the table (`col_…`, `row_…`).
+ */
+export interface TableColumn {
+  id: string;
+  label: string;
+}
+export interface TableRow {
+  id: string;
+  /** One text per column, keyed by column ID. */
+  cells: Record<string, string>;
+}
+export interface TableValue {
+  columns: TableColumn[];
+  rows: TableRow[];
+}
+export interface TableProp extends PropBase {
+  type: 'table';
+  default: TableValue;
+}
+export type PropSchema = ScalarPropSchema | ListProp | TableProp;
 export type ListItem = { id: string } & Record<string, unknown>;
 
 // ---------------------------------------------------------------------------

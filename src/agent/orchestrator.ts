@@ -183,6 +183,7 @@ function focusedPrompt(state: ProjectState, mode: RunTools['mode'], images = fal
     return `You edit one selected element of a small business website. The element's current content is in <editor_context>.
 - update_selected_props changes its content; send only what changes.
 - edit_selected_list changes one item of a list.
+- edit_selected_table changes one cell, row or column of a table, by the IDs in its content.
 - style_selected_element changes its look. Use scope "phone", "tablet" or "desktop" for one screen size, "base" for all.
 - request_wider_scope asks the user first, when the request needs changes outside this element.${
       images
@@ -212,7 +213,7 @@ function systemPrompt(state: ProjectState, run: RunTools): string {
     run.mode === 'site'
       ? `\n\nPreferred tools: build or rewrite a page with one upsert_page_with_sections call (all its sections, navigation included, no IDs or revisions), and change the name, contact details, colors or fonts with update_site_brand. Several of these calls may run in one step. Use apply_operations for finer edits they cannot express.`
       : run.mode === 'selection'
-        ? `\n\nPreferred tools: update_selected_props, edit_selected_list and style_selected_element change the selected element directly, with no IDs or revisions. Use apply_operations only for what they cannot express.`
+        ? `\n\nPreferred tools: update_selected_props, edit_selected_list, edit_selected_table and style_selected_element change the selected element directly, with no IDs or revisions. Use apply_operations only for what they cannot express.`
         : '';
   return `You are the website editing assistant inside SiteOrigin Builder, a desktop editor for small business websites. You change the website only through the provided tools, which apply the same validated operations as the visual editor.
 
@@ -1217,6 +1218,7 @@ function activityLabel(call: ToolCall, state: ProjectState): string {
       return 'Updating the site brand';
     case 'update_selected_props':
     case 'edit_selected_list':
+    case 'edit_selected_table':
       return 'Updating the selection';
     case 'style_selected_element':
       return 'Styling the selection';

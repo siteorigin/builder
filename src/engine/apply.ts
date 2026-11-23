@@ -33,6 +33,7 @@ import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists,
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
+import { editTable } from './table';
 import { bindingSlots, enclosingList, normalizeProperties } from './schema';
 import { forEachTokenRef, tokenUsageCounts } from './tokens';
 import { settleFormKeys } from './form-keys';
@@ -178,6 +179,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         node.props[op.prop] = list;
         return {};
       });
+    case 'instance.editTable':
+      return tableEdit(state, op);
     case 'instance.setVariant': {
       const { node, def } = instanceTarget(state, op.owner, op.nodeId);
       const found = variantOption(def, op.variant, op.axis);
@@ -1265,6 +1268,22 @@ function keepingFormKeys(state: ProjectState, op: Op<'instance.setProp' | 'insta
 function formDefaults(def: ComponentDefinition): { name?: unknown; label?: unknown } {
   const schema = def.properties.fields;
   return schema?.type === 'list' ? { name: schema.fields.name?.default, label: schema.fields.label?.default } : {};
+}
+
+/**
+ * One step of a table edit, by row and column ID, on the table the placement shows now (its own, or the
+ * definition's while it has none). A step whose row or column has gone is refused.
+ */
+function tableEdit(state: ProjectState, op: Op<'instance.editTable'>): OpResult {
+  const { node, def } = instanceTarget(state, op.owner, op.nodeId);
+  const schema = def.properties[op.prop];
+  if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
+  if (schema.type !== 'table') fail(`"${op.prop}" is not a table property.`);
+  if (isBinding(node.props[op.prop])) fail(`${schema.label} comes from the enclosing component's own property; edit the table there.`);
+  const current = Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : clone(schema.default);
+  const r = editTable(current, op, `${def.name} → ${schema.label}`);
+  node.props[op.prop] = r.value;
+  return r.rowId ? { rowId: r.rowId } : r.columnId ? { columnId: r.columnId } : {};
 }
 
 function listInsert(state: ProjectState, op: Op<'instance.listInsert'>): OpResult {
