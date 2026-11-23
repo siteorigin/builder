@@ -243,12 +243,19 @@ const HEADER_SOURCE = `<script>
 			right: 0;
 			display: none;
 			flex-direction: column;
+			flex-wrap: nowrap;
 			align-items: stretch;
 			gap: var(--so-space-md);
 			padding: var(--so-space-md) var(--so-container-gutter) var(--so-space-xl);
 			background: var(--so-color-background);
 			border-bottom: 1px solid var(--so-color-border);
 			box-shadow: var(--so-shadow-md);
+			/* The menu hangs from a sticky header, so the page cannot scroll to it. When enlarged text or a short
+			   screen makes it taller than the space below the header, it scrolls on its own. */
+			max-height: calc(100vh - 100%);
+			max-height: calc(100dvh - 100%);
+			overflow-y: auto;
+			overscroll-behavior: contain;
 		}
 		.so-header--open .so-header__nav {
 			display: flex;

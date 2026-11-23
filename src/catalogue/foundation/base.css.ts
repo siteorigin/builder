@@ -10,6 +10,10 @@ body {
   font-family: var(--so-font-body);
   font-size: var(--so-text-body-size);
   line-height: var(--so-text-body-line-height);
+  /* A word wider than its box (a display heading or an email address at a visitor's enlarged text size) breaks
+     instead of pushing the page sideways. Unlike break-word, anywhere also lets flex and fit-content boxes
+     shrink below that word. Text that fits wraps exactly as before. */
+  overflow-wrap: anywhere;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -48,7 +52,7 @@ address { font-style: normal; }
   min-height: 46px; padding: 0.7em 1.35em;
   border: 1px solid transparent; border-radius: var(--so-radius-pill);
   font-family: var(--so-font-body); font-size: 0.97rem; font-weight: 550; line-height: 1.2; letter-spacing: -0.005em;
-  text-decoration: none; white-space: nowrap; cursor: pointer;
+  text-align: center; text-decoration: none; cursor: pointer;
   background: var(--so-btn-bg, transparent); color: var(--so-btn-fg, currentColor);
   transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
 }
