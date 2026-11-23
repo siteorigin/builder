@@ -130,7 +130,7 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
   try {
     manifest = JSON.parse(manifestText);
   } catch {
-    throw new ProjectFormatError('siteorigin.project.json is not valid JSON.');
+    throw new ProjectFormatError('siteorigin.project.json is not valid JSON, so the project was not opened. If it was copied or downloaded, it may be incomplete: replace it with a complete copy, or choose another project. The folder was not changed.');
   }
   if (typeof manifest.schemaVersion !== 'number') throw new ProjectFormatError('siteorigin.project.json has no schema version.');
   if (manifest.schemaVersion > SCHEMA_VERSION && !opts.allowNewer)

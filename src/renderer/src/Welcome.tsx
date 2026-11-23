@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronRight, Folder, FolderOpen, LayoutTemplate, MousePointerClick, Plus, Settings, ShieldAlert, Upload, X } from 'lucide-react';
 import type { ProgressEvent, RecentProject } from '@shared/api';
-import { api, setState, toast, useStore } from './store';
+import { api, errorText, setState, toast, useStore } from './store';
 import { Field, Modal, openDialogs, Spinner, SwitchRow } from './components/ui';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark } from './components/AppMark';
@@ -29,6 +29,7 @@ export function Welcome() {
   const [trust, setTrust] = useState<{ dir: string; name: string } | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [trusting, setTrusting] = useState(false);
+  const openingRef = useRef(false);
   const modal = useStore((s) => s.modal);
   const refresh = () => void api.projects.recents().then(setRecents);
   useEffect(() => {
@@ -50,12 +51,23 @@ export function Welcome() {
   }, []);
 
   const open = async (dir?: string) => {
+    // One open at a time: a second request must not clear the busy state of the first, or race it in the main process.
+    // The disabled buttons show it; this also stops the Open project menu command, which no button state reaches.
+    if (openingRef.current) return;
+    openingRef.current = true;
     setOpening(dir ?? 'dialog');
-    const r = await api.projects.open(dir);
-    setOpening(null);
-    if (r.needsTrust) setTrust(r.needsTrust);
-    else if (!r.ok && r.message) toast(r.message, 'error');
-    refresh();
+    try {
+      const r = await api.projects.open(dir);
+      if (r.needsTrust) setTrust(r.needsTrust);
+      else if (!r.ok && r.message) toast(r.message, 'error');
+    } catch (e) {
+      // Whatever went wrong, the author sees it and can choose another project straight away.
+      toast(`Could not open the project: ${errorText(e)}`, 'error');
+    } finally {
+      openingRef.current = false;
+      setOpening(null);
+      refresh();
+    }
   };
 
   return (
@@ -199,10 +211,15 @@ export function Welcome() {
                 onClick={async () => {
                   const t = trust;
                   setTrusting(true);
-                  const r = await api.projects.trustAndOpen(t.dir);
-                  setTrusting(false);
-                  setTrust(null);
-                  if (!r.ok && r.message) toast(r.message, 'error');
+                  try {
+                    const r = await api.projects.trustAndOpen(t.dir);
+                    if (!r.ok && r.message) toast(r.message, 'error');
+                  } catch (e) {
+                    toast(`Could not open the project: ${errorText(e)}`, 'error');
+                  } finally {
+                    setTrusting(false);
+                    setTrust(null);
+                  }
                 }}
               >
                 {trusting ? <Spinner decorative /> : null}
