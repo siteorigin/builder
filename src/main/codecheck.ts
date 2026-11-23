@@ -509,7 +509,15 @@ const strings = (vals: Val[]): string[] => vals.map((v) => (v.kind === 'str' ? v
 /** The first values, and every one past them that may matter (the step budget bounds how many there are). */
 const keep = <T>(all: T[], matters: (v: T) => boolean): T[] => (all.length <= MAX_VALUES ? all : [...all.slice(0, MAX_VALUES), ...all.slice(MAX_VALUES).filter(matters)]);
 /** Lists and objects are always kept: one of them may hold the remote URL. */
-const capped = (vals: Val[]) => keep(vals, (v) => v.kind === 'arr' || v.kind === 'obj' || (v.kind === 'str' && SUSPICIOUS.test(v.s)));
+/** Each value once: the same list reached two ways is one list, however often a chain of names doubles it. */
+function distinct(vals: Val[]): Val[] {
+  const seen = new Set<unknown>();
+  return vals.filter((v) => {
+    const key = v.kind === 'str' ? `s:${v.s}` : v.kind === 'unknown' ? 'unknown' : v;
+    return !seen.has(key) && !!seen.add(key);
+  });
+}
+const capped = (vals: Val[]) => keep(distinct(vals), (v) => v.kind === 'arr' || v.kind === 'obj' || (v.kind === 'str' && SUSPICIOUS.test(v.s)));
 /** At most MAX_VALUES strings, the ones that may matter first. */
 function fewest(xs: string[]): string[] {
   const unique = [...new Set(xs)];
@@ -691,7 +699,8 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
       const frame = calls?.[calls.length - 1]?.get(name);
       if (frame) return { srcs: frame, local: true };
       const own = b.scopes.get(scope[i])?.get(name);
-      if (own) return { srcs: own, local: !!calls?.length };
+      // Anything read inside a function whose call is being followed may depend on that call's arguments.
+      if (own) return { srcs: own, local: scope.some((s) => !!frames.get(s)?.length) };
     }
     const global = b.names.get(name);
     return global && { srcs: global, local: false };
@@ -799,10 +808,10 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
               once(n, () => {
                 const out: Val[] = [];
                 for (const p of n.properties as Node[]) {
-                  if (p.type === 'SpreadElement') out.push(...evaluate(p.argument as Node, at, scope).flatMap((v) => prop(v, key, at + 1)));
+                  if (p.type === 'SpreadElement') for (const v of evaluate(p.argument as Node, at, scope)) for (const w of prop(v, key, at + 1)) out.push(w);
                   else {
                     const k = nameOf(p.key as Node, p.computed);
-                    if (key === null || k === null || k === key) out.push(...(p.kind === 'init' && !p.method ? evaluate(p.value as Node, at, scope) : [UNKNOWN]));
+                    if (key === null || k === null || k === key) for (const v of p.kind === 'init' && !p.method ? evaluate(p.value as Node, at, scope) : [UNKNOWN]) out.push(v);
                   }
                 }
                 return out.length ? capped(out) : [UNKNOWN];

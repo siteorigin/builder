@@ -253,6 +253,9 @@ describe('strict policy follows values and imports', () => {
     const t0 = Date.now();
     expect(await errorsOf(`\tconst a0 = '${'y'.repeat(8000)}';\n${doubling}`, uses)).toEqual([]);
     expect(Date.now() - t0).toBeLessThan(10_000);
+    // A chain of names that doubles the ways to reach one list, read through an object, finishes.
+    const aliases = Array.from({ length: 18 }, (_, i) => `\tconst a${i + 1} = show ? a${i} : a${i};`).join('\n');
+    expect(await errorsOf(`\tlet show = $state(true);\n\tconst a0 = ['/assets/logo.svg'];\n${aliases}\n\tconst box = { photos: a18 };`, `<p data-a={a8} data-b={a16}>x</p><img src={box.photos[0]} alt="" />`)).toEqual([]);
     // A helper used for a local image and for a link: the image reads only its own call.
     const identity = `\tconst site = 'https://example.com';\n\tfunction identity(x) { return x; }`;
     expect(await errorsOf(identity, `<img src={identity('/assets/logo.svg')} alt="" /><a href={identity(site)}>Site</a>`)).toEqual([]);
