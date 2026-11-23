@@ -394,17 +394,16 @@ describe('first-screen image loading through code components', () => {
     expectEagerBound(files);
   });
 
-  it('reads the flag only where a code component declares it as a prop', () => {
+  it('hands the flag to a code component however it writes its props, but not to one that never names it', () => {
     let s = fresh();
     const hero = instanceOf(s, 'hero.split');
     s = applyOperations(s, [{ type: 'component.convertToCode', owner: home(s), nodeId: hero.id, name: 'Hero code' }]).state;
     const code = Object.values(s.components).find((d) => d.name === 'Hero code')!;
     const page = () => generateProject(s).get('src/routes/+page.svelte')!;
-    // Mentioned in comments only.
-    code.source = `<!-- so_eager is not read here -->\n<div {...rest}>Hi</div>\n<script>\n\tlet { ...rest } = $props(); // so_eager\n</script>\n`;
+    code.source = `<div {...rest}>Hi</div>\n<script>\n\tlet { ...rest } = $props();\n</script>\n`;
     expect(page()).not.toContain('so_eager');
-    // Renamed on the way in, after a line that holds "//" inside a string.
-    code.source = `<div {...rest}>{eager}</div>\n<script>\n\tconst cdn = "//cdn.example/a//b.png"; let { so_eager: eager = false, ...rest } = $props();\n</script>\n`;
+    // Renamed on the way in, bound with const, and after a line that holds "//" inside a string.
+    code.source = `<div {...rest}>{eager}</div>\n<script>\n\tconst cdn = "//cdn.example/a//b.png"; const { so_eager: eager = false, ...rest } = $props();\n</script>\n`;
     expect(page().match(/so_eager=\{true\}/g)).toHaveLength(1);
     // A property the manifest declares is the author's own, and is never added twice.
     code.properties.so_eager = { type: 'boolean', default: false } as never;

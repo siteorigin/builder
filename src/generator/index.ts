@@ -890,12 +890,13 @@ function insideRepeat(def: ComponentDefinition, parents: Map<string, string>, no
 }
 
 /**
- * Whether a definition takes the page's `so_eager` flag: code components whose source reads it as a prop, such as
+ * Whether a definition takes the page's `so_eager` flag: code components whose source mentions it, such as
  * a copy converted to code, and managed ones with images (or with instances that take the flag themselves)
  * outside lists. A code component that declares the property itself owns it and is never handed the flag.
  */
 function takesEager(state: ProjectState, def: ComponentDefinition, memo: Map<string, boolean> = new Map()): boolean {
-  if (def.kind === 'code') return !Object.hasOwn(def.properties, 'so_eager') && /\blet\s*\{[^]*?\bso_eager\b[^]*?\}\s*=\s*\$props\(\)/.test(def.source ?? '');
+  // A plain token test: linear in the source, and blind to how the author writes the destructuring.
+  if (def.kind === 'code') return !Object.hasOwn(def.properties, 'so_eager') && /\bso_eager\b/.test(def.source ?? '');
   return treeTakesEager(state, def, memo, new Set());
 }
 
