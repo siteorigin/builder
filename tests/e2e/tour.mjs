@@ -1,70 +1,74 @@
-// Visual tour: screenshots of key surfaces in dark mode.
-import { _electron as electron } from 'playwright';
-import { mkdirSync, rmSync } from 'node:fs';
+// Visual tour: screenshots of key surfaces, mostly in dark mode. Each surface must appear before its shot.
+import assert from 'node:assert/strict';
 import { join } from 'node:path';
+import { MOD, createProject, launch, scratch, step } from './harness.mjs';
 
-const OUT = process.env.SHOTS;
-const WORK = process.env.WORK;
-rmSync(WORK, { recursive: true, force: true });
-mkdirSync(OUT, { recursive: true });
-const app = await electron.launch({ args: ['.'], env: { ...process.env, SITEORIGIN_USER_DATA: join(WORK, 'userdata'), OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '' } });
-const win = await app.firstWindow();
-await win.setViewportSize({ width: 1440, height: 900 });
-await win.waitForSelector('.welcome');
+const { WORK, SHOTS: OUT, cleanup } = scratch('tour');
+const { app, win, errors } = await launch(WORK);
 await win.evaluate(() => window.builder.app.setSettings({ appearance: 'dark' }));
 await win.emulateMedia({ colorScheme: 'dark' });
-await win.evaluate((dir) => window.builder.projects.create({ name: 'Harbour Lane Studio', parentDir: dir, starter: 'business', sampleImages: true }), join(WORK, 'sites'));
-const frame = win.frameLocator('.frame-box iframe');
-await frame.locator('h1').first().waitFor({ timeout: 60000 });
+const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 await win.waitForTimeout(1200);
 const shot = (n) => win.screenshot({ path: join(OUT, n) });
 await shot('30-dark-editor.png');
 
-// Select a services card title (part in a repeated item)
+step('a part in a repeated item');
 await win.locator('.rail [aria-label="Layers"]').click();
 const gridRow = win.locator('.list-item', { hasText: 'Services grid' });
 await gridRow.locator('.tree-toggle').click();
-await win.locator('.list-item', { hasText: 'Card title' }).click();
-await win.waitForTimeout(800);
+await win.locator('.list-item', { hasText: 'Card title' }).first().click();
+await win.locator('[role="tree"] .list-item.selected', { hasText: 'Card title' }).waitFor();
 await shot('31-dark-part.png');
 
-// Edit definition flow
+step('edit a component everywhere');
 await gridRow.click();
-await win.waitForTimeout(300);
-await win.locator('.section-head', { hasText: 'Component' }).click();
-await win.getByRole('button', { name: 'Edit definition' }).click();
-await win.waitForTimeout(300);
+const compSection = win.locator('.section-head', { hasText: 'Component' });
+if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
+await win.getByRole('button', { name: 'Edit everywhere…' }).click();
+await win.locator('.modal').waitFor();
 await shot('32-edit-definition.png');
-await win.getByRole('button', { name: /Create project copy and edit/ }).click();
-await win.waitForTimeout(1500);
-await win.locator('.list-item', { hasText: 'Services grid' }).locator('.tree-toggle').click().catch(() => {});
-await win.locator('.list-item', { hasText: 'Card' }).first().click().catch(() => {});
+await win.getByRole('button', { name: /Make a copy and edit/ }).click();
+await win.locator('.mode-band').waitFor();
 await win.waitForTimeout(800);
 await shot('33-definition-mode.png');
-await win.getByRole('button', { name: 'Done' }).click();
+await win.locator('.mode-band-done').click();
+await win.locator('.mode-band').waitFor({ state: 'detached' });
 
-// Settings, export, command menu, source
+step('settings, command menu and export');
 await win.locator('[aria-label="Settings"]').click();
-await win.getByRole('button', { name: 'AI assistant' }).click();
-await win.waitForTimeout(300);
+await win.getByRole('tab', { name: 'AI assistant' }).click();
+await win.locator('.modal [role="tab"][aria-selected="true"]', { hasText: 'AI assistant' }).waitFor();
 await shot('34-settings.png');
 await win.keyboard.press('Escape');
-await win.keyboard.press('Meta+K');
+await win.locator('.modal').waitFor({ state: 'detached' });
+await win.keyboard.press(`${MOD}+K`);
+await win.locator('.cmdk').waitFor();
 await win.keyboard.type('fa');
 await win.waitForTimeout(300);
 await shot('35-cmdk.png');
 await win.keyboard.press('Escape');
+await win.locator('.cmdk').waitFor({ state: 'detached' });
 await win.getByRole('button', { name: 'Export', exact: true }).click();
-await win.waitForTimeout(300);
+await win.locator('.modal').waitFor();
 await shot('36-export.png');
 await win.keyboard.press('Escape');
+await win.locator('.modal').waitFor({ state: 'detached' });
+
+step('source view (Developer mode)');
 await win.evaluate(() => window.builder.app.setSettings({ appearance: 'light' }));
 await win.emulateMedia({ colorScheme: 'light' });
-await win.waitForTimeout(300);
+await win.locator('[aria-label="Settings"]').click();
+await win.getByRole('switch', { name: 'Developer mode' }).click();
+await win.keyboard.press('Escape');
+await win.locator('.modal').waitFor({ state: 'detached' });
 await frame.locator('h1').first().click();
-await win.waitForTimeout(300);
-if (!(await win.getByRole('button', { name: 'View source' }).isVisible())) await win.locator('.section-head', { hasText: 'Component' }).click();
+await win.locator('.ov-chip').waitFor();
+if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
 await win.getByRole('button', { name: 'View source' }).click();
-await win.waitForTimeout(500);
+await win.locator('.modal .cm-content').waitFor();
 await shot('37-source.png');
+
+assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
+cleanup();
+console.log('\ntour: passed');

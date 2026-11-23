@@ -3,7 +3,7 @@
 // editing, preview) and writes one PNG of the dock per state and theme. Opt-in only, never part of
 // `npm run test:e2e`:
 //
-//   npm run build && DESIGN_CAPTURE=1 DESIGN_CAPTURE_DIR=/abs/out node tests/e2e/design/inspector.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/inspector.mjs
 //
 // Each capture is verified after it settles; a state that did not render throws instead of writing a
 // plausible-looking wrong image. Files are named `{state}--{theme}.png`; `window-*` files are the whole
@@ -17,8 +17,8 @@ if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('inspector capture harness: set DESIGN_CAPTURE=1 to run');
   process.exit(0);
 }
-const OUT = process.env.DESIGN_CAPTURE_DIR;
-if (!OUT) throw new Error('DESIGN_CAPTURE_DIR must be set to a directory outside the repository');
+// Defaults to a folder under the OS temp folder; set DESIGN_CAPTURE_DIR to keep the images elsewhere.
+const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'inspector');
 mkdirSync(OUT, { recursive: true });
 // Resolved, because Vite fails to import through a symlinked project path (macOS tmpdir is one).
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-insp-')));

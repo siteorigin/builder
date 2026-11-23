@@ -1,7 +1,7 @@
 // Design capture for the Site styles panel (the right dock's "Site styles" tab). Opt-in only, never part
 // of `npm run test:e2e`:
 //
-//   npm run build && DESIGN_CAPTURE=1 DESIGN_CAPTURE_DIR=/abs/out node tests/e2e/design/site-styles.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/site-styles.mjs
 //
 // Drives the real (built) app with a populated business project, seeds site-style changes through the
 // same project:apply channel the editor uses, and writes `{state}--{theme}.png`. Panel captures are the
@@ -16,8 +16,8 @@ if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('site styles capture: set DESIGN_CAPTURE=1 to run');
   process.exit(0);
 }
-const OUT = process.env.DESIGN_CAPTURE_DIR;
-if (!OUT) throw new Error('DESIGN_CAPTURE_DIR must be set to a directory outside the repository');
+// Defaults to a folder under the OS temp folder; set DESIGN_CAPTURE_DIR to keep the images elsewhere.
+const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'site-styles');
 mkdirSync(OUT, { recursive: true });
 // Resolved, because Vite fails to import through a symlinked project path (macOS tmpdir is one).
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-design-styles-')));

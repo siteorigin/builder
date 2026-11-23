@@ -1,7 +1,7 @@
 // Design capture harness for the Layers panel (left sidebar, Layers tab). Opt-in only, never part of
 // `npm run test:e2e`:
 //
-//   npm run build && DESIGN_CAPTURE=1 DESIGN_CAPTURE_DIR=/abs/out node tests/e2e/design/layers-panel.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/layers-panel.mjs
 //
 // It opens the business starter, then seeds the home page through the app's own edit seam
 // (window.builder.project.apply) with a deeply nested section, a long layer name, a hidden layer and a
@@ -17,8 +17,8 @@ if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('layers design capture: set DESIGN_CAPTURE=1 to run');
   process.exit(0);
 }
-const OUT = process.env.DESIGN_CAPTURE_DIR;
-if (!OUT) throw new Error('DESIGN_CAPTURE_DIR must be set to a directory outside the repository');
+// Defaults to a folder under the OS temp folder; set DESIGN_CAPTURE_DIR to keep the images elsewhere.
+const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'layers-panel');
 mkdirSync(OUT, { recursive: true });
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-layers-')));
 const THEMES = ['light', 'dark'];
@@ -293,7 +293,7 @@ await openRail('Layers');
   await pause(500);
 }
 await shot('layers-definition', '.mode-band');
-await win.getByRole('button', { name: 'Done editing' }).click();
+await win.locator('.mode-band-done').click();
 await pause(800);
 
 // 11. An empty page.

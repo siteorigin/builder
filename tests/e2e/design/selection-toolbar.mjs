@@ -3,11 +3,12 @@
 // keyboard-driven menu, and the app's other menus that share the same primitive. Opt-in only, never
 // part of `npm run test:e2e`:
 //
-//   npm run build && DESIGN_CAPTURE=1 DESIGN_CAPTURE_DIR=/abs/out node tests/e2e/design/selection-toolbar.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/selection-toolbar.mjs
 //
 // Each capture is verified on screen after it settles; a state that did not render throws instead of
 // writing a plausible-looking wrong image. Files are named `{state}--{theme}.png`.
 import { _electron as electron } from 'playwright';
+import { MOD } from '../harness.mjs';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,8 +17,8 @@ if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('selection toolbar capture: set DESIGN_CAPTURE=1 to run');
   process.exit(0);
 }
-const OUT = process.env.DESIGN_CAPTURE_DIR;
-if (!OUT) throw new Error('DESIGN_CAPTURE_DIR must be set to a directory outside the repository');
+// Defaults to a folder under the OS temp folder; set DESIGN_CAPTURE_DIR to keep the images elsewhere.
+const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'selection-toolbar');
 mkdirSync(OUT, { recursive: true });
 // Resolved, because Vite fails to import through a symlinked project path (macOS tmpdir is one).
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-design-sel-')));
@@ -163,7 +164,7 @@ await shot('layers-context-menu', menuSel, { themes: LIGHT, clip: false });
 await esc();
 
 // The command menu reuses the menu item styles.
-await win.keyboard.press('Meta+K');
+await win.keyboard.press(`${MOD}+K`);
 await pause(250);
 await win.keyboard.type('pa');
 await pause(300);

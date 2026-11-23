@@ -1,7 +1,7 @@
 // Design capture harness for the AI panel (the right dock's AI tab). Opt-in only, never part of
 // `npm run test:e2e`, and it never calls a real provider:
 //
-//   npm run build && DESIGN_CAPTURE=1 DESIGN_CAPTURE_DIR=/abs/out node tests/e2e/design/ai-chat.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/ai-chat.mjs
 //
 // Conversations are seeded through the project's own chat storage before the project opens, and a run in
 // progress is pushed through the same `ai:event` channel the agent uses. The API key is a placeholder that
@@ -17,8 +17,8 @@ if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('AI panel capture harness: set DESIGN_CAPTURE=1 to run');
   process.exit(0);
 }
-const OUT = process.env.DESIGN_CAPTURE_DIR;
-if (!OUT) throw new Error('DESIGN_CAPTURE_DIR must be set to a directory outside the repository');
+// Defaults to a folder under the OS temp folder; set DESIGN_CAPTURE_DIR to keep the images elsewhere.
+const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'ai-chat');
 mkdirSync(OUT, { recursive: true });
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-design-ai-')));
 const THEMES = ['light', 'dark'];

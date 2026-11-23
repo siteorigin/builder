@@ -1,12 +1,13 @@
 // Design capture for the Pages panel (the left sidebar's Pages tab). Opt-in only, never part of
 // `npm run test:e2e`:
 //
-//   npm run build && DESIGN_CAPTURE=1 DESIGN_CAPTURE_DIR=/abs/out node tests/e2e/design/pages-panel.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/pages-panel.mjs
 //
 // Drives the real (built) app and writes `{state}--{theme}.png`. Panel states are cropped to the rail and
 // sidebar so the rows are legible; `context` is the whole window. Every capture checks its state on
 // screen after it settles and throws rather than writing a wrong image.
 import { _electron as electron } from 'playwright';
+import { MOD } from '../harness.mjs';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,8 +16,8 @@ if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('pages panel capture: set DESIGN_CAPTURE=1 to run');
   process.exit(0);
 }
-const OUT = process.env.DESIGN_CAPTURE_DIR;
-if (!OUT) throw new Error('DESIGN_CAPTURE_DIR must be set to a directory outside the repository');
+// Defaults to a folder under the OS temp folder; set DESIGN_CAPTURE_DIR to keep the images elsewhere.
+const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'pages-panel');
 mkdirSync(OUT, { recursive: true });
 // Resolved, because Vite fails to import through a symlinked project path (macOS tmpdir is one).
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-pages-')));
@@ -139,7 +140,7 @@ await win.keyboard.type('Our services & pricing');
 await pause(300);
 await shot('add', '.side-panel input.inline-edit', BOTH);
 // A title whose address is already taken: the preview shows the address the page will really get.
-await win.keyboard.press('Meta+A');
+await win.keyboard.press(`${MOD}+A`);
 await win.keyboard.type('About');
 await pause(300);
 await shot('add-taken', '.side-panel input.inline-edit', LIGHT);

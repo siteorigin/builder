@@ -2,7 +2,7 @@
 // a component, a component part and a primitive, at All sizes and at one screen size, with inherited,
 // token-linked, custom and changed values. Opt-in only, never part of `npm run test:e2e`:
 //
-//   npm run build && DESIGN_CAPTURE=1 DESIGN_CAPTURE_DIR=/abs/out node tests/e2e/design/component-styles.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/component-styles.mjs
 //
 // Each state is checked on screen after it settles and the harness throws rather than write an image of a
 // state that did not render. Files are named `{state}--{theme}.png` and show the inspector panel only.
@@ -15,8 +15,8 @@ if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('component styles capture: set DESIGN_CAPTURE=1 to run');
   process.exit(0);
 }
-const OUT = process.env.DESIGN_CAPTURE_DIR;
-if (!OUT) throw new Error('DESIGN_CAPTURE_DIR must be set to a directory outside the repository');
+// Defaults to a folder under the OS temp folder; set DESIGN_CAPTURE_DIR to keep the images elsewhere.
+const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'component-styles');
 mkdirSync(OUT, { recursive: true });
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-design-styles-')));
 const THEMES = ['light', 'dark'];

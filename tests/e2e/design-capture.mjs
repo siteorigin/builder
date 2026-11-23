@@ -1,11 +1,12 @@
 // Design capture harness: drives the real (built) app through every design-relevant state in light
 // and dark and writes one PNG per state and theme. Opt-in only, never part of `npm run test:e2e`:
 //
-//   npm run build && DESIGN_CAPTURE=1 DESIGN_CAPTURE_DIR=/abs/out node tests/e2e/design-capture.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design-capture.mjs
 //
 // Each capture is verified on screen after it settles; a state that did not render throws instead
 // of writing a plausible-looking wrong image. Files are named `{state}--{theme}.png`.
 import { _electron as electron } from 'playwright';
+import { MOD } from './harness.mjs';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,8 +15,8 @@ if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('design capture harness: set DESIGN_CAPTURE=1 to run');
   process.exit(0);
 }
-const OUT = process.env.DESIGN_CAPTURE_DIR;
-if (!OUT) throw new Error('DESIGN_CAPTURE_DIR must be set to a directory outside the repository');
+// Defaults to a folder under the OS temp folder; set DESIGN_CAPTURE_DIR to keep the images elsewhere.
+const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'design-capture');
 mkdirSync(OUT, { recursive: true });
 // Resolved, because Vite fails to import through a symlinked project path (macOS tmpdir is one).
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-design-')));
@@ -198,7 +199,7 @@ await pause(500);
 await shot('site-styles', '#dock-panel-styles .insp-head');
 // A site colour changed from the theme.
 {
-  const hex = win.locator('#dock-panel-styles input.hex').first();
+  const hex = win.locator('#dock-panel-styles input.ss-hex').first();
   await hex.fill('#2b5d8a');
   await hex.press('Enter');
   await pause(700);
@@ -296,7 +297,7 @@ await pause(300);
 await shot('export', '.modal');
 await closeModal();
 
-await win.keyboard.press('Meta+K');
+await win.keyboard.press(`${MOD}+K`);
 await pause(200);
 await win.keyboard.type('pa');
 await pause(300);
@@ -331,7 +332,7 @@ if (await eyebrow.isVisible().catch(() => false)) {
 }
 await win.keyboard.press('Escape');
 await pause(200);
-await win.keyboard.press('Meta+S');
+await win.keyboard.press(`${MOD}+S`);
 await pause(400);
 await shot('toast', '.toast', ['light']);
 await win.locator('.project-title').click();
@@ -349,7 +350,7 @@ await win.keyboard.press('Escape');
 await pause(200);
 await win.locator('.side-panel .list-item', { hasText: 'Contact' }).hover();
 await win.locator('[aria-label="Contact options"]').click();
-await win.getByRole('menuitem', { name: /Delete Contact/ }).click();
+await win.getByRole('menuitem', { name: /Delete page/ }).click();
 await pause(400);
 await shot('delete-page', '.modal');
 await closeModal();
@@ -366,7 +367,7 @@ await shot('edit-definition', '.modal', ['light']);
 await win.getByRole('button', { name: /Make a copy and edit/ }).click();
 await pause(1800);
 await shot('definition-mode', '.mode-band');
-await win.getByRole('button', { name: 'Done editing' }).click();
+await win.locator('.mode-band-done').click();
 await pause(800);
 
 // Source view (a Developer mode feature).

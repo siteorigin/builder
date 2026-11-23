@@ -1,52 +1,44 @@
-// End-to-end smoke test: drives the real Electron app.
-import { _electron as electron } from 'playwright';
-import { mkdirSync, rmSync } from 'node:fs';
+// End-to-end smoke test: drives the real Electron app through key storage, project creation and selection.
+import assert from 'node:assert/strict';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { createProject, eventually, launch, scratch, step } from './harness.mjs';
 
-const OUT = process.env.SHOTS ?? '/tmp/so-shots';
-const WORK = process.env.WORK ?? '/tmp/so-work';
-rmSync(WORK, { recursive: true, force: true });
-mkdirSync(OUT, { recursive: true });
-mkdirSync(WORK, { recursive: true });
-
-const app = await electron.launch({
-  args: ['.'],
-  env: { ...process.env, SITEORIGIN_USER_DATA: join(WORK, 'userdata'), OPENAI_API_KEY: '', ANTHROPIC_API_KEY: '' }
-});
-const win = await app.firstWindow();
-const logs = [];
-win.on('console', (m) => logs.push(`[${m.type()}] ${m.text()}`));
-win.on('pageerror', (e) => logs.push(`[pageerror] ${e}`));
-await win.setViewportSize({ width: 1440, height: 900 });
-await win.waitForSelector('.welcome');
+const { WORK, SHOTS: OUT, cleanup } = scratch('smoke');
+const { app, win, errors } = await launch(WORK);
 await win.screenshot({ path: join(OUT, '01-welcome.png') });
-// API keys are stored in a user-only local file, never the OS keychain.
-const saved = await win.evaluate(async () => (await window.builder.ai.setKey('anthropic', 'sk-ant-test')).find((p) => p.id === 'anthropic'));
-console.log('key saved:', saved.configured, saved.source, saved.storage);
-const { statSync } = await import('node:fs');
-console.log('key file mode:', (statSync(join(WORK, 'userdata', 'api-keys.json')).mode & 0o777).toString(8));
-await win.evaluate(() => window.builder.ai.setKey('anthropic', null));
 
+step('API keys are stored in a user-only local file, never the OS keychain');
+const saved = await win.evaluate(async () => (await window.builder.ai.setKey('anthropic', 'sk-ant-test')).find((p) => p.id === 'anthropic'));
+assert.equal(saved.configured, true, 'the saved key is reported as configured');
+const keyFile = join(WORK, 'userdata', 'api-keys.json');
+assert.equal(JSON.parse(readFileSync(keyFile, 'utf8')).anthropic, 'sk-ant-test', 'the key is stored in api-keys.json');
+if (process.platform !== 'win32') assert.equal((statSync(keyFile).mode & 0o777).toString(8), '600', 'api-keys.json is readable only by the user');
+const cleared = await win.evaluate(async () => (await window.builder.ai.setKey('anthropic', null)).find((p) => p.id === 'anthropic'));
+assert.equal(cleared.configured, false, 'the key is reported as removed');
+assert.equal(JSON.parse(readFileSync(keyFile, 'utf8')).anthropic, undefined, 'the key is removed from api-keys.json');
+
+step('create a project');
 await win.getByRole('button', { name: /New project/ }).first().click();
 await win.waitForSelector('.modal');
 await win.fill('input[placeholder^="For example"]', 'Harbour Lane Studio');
 await win.screenshot({ path: join(OUT, '02-new-project.png') });
 // The folder picker is a native dialog; create through the same IPC call the dialog uses.
 const t0 = Date.now();
-const res = await win.evaluate((dir) => window.builder.projects.create({ name: 'Harbour Lane Studio', parentDir: dir, starter: 'business', sampleImages: true }), join(WORK, 'sites'));
-console.log('create', res, Date.now() - t0, 'ms');
-await win.waitForSelector('.editor');
-await win.waitForSelector('.frame-box iframe', { timeout: 60000 });
-const frame = win.frameLocator('.frame-box iframe');
-await frame.locator('h1').first().waitFor({ timeout: 60000 });
-await win.waitForTimeout(1500);
+const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
+console.log('created and previewed in', Date.now() - t0, 'ms');
 await win.screenshot({ path: join(OUT, '03-editor.png') });
 
-// Select the hero, then its heading.
-await frame.locator('h1').first().click();
+step('select the hero, then its heading');
+const h1 = frame.locator('h1').first();
+const chipLabel = () => win.locator('.ov-chip .label').first().innerText();
+await h1.click();
+await eventually(async () => assert.equal(await chipLabel(), 'Split hero', 'the first click selects the hero section'));
 await win.waitForTimeout(400);
-await frame.locator('h1').first().click();
-await win.waitForTimeout(600);
+await h1.click();
+await eventually(async () => assert.match(await chipLabel(), /heading/i, 'the second click selects its heading'));
 await win.screenshot({ path: join(OUT, '04-selected-heading.png') });
-console.log(logs.slice(-30).join('\n'));
+assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
+cleanup();
+console.log('\nsmoke: passed');

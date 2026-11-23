@@ -2,7 +2,7 @@
 // the panel's design-relevant states in light and dark and writes one PNG per state and theme. Opt-in only,
 // never part of `npm run test:e2e`:
 //
-//   npm run build && DESIGN_CAPTURE=1 DESIGN_CAPTURE_DIR=/abs/out node tests/e2e/design/insert-panel.mjs
+//   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/insert-panel.mjs
 //
 // Each capture is verified on screen after it settles; a state that did not render throws instead of
 // writing a plausible-looking wrong image. Files are named `insert-{state}--{theme}.png`. Panel states are
@@ -16,8 +16,8 @@ if (process.env.DESIGN_CAPTURE !== '1') {
   console.log('insert panel capture harness: set DESIGN_CAPTURE=1 to run');
   process.exit(0);
 }
-const OUT = process.env.DESIGN_CAPTURE_DIR;
-if (!OUT) throw new Error('DESIGN_CAPTURE_DIR must be set to a directory outside the repository');
+// Defaults to a folder under the OS temp folder; set DESIGN_CAPTURE_DIR to keep the images elsewhere.
+const OUT = process.env.DESIGN_CAPTURE_DIR ?? join(realpathSync(tmpdir()), 'so-design-capture', 'insert-panel');
 mkdirSync(OUT, { recursive: true });
 // Resolved, because Vite fails to import through a symlinked project path (macOS tmpdir is one).
 const WORK = realpathSync(mkdtempSync(join(tmpdir(), 'so-insert-')));
