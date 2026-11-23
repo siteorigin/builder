@@ -36,14 +36,14 @@ import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf } from '@engine/tree';
-import { applyOps, setState, toast, useStore } from '../store';
+import { applyOps, applyWith, setState, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 
-type ListOp = { kind: 'insert' } | { kind: 'remove'; itemId: string } | { kind: 'move'; itemId: string; index: number } | { kind: 'field'; itemId: string; field: string; value: unknown };
+type ListOp = { kind: 'insert' } | { kind: 'remove'; itemId: string } | { kind: 'move'; itemId: string; index: number } | { kind: 'field'; itemId: string; field: string; value: unknown; edit?: PendingEdit };
 type Tokens = ReturnType<typeof effectiveTokens>;
 type Tone = 'local' | 'shared' | 'definition';
 
@@ -307,7 +307,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   // Making a code component unique copies its source into the project, which is only editable in developer mode.
   const canMakeUnique = def.kind === 'managed' || dev;
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
-  const set = (prop: string, value: unknown) => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], `Edit ${def.properties[prop]?.label ?? prop}`, `${node.id}:${prop}`);
+  const set = (prop: string, value: unknown, edit?: PendingEdit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], `Edit ${def.properties[prop]?.label ?? prop}`, `${node.id}:${prop}`);
   const onStyle = (partId: string) => (property: string, value: StyleValue | null) =>
     void applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], `Style ${def.parts[partId]?.label ?? partId}`, `${node.id}:${partId}:${scope}:${property}`);
   const overrides = countStyles(node.overrides?.[styledPart]);
@@ -372,8 +372,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               schema={schema}
               label={label}
               value={node.props[key] ?? schema.default}
-              onChange={(v) => set(key, v)}
-              onList={(op) => void applyOps([listOps(owner, node.id, key, op)], `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+              onChange={(v, edit) => set(key, v, edit)}
+              onList={(op) => void applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, node.id, key, op)], `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
               state={state}
             />
           )}
@@ -580,8 +580,8 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
                   schema={schema}
                   value={inst.props[b.prop] ?? schema.default}
                   state={state}
-                  onChange={(v) => void applyOps([{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${instNodeId}:${b.prop}`)}
-                  onList={(op) => void applyOps([listOps(instOwner, instNodeId, b.prop!, op)], `Edit ${schema.label}`)}
+                  onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${instNodeId}:${b.prop}`)}
+                  onList={(op) => void applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(instOwner, instNodeId, b.prop!, op)], `Edit ${schema.label}`)}
                 />
               );
             }
@@ -589,7 +589,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
               const field = listSchema.fields[b.item!];
               const item = listItems.find((x) => x.id === itemId);
               if (!field || !item) return null;
-              const edit = (v: unknown) => void applyOps([{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${instNodeId}:${listProp}:${itemId}:${b.item}`);
+              const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${instNodeId}:${listProp}:${itemId}:${b.item}`);
               return <ScalarField key={i} schema={field} value={item[b.item!]} state={state} onChange={edit} />;
             }
             return null;
@@ -624,7 +624,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
 
 function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: GraphNode; tokens: Tokens; selection: ElementRef }) {
   const scope = useStore((s) => s.styleScope);
-  const content = (field: Extract<EditOperation, { type: 'node.setContent' }>['field'], value: unknown) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field, value }], `Edit ${field}`, `${node.id}:${field}`);
+  const content = (field: Extract<EditOperation, { type: 'node.setContent' }>['field'], value: unknown, edit?: PendingEdit) => void applyWith(edit, [{ type: 'node.setContent', owner, nodeId: node.id, field, value }], `Edit ${field}`, `${node.id}:${field}`);
   const t = structuralTarget(selection);
   const title = refLabel(state, selection);
   const kind = elementKind(node);
@@ -676,7 +676,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
                 <div className="field-label" id={`${node.id}-dest`}>
                   Link
                 </div>
-                <LinkEditor value={node.link} onChange={(v) => content('link', v)} state={state} label={kind.name} />
+                <LinkEditor value={node.link} onChange={(v, edit) => content('link', v, edit)} state={state} label={kind.name} />
               </div>
             )}
             <Field label="Appearance">

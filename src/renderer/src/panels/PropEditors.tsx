@@ -2,60 +2,59 @@ import { createElement, Fragment, useEffect, useId, useRef, useState, type React
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
-import { api, toast, useStore } from '../store';
+import { api, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
 import { assetUrl } from '../lib/model';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
+import { pageIds, pageSections, planSectionPick, sharedPageIds } from '@generator/checks';
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
-/**
- * Link editor: what kind of destination, then the destination itself. `label` names the field it belongs to
- * ("Primary button"), so each control has a name that still makes sense out of context.
- */
-/** Anchor IDs a page offers as jump targets, in page order, plus the shared header and footer's. */
-function anchorsOn(state: ProjectState, pageId: string | null | undefined): string[] {
-  const out: string[] = [];
-  const walk = (tree: { rootIds: string[]; nodes: Record<string, GraphNode> }) => {
-    const visit = (id: string) => {
-      const n = tree.nodes[id];
-      if (!n) return;
-      if (n.anchor && !out.includes(n.anchor)) out.push(n.anchor);
-      if (n.kind === 'element' || n.kind === 'repeat') n.children.forEach(visit);
-      if (n.kind === 'instance') Object.values(n.slots ?? {}).forEach((ids) => ids.forEach(visit));
-    };
-    tree.rootIds.forEach(visit);
-  };
-  const page = pageId ? state.pages[pageId] : undefined;
-  if (page) walk(page);
-  walk(state.site.shell.header);
-  walk(state.site.shell.footer);
-  return out;
-}
-
-const OTHER_ANCHOR = '\u0000other';
+const OTHER_SECTION = '\u0000other';
+const SECTION_NODE = 'node:';
 
 /**
- * Which section of a page a link jumps to: the anchors the page has, or any ID typed in. `top` offers the top of
- * the page (no anchor); without it an empty value asks for a choice.
+ * Which section of a page a link jumps to: the page's sections by their headings (a section without an ID gets one
+ * from its heading when it is chosen), the shared header and footer's IDs, or any ID typed in. `top` offers the top
+ * of the page (no section); without it an empty value asks for a choice.
  */
-function AnchorPicker({ anchors, value, onPick, label, top }: { anchors: string[]; value: string; onPick: (a: string) => void; label: string; top?: boolean }) {
+function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { state: ProjectState; pageId: string | null | undefined; value: string; onPick: (anchor: string, edit?: PendingEdit) => void; label: string; top?: boolean; shared?: boolean }) {
   const [typing, setTyping] = useState(false);
   const picker = useRef<HTMLSelectElement>(null);
-  const options = value && !anchors.includes(value) ? [...anchors, value] : anchors;
-  // Leaving the typed ID (a commit, Escape or a plain blur) goes back to the list when there is one.
+  const revision = useStore((s) => s.snapshot?.revision);
+  const page = pageId ? state.pages[pageId] : undefined;
+  // A shared header or footer link to a section "on this page" shows on every page with the header, so only IDs all
+  // of those pages have will work there, and choosing one never gives a section on one page a new ID.
+  const ids = !page ? new Set<string>() : shared ? sharedPageIds(state) : pageIds(state, page.id);
+  const options: Array<{ value: string; text: string }> = [];
+  const add = (v: string, text: string) => {
+    if (!options.some((o) => o.value === v)) options.push({ value: v, text });
+  };
+  const seen = new Map<string, number>();
+  for (const x of page ? pageSections(state, page.id) : []) {
+    if (shared && !(x.anchor && ids.has(x.anchor))) continue;
+    // Sections with the same heading are told apart by their order on the page.
+    const n = (seen.get(x.label) ?? 0) + 1;
+    seen.set(x.label, n);
+    add(x.anchor ? `#${x.anchor}` : `${SECTION_NODE}${x.nodeId}`, `${x.nested ? '\u2003' : ''}${x.label}${n > 1 ? ` (${n})` : ''}`);
+  }
+  if (page && page.shell !== 'none')
+    for (const t of [state.site.shell.header, state.site.shell.footer]) for (const n of Object.values(t.nodes)) if (n.anchor && ids.has(n.anchor)) add(`#${n.anchor}`, `#${n.anchor}`);
+  // A section that is gone (or was typed in) stays visible until another is chosen.
+  if (value) add(`#${value}`, ids.has(value) ? `#${value}` : `#${value} (not found)`);
+  // Leaving the typed ID (a commit, Escape or a plain blur) goes back to the list.
   const backToList = (refocus: boolean) => {
     setTyping(false);
     if (refocus) requestAnimationFrame(() => picker.current?.focus());
   };
-  if (typing || !options.length)
+  if (typing)
     return (
       <span
         className="grow"
         style={{ display: 'flex', minWidth: 0 }}
-        onBlur={() => typing && backToList(false)}
+        onBlur={() => backToList(false)}
         onKeyDown={(e) => {
-          if (e.key === 'Escape' && typing) (e.stopPropagation(), backToList(true));
+          if (e.key === 'Escape') (e.stopPropagation(), backToList(true));
         }}
       >
         <DraftInput
@@ -63,7 +62,7 @@ function AnchorPicker({ anchors, value, onPick, label, top }: { anchors: string[
           value={value}
           ariaLabel={label}
           placeholder={top ? 'Top of page, or a section ID' : 'section-id'}
-          autoFocus={typing}
+          autoFocus
           onCommit={(t) => {
             const a = t.trim().replace(/^#/, '');
             if (a && !/^[A-Za-z][\w-]{0,60}$/.test(a)) return toast('Section IDs start with a letter and use letters, numbers, - and _.', 'error');
@@ -77,27 +76,38 @@ function AnchorPicker({ anchors, value, onPick, label, top }: { anchors: string[
     <select
       ref={picker}
       className="select sm grow"
-      value={value}
+      value={value ? `#${value}` : ''}
       aria-label={label}
       onChange={(e) => {
-        if (e.target.value === OTHER_ANCHOR) setTyping(true);
-        else onPick(e.target.value);
+        const v = e.target.value;
+        if (v === OTHER_SECTION) return setTyping(true);
+        // A pick from the list holds only for the project it was shown from: an undo in flight could remove the ID.
+        if (!v.startsWith(SECTION_NODE)) return onPick(v.replace(/^#/, ''), v ? { operations: [], expectedRevision: revision } : undefined);
+        const plan = page ? planSectionPick(state, page.id, v.slice(SECTION_NODE.length)) : null;
+        if (plan) onPick(plan.anchor, { operations: plan.operations, expectedRevision: revision });
       }}
     >
       {top ? <option value="">Top of page</option> : !value && <option value="" disabled>Choose a section…</option>}
-      {options.map((a) => (
-        <option key={a} value={a}>
-          #{a}
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.text}
         </option>
       ))}
-      <option value={OTHER_ANCHOR}>Another section ID…</option>
+      <option value={OTHER_SECTION}>Another section ID…</option>
     </select>
   );
 }
 
-export function LinkEditor({ value, onChange, state, label }: { value: LinkValue; onChange: (v: LinkValue) => void; state: ProjectState; label?: string }) {
+/**
+ * Link editor: what kind of destination, then the destination itself. `label` names the field it belongs to
+ * ("Primary button"), so each control has a name that still makes sense out of context. Choosing a section that
+ * has no ID yet passes the edit that gives it one, to be saved with the link.
+ */
+export function LinkEditor({ value, onChange, state, label }: { value: LinkValue; onChange: (v: LinkValue, edit?: PendingEdit) => void; state: ProjectState; label?: string }) {
   const v = value ?? { type: 'none', target: '' };
   const currentPageId = useStore((s) => s.pageId);
+  // A link in the shared header or footer shows on every page that has them.
+  const shared = useStore((s) => s.selection?.owner.kind === 'shell');
   // A type that needs a destination before it is a valid link (an address, a number) waits here until one
   // is entered; a new value (an undo, another selection) ends the wait.
   const [pending, setPending] = useState<LinkValue['type'] | null>(null);
@@ -128,7 +138,7 @@ export function LinkEditor({ value, onChange, state, label }: { value: LinkValue
       onChange(withAnchor({ type: t, target: page, newTab: v.newTab }, anchor));
     }
     // A section carries over only when it is on this page; otherwise one is chosen first.
-    else if (t === 'anchor' && anchor && anchorsOn(state, currentPageId).includes(anchor)) onChange({ type: t, target: anchor });
+    else if (t === 'anchor' && anchor && currentPageId && (shared ? sharedPageIds(state) : pageIds(state, currentPageId)).has(anchor)) onChange({ type: t, target: anchor });
     else setPending(t);
   };
   return (
@@ -151,7 +161,7 @@ export function LinkEditor({ value, onChange, state, label }: { value: LinkValue
             ))}
           </select>
         ) : type === 'anchor' ? (
-          <AnchorPicker anchors={anchorsOn(state, currentPageId)} value={target} label={named('Section')} onPick={(a) => a && onChange({ type: 'anchor', target: a })} />
+          <SectionPicker state={state} pageId={currentPageId} value={target} label={named('Section')} shared={shared} onPick={(a, edit) => a && onChange({ type: 'anchor', target: a }, edit)} />
         ) : type !== 'none' ? (
           <DraftInput
             key={type}
@@ -170,7 +180,7 @@ export function LinkEditor({ value, onChange, state, label }: { value: LinkValue
       {type === 'page' && (
         <div className="insp-link-row">
           <span className="insp-link-type faint insp-link-sub">Section</span>
-          <AnchorPicker anchors={anchorsOn(state, v.target)} value={v.anchor ?? ''} label={named('Section on the page')} top onPick={(a) => onChange(withAnchor(v, a || undefined))} />
+          <SectionPicker state={state} pageId={v.target} value={v.anchor ?? ''} label={named('Section on the page')} top onPick={(a, edit) => onChange(withAnchor(v, a || undefined), edit)} />
         </div>
       )}
       {/* A new tab only means something for pages and web addresses; mail and phone links open their own apps. */}
@@ -482,7 +492,7 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
  * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
  * its hint; without, it names itself with aria-label.
  */
-export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown) => void; state: ProjectState; label?: string; id?: string; describedBy?: string }) {
+export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; id?: string; describedBy?: string }) {
   const name = id ? undefined : (label ?? schema.label);
   const wired = { id, 'aria-describedby': describedBy };
   switch (schema.type) {
@@ -524,7 +534,7 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
 }
 
 /** One scalar field with its visible label wired to its control. Booleans sit on one line; images are their own titled card. */
-export function ScalarField({ schema, value, onChange, state, label }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown) => void; state: ProjectState; label?: string }) {
+export function ScalarField({ schema, value, onChange, state, label }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string }) {
   const id = useId();
   const shown = label ?? schema.label;
   if (schema.type === 'boolean') return <SwitchRow checked={!!value} onChange={onChange} label={shown} hint={schema.description} />;
@@ -551,8 +561,8 @@ export function PropField({ name, schema, value, onChange, onList, state, focusI
   name: string;
   schema: PropSchema;
   value: unknown;
-  onChange: (v: unknown) => void;
-  onList: (op: { kind: 'insert' } | { kind: 'remove'; itemId: string } | { kind: 'move'; itemId: string; index: number } | { kind: 'field'; itemId: string; field: string; value: unknown }) => void;
+  onChange: (v: unknown, edit?: PendingEdit) => void;
+  onList: (op: { kind: 'insert' } | { kind: 'remove'; itemId: string } | { kind: 'move'; itemId: string; index: number } | { kind: 'field'; itemId: string; field: string; value: unknown; edit?: PendingEdit }) => void;
   state: ProjectState;
   focusItem?: string;
   /** A shorter visible label, when a group heading already says what the field belongs to. */
@@ -694,7 +704,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem }: { name: s
               {openId === it.id && (
                 <FieldGroups
                   groups={fields}
-                  render={({ key, schema: fs, label }) => <ScalarField key={key} schema={fs as ScalarPropSchema} label={label} value={it[key]} onChange={(v) => L({ kind: 'field', itemId: it.id, field: key, value: v })} state={state} />}
+                  render={({ key, schema: fs, label }) => <ScalarField key={key} schema={fs as ScalarPropSchema} label={label} value={it[key]} onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })} state={state} />}
                 />
               )}
             </div>

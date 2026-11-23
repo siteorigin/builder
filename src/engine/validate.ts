@@ -5,7 +5,7 @@ import { variantIdsValid, variantOptions } from '@shared/variants';
 import { allTrees, childLists, displayName, subtreeIds } from './tree';
 import { boundSchema } from './schema';
 import { declaredTokens, findTokenCycle } from './tokens';
-import { unlinkedButtons } from '@generator/checks';
+import { missingSectionLinks, unlinkedButtons } from '@generator/checks';
 import { formConnected } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
@@ -16,8 +16,23 @@ export interface Diagnostic {
   nodeId?: string;
 }
 
-/** Schema and reference validation: IDs, references, nesting and routes. */
-export function validateState(state: ProjectState): Diagnostic[] {
+/**
+ * Errors in what the site shows that an edit may still introduce: the author fixes them later (a link to a section
+ * that was just deleted, say), so they never stop a change from being saved or a file from being loaded.
+ */
+const CONTENT_ERRORS = new Set(['LINK_SECTION_MISSING']);
+
+/** Whether a diagnostic leaves the project inconsistent enough that a change introducing it is refused. */
+export const blocksSaving = (d: Diagnostic) => d.severity === 'error' && !CONTENT_ERRORS.has(d.code);
+
+/** "Home", "Home and About", "Home, About and Contact". */
+const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? ''));
+
+/**
+ * Schema and reference validation: IDs, references, nesting and routes, and links to sections that do not exist.
+ * Save gates pass `sectionLinks: false`: those findings never block a save, so they need not be worked out.
+ */
+export function validateState(state: ProjectState, opts: { sectionLinks?: boolean } = {}): Diagnostic[] {
   const out: Diagnostic[] = [];
   const routes = new Map<string, string>();
   if (!state.pages[state.site.homePageId]) out.push({ severity: 'error', code: 'HOME_MISSING', message: 'The site has no Home page.' });
@@ -123,6 +138,15 @@ export function validateState(state: ProjectState): Diagnostic[] {
         if (!formConnected(props))
           out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. Add an HTTPS form endpoint or a Web3Forms access key, or choose Netlify Forms.`, owner, nodeId: n.id });
       }
+  }
+  for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {
+    const where = i.owner.kind === 'shell' ? (i.owner.id === 'header' ? 'Header' : 'Footer') : (state.pages[i.owner.id]?.title ?? 'A page');
+    const what = i.label ? `the “${i.label}” link${i.inText ? ' in the text' : ''}` : `a link${i.inText ? ' in the text' : ''}`;
+    const fix = i.inText ? 'Change the link in the text to a section the page has.' : 'Choose one of the page’s sections in the link’s Section list.';
+    const message = i.pageId
+      ? `${where}: ${what} goes to #${i.fragment} on ${state.pages[i.pageId].title}, but that page has no section with that ID. ${fix}`
+      : `${where}: ${what} goes to #${i.fragment}, but ${listed((i.pages ?? []).map((id) => state.pages[id].title))} ${(i.pages ?? []).length > 1 ? 'have' : 'has'} no section with that ID. ${fix}`;
+    out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId });
   }
   out.push(...structureDiagnostics(state));
   for (const a of Object.values(state.assets.assets)) {

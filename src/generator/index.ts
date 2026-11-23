@@ -200,7 +200,7 @@ export function resolveRichText(value: unknown, ctx: ResolveContext, plainAs?: R
  * Whether a code component reads rich text as paragraph strings. One that renders through the RichText helper
  * takes the blocks, links included; any other was written for the strings it has always been given.
  */
-function takesParagraphs(def: ComponentDefinition): boolean {
+export function takesParagraphs(def: ComponentDefinition): boolean {
   return def.kind === 'code' && !/RichText\.svelte|^<!-- Code component converted from/.test(def.source ?? '');
 }
 

@@ -15,7 +15,7 @@ import { themeUpdates } from '@engine/theme-updates';
 import { basePath, generateManagedComponent, generatePage, defFile } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
-import { copyProjectSource, editedGeneratedFile, exportedAssetFilter, finishExportedSource, listFiles, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, uniqueChild } from './export';
+import { copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, sectionLinkWarnings, uniqueChild } from './export';
 import { ProjectLockedError, ProjectSession } from './project/session';
 import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
@@ -649,6 +649,7 @@ export class Controller {
       const folder = join(staging, 'project');
       const snap = await this.snapshotSource(s, folder);
       if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
+      warnings.push(...sectionLinkWarnings(snap.state));
       if (format === 'zip') await zipDirectory(folder, dest, `${slugify(snap.state.site.name) || 'website'}-source`);
       else {
         const problem = await this.publish(folder, dest);
@@ -714,7 +715,7 @@ export class Controller {
     const omitted = await pruneWebsiteAssets(project, state);
     await fs.symlink(join(s.dir, 'node_modules'), join(project, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
     const build = await buildProject(project);
-    if (!build.ok) return { ok: false, message: 'The production build failed.', warnings: [stripAnsi(build.error ?? ''), ...build.logs.map(stripAnsi)].filter(Boolean).slice(0, 8) };
+    if (!build.ok) return { ok: false, ...explainBuildFailure(state, [stripAnsi(build.error ?? ''), ...build.logs.map(stripAnsi)]) };
     const out = join(project, 'build');
     const warnings: string[] = [];
     // Verify page inventory.

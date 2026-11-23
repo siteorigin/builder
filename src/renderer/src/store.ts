@@ -143,8 +143,18 @@ export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast
   setTimeout(() => setState({ toasts: getState().toasts.filter((t) => t.id !== id) }), kind === 'error' ? 7000 : 4000);
 }
 
-/** Apply operations through the shared command service. Returns per-op results or null on failure. */
-export async function applyOps(operations: EditOperation[], label: string, coalesceKey?: string): Promise<Array<Record<string, unknown>> | null> {
+/** Edits a change needs first, saved in the same batch: a section's new ID before the link that jumps to it. */
+export interface PendingEdit {
+  operations: EditOperation[];
+  /** The project revision the edits were planned against: the batch is refused if the project has moved on. */
+  expectedRevision?: number;
+}
+
+/**
+ * Apply operations through the shared command service. Returns per-op results or null on failure. With
+ * `expectedRevision`, the batch applies only to the project as it was at that revision.
+ */
+export async function applyOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<Array<Record<string, unknown>> | null> {
   const s = getState();
   if (s.snapshot?.aiBusy) {
     toast('The AI is making changes. Stop it to edit manually.', 'error', { label: 'Stop AI', run: () => void api.ai.stop() });
@@ -152,15 +162,24 @@ export async function applyOps(operations: EditOperation[], label: string, coale
   }
   setState({ pendingSave: s.pendingSave + 1 });
   try {
-    const r = await api.project.apply({ operations }, { label, coalesceKey });
+    const r = await api.project.apply(expectedRevision === undefined ? { operations } : { operations, expectedRevision }, { label, coalesceKey });
     if (!r.ok) {
-      toast(r.error?.message ?? 'That change could not be applied.', 'error');
+      toast(r.error?.code === 'STALE_REVISION' ? 'The project changed while you were choosing. Choose again.' : (r.error?.message ?? 'That change could not be applied.'), 'error');
       return null;
     }
     return r.results ?? [];
   } finally {
     setState({ pendingSave: Math.max(0, getState().pendingSave - 1) });
   }
+}
+
+/**
+ * Apply `operations` after the edits they need first, as one batch and one undo step, against the revision the
+ * edit was planned on. A batch that adds edits of its own is its own undo step, never merged into the last one.
+ */
+export function applyWith(edit: PendingEdit | undefined, operations: EditOperation[], label: string, coalesceKey?: string) {
+  if (!edit) return applyOps(operations, label, coalesceKey);
+  return applyOps([...edit.operations, ...operations], label, edit.operations.length ? undefined : coalesceKey, edit.expectedRevision);
 }
 
 export function applyAiEvent(e: AiEvent) {

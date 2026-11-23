@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compile } from 'svelte/compiler';
-import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
+import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
@@ -9,7 +9,7 @@ import { applyOperations } from '@engine/apply';
 import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, generateProject, js, propLocals, resolveLink } from '@generator/index';
 import { externalLink } from '@shared/links';
 import { usedIcons } from '@generator/runtime-files';
-import { placeholderImageCount } from '@generator/checks';
+import { pageIds, pageSections, placeholderImageCount, planSectionPick, sharedPageIds } from '@generator/checks';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -427,5 +427,372 @@ describe('editor variants and hot updates', () => {
     const page = generateProject(s, { instrument: true }).get('src/routes/+page.svelte')!;
     expect(page).toMatch(/\{#key 'siteorigin'\}\n\n\{\/key\}\n$/);
     expect(compileAll(new Map([['src/routes/+page.svelte', page]]))).toEqual([]);
+  });
+});
+
+describe('section links', () => {
+  const contactOf = (s: ProjectState) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === '/contact/')!;
+  const headerOf = (s: ProjectState) => s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+  const missing = (s: ProjectState) => validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING');
+
+  it('reports a link to a section the destination page does not have', () => {
+    const s = fresh();
+    const contact = contactOf(s);
+    headerOf(s).props.ctaLink = { type: 'page', target: contact.id, anchor: 'get-in-touch-with-us' };
+    const found = missing(s);
+    expect(found).toHaveLength(1);
+    expect(found[0].severity).toBe('error');
+    expect(found[0].owner).toEqual({ kind: 'shell', id: 'header' });
+    expect(found[0].nodeId).toBe(headerOf(s).id);
+    expect(found[0].message).toContain('Book a call');
+    expect(found[0].message).toContain('#get-in-touch-with-us');
+    expect(found[0].message).toContain('Contact');
+    // An ID on another page does not count: the link goes to Contact.
+    instanceOf(s, 'features.grid').anchor = 'get-in-touch-with-us';
+    expect(missing(s)).toHaveLength(1);
+  });
+
+  it('accepts the section once it exists, and reports it again when the section is deleted', () => {
+    let s = fresh();
+    const contact = contactOf(s);
+    const details = instanceOf(s, 'contact.details', contact.id);
+    headerOf(s).props.ctaLink = { type: 'page', target: contact.id, anchor: 'get-in-touch' };
+    expect(missing(s)).toHaveLength(1);
+    s = applyOperations(s, [{ type: 'node.setContent', owner: { kind: 'page', id: contact.id }, nodeId: details.id, field: 'anchor', value: 'get-in-touch' }]).state;
+    expect(missing(s)).toEqual([]);
+    s = applyOperations(s, [{ type: 'node.remove', owner: { kind: 'page', id: contact.id }, nodeId: details.id }]).state;
+    expect(missing(s)).toHaveLength(1);
+  });
+
+  it('checks same-page links against the page they render on', () => {
+    const s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    hero.props.secondaryLink = { type: 'anchor', target: 'services' };
+    const found = missing(s);
+    expect(found).toHaveLength(1);
+    expect(found[0].owner).toEqual({ kind: 'page', id: s.site.homePageId });
+    expect(found[0].nodeId).toBe(hero.id);
+    expect(found[0].message).toContain('About the studio');
+    instanceOf(s, 'features.grid').anchor = 'services';
+    expect(missing(s)).toEqual([]);
+    // The same link on About looks for the section on About.
+    const about = s.site.pageOrder[1];
+    const banner = instanceOf(s, 'cta.banner', about);
+    banner.props.primaryLink = { type: 'anchor', target: 'services' };
+    const onAbout = missing(s);
+    expect(onAbout).toHaveLength(1);
+    expect(onAbout[0].owner).toEqual({ kind: 'page', id: about });
+    expect(onAbout[0].nodeId).toBe(banner.id);
+  });
+
+  it('accepts the ids the generated layout always has', () => {
+    const s = fresh();
+    instanceOf(s, 'hero.split').props.secondaryLink = { type: 'anchor', target: 'main' };
+    expect(missing(s)).toEqual([]);
+    // "#top" goes to the top of the page without an element of that ID, in browsers and in the static build.
+    instanceOf(s, 'hero.split').props.secondaryLink = { type: 'anchor', target: 'top' };
+    expect(missing(s)).toEqual([]);
+    // The header's code writes this one out literally, so it exists wherever the header shows.
+    instanceOf(s, 'hero.split').props.secondaryLink = { type: 'anchor', target: 'so-site-nav' };
+    expect(missing(s)).toEqual([]);
+    s.pages[s.site.homePageId].shell = 'none';
+    expect(missing(s)).toHaveLength(1);
+  });
+
+  it('checks a shared link on every page that shows the header, and only those', () => {
+    const s = fresh();
+    const about = s.site.pageOrder[1];
+    const contact = contactOf(s);
+    headerOf(s).props.links = [{ id: 'i1', label: 'Services', link: { type: 'anchor', target: 'services' } }];
+    instanceOf(s, 'features.grid').anchor = 'services';
+    // Only IDs every page with the header has are safe for its "on this page" links.
+    expect([...sharedPageIds(s)].sort()).toEqual(['main', 'so-site-nav', 'top']);
+    let found = missing(s);
+    expect(found).toHaveLength(1);
+    expect(found[0].nodeId).toBe(headerOf(s).id);
+    expect(found[0].message).toContain('the “Services” link');
+    expect(found[0].message).toContain('About and Contact have no section');
+    contact.shell = 'none';
+    found = missing(s);
+    expect(found).toHaveLength(1);
+    expect(found[0].message).toContain(`${s.pages[about].title} has no section`);
+    // A page without the header does not limit where the header's links can go.
+    instanceOf(s, 'cta.banner', about).anchor = 'services';
+    expect(sharedPageIds(s).has('services')).toBe(true);
+    expect(missing(s)).toEqual([]);
+  });
+
+  it('checks a code component link only when its label lets it render', () => {
+    const s = fresh();
+    headerOf(s).props.ctaLink = { type: 'page', target: contactOf(s).id, anchor: 'nowhere' };
+    headerOf(s).props.ctaLabel = '';
+    expect(missing(s)).toEqual([]);
+    // The header shows its action for any label the template treats as present, spaces included.
+    headerOf(s).props.ctaLabel = ' ';
+    expect(missing(s)).toHaveLength(1);
+  });
+
+  it('reports links inside rich text, list items included', () => {
+    const s = fresh();
+    instanceOf(s, 'content.media').props.body = [
+      { type: 'p', spans: [{ text: 'Read ' }, { text: 'how we work', link: { type: 'anchor', target: 'process' } }] },
+      { type: 'ul', items: [[{ text: 'Our process', link: { type: 'anchor', target: 'process' } }]] }
+    ];
+    const found = missing(s);
+    expect(found.map((d) => d.message.match(/“(.+?)”/)?.[1])).toEqual(['how we work', 'Our process']);
+    expect(found[1].message).toContain('the “Our process” link in the text goes to #process');
+    expect(found[1].message).toContain('Change the link in the text');
+  });
+
+  it('reports each broken link of a list, even with the same label', () => {
+    const s = fresh();
+    const grid = instanceOf(s, 'features.grid');
+    const items = (grid.props.items as Array<Record<string, unknown>>).map((it) => ({ ...it, linkLabel: 'Learn more', link: { type: 'anchor', target: 'gone' } }));
+    grid.props.items = items;
+    expect(missing(s)).toHaveLength(3);
+  });
+
+  it('tells apart the same link in two placements of one component inside another', () => {
+    const s = fresh();
+    const outer = addToHome(s, 'layout.section');
+    const id = installComponent(s, 'cta.banner');
+    const a = makeInstance(s.components[id], { primaryLink: { type: 'anchor', target: 'one' } });
+    const b = makeInstance(s.components[id], { primaryLink: { type: 'anchor', target: 'two' } });
+    home(s).nodes[a.id] = a;
+    home(s).nodes[b.id] = b;
+    outer.slots = { content: [a.id, b.id] };
+    expect(missing(s).map((d) => d.message.match(/#(\w+)/)?.[1]).sort()).toEqual(['one', 'two']);
+    // Inside a definition both report against the placement that holds them, and both still count.
+    const wrap = defOf(s, 'layout.section');
+    const slotNode = Object.values(wrap.tree!.nodes).find((n) => n.kind === 'slot')!;
+    const parentOf = Object.values(wrap.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotNode.id)) as { children: string[] };
+    const ia = makeInstance(s.components[id], { primaryLink: { type: 'anchor', target: 'three' } });
+    const ib = makeInstance(s.components[id], { primaryLink: { type: 'anchor', target: 'four' } });
+    wrap.tree!.nodes[ia.id] = ia;
+    wrap.tree!.nodes[ib.id] = ib;
+    parentOf.children.push(ia.id, ib.id);
+    expect(missing(s).filter((d) => d.nodeId === outer.id).map((d) => d.message.match(/#(\w+)/)?.[1]).sort()).toEqual(['four', 'three']);
+  });
+
+  it('walks slot content rendered once per list item only once', () => {
+    const s = fresh();
+    let parent = addToHome(s, 'layout.section');
+    const def = defOf(s, 'layout.section');
+    const slotNode = Object.values(def.tree!.nodes).find((n) => n.kind === 'slot')!;
+    const holder = Object.values(def.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotNode.id)) as { children: string[] };
+    // The slot renders once per item of a ten-item list; six sections nested through it stay quick to check.
+    def.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: {}, default: Array.from({ length: 10 }, (_, i) => ({ id: `r${i}` })) } as never;
+    def.tree!.nodes['rows'] = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: [slotNode.id] };
+    holder.children = holder.children.map((c) => (c === slotNode.id ? 'rows' : c));
+    for (let i = 0; i < 6; i++) {
+      const child = makeInstance(def, {});
+      home(s).nodes[child.id] = child;
+      parent.slots = { content: [child.id] };
+      parent = child;
+    }
+    const leaf: GraphNode = { id: 'n_leaf', kind: 'link', label: 'Go', link: { type: 'anchor', target: 'nowhere' }, appearance: 'primary' };
+    home(s).nodes[leaf.id] = leaf;
+    parent.slots = { content: [leaf.id] };
+    const started = Date.now();
+    expect(missing(s)).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('walks such slot content once inside a definition too', () => {
+    const s = fresh();
+    addToHome(s, 'layout.section');
+    const section = defOf(s, 'layout.section');
+    const slotNode = Object.values(section.tree!.nodes).find((n) => n.kind === 'slot')!;
+    const holder = Object.values(section.tree!.nodes).find((n) => n.kind === 'element' && n.children.includes(slotNode.id)) as { children: string[] };
+    section.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: {}, default: Array.from({ length: 10 }, (_, i) => ({ id: `r${i}` })) } as never;
+    section.tree!.nodes['rows'] = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: [slotNode.id] };
+    holder.children = holder.children.map((c) => (c === slotNode.id ? 'rows' : c));
+    // Six sections nested inside the banner's own definition, a button at the bottom.
+    const banner = defOf(s, 'cta.banner');
+    const root = banner.tree!.nodes[banner.tree!.rootIds[0]] as { children: string[] };
+    const button: GraphNode = { id: 'b_leaf', kind: 'link', label: 'Go', link: { type: 'none', target: '' }, appearance: 'primary' };
+    banner.tree!.nodes[button.id] = button;
+    let inner: string = button.id;
+    for (let i = 0; i < 6; i++) {
+      const child = makeInstance(section, {});
+      child.slots = { content: [inner] };
+      banner.tree!.nodes[child.id] = child;
+      inner = child.id;
+    }
+    root.children.push(inner);
+    const started = Date.now();
+    // One finding for each page that places the banner (Home and About), not one per rendering of the slot.
+    expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED' && d.message.includes('“Go”'))).toHaveLength(2);
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('reads rich text links in a section converted to code', () => {
+    let s = fresh();
+    const media = instanceOf(s, 'content.media');
+    const home = { kind: 'page' as const, id: s.site.homePageId };
+    s = applyOperations(s, [{ type: 'component.convertToCode', owner: home, nodeId: media.id, name: 'Media code' }]).state;
+    (s.pages[s.site.homePageId].nodes[media.id] as InstanceNode).props.body = [{ type: 'p', spans: [{ text: 'See the steps', link: { type: 'anchor', target: 'steps' } }] }];
+    expect(missing(s).map((d) => d.message)).toEqual([expect.stringContaining('the “See the steps” link in the text goes to #steps')]);
+  });
+
+  it('gives a component root the id its placement sets, before its own', () => {
+    const s = fresh();
+    const def = defOf(s, 'cta.banner');
+    def.tree!.nodes[def.tree!.rootIds[0]].anchor = 'banner';
+    const banner = instanceOf(s, 'cta.banner');
+    expect(pageIds(s, s.site.homePageId).has('banner')).toBe(true);
+    banner.anchor = 'start';
+    const ids = pageIds(s, s.site.homePageId);
+    expect(ids.has('start')).toBe(true);
+    expect(ids.has('banner')).toBe(false);
+  });
+
+  it('walks a section placed inside another of the same kind', () => {
+    const s = fresh();
+    const outer = addToHome(s, 'layout.section');
+    const id = installComponent(s, 'layout.section');
+    const inner = makeInstance(s.components[id], {});
+    const heading: GraphNode = { id: 'n_deep', kind: 'text', tag: 'h2', text: 'Deep', anchor: 'deep' };
+    const button: GraphNode = { id: 'n_btn', kind: 'link', label: 'Go', link: { type: 'none', target: '' }, appearance: 'primary' };
+    home(s).nodes[inner.id] = inner;
+    home(s).nodes[heading.id] = heading;
+    home(s).nodes[button.id] = button;
+    // The inner section is not a root of its own; it lives in the outer one's content.
+    home(s).rootIds = home(s).rootIds.filter((r) => r !== inner.id);
+    outer.slots = { content: [inner.id] };
+    inner.slots = { content: [heading.id, button.id] };
+    expect(pageIds(s, s.site.homePageId).has('deep')).toBe(true);
+    expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED').map((d) => d.nodeId)).toContain('n_btn');
+    // The anchored heading is listed; the sections around it, named only by it, are not.
+    const listed = pageSections(s, s.site.homePageId);
+    expect(listed.find((x) => x.nodeId === heading.id)).toMatchObject({ label: 'Deep', anchor: 'deep', nested: false });
+    expect(listed.some((x) => x.nodeId === inner.id || x.nodeId === outer.id)).toBe(false);
+  });
+
+  it('counts slot content only where the definition shows the slot', () => {
+    const s = fresh();
+    const section = addToHome(s, 'layout.section');
+    const text: GraphNode = { id: 'n_note', kind: 'text', tag: 'p', text: 'Note', anchor: 'note' };
+    home(s).nodes[text.id] = text;
+    section.slots = { content: [text.id] };
+    expect(pageIds(s, s.site.homePageId).has('note')).toBe(true);
+    const def = s.components[section.definitionId];
+    const slot = Object.values(def.tree!.nodes).find((n) => n.kind === 'slot')!;
+    slot.when = { $prop: 'missing' };
+    expect(pageIds(s, s.site.homePageId).has('note')).toBe(false);
+  });
+});
+
+describe('choosing a section to link to', () => {
+  const contactOf = (s: ProjectState) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === '/contact/')!;
+  const headerOf = (s: ProjectState) => s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+  const file = (files: Map<string, string>, end: string) => [...files.entries()].find(([p]) => p.endsWith(end))?.[1] ?? '';
+
+  it("lists a page's sections by their visible headings", () => {
+    const s = fresh();
+    expect(pageSections(s, contactOf(s).id).map((x) => x.label)).toEqual(['Let’s talk', 'Get in touch', 'Frequently asked questions']);
+    expect(pageSections(s, contactOf(s).id).every((x) => !x.anchor && !x.nested)).toBe(true);
+    const blank = createStarterState('blank', 'Blank', false);
+    expect(pageSections(blank, blank.site.homePageId).map((x) => x.label)).toEqual(['Welcome to Blank']);
+    // The logo strip shows its heading as a paragraph; its Heading property still names it.
+    expect(pageSections(s, s.site.homePageId)[1].label).toBe('Trusted by homeowners and local businesses');
+    // A heading placed straight on the page is a section of its own.
+    const h: GraphNode = { id: 'n_h', kind: 'text', tag: 'h2', text: 'Opening hours' };
+    contactOf(s).nodes[h.id] = h;
+    contactOf(s).rootIds.push(h.id);
+    expect(pageSections(s, contactOf(s).id).at(-1)).toMatchObject({ nodeId: 'n_h', label: 'Opening hours', nested: false });
+  });
+
+  it('reuses the ID a section already renders with, so links to it keep working', () => {
+    const s = fresh();
+    const def = defOf(s, 'cta.banner');
+    def.tree!.nodes[def.tree!.rootIds[0]].anchor = 'banner';
+    const banner = instanceOf(s, 'cta.banner');
+    expect(pageSections(s, s.site.homePageId).find((x) => x.nodeId === banner.id)?.anchor).toBe('banner');
+    expect(planSectionPick(s, s.site.homePageId, banner.id)).toEqual({ anchor: 'banner', operations: [] });
+    // A second placement inherits the same ID; it is offered as a section of its own and gets an ID of its own.
+    const second = addToHome(s, 'cta.banner', { heading: 'One more thing' });
+    const listed = pageSections(s, s.site.homePageId).find((x) => x.nodeId === second.id);
+    expect(listed).toMatchObject({ label: 'One more thing', anchor: undefined });
+    // With two elements rendering it, the ID no longer picks out the first one either: moving them would retarget it.
+    expect(pageSections(s, s.site.homePageId).find((x) => x.nodeId === banner.id)?.anchor).toBeUndefined();
+    expect(planSectionPick(s, s.site.homePageId, banner.id)!.operations).toHaveLength(1);
+    expect(planSectionPick(s, s.site.homePageId, second.id)).toMatchObject({ anchor: 'one-more-thing', operations: [expect.objectContaining({ nodeId: second.id })] });
+  });
+
+  it('offers sections placed inside another section, and not the wrapper they name', () => {
+    const s = fresh();
+    const contact = contactOf(s);
+    const [intro, details, faq] = contact.rootIds;
+    const id = installComponent(s, 'layout.section');
+    const wrapper = makeInstance(s.components[id], {});
+    wrapper.slots = { content: [details, faq] };
+    contact.nodes[wrapper.id] = wrapper;
+    contact.rootIds = [intro, wrapper.id];
+    const sections = pageSections(s, contact.id);
+    expect(sections.map((x) => [x.label, x.nested])).toEqual([
+      ['Let’s talk', false],
+      ['Get in touch', false],
+      ['Frequently asked questions', false]
+    ]);
+    // Once it has an ID of its own, the wrapper is offered too, by its name, with the sections inside it under it.
+    wrapper.anchor = 'more';
+    expect(pageSections(s, contact.id).map((x) => [x.label, x.anchor, x.nested])).toEqual([
+      ['Let’s talk', undefined, false],
+      ['Section', 'more', false],
+      ['Get in touch', undefined, true],
+      ['Frequently asked questions', undefined, true]
+    ]);
+  });
+
+  it('gives a chosen section a stable ID in the same batch as the link, and keeps it through renames and moves', () => {
+    let s = fresh();
+    const contact = contactOf(s);
+    const details = contact.rootIds[1];
+    const plan = planSectionPick(s, contact.id, details)!;
+    expect(plan.anchor).toBe('get-in-touch');
+    expect(plan.operations).toHaveLength(1);
+    s = applyOperations(s, [
+      ...plan.operations,
+      { type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: headerOf(s).id, prop: 'ctaLink', value: { type: 'page', target: contact.id, anchor: plan.anchor } }
+    ]).state;
+    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+    // Choosing it again reuses the ID.
+    expect(planSectionPick(s, contact.id, details)).toEqual({ anchor: 'get-in-touch', operations: [] });
+    const page = { kind: 'page' as const, id: contact.id };
+    s = applyOperations(s, [
+      { type: 'instance.setProp', owner: page, nodeId: details, prop: 'heading', value: 'Talk to the studio' },
+      { type: 'node.move', owner: page, nodeId: details, parentId: null, index: 0 }
+    ]).state;
+    expect(s.pages[contact.id].rootIds[0]).toBe(details);
+    expect(pageSections(s, contact.id)[0]).toMatchObject({ label: 'Talk to the studio', anchor: 'get-in-touch' });
+    expect(planSectionPick(s, contact.id, details)).toEqual({ anchor: 'get-in-touch', operations: [] });
+    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
+    const files = generateProject(s);
+    expect(file(files, 'routes/contact/+page.svelte')).toContain('so_id={"get-in-touch"}');
+    expect(file(files, 'routes/+layout.svelte')).toContain('ctaLink={{"href":"/contact/#get-in-touch"}}');
+  });
+
+  it('makes IDs that are valid and unused on the page', () => {
+    const s = fresh();
+    const contact = contactOf(s);
+    const [intro, details, faq] = contact.rootIds;
+    (contact.nodes[faq] as InstanceNode).anchor = 'get-in-touch';
+    expect(planSectionPick(s, contact.id, details)!.anchor).toBe('get-in-touch-2');
+    (contact.nodes[intro] as InstanceNode).props.heading = '2025: a new studio';
+    expect(planSectionPick(s, contact.id, intro)!.anchor).toBe('a-new-studio');
+    (contact.nodes[intro] as InstanceNode).props.heading = '';
+    expect(planSectionPick(s, contact.id, intro)!.anchor).toMatch(/^[a-z][\w-]*$/);
+    // A heading that matches an ID the site already uses gets a number.
+    (contact.nodes[intro] as InstanceNode).props.heading = 'Main';
+    expect(planSectionPick(s, contact.id, intro)!.anchor).toBe('main-2');
+    // So does one that matches an ID inside a component on the page.
+    (contact.nodes[faq] as InstanceNode).anchor = undefined;
+    const def = defOf(s, 'faq.list');
+    const inside = Object.values(def.tree!.nodes).find((n) => n.kind === 'text')!;
+    inside.anchor = 'get-in-touch';
+    expect(planSectionPick(s, contact.id, details)!.anchor).toBe('get-in-touch-2');
+    (contact.nodes[intro] as InstanceNode).anchor = 'get-in-touch-2';
+    expect(planSectionPick(s, contact.id, details)!.anchor).toBe('get-in-touch-3');
   });
 });

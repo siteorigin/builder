@@ -222,6 +222,12 @@ export class DevServer {
 }
 
 /** How long a build may take, and how long a build that reported an error may still finish on its own. */
+/** The last lines a build wrote to stderr, for a failure's details. */
+export function stderrTail(chunks: string[], max = 4000): string[] {
+  const text = chunks.join('').slice(-max).trim();
+  return text ? [text] : [];
+}
+
 export const BUILD_LIMITS = { timeoutMs: 10 * 60_000, errorGraceMs: 5_000, exitWaitMs: 3_000 };
 
 /**
@@ -237,15 +243,17 @@ export function buildProject(dir: string): Promise<{ ok: boolean; error?: string
     const errLines: string[] = [];
     const timers: NodeJS.Timeout[] = [];
     /** Settle once the worker is gone (or has not left after a few seconds), so callers can clean up its folder. */
-    const finish = (result: { ok: boolean; error?: string; logs: string[] }) => {
+    const finish = (outcome: { ok: boolean; error?: string; logs: string[] }, withStderr = false) => {
       if (done) return;
       done = true;
       for (const t of timers) clearTimeout(t);
-      if (exited) return resolve(result);
-      const settle = setTimeout(() => resolve(result), BUILD_LIMITS.exitWaitMs);
+      // stderr can still be arriving when the worker reports, so it is read only once the worker has gone.
+      const result = () => (withStderr ? { ...outcome, logs: [...outcome.logs, ...stderrTail(errLines)] } : outcome);
+      if (exited) return resolve(result());
+      const settle = setTimeout(() => resolve(result()), BUILD_LIMITS.exitWaitMs);
       onExit.push(() => {
         clearTimeout(settle);
-        resolve(result);
+        resolve(result());
       });
       try {
         proc.kill();
@@ -255,7 +263,8 @@ export function buildProject(dir: string): Promise<{ ok: boolean; error?: string
     };
     proc.stderr?.on('data', (d) => errLines.push(String(d)));
     proc.on('message', (m: { type: string; ok?: boolean; error?: string; message?: string; logs?: string[] }) => {
-      if (m.type === 'built') finish({ ok: !!m.ok, error: m.error, logs: m.logs ?? [] });
+      // A failed build often explains itself only on stderr (the static build lists links to missing sections there).
+      if (m.type === 'built') finish({ ok: !!m.ok, error: m.error, logs: m.logs ?? [] }, !m.ok);
       else if (m.type === 'error') {
         // The worker hit an error it could not hand back as a result (an uncaught exception, a failed plugin).
         // Give the build a moment in case it still completes, then stop waiting for it.

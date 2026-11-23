@@ -12,6 +12,7 @@ import { zipDirectory } from '../../src/main/zip';
 import {
   copyProjectSource,
   editedGeneratedFile,
+  explainBuildFailure,
   exportedAssetFilter,
   finishExportedSource,
   isGeneratedReadme,
@@ -20,6 +21,7 @@ import {
   projectReadme,
   pruneWebsiteAssets,
   publishFolder,
+  sectionLinkWarnings,
   uniqueChild
 } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
@@ -296,3 +298,60 @@ describe('source export helpers', () => {
     expect(uniqueChild(parent, 'site')).toBe(join(parent, 'site-3'));
   });
 });
+
+describe('links to missing sections', () => {
+  const broken = () => {
+    const s = createStarterState('business', 'Studio', false);
+    const contact = s.site.pageOrder.find((id) => s.pages[id].route === '/contact/')!;
+    const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as { props: Record<string, unknown> };
+    header.props.ctaLink = { type: 'page', target: contact, anchor: 'get-in-touch-with-us' };
+    return s;
+  };
+  const prerender = 'Error: The following pages contain links to /contact/#get-in-touch-with-us, but no element with id="get-in-touch-with-us" exists on /contact/ - see the `handleMissingId` option';
+
+  it('names the links when the build refuses a missing section', () => {
+    const r = explainBuildFailure(broken(), [prerender, 'at prerender']);
+    expect(r.message).toMatch(/a link goes to a section its page does not have/);
+    expect(r.warnings[0]).toContain('the “Book a call” link goes to #get-in-touch-with-us on Contact');
+    expect(r.warnings).toContain(prerender);
+  });
+
+  it('says so plainly when the build finds a missing section Project health does not', () => {
+    const r = explainBuildFailure(createStarterState('business', 'Studio', false), [prerender]);
+    expect(r.message).toMatch(/a link goes to a section its page does not have/);
+    expect(r.message).not.toMatch(/Project health/);
+    expect(r.warnings).toEqual([prerender]);
+  });
+
+  it('puts the missing ID first, however long the build log', () => {
+    const log = [...Array.from({ length: 12 }, (_, i) => `vite warning ${i}`), 'Error: [prerender_missing_id] no element with id="gone" exists on /contact/'].join('\n');
+    const r = explainBuildFailure(createStarterState('business', 'Studio', false), ['Prerendering failed', log]);
+    expect(r.warnings[0]).toBe('Error: [prerender_missing_id] no element with id="gone" exists on /contact/');
+  });
+
+  it('keeps the build line in view when Project health lists many links', () => {
+    const s = broken();
+    const banner = Object.values(s.pages[s.site.homePageId].nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'features.grid') as { props: Record<string, unknown> };
+    banner.props.items = Array.from({ length: 9 }, (_, i) => ({ id: `i${i}`, icon: 'star', title: `T${i}`, description: '', linkLabel: 'More', link: { type: 'anchor', target: `gone${i}` } }));
+    const r = explainBuildFailure(s, ['Prerendering failed', prerender]);
+    expect(r.warnings).toHaveLength(8);
+    expect(r.warnings).toContain(prerender);
+  });
+
+  it('does not take an unrelated build error for a missing section', () => {
+    expect(explainBuildFailure(broken(), ["Error: Cannot find module './missing_id.js'"]).message).toBe('The production build failed.');
+  });
+
+  it('leaves other build failures as they are', () => {
+    expect(explainBuildFailure(broken(), ['Error: Cannot find module x'])).toEqual({ message: 'The production build failed.', warnings: ['Error: Cannot find module x'] });
+  });
+
+  it('warns a source export that will not build', () => {
+    expect(sectionLinkWarnings(createStarterState('business', 'Studio', false))).toEqual([]);
+    const w = sectionLinkWarnings(broken());
+    expect(w).toHaveLength(2);
+    expect(w[0]).toMatch(/^Project health found a link .* Fix it before building/);
+    expect(w[1]).toContain('the “Book a call” link goes to #get-in-touch-with-us on Contact');
+  });
+});
+
