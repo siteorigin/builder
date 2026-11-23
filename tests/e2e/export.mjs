@@ -213,6 +213,28 @@ const fieldNotes = await win.evaluate(() =>
 );
 assert.equal(fieldNotes.ok, true, `the pages are added: ${fieldNotes.error?.message}`);
 
+step('#246: Site search on a nested page, over project pages, one of them hidden from it');
+const commissions = [103, 104, 105];
+const searchSetup = await win.evaluate(
+  (ns) =>
+    window.builder.project.apply(
+      {
+        operations: [
+          { type: 'page.create', pageId: 'pg_findproject', title: 'Find a project', route: '/portfolio/find/' },
+          { type: 'node.insert', owner: { kind: 'page', id: 'pg_findproject' }, componentId: 'site.search', props: { heading: 'Find a project' } },
+          ...ns.flatMap((n) => [
+            { type: 'page.create', pageId: `pg_commission${n}`, title: `Workshop commission ${n}`, route: `/portfolio/workshop-commission-${n}/` },
+            { type: 'node.insert', owner: { kind: 'page', id: `pg_commission${n}` }, componentId: 'content.text', props: { heading: `Commission ${n}`, body: `Oak and linen, made in the workshop as commission number ${n}.` } }
+          ]),
+          { type: 'page.update', pageId: 'pg_commission104', searchHidden: true }
+        ]
+      },
+      { label: 'Add Site search' }
+    ),
+  commissions
+);
+assert.equal(searchSetup.ok, true, `Site search and the project pages are added: ${searchSetup.error?.message}`);
+
 step('export through the controller');
 // Folder exports ask for a parent folder and create a new folder inside it, so nothing is ever replaced.
 const exportsDir = join(WORK, 'exports');
@@ -272,6 +294,58 @@ async function proofTab(url) {
 const tab1 = await proofTab(stat.previewUrl);
 assert.equal(await tab1.title(), 'Client proof 1', 'the first proof opens with its own title');
 
+/**
+ * Search a website proof as a visitor does, from its nested Site search page, and return each result's title and
+ * the address its link goes to. A search sent before the page's scripts start just reloads it: search again then.
+ */
+async function searchProof(url, words) {
+  const tab = await proofTab(new URL('portfolio/find/', url).href);
+  try {
+    await tab.waitForLoadState('networkidle');
+    const box = tab.getByRole('searchbox', { name: 'Search for' });
+    await eventually(async () => {
+      await box.fill(words);
+      await box.press('Enter');
+      await tab.locator('.so-search__status').filter({ hasText: /match/ }).waitFor({ timeout: 3000 });
+    }, 30000);
+    const links = tab.locator('.so-search__result a');
+    const found = [];
+    for (let i = 0; i < (await links.count()); i++) found.push({ title: await links.nth(i).innerText(), path: new URL(await links.nth(i).evaluate((a) => a.href)).pathname });
+    return { tab, found };
+  } catch (e) {
+    await tab.close();
+    throw e;
+  }
+}
+step('#246: the first proof searches its pages from a nested address and goes to the one found');
+{
+  const { tab, found } = await searchProof(stat.previewUrl, 'workshop commission');
+  assert.deepEqual(
+    found.map((r) => r.path),
+    ['/portfolio/workshop-commission-103/', '/portfolio/workshop-commission-105/'],
+    `the proof finds the project pages, not the one hidden from site search: ${JSON.stringify(found)}`
+  );
+  const link = tab.locator('.so-search__result a').filter({ hasText: 'Workshop commission 105' });
+  await link.focus();
+  await Promise.all([tab.waitForURL(/\/portfolio\/workshop-commission-105\/$/), tab.keyboard.press('Enter')]);
+  assert.equal(await tab.locator('main h2').first().innerText(), 'Commission 105', 'the result leads to its page');
+  await tab.close();
+}
+
+step('#246: a project page renamed and another removed before the next proof');
+const searchEdits = await win.evaluate(() =>
+  window.builder.project.apply(
+    {
+      operations: [
+        { type: 'page.update', pageId: 'pg_commission105', title: 'Walnut bench for the Harbour Library', route: '/portfolio/harbour-bench/' },
+        { type: 'page.remove', pageId: 'pg_commission103' }
+      ]
+    },
+    { label: 'Rename and remove projects' }
+  )
+);
+assert.equal(searchEdits.ok, true, `the project pages change: ${searchEdits.error?.message}`);
+
 step('ZIP exports');
 const srcZip = await withTimeout(win.evaluate(() => window.builder.project.exportSource('zip')), 120000, 'Source ZIP export');
 assert.equal(srcZip.ok, true, `source ZIP export succeeds: ${srcZip.message}`);
@@ -290,6 +364,16 @@ const staticOut2 = join(exportsDir, 'harbour-lane-studio-site-3');
 assert.equal(stat2.path, staticOut2, 'the second proof goes to the next free folder beside the first');
 assert.ok(stat2.previewUrl && stat2.previewUrl !== stat.previewUrl, 'the second proof has its own preview');
 const tab2 = await proofTab(stat2.previewUrl);
+step('#246: the second proof finds the renamed page at its new address, and neither the removed nor the hidden one');
+{
+  const renamed = await searchProof(stat2.previewUrl, 'commission number');
+  assert.deepEqual(renamed.found, [{ title: 'Walnut bench for the Harbour Library', path: '/portfolio/harbour-bench/' }], `only the renamed page is found: ${JSON.stringify(renamed.found)}`);
+  await renamed.tab.close();
+  // The first proof still searches the pages it was made from.
+  const first = await searchProof(stat.previewUrl, 'commission number');
+  assert.deepEqual(first.found.map((r) => r.path), ['/portfolio/workshop-commission-103/', '/portfolio/workshop-commission-105/'], 'the first proof keeps its own index');
+  await first.tab.close();
+}
 // Refresh each tab after the second export finished, then follow its own About link.
 for (const [tab, label] of [[tab1, 'Client proof 1'], [tab2, 'Client proof 2']]) {
   const reloaded = await tab.reload();

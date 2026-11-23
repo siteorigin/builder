@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { compile } from 'svelte/compiler';
 import { afterAll, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueEntries } from '@catalogue/index';
@@ -96,6 +97,13 @@ describe('site search files', () => {
     const files = generateProject(after);
     expect(files.get(copy.sourcePath!)).toContain(`from '../runtime/${SEARCH_HELPER_FILE}'`);
     expect(files.has(INDEX)).toBe(true);
+  });
+
+  it('compile without warnings, accessibility ones included', () => {
+    const s = withSearch();
+    const def = Object.values(s.components).find((d) => d.componentId === 'site.search')!;
+    const source = generateProject(s).get(defFile(def))!;
+    for (const generate of ['server', 'client'] as const) expect(compile(source, { filename: 'SiteSearch.svelte', generate, runes: true }).warnings.map((w) => w.code)).toEqual([]);
   });
 
   it('carry no editor code into the website', () => {
