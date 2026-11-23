@@ -370,7 +370,10 @@ document.addEventListener(
     }
     if (!postsForm(e.target)) return;
     lastSubmit = { form: e.target, at: Date.now() };
-    if (liveTest && liveTest.form === e.target) liveTest.submitted = true;
+    // A live test is for the one submission it starts. Any other submission ends it unsent, so a later Send of
+    // the same form (after one that sent nothing) can never deliver answers the author did not confirm.
+    if (liveTest && liveTest.form === e.target && !liveTest.submitted) liveTest.submitted = true;
+    else endLiveTest();
   },
   true
 );
@@ -402,9 +405,9 @@ document.addEventListener('keydown', (e) => {
 // Forms (issue #193)
 // ---------------------------------------------------------------------------
 // The editor never sends a message from the site on the author's behalf. In Preview a form that posts runs its own
-// checks and shows its own sending, sent and error states, but what it sends is answered here, after a pause, with
-// the reply the author chose to practise. Only a live test the author confirmed in the editor lets one message
-// through, from that form, to the destination they were shown.
+// checks and shows its own sending, sent and error states, but what it sends (with fetch or XMLHttpRequest) is
+// answered here, after a pause, with the reply the author chose to practise. Only a live test the author confirmed
+// in the editor lets one message through, from that form, to the address they were shown.
 
 /** How long a practice send waits for its reply, so the form's sending state can be seen. */
 const PRACTICE_DELAY = 800;
@@ -414,19 +417,23 @@ const SUBMIT_WINDOW = 10000;
 let practiceResult = 'success';
 /** The form last submitted in Preview, and when. */
 let lastSubmit = null;
-/** A confirmed live test: { form, destination, requestId, until, submitted, sent }. */
+/** A confirmed live test: { form, id, target, requestId, until, submitted, sent }. */
 let liveTest = null;
+/** Bumped when the mode or the page changes: a practice reply from before no longer describes what is shown. */
+let formEpoch = 0;
 /** Form ids from an earlier page load never match a form of this one. */
 const loadId = Math.random().toString(36).slice(2, 8);
 const formNumbers = new WeakMap();
 let formCount = 0;
 
-// A form's fields are also its properties (a field named "action" hides form.action), so attributes are read directly.
+// A form's fields are also its properties (a field named "action" or "closest" hides the form's own), so the form's
+// attributes and methods are reached through the prototypes.
 const formAttr = (form, name) => Element.prototype.getAttribute.call(form, name);
 const postsForm = (form) => form instanceof HTMLFormElement && (formAttr(form, 'method') || '').toLowerCase() === 'post';
 const isNetlify = (form) => formAttr(form, 'data-netlify') === 'true';
+const formsOnPage = () => [...document.querySelectorAll('form')].filter(postsForm);
 
-/** Where an address goes, without its query or fragment: what the author is shown, and what sends are matched by. */
+/** Where an address goes, without its query or fragment: how a send is matched to the form that posts there. */
 function destinationOf(url) {
   try {
     const u = new URL(url, document.baseURI);
@@ -435,11 +442,20 @@ function destinationOf(url) {
     return '';
   }
 }
+/** The whole address a send goes to, query included (a service can choose its inbox there), without the fragment. */
+function targetOf(url) {
+  try {
+    const u = new URL(url, document.baseURI);
+    return u.protocol === 'https:' || u.protocol === 'http:' ? u.origin + u.pathname + u.search : '';
+  } catch {
+    return '';
+  }
+}
 /** Where a form posts: its action, or the page itself when it has none (as Netlify Forms do). */
 const postsTo = (form) => destinationOf(formAttr(form, 'action') || location.href);
 /** Where a form would send a live test: an address of its own on another site. Netlify only receives on the deployed site. */
-function liveDestination(form) {
-  const to = formAttr(form, 'action') && !isNetlify(form) ? postsTo(form) : '';
+function liveTarget(form) {
+  const to = formAttr(form, 'action') && !isNetlify(form) ? targetOf(formAttr(form, 'action')) : '';
   return to && new URL(to).origin !== location.origin ? to : '';
 }
 
@@ -455,27 +471,27 @@ function hash(text) {
 function formIdOf(form) {
   let n = formNumbers.get(form);
   if (!n) formNumbers.set(form, (n = ++formCount));
-  const hidden = [...form.querySelectorAll('input[type="hidden"]')].map((i) => `${i.name}=${i.value}`).join('&');
+  const hidden = [...Element.prototype.querySelectorAll.call(form, 'input[type="hidden"]')].map((i) => `${i.name}=${i.value}`).join('&');
   return `${loadId}-${n}-${hash(`${formAttr(form, 'action') || ''}|${isNetlify(form)}|${hidden}`)}`;
 }
 
 /** The forms on the page that post, as the editor shows them. */
 function pageForms() {
-  return [...document.querySelectorAll('form')]
-    .filter(postsForm)
+  return formsOnPage()
     .slice(0, 20)
     .map((form) => {
       const by = formAttr(form, 'aria-labelledby');
       const heading = by ? document.getElementById(by.split(/\s+/)[0]) : null;
       const label = (heading?.textContent || formAttr(form, 'aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
-      const shell = form.closest('[data-so-ctx^="shell:"]')?.getAttribute('data-so-ctx').slice(6);
+      const shell = Element.prototype.closest.call(form, '[data-so-ctx^="shell:"]')?.getAttribute('data-so-ctx').slice(6);
+      const action = formAttr(form, 'action');
       return {
         id: formIdOf(form),
         label,
         place: shell === 'header' || shell === 'footer' ? shell : 'page',
-        service: isNetlify(form) ? 'netlify' : formAttr(form, 'action') ? 'endpoint' : 'none',
-        destination: isNetlify(form) ? '' : formAttr(form, 'action') ? postsTo(form) : '',
-        live: !!liveDestination(form)
+        service: isNetlify(form) ? 'netlify' : action ? 'endpoint' : 'none',
+        destination: isNetlify(form) || !action ? '' : targetOf(action),
+        live: !!liveTarget(form)
       };
     });
 }
@@ -498,40 +514,60 @@ new MutationObserver(scheduleForms).observe(document.body, {
   attributeFilter: ['action', 'method', 'data-netlify', 'value', 'aria-labelledby', 'aria-label']
 });
 
-/** The form a send belongs to: the one that posts to the same address, else the form submitted just before it. */
+/**
+ * The form a send belongs to: the form just submitted when it posts there (two forms can share a service's address),
+ * else the form that posts to the same address, else the form submitted just before it.
+ */
 function sendingForm(url) {
   const to = destinationOf(url);
-  const posting = to && [...document.querySelectorAll('form')].find((f) => postsForm(f) && postsTo(f) === to);
-  if (posting) return posting;
-  return lastSubmit && Date.now() - lastSubmit.at < SUBMIT_WINDOW ? lastSubmit.form : null;
+  const recent = lastSubmit && lastSubmit.form.isConnected && Date.now() - lastSubmit.at < SUBMIT_WINDOW ? lastSubmit.form : null;
+  if (recent && postsTo(recent) === to) return recent;
+  return (to && formsOnPage().find((f) => postsTo(f) === to)) || recent;
 }
 
-/** The practice reply: the form's own code reads it as the service's answer. */
-function practise(form) {
-  const id = formIdOf(form);
-  const result = practiceResult;
-  send('formResult', { id, kind: 'practice', result: 'sending' });
-  return new Promise((resolve) =>
-    setTimeout(() => {
-      send('formResult', { id, kind: 'practice', result });
-      resolve(new Response(JSON.stringify({ ok: result === 'success' }), { status: result === 'success' ? 200 : 503, headers: { 'Content-Type': 'application/json' } }));
-    }, PRACTICE_DELAY)
-  );
+/** The confirmed live test this send is, or null: the form and the whole address must be the ones confirmed. */
+function liveFor(form, url) {
+  const test = liveTest;
+  return mode === 'preview' && test && test.form === form && test.submitted && !test.sent && Date.now() < test.until && targetOf(url) === test.target ? test : null;
 }
-
-/** The confirmed live test: the request goes out as the form made it, and the editor hears what came back. */
-function sendLive(test, id, input, init) {
+/** A live test that has not sent anything is over: the page changed, the mode changed, or another submission came. */
+function endLiveTest() {
+  const test = liveTest;
+  if (!test || test.sent) return;
+  liveTest = null;
+  send('formResult', { id: test.id, requestId: test.requestId, kind: 'live', result: 'not-sent' });
+}
+/** Reports on a live test, with where it went and, when the service passed it on, where it ended up. */
+function liveReply(test) {
   test.sent = true;
   if (liveTest === test) liveTest = null;
-  const reply = (result, status) => send('formResult', { id, requestId: test.requestId, kind: 'live', result, destination: test.destination, ...(status ? { status } : {}) });
-  reply('sending');
-  return nativeFetch.call(window, input, init).then(
-    (response) => (reply(response.ok ? 'sent' : 'refused', response.status), response),
-    (error) => {
-      reply('unreadable');
-      throw error;
-    }
-  );
+  return (result, status, redirected) =>
+    send('formResult', { id: test.id, requestId: test.requestId, kind: 'live', result, destination: test.target, ...(status ? { status } : {}), ...(redirected ? { redirected } : {}) });
+}
+
+/** A practice send's reports, while they still describe the page shown. */
+function practiceReports(form) {
+  const id = formIdOf(form);
+  const epoch = formEpoch;
+  return (result) => epoch === formEpoch && form.isConnected && send('formResult', { id, kind: 'practice', result });
+}
+
+/** The practice reply to a fetch: the form's own code reads it as the service's answer. */
+function practise(form, signal) {
+  const report = practiceReports(form);
+  const result = practiceResult;
+  const aborted = () => signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+  if (signal?.aborted) return Promise.reject(aborted());
+  report('sending');
+  return new Promise((resolve, reject) => {
+    const onAbort = () => (clearTimeout(timer), reject(aborted()));
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      report(result);
+      resolve(new Response(JSON.stringify({ ok: result === 'success' }), { status: result === 'success' ? 200 : 503, headers: { 'Content-Type': 'application/json' } }));
+    }, PRACTICE_DELAY);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 // Loaded after the site's own scripts, so every send the page makes comes through here.
@@ -539,22 +575,68 @@ const nativeFetch = window.fetch;
 window.fetch = function fetch(input, init) {
   const request = input instanceof Request ? input : null;
   const method = String(init?.method ?? request?.method ?? 'GET').toUpperCase();
-  const form = method === 'GET' || method === 'HEAD' ? null : sendingForm(request ? request.url : String(input));
+  const url = request ? request.url : String(input);
+  const form = method === 'GET' || method === 'HEAD' ? null : sendingForm(url);
   if (!form) return nativeFetch.call(window, input, init);
-  const test = liveTest;
-  const to = destinationOf(request ? request.url : String(input));
-  if (test && test.form === form && !test.sent && Date.now() < test.until && to === test.destination) return sendLive(test, formIdOf(form), input, init);
-  return practise(form);
+  const test = liveFor(form, url);
+  if (!test) return practise(form, init?.signal ?? request?.signal);
+  const reply = liveReply(test);
+  reply('sending');
+  return nativeFetch.call(window, input, init).then(
+    (response) => (reply(response.ok ? 'sent' : 'refused', response.status, response.redirected ? targetOf(response.url) : ''), response),
+    (error) => {
+      reply('unreadable');
+      throw error;
+    }
+  );
 };
+
+// The same for XMLHttpRequest. A practice success is answered with a small JSON reply, a practice error with a failed
+// request (a data: address with no data), neither of which leaves the page.
+const xhrOpen = XMLHttpRequest.prototype.open;
+const xhrSend = XMLHttpRequest.prototype.send;
+const xhrTargets = new WeakMap();
+XMLHttpRequest.prototype.open = function open(method, url, ...rest) {
+  xhrTargets.set(this, { method: String(method).toUpperCase(), url: String(url) });
+  return xhrOpen.call(this, method, url, ...rest);
+};
+XMLHttpRequest.prototype.send = function send(body) {
+  const target = xhrTargets.get(this);
+  const form = target && target.method !== 'GET' && target.method !== 'HEAD' ? sendingForm(target.url) : null;
+  if (!form) return xhrSend.call(this, body);
+  const test = liveFor(form, target.url);
+  if (test) {
+    const reply = liveReply(test);
+    reply('sending');
+    this.addEventListener('loadend', () => reply(!this.status ? 'unreadable' : this.status < 400 ? 'sent' : 'refused', this.status), { once: true });
+    return xhrSend.call(this, body);
+  }
+  const report = practiceReports(form);
+  const result = practiceResult;
+  report('sending');
+  setTimeout(() => {
+    report(result);
+    xhrOpen.call(this, 'GET', result === 'success' ? 'data:application/json,%7B%22ok%22%3Atrue%7D' : 'data:');
+    xhrSend.call(this);
+  }, PRACTICE_DELAY);
+};
+// A beacon has no reply to practise with: one from a form is dropped, and reports itself queued.
+if (navigator.sendBeacon) {
+  const beacon = navigator.sendBeacon;
+  navigator.sendBeacon = function sendBeacon(url, data) {
+    return sendingForm(String(url)) ? true : beacon.call(navigator, url, data);
+  };
+}
 
 /** Send one real message from a form the author confirmed, with the answers in it now. */
 function liveTestForm(id, requestId) {
   const reply = (result) => send('formResult', { id, requestId, kind: 'live', result });
-  const form = mode === 'preview' ? [...document.querySelectorAll('form')].find((f) => postsForm(f) && formIdOf(f) === id) : null;
+  endLiveTest();
+  const form = mode === 'preview' ? formsOnPage().find((f) => formIdOf(f) === id) : null;
   // The form must still be there with the settings the author confirmed: its id changes with them.
-  const destination = form ? liveDestination(form) : '';
-  if (!destination) return reply('unavailable');
-  const test = { form, destination, requestId, until: Date.now() + SUBMIT_WINDOW, submitted: false, sent: false };
+  const target = form ? liveTarget(form) : '';
+  if (!target) return reply('unavailable');
+  const test = { form, id, target, requestId, until: Date.now() + SUBMIT_WINDOW, submitted: false, sent: false };
   liveTest = test;
   // The browser checks the answers first; a form that is not valid is never submitted.
   HTMLFormElement.prototype.requestSubmit.call(form);
@@ -562,12 +644,7 @@ function liveTestForm(id, requestId) {
     if (liveTest === test) liveTest = null;
     return reply('invalid');
   }
-  if (test.sent) return;
-  setTimeout(() => {
-    if (test.sent) return;
-    if (liveTest === test) liveTest = null;
-    reply('not-sent');
-  }, SUBMIT_WINDOW);
+  setTimeout(() => liveTest === test && endLiveTest(), SUBMIT_WINDOW);
 }
 
 // Whether something on the page that takes typing has focus: a visitor's form field in Preview, or a field or
@@ -1027,6 +1104,8 @@ window.addEventListener('message', async (e) => {
   switch (m.type) {
     case 'mode':
       mode = m.payload.mode === 'preview' ? 'preview' : 'edit';
+      formEpoch++;
+      endLiveTest();
       if (editing) commitEdit();
       document.documentElement.toggleAttribute('data-so-editing', mode === 'edit');
       hovered = null;
@@ -1146,6 +1225,10 @@ window.addEventListener('unhandledrejection', (e) => {
 function reportNav() {
   send('navigated', { path: location.pathname });
   scheduleRects();
+  // Sends and live tests belong to the page they started on.
+  formEpoch++;
+  lastSubmit = null;
+  endLiveTest();
   scheduleForms();
 }
 window.addEventListener('siteorigin:navigated', reportNav);

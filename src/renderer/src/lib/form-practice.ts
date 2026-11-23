@@ -13,7 +13,7 @@ export interface PreviewForm {
   place: 'page' | 'header' | 'footer';
   /** `endpoint`: it posts to an address of its own; `netlify`: Netlify Forms; `none`: not connected yet. */
   service: 'endpoint' | 'netlify' | 'none';
-  /** Where it posts, without query or fragment; '' unless `service` is `endpoint`. */
+  /** Where it posts, without the fragment; '' unless `service` is `endpoint`. */
   destination: string;
   /** Whether a live test can reach its service from the editor. */
   live: boolean;
@@ -33,9 +33,15 @@ export interface FormSend {
   status?: number;
   /** Where a live test went. */
   destination?: string;
+  /** Where the service passed a live test on to, when it redirected it. */
+  redirected?: string;
 }
 
-const RESULTS = new Set<FormSend['result']>(['sending', 'success', 'error', 'sent', 'refused', 'unreadable', 'invalid', 'not-sent', 'unavailable']);
+/** The results each kind of send can report. */
+const RESULTS: Record<FormSend['kind'], ReadonlySet<string>> = {
+  practice: new Set(['sending', 'success', 'error']),
+  live: new Set(['sending', 'sent', 'refused', 'unreadable', 'invalid', 'not-sent', 'unavailable'])
+};
 const str = (v: unknown, max = 500) => (typeof v === 'string' ? v.slice(0, max) : '');
 
 /** The bridge's list of forms, or none when it is not one. */
@@ -55,17 +61,20 @@ export function formsOf(value: unknown): PreviewForm[] {
 /** The bridge's report of a send, or null when it is not one. */
 export function formSendOf(p: Record<string, unknown>): FormSend | null {
   const kind = p.kind === 'practice' || p.kind === 'live' ? p.kind : null;
-  const result = typeof p.result === 'string' && RESULTS.has(p.result as FormSend['result']) ? (p.result as FormSend['result']) : null;
-  if (!kind || !result) return null;
+  const result = kind && typeof p.result === 'string' && RESULTS[kind].has(p.result) ? (p.result as FormSend['result']) : null;
+  const id = str(p.id, 100);
+  if (!kind || !result || !id) return null;
   const status = typeof p.status === 'number' && Number.isInteger(p.status) && p.status >= 100 && p.status < 600 ? p.status : undefined;
-  return { id: str(p.id, 100), requestId: str(p.requestId, 100) || undefined, kind, result, status, destination: str(p.destination, 2000) || undefined };
+  // A reply from the service is the only way a live test is sent or refused.
+  if ((result === 'sent' || result === 'refused') && status === undefined) return null;
+  return { id, requestId: str(p.requestId, 100) || undefined, kind, result, status, destination: str(p.destination, 2000) || undefined, redirected: str(p.redirected, 2000) || undefined };
 }
 
-/** An address as the author reads it: host and path, without the scheme. */
+/** An address as the author reads it: host, path and query, without the scheme. */
 export function shortDestination(url: string): string {
   try {
     const u = new URL(url);
-    return u.host + (u.pathname === '/' ? '' : u.pathname);
+    return u.host + (u.pathname === '/' && !u.search ? '' : u.pathname) + u.search;
   } catch {
     return url;
   }
@@ -99,9 +108,9 @@ export function formSendNote(send: FormSend, form?: PreviewForm): string {
     case 'sending':
       return `Sending one real test message to ${where}…`;
     case 'sent':
-      return `Live test sent to ${where}. The service answered with status ${send.status}. Check the service to see the message arrived.`;
+      return `Live test sent to ${where}${passedOn(send)}. The service answered with status ${send.status}. Check the service to see the message arrived.`;
     case 'refused':
-      return `Live test sent to ${where}, but the service answered with status ${send.status}. Check the form’s settings with the service.`;
+      return `Live test sent to ${where}${passedOn(send)}, but the service answered with status ${send.status}. Check the form’s settings with the service.`;
     case 'unreadable':
       return `The live test to ${where} got no reply the editor could read. The message may still have arrived: check the service before you test again.`;
     case 'invalid':
@@ -112,6 +121,9 @@ export function formSendNote(send: FormSend, form?: PreviewForm): string {
       return 'Nothing was sent: the form did not send its message.';
   }
 }
+
+/** Where the service passed a live test on to, when it did. */
+const passedOn = (send: FormSend) => (send.redirected ? `, which passed it on to ${shortDestination(send.redirected)}` : '');
 
 /** Whether a send's report is the last word on it, rather than one saying it has started. */
 export const sendSettled = (send: FormSend) => send.result !== 'sending';

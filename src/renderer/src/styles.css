@@ -603,7 +603,8 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .form-practice-live { margin-left: auto; }
 .form-practice-confirm { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 7%, var(--raised)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); color: var(--text); overflow-wrap: anywhere; }
 .form-practice-confirm select { min-width: 0; max-width: 100%; }
-.form-practice-result:empty { display: none; }
+.form-practice-result:empty { margin-top: -6px; }
+.form-practice-live[aria-disabled='true'] { opacity: 0.55; cursor: not-allowed; }
 .form-practice-result { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
 .ai-veil { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; gap: 10px; padding: 6px 6px 6px 14px; border-radius: 99px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-md); font-size: 12px; }
 .ai-veil .spark { color: var(--accent-text); }

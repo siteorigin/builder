@@ -63,6 +63,9 @@ export function Canvas() {
   const [practice, setPractice] = useState<PracticeResult>('success');
   const [lastSend, setLastSend] = useState<FormSend | null>(null);
   const [liveRequest, setLiveRequest] = useState<string | null>(null);
+  /** Changes with each page shown, so a live-test confirmation never outlives the page it was opened on. */
+  const [formsView, setFormsView] = useState(0);
+  const [practiceH, setPracticeH] = useState(0);
   // The page's own error is shared through the store, so the status bar and Project health tell the same story.
   const frameError = useStore((s) => s.previewIssue);
   const setFrameError = (m: string | null) => setState({ previewIssue: m });
@@ -119,8 +122,13 @@ export function Canvas() {
   }, []);
 
   const zoom = zoomSetting === 'fit' ? Math.min(1, (size.w - 56) / viewport) : zoomSetting;
+  // Forms in Preview: the panel sits above the other bottom bars (the preview pill, the AI run and a page problem).
+  const formsShown = mode === 'preview' && forms.length > 0;
+  const practiceBottom = 18 + 46 + (runStatus ? 46 : 0) + (frameError && runtime.state === 'ready' ? 46 : 0);
+  // The page ends above the panel, so it never covers what it describes (a form's Send button at the foot of a page).
+  const practiceRoom = formsShown && practiceH ? Math.max(0, practiceBottom + practiceH + 8 - 28) : 0;
   // The frame's whole footprint (20px top padding + 14px label margin + 28px bottom padding) fits at Fit, so the pasteboard never needs its own scrollbar.
-  const frameH = Math.max(300, (size.h - 70) / zoom);
+  const frameH = Math.max(300, (size.h - 70 - practiceRoom) / zoom);
 
   const post = (type: string, payload: unknown = {}) => postToFrame(frameRef.current, origin, session, type, payload);
   // Saving or leaving the project asks the preview to hand back an inline edit that is still open.
@@ -172,6 +180,7 @@ export function Canvas() {
           setForms([]);
           setLastSend(null);
           setLiveRequest(null);
+          setFormsView((v) => v + 1);
           post('formPractice', { result: practice });
           syncTrack();
           // A new page starts with nothing revealed.
@@ -196,6 +205,9 @@ export function Canvas() {
           syncPage(path);
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
+          // What the panel said about the last page's sends is not about this one.
+          setLastSend(null);
+          setFormsView((v) => v + 1);
           // A selection made with the page change (a usage list showing a placement on another page) asked to be
           // scrolled to before this page was there: now it is.
           if (getState().mode !== 'preview') {
@@ -458,6 +470,7 @@ export function Canvas() {
   useEffect(() => {
     setLastSend(null);
     setLiveRequest(null);
+    setFormsView((v) => v + 1);
     if (mode === 'preview') setPractice('success');
   }, [mode]);
   useEffect(() => {
@@ -745,16 +758,17 @@ export function Canvas() {
           </button>
         </div>
       )}
-      {mode === 'preview' && forms.length > 0 && (
-        // Above the other bottom bars: the preview pill, the AI run and a page problem.
+      {formsShown && (
         <FormPractice
+          key={formsView}
           forms={forms}
           practice={practice}
           onPractice={setPractice}
           last={lastSend}
           liveBusy={!!liveRequest}
           onLiveTest={liveTest}
-          bottom={18 + 46 + (runStatus ? 46 : 0) + (frameError && runtime.state === 'ready' ? 46 : 0)}
+          bottom={practiceBottom}
+          onHeight={setPracticeH}
         />
       )}
       {runStatus && (

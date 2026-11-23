@@ -131,6 +131,7 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
   }
 
   async function open(page: Page, props: Record<string, unknown>, path: string) {
+    /** Every request that reached the service. */
     const service = { requests: [] as Array<{ method: string; url: string; body: string }>, status: 200 };
     const capture = (r: Request) => service.requests.push({ method: r.method(), url: r.url(), body: r.postData() ?? '' });
     await page.route(`${SERVICE}/**`, async (route) => {
@@ -154,50 +155,78 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
     await page.goto(`${SITE}/`);
     const frame = page.frame({ name: SESSION });
     if (!frame) throw new Error('The editor has no preview frame');
-    await frame.evaluate(`window.mountForm(${JSON.stringify({ heading: 'Send us a message', provider: 'endpoint', endpoint: ENDPOINT, fields: FIELDS, ...props })})`);
+    const mount = (p: Record<string, unknown>) => frame.evaluate(`window.mountForm(${JSON.stringify({ heading: 'Send us a message', provider: 'endpoint', endpoint: ENDPOINT, fields: FIELDS, ...p })})`);
+    await mount(props);
     const received = () => page.evaluate<Array<{ type: string; payload: Record<string, unknown> }>>('window.received');
     /** Payloads of one type the bridge has sent the editor, in order. */
     const sent = async (type: string) => (await received()).filter((m) => m.type === type).map((m) => m.payload);
     if (path === '/contact/') await expect.poll(async () => (await sent('ready')).length).toBe(1);
-    const field = (label: string) => frame.locator('form.so-form__form').getByLabel(label);
+    const contact = frame.locator('form.so-form__form').first();
+    const field = (label: string) => contact.getByLabel(label);
     const form = {
       page,
       frame,
       service,
       field,
       sent,
+      mount,
       toFrame: (type: string, payload: Record<string, unknown> = {}) => page.evaluate(`window.toFrame(${JSON.stringify(type)}, ${JSON.stringify(payload)})`),
-      button: frame.locator('.so-form__actions button'),
-      status: () => frame.locator('.so-form__status[role="status"]').innerText(),
-      alert: () => frame.locator('.so-form__status[role="alert"]').innerText(),
+      button: contact.locator('.so-form__actions button'),
+      status: () => frame.locator('.so-form__status[role="status"]').first().innerText(),
+      alert: () => frame.locator('.so-form__status[role="alert"]').first().innerText(),
       values: () => Promise.all(['Name', 'Email', 'Message'].map((l) => field(l).inputValue())),
       fill: async (email = 'ada@example.com') => {
         await field('Name').fill('Ada');
         await field('Email').fill(email);
         await field('Message').fill('A rehearsal enquiry');
       },
+      /** Whether the browser's own checks would let the form be submitted. */
+      valid: () => frame.evaluate<boolean>(`document.querySelector('form.so-form__form').checkValidity()`),
       /** The forms the bridge last listed for the editor. */
       forms: async () => ((await sent('forms')).at(-1)?.forms ?? []) as PreviewForm[],
-      /** The id of the form the editor would confirm a live test for, once the bridge has listed it. */
-      formId: async () => {
-        await expect.poll(async () => (await form.forms()).length).toBe(1);
-        return (await form.forms())[0].id;
+      /** The id of the nth listed form, once the bridge has listed `count` of them. */
+      formId: async (n = 0, count = 1) => {
+        await expect.poll(async () => (await form.forms()).length).toBe(count);
+        return (await form.forms())[n].id;
       },
-      /** What the bridge has told the editor about sends, without ids. */
-      results: async () => (await sent('formResult')).map(({ id: _id, requestId: _r, ...rest }) => rest),
-      preview: async () => {
-        await form.toFrame('mode', { mode: 'preview' });
-        // Commands arrive in order: once this one is answered, Preview is on.
+      /** What the bridge has told the editor about sends, without form ids. */
+      results: async () => (await sent('formResult')).map(({ id: _id, ...rest }) => rest),
+      /** Which listed form each report was about. */
+      resultIds: async () => (await sent('formResult')).map((r) => r.id),
+      setMode: async (mode: 'edit' | 'preview') => {
+        await form.toFrame('mode', { mode });
+        // Commands arrive in order: once this one is answered, the mode has changed.
+        const before = (await sent('measured')).length;
         await form.toFrame('measure', { requestId: 'mode', descs: [] });
-        await expect.poll(async () => (await sent('measured')).length).toBeGreaterThan(0);
-      }
+        await expect.poll(async () => (await sent('measured')).length).toBeGreaterThan(before);
+      },
+      preview: () => form.setMode('preview'),
+      /** Adds a form of the page's own code that posts with `send` (JavaScript run in the page, given the form as `form`). */
+      addCustomForm: (id: string, action: string, send: string) =>
+        frame.evaluate(`(() => {
+          document.getElementById('app').insertAdjacentHTML('beforeend', '<form id="${id}" method="post" action="${action}"><input name="q" value="Hello"></form>');
+          const form = document.getElementById('${id}');
+          form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            window.customResults ??= {};
+            try {
+              window.customResults['${id}'] = await (async () => { ${send} })();
+            } catch (error) {
+              window.customResults['${id}'] = String(error.name);
+            }
+          });
+        })()`),
+      submitCustom: (id: string) => frame.evaluate(`document.getElementById('${id}').requestSubmit()`),
+      customResult: (id: string) => frame.evaluate(`window.customResults?.['${id}']`)
     };
     return form;
   }
 
   it('sends nothing in Edit, however the form is submitted', async () => {
-    await withPreview(async ({ frame, fill, field, service, status, values, results }) => {
+    await withPreview(async ({ frame, fill, field, service, status, values, results, valid }) => {
       await fill();
+      // The answers would pass the browser's checks: only Edit stops them.
+      expect(await valid()).toBe(true);
       await field('Email').press('Enter');
       await frame.evaluate(`document.querySelector('form').requestSubmit()`);
       await frame.waitForTimeout(400);
@@ -208,19 +237,34 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
     });
   }, 30_000);
 
-  it('lists the form with where it sends when published', async () => {
-    await withPreview(async ({ forms }) => {
-      await expect.poll(forms).toEqual([{ id: expect.any(String), label: 'Send us a message', place: 'page', service: 'endpoint', destination: ENDPOINT, live: true }]);
+  it('lists each form with where it sends when published, and where it is', async () => {
+    await withPreview(async ({ frame, forms }) => {
+      await frame.evaluate(`document.body.insertAdjacentHTML('beforeend', '<footer data-so-ctx="shell:footer"><form method="post" action="${SERVICE}/f/news?list=monthly#top" aria-label="Newsletter"></form></footer>')`);
+      await expect.poll(forms).toEqual([
+        { id: expect.any(String), label: 'Send us a message', place: 'page', service: 'endpoint', destination: ENDPOINT, live: true },
+        { id: expect.any(String), label: 'Newsletter', place: 'footer', service: 'endpoint', destination: `${SERVICE}/f/news?list=monthly`, live: true }
+      ]);
     });
+  }, 30_000);
+
+  it('still lists a form one of whose fields is named like a form method', async () => {
+    await withPreview(
+      async ({ forms }) => {
+        await expect.poll(async () => (await forms()).map((f) => f.label)).toEqual(['Send us a message']);
+      },
+      { fields: [...FIELDS, { id: 'f4', label: 'Closest branch', name: 'closest', type: 'text', required: false, placeholder: '' }] }
+    );
   }, 30_000);
 
   it('practises a send in Preview: the form shows sending, then its sent message, and nothing is sent', async () => {
     await withPreview(async ({ fill, field, service, status, values, button, results, preview }) => {
       await preview();
-      // The browser's own checks still run: a form with a required answer missing is never submitted.
+      // The browser's own checks still run: a form with a required answer missing, or not valid, is never submitted.
       await field('Name').fill('Ada');
       await field('Email').press('Enter');
       await field('Email').fill('not an email');
+      await field('Email').press('Enter');
+      await field('Email').fill('ada@example.com');
       await field('Email').press('Enter');
       expect(await status()).toBe('');
       expect(await results()).toEqual([]);
@@ -245,12 +289,14 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       await preview();
       await toFrame('formPractice', { result: 'error' });
       await fill();
-      await field('Message').focus();
       await field('Email').press('Enter');
       await expect.poll(status).toBe(SENDING);
       await expect.poll(alert, { timeout: 5000 }).toBe(FAILED);
       expect(await values()).toEqual(['Ada', 'ada@example.com', 'A rehearsal enquiry']);
-      await expect.poll(async () => (await results()).at(-1)).toEqual({ kind: 'practice', result: 'error' });
+      await expect.poll(results).toEqual([
+        { kind: 'practice', result: 'sending' },
+        { kind: 'practice', result: 'error' }
+      ]);
       expect(service.requests).toHaveLength(0);
     });
   }, 30_000);
@@ -266,10 +312,10 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       expect(service.requests[0].body).toContain('A rehearsal enquiry');
       await expect.poll(status).toBe(SENT);
       await expect.poll(results).toEqual([
-        { kind: 'live', result: 'sending', destination: ENDPOINT },
-        { kind: 'live', result: 'sent', status: 202, destination: ENDPOINT }
+        { requestId: 'live-1', kind: 'live', result: 'sending', destination: ENDPOINT },
+        { requestId: 'live-1', kind: 'live', result: 'sent', status: 202, destination: ENDPOINT }
       ]);
-      expect((await field('Name').inputValue())).toBe('');
+      expect(await field('Name').inputValue()).toBe('');
 
       // The next ordinary send is a practice again.
       await fill();
@@ -291,8 +337,26 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       service.status = 422;
       await toFrame('formLiveTest', { id: await formId(), requestId: 'live-1' });
       await expect.poll(alert).toBe(FAILED);
-      await expect.poll(async () => (await results()).at(-1)).toEqual({ kind: 'live', result: 'refused', status: 422, destination: ENDPOINT });
+      await expect.poll(async () => (await results()).at(-1)).toEqual({ requestId: 'live-1', kind: 'live', result: 'refused', status: 422, destination: ENDPOINT });
       expect(service.requests).toHaveLength(1);
+    });
+  }, 30_000);
+
+  it('never lets a live test confirmed during a practice send deliver a later, ordinary send (review)', async () => {
+    await withPreview(async ({ fill, field, service, status, alert, results, toFrame, formId, preview }) => {
+      await preview();
+      await toFrame('formPractice', { result: 'error' });
+      await fill();
+      await field('Email').press('Enter');
+      await expect.poll(status).toBe(SENDING);
+      // The form is still sending its practice, so it does not send for the live test.
+      await toFrame('formLiveTest', { id: await formId(), requestId: 'live-1' });
+      await expect.poll(alert, { timeout: 5000 }).toBe(FAILED);
+      await field('Message').fill('A different enquiry');
+      await field('Email').press('Enter');
+      await expect.poll(async () => (await results()).filter((r) => r.kind === 'live')).toEqual([{ requestId: 'live-1', kind: 'live', result: 'not-sent' }]);
+      await expect.poll(async () => (await results()).at(-1), { timeout: 5000 }).toEqual({ kind: 'practice', result: 'error' });
+      expect(service.requests).toHaveLength(0);
     });
   }, 30_000);
 
@@ -301,24 +365,49 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       // Not in Preview.
       await fill();
       await toFrame('formLiveTest', { id: await formId(), requestId: 'edit' });
-      await expect.poll(results).toEqual([{ kind: 'live', result: 'unavailable' }]);
+      await expect.poll(results).toEqual([{ requestId: 'edit', kind: 'live', result: 'unavailable' }]);
 
       await preview();
       await field('Email').fill('not an email');
       await toFrame('formLiveTest', { id: await formId(), requestId: 'invalid' });
       await expect.poll(results).toHaveLength(2);
-      expect((await results())[1]).toEqual({ kind: 'live', result: 'invalid' });
+      expect((await results())[1]).toEqual({ requestId: 'invalid', kind: 'live', result: 'invalid' });
+      await field('Email').fill('ada@example.com');
 
       // The author confirmed the test for one destination; the form now sends somewhere else.
       const confirmed = await formId();
-      await field('Email').fill('ada@example.com');
       await frame.evaluate(`document.querySelector('form').setAttribute('action', '${SERVICE}/f/other')`);
       await expect.poll(async () => (await forms())[0].id).not.toBe(confirmed);
       await toFrame('formLiveTest', { id: confirmed, requestId: 'stale' });
       await expect.poll(results).toHaveLength(3);
-      expect((await results())[2]).toEqual({ kind: 'live', result: 'unavailable' });
+      expect((await results())[2]).toEqual({ requestId: 'stale', kind: 'live', result: 'unavailable' });
+
+      // Or its service's key changed, where it posts staying the same.
+      const keyed = (await forms())[0].id;
+      await frame.evaluate(`document.querySelector('form').insertAdjacentHTML('afterbegin', '<input type="hidden" name="access_key" value="another-inbox">')`);
+      await expect.poll(async () => (await forms())[0].id).not.toBe(keyed);
+      await toFrame('formLiveTest', { id: keyed, requestId: 'rekeyed' });
+      await expect.poll(results).toHaveLength(4);
+      expect((await results())[3]).toEqual({ requestId: 'rekeyed', kind: 'live', result: 'unavailable' });
       await frame.waitForTimeout(200);
       expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  it('tests the form the author confirmed when two forms send to the same service (review)', async () => {
+    await withPreview(async ({ frame, service, results, resultIds, toFrame, formId, mount, preview }) => {
+      await mount({ heading: 'Book a visit' });
+      const second = frame.locator('form.so-form__form').nth(1);
+      await preview();
+      await second.getByLabel('Name').fill('Grace');
+      await second.getByLabel('Email').fill('grace@example.com');
+      await second.getByLabel('Message').fill('A visit next week');
+      const id = await formId(1, 2);
+      await toFrame('formLiveTest', { id, requestId: 'live-1' });
+      await expect.poll(() => service.requests.length).toBe(1);
+      expect(service.requests[0].body).toContain('A visit next week');
+      await expect.poll(async () => (await results()).at(-1)).toMatchObject({ kind: 'live', result: 'sent' });
+      expect(new Set(await resultIds())).toEqual(new Set([id]));
     });
   }, 30_000);
 
@@ -336,20 +425,75 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
     );
   }, 30_000);
 
-  it('practises a form whose own code waits before it sends', async () => {
-    await withPreview(async ({ frame, service, preview }) => {
+  it('practises a form whose own code waits, then sends somewhere other than its action', async () => {
+    await withPreview(async ({ service, preview, addCustomForm, submitCustom, customResult }) => {
       await preview();
-      await frame.evaluate(`(() => {
-        document.getElementById('app').insertAdjacentHTML('beforeend', '<form id="custom" method="post" action="${SERVICE}/f/custom"><input name="q" value="Hello"></form>');
-        document.getElementById('custom').addEventListener('submit', async (e) => {
-          e.preventDefault();
-          await new Promise((r) => setTimeout(r, 300));
-          const reply = await fetch('${SERVICE}/f/custom?source=contact', { method: 'POST', body: new FormData(e.target) });
-          window.customStatus = reply.status;
-        });
-        document.getElementById('custom').requestSubmit();
-      })()`);
-      await expect.poll(() => frame.evaluate('window.customStatus'), { timeout: 5000 }).toBe(200);
+      await addCustomForm('custom', `${SERVICE}/f/custom`, `await new Promise((r) => setTimeout(r, 300)); return (await fetch('${SERVICE}/relay', { method: 'POST', body: new FormData(form) })).status;`);
+      await submitCustom('custom');
+      await expect.poll(() => customResult('custom'), { timeout: 5000 }).toBe(200);
+      expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  it('practises a form that sends with XMLHttpRequest, and lets a confirmed live test of it through', async () => {
+    const xhr = (result: string) =>
+      `return await new Promise((resolve) => { const x = new XMLHttpRequest(); x.open('POST', '${SERVICE}/f/xhr'); x.onload = () => resolve('${result}:' + x.status); x.onerror = () => resolve('${result}:error'); x.send(new FormData(form)); });`;
+    await withPreview(async ({ service, results, preview, toFrame, addCustomForm, submitCustom, customResult, forms }) => {
+      await preview();
+      await addCustomForm('ok', `${SERVICE}/f/xhr`, xhr('ok'));
+      await submitCustom('ok');
+      await expect.poll(() => customResult('ok'), { timeout: 5000 }).toBe('ok:200');
+      await toFrame('formPractice', { result: 'error' });
+      await submitCustom('ok');
+      await expect.poll(() => customResult('ok'), { timeout: 5000 }).toBe('ok:error');
+      expect(service.requests).toHaveLength(0);
+      await expect.poll(async () => (await results()).map((r) => r.result)).toEqual(['sending', 'success', 'sending', 'error']);
+
+      await expect.poll(async () => (await forms()).length).toBe(2);
+      const id = (await forms()).find((f) => f.destination === `${SERVICE}/f/xhr`)!.id;
+      await toFrame('formLiveTest', { id, requestId: 'live-xhr' });
+      await expect.poll(() => customResult('ok'), { timeout: 5000 }).toBe('ok:200');
+      expect(service.requests).toMatchObject([{ method: 'POST', url: `${SERVICE}/f/xhr` }]);
+      await expect.poll(async () => (await results()).at(-1)).toMatchObject({ kind: 'live', result: 'sent', status: 200 });
+    });
+  }, 30_000);
+
+  it('ends a live test when the page changes, and does not report a practice send from a page or mode left behind', async () => {
+    await withPreview(async ({ frame, fill, field, service, results, preview, setMode, toFrame, addCustomForm, customResult, forms }) => {
+      await preview();
+      // A form that waits before it sends: its live test is still waiting when the visitor moves on.
+      await addCustomForm('slow', `${SERVICE}/f/slow`, `await new Promise((r) => setTimeout(r, 400)); return (await fetch('${SERVICE}/f/slow', { method: 'POST', body: new FormData(form) })).status;`);
+      await expect.poll(async () => (await forms()).length).toBe(2);
+      const id = (await forms()).find((f) => f.destination === `${SERVICE}/f/slow`)!.id;
+      await toFrame('formLiveTest', { id, requestId: 'live-1' });
+      await frame.evaluate(`window.dispatchEvent(new Event('siteorigin:navigated'))`);
+      await expect.poll(results).toEqual([{ requestId: 'live-1', kind: 'live', result: 'not-sent' }]);
+      // Its send, when it comes, is a practice.
+      await expect.poll(() => customResult('slow'), { timeout: 5000 }).toBe(200);
+      expect((await results()).slice(1)).toEqual([
+        { kind: 'practice', result: 'sending' },
+        { kind: 'practice', result: 'success' }
+      ]);
+      expect(service.requests).toHaveLength(0);
+
+      // A practice send still waiting when the author leaves Preview tells the editor nothing more.
+      await fill();
+      await field('Email').press('Enter');
+      await expect.poll(async () => (await results()).length).toBe(4);
+      await setMode('edit');
+      await frame.waitForTimeout(1200);
+      expect((await results()).slice(3)).toEqual([{ kind: 'practice', result: 'sending' }]);
+    });
+  }, 30_000);
+
+  it('gives up a practice send its page cancels', async () => {
+    await withPreview(async ({ service, results, preview, addCustomForm, submitCustom, customResult }) => {
+      await preview();
+      await addCustomForm('cancel', `${SERVICE}/f/cancel`, `const c = new AbortController(); setTimeout(() => c.abort(), 100); return (await fetch('${SERVICE}/f/cancel', { method: 'POST', body: new FormData(form), signal: c.signal })).status;`);
+      await submitCustom('cancel');
+      await expect.poll(() => customResult('cancel'), { timeout: 5000 }).toBe('AbortError');
+      await new Promise((r) => setTimeout(r, 1000));
+      expect(await results()).toEqual([{ kind: 'practice', result: 'sending' }]);
       expect(service.requests).toHaveLength(0);
     });
   }, 30_000);
@@ -365,12 +509,16 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
 
   it('holds every submission while the page is loading, before the bridge runs', async () => {
     await withPreview(
-      async ({ frame, fill, field, service, status }) => {
+      async ({ frame, fill, field, service, status, addCustomForm, submitCustom, customResult }) => {
         await fill();
         await field('Email').press('Enter');
         await frame.evaluate(`document.querySelector('form').requestSubmit()`);
-        await frame.waitForTimeout(400);
+        // A form of the page's own code is held too.
+        await addCustomForm('own', `${SERVICE}/f/own`, `return (await fetch('${SERVICE}/f/own', { method: 'POST', body: new FormData(form) })).status;`);
+        await submitCustom('own');
+        await frame.waitForTimeout(600);
         expect(await status()).toBe('');
+        expect(await customResult('own')).toBeUndefined();
         expect(service.requests).toHaveLength(0);
       },
       {},

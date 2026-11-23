@@ -14,7 +14,8 @@ export function FormPractice({
   last,
   liveBusy,
   onLiveTest,
-  bottom
+  bottom,
+  onHeight
 }: {
   forms: PreviewForm[];
   practice: PracticeResult;
@@ -25,6 +26,8 @@ export function FormPractice({
   liveBusy: boolean;
   onLiveTest: (form: PreviewForm) => void;
   bottom: number;
+  /** The panel's height, so the preview can keep the page clear of it. */
+  onHeight: (height: number) => void;
 }) {
   const live = forms.filter((f) => f.live);
   /** The form a live test is being confirmed for. */
@@ -34,22 +37,33 @@ export function FormPractice({
   useEffect(() => {
     if (confirming && !target) setConfirming(null);
   }, [confirming, target]);
-  // Focus goes to Cancel when the confirmation opens, and back to the button that opened it when it closes.
+  // Focus goes to Cancel when the confirmation opens, and back to the button that opened it when it closes, unless
+  // the author has moved on (into the page, say) by then.
+  const panel = useRef<HTMLElement>(null);
   const liveButton = useRef<HTMLButtonElement>(null);
   const cancelButton = useRef<HTMLButtonElement>(null);
   const wasConfirming = useRef(false);
   useEffect(() => {
+    const here = !document.activeElement || document.activeElement === document.body || !!panel.current?.contains(document.activeElement);
     if (target && !wasConfirming.current) cancelButton.current?.focus();
-    else if (!target && wasConfirming.current) liveButton.current?.focus();
+    else if (!target && wasConfirming.current && here) liveButton.current?.focus();
     wasConfirming.current = !!target;
   }, [!!target]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const el = panel.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => onHeight(el.offsetHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const titleId = useId();
   const choose = useId();
+  const confirmText = useId();
   const shown = forms.slice(0, 3);
   return (
-    <section className="form-practice" style={{ bottom }} aria-labelledby={titleId}>
+    <section ref={panel} className="form-practice" style={{ bottom }} aria-labelledby={titleId}>
       <p className="form-practice-title" id={titleId}>
-        <Mail aria-hidden="true" /> <strong>Form sends are simulated in Preview.</strong> Nothing is sent.
+        <Mail aria-hidden="true" /> <strong>Form sends are simulated in Preview.</strong> {live.length ? 'Nothing is sent unless you test live delivery.' : 'Nothing is sent.'}
       </p>
       {shown.map((f) => (
         <p key={f.id} className="form-practice-where">
@@ -69,13 +83,14 @@ export function FormPractice({
             </button>
           </div>
           {live.length > 0 && (
-            <button ref={liveButton} type="button" className="btn btn-sm form-practice-live" disabled={liveBusy} onClick={() => setConfirming(live[0].id)}>
+            // Not disabled while a test is on its way, so focus can stay on it after the confirmation closes.
+            <button ref={liveButton} type="button" className="btn btn-sm form-practice-live" aria-disabled={liveBusy || undefined} onClick={() => !liveBusy && setConfirming(live[0].id)}>
               <Send aria-hidden="true" /> Test live delivery…
             </button>
           )}
         </div>
       ) : (
-        <div className="form-practice-confirm" role="group" aria-label="Test live delivery">
+        <div className="form-practice-confirm" role="group" aria-label="Test live delivery" aria-describedby={confirmText}>
           {live.length > 1 && (
             <label className="form-practice-row" htmlFor={choose}>
               <span className="form-practice-label">Form</span>
@@ -88,7 +103,7 @@ export function FormPractice({
               </select>
             </label>
           )}
-          <p>
+          <p id={confirmText}>
             <strong>Send one real test message?</strong> The answers now in {formName(target).replace(/^The form/, 'the form')} go to {shortDestination(target.destination)}, as a visitor’s message would.
           </p>
           <div className="form-practice-row">

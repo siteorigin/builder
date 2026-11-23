@@ -328,7 +328,7 @@ step('a contact form practises its sends in Preview, and sends one real message 
 const ENDPOINT = 'https://forms.e2e.test/f/rehearsal';
 const delivered = [];
 const deliver = async (route) => {
-  delivered.push({ method: route.request().method(), body: route.request().postData() ?? '' });
+  delivered.push({ method: route.request().method(), url: route.request().url(), body: route.request().postData() ?? '' });
   await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{"ok":true}' });
 };
 await app.context().route('https://forms.e2e.test/**', deliver);
@@ -357,7 +357,7 @@ assert.equal(await formStatus(), '', 'Edit shows no sent message');
 await win.locator('button[title^="Preview:"]').click();
 await eventually(async () => {
   const text = await practicePanel.innerText();
-  assert.ok(text.includes('Form sends are simulated in Preview. Nothing is sent.'), `Preview says before any send that sends are simulated: ${text}`);
+  assert.ok(text.includes('Form sends are simulated in Preview. Nothing is sent unless you test live delivery.'), `Preview says before any send that sends are simulated: ${text}`);
   assert.ok(text.includes('sends to forms.e2e.test/f/rehearsal'), `and where the form sends once published: ${text}`);
 });
 await answer();
@@ -383,6 +383,7 @@ assert.equal(delivered.length, 0, 'opening the live test sends nothing');
 await practicePanel.getByRole('button', { name: 'Send one real test message' }).click();
 await eventually(() => assert.equal(delivered.length, 1, 'the confirmed live test sends one message'));
 assert.equal(delivered[0].method, 'POST');
+assert.equal(delivered[0].url, ENDPOINT, 'the live test goes to the address the author confirmed');
 assert.ok(delivered[0].body.includes('A rehearsal enquiry'), 'the live test sends the answers in the form');
 await eventually(async () => assert.equal(await practiceNote(), 'Live test sent to forms.e2e.test/f/rehearsal. The service answered with status 200. Check the service to see the message arrived.', 'Preview reports what the service answered'));
 
