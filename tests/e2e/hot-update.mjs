@@ -39,31 +39,37 @@ const owner = { kind: 'page', id: ids.pageId };
 /**
  * What a document shows: its h1 headings, main elements, and the images and lead paragraphs in main, in order.
  * Runs in a page: the canvas document itself when `html` is null, else `html` parsed there. For the canvas it
- * also reports the label of the document, whether its first section was hydrated from server-rendered markup
- * (which keeps Svelte's "[" block markers; markup rendered in the page has none) and the marks on its sections.
+ * also reports the label of the document, which sections were hydrated from server-rendered markup (it keeps
+ * Svelte's "[" block markers; markup rendered in the page has none) and the marks on its sections.
  */
 function snapshot(html) {
   const doc = html === null ? document : new DOMParser().parseFromString(html, 'text/html');
   const main = doc.querySelector('main');
   const sections = main ? [...main.querySelectorAll('section')] : [];
-  const markers = [];
-  if (sections[0]) for (const w = doc.createTreeWalker(sections[0], NodeFilter.SHOW_COMMENT); w.nextNode(); ) markers.push(w.currentNode.data);
+  const hydrated = (el) => {
+    for (const w = doc.createTreeWalker(el, NodeFilter.SHOW_COMMENT); w.nextNode(); ) if (w.currentNode.data.startsWith('[')) return true;
+    return false;
+  };
   return {
     h1: [...doc.querySelectorAll('h1')].map((el) => el.textContent.trim()),
+    h2: main ? [...main.querySelectorAll('h2')].map((el) => el.textContent.trim()) : [],
     main: doc.querySelectorAll('main').length,
     images: main ? [...main.querySelectorAll('img')].map((img) => new URL(img.getAttribute('src') ?? '', 'http://site/').pathname) : [],
     leads: main ? [...main.querySelectorAll('[class*="__lead"]')].map((el) => el.textContent.trim()) : [],
     sections: sections.length,
-    canvas: html === null ? { doc: window.__soDoc ?? null, hydrated: markers.some((m) => m.startsWith('[')), marks: sections.map((el) => el.__soMark ?? null) } : null
+    canvas: html === null ? { doc: window.__soDoc ?? null, hydrated: sections.map(hydrated), marks: sections.map((el) => el.__soMark ?? null) } : null
   };
 }
 const shown = () => canvas.evaluate(snapshot, null);
 const content = ({ canvas: _, ...rest }) => rest;
 const textCount = (text) => frame.getByText(text, { exact: true }).count();
 
-/** Load the canvas document again (as Try again or reopening the project would), then label it and mark its sections. */
+/**
+ * Load the canvas document again (as Try again or reopening the project would), then label it and mark its
+ * sections. The section about to be edited must have been hydrated from the server-rendered page.
+ */
 let loads = 0;
-async function reloadCanvas() {
+async function reloadCanvas(edited) {
   await canvas.evaluate(() => {
     window.__soBeforeReload = true;
     location.reload();
@@ -77,7 +83,7 @@ async function reloadCanvas() {
     document.querySelectorAll('main section').forEach((el, i) => (el.__soMark = i + 1));
   }, doc);
   const s = await shown();
-  assert.equal(s.canvas.hydrated, true, 'the reloaded page was hydrated from the server-rendered page');
+  assert.equal(s.canvas.hydrated[edited], true, 'the section to edit was hydrated from the server-rendered page');
   return { doc, sections: s.sections };
 }
 
@@ -94,13 +100,22 @@ async function single(doc, sections, headline, firstImage) {
 }
 /** Long enough for a stale copy to show once an update has landed: the check before it can pass first. */
 const settle = () => win.waitForTimeout(1000);
+/**
+ * Until the canvas shows the project copy at section `index`. The copy has its own class names and no theme
+ * ones left; once they show, its update has landed and a reload loads a page no update has touched since.
+ */
+const showsCopy = (index) =>
+  eventually(async () => {
+    const cls = (await frame.locator('main section').nth(index).getAttribute('class')) ?? '';
+    assert.match(cls, /so-proj-/, 'the canvas shows the copy');
+    assert.doesNotMatch(cls, /so-foundation-/, 'the theme component is gone');
+  }, 30000);
 
 step('the hero: a project copy, on a freshly loaded page');
-// Theme components are edited through a project copy, which has its own class names: once the canvas shows them,
-// its update has landed and the reload loads a page that no update has touched since.
+// Theme components are edited through a project copy.
 const heroCopy = (await apply([{ type: 'component.fork', definitionId: ids.heroDef }], 'Fork hero')).results[0].definitionId;
-await eventually(async () => assert.match((await frame.locator('main section').first().getAttribute('class')) ?? '', /so-proj-/, 'the canvas shows the copy'), 30000);
-let { doc, sections } = await reloadCanvas();
+await showsCopy(0);
+let { doc, sections } = await reloadCanvas(0);
 await single(doc, sections, 'Calm, considered spaces for everyday life', ids.heroImage);
 
 step('a change to the hero component alone');
@@ -140,8 +155,8 @@ step('the features grid: a component that places another, on a freshly loaded pa
 // gets a project copy. Neither changes what the page shows.
 const outer = (await apply([{ type: 'component.createFromNode', owner, nodeId: ids.featuresId, name: 'Services band' }], 'Services band')).results[0].definitionId;
 const featuresCopy = (await apply([{ type: 'component.fork', definitionId: ids.featuresDef }], 'Fork features')).results[0].definitionId;
-await eventually(async () => assert.match((await frame.locator('main section').nth(2).getAttribute('class')) ?? '', /so-proj-/, 'the canvas shows the copy'), 30000);
-({ doc, sections } = await reloadCanvas());
+await showsCopy(2);
+({ doc, sections } = await reloadCanvas(2));
 assert.deepEqual(content(await shown()), afterHero, 'a full reload shows what the hot updates did');
 const inner = await win.evaluate(async (outer) => (await window.builder.project.snapshot()).state.components[outer].tree.rootIds[0], outer);
 
@@ -176,7 +191,7 @@ await settle();
 const hot = content(await featuresShown());
 
 step('a full reload of the canvas shows the same page');
-({ doc } = await reloadCanvas());
+({ doc } = await reloadCanvas(0));
 assert.deepEqual(content(await shown()), hot, 'a full reload shows what the hot updates did');
 
 step('the static export shows the same page');
