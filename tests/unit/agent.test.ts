@@ -469,9 +469,9 @@ describe('run budget, parallel calls and validation', () => {
     const { result } = await env.run('Add a wide page');
     expect(result?.status).toBe('completed');
     const v = result!.validation;
-    expect(v).toContain('Content is wider than the screen at phone width.');
-    expect(v).toContain('Fits the screen at desktop width.');
-    expect(v).toContain("Couldn't check the layout at tablet width.");
+    expect(v).toContain('Content is wider than the screen at phone width on Home.');
+    expect(v).toContain('Fits the screen at desktop width on Home.');
+    expect(v).toContain("Couldn't check the layout at tablet width on Home.");
     // The tablet check ran twice and failed twice: it is one line, and a check that could not run is not a pass.
     expect(v.filter((x) => /tablet/.test(x))).toHaveLength(1);
     expect(result!.checks?.find((c) => /tablet/.test(c.text))?.status).toBe('unverified');
@@ -513,10 +513,10 @@ describe('run budget, parallel calls and validation', () => {
     expect(result!.changes.flatMap((c) => c.operations)).toEqual(['node.insert', 'node.setContent']);
     // Every check is said once, with its final state, and the stored lines are the same checks.
     expect(result!.checks).toEqual([
-      { status: 'pass', text: 'Fits the screen at phone width.' },
-      { status: 'pass', text: 'The image loads at phone width.' },
-      { status: 'pass', text: 'Fits the screen at desktop width.' },
-      { status: 'pass', text: 'The image loads at desktop width.' },
+      { status: 'pass', text: 'Fits the screen at phone width on Home.' },
+      { status: 'pass', text: 'The image loads at phone width on Home.' },
+      { status: 'pass', text: 'Fits the screen at desktop width on Home.' },
+      { status: 'pass', text: 'The image loads at desktop width on Home.' },
       { status: 'pass', text: 'Project structure, links and references are valid.' },
       { status: 'pass', text: 'All components build without errors.' }
     ]);
@@ -553,9 +553,13 @@ describe('run budget, parallel calls and validation', () => {
     );
     homeId = env.session.state.site.homePageId;
     const { result } = await env.run('Add a gallery page');
-    expect(result!.checks?.slice(0, 2)).toEqual([
-      { status: 'pass', text: 'Fits the screen at phone width.' },
-      { status: 'issue', text: 'An image failed to load at phone width (gone.jpg).' }
+    // Named by page: the run changed another page (Gallery) than the one it checked.
+    expect(result!.checks).toEqual([
+      { status: 'pass', text: 'Fits the screen at phone width on Home.' },
+      { status: 'issue', text: 'An image failed to load at phone width on Home (gone.jpg).' },
+      { status: 'pass', text: 'Project structure, links and references are valid.' },
+      { status: 'pass', text: 'All components build without errors.' },
+      { status: 'issue', text: 'Gallery still has no sections.' }
     ]);
   });
 });

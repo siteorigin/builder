@@ -454,13 +454,17 @@ async function settled(deadline) {
   await until(deadline, new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 }
 
-/** The image's address as an author would recognise it: the path on this site, or the full address elsewhere. */
+/**
+ * The image's address as an author would recognise it: the path on this site, or the address elsewhere. An
+ * inline image's address is its whole content, so it is named, never sent (it could exceed a message's size).
+ */
 function imagePath(url) {
+  if (/^(data|blob):/i.test(url)) return 'an inline image';
   try {
     const u = new URL(url, location.href);
-    return u.origin === location.origin ? decodeURI(u.pathname) : u.href;
+    return (u.origin === location.origin ? decodeURI(u.pathname) : u.href).slice(0, 300);
   } catch {
-    return String(url);
+    return String(url).slice(0, 300);
   }
 }
 
@@ -492,8 +496,8 @@ function probe(url, deadline) {
  * the measuring frame missed it, not the site.
  */
 async function imageReport(deadline) {
-  // sources: the address each image was given (not the variant chosen), so the editor can tell a load that
-  // shows an image the page no longer has.
+  // sources: the address each image was given (not the variant chosen) and its outcome, so the editor can
+  // tell a load that shows an image the page no longer has, and set its result aside.
   const summary = { total: 0, loaded: 0, failed: 0, unverified: 0, failedFiles: [], sources: [] };
   const issues = [];
   const checks = [];
@@ -501,7 +505,8 @@ async function imageReport(deadline) {
     const url = img.currentSrc || img.getAttribute('src') || '';
     if (!url) continue;
     summary.total++;
-    if (img.getAttribute('src') && summary.sources.length < 200) summary.sources.push(imagePath(img.getAttribute('src')));
+    const source = { path: imagePath(img.getAttribute('src') || url), outcome: 'loaded' };
+    if (summary.sources.length < 200) summary.sources.push(source);
     if (img.complete && img.naturalWidth > 0) {
       summary.loaded++;
       continue;
@@ -512,11 +517,13 @@ async function imageReport(deadline) {
         if (ok === true) summary.loaded++;
         else if (ok === false) {
           summary.failed++;
+          source.outcome = 'failed';
           if (summary.failedFiles.length < 10) summary.failedFiles.push(path.slice(path.lastIndexOf('/') + 1) || path);
-          issues.push({ kind: 'broken-image', message: `Image ${path} failed to load.` });
+          issues.push({ kind: 'broken-image', source: source.path, message: `Image ${path} failed to load.` });
         } else {
           summary.unverified++;
-          issues.push({ kind: 'image-unverified', message: `Image ${path} was still loading when the check ran out of time, so it could not be checked. This is not a problem with the site.` });
+          source.outcome = 'unverified';
+          issues.push({ kind: 'image-unverified', source: source.path, message: `Image ${path} was still loading when the check ran out of time, so it could not be checked. This is not a problem with the site.` });
         }
       })
     );
@@ -526,6 +533,8 @@ async function imageReport(deadline) {
 }
 
 async function inspect(deadline) {
+  // Images first: one that arrives while they are requested again can still change the layout measured below.
+  const images = await imageReport(deadline);
   const vw = document.documentElement.clientWidth;
   const issues = [];
   const docWidth = document.documentElement.scrollWidth;
@@ -541,10 +550,9 @@ async function inspect(deadline) {
     if (el.scrollWidth > el.clientWidth + 2 && getComputedStyle(el).overflowX === 'visible' && el.clientWidth > 0 && el.children.length === 0)
       issues.push({ kind: 'text-overflow', desc: descOf(el), text: textPreview(el), message: 'Text is wider than its box.' });
   }
-  for (const img of document.querySelectorAll('img')) if (!img.hasAttribute('alt')) issues.push({ kind: 'missing-alt', message: `Image ${img.getAttribute('src')} has no alt attribute.` });
-  // Image results go first, so a page with many layout findings cannot push them past the cap.
-  const images = await imageReport(deadline);
-  issues.unshift(...images.issues);
+  for (const img of document.querySelectorAll('img')) if (!img.hasAttribute('alt')) issues.push({ kind: 'missing-alt', message: `Image ${imagePath(img.getAttribute('src') || '')} has no alt attribute.` });
+  // After the layout findings, which the cap must not hide; the image counts in `images` are never capped.
+  issues.push(...images.issues);
   const placeholders = document.querySelectorAll('.so-img--placeholder').length;
   if (placeholders) issues.push({ kind: 'image-placeholder', message: `${placeholders} image placeholder(s) have no image chosen.` });
   const h1 = document.querySelectorAll('h1').length;

@@ -1,6 +1,6 @@
 import { api, getState } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from './bridge';
-import { failedImages, missingImages, missingSections, withUnconfirmedImages } from './inspect-check';
+import { failedImages, missingImages, missingSections, staleImages, withUnconfirmedImages } from './inspect-check';
 
 /** How long the preview server gets to pick up files the AI just wrote before a fresh page load. */
 const SETTLE_MS = 400;
@@ -13,17 +13,18 @@ export async function runInspection(req: { requestId: string; pageId: string; wi
   const state = () => getState().snapshot?.state;
   let report = await measure(req);
   // A page the dev server has not caught up with (a route created moments ago, sections just added, an image
-  // just changed) is missing some of its sections or shows an image it no longer has, and a file the server has
-  // not picked up yet fails to load; give it one more chance before reporting.
-  if (missingSections(state(), req.pageId, report).length || missingImages(state(), req.pageId, report).length || failedImages(report)) {
+  // just changed) is missing some of its sections or images, or shows an image it no longer uses, and a file the
+  // server has not picked up yet fails to load; give it one more chance before reporting.
+  const behind = (r: unknown) => missingSections(state(), req.pageId, r).length || missingImages(state(), req.pageId, r).length || staleImages(state(), req.pageId, r).length;
+  if (behind(report) || failedImages(report)) {
     await new Promise((r) => setTimeout(r, 1500));
     report = await measure(req);
   }
   const missing = missingSections(state(), req.pageId, report);
   const page = state()?.pages[req.pageId];
   if (page && missing.length && missing.length === page.rootIds.length) report = { error: 'The preview has not caught up with the latest changes to this page.' };
-  // Images it still showed from before a change say nothing about the new ones.
-  else report = withUnconfirmedImages(report, missingImages(state(), req.pageId, report));
+  // Images it still showed from before a change say nothing about the page now, or about the new ones.
+  else report = withUnconfirmedImages(report, missingImages(state(), req.pageId, report), staleImages(state(), req.pageId, report));
   if (report && typeof report === 'object') {
     // The section and image address lists are only for these checks; they are not evidence for the AI.
     delete (report as { sections?: unknown }).sections;

@@ -16,6 +16,15 @@ export function checksOf(r: Pick<NonNullable<ChatMessage['result']>, 'checks' | 
   };
 }
 
+/**
+ * What a change says, and its technical detail. Results stored before changes had readable labels can carry a
+ * raw operation name ("node.setContent") as the label; that is detail, not words for an author.
+ */
+export function changeText(c: ChatChange): { label: string; operations: string[] } {
+  if (!c.operations && /^[a-z]+\.[A-Za-z]+$/.test(c.label)) return { label: 'Made a change', operations: [c.label] };
+  return { label: c.label, operations: c.operations ?? [] };
+}
+
 /** A change can be shown when it names a page, or an element of the shared header or footer. */
 export const canOpen = (c: ChatChange) => !!c.pageId || (c.owner?.kind === 'shell' && !!c.nodeId);
 

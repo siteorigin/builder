@@ -7,7 +7,7 @@ import { api, getState, setState, toast, useStore, confirmDialog, selectChatDraf
 import { afterSend, draftFor, moveDraft, unsentDrafts, withDraft } from '../lib/chatDrafts';
 import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
-import { canOpen, changeTarget, checksOf } from '../lib/result';
+import { canOpen, changeTarget, changeText, checksOf } from '../lib/result';
 import { Segmented, Spinner, useMenu } from '../components/ui';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
@@ -682,31 +682,34 @@ function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
               <ul aria-label="Changes that were undone">
                 {r.changes.map((c, i) => (
                   <li key={i} className="faint">
-                    {c.label}
+                    {changeText(c).label}
                   </li>
                 ))}
               </ul>
             </div>
           ) : (
             <ul className="changes" aria-label="Changes">
-              {r.changes.map((c, i) => (
-                <li key={i}>
-                  {canOpen(c) ? (
-                    <button className="change-link" onClick={() => openChange(c)}>
-                      {c.label}
-                    </button>
-                  ) : (
-                    <span>{c.label}</span>
-                  )}
-                  {/* Technical detail: the operations behind the change, for people working on the site's code. */}
-                  {devMode && !!c.operations?.length && (
-                    <code className="change-ops">
-                      <span className="sr-only">Operations: </span>
-                      {c.operations.join(', ')}
-                    </code>
-                  )}
-                </li>
-              ))}
+              {r.changes.map((c, i) => {
+                const { label, operations } = changeText(c);
+                return (
+                  <li key={i}>
+                    {canOpen(c) ? (
+                      <button className="change-link" onClick={() => openChange(c)}>
+                        {label}
+                      </button>
+                    ) : (
+                      <span>{label}</span>
+                    )}
+                    {/* Technical detail: the operations behind the change, for people working on the site's code. */}
+                    {devMode && operations.length > 0 && (
+                      <code className="change-ops">
+                        <span className="sr-only">Operations: </span>
+                        {operations.join(', ')}
+                      </code>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           ))}
         {r.validation.length > 0 && (

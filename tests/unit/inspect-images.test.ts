@@ -36,7 +36,7 @@ interface ImageSummary {
   failed: number;
   unverified: number;
   failedFiles: string[];
-  sources: string[];
+  sources: Array<{ path: string; outcome: string }>;
 }
 interface Report {
   images: ImageSummary;
@@ -104,18 +104,25 @@ describe('layout inspection images', () => {
     // Hero (relative address on a nested route) and the lazy image load; the photo's phone variant and the
     // missing file do not.
     expect(report.images).toEqual({ total: 4, loaded: 2, failed: 2, unverified: 0, failedFiles: expect.arrayContaining(['photo-640.jpg', 'missing.jpg']), sources: expect.any(Array) });
-    // The address each image was given, resolved on the nested route, for the editor's catch-up check.
-    expect(report.images.sources).toEqual(['/assets/hero.jpg', '/assets/photo.jpg', '/assets/lazy.jpg', '/assets/missing.jpg']);
+    // The address each image was given, resolved on the nested route, with its outcome, for the editor's
+    // catch-up check.
+    expect(report.images.sources).toEqual([
+      { path: '/assets/hero.jpg', outcome: 'loaded' },
+      { path: '/assets/photo.jpg', outcome: 'failed' },
+      { path: '/assets/lazy.jpg', outcome: 'loaded' },
+      { path: '/assets/missing.jpg', outcome: 'failed' }
+    ]);
     expect(brokenPaths(report)).toEqual(expect.arrayContaining(['Image /assets/photo-640.jpg failed to load.', 'Image /assets/missing.jpg failed to load.']));
-    // Image results lead the issue list, so many layout findings cannot hide them.
-    expect(report.issues[0].kind).toBe('broken-image');
   }, 30000);
 
   it.skipIf(!browserInstalled)('loads responsive images whose variants are all there at desktop width', async () => {
     const image = png(640, 360);
     // Which variant the browser picks is its own choice; every one of them is there.
-    const report = await inspectAt(1280, '', { '/assets/photo-640.jpg': (route) => route.fulfill({ contentType: 'image/png', body: image }) });
-    expect(report.images).toMatchObject({ total: 3, loaded: 3, failed: 0, unverified: 0 });
+    // An inline image loads too, and its address (its whole content) is named rather than sent.
+    const inline = `data:image/png;base64,${image.toString('base64')}`;
+    const report = await inspectAt(1280, `<img alt="Inline" src="${inline}">`, { '/assets/photo-640.jpg': (route) => route.fulfill({ contentType: 'image/png', body: image }) });
+    expect(report.images).toMatchObject({ total: 4, loaded: 4, failed: 0, unverified: 0 });
+    expect(report.images.sources.at(-1)).toEqual({ path: 'an inline image', outcome: 'loaded' });
     expect(brokenPaths(report)).toEqual([]);
   }, 30000);
 

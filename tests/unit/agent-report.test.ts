@@ -61,11 +61,11 @@ describe('change descriptions', () => {
     const { changes } = run(placed, [
       () => [{ type: 'node.setContent', owner, nodeId: imageId, field: 'image', value: { assetId: 'as_office', alt: 'New words' } }],
       () => [
-        { type: 'node.setStyle', owner, nodeId: imageId, property: 'radius', value: '0' },
+        { type: 'node.setStyle', owner, nodeId: imageId, scope: 'base', property: 'radius', value: '0' },
         { type: 'node.setStyle', owner, nodeId: imageId, scope: 'phone', property: 'width', value: '100%' }
       ]
     ]);
-    expect(changes.map((c) => c.label)).toEqual(['Changed the alt text of Image on お問い合わせ', expect.stringMatching(/^Changed the .+ and width \(phone\) of Image on お問い合わせ$/)]);
+    expect(changes.map((c) => c.label)).toEqual(['Changed the alt text of Image on お問い合わせ', 'Changed the corner radius and width (phone) of Image on お問い合わせ']);
     expect(changes[1].operations).toEqual(['node.setStyle']);
   });
 
@@ -78,6 +78,7 @@ describe('change descriptions', () => {
     const { changes } = run(state, [
       () => [
         { type: 'instance.listInsert', owner: header, nodeId: nav, prop: 'links', item: { label: 'Contact', link: '/contact/' } },
+        { type: 'instance.listInsert', owner: header, nodeId: nav, prop: 'links', item: { label: 'About', link: '/about/' } },
         { type: 'instance.setProp', owner: home, nodeId: hero, prop: 'heading', value: 'Hello' },
         { type: 'instance.setProp', owner: home, nodeId: hero, prop: 'image', value: 'as_office' },
         { type: 'token.set', tokenId: 'color.brand', value: '#123456' },
@@ -86,7 +87,8 @@ describe('change descriptions', () => {
       ]
     ]);
     const labels = changes.map((c) => c.label);
-    expect(labels[0]).toMatch(/^Added an item to the .+ of .+ on the shared header$/);
+    // Two links added to the menu are one entry that counts them, named by the property's label.
+    expect(labels[0]).toMatch(/^Added 2 items to the navigation of .+ on the shared header$/);
     expect(changes[0]).toMatchObject({ owner: header, nodeId: nav });
     expect(changes[0].pageId).toBeUndefined();
     // Both property edits of the hero are one entry; the image names the photo and the alt text it brought.
@@ -119,11 +121,42 @@ describe('change descriptions', () => {
     const copy = changes.find((c) => c.operations?.includes('node.copy'))!;
     expect(copy.label).toMatch(/^Copied .+ from Home to お問い合わせ$/);
     expect(copy.pageId).toBe(pageId);
-    expect(after.pages[pageId].nodes[copy.nodeId!]).toBeTruthy();
+    // The link goes to the new copy: the page's newest section, built from the same component as the hero.
+    const copied = after.pages[pageId].nodes[copy.nodeId!];
     expect(copy.nodeId).not.toBe(hero);
+    expect(state.pages[pageId].nodes[copy.nodeId!]).toBeUndefined();
+    expect(copied).toMatchObject({ kind: 'instance', definitionId: (state.pages[home.id].nodes[hero] as { definitionId: string }).definitionId });
+  });
+
+  it('names a component part in a style edit, so two parts are two details', () => {
+    const { state } = project();
+    const home = { kind: 'page' as const, id: state.site.homePageId };
+    const hero = state.pages[home.id].rootIds[0];
+    const def = state.components[(state.pages[home.id].nodes[hero] as { definitionId: string }).definitionId];
+    const parts = Object.entries(def.parts).filter(([id]) => id !== 'root').slice(0, 2);
+    expect(parts).toHaveLength(2);
+    const { changes } = run(state, [() => parts.map(([partId]) => ({ type: 'node.setStyle' as const, owner: home, nodeId: hero, partId, scope: 'base' as const, property: 'paddingBlock', value: '1rem' }))]);
+    expect(changes).toHaveLength(1);
+    for (const [, part] of parts) expect(changes[0].label).toContain(part.label.toLowerCase());
+  });
+
+  it('reads an image bound to a component property from the property, so an alt-only edit says only that', () => {
+    let { state } = project();
+    const home = { kind: 'page' as const, id: state.site.homePageId };
+    const hero = state.pages[home.id].rootIds[0];
+    // A project copy of the hero, whose image node shows the "image" property.
+    state = applyOperations(state, [{ type: 'component.makeUnique', owner: home, nodeId: hero, name: 'My hero' }]).state;
+    const def = Object.values(state.components).find((d) => d.name === 'My hero')!;
+    state = applyOperations(state, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'image', schema: { ...def.properties.image, default: { assetId: 'as_office', alt: 'Old words' } } }]).state;
+    const owner = { kind: 'component' as const, id: def.id };
+    const image = Object.values(state.components[def.id].tree!.nodes).find((n) => n.kind === 'image')!;
+    const { changes } = run(state, [() => [{ type: 'node.setContent', owner, nodeId: image.id, field: 'image', value: { assetId: 'as_office', alt: 'New words' } }]]);
+    expect(changes.map((c) => c.label)).toEqual(['Changed the alt text of Image on the “My hero” component']);
+    expect(changes[0]).toMatchObject({ owner, definitionId: def.id, nodeId: image.id });
   });
 
   it('joins words the way a sentence does', () => {
+    expect(joinWords([])).toBe('');
     expect(joinWords(['a'])).toBe('a');
     expect(joinWords(['a', 'b'])).toBe('a and b');
     expect(joinWords(['a', 'b', 'c'])).toBe('a, b and c');
@@ -140,6 +173,10 @@ describe('check results', () => {
     ]);
     expect(inspectionChecks(true, ok({ total: 2, loaded: 1, failed: 1, unverified: 0, failedFiles: ['missing.jpg'] }))[1]).toEqual({ status: 'issue', text: 'An image failed to load at phone width (missing.jpg).' });
     expect(inspectionChecks(true, ok({ total: 1, loaded: 0, failed: 0, unverified: 1 }))[1]).toEqual({ status: 'unverified', text: "Couldn't confirm that an image loaded at phone width." });
+    expect(inspectionChecks(true, ok({ total: 3, loaded: 1, failed: 1, unverified: 1, failedFiles: ['gone.jpg'] }))[1]).toEqual({ status: 'issue', text: 'An image failed to load at phone width (gone.jpg). 1 other could not be checked.' });
+    // The measured widths decide fit even when the capped issue list kept no overflow entry.
+    const wide = { pageId: 'p', viewport: 'phone', report: { issues: Array(40).fill({ kind: 'broken-image' }), documentWidth: 600, viewportWidth: 390 } };
+    expect(inspectionChecks(true, wide)[0]).toEqual({ status: 'issue', text: 'Content is wider than the screen at phone width.' });
     // Reports from before images were counted still surface a broken image.
     expect(inspectionChecks(true, ok(undefined, [{ kind: 'broken-image', message: 'x' }]))[1]).toMatchObject({ status: 'issue' });
     // No images: no image line, and no pass claimed for images that are not there.
@@ -147,22 +184,24 @@ describe('check results', () => {
     expect(inspectionChecks(false, { viewport: 'tablet', error: 'VALIDATION_FAILED' })).toEqual([{ status: 'unverified', text: "Couldn't check the layout at tablet width." }]);
   });
 
-  it('says each check once, with its latest result, and names pages when several were checked', () => {
-    const state = createStarterState('business', 'Test', false);
-    const [home, about] = state.site.pageOrder;
+  it('says each check once, with its latest result, naming its page', () => {
+    let state = createStarterState('business', 'Test', false);
+    const [home, about, contact] = state.site.pageOrder;
     const log = new InspectionLog();
     log.record(home, 'phone', true, { viewport: 'phone', report: { issues: [], images: { total: 1, loaded: 0, failed: 1, unverified: 0, failedFiles: ['a.jpg'] } } });
     log.record(home, 'phone', true, { viewport: 'phone', report: { issues: [], images: { total: 1, loaded: 1, failed: 0, unverified: 0 } } });
     expect(log.checks(state)).toEqual([
-      { status: 'pass', text: 'Fits the screen at phone width.' },
-      { status: 'pass', text: 'The image loads at phone width.' }
+      { status: 'pass', text: 'Fits the screen at phone width on Home.' },
+      { status: 'pass', text: 'The image loads at phone width on Home.' }
     ]);
-    // A later check that could not run replaces an earlier pass: the final state is unknown.
+    // A later check that could not run replaces an earlier pass (with a report): the final state is unknown.
     log.record(home, 'desktop', true, { viewport: 'desktop', report: { issues: [] } });
-    log.record(home, 'desktop', false, { viewport: 'desktop' });
+    log.record(home, 'desktop', false, { viewport: 'desktop', report: { issues: [] } });
     log.record(about, 'phone', true, { viewport: 'phone', report: { issues: [] } });
-    const texts = log.checks(state).map((c) => c.text);
-    expect(texts).toEqual([`Fits the screen at phone width on ${state.pages[home].title}.`, `The image loads at phone width on ${state.pages[home].title}.`, `Couldn't check the layout at desktop width on ${state.pages[home].title}.`, `Fits the screen at phone width on ${state.pages[about].title}.`]);
+    log.record(contact, 'phone', true, { viewport: 'phone', report: { issues: [] } });
+    // A page removed after its check has nothing left to report.
+    state = applyOperations(state, [{ type: 'page.remove', pageId: contact, replacementPageId: home }]).state;
+    expect(log.checks(state).map((c) => c.text)).toEqual(['Fits the screen at phone width on Home.', 'The image loads at phone width on Home.', "Couldn't check the layout at desktop width on Home.", `Fits the screen at phone width on ${state.pages[about].title}.`]);
   });
 
   it('stops vouching for a page once a later edit changes it, until it is checked again', () => {
@@ -183,7 +222,9 @@ describe('check results', () => {
     expect(log.checks(state).slice(0, 2).map((c) => c.status)).toEqual(['pass', 'pass']);
     // A site-wide change reaches every page.
     log.invalidate('all');
-    expect(log.checks(state).every((c) => c.status === 'unverified')).toBe(true);
+    const all = log.checks(state);
+    expect(all).toHaveLength(3);
+    expect(all.every((c) => c.status === 'unverified')).toBe(true);
   });
 
   it('knows which pages an edit can change', () => {
@@ -191,8 +232,11 @@ describe('check results', () => {
     const [home, about] = state.site.pageOrder;
     const page = (id: string) => ({ kind: 'page' as const, id });
     const node = state.pages[home].rootIds[0];
-    expect(pagesTouched([{ type: 'node.setStyle', owner: page(home), nodeId: node, property: 'gap', value: '1rem' }])).toEqual(new Set([home]));
-    expect(pagesTouched([{ type: 'node.copy', owner: page(home), nodeId: node, toOwner: page(about) }])).toEqual(new Set([home, about]));
+    expect(pagesTouched([{ type: 'node.setStyle', owner: page(home), nodeId: node, scope: 'base', property: 'gap', value: '1rem' }])).toEqual(new Set([home]));
+    // A copy changes only the page it lands on.
+    expect(pagesTouched([{ type: 'node.copy', owner: page(home), nodeId: node, toOwner: page(about) }])).toEqual(new Set([about]));
+    expect(pagesTouched([{ type: 'page.update', pageId: about, seoTitle: 'x' }, { type: 'page.setHome', pageId: home }])).toEqual(new Set([about, home]));
+    expect(pagesTouched([{ type: 'page.remove', pageId: about }, { type: 'page.reorder', pageIds: [about, home] }])).toEqual(new Set([about]));
     expect(pagesTouched([{ type: 'page.create', title: 'New' }])).toEqual(new Set());
     expect(pagesTouched([{ type: 'page.create', title: 'New', addToNavigation: true }])).toBe('all');
     expect(pagesTouched([{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: 'n', prop: 'x', value: 1 }])).toBe('all');

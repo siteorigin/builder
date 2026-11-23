@@ -29,21 +29,24 @@ interface Draft {
   key: string;
   operations: Set<string>;
   details: string[];
-  render: (details: string[]) => string;
+  /** How many operations the entry stands for ("Added 2 items"). */
+  count: number;
+  render: (details: string[], count: number) => string;
   link: Omit<ChatChange, 'label' | 'operations'>;
 }
 
 /**
  * The completion card's change list. Each entry names what changed and where, links to the element when
- * there is one, and keeps the raw operation types as technical detail. Content and style edits to one
- * element are merged into one entry ("Set the image and alt text of Image on Contact").
+ * there is one, and keeps the raw operation types as technical detail. Content edits to one element are
+ * merged into one entry ("Set the image and alt text of Image on Contact"), and so are its style edits.
  */
 export function describeOps(ops: EditOperation[], before: ProjectState, after: ProjectState, results: unknown[]): ChatChange[] {
   const drafts = new Map<string, Draft>();
   const add = (op: EditOperation, key: string, render: Draft['render'], link: Draft['link'] = {}, detail?: string) => {
     let d = drafts.get(key);
-    if (!d) drafts.set(key, (d = { key, operations: new Set(), details: [], render, link }));
+    if (!d) drafts.set(key, (d = { key, operations: new Set(), details: [], count: 0, render, link }));
     d.operations.add(op.type);
+    d.count++;
     if (detail && !d.details.includes(detail)) d.details.push(detail);
   };
   const tree = (state: ProjectState, o: OwnerRef) => {
@@ -89,10 +92,13 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
     add(op, `content:${ownerKey(op.owner)}:${op.nodeId}`, (d) => `${verb(op.owner, op.nodeId)} the ${joinWords(d)} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId), detail);
   const styleEdit = (op: EditOperation & { owner: OwnerRef; nodeId: string }, detail: string) =>
     add(op, `style:${ownerKey(op.owner)}:${op.nodeId}`, (d) => `Changed the ${joinWords(d)} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId), detail);
+  /** An image value as shown: one bound to a component property shows that property's default. */
+  const shownImage = (state: ProjectState, o: OwnerRef, value: unknown): Partial<ImageValue> => {
+    const v = isBinding(value) && '$prop' in value && o.kind === 'component' ? state.components[o.id]?.properties[value.$prop]?.default : value;
+    return (v && typeof v === 'object' && !isBinding(v) ? v : {}) as Partial<ImageValue>;
+  };
   /** What an image edit changed: the picture, its alt text, or whether it is decorative. */
-  const imageParts = (was: unknown, now: unknown, label = 'image'): string[] => {
-    const a = (was && typeof was === 'object' && !isBinding(was) ? was : {}) as Partial<ImageValue>;
-    const b = (now && typeof now === 'object' && !isBinding(now) ? now : {}) as Partial<ImageValue>;
+  const imageParts = (a: Partial<ImageValue>, b: Partial<ImageValue>, label = 'image'): string[] => {
     const asset = b.assetId ? (after.assets.assets[b.assetId]?.name ?? null) : null;
     const parts: string[] = [];
     if ((a.assetId ?? null) !== (b.assetId ?? null)) parts.push(asset ? `${label} (${quoted(asset)})` : label);
@@ -103,6 +109,7 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
   const tokenLabel = (id: string) => [...declaredTokens(after), ...declaredTokens(before)].find((t) => t.id === id)?.label ?? id;
   const assetName = (id: string | null | undefined) => (id ? (after.assets.assets[id]?.name ?? before.assets.assets[id]?.name ?? 'an image') : 'an image');
   const plain = (op: EditOperation, label: string, link: Draft['link'] = {}) => add(op, `plain:${label}:${JSON.stringify(link)}`, () => label, link);
+  const items = (n: number) => (n === 1 ? 'an item' : `${n} items`);
 
   ops.forEach((op, i) => {
     const res = (results[i] ?? {}) as Record<string, string | undefined>;
@@ -150,9 +157,12 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Renamed ${old} to ${quoted(op.name)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
       }
       case 'node.setStyle': {
-        const prop = STYLE_PROPS.find((p) => p.id === op.property)?.label ?? op.property;
+        const prop = inSentence(STYLE_PROPS.find((p) => p.id === op.property)?.label ?? op.property);
         const scope = op.scope && op.scope !== 'base' ? ` (${op.scope})` : '';
-        return styleEdit(op, `${inSentence(prop)}${scope}`);
+        // A part of a component ("Heading") is named, so two parts' paddings are two details.
+        const n = op.partId && op.partId !== 'root' ? nodeIn(after, op.owner, op.nodeId) : undefined;
+        const part = n?.kind === 'instance' ? after.components[n.definitionId]?.parts[op.partId!]?.label : op.partId && op.partId !== 'root' ? op.partId : undefined;
+        return styleEdit(op, `${part ? `${inSentence(part)} ` : ''}${prop}${scope}`);
       }
       case 'node.resetStyles':
         return styleEdit(op, 'styles (reset)');
@@ -166,8 +176,9 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         if (op.field !== 'image') return contentEdit(op, CONTENT_FIELDS[op.field] ?? op.field);
         const was = nodeIn(before, op.owner, op.nodeId);
         const now = nodeIn(after, op.owner, op.nodeId);
-        const value = now?.kind === 'image' && !isBinding(now.image) ? now.image : op.value;
-        return imageParts(was?.kind === 'image' ? was.image : undefined, value).forEach((p) => contentEdit(op, p));
+        const wasShown = was?.kind === 'image' ? shownImage(before, op.owner, was.image) : {};
+        const nowShown = now?.kind === 'image' ? shownImage(after, op.owner, now.image) : shownImage(after, op.owner, op.value);
+        return imageParts(wasShown, nowShown).forEach((p) => contentEdit(op, p));
       }
       case 'node.setBinding': {
         const field = op.field === 'prop' ? (op.prop ?? 'property') : (CONTENT_FIELDS[op.field] ?? op.field);
@@ -184,16 +195,16 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         if (schema?.type !== 'image') return contentEdit(op, label);
         const was = nodeIn(before, op.owner, op.nodeId);
         const now = nodeIn(after, op.owner, op.nodeId);
-        const wasValue = was?.kind === 'instance' ? was.props[op.prop] : undefined;
-        const nowValue = now?.kind === 'instance' ? now.props[op.prop] : op.value;
+        const wasValue = was?.kind === 'instance' ? shownImage(before, op.owner, was.props[op.prop]) : {};
+        const nowValue = shownImage(after, op.owner, now?.kind === 'instance' ? now.props[op.prop] : op.value);
         return imageParts(wasValue, nowValue, label).forEach((p) => contentEdit(op, p));
       }
       case 'instance.listInsert':
       case 'instance.listRemove':
       case 'instance.listMove': {
         const label = inSentence(propSchema(op.owner, op.nodeId, op.prop)?.label ?? op.prop);
-        const what = op.type === 'instance.listInsert' ? `Added an item to the ${label}` : op.type === 'instance.listRemove' ? `Removed an item from the ${label}` : `Reordered the ${label}`;
-        return plain(op, `${what} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
+        const what = (n: number) => (op.type === 'instance.listInsert' ? `Added ${items(n)} to the ${label}` : op.type === 'instance.listRemove' ? `Removed ${items(n)} from the ${label}` : `Reordered the ${label}`);
+        return add(op, `${op.type}:${ownerKey(op.owner)}:${op.nodeId}:${op.prop}`, (_d, n) => `${what(n)} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
       }
       case 'token.set':
         return plain(op, `${op.value === null ? 'Reset' : 'Changed'} the site style ${quoted(tokenLabel(op.tokenId))}`);
@@ -270,7 +281,7 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       case 'theme.refresh':
         return plain(op, 'Updated components to the latest theme version');
       case 'asset.add':
-        return plain(op, `Added ${quoted(op.name ?? 'an image')} to the library`);
+        return plain(op, `Added the ${op.asset.kind === 'font' ? 'font' : 'image'} ${quoted(op.asset.name)} to the library`);
       case 'asset.update':
         return plain(op, `Changed the details of ${quoted(assetName(op.assetId))} in the library`);
       case 'asset.remove':
@@ -284,7 +295,7 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       }
     }
   });
-  return [...drafts.values()].map((d) => ({ label: d.render(d.details), ...d.link, operations: [...d.operations] }));
+  return [...drafts.values()].map((d) => ({ label: d.render(d.details, d.count), ...d.link, operations: [...d.operations] }));
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +316,7 @@ interface ImageSummary {
 interface InspectionContent {
   pageId?: string;
   viewport?: string;
-  report?: { issues?: Array<{ kind: string; message?: string }>; images?: ImageSummary };
+  report?: { issues?: Array<{ kind: string; message?: string }>; images?: ImageSummary; documentWidth?: number; viewportWidth?: number };
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
@@ -317,8 +328,11 @@ export function inspectionChecks(ok: boolean, content: unknown, onPage = ''): Ch
   if (!ok || !c.report) return [{ status: 'unverified', text: `Couldn't check the layout ${at}.` }];
   const issues = c.report.issues ?? [];
   const kinds = new Set(issues.map((i) => i.kind));
+  // The widths are measured whatever the issue list kept: a capped list cannot turn overflow into a pass.
+  const { documentWidth, viewportWidth } = c.report;
+  const wide = typeof documentWidth === 'number' && typeof viewportWidth === 'number' && documentWidth > viewportWidth + 1;
   const out: ChatCheck[] = [
-    kinds.has('horizontal-overflow') || kinds.has('element-overflow')
+    wide || kinds.has('horizontal-overflow') || kinds.has('element-overflow')
       ? { status: 'issue', text: `Content is wider than the screen ${at}.` }
       : kinds.has('text-overflow')
         ? { status: 'issue', text: `Some text overflows its box ${at}.` }
@@ -345,13 +359,13 @@ export function inspectionChecks(ok: boolean, content: unknown, onPage = ''): Ch
 export function pagesTouched(ops: EditOperation[]): Set<string> | 'all' {
   const pages = new Set<string>();
   for (const op of ops) {
-    if ('owner' in op) {
+    if (op.type === 'node.copy') {
+      // The copy lands in toOwner; the original stays as it was.
+      if (op.toOwner.kind !== 'page') return 'all';
+      pages.add(op.toOwner.id);
+    } else if ('owner' in op) {
       if (op.owner.kind !== 'page') return 'all';
       pages.add(op.owner.id);
-      if (op.type === 'node.copy') {
-        if (op.toOwner.kind !== 'page') return 'all';
-        pages.add(op.toOwner.id);
-      }
     } else if (op.type === 'page.create') {
       if (op.addToNavigation) return 'all';
     } else if (op.type === 'page.update' || op.type === 'page.remove' || op.type === 'page.setHome') pages.add(op.pageId);
@@ -378,11 +392,13 @@ export class InspectionLog {
     for (const e of this.latest.values()) if (pages === 'all' || pages.has(e.pageId)) e.stale = true;
   }
 
+  /** Each check names its page, so a check is never read as being about another page the run changed. */
   checks(state: ProjectState): ChatCheck[] {
-    const pages = new Set([...this.latest.values()].map((e) => e.pageId));
     return [...this.latest.values()].flatMap((e) => {
-      const title = state.pages[e.pageId]?.title;
-      const rows = inspectionChecks(e.ok, e.content, pages.size > 1 && title ? ` on ${title}` : '');
+      const page = Object.hasOwn(state.pages, e.pageId) ? state.pages[e.pageId] : undefined;
+      // A page the run removed after checking it has nothing left to report on; an unknown page has no title.
+      if (!page && !e.pageId.startsWith('?')) return [];
+      const rows = inspectionChecks(e.ok, e.content, page ? ` on ${page.title}` : '');
       return e.stale ? rows.map((r): ChatCheck => ({ status: 'unverified', text: `${r.text.replace(/\.$/, '')}, before later changes.` })) : rows;
     });
   }
