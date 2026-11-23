@@ -42,6 +42,7 @@ describe('the question the composer answers', () => {
 
   it('never sends the message that comes back with an Enter pressed right after a typed answer', () => {
     expect(composerAction({ text: 'Now the footer', waiting: false, running: false, sinceAnswerMs: 200 })).toBe('none');
+    expect(composerAction({ text: 'Now the footer', waiting: false, running: false, sinceAnswerMs: 900 })).toBe('none');
     expect(composerAction({ text: 'Now the footer', waiting: false, running: false, sinceAnswerMs: 1500 })).toBe('send');
     // A second answer is never held back.
     expect(composerAction({ text: 'Calm', waiting: true, running: true, sinceAnswerMs: 200 })).toBe('answer');

@@ -445,14 +445,15 @@ describe('clarification questions', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
       messages: [
         { id: 'm_u', role: 'user', text: 'Ask me', time: '2026-01-01T00:00:00.000Z' },
-        { id: 'm_a', role: 'assistant', text: 'Done.', time: '2026-01-01T00:00:01.000Z', questions: [{ text: 'No choices stored?', answered: 'Fine' }, { text: '', choices: [], answered: 'Blank' }, null] }
+        { id: 'm_a', role: 'assistant', text: 'Done.', time: '2026-01-01T00:00:01.000Z', questions: [{ text: 'No choices stored?', answered: 'Fine' }, { text: '', choices: [], answered: 'Blank' }, null, { text: 'Long?', choices: ['A', 7, null], answered: 'x'.repeat(5000) }] }
       ]
     };
     writeFileSync(join(dir, 'c_broken1.json'), JSON.stringify(broken));
     await env.orch.openConversation('c_broken1');
     const { result } = await env.run('Carry on');
     expect(result?.status).toBe('no-changes');
-    expect(env.adapter.requests[0].items.slice(0, -1).map((i) => (i.kind === 'tool_result' ? '' : i.text))).toEqual(['Ask me', 'No choices stored?', 'Fine', 'Done.']);
+    // A very long answer is replayed in part.
+    expect(env.adapter.requests[0].items.slice(0, -1).map((i) => (i.kind === 'tool_result' ? '' : i.text))).toEqual(['Ask me', 'No choices stored?', 'Fine', 'Long?\nChoices: A', `${'x'.repeat(4000)}…`, 'Done.']);
     // The run released the project: another request starts normally.
     expect((await env.run('And again')).result?.status).toBe('no-changes');
   });

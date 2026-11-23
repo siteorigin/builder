@@ -199,8 +199,10 @@ export function Chat() {
     if (typed) answeredAt.current = Date.now();
     const ok = await api.ai.answer(q.runId, q.question.id, text.trim()).catch(() => false);
     if (!ok) {
-      if (answering.current === key) answering.current = null;
-      answeredAt.current = 0;
+      if (answering.current === key) {
+        answering.current = null;
+        answeredAt.current = 0;
+      }
       // Refused while the same question still waits (the app could not deliver it): say so, and keep the text.
       const s = getState();
       if (waitingQuestion(s.conversation, s.activeRunId, s.runStatus)?.question.id === q.question.id) toast('Your answer could not be sent. Try again.', 'error');
@@ -473,7 +475,11 @@ export function Chat() {
             readOnly={!conversation}
             onChange={(e) => {
               if (asking && askingKey) setAnswerBox({ key: askingKey, text: e.target.value });
-              else setChatDraft(conversation?.id, e.target.value);
+              else {
+                // Editing the message that came back makes its next Enter a deliberate send.
+                answeredAt.current = 0;
+                setChatDraft(conversation?.id, e.target.value);
+              }
               sizeToFit(e.target);
             }}
             onKeyDown={(e) => {
@@ -508,7 +514,9 @@ export function Chat() {
                 disabled={!answerText.trim()}
                 title="Send answer"
                 aria-label="Send answer"
-                onClick={() => {
+                onClick={(e) => {
+                  // The second click of a double click would land on Send once the question is answered.
+                  if (e.detail > 1) return;
                   void answer(asking, answerText, true);
                   focusComposer();
                 }}
@@ -516,7 +524,7 @@ export function Chat() {
                 <ArrowUp />
               </button>
             ) : (
-              <button className="send-btn" disabled={running || !draft.trim() || sending} title={running ? 'You can send once this request finishes' : 'Send'} aria-label={running ? 'Send (available when the current request finishes)' : 'Send'} onClick={() => void send()}>
+              <button className="send-btn" disabled={running || !draft.trim() || sending} title={running ? 'You can send once this request finishes' : 'Send'} aria-label={running ? 'Send (available when the current request finishes)' : 'Send'} onClick={(e) => e.detail <= 1 && void send()}>
                 <ArrowUp />
               </button>
             )}
