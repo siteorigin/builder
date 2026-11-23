@@ -1,3 +1,4 @@
+import { isImeComposing } from '../lib/ime';
 import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type ReactElement, type ReactNode } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
@@ -73,6 +74,7 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
     const el = ref.current;
     if (!el || openDialogs[openDialogs.length - 1] !== el || e.defaultPrevented) return;
     if (e.key === 'Escape') {
+      if (isImeComposing(e)) return;
       e.preventDefault();
       e.stopPropagation();
       closeRef.current();
@@ -607,13 +609,14 @@ export function DraftInput({
       onLive?.(e.target.value);
     },
     onKeyDown: (e: React.KeyboardEvent) => {
+      if (isImeComposing(e)) return;
       if (e.key === 'Escape') {
         // Revert: blur must not commit the abandoned draft.
         cancelled.current = true;
         setDraft(value);
         (e.target as HTMLElement).blur();
       }
-      if (e.key === 'Enter' && !e.nativeEvent.isComposing && (!multiline || e.metaKey || e.ctrlKey)) {
+      if (e.key === 'Enter' && (!multiline || e.metaKey || e.ctrlKey)) {
         // Blur is the single commit path, so one Enter makes one edit.
         e.preventDefault();
         (e.target as HTMLElement).blur();

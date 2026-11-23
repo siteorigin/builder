@@ -4,6 +4,7 @@ import { slugify, validateRoute } from '@shared/routes';
 import type { ProjectState } from '@shared/types';
 import { applyOps, markDraft, setState, toast, useStore } from '../store';
 import { openSection, rovingKeys, useMenu } from '../components/ui';
+import { isImeComposing } from '../lib/ime';
 import { selectPage } from '../lib/actions';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
 
@@ -368,7 +369,7 @@ export function PagesPanel() {
               onFocus={(e) => e.currentTarget.select()}
               onBlur={(e) => endRename(renaming, e.target.value)}
               onKeyDown={(e) => {
-                if (e.nativeEvent.isComposing) return;
+                if (isImeComposing(e)) return;
                 if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
                 if (e.key === 'Escape') (e.stopPropagation(), endRename(renaming));
               }}
@@ -383,7 +384,7 @@ export function PagesPanel() {
             role="group"
             aria-label="New page"
             onKeyDown={(e) => {
-              if (e.key === 'Escape') (e.stopPropagation(), cancelAdd());
+              if (e.key === 'Escape' && !isImeComposing(e)) (e.stopPropagation(), cancelAdd());
             }}
             // Leaving the form never creates a page by itself: an empty form just goes away, a titled one
             // waits for Add page or Cancel.
@@ -403,7 +404,7 @@ export function PagesPanel() {
               readOnly={creating}
               onChange={(e) => setTitle(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) void add();
+                if (e.key === 'Enter' && !isImeComposing(e)) void add();
               }}
             />
             <div className="pages-add-route" id="pages-add-route">
