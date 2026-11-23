@@ -1294,8 +1294,10 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
   const iconType = favicon ? favicon.mime : 'image/svg+xml';
   const fontImports = usedFontPackages(state, effectiveTokens(state).map((t) => t.value)).map((f) => `\timport '${f}';`).join('\n');
+  // Until the bridge is running, no form on the page can be sent: the editor never sends a message from the site on
+  // the author's behalf (issue #193). The hold is in place before any form's own code, and the bridge removes it.
   const devBridge = opts.instrument
-    ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tonMount(() => {\n\t\timport('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => window.dispatchEvent(new CustomEvent('siteorigin:navigated')));`
+    ? `\n\timport { onMount } from 'svelte';\n\timport { afterNavigate } from '$app/navigation';\n\tif (typeof window !== 'undefined' && !window.__siteoriginBridge && !window.__siteoriginHold) {\n\t\twindow.__siteoriginHold = (e) => (e.preventDefault(), e.stopImmediatePropagation());\n\t\tdocument.addEventListener('submit', window.__siteoriginHold, true);\n\t}\n\tonMount(() => {\n\t\timport('virtual:siteorigin-bridge');\n\t});\n\tafterNavigate(() => window.dispatchEvent(new CustomEvent('siteorigin:navigated')));`
     : '';
   return (
     HEADER_NOTE('siteorigin/site.json') +

@@ -323,6 +323,78 @@ assert.equal(await setting('Web3Forms access key').inputValue(), 'e2e-test-key',
 assert.deepEqual(await formState(), { provider: 'web3forms', endpoint: 'https://formspree.io/f/e2etest', accessKey: 'e2e-test-key', formName: 'enquiries', warning: '' }, 'the project keeps every service’s setting');
 await eventually(async () => assert.equal(await frame.locator('form.so-form__form input[name="access_key"]').inputValue(), 'e2e-test-key', 'the preview form sends that key to Web3Forms'));
 
+step('a contact form practises its sends in Preview, and sends one real message only when the author confirms a live test (issue #193)');
+// The service is answered here and counted. A .test address never resolves, so nothing could reach a real service.
+const ENDPOINT = 'https://forms.e2e.test/f/rehearsal';
+const delivered = [];
+const deliver = async (route) => {
+  delivered.push({ method: route.request().method(), url: route.request().url(), body: route.request().postData() ?? '' });
+  await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'access-control-allow-origin': '*' }, body: '{"ok":true}' });
+};
+await app.context().route('https://forms.e2e.test/**', deliver);
+await service.selectOption('endpoint');
+await setting('Form endpoint URL').fill(ENDPOINT);
+await setting('Form endpoint URL').press('Enter');
+const contact = frame.locator('form.so-form__form');
+await eventually(async () => assert.equal(await contact.getAttribute('action'), ENDPOINT, 'the preview form posts to the endpoint'));
+const answer = async () => {
+  await contact.getByLabel('Name').fill('Ada');
+  await contact.getByLabel('Email').fill('ada@example.com');
+  await contact.getByLabel('Message').fill('A rehearsal enquiry');
+};
+const formStatus = () => frame.locator('.so-form__status[role="status"]').innerText();
+const formAlert = () => frame.locator('.so-form__status[role="alert"]').innerText();
+const practicePanel = win.locator('.form-practice');
+const practiceNote = () => practicePanel.locator('[role="status"]').innerText();
+
+await answer();
+await contact.getByRole('button', { name: 'Send message' }).press('Enter');
+await contact.getByLabel('Email').press('Enter');
+await win.waitForTimeout(600);
+assert.equal(delivered.length, 0, 'Edit sends nothing');
+assert.equal(await formStatus(), '', 'Edit shows no sent message');
+
+await win.locator('button[title^="Preview:"]').click();
+await eventually(async () => {
+  const text = await practicePanel.innerText();
+  assert.ok(text.includes('Form sends are simulated in Preview. Nothing is sent unless you test live delivery.'), `Preview says before any send that sends are simulated: ${text}`);
+  assert.ok(text.includes('sends to forms.e2e.test/f/rehearsal'), `and where the form sends once published: ${text}`);
+});
+await answer();
+await contact.getByLabel('Email').press('Enter');
+await eventually(async () => assert.equal(await practiceNote(), 'Practice send: the form showed its sent message. Nothing was sent.', 'Preview explains the practice send'));
+assert.equal(await formStatus(), 'Thank you. Your message has been sent.', 'the form shows its own sent message');
+assert.equal(delivered.length, 0, 'a practice send in Preview sends nothing');
+
+await practicePanel.getByRole('button', { name: 'Error', exact: true }).click();
+await answer();
+await contact.getByLabel('Email').press('Enter');
+await eventually(async () => assert.equal(await practiceNote(), 'Practice send: the form showed its error message. Nothing was sent.', 'Preview explains the failed practice send'));
+assert.equal(await formAlert(), 'Sorry, your message could not be sent. Please try again or contact us directly.', 'the form shows its own error message');
+assert.equal(await contact.getByLabel('Message').inputValue(), 'A rehearsal enquiry', 'a failed send keeps the answers');
+assert.equal(delivered.length, 0, 'a failed practice send sends nothing');
+
+await practicePanel.getByRole('button', { name: /Test live delivery/ }).click();
+await eventually(async () => {
+  const text = await practicePanel.innerText();
+  assert.ok(text.includes('Send one real test message?') && text.includes('go to forms.e2e.test/f/rehearsal'), `the live test names where it sends before it sends: ${text}`);
+});
+assert.equal(delivered.length, 0, 'opening the live test sends nothing');
+await practicePanel.getByRole('button', { name: 'Send one real test message' }).click();
+await eventually(() => assert.equal(delivered.length, 1, 'the confirmed live test sends one message'));
+assert.equal(delivered[0].method, 'POST');
+assert.equal(delivered[0].url, ENDPOINT, 'the live test goes to the address the author confirmed');
+assert.ok(delivered[0].body.includes('A rehearsal enquiry'), 'the live test sends the answers in the form');
+await eventually(async () => assert.equal(await practiceNote(), 'Live test sent to forms.e2e.test/f/rehearsal. The service answered with status 200. Check the service to see the message arrived.', 'Preview reports what the service answered'));
+
+await practicePanel.getByRole('button', { name: 'Success', exact: true }).click();
+await answer();
+await contact.getByLabel('Email').press('Enter');
+await eventually(async () => assert.equal(await practiceNote(), 'Practice send: the form showed its sent message. Nothing was sent.', 'the next send is a practice again'));
+assert.equal(delivered.length, 1, 'only the confirmed live test was sent');
+await win.locator('button[title^="Edit:"]').click();
+await app.context().unroute('https://forms.e2e.test/**', deliver);
+
 step('repeatable lists: capacity, and focus after a move to either end');
 if (!(await win.locator('[role="tree"]').first().isVisible())) await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();

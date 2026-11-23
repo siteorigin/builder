@@ -20,6 +20,8 @@ import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { runPhase } from '../lib/savestate';
+import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
+import { FormPractice } from './FormPractice';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -56,6 +58,20 @@ export function Canvas() {
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [session, setSession] = useState(() => newSessionId());
   const [ready, setReady] = useState(false);
+  /** Forms in Preview (issue #193): the page's forms, the reply practice sends get, the last send, the live test on its way. */
+  const [forms, setForms] = useState<PreviewForm[]>([]);
+  const [practice, setPractice] = useState<PracticeResult>('success');
+  const [lastSend, setLastSend] = useState<FormSend | null>(null);
+  const [liveRequest, setLiveRequestState] = useState<string | null>(null);
+  /** The live test the editor is waiting on, read by message handlers that may run before React re-renders. */
+  const liveRequestRef = useRef<string | null>(null);
+  const setLiveRequest = (id: string | null) => {
+    liveRequestRef.current = id;
+    setLiveRequestState(id);
+  };
+  /** Changes with each page shown, so a live-test confirmation never outlives the page it was opened on. */
+  const [formsView, setFormsView] = useState(0);
+  const [practiceH, setPracticeH] = useState(0);
   // The page's own error is shared through the store, so the status bar and Project health tell the same story.
   const frameError = useStore((s) => s.previewIssue);
   const setFrameError = (m: string | null) => setState({ previewIssue: m });
@@ -112,8 +128,13 @@ export function Canvas() {
   }, []);
 
   const zoom = zoomSetting === 'fit' ? Math.min(1, (size.w - 56) / viewport) : zoomSetting;
+  // Forms in Preview: the panel sits above the other bottom bars (the preview pill, the AI run and a page problem).
+  const formsShown = mode === 'preview' && forms.length > 0;
+  const practiceBottom = 18 + 46 + (runStatus ? 46 : 0) + (frameError && runtime.state === 'ready' ? 46 : 0);
+  // The page ends above the panel, so it never covers what it describes (a form's Send button at the foot of a page).
+  const practiceRoom = formsShown && practiceH ? Math.max(0, practiceBottom + practiceH + 8 - 28) : 0;
   // The frame's whole footprint (20px top padding + 14px label margin + 28px bottom padding) fits at Fit, so the pasteboard never needs its own scrollbar.
-  const frameH = Math.max(300, (size.h - 70) / zoom);
+  const frameH = Math.max(300, (size.h - 70 - practiceRoom) / zoom);
 
   const post = (type: string, payload: unknown = {}) => postToFrame(frameRef.current, origin, session, type, payload);
   // Saving or leaving the project asks the preview to hand back an inline edit that is still open.
@@ -161,6 +182,12 @@ export function Canvas() {
           frameTextFocus.active = false;
           endInlineEdit();
           post('mode', { mode: getState().mode });
+          // A new page load knows nothing of the last one's forms or sends.
+          setForms([]);
+          setLastSend(null);
+          setLiveRequest(null);
+          setFormsView((v) => v + 1);
+          post('formPractice', { result: practice });
           syncTrack();
           // A new page starts with nothing revealed.
           sentReveal.current = null;
@@ -184,6 +211,10 @@ export function Canvas() {
           syncPage(path);
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
+          // What the panel said about the last page's sends is not about this one, and nor is a live test's answer.
+          setLastSend(null);
+          setLiveRequest(null);
+          setFormsView((v) => v + 1);
           // A selection made with the page change (a usage list showing a placement on another page) asked to be
           // scrolled to before this page was there: now it is.
           if (getState().mode !== 'preview') {
@@ -323,6 +354,17 @@ export function Canvas() {
         case 'revisionApplied':
           setFrameError(null);
           break;
+        case 'forms':
+          setForms(formsOf(p.forms));
+          break;
+        case 'formResult': {
+          const send = formSendOf(p);
+          // A live test's reports count only for the test the editor asked for.
+          if (!send || (send.kind === 'live' && send.requestId !== liveRequestRef.current)) break;
+          if (send.kind === 'live' && sendSettled(send)) setLiveRequest(null);
+          setLastSend(send);
+          break;
+        }
         case 'measured': {
           const w = measureWaiters.current.get(String(p.requestId));
           if (w) {
@@ -430,6 +472,24 @@ export function Canvas() {
   useEffect(() => {
     if (ready) post('mode', { mode });
   }, [mode, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Each visit to Preview starts practising successful sends, with nothing said about earlier ones.
+  useEffect(() => {
+    setLastSend(null);
+    setLiveRequest(null);
+    setFormsView((v) => v + 1);
+    if (mode === 'preview') setPractice('success');
+  }, [mode]);
+  useEffect(() => {
+    if (ready) post('formPractice', { result: practice });
+  }, [practice, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  const liveTest = (form: PreviewForm) => {
+    const requestId = `live-${Date.now()}`;
+    setLiveRequest(requestId);
+    setLastSend(null);
+    // The address the author was shown: the page refuses the test if the form would now send anywhere else.
+    post('formLiveTest', { id: form.id, target: form.destination, requestId });
+  };
 
   // Navigate when the current page changes.
   useEffect(() => {
@@ -705,6 +765,19 @@ export function Canvas() {
             <Pencil size={13} /> Back to editing
           </button>
         </div>
+      )}
+      {formsShown && (
+        <FormPractice
+          key={formsView}
+          forms={forms}
+          practice={practice}
+          onPractice={setPractice}
+          last={lastSend}
+          liveBusy={!!liveRequest}
+          onLiveTest={liveTest}
+          bottom={practiceBottom}
+          onHeight={setPracticeH}
+        />
       )}
       {runStatus && (
         <div className="ai-veil" role="status" style={{ bottom: mode === 'preview' ? 64 : 18 }}>
