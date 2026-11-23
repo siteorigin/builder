@@ -1,12 +1,13 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown } from 'lucide-react';
-import type { OwnerRef, ProjectState } from '@shared/types';
-import { childLists } from '@engine/tree';
+import { icons, Search, Code, CornerDownRight, Check, Plus, SearchX, X, ArrowDown, Ellipsis, Pencil, Trash2, FileText, PanelTop, PanelBottom, Component } from 'lucide-react';
+import type { ComponentDefinition, OwnerRef, ProjectState } from '@shared/types';
+import { childLists, placementCounts, placesOf } from '@engine/tree';
+import { dependentsOf } from '@engine/definitions';
 import { catalogueEntries, CATEGORY_LABELS } from '@catalogue/index';
-import { getState, setState, useStore } from '../store';
-import { insert, insertionPoint, type Primitive } from '../lib/actions';
+import { commitOps, getState, setState, toast, undoAction, useStore } from '../store';
+import { insert, insertionPoint, selectPage, type Primitive } from '../lib/actions';
 import { ownerLabel, refLabel, treeFor } from '../lib/model';
-import { gridKeys, useGridTabStops } from '../components/ui';
+import { gridKeys, useGridTabStops, useMenu, type MenuItem } from '../components/ui';
 
 export function LucideIcon({ name, size = 15 }: { name?: string; size?: number }) {
   const key = (name ?? 'box')
@@ -175,6 +176,8 @@ interface Item {
   spec: { componentId?: string; definitionId?: string; primitive?: Primitive };
   icon?: string;
   code?: boolean;
+  /** Project components: how many times it is placed. */
+  uses?: number;
 }
 /** Where an insert lands, in words: "after" + "Split hero". */
 type Where = { lead: string; target: string } | null;
@@ -238,24 +241,44 @@ function ItemIcon({ it }: { it: Item }) {
   );
 }
 
-/** Tiles in a two-column APG grid: one tab stop, arrow keys between tiles, Enter or Space to add. */
-function TileGrid({ items, labelledBy, className = '', cols = 2, render, extra }: { items: Item[]; labelledBy: string; className?: string; cols?: 1 | 2; render: (it: Item) => ReactNode; extra?: ReactNode }) {
-  const cells: ReactNode[] = items.map((it) => (
-    <div role="gridcell" className="insert-cell" key={it.key}>
-      {render(it)}
+/**
+ * Show a component's placement on a page or in the shared header or footer, as the project is now: a menu opened
+ * earlier may name a page or placement that has gone since. The shared areas are shown on the current page, or the
+ * first page that shows them.
+ */
+function showPlacement(definitionId: string, owner: OwnerRef) {
+  const s = getState();
+  const st = s.snapshot?.state;
+  const place = st && placesOf(st, definitionId).find((p) => p.owner.kind === owner.kind && p.owner.id === owner.id);
+  if (!st || !place) return toast('That placement has been removed since the menu opened.', 'info');
+  const showsShell = (id: string | null | undefined) => !!id && Object.hasOwn(st.pages, id) && st.pages[id].shell !== 'none';
+  const current = s.definitionMode?.returnPageId ?? s.pageId;
+  const pageId = owner.kind === 'page' ? owner.id : showsShell(current) ? current : st.site.pageOrder.find(showsShell);
+  if (!pageId) return toast('No page shows the shared header and footer, so this placement is not visible anywhere.', 'info');
+  selectPage(pageId);
+  setState({ selection: { owner, instancePath: [], nodeId: place.nodeIds[0] }, rightTab: 'inspect', dockOpen: true });
+}
+
+/** How often a component is placed, in the Inspector's words: "once", "3 times". */
+const usedTimes = (n: number) => (n === 1 ? 'once' : `${n} times`);
+
+/**
+ * Tiles in a two-column APG grid: one tab stop, arrow keys between tiles, Enter or Space to add. With `aside`, each
+ * tile is followed in its row by a cell of its own (the library's manage button), reached with the arrow keys.
+ */
+function TileGrid({ items, labelledBy, className = '', cols = 2, render, aside, extra }: { items: Item[]; labelledBy: string; className?: string; cols?: 1 | 2; render: (it: Item) => ReactNode; aside?: (it: Item) => ReactNode; extra?: ReactNode }) {
+  const cell = (key: string, content: ReactNode) => (
+    <div role="gridcell" className="insert-cell" key={key}>
+      {content}
     </div>
-  ));
-  if (extra)
-    cells.push(
-      <div role="gridcell" className="insert-cell" key="extra">
-        {extra}
-      </div>
-    );
+  );
+  const units: ReactNode[][] = items.map((it) => [cell(it.key, render(it)), ...(aside ? [cell(`${it.key}:aside`, aside(it))] : [])]);
+  if (extra) units.push([cell('extra', extra)]);
   const rows: ReactNode[] = [];
-  for (let i = 0; i < cells.length; i += cols)
+  for (let i = 0; i < units.length; i += cols)
     rows.push(
       <div role="row" className="insert-row" key={i}>
-        {cells.slice(i, i + cols)}
+        {units.slice(i, i + cols).flat()}
       </div>
     );
   return (
@@ -288,8 +311,25 @@ export function InsertPanel() {
   const searchRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const id = useId();
+  const menu = useMenu();
   useGridTabStops(bodyRef);
+  const revision = snap?.revision;
+  // The component whose manage menu is open. Once it has gone (the AI, an Undo) its menu closes; anything else the
+  // menu offers is checked again when it is chosen.
+  const menuFor = useRef<string | null>(null);
+  // The component deleted from its menu, until it has gone. Its row goes with it, and focus stays in the library
+  // (else search) rather than falling to the page, where the next Delete would remove the canvas selection.
+  const refocus = useRef<string | null>(null);
+  useEffect(() => {
+    if (menuFor.current && snap && !Object.hasOwn(snap.state.components, menuFor.current)) menu.close();
+    if (!refocus.current || !snap || Object.hasOwn(snap.state.components, refocus.current)) return;
+    refocus.current = null;
+    const a = document.activeElement;
+    if (a && a !== document.body && a.isConnected) return;
+    (bodyRef.current?.querySelector<HTMLElement>('.insert-group[data-kind="component"] [role="gridcell"] > [tabindex="0"]') ?? searchRef.current)?.focus({ preventScroll: true });
+  }, [revision]);
   const entries = useMemo(() => (snap ? catalogueEntries(snap.state.site.themeId) : []), [snap?.state.site.themeId]);
+  const uses = useMemo(() => (snap ? placementCounts(snap.state) : {}), [snap?.state]);
   // Opening the panel puts the cursor in search, so typing a name finds it straight away.
   useEffect(() => {
     if (open) searchRef.current?.focus({ preventScroll: true });
@@ -342,7 +382,7 @@ export function InsertPanel() {
   // Code components show only in Developer mode, as its setting promises.
   const mine: Item[] = Object.values(st.components)
     .filter((d) => d.owner === 'project' && d.category !== 'shell' && (dev || d.kind !== 'code'))
-    .map((d) => ({ key: `c:${d.id}`, kind: 'component', name: d.name, description: d.description ?? '', hay: `${d.name} ${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.toLowerCase(), group: 'Your components', spec: { definitionId: d.id }, code: d.kind === 'code' }));
+    .map((d) => ({ key: `c:${d.id}`, kind: 'component', name: d.name, description: d.description ?? '', hay: `${d.name} ${d.description ?? ''} ${d.kind === 'code' ? 'code ' : ''}component`.toLowerCase(), group: 'Your components', spec: { definitionId: d.id }, code: d.kind === 'code', uses: uses[d.id] ?? 0 }));
 
   // Search: every word must match; exact names first, then names that start with the query, then names
   // that contain every word, then description and tag matches. Ties keep the panel's own order.
@@ -463,6 +503,43 @@ export function InsertPanel() {
       <Plus />
     </span>
   );
+  // The library's own menu: rename, where each copy is placed (choosing one shows it), and delete once unused.
+  const manageItems = (def: ComponentDefinition): MenuItem[] => {
+    const places = placesOf(st, def.id);
+    const needs = dependentsOf(st, def.id);
+    const count = places.reduce((n, p) => n + p.nodeIds.length, 0);
+    // Pages that share a title are told apart by their address.
+    const titles = places.filter((p) => p.owner.kind === 'page').map((p) => p.label);
+    const pageLabel = (p: (typeof places)[number]) => (titles.indexOf(p.label) !== titles.lastIndexOf(p.label) ? `${p.label} (${st.pages[p.owner.id]?.route ?? ''})` : p.label);
+    const placeItem = (p: (typeof places)[number]): MenuItem => {
+      const n = p.nodeIds.length > 1 ? `${p.nodeIds.length} times` : undefined;
+      if (p.owner.kind === 'page') return { label: pageLabel(p), icon: <FileText />, hint: n, onSelect: () => showPlacement(def.id, p.owner) };
+      if (p.owner.kind === 'shell') return { label: `Shared ${p.label.toLowerCase()}`, icon: p.owner.id === 'footer' ? <PanelBottom /> : <PanelTop />, hint: n, onSelect: () => showPlacement(def.id, p.owner) };
+      // Inside another component's design: it is shown wherever that component is.
+      return { label: `In ${p.label}`, icon: <Component />, hint: n ?? 'Design', disabled: true };
+    };
+    return [
+      { label: 'Rename…', icon: <Pencil />, onSelect: () => setState({ modal: { kind: 'rename-component', definitionId: def.id } }) },
+      { separator: true },
+      { heading: count ? `Used ${usedTimes(count)}` : needs.length ? 'Not placed anywhere' : 'Not used anywhere' },
+      ...places.map(placeItem),
+      ...needs.map((d): MenuItem => ({ label: `Needed by ${d.name}`, icon: <Code />, hint: 'Code', disabled: true })),
+      { separator: true },
+      { label: 'Delete component', icon: <Trash2 />, danger: true, disabled: count > 0 || needs.length > 0, hint: count || needs.length ? 'In use' : undefined, onSelect: () => void removeDefinition(def) }
+    ];
+  };
+  const removeDefinition = async (def: ComponentDefinition) => {
+    refocus.current = def.id;
+    const r = await commitOps([{ type: 'component.remove', definitionId: def.id }], `Delete component ${def.name}`);
+    if (!r) refocus.current = null;
+    if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+    toast(`Deleted ${def.name}`, 'info', undoAction(r));
+  };
+  const manage = (it: Item) => {
+    const def = st.components[it.spec.definitionId!];
+    menuFor.current = def?.id ?? null;
+    return def ? manageItems(def) : [];
+  };
 
   const groups = new Map<string, Item[]>();
   for (const it of sections) groups.set(it.group, [...(groups.get(it.group) ?? []), it]);
@@ -488,16 +565,31 @@ export function InsertPanel() {
         <TileGrid
           items={allMine ? mine : mine.slice(0, MINE_SHOWN)}
           labelledBy={`${id}-yours`}
-          className="compact list"
+          className="compact list managed"
           cols={1}
           extra={newCode || undefined}
           render={(it) => (
-            <button className="insert-tile project" title={it.description ? `${it.name}: ${it.description}` : it.name} {...tileProps(it)}>
+            <button
+              className="insert-tile project"
+              title={it.description ? `${it.name}: ${it.description}` : it.name}
+              {...tileProps(it)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                menu.open(e.clientX, e.clientY, manage(it), `Manage ${it.name}`, e.currentTarget);
+              }}
+            >
               <ItemIcon it={it} />
               <span className="txt">
                 <strong>{it.name}</strong>
-                <small>{it.code ? 'Code component' : 'Component'}</small>
+                <small>
+                  {it.code ? 'Code component' : 'Component'} · {it.uses ? `Used ${usedTimes(it.uses)}` : 'Not used'}
+                </small>
               </span>
+            </button>
+          )}
+          aside={(it) => (
+            <button className="icon-btn insert-manage" aria-haspopup="menu" aria-label={`Manage ${it.name}`} title="Rename, see where it is used, or delete" onClick={(e) => menu.openAt(e.currentTarget, manage(it), `Manage ${it.name}`)}>
+              <Ellipsis />
             </button>
           )}
         />
@@ -513,6 +605,7 @@ export function InsertPanel() {
 
   return (
     <div className="insert-panel" onKeyDown={onPanelKey}>
+      {menu.node}
       <div className="panel-head">
         <h3>Insert</h3>
         {!query && (

@@ -10,6 +10,7 @@ import { forgetCopy, handleShortcut, projectHistory } from './Editor';
 import { frameTextFocus, inlineEdit } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, menuHistoryOwner, type HistoryContext } from './lib/history';
 import { endEditingHold, prepareToLeave, projectClosed } from './lib/leave';
+import { keepPagesValid } from './lib/model';
 
 /** What Undo and Redo, and keys forwarded from the preview frame, act on right now. */
 function historyContext(): HistoryContext {
@@ -37,9 +38,8 @@ export function App() {
         // that is closing names no opening, and is not one.
         if (s.screen !== 'editor' || (snap.workspaceKey && snap.workspaceKey !== s.snapshot?.workspaceKey)) openSnapshot(snap);
         else {
-          // Keep the current page valid.
-          const pageId = s.pageId && snap.state.pages[s.pageId] ? s.pageId : snap.state.site.homePageId;
-          setState({ snapshot: snap, runtime: snap.runtime, pageId });
+          // Keep the current page, and the one editing everywhere returns to, valid.
+          setState({ snapshot: snap, runtime: snap.runtime, ...keepPagesValid(snap.state, s.pageId, s.definitionMode) });
         }
       }),
       api.on('project:closed', () => {

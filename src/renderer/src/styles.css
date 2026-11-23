@@ -1227,6 +1227,12 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .insert-grid.compact .insert-tile { flex-direction: row; align-items: center; gap: 8px; min-height: 40px; padding: 6px 8px; }
 .insert-grid.compact .insert-tile strong { padding: 0; flex: 1; min-width: 0; }
 .insert-grid.list { grid-template-columns: 1fr; }
+/* The library: each component's tile, then its manage button in the same row. */
+/* The button takes the row's full height, so it lines up with its tile for the grid's Home, End and arrow keys. */
+.insert-grid.managed { grid-template-columns: minmax(0, 1fr) auto; column-gap: 2px; }
+.insert-grid.managed .insert-tile.new { grid-column: 1 / -1; }
+.insert-manage { width: 28px; height: auto; color: var(--text-3); }
+.insert-manage:is(:hover, :focus-visible, [aria-expanded='true']) { color: var(--text); }
 .insert-tile.project .txt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .insert-tile.project strong { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .insert-tile.project small { font-size: 11px; color: var(--text-3); }

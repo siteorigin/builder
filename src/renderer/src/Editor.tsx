@@ -17,7 +17,7 @@ import { SettingsModal } from './panels/SettingsModal';
 import { ExportModal } from './panels/ExportModal';
 import { CommandMenu } from './panels/CommandMenu';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
-import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, SetHomeModal } from './panels/Dialogs';
+import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, RenameComponentModal, SetHomeModal } from './panels/Dialogs';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
 import { refLabel } from './lib/model';
@@ -492,6 +492,8 @@ export function Editor() {
       {modal?.kind === 'page-source' && <PageSourceModal pageId={modal.pageId} />}
       {modal?.kind === 'new-code' && <NewCodeComponentModal />}
       {modal?.kind === 'create-component' && <CreateComponentModal target={modal.ref} />}
+      {modal?.kind === 'make-unique' && <MakeUniqueModal owner={modal.owner} nodeId={modal.nodeId} definitionId={modal.definitionId} />}
+      {modal?.kind === 'rename-component' && <RenameComponentModal definitionId={modal.definitionId} />}
       {modal?.kind === 'delete-page' && <DeletePageModal pageId={modal.pageId} />}
       {modal?.kind === 'set-home' && <SetHomeModal pageId={modal.pageId} />}
       {modal?.kind === 'edit-definition' && <EditDefinitionModal target={modal.ref} />}

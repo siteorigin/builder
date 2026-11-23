@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { AiEvent, AppSettings, ChatMessage, Conversation, LocalWorkspaceState, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditOperation } from '@shared/ops';
-import type { ElementRef, ResponsiveScope } from '@shared/types';
+import type { ElementRef, OwnerRef, ResponsiveScope } from '@shared/types';
 import { chatStatePatch, draftFor, withDraft, type ChatDrafts } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
@@ -11,7 +11,7 @@ export const api = window.builder;
 
 export type LeftTab = 'pages' | 'layers' | 'insert' | 'assets';
 export type RightTab = 'inspect' | 'chat' | 'styles';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'create-component'; ref: ElementRef } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' };
+export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' };
 
 export interface Rect {
   x: number;

@@ -167,6 +167,18 @@ export function refLabel(state: ProjectState, ref: ElementRef): string {
   return displayName(state, r.node, r.def);
 }
 
+/**
+ * The page shown, and the page that editing everywhere returns to, kept to pages the project still has: an Undo or
+ * the AI may remove either, and both fall back to Home.
+ */
+export function keepPagesValid(state: ProjectState, pageId: string | null, definitionMode: { definitionId: string; returnPageId: string } | null) {
+  const valid = (id: string | null | undefined): id is string => !!id && Object.hasOwn(state.pages, id);
+  return {
+    pageId: valid(pageId) ? pageId : state.site.homePageId,
+    definitionMode: definitionMode && !valid(definitionMode.returnPageId) ? { ...definitionMode, returnPageId: state.site.homePageId } : definitionMode
+  };
+}
+
 export function ownerLabel(state: ProjectState, owner: OwnerRef): string {
   if (owner.kind === 'page') return state.pages[owner.id]?.title ?? 'Page';
   if (owner.kind === 'shell') return owner.id === 'header' ? 'Header' : 'Footer';

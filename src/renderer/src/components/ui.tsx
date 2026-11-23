@@ -355,6 +355,7 @@ export function useMenu() {
   return {
     node,
     isOpen: !!menu,
+    close,
     closeIfTriggerGone,
     /** Open at a point (right-click); focus returns to `returnTo` (the row) on close. */
     open: (x: number, y: number, items: MenuItem[], label?: string, returnTo?: HTMLElement | null) => setMenu({ key: ++menuKey, x, y, items, label, returnTo }),

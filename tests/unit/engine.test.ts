@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations, planHomeChange } from '@engine/apply';
+import { uniqueCopyName } from '@engine/definitions';
 import { pageIds, shellPageLinks } from '@generator/checks';
 import { EngineError, instancesOf } from '@engine/tree';
 import { validateState } from '@engine/validate';
@@ -122,6 +123,70 @@ describe('components', () => {
     expect(node.variants?.tone).toBe('inverse');
     expect(node.overrides?.value?.tablet?.color).toBe('#ff0000');
     expect(r.state.components[node.definitionId].owner).toBe('project');
+  });
+
+  it('names repeated unnamed forks without stacking "(unique)" (#56)', () => {
+    let s = fresh();
+    const stats = firstInstance(s, 'stats.row');
+    const original = s.components[stats.definitionId].name;
+    const names: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: stats.id }]);
+      s = r.state;
+      names.push(s.components[r.results[0].definitionId as string].name);
+    }
+    for (const n of names) expect(n).not.toMatch(/\(unique\).*\(unique\)/);
+    expect(new Set([original, ...names]).size).toBe(4);
+    expect(names).toEqual([`${original} (unique)`, `${original} (unique 2)`, `${original} (unique 3)`]);
+  });
+
+  it('suggests copy names that recover stacked suffixes, avoid every installed name and fit the limit (#56)', () => {
+    const s = fresh();
+    const stats = firstInstance(s, 'stats.row');
+    const def = s.components[stats.definitionId];
+    // A project saved before the fix: its stacked name recovers on the next copy.
+    expect(uniqueCopyName(s, 'Exhibitor card (unique) (UNIQUE 2)')).toBe('Exhibitor card (unique)');
+    expect(uniqueCopyName(s, `${def.name.toUpperCase()} (unique)`)).toBe(`${def.name.toUpperCase()} (unique)`);
+    // Names compare without case or outer spaces, including theme components'.
+    s.components[stats.definitionId] = { ...def, name: `  ${def.name.toLowerCase()} (UNIQUE) ` };
+    expect(uniqueCopyName(s, def.name)).toBe(`${def.name} (unique 2)`);
+    // Ordinary numbers stay part of the name, and a name of suffixes alone still gets one.
+    expect(uniqueCopyName(s, 'Press copy 2')).toBe('Press copy 2 (unique)');
+    expect(uniqueCopyName(s, ' (unique) ')).toBe('Component (unique)');
+    // Long names keep one stem for the whole series, and a cut never exposes an old suffix or splits a character.
+    expect(uniqueCopyName(s, 'x'.repeat(70))).toBe(`${'x'.repeat(48)} (unique)`);
+    expect(uniqueCopyName(s, `${'x'.repeat(39)} (unique) extra words`)).toBe(`${'x'.repeat(39)} (unique)`);
+    const emoji = uniqueCopyName(s, `${'x'.repeat(47)}😀yyy`);
+    expect(emoji).toBe(`${'x'.repeat(47)} (unique)`);
+    expect(emoji).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
+
+  it('numbers a series of copies of a long name without starting again (#56)', () => {
+    let s = fresh();
+    const stats = firstInstance(s, 'stats.row');
+    s.components[stats.definitionId] = { ...s.components[stats.definitionId], name: 'x'.repeat(52) };
+    const names: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: stats.id }]);
+      s = r.state;
+      names.push(s.components[r.results[0].definitionId as string].name);
+    }
+    const stem = 'x'.repeat(48);
+    expect(names).toEqual([`${stem} (unique)`, `${stem} (unique 2)`, `${stem} (unique 3)`]);
+    for (const n of names) expect(n.length).toBeLessThanOrEqual(60);
+  });
+
+  it('keeps a name the author chose for a separate copy, even one another component has', () => {
+    let s = fresh();
+    const stats = firstInstance(s, 'stats.row');
+    const other = s.components[firstInstance(s, 'cta.banner').definitionId].name;
+    expect(other).not.toBe(s.components[stats.definitionId].name);
+    const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: stats.id, name: `  ${other}  ` }]);
+    s = r.state;
+    const copy = r.results[0].definitionId as string;
+    expect(copy).not.toBe(stats.definitionId);
+    expect(s.components[copy].name).toBe(other);
+    expect((home(s).nodes[stats.id] as InstanceNode).definitionId).toBe(copy);
   });
 
   it('creates a component from a subtree with generated properties (3.4)', () => {
