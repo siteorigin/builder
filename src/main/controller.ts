@@ -46,6 +46,9 @@ async function configHash(dir: string): Promise<string> {
   return sha(parts.map((p) => p ?? '').join('\n--\n'));
 }
 
+/** A failure message that says which project folder it is about. */
+const inFolder = (message: string, dir: string) => `${message} Project folder: "${dir}".`;
+
 /**
  * Read just enough of a project's manifest to name it. A missing, empty, truncated or otherwise unreadable
  * manifest comes back as a message naming the file and folder; nothing is thrown and nothing is changed.
@@ -226,18 +229,18 @@ export class Controller {
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
     dir = canonicalDir(dir);
-    // A manifest that cannot be read (a truncated copy, say) is reported before anything else, trusted or not.
-    const manifest = await readManifestSummary(dir);
-    if (!manifest.ok) return { ok: false, message: manifest.message };
-    if (!(await isTrusted(dir, await configHash(dir)))) return { ok: false, needsTrust: { dir, name: manifest.name } };
+    if (!(await isTrusted(dir, await configHash(dir)))) {
+      // The trust prompt names the project, so a manifest that cannot be read (a truncated copy, say) stops here.
+      const manifest = await readManifestSummary(dir);
+      if (!manifest.ok) return { ok: false, message: manifest.message };
+      return { ok: false, needsTrust: { dir, name: manifest.name } };
+    }
     return this.openTrusted(dir);
   }
 
   async trustAndOpen(opened: string): Promise<{ ok: boolean; message?: string }> {
     try {
       const dir = canonicalDir(opened);
-      const manifest = await readManifestSummary(dir);
-      if (!manifest.ok) return { ok: false, message: manifest.message };
       await trust(dir, await configHash(dir));
       return await this.openTrusted(dir);
     } catch (e) {
@@ -262,10 +265,10 @@ export class Controller {
             canUnlock: locked
           });
         } catch {
-          return { ok: false, message: e.message };
+          return { ok: false, message: inFolder(e.message, dir) };
         }
-      } else if (e instanceof ProjectFormatError) return { ok: false, message: e.message };
-      else return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
+      } else if (e instanceof ProjectFormatError) return { ok: false, message: inFolder(e.message, dir) };
+      else return { ok: false, message: inFolder(`Could not open the project: ${(e as Error).message}`, dir) };
     }
     // Workspace layout and recents are conveniences: a broken file or a failed save never blocks opening.
     let workspace: LocalWorkspaceState = {};

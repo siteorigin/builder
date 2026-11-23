@@ -3,7 +3,7 @@
  * and folder, leaves the folder untouched, and never rejects the call (which left the Open button disabled).
  */
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -26,6 +26,7 @@ const tmp = (p: string) => {
 };
 const fingerprint = (d: string) =>
   readdirSync(d)
+    .filter((f) => statSync(join(d, f)).isFile())
     .sort()
     .map((f) => `${f}:${createHash('sha256').update(readFileSync(join(d, f))).digest('hex')}`)
     .join('|');
@@ -70,6 +71,25 @@ describe('opening a received project', () => {
     writeFileSync(join(dir, 'siteorigin.project.json'), JSON.stringify({ name: 'Cafe' }));
     const r = await new Controller(() => null).open(dir);
     expect(r.needsTrust).toEqual({ dir, name: 'Cafe' });
+  });
+});
+
+describe('a trusted project with a truncated manifest', () => {
+  it('names the file and folder and leaves the manifest as received, so another project can be opened', async () => {
+    const dir = tmp('so-trusted-');
+    const file = join(dir, 'siteorigin.project.json');
+    writeFileSync(file, truncated);
+    const c = new Controller(() => null);
+    const t = await c.trustAndOpen(dir);
+    expect(t.ok).toBe(false);
+    expect(t.message).toContain('siteorigin.project.json');
+    expect(t.message).toContain(dir);
+    // Now trusted, the recent-project entry takes the trusted path and gets the same structured answer.
+    const r = await c.open(dir);
+    expect(r.ok).toBe(false);
+    expect(r.message).toBe(t.message);
+    expect(readFileSync(file, 'utf8')).toBe(truncated);
+    expect(c.session).toBeNull();
   });
 });
 
