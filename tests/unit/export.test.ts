@@ -3,7 +3,8 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { inflateRawSync, crc32 } from 'node:zlib';
+import { randomBytes } from 'node:crypto';
+import { deflateRawSync, inflateRawSync, crc32 } from 'node:zlib';
 import { createStarterState } from '@catalogue/starters';
 import { assetUsages } from '@engine/apply';
 import { generateProject } from '@generator/index';
@@ -40,8 +41,8 @@ const write = (root: string, rel: string, text: string) => {
   writeFileSync(join(root, rel), text);
 };
 
-/** A minimal reader: every entry's name and inflated content, checked against its CRC. */
-function readZip(buf: Buffer): Map<string, Buffer> {
+/** A minimal reader: every entry's name and inflated content, checked against its CRC. `methods` collects each entry's compression method. */
+function readZip(buf: Buffer, methods = new Map<string, number>()): Map<string, Buffer> {
   const out = new Map<string, Buffer>();
   const end = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
   const count = buf.readUInt16LE(end + 10);
@@ -58,7 +59,9 @@ function readZip(buf: Buffer): Map<string, Buffer> {
     const data = buf.subarray(offset + 30 + localNameLen, offset + 30 + localNameLen + csize);
     const body = method === 8 ? inflateRawSync(data) : Buffer.from(data);
     expect(crc32(body) >>> 0).toBe(crc);
+    expect(buf.readUInt16LE(offset + 8), `${name}: local and central headers agree on the method`).toBe(method);
     out.set(name, body);
+    methods.set(name, method);
     p += 46 + nameLen + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
   }
   return out;
@@ -101,6 +104,53 @@ describe('ZIP export', () => {
     await expect(zipDirectory(temp(), zip, '../escape')).rejects.toThrow(/folder name/);
     expect(readFileSync(zip, 'utf8')).toBe('previous export');
     expect(readdirSync(out)).toEqual(['site.zip']);
+  });
+
+  it('keeps the main process responsive while it compresses a large file', async () => {
+    const src = temp();
+    // Text that deflates, but only with real work: one synchronous pass over it holds the thread for a long time.
+    const text = Buffer.from(randomBytes(6 * 1024 * 1024).toString('base64'));
+    writeFileSync(join(src, 'data.json'), text);
+    const started = performance.now();
+    deflateRawSync(text, { level: 9 });
+    const blocking = performance.now() - started;
+    let last = performance.now();
+    let longest = 0;
+    const gap = () => {
+      const now = performance.now();
+      longest = Math.max(longest, now - last);
+      last = now;
+    };
+    const ticker = setInterval(gap, 1);
+    const zip = join(temp(), 'big.zip');
+    try {
+      await zipDirectory(src, zip);
+      gap();
+    } finally {
+      clearInterval(ticker);
+    }
+    expect(longest, `longest pause ${longest.toFixed(1)}ms; a synchronous deflate takes ${blocking.toFixed(1)}ms`).toBeLessThan(blocking / 2);
+    const methods = new Map<string, number>();
+    expect(readZip(readFileSync(zip), methods).get('data.json')!.equals(text)).toBe(true);
+    expect(methods.get('data.json')).toBe(8);
+  });
+
+  it('stores already-compressed media as it is and compresses everything else', async () => {
+    const src = temp();
+    // Deliberately compressible content, so only the file type decides.
+    const body = 'x'.repeat(20000);
+    const media = ['photo.png', 'PHOTO.JPG', 'img/hero.jpeg', 'img/hero-480.webp', 'img/hero.avif', 'anim.gif', 'fonts/inter.woff2', 'fonts/old.woff'];
+    const text = ['index.html', 'logo.svg', 'app.css', 'data.json'];
+    for (const f of [...media, ...text]) write(src, f, body);
+    const zip = join(temp(), 'media.zip');
+    await zipDirectory(src, zip);
+    const methods = new Map<string, number>();
+    const entries = readZip(readFileSync(zip), methods);
+    for (const f of [...media, ...text]) expect(entries.get(f)!.toString(), f).toBe(body);
+    for (const f of media) expect(methods.get(f), f).toBe(0);
+    for (const f of text) expect(methods.get(f), f).toBe(8);
+    const check = spawnSync('unzip', ['-tq', zip], { encoding: 'utf8' });
+    if (!check.error) expect(check.status, check.stdout + check.stderr).toBe(0);
   });
 
   it('keeps executable scripts executable', async () => {
