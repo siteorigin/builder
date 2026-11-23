@@ -706,9 +706,11 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
 /** Tool schema for one project: each section is typed by its component, with closed props. */
 export function upsertToolSchema(state: ProjectState): JsonSchema {
   const defs: ComponentDefinition[] = [
+    // A theme component already in the project is typed as installed, as the section check reads it: a newer
+    // theme's properties (a heading level, say) are not there until Project health updates it.
     ...catalogueEntries(state.site.themeId).flatMap((e) => {
       const d = catalogueComponent(state.site.themeId, e.componentId);
-      return d ? [d] : [];
+      return d ? [Object.hasOwn(state.components, d.id) ? state.components[d.id] : d] : [];
     }),
     ...Object.values(state.components).filter((d) => d.owner === 'project' && d.category !== 'shell')
   ];

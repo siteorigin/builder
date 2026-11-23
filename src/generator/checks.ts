@@ -1,8 +1,8 @@
 /**
  * Checks on what a page will actually show, evaluated with the same rules the generated components use.
  */
-import type { Binding, ComponentDefinition, GraphNode, ImageValue, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema } from '@shared/types';
-import { conditionHolds, conditionRef, isBinding, type Condition } from '@shared/types';
+import type { Binding, ComponentDefinition, GraphNode, ImageValue, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, type Condition } from '@shared/types';
 import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
@@ -36,6 +36,8 @@ interface Scope {
   multiple?: boolean;
   /** The slots this content is shown through, outermost first, each named by the frame supplying it and the slot. */
   slots?: string[];
+  /** Shown through a code component's slot: counted as shown more than once, though its markup may show it once. */
+  codeSlot?: boolean;
 }
 
 function evaluate(v: unknown, scope: Scope): unknown {
@@ -71,8 +73,8 @@ interface Visit {
   again?: (slot: string) => void;
   /** An image node about to render. */
   image?: (n: GraphNode & { kind: 'image' }, scope: Scope, reportId: string) => void;
-  /** A text node about to render. */
-  text?: (n: GraphNode & { kind: 'text' }, scope: Scope, reportId: string, inDef: boolean) => void;
+  /** A text node about to render; `def` is the definition it belongs to, for a component's node. */
+  text?: (n: GraphNode & { kind: 'text' }, scope: Scope, reportId: string, inDef: boolean, def?: ComponentDefinition) => void;
   /** An `id` attribute the generated markup will carry. */
   id?: (id: string, reportId: string) => void;
   /**
@@ -176,7 +178,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         visit.image?.(n, frame.scope, reportId);
         break;
       case 'text':
-        visit.text?.(n, frame.scope, reportId, !!frame.def);
+        visit.text?.(n, frame.scope, reportId, !!frame.def, frame.def);
         break;
       case 'element':
         for (const c of n.children) walk(frame, c, inner);
@@ -225,7 +227,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
             const f = placementField(v, frame.scope);
             if (f) forwarded[k] = f;
           }
-          const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots };
+          const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots, codeSlot: frame.scope.codeSlot };
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
           const child: Frame = { tree: def.tree, def, scope: { props, trail, ...where }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
@@ -234,7 +236,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           // Code that places `so_id` as an id (a converted section does, on its root) carries the placement's id.
           if (ownId && SO_ID_ATTR.test(def.source ?? '')) visit.id?.(ownId, reportId);
           // Code places its slot content where its own markup says; count all of it as rendered, as often as it likes.
-          const placed = frame.scope.multiple ? frame : { ...frame, origin: frame.origin ?? frame, scope: { ...frame.scope, multiple: true } };
+          const placed = frame.scope.multiple ? frame : { ...frame, origin: frame.origin ?? frame, scope: { ...frame.scope, multiple: true, codeSlot: true } };
           for (const ids of Object.values(n.slots ?? {})) for (const c of ids) walk(placed, c, inner);
         }
         break;
@@ -929,7 +931,7 @@ function sectionName(state: ProjectState, n: GraphNode): string {
 
 function headingText(n: GraphNode & { kind: 'text' }, scope: Scope): string {
   const v = evaluate(n.text, scope);
-  const text = typeof v === 'string' ? v : Array.isArray(v) ? richTextToPlain(toRichText(v)) : '';
+  const text = typeof v === 'string' ? v : typeof v === 'number' ? String(v) : Array.isArray(v) ? richTextToPlain(toRichText(v)) : '';
   return text.replace(/\s+/g, ' ').trim();
 }
 
@@ -1047,6 +1049,10 @@ export interface OutlineHeading {
   itemPath?: string[];
   /** Shown by a component placed directly at `nodeId` (not one inside its design or a code component). */
   direct?: boolean;
+  /** For a heading in a component inside the placed one: the placements from `nodeId` in, when they can be named. */
+  instancePath?: string[];
+  /** The declared part of its definition the heading is, if any. */
+  partId?: string;
   /** A subheading written inside rich text: its level is part of the text. */
   rich?: boolean;
   /** Rendered more than once from this one place (slot content a component shows for each item, say). */
@@ -1057,36 +1063,72 @@ export interface OutlineHeading {
 }
 
 const levelOf = (tag: unknown) => (typeof tag === 'string' && HEADING.test(tag) ? Number(tag[1]) : 0);
+const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
+const SIZES = ['phone', 'tablet', 'desktop'] as const;
+
+/** Whether styles hide an element at every size: hidden at the base size and shown again at none. */
+const hiddenEverywhere = (...layers: Array<ResponsiveStyles | undefined>) =>
+  layers.some((l) => l?.base?.hidden === true) && !layers.some((l) => SIZES.some((z) => l?.[z]?.hidden === false));
+
+/** The tag a text node renders, as the generator decides it: a bound tag's value when it is one of its choice's text tags, else the choice's default. */
+function renderedTag(n: GraphNode & { kind: 'text' }, scope: Scope, def: ComponentDefinition | undefined): { tag: string; levels?: number[] } {
+  if (!isBinding(n.tag)) return { tag: TEXT_TAG_SET.has(n.tag) ? n.tag : 'p' };
+  const b = n.tag;
+  const schema = '$prop' in b ? (def && Object.hasOwn(def.properties, b.$prop) ? def.properties[b.$prop] : undefined) : scope.fields?.[b.$item];
+  const options = schema?.type === 'enum' ? schema.options.map((o) => o.value).filter((o) => TEXT_TAG_SET.has(o)) : [];
+  const fallback = schema?.type === 'enum' && options.includes(schema.default) ? schema.default : (options[0] ?? 'p');
+  const v = evaluate(b, scope);
+  return { tag: typeof v === 'string' && options.includes(v) ? v : fallback, levels: options.map(levelOf).filter(Boolean) };
+}
 
 /**
- * The headings a page renders, shared header and footer included when it shows them, read the way the generated
- * markup renders them: a heading whose condition fails is left out, and one inside a list is listed once per item.
- * Each says where its level is chosen when an author can change it.
+ * The headings a page renders, in order, and whether it places code whose headings cannot be read here. Headings
+ * hidden at every size are left out, as screen readers never reach them.
  */
-export function headingOutline(state: ProjectState, pageId: string): OutlineHeading[] {
-  const page = state.pages[pageId];
-  if (!page) return [];
+function collectHeadings(state: ProjectState, pageId: string, shell: boolean): { outline: OutlineHeading[]; uninspected: boolean } {
+  const page = Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
+  if (!page) return { outline: [], uninspected: false };
   const trees: Array<[OwnerRef, NodeTree]> = [[{ kind: 'page', id: page.id }, page]];
-  if (hasShell(page)) trees.unshift([{ kind: 'shell', id: 'header' }, state.site.shell.header]), trees.push([{ kind: 'shell', id: 'footer' }, state.site.shell.footer]);
+  if (shell && hasShell(page)) trees.unshift([{ kind: 'shell', id: 'header' }, state.site.shell.header]), trees.push([{ kind: 'shell', id: 'footer' }, state.site.shell.footer]);
   const out: OutlineHeading[] = [];
-  // The slots each heading is shown through: a slot shown again (by a second slot of that name) repeats them.
-  const through = new Map<OutlineHeading, string[]>();
+  let uninspected = false;
+  // The headings shown through each slot: a slot shown again (by a second slot of that name) repeats them.
+  const bySlot = new Map<string, OutlineHeading[]>();
   const add = (h: OutlineHeading, scope: Scope) => {
-    if (scope.multiple) h.repeated = true;
-    if (scope.slots?.length) through.set(h, scope.slots);
+    // Slot content a design shows inside a list renders once per item; a code component's is taken as shown once.
+    if (scope.multiple && !scope.codeSlot) h.repeated = true;
+    for (const slot of scope.slots ?? []) bySlot.set(slot, [...(bySlot.get(slot) ?? []), h]);
     out.push(h);
   };
-  for (const [owner, tree] of trees)
+  for (const [owner, tree] of trees) {
+    // Page nodes hidden at every size, from the outermost one in: nothing inside them renders for anyone.
+    const hiding: boolean[] = [];
+    let hidden = 0;
     walkRendered(state, tree, {
-      again: (slot) => {
-        for (const [h, slots] of through) if (slots.includes(slot)) h.repeated = true;
+      enter: (n) => {
+        const hides = hiddenEverywhere(n.styles, n.kind === 'instance' ? n.overrides?.root : undefined);
+        hiding.push(hides);
+        if (hides) hidden++;
       },
-      text: (n, scope, reportId, inDef) => {
-        const where: Pick<OutlineHeading, 'owner' | 'nodeId' | 'defNodeId' | 'itemPath' | 'direct'> = { owner, nodeId: reportId };
+      leave: () => {
+        if (hiding.pop()) hidden--;
+      },
+      again: (slot) => {
+        for (const h of bySlot.get(slot) ?? []) h.repeated = true;
+      },
+      text: (n, scope, reportId, inDef, def) => {
+        if (hidden) return;
+        const where: Pick<OutlineHeading, 'owner' | 'nodeId' | 'defNodeId' | 'itemPath' | 'direct' | 'instancePath' | 'partId'> = { owner, nodeId: reportId };
         if (inDef) {
           where.defNodeId = n.id;
           where.direct = !!scope.placement;
           if (scope.placement && scope.path?.length) where.itemPath = scope.path;
+          // A heading in a component inside the placed one is selected through the placements between, when no list
+          // item is on the way (those are named by the item, not by the path).
+          const trail = (scope.trail ?? '').split('/').filter(Boolean);
+          if (!scope.placement && trail.length > 1 && !trail.some((t) => t.includes('[')) && !scope.path?.length) where.instancePath = trail;
+          const partId = def && Object.entries(def.parts).find(([, part]) => part.nodeId === n.id)?.[0];
+          if (partId) where.partId = partId;
         }
         if (n.rich) {
           const v = evaluate(n.text, scope);
@@ -1096,27 +1138,43 @@ export function headingOutline(state: ProjectState, pageId: string): OutlineHead
           }
           return;
         }
-        const level = levelOf(evaluate(n.tag, scope));
+        const shown = renderedTag(n, scope, def);
+        const level = levelOf(shown.tag);
         if (!level) return;
         const heading: OutlineHeading = { level, text: headingText(n, scope), ...where };
         if (!inDef) {
           if (!isBinding(n.tag)) Object.assign(heading, { levelSource: { kind: 'node' }, levels: [1, 2, 3, 4, 5, 6] });
         } else {
-          // A design's heading takes its level from a choice its placement makes, read through any designs between.
+          // A design's heading takes its level from a choice its placement makes, read through any designs between:
+          // the levels offered are the placement's options that this heading can render.
           const f = placementField(n.tag, scope);
           const schema = f && fieldSchema(state, tree, reportId, f);
-          const levels = schema?.type === 'enum' ? schema.options.map((o) => levelOf(o.value)).filter(Boolean) : [];
+          const levels = schema?.type === 'enum' ? schema.options.map((o) => levelOf(o.value)).filter((l) => l && shown.levels?.includes(l)) : [];
           if (f && levels.length) Object.assign(heading, { levelSource: { kind: 'prop', ...f }, levels });
         }
         add(heading, scope);
       },
       code: (def, props, reportId, _placement, _n, scope, inDef) => {
-        // The shipped contact form shows its heading as an `<h2>`; other code's headings are not known here.
-        if (shippedCode(state, def) !== 'contact.form' || typeof props.heading !== 'string' || !props.heading.trim()) return;
+        if (hidden) return;
+        const which = shippedCode(state, def);
+        // Other code's headings are not known here: the page's review cannot say it has no title.
+        if (!which) uninspected ||= owner.kind === 'page';
+        // The shipped contact form shows its heading as an `<h2>`.
+        if (which !== 'contact.form' || typeof props.heading !== 'string' || !props.heading.trim()) return;
         add({ level: 2, text: props.heading.replace(/\s+/g, ' ').trim(), owner, nodeId: reportId, ...(inDef ? { direct: false } : {}) }, scope);
       }
     });
-  return out;
+  }
+  return { outline: out, uninspected };
+}
+
+/**
+ * The headings a page renders, shared header and footer included when it shows them, read the way the generated
+ * markup renders them: a heading whose condition fails, or that is hidden at every size, is left out, and one inside
+ * a list is listed once per item. Each says where its level is chosen when an author can change it.
+ */
+export function headingOutline(state: ProjectState, pageId: string): OutlineHeading[] {
+  return collectHeadings(state, pageId, true).outline;
 }
 
 /** What a page's headings ask its author to review. Indexes are positions in the outline. */
@@ -1136,7 +1194,7 @@ export interface HeadingReview {
  * and each heading at most one level below the one before it. Only the page's own headings count: the shared header
  * and footer are the same on every page, so they neither give a page its title nor leave a gap in its outline.
  */
-export function reviewHeadings(outline: OutlineHeading[], hasContent: boolean): HeadingReview {
+export function reviewHeadings(outline: OutlineHeading[], hasContent: boolean, uninspected = false): HeadingReview {
   const own = outline.map((h, index) => ({ h, index })).filter(({ h }) => h.owner.kind === 'page');
   const titles = own.filter(({ h }) => h.level === 1).map(({ index }) => index);
   const shown = titles.reduce((n, i) => n + (outline[i].repeated ? 2 : 1), 0);
@@ -1145,11 +1203,16 @@ export function reviewHeadings(outline: OutlineHeading[], hasContent: boolean): 
     const after = own[k - 1].h.level;
     if (own[k].h.level > after + 1) skips.push({ index: own[k].index, after, suggest: after + 1 });
   }
-  return { titles, extraTitles: shown > 1, missingTitle: hasContent && !titles.length, skips };
+  // Code whose headings cannot be read may hold the title.
+  return { titles, extraTitles: shown > 1, missingTitle: hasContent && !titles.length && !uninspected, skips };
 }
 
-/** The review of one page's headings, with the outline it was made from. */
-export function pageHeadings(state: ProjectState, pageId: string): { outline: OutlineHeading[]; review: HeadingReview } {
-  const outline = headingOutline(state, pageId);
-  return { outline, review: reviewHeadings(outline, !!state.pages[pageId]?.rootIds.length) };
+/**
+ * The review of one page's headings, with the outline it was made from and whether code on the page shows headings
+ * that cannot be read. `shell: false` leaves out the shared header and footer, which the review never counts.
+ */
+export function pageHeadings(state: ProjectState, pageId: string, opts: { shell?: boolean } = {}): { outline: OutlineHeading[]; review: HeadingReview; uninspected: boolean } {
+  const { outline, uninspected } = collectHeadings(state, pageId, opts.shell !== false);
+  const hasContent = Object.hasOwn(state.pages, pageId) && !!state.pages[pageId].rootIds.length;
+  return { outline, review: reviewHeadings(outline, hasContent, uninspected), uninspected };
 }

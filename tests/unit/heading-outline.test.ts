@@ -28,6 +28,28 @@ function contactWithHero(s = fresh()) {
   return { s: r.state, pageId: contact.id, heroId: r.state.pages[contact.id].rootIds[1] };
 }
 
+/** A project component with a hand-built tree, installed into the project. */
+function projectDef(s: ProjectState, id: string, properties: ComponentDefinition['properties'], nodes: GraphNode[], extra: Partial<ComponentDefinition> = {}): ComponentDefinition {
+  const def: ComponentDefinition = {
+    schemaVersion: 1,
+    id,
+    componentId: id,
+    contractVersion: 1,
+    kind: 'managed',
+    owner: 'project',
+    name: id,
+    description: '',
+    category: 'content',
+    tags: [],
+    properties,
+    parts: {},
+    tree: { rootIds: [nodes[0].id], nodes: Object.fromEntries(nodes.map((n) => [n.id, n])) },
+    ...extra
+  };
+  s.components[id] = def;
+  return def;
+}
+
 /** Text nodes placed at the top level of a page, in order. */
 function withHeadings(s: ProjectState, pageId: string, nodes: Array<Partial<TextNode> & { id: string }>) {
   const page = s.pages[pageId];
@@ -127,6 +149,87 @@ describe('heading outline', () => {
   });
 });
 
+describe('headings as the generated site renders them', () => {
+  it('reads a level a design hands on the way the nested heading renders it, and offers only levels it can render', () => {
+    const s = fresh();
+    const home = s.site.homePageId;
+    const level = (def: string, opts: string[]) => P.choice('Level', def, opts.map((o) => [o, o.toUpperCase()] as [string, string]));
+    // The inner heading renders Heading 2 or 3; its wrapper offers 1, 2 or 3 and forwards its choice.
+    projectDef(s, 'p_inner', { lvl: level('h2', ['h2', 'h3']), year: P.num('Year', 2026) }, [{ id: 'title', kind: 'text', tag: { $prop: 'lvl' }, text: { $prop: 'year' } }]);
+    const wrapper = projectDef(s, 'p_wrap', { level: level('h2', ['h1', 'h2', 'h3']) }, [
+      { id: 'root', kind: 'element', tag: 'div', children: ['first', 'second'] },
+      { id: 'first', kind: 'instance', definitionId: 'p_inner', props: { lvl: { $prop: 'level' } } },
+      { id: 'second', kind: 'instance', definitionId: 'p_inner', props: { lvl: 'h3' } }
+    ]);
+    const placed: InstanceNode = { ...makeInstance(wrapper, {}), props: { level: 'h1' } };
+    withHeadings(s, home, []);
+    s.pages[home].nodes = { [placed.id]: placed };
+    s.pages[home].rootIds = [placed.id];
+    const [first, second] = own(s, home);
+    // "h1" is not one of the inner heading's levels: the site renders its default, Heading 2.
+    expect(first).toMatchObject({ level: 2, text: '2026', levelSource: { kind: 'prop', prop: 'level' }, levels: [2, 3], instancePath: [placed.id, 'first'] });
+    expect(second).toMatchObject({ level: 3, instancePath: [placed.id, 'second'] });
+    expect(second.levelSource).toBeUndefined();
+    // Each nested heading selects itself, not the wrapper they share.
+    expect(headingTarget(s, first)).toEqual({ owner: { kind: 'page', id: home }, instancePath: [placed.id, 'first'], nodeId: 'title' });
+    expect(headingTarget(s, second)).toEqual({ owner: { kind: 'page', id: home }, instancePath: [placed.id, 'second'], nodeId: 'title' });
+    expect(headingWarnings(s).map((d) => d.code)).toEqual(['HEADING_MISSING_H1']);
+  });
+
+  it('leaves out a heading hidden at every size, but not one hidden at some sizes', () => {
+    const s = fresh();
+    const home = s.site.homePageId;
+    withHeadings(s, home, [
+      { id: 'n_old', tag: 'h1', text: 'Old title', styles: { base: { hidden: true } } },
+      { id: 'n_new', tag: 'h1', text: 'New title' }
+    ]);
+    expect(rows(s, home)).toEqual([[1, 'New title']]);
+    expect(headingWarnings(s)).toEqual([]);
+    // Shown again on phones, it is a second title there.
+    (s.pages[home].nodes.n_old as TextNode).styles = { base: { hidden: true }, phone: { hidden: false } };
+    expect(headingWarnings(s).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
+    // A section hidden at every size hides its headings: the Contact page's hero, here.
+    const { s: withHero, pageId, heroId } = contactWithHero();
+    (withHero.pages[pageId].nodes[heroId] as InstanceNode).overrides = { root: { base: { hidden: true } } };
+    expect(headingWarnings(withHero)).toEqual([]);
+  });
+
+  it('cannot say a page with custom code has no title, since the code’s headings are unknown', () => {
+    const s = fresh();
+    const home = s.site.homePageId;
+    s.components.code_banner = { ...projectDef(s, 'code_banner', {}, [{ id: 'x', kind: 'divider' }]), kind: 'code', tree: undefined, source: '<h1>Welcome</h1>' };
+    const code = makeInstance(s.components.code_banner, {});
+    withHeadings(s, home, [{ id: 'n_a', tag: 'h2', text: 'Services' }]);
+    expect(headingWarnings(s).map((d) => d.code)).toEqual(['HEADING_MISSING_H1']);
+    s.pages[home].nodes[code.id] = code;
+    s.pages[home].rootIds.unshift(code.id);
+    expect(pageOutline(s, home).uninspected).toBe(true);
+    expect(headingWarnings(s)).toEqual([]);
+  });
+
+  it('counts slot content a design shows twice through two slots of one name', () => {
+    const s = fresh();
+    const home = s.site.homePageId;
+    const def = projectDef(
+      s,
+      'p_twice',
+      {},
+      [
+        { id: 'root', kind: 'element', tag: 'div', children: ['a', 'b'] },
+        { id: 'a', kind: 'slot', slot: 'content' },
+        { id: 'b', kind: 'slot', slot: 'content' }
+      ],
+      { slots: { content: { label: 'Content' } } }
+    );
+    const inst: InstanceNode = { ...makeInstance(def, {}), slots: { content: ['n_title'] } };
+    withHeadings(s, home, []);
+    s.pages[home].nodes = { [inst.id]: inst, n_title: { id: 'n_title', kind: 'text', tag: 'h1', text: 'Twice' } };
+    s.pages[home].rootIds = [inst.id];
+    expect(own(s, home)).toEqual([expect.objectContaining({ text: 'Twice', repeated: true })]);
+    expect(headingWarnings(s).map((d) => d.code)).toEqual(['HEADING_MULTIPLE_H1']);
+  });
+});
+
 describe('heading review in Project health', () => {
   it('warns about a second page title without blocking saving or export, and keeps the unlinked button warnings', () => {
     const { s, pageId, heroId } = contactWithHero();
@@ -162,7 +265,7 @@ describe('heading review in Project health', () => {
     const intro = s.pages[contact.id].rootIds[0];
     const r = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'page', id: contact.id }, nodeId: intro, prop: 'headingLevel', value: 'h2' }]).state;
     expect(headingWarnings(r)).toEqual([
-      expect.objectContaining({ code: 'HEADING_MISSING_H1', owner: { kind: 'page', id: contact.id }, message: 'Contact: no heading is a Heading 1, so the page has no title for screen readers to announce. Make the page’s main heading Heading 1.' })
+      expect.objectContaining({ severity: 'warning', code: 'HEADING_MISSING_H1', owner: { kind: 'page', id: contact.id }, message: 'Contact: no heading is a Heading 1, so the page has no title for screen readers to announce. Make the page’s main heading Heading 1.' })
     ]);
     withHeadings(r, contact.id, []);
     expect(headingWarnings(r)).toEqual([]);
@@ -176,11 +279,16 @@ describe('heading review in Project health', () => {
       { id: 'n_b', tag: 'h2', text: 'Services' },
       { id: 'n_c', tag: 'h4', text: 'Planning' },
       { id: 'n_d', tag: 'h3', text: 'Delivery' },
-      { id: 'n_e', tag: 'h2', text: 'Contact' }
+      { id: 'n_e', tag: 'h2', text: 'Contact' },
+      { id: 'n_f', tag: 'h5', text: 'Hours' }
     ]);
-    expect(pageHeadings(s, home).review.skips).toEqual([{ index: 2, after: 2, suggest: 3 }]);
+    expect(pageHeadings(s, home, { shell: false }).review.skips).toEqual([
+      { index: 2, after: 2, suggest: 3 },
+      { index: 5, after: 2, suggest: 3 }
+    ]);
     expect(headingWarnings(s)).toEqual([
-      expect.objectContaining({ code: 'HEADING_LEVEL_SKIP', nodeId: 'n_c', message: 'Home: “Planning” is a Heading 4 right after a Heading 2, so the outline skips a level. Make it Heading 3.' })
+      expect.objectContaining({ severity: 'warning', code: 'HEADING_LEVEL_SKIP', nodeId: 'n_c', message: 'Home: “Planning” is a Heading 4 right after a Heading 2, so the outline skips a level. Make it Heading 3.' }),
+      expect.objectContaining({ code: 'HEADING_LEVEL_SKIP', nodeId: 'n_f', message: 'Home: “Hours” is a Heading 5 right after a Heading 2, so the outline skips a level. Make it Heading 3.' })
     ]);
   });
 
@@ -242,6 +350,25 @@ describe('page outline rows and fixes', () => {
     expect(pageOutline(fixed, home).rows.filter((r) => r.heading.owner.kind === 'page').map((r) => [r.heading.level, r.fix ?? null])).toEqual([
       [1, null],
       [3, 2]
+    ]);
+  });
+
+  it('offers no one-step fix for a level several headings share, which would change them all', () => {
+    const s = fresh();
+    const home = s.site.homePageId;
+    const def = projectDef(s, 'p_pair', { level: P.choice('Level', 'h1', [['h1', 'H1'], ['h2', 'H2']]) }, [
+      { id: 'root', kind: 'element', tag: 'div', children: ['one', 'two'] },
+      { id: 'one', kind: 'text', tag: { $prop: 'level' }, text: 'One' },
+      { id: 'two', kind: 'text', tag: { $prop: 'level' }, text: 'Two' }
+    ]);
+    const inst = makeInstance(def, {});
+    withHeadings(s, home, []);
+    s.pages[home].nodes = { [inst.id]: inst };
+    s.pages[home].rootIds = [inst.id];
+    const { rows } = pageOutline(s, home);
+    expect(rows.filter((r) => r.heading.owner.kind === 'page').map((r) => [r.title ?? false, r.extraTitle ?? false, r.fix ?? null])).toEqual([
+      [true, false, null],
+      [false, true, null]
     ]);
   });
 

@@ -121,7 +121,8 @@ export function LayersPanel() {
       tree.querySelector<HTMLElement>('[role="treeitem"][aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
     }, 60);
     return () => clearTimeout(t);
-  }, [selection, visible]);
+    // Returning from the headings outline shows the selected row again: it may have changed while the tree was hidden.
+  }, [selection, visible, view]);
   // Rows mount and unmount inside branches that open on their own (revealing a canvas selection), which does
   // not re-render the panel: keep exactly one tabbable row whenever the rows change.
   useEffect(() => {

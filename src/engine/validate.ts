@@ -253,7 +253,8 @@ export function headingDiagnostics(state: ProjectState): Diagnostic[] {
     const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
     if (!page) continue;
     const owner = { kind: 'page', id };
-    const { outline, review } = pageHeadings(state, id);
+    // The shared header and footer never count toward a page's review: they are left out of the walk.
+    const { outline, review } = pageHeadings(state, id, { shell: false });
     if (review.missingTitle)
       out.push({ severity: 'warning', code: 'HEADING_MISSING_H1', message: `${page.title}: no heading is a Heading 1, so the page has no title for screen readers to announce. Make the page’s main heading Heading 1.`, owner });
     if (review.extraTitles) {

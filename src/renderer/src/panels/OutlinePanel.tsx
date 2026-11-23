@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { CircleCheck, Heading1, TriangleAlert } from 'lucide-react';
 import { sameRef } from '@shared/types';
 import type { OutlineHeading } from '@generator/checks';
-import { applyOps, setState, useStore } from '../store';
+import { applyOps, getState, setState, useStore } from '../store';
 import { headingLevelOps, headingTarget, headingWords, pageOutline, type OutlineRow } from '../lib/outline';
 
 const WHERE: Record<string, string> = { header: 'Shared header', footer: 'Shared footer' };
@@ -39,15 +39,18 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
   const revision = snap.revision;
 
   const select = (h: OutlineHeading) => setState({ mode: 'edit', selection: headingTarget(state, h), rightTab: 'inspect', dockOpen: true });
-  const setLevel = (h: OutlineHeading, level: number, button: HTMLElement) => {
+  /**
+   * Give a heading another level. Focus stays in the outline, on the same heading's row once it has its new level
+   * (changing a level never adds or removes a row), unless the edit did not land or another page is shown by then.
+   */
+  const setLevel = (h: OutlineHeading, level: number) => {
     const ops = headingLevelOps(h, level);
+    const index = rows.findIndex((r) => r.heading === h);
     if (!ops) return;
-    // Focus stays in the outline: on the same heading's row once it has its new level.
-    const row = button.closest('li');
-    const index = row ? [...(row.parentElement?.children ?? [])].indexOf(row) : -1;
-    void applyOps(ops, `Make “${headingWords(h)}” Heading ${level}`, undefined, revision).then(() =>
-      requestAnimationFrame(() => document.querySelectorAll<HTMLElement>('.outline-list > li .outline-row')[index]?.focus())
-    );
+    void applyOps(ops, `Make “${headingWords(h)}” Heading ${level}`, undefined, revision).then((done) => {
+      if (!done || getState().pageId !== pageId) return;
+      requestAnimationFrame(() => document.querySelectorAll<HTMLElement>('.outline-list > li .outline-row')[index]?.focus());
+    });
   };
 
   const own = rows.filter((r) => r.heading.owner.kind === 'page');
@@ -59,7 +62,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
         {titleFix && (
           <>
             {' '}
-            <button className="link" disabled={readOnly} onClick={(e) => setLevel(titleFix.heading, 1, e.currentTarget)}>
+            <button className="link" disabled={readOnly} onClick={() => setLevel(titleFix.heading, 1)}>
               Make “{headingWords(titleFix.heading)}” Heading 1
             </button>
           </>
@@ -82,7 +85,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
   ) : null;
 
   return (
-    <div className="panel-body outline-view" aria-label={`Headings on ${page.title}`} role="region">
+    <div className="panel-body outline-view" aria-label={`Headings on ${page.title}`} role="region" tabIndex={-1}>
       <div className="outline-summary">{summary}</div>
       {rows.length === 0 ? (
         <div className="layers-empty">
@@ -121,7 +124,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
                     )}
                   </button>
                   {r.fix && (
-                    <button className="btn btn-sm outline-fix" disabled={readOnly} title="Changes the heading’s level in the page outline; it looks the same" onClick={(e) => setLevel(h, r.fix!, e.currentTarget)}>
+                    <button className="btn btn-sm outline-fix" disabled={readOnly} title="Changes the heading’s level in the page outline; it looks the same" onClick={() => setLevel(h, r.fix!)}>
                       Make Heading {r.fix}
                     </button>
                   )}
@@ -131,6 +134,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
           })}
         </ol>
       )}
+      {outline.uninspected && <p className="muted outline-note">Headings inside custom code components are not listed here.</p>}
     </div>
   );
 }

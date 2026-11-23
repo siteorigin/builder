@@ -23,6 +23,8 @@ export interface OutlineRow {
 export interface PageOutline {
   rows: OutlineRow[];
   review: HeadingReview;
+  /** Code on the page shows headings that cannot be read here. */
+  uninspected: boolean;
   /** For a page with no Heading 1: its first heading, when it can be made one from here. */
   titleFix?: OutlineRow;
 }
@@ -30,29 +32,45 @@ export interface PageOutline {
 /** Whether a heading's level can be set to this one from the outline. */
 export const canSetLevel = (h: OutlineHeading, level: number) => !!h.levelSource && !!h.levels?.includes(level) && h.level !== level;
 
+/** Names where a heading's level is chosen: headings sharing one change together. */
+const sourceKey = (h: OutlineHeading) => {
+  const s = h.levelSource;
+  return s ? JSON.stringify([h.owner.kind, h.owner.id, h.nodeId, s.kind === 'node' ? null : [s.prop, s.itemId ?? null, s.field ?? null]]) : null;
+};
+
 /** The current page's outline, each row marked with what it asks for. */
 export function pageOutline(state: ProjectState, pageId: string): PageOutline {
-  const { outline, review } = pageHeadings(state, pageId);
+  const { outline, review, uninspected } = pageHeadings(state, pageId);
   const rows: OutlineRow[] = outline.map((heading) => ({ heading }));
+  // A level chosen once for several headings (a design's choice its headings share, or one heading repeated) is
+  // changed for all of them, which the row's fix does not say: those are changed in the Inspector instead.
+  const sharing = new Map<string, number>();
+  for (const h of outline) {
+    const k = sourceKey(h);
+    if (k) sharing.set(k, (sharing.get(k) ?? 0) + (h.repeated ? 2 : 1));
+  }
+  const fixable = (h: OutlineHeading, level: number) => canSetLevel(h, level) && sharing.get(sourceKey(h)!) === 1;
   // The first Heading 1 is taken as the page's title, and each later one as a second title. A title shown more than
   // once is its own second title, which no other level settles while it stays the page's only one.
   review.titles.forEach((i, k) => {
     if (k === 0 && !outline[i].repeated) rows[i].title = true;
     else rows[i].extraTitle = true;
-    if (k > 0 && canSetLevel(outline[i], 2)) rows[i].fix = 2;
+    if (k > 0 && fixable(outline[i], 2)) rows[i].fix = 2;
   });
   for (const s of review.skips) {
     rows[s.index].skip = { after: s.after, suggest: s.suggest };
-    if (canSetLevel(outline[s.index], s.suggest)) rows[s.index].fix = s.suggest;
+    if (fixable(outline[s.index], s.suggest)) rows[s.index].fix = s.suggest;
   }
   const firstOwn = rows.find((r) => r.heading.owner.kind === 'page');
-  const titleFix = review.missingTitle && firstOwn && canSetLevel(firstOwn.heading, 1) ? firstOwn : undefined;
-  return { rows, review, ...(titleFix ? { titleFix } : {}) };
+  const titleFix = review.missingTitle && firstOwn && fixable(firstOwn.heading, 1) ? firstOwn : undefined;
+  return { rows, review, uninspected, ...(titleFix ? { titleFix } : {}) };
 }
 
 /** What selecting a heading selects: its own element, or the part of the section placed on the page that shows it. */
 export function headingTarget(state: ProjectState, h: OutlineHeading): ElementRef {
   const page: ElementRef = { owner: h.owner, instancePath: [], nodeId: h.nodeId };
+  // A heading in a component inside the placed one: through the placements between, as the canvas selects it.
+  if (h.instancePath?.length && h.defNodeId) return { owner: h.owner, instancePath: h.instancePath, nodeId: h.defNodeId, ...(h.partId ? { partId: h.partId } : {}) };
   if (!h.direct || !h.defNodeId) return page;
   const tree = h.owner.kind === 'page' ? state.pages[h.owner.id] : h.owner.kind === 'shell' ? state.site.shell[h.owner.id as 'header' | 'footer'] : undefined;
   const node = tree && Object.hasOwn(tree.nodes, h.nodeId) ? tree.nodes[h.nodeId] : undefined;
