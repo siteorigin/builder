@@ -305,6 +305,8 @@ export interface ApplyResult {
   /** Per-operation results such as new node or page IDs. */
   results?: Array<Record<string, unknown>>;
   changed?: string[];
+  /** The history entry the change was recorded in, so an Undo offered for it reverses that entry and no other. */
+  entryId?: string;
   error?: { code: ToolErrorCode; message: string; recoverable: boolean; details?: unknown };
 }
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Component, History, Redo2, Sparkles, Trash2, Undo2, User } from 'lucide-react';
 import type { ElementRef } from '@shared/types';
 import { instancesOf } from '@engine/tree';
@@ -188,7 +188,10 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
 
 export function HistoryModal() {
   const snap = useStore((s) => s.snapshot);
+  // Opened from a notification whose change could not be undone on its own: show that change.
+  const focusId = useStore((s) => (s.modal?.kind === 'history' ? s.modal.entryId : undefined));
   const entries = [...(snap?.history.entries ?? [])].reverse();
+  const focused = useCallback((el: HTMLLIElement | null) => el?.scrollIntoView({ block: 'nearest' }), []);
   return (
     <Modal
       title="History"
@@ -220,7 +223,7 @@ export function HistoryModal() {
       ) : (
         <ol className="history-list">
           {entries.map((e) => (
-            <li key={e.id} className={e.applied ? '' : 'undone'}>
+            <li key={e.id} ref={e.id === focusId ? focused : undefined} className={`${e.applied ? '' : 'undone'}${e.id === focusId ? ' focus' : ''}`} aria-current={e.id === focusId ? 'true' : undefined}>
               {e.source === 'ai' ? <Sparkles aria-label="By AI" /> : <User aria-label="By you" />}
               <span className="grow ellipsis">{e.label}</span>
               {!e.applied && <span className="badge">Undone</span>}

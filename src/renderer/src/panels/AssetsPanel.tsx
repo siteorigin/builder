@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ChevronDown, ChevronRight, Component, FileText, Globe, ImageIcon, ImagePlus, Info, PanelTop, Replace, Search, Trash2, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
-import { api, applyOps, getState, setState, toast, useStore } from '../store';
+import { api, applyOps, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
 import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { assetUrl } from '../lib/model';
@@ -65,8 +65,8 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
       `Rename font family to ${family}`
     );
   const remove = async (a: AssetRecord) => {
-    const label = `Remove ${a.name}`;
-    if (await applyOps([{ type: 'asset.remove', assetId: a.id }], label)) toast(`Removed ${a.name}.`, 'info', { label: 'Undo', run: undoIfLatest(label) });
+    const r = await commitOps([{ type: 'asset.remove', assetId: a.id }], `Remove ${a.name}`);
+    if (r) toast(`Removed ${a.name}.`, 'info', undoAction(r));
   };
   return (
     <section className="font-list" aria-labelledby="font-list-title">
@@ -126,12 +126,6 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
     </section>
   );
 }
-
-/** An Undo on a toast only undoes the edit it describes: once anything else has happened, History is the way back. */
-const undoIfLatest = (label: string) => () => {
-  if (getState().snapshot?.history.undoLabel === label) void api.project.undo();
-  else toast(`Other changes came after that. Open History to undo “${label}”.`, 'info', { label: 'History', run: () => setState({ modal: { kind: 'history' } }) });
-};
 
 interface Place {
   key: string;
@@ -325,28 +319,29 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     if (!sel || withId === sel.id) return;
     const n = places.length || usage[sel.id] || 0;
     const target = getState().snapshot?.state.assets.assets[withId];
-    const label = `Replace ${nameOf(sel)}`;
-    if (await applyOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], label)) {
+    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], `Replace ${nameOf(sel)}`);
+    if (r) {
       replaceSession.current++;
       setReplacing(false);
-      toast(`${target ? nameOf(target) : 'The new image'} now shows in ${n === 1 ? 'its place' : `all ${n} places`} instead of ${nameOf(sel)}.`, 'info', { label: 'Undo', run: undoIfLatest(label) });
+      toast(`${target ? nameOf(target) : 'The new image'} now shows in ${n === 1 ? 'its place' : `all ${n} places`} instead of ${nameOf(sel)}.`, 'info', undoAction(r));
       requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
     }
   };
   const removeOne = async (a: AssetRecord) => {
     const i = shown.findIndex((x) => x.id === a.id);
     const next = shown[i + 1] ?? shown[i - 1];
-    const label = `Remove ${nameOf(a)}`;
-    if (await applyOps([{ type: 'asset.remove', assetId: a.id }], label)) {
+    const r = await commitOps([{ type: 'asset.remove', assetId: a.id }], `Remove ${nameOf(a)}`);
+    if (r) {
       setSelected(null);
-      toast(`Removed ${nameOf(a)}.`, 'info', { label: 'Undo', run: undoIfLatest(label) });
+      toast(`Removed ${nameOf(a)}.`, 'info', undoAction(r));
       focusTile(next?.id);
     }
   };
   const removeMany = async (list: AssetRecord[]) => {
     const label = list.length === 1 ? `Remove ${nameOf(list[0])}` : `Remove ${list.length} unused images`;
-    if (await applyOps(list.map((a) => ({ type: 'asset.remove' as const, assetId: a.id })), label)) {
-      toast(`Removed ${plural(list.length, 'unused image', 'unused images')}.`, 'info', { label: 'Undo', run: undoIfLatest(label) });
+    const r = await commitOps(list.map((a) => ({ type: 'asset.remove' as const, assetId: a.id })), label);
+    if (r) {
+      toast(`Removed ${plural(list.length, 'unused image', 'unused images')}.`, 'info', undoAction(r));
       if (list.length === unused.length) setFilter('all');
       focusTile(null);
     }

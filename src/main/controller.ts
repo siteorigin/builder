@@ -766,6 +766,16 @@ export class Controller {
     return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user' });
   }
 
+  /**
+   * Undo one history entry for the notification that offered it. `key` is the opening of the project the change was
+   * made in (from its snapshot): an Undo left over from a project that has since closed never reaches another one.
+   */
+  undoEntry(entryId: string, key: string): Promise<ApplyResult> {
+    if (!this.session || !key || this.workspaceKey !== key)
+      return Promise.resolve({ ok: false, revision: this.session?.revision ?? 0, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.', recoverable: false } });
+    return this.session.undoEntry(entryId);
+  }
+
   /** Import files. `only` limits a picker that can only use one kind, before anything is written to the project. */
   async importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }> {
     const s = this.session;

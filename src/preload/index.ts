@@ -25,6 +25,7 @@ const api: BuilderApi = {
     apply: invoke('project:apply'),
     copy: invoke('project:copy'),
     undo: invoke('project:undo'),
+    undoEntry: invoke('project:undoEntry'),
     redo: invoke('project:redo'),
     importAssets: invoke('project:importAssets'),
     exportSource: invoke('project:exportSource'),

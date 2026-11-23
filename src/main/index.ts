@@ -223,6 +223,11 @@ function registerIpc() {
   handle('edit:undo', () => win?.webContents.undo());
   handle('edit:redo', () => win?.webContents.redo());
   handle('project:undo', () => controller.session?.undo());
+  handle('project:undoEntry', (entryId: unknown, key: unknown) =>
+    typeof entryId === 'string' && typeof key === 'string'
+      ? controller.undoEntry(entryId, key)
+      : { ok: false, revision: controller.session?.revision ?? 0, error: { code: 'INVALID_ARGUMENT', message: 'Nothing to undo.', recoverable: false } }
+  );
   handle('project:redo', () => controller.session?.redo());
   handle('project:importAssets', (paths?: string[], only?: 'image' | 'font') => controller.importAssets(paths, only === 'image' || only === 'font' ? only : undefined));
   // Export builds from the project folder and needs the writer lock (spec 20).

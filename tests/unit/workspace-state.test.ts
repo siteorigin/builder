@@ -14,11 +14,18 @@ vi.mock('electron', () => ({
   shell: {}
 }));
 // Trust, recents and the preview's website tools are outside this test: no settings file, no npm, no dev server.
+// `whileSettingsLoad` runs once inside the next settings read, to change projects in the middle of an edit.
+const hooks = vi.hoisted(() => ({ whileSettingsLoad: null as null | (() => Promise<unknown>) }));
 vi.mock('../../src/main/settings', () => ({
   addRecent: async () => undefined,
   isTrusted: async () => true,
   trust: async () => undefined,
-  loadSettings: async () => ({ settings: { developerMode: false } })
+  loadSettings: async () => {
+    const during = hooks.whileSettingsLoad;
+    hooks.whileSettingsLoad = null;
+    await during?.();
+    return { settings: { developerMode: false } };
+  }
 }));
 vi.mock('../../src/main/runtime/manager', () => ({
   dependenciesReady: async () => true,
@@ -157,5 +164,50 @@ describe('workspace state per project', () => {
     c.saveLocalState({ chatDrafts: {} }, opening(c));
     await c.close();
     expect(onDisk(a).chatDrafts).toEqual({});
+  });
+
+  it('an Undo offered in an earlier opening of a project never acts on a later one', async () => {
+    const { c, parent } = setup();
+    const a = await create(c, parent, 'Alpha');
+    const first = opening(c);
+    const r = await c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });
+    expect(r.entryId).toBeDefined();
+    await c.close();
+    expect(await c.open(a)).toEqual({ ok: true });
+    // The same history entry is still the newest one, but the notification belonged to the earlier opening.
+    expect(await c.undoEntry(r.entryId!, first)).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.' } });
+    expect(c.session!.state.site.name).toBe('Renamed');
+    expect((await c.undoEntry(r.entryId!, opening(c))).ok).toBe(true);
+    expect(c.session!.state.site.name).toBe('Alpha');
+  });
+
+  it('an edit sent while its project is replaced never lands in the next one', async () => {
+    const { c, parent } = setup();
+    const a = await create(c, parent, 'Alpha');
+    const revision = c.session!.revision;
+    hooks.whileSettingsLoad = async () => {
+      await c.close();
+      expect(await c.open(a)).toEqual({ ok: true });
+    };
+    const r = await c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });
+    expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.' } });
+    expect(c.session!.state.site.name).toBe('Alpha');
+    expect(c.session!.revision).toBe(revision);
+  });
+
+  it('an edit sent while its project closes is refused, and so is one made in an earlier opening', async () => {
+    const { c, parent } = setup();
+    const a = await create(c, parent, 'Alpha');
+    const first = opening(c);
+    hooks.whileSettingsLoad = () => c.close();
+    const closing = await c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site', opening: first });
+    expect(closing).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(await c.open(a)).toEqual({ ok: true });
+    expect(c.session!.state.site.name).toBe('Alpha');
+    // The editor still showed the earlier opening when it sent this one.
+    const stale = await c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site', opening: first });
+    expect(stale).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.' } });
+    expect(c.session!.state.site.name).toBe('Alpha');
+    expect((await c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site', opening: opening(c) })).ok).toBe(true);
   });
 });

@@ -3,7 +3,7 @@ import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, 
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'lucide-react';
-import { aiActivity, applyHeld, commitDraft, discardHeld, getConfirm, markDraft, onConfirmChange, useStore, type HeldEdit } from '../store';
+import { aiActivity, applyHeld, commitDraft, discardHeld, getConfirm, markDraft, onConfirmChange, undoAvailable, useStore, type HeldEdit } from '../store';
 import { afterSettle, isSettling, reportRefused } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
 import type { ProjectSnapshot } from '@shared/api';
@@ -802,6 +802,7 @@ function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
 export function Toasts() {
   const toasts = useStore((s) => s.toasts);
   const held = useStore((s) => s.heldEdits);
+  const snapshot = useStore((s) => s.snapshot);
   const aiRunId = useStore((s) => (s.snapshot?.aiBusy ? (s.snapshot.aiRunId ?? null) : null));
   // Rendered outside the app root, so toasts stay readable (and actionable) while a dialog makes the root inert.
   return createPortal(
@@ -818,7 +819,8 @@ export function Toasts() {
           <div key={t.id} className={`toast ${t.kind}`} role={t.kind === 'error' ? 'alert' : undefined}>
             {t.kind === 'error' ? <CircleAlert /> : t.kind === 'success' ? <CircleCheck /> : <Info />}
             <span className="grow">{t.text}</span>
-            {t.action && (
+            {/* An Undo whose change has been undone some other way, or whose project has closed, is withdrawn. */}
+            {t.action && (!t.action.undoes || undoAvailable(t.action.undoes, snapshot)) && (
               <button
                 className="btn btn-sm btn-ghost"
                 onClick={() => {

@@ -3,18 +3,19 @@ import { EventEmitter } from 'node:events';
 import { promises as fs, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import type { ProjectState } from '@shared/types';
+import type { PageDoc, ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { applyOperations, captureClipboard, type Clipboard } from '@engine/apply';
 import { listThemes } from '@catalogue/index';
-import { EngineError } from '@engine/tree';
+import { anchorsInUse, displayName, EngineError } from '@engine/tree';
+import { findRemoval, restoreRemoval } from '@engine/restore';
 import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
 import { checkSvelteSource, componentSources } from '../codecheck';
 import { atomicWrite, ensureDir, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
-import { CUSTOM_SOURCE_RE, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 
 export const LOCAL_DIR = '.siteorigin';
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -97,6 +98,9 @@ interface GeneratedManifest {
   pending?: Record<string, string>;
 }
 
+/** A page's document path, capturing the page ID. */
+const PAGE_DOC = new RegExp(`^${DOC_DIR}/pages/([^/]+)\\.json$`);
+
 /** How many recent copies a session keeps for Paste. */
 const CLIPBOARD_LIMIT = 5;
 
@@ -115,6 +119,8 @@ export interface SessionEvent {
   changedFiles: string[];
   label: string;
   source: 'user' | 'ai' | 'system';
+  /** The history entry the change was recorded in (absent when history was skipped or nothing changed). */
+  entryId?: string;
 }
 
 /** A canonical file changed on disk since the app last read or wrote it. */
@@ -915,7 +921,7 @@ export class ProjectSession extends EventEmitter {
       opts.history !== false && Object.keys(changed).length
         ? this.planHistory(changed, opts, this.revision + 1)
         : opts.cursor !== undefined
-          ? { history: { ...this.history, cursor: opts.cursor }, pruned: false }
+          ? { history: { ...this.history, cursor: opts.cursor }, pruned: false, entryId: undefined }
           : null;
     const journaled = !!(writes.length || deletes.length || planned);
     let changedFiles: string[];
@@ -937,7 +943,7 @@ export class ProjectSession extends EventEmitter {
       throw e;
     }
     if (planned && (planned.pruned || --this.gcCountdown <= 0)) await this.sweep();
-    const event: SessionEvent = { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: opts.label, source: opts.source ?? 'user' };
+    const event: SessionEvent = { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: opts.label, source: opts.source ?? 'user', entryId: planned?.entryId };
     this.emit('changed', event);
     return event;
   }
@@ -1181,7 +1187,7 @@ export class ProjectSession extends EventEmitter {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: e.message, recoverable: true } };
         throw e;
       }
-      const result: ApplyResult = { ok: true, revision: this.revision, results, changed: ev.changedDocs };
+      const result: ApplyResult = { ok: true, revision: this.revision, results, changed: ev.changedDocs, entryId: ev.entryId };
       if (opts.idempotencyKey) this.idempotency.set(opts.idempotencyKey, { fingerprint, result });
       return result;
     });
@@ -1204,13 +1210,15 @@ export class ProjectSession extends EventEmitter {
 
   /**
    * The history after recording `docs` as one step at `revision`, built on a copy: nothing changes until it is
-   * installed, so it can be journaled with the change it records.
+   * installed, so it can be journaled with the change it records. `entryId` is the entry that holds the step.
    */
-  private planHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string }, revision: number): { history: HistoryFile; pruned: boolean } {
+  private planHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string }, revision: number): { history: HistoryFile; pruned: boolean; entryId: string } {
     const h = structuredClone(this.history);
     h.entries = h.entries.slice(0, h.cursor);
     const last = h.entries[h.entries.length - 1];
+    let id: string;
     if (opts.coalesceKey && last?.coalesceKey === opts.coalesceKey && Date.now() - Date.parse(last.time) < 4000) {
+      id = last.id;
       for (const [path, d] of Object.entries(docs)) {
         if (last.docs[path]) last.docs[path].after = d.after;
         else last.docs[path] = d;
@@ -1218,8 +1226,9 @@ export class ProjectSession extends EventEmitter {
       last.time = new Date().toISOString();
       last.revision = revision;
     } else {
+      id = `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
       h.entries.push({
-        id: `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        id,
         label: opts.label,
         source: opts.source ?? 'user',
         time: new Date().toISOString(),
@@ -1232,7 +1241,7 @@ export class ProjectSession extends EventEmitter {
     const pruned = h.entries.length > HISTORY_LIMIT;
     if (pruned) h.entries = h.entries.slice(h.entries.length - HISTORY_LIMIT);
     h.cursor = h.entries.length;
-    return { history: h, pruned };
+    return { history: h, pruned, entryId: id };
   }
 
   private async installHistory(history: HistoryFile) {
@@ -1458,6 +1467,94 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Later changes were made after this AI turn. Undo those first from the history.', recoverable: false } };
       return this.travel(latest, 'undo');
     });
+  }
+
+  /**
+   * Undo one history entry, for an Undo offered beside the change it made. The newest entry is undone like Undo.
+   * An older one is undone on its own only when it removed one section or element from a page and nothing since
+   * stands in the way: that subtree is put back where it was, as a new change, and every later edit stays. Anything
+   * else is refused, changing nothing, so this never undoes a different change from the one it names.
+   */
+  undoEntry(entryId: string): Promise<ApplyResult> {
+    return this.serialize(async () => {
+      if (this.activeRun) return { ok: false, revision: this.revision, error: { code: 'BUSY', message: 'Stop the AI before undoing.', recoverable: true } };
+      const blocked = await this.writeBlocked();
+      if (blocked) return blocked;
+      const h = this.history;
+      const at = h.entries.findIndex((e) => e.id === entryId);
+      const entry = h.entries[at];
+      if (!entry) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'That change is no longer in History.', recoverable: false } };
+      if (at >= h.cursor) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `“${entry.label}” was already undone.`, recoverable: false } };
+      if (at === h.cursor - 1) return this.travel(entry, 'undo');
+      return this.restoreOnItsOwn(entry, at);
+    });
+  }
+
+  /** Put back what an older, still applied history entry removed from a page, keeping every later change (see undoEntry). */
+  private async restoreOnItsOwn(entry: HistoryEntry, at: number): Promise<ApplyResult> {
+    const refuse = (why?: string): ApplyResult => ({
+      ok: false,
+      revision: this.revision,
+      error: { code: 'CONFLICT', message: `Other changes came after “${entry.label}”${why ? `, so it can’t be undone on its own. ${why}` : '.'} Open History to undo it.`, recoverable: false }
+    });
+    const paths = Object.keys(entry.docs);
+    const path = paths[0];
+    const pageId = path?.match(PAGE_DOC)?.[1];
+    const d = entry.docs[path];
+    if (paths.length !== 1 || !pageId || !d.before || !d.after) return refuse();
+    const page = this.state.pages[pageId];
+    if (!page) return refuse('Its page has been deleted.');
+    const versions = new Map<string, PageDoc | null>();
+    const read = async (hash: string) => {
+      if (!versions.has(hash)) versions.set(hash, await this.getBlob(hash).then((t) => JSON.parse(t) as PageDoc, () => null));
+      return versions.get(hash)!;
+    };
+    const lost = 'History no longer holds the page as it was.';
+    const [before, after] = [await read(d.before), await read(d.after)];
+    if (!before || !after) return refuse(lost);
+    const removal = findRemoval(before, after);
+    if (!removal) return refuse();
+    // What the page went through since. Once the subtree has been back (put back by an earlier Undo, say, and then
+    // deleted again), this removal is no longer the one that took it away.
+    for (const e of this.history.entries.slice(at + 1, this.history.cursor)) {
+      const later = e.docs[path];
+      if (!later) continue;
+      if (!later.before || !later.after) return refuse('Its page has been deleted and made again since.');
+      for (const v of [await read(later.before), await read(later.after)]) {
+        if (!v) return refuse(lost);
+        if (Object.hasOwn(v.nodes, removal.rootId)) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `“${entry.label}” was already undone.`, recoverable: false } };
+      }
+    }
+    let put = restoreRemoval(before, removal, page);
+    if (!put.ok && put.gap) {
+      // Only versions the page really went through count: an undone change shows an order the user took back.
+      const applied: PageDoc[] = [];
+      for (const e of this.history.entries.slice(0, this.history.cursor).reverse())
+        for (const hash of [e.docs[path]?.after, e.docs[path]?.before]) {
+          const v = hash ? await read(hash) : null;
+          if (v) applied.push(v);
+        }
+      put = restoreRemoval(before, removal, page, applied);
+    }
+    if (!put.ok) return refuse(put.reason);
+    const taken = anchorsInUse(this.state, { kind: 'page', id: pageId });
+    const clash = removal.ids.map((id) => before.nodes[id].anchor).find((a) => a && taken.has(a));
+    if (clash) return refuse(`Something else on the page now uses its anchor “#${clash}”.`);
+    const next: ProjectState = { ...this.state, pages: { ...this.state.pages, [pageId]: { ...page, rootIds: put.tree.rootIds, nodes: put.tree.nodes } } };
+    // What it brings back must still make sense with everything changed since (a component or image it uses may be
+    // gone). Diagnostics are told apart by where they are, as two missing images on one page share a message.
+    const key = (x: Diagnostic) => `${x.code}|${x.owner?.kind}:${x.owner?.id}|${x.nodeId}|${x.message}`;
+    const known = new Set(validateState(this.state, { sectionLinks: false }).filter(blocksSaving).map(key));
+    const introduced = validateState(next, { sectionLinks: false }).filter((x) => blocksSaving(x) && !known.has(key(x)));
+    if (introduced.length) return refuse(introduced.map((x) => x.message).join(' '));
+    let ev: SessionEvent;
+    try {
+      ev = await this.persist(next, { label: `Restore ${displayName(next, put.tree.nodes[put.rootId])}`, source: 'user' });
+    } catch (e) {
+      if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: e.message, recoverable: true } };
+      throw e;
+    }
+    return { ok: true, revision: this.revision, changed: ev.changedDocs, entryId: ev.entryId };
   }
 
   // -------------------------------------------------------------------------

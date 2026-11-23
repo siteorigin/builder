@@ -248,6 +248,12 @@ export interface BuilderApi {
     /** Copy page content as it is now, for a later `node.paste` with the returned clipboard ID. */
     copy(pageId: string, nodeId: string, expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }>;
     undo(): Promise<ApplyResult>;
+    /**
+     * Undo one history entry (`ApplyResult.entryId`) of the opening `workspaceKey`, for an Undo offered beside that
+     * change. The newest entry is undone like Undo; an older one is reversed on its own as a new change when later
+     * edits allow it, and refused with CONFLICT otherwise.
+     */
+    undoEntry(entryId: string, workspaceKey: string): Promise<ApplyResult>;
     redo(): Promise<ApplyResult>;
     importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;
