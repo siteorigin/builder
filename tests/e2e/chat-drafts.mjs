@@ -124,6 +124,24 @@ await eventually(async () => assert.equal(await chatTitle().textContent(), 'New 
 await composerIs('');
 await suggestions().waitFor();
 assert.equal(await sendButton().isDisabled(), true, 'Send is not enabled with the other client’s text');
+
+step('starters name the pages this site has, whatever they are called (#54)');
+const starterTexts = async () => (await suggestions().locator('.suggestion').allTextContents()).map((x) => x.trim());
+const only = await starterTexts();
+assert.ok(only.length > 0, 'a one-page site has starters');
+assert.ok(only.some((x) => /^Create a new Contact page/.test(x)), 'a missing Contact page is offered as one to create');
+await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'page.create', title: 'お問い合わせ', starter: 'intro', addToNavigation: true }] }, { label: 'Add page' }));
+await win.locator('.pages-list [role="option"]', { hasText: 'お問い合わせ' }).click();
+await eventually(async () => assert.match(await win.locator('.toolbar .project-title').innerText(), /お問い合わせ/, 'the second page is open'));
+await eventually(async () => assert.ok((await starterTexts()).some((x) => x.includes('“お問い合わせ”'))));
+const forSecond = await starterTexts();
+assert.match(forSecond[0], /“お問い合わせ”/, 'the open page comes first');
+assert.ok(forSecond.some((x) => /^On another page, “Home”: /.test(x)), 'the other page is labelled as another page');
+assert.ok(!forSecond.some((x) => /Contact|FAQ/.test(x)), 'no starter names a page this site does not have');
+await suggestions().locator('.suggestion', { hasText: 'On another page' }).click();
+await composerIs(forSecond.find((x) => x.startsWith('On another page')));
+await message().fill('');
+await suggestions().waitFor();
 await type('Lantern light');
 await win.evaluate(() => window.builder.projects.close());
 await win.waitForSelector('.welcome');

@@ -6,6 +6,7 @@ import { refKey } from '@shared/types';
 import { api, getState, setState, toast, useStore, confirmDialog, selectChatDraft, setChatDraft } from '../store';
 import { afterSend, draftFor, moveDraft, unsentDrafts, withDraft } from '../lib/chatDrafts';
 import { refLabel, resolveRef } from '../lib/model';
+import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, resumableId } from '../lib/result';
 import { composerAction, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
@@ -21,8 +22,6 @@ function Md({ text }: { text: string }) {
     </span>
   );
 }
-
-const SUGGESTIONS = ['Rewrite the home page hero to sound warmer and more confident', 'Add a Services page with three service cards and link it from the header', 'Make the brand color a deep navy blue', 'Add an FAQ section to the Contact page'];
 
 /** What the run strip says for each phase of a run. */
 const PHASE: Record<string, string> = {
@@ -175,21 +174,8 @@ export function Chat() {
   const model = provider ? settings?.ai.models[provider.id] : undefined;
   const modelLabel = provider?.models.find((m) => m.id === model)?.label ?? model;
   const sel = selLabel?.toLowerCase();
-  const selKind = (() => {
-    try {
-      return selection ? resolveRef(st, selection).node?.kind : undefined;
-    } catch {
-      return undefined;
-    }
-  })();
-  // Starters fit what is selected: words for text, the picture for an image, layout and content for the rest.
-  const suggestions = !(selLabel && ctxOn.selection)
-    ? SUGGESTIONS
-    : selKind === 'text' || selKind === 'link'
-      ? [`Rewrite the ${sel} to sound warmer and more confident`, `Make the ${sel} shorter and easier to scan`, `Suggest three other ways to write the ${sel}`]
-      : selKind === 'image'
-        ? [`Write better alt text for the ${sel}`, `Find a better image for the ${sel} from my images`]
-        : [`Make the ${sel} more polished and easier to scan`, `Rewrite the text in the ${sel} to sound warmer`, `Suggest a better layout for the ${sel}`];
+  // Starters come from what this project holds: the page, the selection, the pages and the images that exist.
+  const suggestions = msgs.length === 0 && configured && conversation && !draft.trim() ? chatSuggestions({ state: st, assetUsage: snap.assetUsage, pageId, selection, context: ctxOn }) : [];
   const openSettings = () => setState({ modal: { kind: 'settings', tab: 'ai' } });
   const focusComposer = () => requestAnimationFrame(() => taRef.current?.focus());
 
@@ -352,21 +338,22 @@ export function Chat() {
             ) : (
               // Starters prefill an empty composer; once you have written something they step aside rather than replace it.
               conversation &&
-              !draft.trim() && (
+              suggestions.length > 0 && (
                 <div className="suggestions" role="group" aria-label="Suggestions">
                   {suggestions.map((s) => (
                     <button
-                      key={s}
+                      key={s.text}
                       className="suggestion"
+                      data-kind={s.kind}
                       onClick={() => {
-                        setChatDraft(conversation.id, s);
+                        setChatDraft(conversation.id, s.text);
                         requestAnimationFrame(() => {
                           sizeToFit(taRef.current);
                           taRef.current?.focus();
                         });
                       }}
                     >
-                      {s}
+                      {s.text}
                     </button>
                   ))}
                 </div>
