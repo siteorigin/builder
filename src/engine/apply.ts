@@ -27,6 +27,7 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { pageIds } from '@generator/checks';
+import { pageLinkUses, type PageLinkUse } from './page-links';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, subtreeIds, allTrees } from './tree';
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
@@ -373,13 +374,9 @@ export function assetUsages(state: ProjectState): Record<string, number> {
   return out;
 }
 
+/** How many links from the rest of the site go to a page: the links deleting it would move to a replacement. */
 export function pageLinkReferences(state: ProjectState, pageId: string): number {
-  let count = 0;
-  walkValues(state, (v) => {
-    const l = v as Partial<LinkValue>;
-    if (l.type === 'page' && l.target === pageId) count++;
-  });
-  return count;
+  return pageLinkUses(state, pageId).length;
 }
 
 function routeTaken(state: ProjectState, route: string, exceptPageId?: string): boolean {
@@ -544,28 +541,52 @@ function keepSectionLinksOnCopy(state: ProjectState, sourceId: string, copy: Pag
   walk(copy.nodes);
 }
 
-function rewritePageLinks(state: ProjectState, fromId: string, toId: string) {
-  walkValues(state, (v) => {
-    const l = v as Partial<LinkValue>;
-    if (l.type === 'page' && l.target === fromId) (l as LinkValue).target = toId;
-  });
+/**
+ * Where each link to a section of a removed page goes on its replacement: the same section when the replacement has
+ * one with that ID, else the section chosen for it, else the top of the replacement page. A link is never left
+ * pointing at a section its new page does not have, and never moved off a section its new page does have.
+ */
+function sectionsOnReplacement(state: ProjectState, page: PageDoc, replacementId: string, uses: PageLinkUse[], choices: Op<'page.remove'>['sectionReplacements']): (anchor: string) => string {
+  const ids = pageIds(state, replacementId);
+  const title = state.pages[replacementId].title;
+  const incoming = new Set(uses.map((u) => u.link.anchor).filter(Boolean));
+  const chosen = new Map<string, string>();
+  for (const c of choices ?? []) {
+    const from = c.from.replace(/^#/, '');
+    const to = c.to.replace(/^#/, '');
+    if (!incoming.has(from)) fail(`No link to "${page.title}" goes to #${from}.`);
+    if (chosen.has(from)) fail(`Links to #${from} were given more than one section.`);
+    if (to && !ids.has(to)) fail(`"${title}" has no section with the ID "${to}". Choose one of its sections, or "" for the top of the page.`);
+    chosen.set(from, to);
+  }
+  return (anchor) => (ids.has(anchor) ? anchor : (chosen.get(anchor) ?? ''));
 }
 
 function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   const page = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
   if (state.site.pageOrder.length <= 1) fail('A site needs at least one page.');
-  const refs = pageLinkReferences(state, page.id);
+  const uses = pageLinkUses(state, page.id);
+  const refs = uses.length;
   if (op.replacementPageId && !own(state.pages, op.replacementPageId)) fail('The replacement page does not exist.');
   if (op.replacementPageId === page.id) fail('The replacement must be a different page.');
   if (refs && !op.replacementPageId)
     throw new EngineError('VALIDATION_FAILED', `${refs} link${refs === 1 ? '' : 's'} point to "${page.title}". Choose a replacement page for them.`, { references: refs });
+  if (op.sectionReplacements?.length && !op.replacementPageId) fail('Sections for links can only be chosen on a replacement page.');
+  // Sections are looked up before anything moves: the replacement page's IDs do not depend on the page going.
+  const section = op.replacementPageId ? sectionsOnReplacement(state, page, op.replacementPageId, uses, op.sectionReplacements) : null;
   if (page.id === state.site.homePageId) {
     // The page replacing Home moves to "/". Its old address is not kept: this removes a page, it moves none.
     const next = op.replacementPageId ?? state.site.pageOrder.find((id) => id !== page.id)!;
     state.pages[next].route = '/';
     state.site.homePageId = next;
   }
-  if (op.replacementPageId) rewritePageLinks(state, page.id, op.replacementPageId);
+  if (op.replacementPageId && section)
+    for (const { link } of uses) {
+      link.target = op.replacementPageId;
+      const anchor = link.anchor ? section(link.anchor) : '';
+      if (anchor) link.anchor = anchor;
+      else delete link.anchor;
+    }
   // Old addresses kept for the removed page follow its links to the replacement, or go with it.
   if (Array.isArray(state.site.redirects)) {
     state.site.redirects = state.site.redirects.flatMap((r) => (r.pageId !== page.id ? [r] : op.replacementPageId ? [{ ...r, pageId: op.replacementPageId }] : []));

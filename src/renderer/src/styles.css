@@ -1383,6 +1383,12 @@ body.dialog-open .toast .btn { visibility: hidden; }
 .set-home-heading { font-weight: 500; margin-bottom: 6px; }
 .set-home-keep { display: flex; align-items: center; gap: 6px; font-weight: 500; }
 .set-home-keep input { margin: 0; accent-color: var(--accent); }
+/* The links a deletion moves, by label and place, for review before deleting. Long lists scroll in the dialog. */
+.delete-page-links { margin: 0; padding: 8px 10px; list-style: none; display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.delete-page-links li { overflow-wrap: anywhere; }
+.delete-page-link-label { font-weight: 500; }
+.delete-page-body { overflow-wrap: anywhere; }
+.delete-page-note { margin: 0; color: var(--text-2); }
 /* Assets: one image's details replace the grid. Flat on the panel (no card inside a panel), in three
    bands split by straight dividers: what it is and where it is used, what it says, what you can do. */
 .asset-detail { display: flex; flex-direction: column; padding: 0 14px 20px; }

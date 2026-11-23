@@ -2,13 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Component, History, House, Redo2, Sparkles, Trash2, Undo2, User } from 'lucide-react';
 import type { ElementRef } from '@shared/types';
 import { displayName, instancesOf } from '@engine/tree';
-import { pageLinkReferences, planHomeChange } from '@engine/apply';
+import { planHomeChange } from '@engine/apply';
+import type { PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { applyOps, api, getState, setState, toast, useStore } from '../store';
 import { Field, Modal, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
+import { planPageRemoval, reviewPageRemoval } from '../lib/page-removal';
+import { sectionOptions } from '../lib/sections';
 
 export function CreateComponentModal({ target }: { target: ElementRef }) {
   const [name, setName] = useState('');
@@ -45,60 +48,112 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
   );
 }
 
+/** How a link in the review reads: its label in quotes, where it is, and the section it jumps to. */
+function RemovedPageLink({ use }: { use: PageLinkUse }) {
+  return (
+    <li>
+      <span className="delete-page-link-label">“{use.label}”</span> <span className="muted">in {use.where}</span>
+      {use.link.anchor && <span className="delete-page-route"> #{use.link.anchor}</span>}
+    </li>
+  );
+}
+
+/** A choice for a missing section that has not been made yet: the select shows its prompt. */
+const UNCHOSEN = '\u0000unchosen';
+
+/** No page chosen yet: shown when the replacement picked before has gone. */
+const NO_PAGE = '';
+
 export function DeletePageModal({ pageId }: { pageId: string }) {
   const snap = useStore((s) => s.snapshot);
   const st = snap!.state;
   const page = st.pages[pageId];
   const others = st.site.pageOrder.filter((id) => id !== pageId);
-  const [replacement, setReplacement] = useState(st.site.homePageId === pageId ? others[0] : st.site.homePageId);
-  const refs = pageLinkReferences(st, pageId);
-  const close = () => setState({ modal: null });
+  const isHome = st.site.homePageId === pageId;
+  const [picked, setPicked] = useState(isHome ? others[0] : st.site.homePageId);
+  // A replacement that has gone since it was picked (an undo, the assistant) is never swapped for another page
+  // without asking: the author chooses again.
+  const replacement = picked && picked !== pageId && Object.hasOwn(st.pages, picked) ? picked : undefined;
+  // Section choices hold only for the replacement and the project they were made for: a new replacement or any
+  // change to the project (an undo, the assistant) asks again.
+  const [sections, setSections] = useState<{ key: string; choices: Map<string, string> }>({ key: '', choices: new Map() });
+  const key = [snap?.workspaceKey, pageId, replacement, snap?.revision].join('\u0000');
+  const choices = sections.key === key ? sections.choices : new Map<string, string>();
+  const [busy, setBusy] = useState(false);
+  const review = reviewPageRemoval(st, pageId, replacement);
+  const refs = review.uses.length;
+  const plan = planPageRemoval(st, pageId, replacement, choices);
+  const target = replacement ? st.pages[replacement] : undefined;
+  const aiBusy = !!snap?.aiBusy;
+  // A page deleted some other way (the assistant) takes its dialog with it, so an undo never brings the dialog back.
+  useEffect(() => {
+    const modal = getState().modal;
+    if (!page && !busy && modal?.kind === 'delete-page' && modal.pageId === pageId) setState({ modal: null });
+  }, [page, busy, pageId]);
+  const close = () => !busy && setState({ modal: null });
   if (!page) return null;
+  const choose = (fragment: string, value: string) => setSections({ key, choices: new Map(choices).set(fragment, value) });
+  const { options } = sectionOptions(st, replacement);
+  const remove = async () => {
+    if (!plan.operations || busy || aiBusy) return;
+    const workspaceKey = snap?.workspaceKey;
+    setBusy(true);
+    let done: Awaited<ReturnType<typeof applyOps>> = null;
+    try {
+      done = await applyOps(plan.operations, `Delete page ${page.title}`, undefined, snap?.revision);
+    } finally {
+      setBusy(false);
+    }
+    // Only this dialog closes, and only in the project it was opened in.
+    const now = getState();
+    if (!done || now.snapshot?.workspaceKey !== workspaceKey) return;
+    if (now.modal?.kind === 'delete-page' && now.modal.pageId === pageId) setState({ modal: null });
+    // Only leave the current page when it is the one that went.
+    const current = getState().pageId;
+    if (current === pageId || !getState().snapshot?.state.pages[current ?? '']) selectPage(replacement ?? st.site.homePageId);
+    // The row that opened this is gone: keyboard focus goes to the current page's row.
+    setTimeout(() => document.querySelector<HTMLElement>('[role="listbox"][aria-label="Pages"] [role="option"][aria-selected="true"]')?.focus(), 0);
+  };
+  const linkHint = refs ? ` The ${refs} link${refs === 1 ? '' : 's'} below that point here will point to it.` : '';
   return (
     <Modal
       title={`Delete “${page.title}”?`}
       describedBy="delete-page-desc"
       icon={<Trash2 style={{ color: 'var(--red)' }} />}
       onClose={close}
+      busy={busy}
       footer={
         <>
-          <button className="btn" onClick={close}>
+          <button className="btn" onClick={close} disabled={busy}>
             Cancel
           </button>
-          <button
-            className="btn btn-danger-fill"
-            onClick={async () => {
-              if (await applyOps([{ type: 'page.remove', pageId, replacementPageId: refs || pageId === st.site.homePageId ? replacement : undefined }], `Delete page ${page.title}`)) {
-                setState({ modal: null });
-                // Only leave the current page when it is the one that went.
-                const current = getState().pageId;
-                if (current === pageId || !getState().snapshot?.state.pages[current ?? '']) selectPage(replacement ?? st.site.homePageId);
-                // The row that opened this is gone: keyboard focus goes to the current page's row.
-                setTimeout(() => document.querySelector<HTMLElement>('[role="listbox"][aria-label="Pages"] [role="option"][aria-selected="true"]')?.focus(), 0);
-              }
-            }}
-          >
+          <button className="btn btn-danger-fill" disabled={!plan.operations || busy || aiBusy} onClick={() => void remove()}>
             Delete page
           </button>
         </>
       }
     >
-      <div className="col" style={{ gap: 12 }}>
+      <div className="col delete-page-body" style={{ gap: 12 }}>
         <p id="delete-page-desc" style={{ margin: 0 }}>
           The page at <span className="delete-page-route">{page.route}</span> and its content are removed from your site. You can undo this.
         </p>
-        {(refs > 0 || pageId === st.site.homePageId) && (
+        {(refs > 0 || isHome) && (
           <Field
-            label={pageId === st.site.homePageId ? 'New home page' : 'Point existing links to'}
+            label={isHome ? 'New home page' : 'Point existing links to'}
             hint={
-              pageId === st.site.homePageId
-                ? refs
-                  ? `It becomes the home page, and the ${refs} link${refs === 1 ? '' : 's'} (including navigation) that point here will point to it.`
+              isHome
+                ? target
+                  ? `${target.title} becomes the home page and moves from ${target.route} to /.${linkHint}`
                   : 'Another page must become the home page.'
-                : `${refs} link${refs === 1 ? '' : 's'} (including navigation) currently point${refs === 1 ? 's' : ''} to this page.`
+                : `The ${refs} link${refs === 1 ? '' : 's'} below point${refs === 1 ? 's' : ''} to this page now.`
             }
           >
-            <select className="select" value={replacement} onChange={(e) => setReplacement(e.target.value)}>
+            <select className="select" value={replacement ?? NO_PAGE} disabled={busy} onChange={(e) => setPicked(e.target.value)}>
+              {!replacement && (
+                <option value={NO_PAGE} disabled>
+                  Choose a page…
+                </option>
+              )}
               {others.map((id) => {
                 // Pages that share a title are told apart by their address.
                 const p = st.pages[id];
@@ -112,6 +167,42 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
             </select>
           </Field>
         )}
+        {refs > 0 && (
+          <ul className="delete-page-links" aria-label={`Links that will go to ${target?.title ?? 'the new page'}`}>
+            {review.uses.map((u, i) => (
+              <RemovedPageLink key={i} use={u} />
+            ))}
+          </ul>
+        )}
+        {target &&
+          review.missing.map((m) => {
+            const labels = m.uses.map((u) => `“${u.label}”`);
+            return (
+              <Field
+                key={m.fragment}
+                label={`Links to #${m.fragment}`}
+                hint={`${target.title} has no section with this ID. Choose where ${labels.length > 1 ? `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]} go` : `${labels[0]} goes`} instead.`}
+              >
+                <select className="select" value={choices.get(m.fragment) ?? UNCHOSEN} disabled={busy} onChange={(e) => choose(m.fragment, e.target.value)}>
+                  <option value={UNCHOSEN} disabled>
+                    Choose a section…
+                  </option>
+                  <option value="">Top of page</option>
+                  {options.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.text}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            );
+          })}
+        {plan.lost.length > 0 && (
+          <p className="delete-page-note" role="alert">
+            Giving those sections new IDs would take {plan.lost.map((id) => `#${id}`).join(', ')} away from {target?.title}, where other links still go. Choose a different section for one of them.
+          </p>
+        )}
+        {aiBusy && <p className="delete-page-note">The AI is making changes. Stop it to delete this page.</p>}
       </div>
     </Modal>
   );

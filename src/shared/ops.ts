@@ -60,7 +60,11 @@ export const OPERATION_SCHEMAS = {
   'page.remove': z.object({
     type: z.literal('page.remove'),
     pageId: z.string(),
-    replacementPageId: z.string().optional().describe('Links to the removed page are pointed here. Required when other content links to it.')
+    replacementPageId: z.string().optional().describe('Links to the removed page are pointed here. Required when other content links to it.'),
+    sectionReplacements: z
+      .array(z.object({ from: z.string().describe('A section ID on the removed page that links jump to.'), to: z.string().describe('The section ID on the replacement page they jump to instead, or "" for the top of the page.') }))
+      .optional()
+      .describe('Where links to sections of the removed page go when the replacement page has no section with that ID. A section the replacement page also has is always kept; any other goes to the top of the replacement page unless chosen here.')
   }),
   'page.setHome': z.object({
     type: z.literal('page.setHome'),

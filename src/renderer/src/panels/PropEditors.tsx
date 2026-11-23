@@ -12,13 +12,13 @@ import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget,
 import { importAndPlace } from '../lib/place';
 import { assetUrl } from '../lib/model';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
-import { pageIds, pageSections, planSectionPick, sharedPageIds } from '@generator/checks';
+import { pageIds, planSectionPick, sharedPageIds } from '@generator/checks';
 import { contactMismatch } from '@shared/contact-links';
+import { SECTION_NODE, sectionOptions } from '../lib/sections';
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
 const OTHER_SECTION = '\u0000other';
-const SECTION_NODE = 'node:';
 
 /**
  * Which section of a page a link jumps to: the page's sections by their headings (a section without an ID gets one
@@ -32,23 +32,9 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { s
   const page = pageId ? state.pages[pageId] : undefined;
   // A shared header or footer link to a section "on this page" shows on every page with the header, so only IDs all
   // of those pages have will work there, and choosing one never gives a section on one page a new ID.
-  const ids = !page ? new Set<string>() : shared ? sharedPageIds(state) : pageIds(state, page.id);
-  const options: Array<{ value: string; text: string }> = [];
-  const add = (v: string, text: string) => {
-    if (!options.some((o) => o.value === v)) options.push({ value: v, text });
-  };
-  const seen = new Map<string, number>();
-  for (const x of page ? pageSections(state, page.id) : []) {
-    if (shared && !(x.anchor && ids.has(x.anchor))) continue;
-    // Sections with the same heading are told apart by their order on the page.
-    const n = (seen.get(x.label) ?? 0) + 1;
-    seen.set(x.label, n);
-    add(x.anchor ? `#${x.anchor}` : `${SECTION_NODE}${x.nodeId}`, `${x.nested ? '\u2003' : ''}${x.label}${n > 1 ? ` (${n})` : ''}`);
-  }
-  if (page && page.shell !== 'none')
-    for (const t of [state.site.shell.header, state.site.shell.footer]) for (const n of Object.values(t.nodes)) if (n.anchor && ids.has(n.anchor)) add(`#${n.anchor}`, `#${n.anchor}`);
+  const { ids, options } = sectionOptions(state, pageId, shared);
   // A section that is gone (or was typed in) stays visible until another is chosen.
-  if (value) add(`#${value}`, ids.has(value) ? `#${value}` : `#${value} (not found)`);
+  if (value && !options.some((o) => o.value === `#${value}`)) options.push({ value: `#${value}`, text: ids.has(value) ? `#${value}` : `#${value} (not found)` });
   // Leaving the typed ID (a commit, Escape or a plain blur) goes back to the list.
   const backToList = (refocus: boolean) => {
     setTyping(false);
