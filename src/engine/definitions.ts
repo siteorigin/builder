@@ -279,6 +279,14 @@ export function removeVariant(state: ProjectState, op: Op<'component.removeVaria
   const def = projectDef(state, op.definitionId);
   const found = findVariant(def, op.variant, op.axis);
   if ('error' in found) fail(found.error);
+  // A placement inside another component that chooses this option through a property would lose it.
+  for (const { node, owner } of instancesOf(state, def.id)) {
+    const chosen = node.variants?.[found.axis];
+    const parent = owner.kind === 'component' ? state.components[owner.id] : undefined;
+    const from = parent && isBinding(chosen) ? boundSchema(parent, node.id, chosen) : undefined;
+    if (from?.type === 'enum' && from.options.some((o) => o.value === found.id))
+      fail(`"${parent!.name}" can choose the ${found.axis} "${found.id}" through its "${from.label}" choice. Remove that option there first.`);
+  }
   const axis = def.variantAxes![found.axis];
   delete axis.options[found.id];
   const left = Object.keys(axis.options);
@@ -333,7 +341,7 @@ const FIELD_KINDS: Record<BindField, GraphNode['kind'][] | null> = {
   text: ['text'],
   image: ['image'],
   fallbackAlt: ['image'],
-  link: ['link'],
+  link: ['link', 'element'],
   label: ['link'],
   appearance: ['link'],
   icon: ['icon', 'link'],
@@ -360,6 +368,8 @@ function literalFor(field: BindField, node: GraphNode, schema: PropSchema | unde
     case 'appearance':
       return APPEARANCES.includes(String(d)) ? String(d) : 'primary';
     case 'icon':
+      // A button showed no icon while its property was empty, and keeps showing none.
+      if (node.kind === 'link' && !(typeof d === 'string' && d.trim())) return undefined;
       return typeof d === 'string' && /^[a-z0-9-]{1,40}$/.test(d) ? d : 'sparkles';
     case 'image':
       return schema?.type === 'image' ? clone(d) : { assetId: null, alt: '' };

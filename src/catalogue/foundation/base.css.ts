@@ -48,10 +48,11 @@ address, cite { font-style: normal; }
 
 .so-plain-link { background: var(--so-btn-bg, none); text-decoration: none; }
 .so-plain-link:hover { text-decoration: underline; text-underline-offset: 3px; }
-/* A link's icon beside its label. Buttons space it with their own gap; text links need a margin. */
-:is(.so-link, .so-plain-link) > .so-link__icon { display: inline-block; vertical-align: -0.18em; }
-:is(.so-link, .so-plain-link) > .so-link__icon--start { margin-inline-end: 0.35em; }
-:is(.so-link, .so-plain-link) > .so-link__icon--end { margin-inline-start: 0.35em; }
+/* A link's icon beside its label. Buttons space it with their own gap; text links (and a link left without a
+   destination, shown as plain text) sit it on the line with a margin. */
+:not(.so-btn) > .so-link__icon { display: inline-block; vertical-align: -0.18em; }
+:not(.so-btn) > .so-link__icon--start { margin-inline-end: 0.35em; }
+:not(.so-btn) > .so-link__icon--end { margin-inline-start: 0.35em; }
 /* A whole card as one link: it keeps the card's own layout and colours (any rule on the card wins). */
 :where(.so-card-link) { display: block; color: inherit; text-decoration: none; }
 

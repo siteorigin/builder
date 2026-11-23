@@ -580,6 +580,8 @@ interface EmitCtx {
   lists?: PropSchema[];
   /** Cards that render as their plain container because something interactive renders inside them. */
   brokenCards?: Set<string>;
+  /** Snippets this file declares, for unique names. */
+  snippets?: number;
 }
 
 function useImport(ctx: EmitCtx, name: string, path: string) {
@@ -589,8 +591,9 @@ function useImport(ctx: EmitCtx, name: string, path: string) {
 function bindExpr(ctx: EmitCtx, v: unknown, schema?: PropSchema): string {
   if (isBinding(v)) {
     if ('$prop' in v) return ctx.locals.get(v.$prop) ?? 'undefined';
-    const itemVar = ctx.items[ctx.items.length - 1] ?? 'item';
-    return itemField(itemVar, v.$item);
+    // Outside every list there is no item to read (validation reports it), so the field is empty.
+    const itemVar = ctx.items[ctx.items.length - 1];
+    return itemVar ? itemField(itemVar, v.$item) : 'undefined';
   }
   return js(schema ? resolveValue(schema, v, ctx.rctx) : v);
 }
@@ -715,7 +718,8 @@ function childrenCondition(ctx: EmitCtx, node: GraphNode & { kind: 'element' }, 
 function labellingHeading(ctx: EmitCtx, node: GraphNode): (GraphNode & { kind: 'text' }) | null {
   if (!ctx.def || ctx.items.length || node.kind !== 'element' || node.tag !== 'nav') return null;
   const first = ctx.tree.nodes[node.children[0]];
-  if (first?.kind !== 'text' || first.rich || typeof first.tag !== 'string' || !/^h[2-6]$/.test(first.tag) || first.unless) return null;
+  // A heading whose level a property chooses still labels the landmark, whichever level it renders at.
+  if (first?.kind !== 'text' || first.rich || !tagChoices(ctx, first).tags.every((t) => /^h[2-6]$/.test(t)) || first.unless) return null;
   return !first.when || headingGuardedByOwnText(first) ? first : null;
 }
 
@@ -763,7 +767,9 @@ function elementLabelAttrs(ctx: EmitCtx, node: GraphNode & { kind: 'element' }):
 function nameAttr(ctx: EmitCtx, attr: string, v: unknown): string {
   if (v === undefined) return '';
   if (!isBinding(v)) return String(v).trim() ? ` ${attr}=${attrJs(String(v).trim())}` : '';
-  return ` ${attr}={${bindExpr(ctx, v)} || undefined}`;
+  useImport(ctx, '{ has }', `${RUNTIME_DIR}/util.js`);
+  const value = bindExpr(ctx, v);
+  return ` ${attr}={has(${value}) ? ${value} : undefined}`;
 }
 
 /** The schema a binding reads in this scope: a property of the definition, or a field of the innermost list. */
@@ -884,7 +890,8 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       }
       if (choices.tags.length === 1) return `${p}<${choices.tags[0]} ${attrs}>${children ? `\n${children}\n${p}` : ''}</${choices.tags[0]}>`;
       // A bound tag renders the children once, from a snippet each possible tag renders.
-      const snippet = `so_children_${safeIdent(node.id)}`;
+      ctx.snippets = (ctx.snippets ?? 0) + 1;
+      const snippet = `so_children_${ctx.snippets}`;
       const body = children ? `${p}{#snippet ${snippet}()}\n${children}\n${p}{/snippet}\n` : '';
       return body + perTag(ctx, choices, (tag) => `${pad(ctx)}<${tag} ${attrs}>${children ? `{@render ${snippet}()}` : ''}</${tag}>`);
     }

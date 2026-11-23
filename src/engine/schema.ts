@@ -328,8 +328,10 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
         return `compares a ${schema.type} property with a value; a ${schema.type} can only be tested for being set.`;
     }
   }
+  // Older fields are type-checked where they are bound; documents saved before these checks keep loading as they did.
+  const fresh = ['tag', 'variant', 'iconPosition', 'ariaLabel'].includes(field) || (field === 'link' && node.kind === 'element') || (field === 'icon' && node.kind === 'link');
   const ok = acceptedTypes(node, field, undefined);
-  if (field === 'prop' || !ok) return null;
+  if (!fresh || !ok) return null;
   if (!ok.includes(schema.type)) return `shows a ${schema.type} property as its ${field}, which needs a ${ok.join(' or ')} property.`;
   const options = optionValues(schema);
   switch (field) {

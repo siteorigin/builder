@@ -316,6 +316,8 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
     node: (n, scope, reportId, inDef) => {
       if (!inDef) return;
       const reads: unknown[] = [conditionRef(n.when), conditionRef(n.unless)];
+      // An accessible name read from the same field would be cleared with it.
+      if (n.kind === 'element' || n.kind === 'icon' || n.kind === 'link') reads.push(n.ariaLabel);
       if (n.kind === 'text') reads.push(n.text);
       if (n.kind === 'link') reads.push(n.label);
       if (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') reads.push(...Object.values(n.props));

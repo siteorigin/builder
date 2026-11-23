@@ -26,6 +26,7 @@ import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily 
 import { getTheme, listThemes } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
+import { slotsInsideCards } from '@generator/card-links';
 import { pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, subtreeIds, allTrees } from './tree';
@@ -1124,11 +1125,13 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       return {};
     }
     case 'tag': {
-      if (node.kind !== 'text') fail('Only text nodes have a tag.');
+      if (node.kind !== 'text' && node.kind !== 'element') fail('Only text and containers have a tag.');
+      if (node.kind === 'text' && node.rich) fail('Rich text keeps its paragraph structure.');
+      // A bound tag is the choice's default, which must stay one of the choice's options.
+      if (setBound(node.tag, () => String(v))) return {};
+      if (node.kind !== 'text') fail('A container’s tag is chosen when it is inserted.');
       if (!['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'].includes(String(v))) fail('Tag must be h1–h6 or p.');
-      if (node.rich) fail('Rich text keeps its paragraph structure.');
-      // A bound tag is the choice's default; it must stay one of the choice's options.
-      if (!setBound(node.tag, () => String(v))) node.tag = String(v) as TextTag;
+      node.tag = String(v) as TextTag;
       return {};
     }
     case 'anchor': {
@@ -1720,6 +1723,9 @@ function titleCase(s: string): string {
 function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): OpResult {
   const { node, def } = instanceTarget(state, op.owner, op.nodeId);
   if (def.kind !== 'managed' || !def.tree) fail(`"${def.name}" is already a code component.`);
+  // Content placed in such a slot could no longer be checked for links inside the card's own link.
+  const carded = slotsInsideCards(state, def);
+  if (carded.length) fail(`"${def.name}" places its ${carded.map((s) => `“${def.slots?.[s]?.label ?? s}”`).join(', ')} content inside a card that links somewhere, which a code component cannot keep free of other links. Remove the card's link first.`);
   const name = op.name?.trim() || `${def.name} (code)`;
   const newId = projectDefId(name, 'code');
   const sourcePath = `${CUSTOM_DIR}/${pascal(name)}-${newId.slice(-5).replace(/[^A-Za-z0-9]/g, '')}.svelte`;

@@ -7,6 +7,7 @@ import type { ComponentDefinition, ElementNode, GraphNode, LinkValue, NodeTree, 
 import { isBinding } from '@shared/types';
 import { isListBlock, toRichText, type RichSpan } from '@shared/richtext';
 import { allTrees } from '@engine/tree';
+import { boundSchema } from '@engine/schema';
 
 /** Elements that are controls in their own right. */
 const INTERACTIVE_TAGS = new Set(['details', 'summary']);
@@ -34,7 +35,7 @@ export interface CardProblem {
   what: string;
 }
 
-const cardKey = (c: CardRef) => `${c.owner.kind}:${c.owner.id}:${c.cardId}`;
+export const cardKey = (c: CardRef) => `${c.owner.kind}:${c.owner.id}:${c.cardId}`;
 
 function richHasLink(value: unknown): boolean {
   const spans = (s: RichSpan[]) => s.some((x) => !!x.link);
@@ -47,7 +48,9 @@ function describe(n: GraphNode, def?: ComponentDefinition): string {
     case 'link':
       return name ? `the ${name} button` : 'a button or link';
     case 'element':
-      return name ? `the ${name} element` : isCardLink(n) ? 'another card link' : `a ${String(n.tag)} element`;
+      if (name) return `the ${name} element`;
+      if (isCardLink(n)) return 'another card link';
+      return isBinding(n.tag) ? 'an element that can render as a details disclosure' : `a ${n.tag} element`;
     case 'text':
       return name ? `the ${name} text` : 'rich text with links';
     case 'instance':
@@ -57,114 +60,176 @@ function describe(n: GraphNode, def?: ComponentDefinition): string {
   }
 }
 
-/** Slot content placed by an instance, read in the tree (and slot context) that placed it. */
-interface SlotScope {
-  content: Record<string, string[]>;
-  tree: NodeTree;
-  parent: SlotScope | null;
+/** One pass over a project: what each definition renders is worked out once, however often it is placed. */
+interface Pass {
+  state: ProjectState;
+  /** The interactive thing a definition's own content renders (slots aside), or null. */
+  intrinsic: Map<string, string | null>;
+  /** The slots a definition actually renders. */
+  rendered: Map<string, Set<string>>;
+  /** For each slot a definition renders inside a card, the cards it renders inside. */
+  cardSlots: Map<string, Map<string, CardRef[]>>;
+  /** Definitions being worked out: one that contains itself (refused by validation) counts as empty. */
+  open: Set<string>;
+}
+
+const newPass = (state: ProjectState): Pass => ({ state, intrinsic: new Map(), rendered: new Map(), cardSlots: new Map(), open: new Set() });
+
+/** Memoized per definition, with a definition that contains itself given `empty`. */
+function once<T>(pass: Pass, memo: Map<string, T>, key: string, empty: T, work: () => T): T {
+  if (memo.has(key)) return memo.get(key)!;
+  const guard = `${memo === pass.intrinsic ? 'i' : memo === pass.rendered ? 'r' : 'c'}:${key}`;
+  if (pass.open.has(guard)) return empty;
+  pass.open.add(guard);
+  try {
+    const out = work();
+    memo.set(key, out);
+    return out;
+  } finally {
+    pass.open.delete(guard);
+  }
 }
 
 /**
- * The first interactive thing that renders from `ids` (in `tree`): a link, another card, a details element, rich
- * text that has or may get links, or a code component (which can place any control). Managed components are
- * followed into their definitions, and their slots into the content the placement gives them; a slot of the
- * definition being checked (`scope` null) is judged where that definition is placed instead.
+ * The slots a definition renders: the slots its tree places, including those passed on to a nested component's
+ * slot that the nested component renders. A code component may render any slot it declares.
  */
-function firstInteractive(state: ProjectState, tree: NodeTree, ids: string[], scope: SlotScope | null, defs: string[], top: GraphNode | null, path = new Set<GraphNode>()): string | null {
-  // A hand-edited tree can list a node under itself: a node already being read further up is skipped.
-  const inside = (n: GraphNode, read: () => string | null) => {
-    path.add(n);
-    try {
-      return read();
-    } finally {
-      path.delete(n);
-    }
-  };
+function renderedSlots(pass: Pass, def: ComponentDefinition): Set<string> {
+  if (def.kind === 'code') return new Set(Object.keys(def.slots ?? {}));
+  return once(pass, pass.rendered, def.id, new Set<string>(), () => {
+    const out = new Set<string>();
+    const tree = def.tree;
+    if (!tree) return out;
+    const seen = new Set<string>();
+    const walk = (ids: string[]) => {
+      for (const id of ids) {
+        const n = tree.nodes[id];
+        if (!n || seen.has(id)) continue;
+        seen.add(id);
+        if (n.kind === 'slot') out.add(n.slot);
+        else if (n.kind === 'element' || n.kind === 'repeat') walk(n.children);
+        else if (n.kind === 'instance') {
+          const nested = pass.state.components[n.definitionId];
+          if (!nested) continue;
+          const shown = renderedSlots(pass, nested);
+          for (const [slot, content] of Object.entries(n.slots ?? {})) if (shown.has(slot)) walk(content);
+        }
+      }
+    };
+    walk(tree.rootIds);
+    return out;
+  });
+}
+
+/** Whether an element renders as a disclosure: a literal details or summary tag, or a choice that offers one. */
+function interactiveTag(def: ComponentDefinition | undefined, n: ElementNode): boolean {
+  if (!isBinding(n.tag)) return INTERACTIVE_TAGS.has(n.tag);
+  const schema = def ? boundSchema(def, n.id, n.tag) : undefined;
+  return schema?.type === 'enum' && schema.options.some((o) => INTERACTIVE_TAGS.has(o.value));
+}
+
+/**
+ * The first interactive thing that renders from `ids` in `tree` (owned by `def`, or a page or the shell): a link,
+ * another card, a disclosure, rich text that has or may get links, or a code component (which can place any
+ * control). A managed component counts by its own content, and by the content its placement gives the slots it
+ * renders. A slot of the definition being read is judged where that definition is placed.
+ */
+function firstInteractive(pass: Pass, def: ComponentDefinition | undefined, tree: NodeTree, ids: string[], path = new Set<string>()): string | null {
   for (const id of ids) {
     const n = tree.nodes[id];
-    if (!n || path.has(n)) continue;
-    // Report against the node the author placed in the tree being checked, not one deep inside a definition.
-    const shown = (what: string) => (top && top !== n ? `${describe(top, top.kind === 'instance' ? state.components[top.definitionId] : undefined)}, which holds ${what}` : what);
-    let inner: string | null = null;
-    switch (n.kind) {
-      case 'link':
-        return shown(describe(n));
-      case 'element':
-        if (isCardLink(n) || (!isBinding(n.tag) && INTERACTIVE_TAGS.has(n.tag))) return shown(describe(n));
-        inner = inside(n, () => firstInteractive(state, tree, n.children, scope, defs, top ?? n, path));
-        break;
-      case 'repeat':
-        inner = inside(n, () => firstInteractive(state, tree, n.children, scope, defs, top ?? n, path));
-        break;
-      case 'text':
-        // Bound rich text takes whatever its placement writes, links included.
-        if (n.rich && (isBinding(n.text) || richHasLink(n.text))) return shown(n.name ? describe(n) : isBinding(n.text) ? 'rich text, which can hold links' : 'rich text with links');
-        break;
-      case 'slot':
-        if (scope) inner = inside(n, () => firstInteractive(state, scope.tree, scope.content[n.slot] ?? [], scope.parent, defs, top, path));
-        break;
-      case 'instance': {
-        const def = state.components[n.definitionId];
-        if (!def) break;
-        if (def.kind === 'code') return shown(`${describe(n, def)}, a code component that can place links and controls`);
-        if (!def.tree || defs.includes(def.id)) break;
-        const placed = def.tree;
-        inner = inside(n, () => firstInteractive(state, placed, placed.rootIds, { content: n.slots ?? {}, tree, parent: scope }, [...defs, def.id], top ?? n, path));
-        break;
+    // A hand-edited tree can list a node under itself: a node already being read further up is skipped.
+    if (!n || path.has(id)) continue;
+    path.add(id);
+    try {
+      let inner: string | null = null;
+      switch (n.kind) {
+        case 'link':
+          return describe(n);
+        case 'element':
+          if (isCardLink(n) || interactiveTag(def, n)) return describe(n);
+          inner = firstInteractive(pass, def, tree, n.children, path);
+          break;
+        case 'repeat':
+          inner = firstInteractive(pass, def, tree, n.children, path);
+          break;
+        case 'text':
+          // Bound rich text takes whatever its placement writes, links included.
+          if (n.rich && (isBinding(n.text) || richHasLink(n.text))) return n.name ? describe(n) : isBinding(n.text) ? 'rich text, which can hold links' : 'rich text with links';
+          break;
+        case 'instance': {
+          const placed = pass.state.components[n.definitionId];
+          if (!placed) break;
+          if (placed.kind === 'code') return `${describe(n, placed)}, a code component that can place links and controls`;
+          const own = intrinsicInteractive(pass, placed);
+          if (own) return `${describe(n, placed)}, which holds ${own}`;
+          for (const slot of renderedSlots(pass, placed)) {
+            inner = firstInteractive(pass, def, tree, n.slots?.[slot] ?? [], path);
+            if (inner) break;
+          }
+          break;
+        }
       }
+      if (inner) return inner;
+    } finally {
+      path.delete(id);
     }
-    if (inner) return inner;
   }
   return null;
 }
 
+/** What a managed definition's own content makes interactive wherever it is placed, or null. */
+function intrinsicInteractive(pass: Pass, def: ComponentDefinition): string | null {
+  return once(pass, pass.intrinsic, def.id, null, () => (def.tree ? firstInteractive(pass, def, def.tree, def.tree.rootIds) : null));
+}
+
 /**
  * For each slot a definition renders inside a card, the cards it renders inside: a slot placed under one of its
- * own cards, or passed on to a nested component's slot that renders inside a card there.
+ * own cards, or passed on to a slot that a nested component renders inside a card of its own.
  */
-function cardSlots(state: ProjectState, def: ComponentDefinition, memo: Map<string, Map<string, CardRef[]>>, path: string[] = []): Map<string, CardRef[]> {
-  const known = memo.get(def.id);
-  if (known) return known;
-  const out = new Map<string, CardRef[]>();
-  if (!def.tree || path.includes(def.id)) return out;
-  const tree = def.tree;
-  const add = (slot: string, cards: CardRef[]) => out.set(slot, [...(out.get(slot) ?? []), ...cards]);
-  const seen = new Set<string>();
-  const walk = (ids: string[], cards: CardRef[]) => {
-    for (const id of ids) {
-      const n = tree.nodes[id];
-      if (!n || seen.has(id)) continue;
-      seen.add(id);
-      if (n.kind === 'slot' && cards.length) add(n.slot, cards);
-      if (n.kind === 'element' || n.kind === 'repeat') walk(n.children, isCardLink(n) ? [...cards, { owner: { kind: 'component', id: def.id }, cardId: n.id }] : cards);
-      if (n.kind === 'instance') {
-        const nested = state.components[n.definitionId];
-        const inner = nested?.kind === 'managed' ? cardSlots(state, nested, memo, [...path, def.id]) : new Map<string, CardRef[]>();
-        for (const [slot, ids2] of Object.entries(n.slots ?? {})) walk(ids2, [...cards, ...(inner.get(slot) ?? [])]);
+function cardSlots(pass: Pass, def: ComponentDefinition): Map<string, CardRef[]> {
+  return once(pass, pass.cardSlots, def.id, new Map<string, CardRef[]>(), () => {
+    const out = new Map<string, CardRef[]>();
+    const tree = def.tree;
+    if (def.kind !== 'managed' || !tree) return out;
+    const add = (slot: string, cards: CardRef[]) => out.set(slot, [...(out.get(slot) ?? []), ...cards]);
+    const seen = new Set<string>();
+    const walk = (ids: string[], cards: CardRef[]) => {
+      for (const id of ids) {
+        const n = tree.nodes[id];
+        if (!n || seen.has(id)) continue;
+        seen.add(id);
+        if (n.kind === 'slot' && cards.length) add(n.slot, cards);
+        if (n.kind === 'element' || n.kind === 'repeat') walk(n.children, isCardLink(n) ? [...cards, { owner: { kind: 'component', id: def.id }, cardId: n.id }] : cards);
+        if (n.kind === 'instance') {
+          const nested = pass.state.components[n.definitionId];
+          if (!nested) continue;
+          const shown = renderedSlots(pass, nested);
+          const inner = cardSlots(pass, nested);
+          for (const [slot, content] of Object.entries(n.slots ?? {})) if (shown.has(slot)) walk(content, [...cards, ...(inner.get(slot) ?? [])]);
+        }
       }
-    }
-  };
-  walk(tree.rootIds, []);
-  memo.set(def.id, out);
-  return out;
+    };
+    walk(tree.rootIds, []);
+    return out;
+  });
 }
 
 /** Every card that has interactive content rendering inside it, from its own tree or from a placement's slot. */
 export function cardLinkProblems(state: ProjectState): CardProblem[] {
   const out: CardProblem[] = [];
-  const memo = new Map<string, Map<string, CardRef[]>>();
+  const pass = newPass(state);
   for (const { owner, tree, label } of allTrees(state)) {
-    const ownDefs = owner.kind === 'component' ? [owner.id] : [];
+    const def = owner.kind === 'component' ? state.components[owner.id] : undefined;
     for (const n of Object.values(tree.nodes)) {
       if (isCardLink(n)) {
-        const what = firstInteractive(state, tree, n.children, null, ownDefs, null);
+        const what = firstInteractive(pass, def, tree, n.children);
         if (what) out.push({ owner, label, nodeId: n.id, cards: [{ owner, cardId: n.id }], what });
       }
       if (n.kind !== 'instance') continue;
-      const def = state.components[n.definitionId];
-      if (def?.kind !== 'managed') continue;
-      for (const [slot, cards] of cardSlots(state, def, memo)) {
-        const what = firstInteractive(state, tree, n.slots?.[slot] ?? [], null, ownDefs, null);
+      const placed = state.components[n.definitionId];
+      if (!placed) continue;
+      for (const [slot, cards] of cardSlots(pass, placed)) {
+        const what = firstInteractive(pass, def, tree, n.slots?.[slot] ?? []);
         if (what) out.push({ owner, label, nodeId: n.id, cards, what });
       }
     }
@@ -177,4 +242,7 @@ export function brokenCardKeys(state: ProjectState): Set<string> {
   return new Set(cardLinkProblems(state).flatMap((p) => p.cards.map(cardKey)));
 }
 
-export { cardKey };
+/** The slots of a definition that render inside one of its cards (or a nested component's card). */
+export function slotsInsideCards(state: ProjectState, def: ComponentDefinition): string[] {
+  return [...cardSlots(newPass(state), def).keys()];
+}
