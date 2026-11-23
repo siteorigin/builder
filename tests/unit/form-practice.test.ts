@@ -27,6 +27,8 @@ describe('forms in Preview, as the editor reads the preview bridge (issue #193)'
     expect(formSendOf({ id: 'a', kind: 'practice', result: 'refused', status: 422 })).toBeNull();
     expect(formSendOf({ id: 'a', kind: 'live', result: 'success' })).toBeNull();
     expect(formSendOf({ id: 'a', kind: 'live', result: 'sent' })).toBeNull();
+    expect(formSendOf({ id: 'a', kind: 'live', result: 'sent', status: 'ok' })).toBeNull();
+    expect(formSendOf({ id: 'a', kind: 'live', result: 'refused' })).toBeNull();
     expect(formSendOf({ kind: 'practice', result: 'success' })).toBeNull();
     expect(sendSettled({ id: 'a', kind: 'live', result: 'sending' })).toBe(false);
     expect(sendSettled({ id: 'a', kind: 'live', result: 'invalid' })).toBe(true);

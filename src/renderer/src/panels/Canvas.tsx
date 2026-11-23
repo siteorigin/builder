@@ -205,8 +205,9 @@ export function Canvas() {
           syncPage(path);
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
-          // What the panel said about the last page's sends is not about this one.
+          // What the panel said about the last page's sends is not about this one, and nor is a live test's answer.
           setLastSend(null);
+          setLiveRequest(null);
           setFormsView((v) => v + 1);
           // A selection made with the page change (a usage list showing a placement on another page) asked to be
           // scrolled to before this page was there: now it is.
@@ -480,7 +481,8 @@ export function Canvas() {
     const requestId = `live-${Date.now()}`;
     setLiveRequest(requestId);
     setLastSend(null);
-    post('formLiveTest', { id: form.id, requestId });
+    // The address the author was shown: the page refuses the test if the form would now send anywhere else.
+    post('formLiveTest', { id: form.id, target: form.destination, requestId });
   };
 
   // Navigate when the current page changes.

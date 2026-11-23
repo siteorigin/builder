@@ -223,13 +223,17 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
   }
 
   it('sends nothing in Edit, however the form is submitted', async () => {
-    await withPreview(async ({ frame, fill, field, service, status, values, results, valid }) => {
+    await withPreview(async ({ frame, fill, field, service, status, values, results, valid, addCustomForm, submitCustom, customResult }) => {
       await fill();
       // The answers would pass the browser's checks: only Edit stops them.
       expect(await valid()).toBe(true);
       await field('Email').press('Enter');
       await frame.evaluate(`document.querySelector('form').requestSubmit()`);
+      // A form of the page's own code too.
+      await addCustomForm('own', `${SERVICE}/f/own`, `return (await fetch('${SERVICE}/f/own', { method: 'POST', body: new FormData(form) })).status;`);
+      await submitCustom('own');
       await frame.waitForTimeout(400);
+      expect(await customResult('own')).toBeUndefined();
       expect(service.requests).toHaveLength(0);
       expect(await status()).toBe('');
       expect(await values()).toEqual(['Ada', 'ada@example.com', 'A rehearsal enquiry']);
@@ -306,7 +310,7 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       await preview();
       await fill();
       service.status = 202;
-      await toFrame('formLiveTest', { id: await formId(), requestId: 'live-1' });
+      await toFrame('formLiveTest', { id: await formId(), target: ENDPOINT, requestId: 'live-1' });
       await expect.poll(() => service.requests.length).toBe(1);
       expect(service.requests[0]).toMatchObject({ method: 'POST', url: ENDPOINT });
       expect(service.requests[0].body).toContain('A rehearsal enquiry');
@@ -335,7 +339,7 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       await preview();
       await fill();
       service.status = 422;
-      await toFrame('formLiveTest', { id: await formId(), requestId: 'live-1' });
+      await toFrame('formLiveTest', { id: await formId(), target: ENDPOINT, requestId: 'live-1' });
       await expect.poll(alert).toBe(FAILED);
       await expect.poll(async () => (await results()).at(-1)).toEqual({ requestId: 'live-1', kind: 'live', result: 'refused', status: 422, destination: ENDPOINT });
       expect(service.requests).toHaveLength(1);
@@ -350,7 +354,7 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       await field('Email').press('Enter');
       await expect.poll(status).toBe(SENDING);
       // The form is still sending its practice, so it does not send for the live test.
-      await toFrame('formLiveTest', { id: await formId(), requestId: 'live-1' });
+      await toFrame('formLiveTest', { id: await formId(), target: ENDPOINT, requestId: 'live-1' });
       await expect.poll(alert, { timeout: 5000 }).toBe(FAILED);
       await field('Message').fill('A different enquiry');
       await field('Email').press('Enter');
@@ -364,31 +368,36 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
     await withPreview(async ({ frame, fill, field, service, results, toFrame, forms, formId, preview }) => {
       // Not in Preview.
       await fill();
-      await toFrame('formLiveTest', { id: await formId(), requestId: 'edit' });
+      await toFrame('formLiveTest', { id: await formId(), target: ENDPOINT, requestId: 'edit' });
       await expect.poll(results).toEqual([{ requestId: 'edit', kind: 'live', result: 'unavailable' }]);
 
       await preview();
       await field('Email').fill('not an email');
-      await toFrame('formLiveTest', { id: await formId(), requestId: 'invalid' });
+      await toFrame('formLiveTest', { id: await formId(), target: ENDPOINT, requestId: 'invalid' });
       await expect.poll(results).toHaveLength(2);
       expect((await results())[1]).toEqual({ requestId: 'invalid', kind: 'live', result: 'invalid' });
       await field('Email').fill('ada@example.com');
+
+      // The author was shown another address than the one the form sends to.
+      await toFrame('formLiveTest', { id: await formId(), target: `${SERVICE}/f/other`, requestId: 'elsewhere' });
+      await expect.poll(results).toHaveLength(3);
+      expect((await results())[2]).toEqual({ requestId: 'elsewhere', kind: 'live', result: 'unavailable' });
 
       // The author confirmed the test for one destination; the form now sends somewhere else.
       const confirmed = await formId();
       await frame.evaluate(`document.querySelector('form').setAttribute('action', '${SERVICE}/f/other')`);
       await expect.poll(async () => (await forms())[0].id).not.toBe(confirmed);
-      await toFrame('formLiveTest', { id: confirmed, requestId: 'stale' });
-      await expect.poll(results).toHaveLength(3);
-      expect((await results())[2]).toEqual({ requestId: 'stale', kind: 'live', result: 'unavailable' });
+      await toFrame('formLiveTest', { id: confirmed, target: ENDPOINT, requestId: 'stale' });
+      await expect.poll(results).toHaveLength(4);
+      expect((await results())[3]).toEqual({ requestId: 'stale', kind: 'live', result: 'unavailable' });
 
       // Or its service's key changed, where it posts staying the same.
       const keyed = (await forms())[0].id;
       await frame.evaluate(`document.querySelector('form').insertAdjacentHTML('afterbegin', '<input type="hidden" name="access_key" value="another-inbox">')`);
       await expect.poll(async () => (await forms())[0].id).not.toBe(keyed);
-      await toFrame('formLiveTest', { id: keyed, requestId: 'rekeyed' });
-      await expect.poll(results).toHaveLength(4);
-      expect((await results())[3]).toEqual({ requestId: 'rekeyed', kind: 'live', result: 'unavailable' });
+      await toFrame('formLiveTest', { id: keyed, target: `${SERVICE}/f/other`, requestId: 'rekeyed' });
+      await expect.poll(results).toHaveLength(5);
+      expect((await results())[4]).toEqual({ requestId: 'rekeyed', kind: 'live', result: 'unavailable' });
       await frame.waitForTimeout(200);
       expect(service.requests).toHaveLength(0);
     });
@@ -403,7 +412,7 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       await second.getByLabel('Email').fill('grace@example.com');
       await second.getByLabel('Message').fill('A visit next week');
       const id = await formId(1, 2);
-      await toFrame('formLiveTest', { id, requestId: 'live-1' });
+      await toFrame('formLiveTest', { id, target: ENDPOINT, requestId: 'live-1' });
       await expect.poll(() => service.requests.length).toBe(1);
       expect(service.requests[0].body).toContain('A visit next week');
       await expect.poll(async () => (await results()).at(-1)).toMatchObject({ kind: 'live', result: 'sent' });
@@ -451,38 +460,77 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
 
       await expect.poll(async () => (await forms()).length).toBe(2);
       const id = (await forms()).find((f) => f.destination === `${SERVICE}/f/xhr`)!.id;
-      await toFrame('formLiveTest', { id, requestId: 'live-xhr' });
+      await toFrame('formLiveTest', { id, target: `${SERVICE}/f/xhr`, requestId: 'live-xhr' });
       await expect.poll(() => customResult('ok'), { timeout: 5000 }).toBe('ok:200');
       expect(service.requests).toMatchObject([{ method: 'POST', url: `${SERVICE}/f/xhr` }]);
       await expect.poll(async () => (await results()).at(-1)).toMatchObject({ kind: 'live', result: 'sent', status: 200 });
     });
   }, 30_000);
 
-  it('ends a live test when the page changes, and does not report a practice send from a page or mode left behind', async () => {
-    await withPreview(async ({ frame, fill, field, service, results, preview, setMode, toFrame, addCustomForm, customResult, forms }) => {
+  it('lets only a send made within the confirmed submission be live: a form that waits first practises', async () => {
+    await withPreview(async ({ service, results, preview, toFrame, addCustomForm, customResult, forms }) => {
       await preview();
-      // A form that waits before it sends: its live test is still waiting when the visitor moves on.
-      await addCustomForm('slow', `${SERVICE}/f/slow`, `await new Promise((r) => setTimeout(r, 400)); return (await fetch('${SERVICE}/f/slow', { method: 'POST', body: new FormData(form) })).status;`);
+      await addCustomForm('slow', `${SERVICE}/f/slow`, `await new Promise((r) => setTimeout(r, 300)); return (await fetch('${SERVICE}/f/slow', { method: 'POST', body: new FormData(form) })).status;`);
       await expect.poll(async () => (await forms()).length).toBe(2);
       const id = (await forms()).find((f) => f.destination === `${SERVICE}/f/slow`)!.id;
-      await toFrame('formLiveTest', { id, requestId: 'live-1' });
-      await frame.evaluate(`window.dispatchEvent(new Event('siteorigin:navigated'))`);
+      await toFrame('formLiveTest', { id, target: `${SERVICE}/f/slow`, requestId: 'live-1' });
       await expect.poll(results).toEqual([{ requestId: 'live-1', kind: 'live', result: 'not-sent' }]);
-      // Its send, when it comes, is a practice.
       await expect.poll(() => customResult('slow'), { timeout: 5000 }).toBe(200);
-      expect((await results()).slice(1)).toEqual([
+      await expect.poll(async () => (await results()).slice(1)).toEqual([
         { kind: 'practice', result: 'sending' },
         { kind: 'practice', result: 'success' }
       ]);
       expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  it('practises a send that comes after the visitor has moved to another page, and says nothing of one left behind', async () => {
+    await withPreview(async ({ frame, fill, field, service, results, preview, setMode, addCustomForm, submitCustom, customResult }) => {
+      await preview();
+      // A form that waits, then sends to an address of its own; the visitor moves on, and the form leaves the page.
+      await addCustomForm('relay', `${SERVICE}/f/relay`, `await new Promise((r) => setTimeout(r, 400)); return (await fetch('${SERVICE}/relay', { method: 'POST', body: new FormData(form) })).status;`);
+      await submitCustom('relay');
+      await frame.evaluate(`(() => { window.dispatchEvent(new Event('siteorigin:navigated')); document.getElementById('relay').remove(); })()`);
+      await expect.poll(() => customResult('relay'), { timeout: 5000 }).toBe(200);
+      expect(service.requests).toHaveLength(0);
+      const before = (await results()).length;
 
       // A practice send still waiting when the author leaves Preview tells the editor nothing more.
       await fill();
       await field('Email').press('Enter');
-      await expect.poll(async () => (await results()).length).toBe(4);
+      await expect.poll(async () => (await results()).length).toBe(before + 1);
       await setMode('edit');
       await frame.waitForTimeout(1200);
-      expect((await results()).slice(3)).toEqual([{ kind: 'practice', result: 'sending' }]);
+      expect((await results()).slice(before)).toEqual([{ kind: 'practice', result: 'sending' }]);
+      expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  it('practises a form without method="post" whose own code posts', async () => {
+    await withPreview(async ({ frame, service, preview, customResult }) => {
+      await preview();
+      await frame.evaluate(`(() => {
+        document.getElementById('app').insertAdjacentHTML('beforeend', '<form id="plain"><input name="q" value="Hello"></form>');
+        const form = document.getElementById('plain');
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault();
+          window.customResults = { plain: (await fetch('${SERVICE}/subscribe', { method: 'POST', body: new FormData(form) })).status };
+        });
+        form.requestSubmit();
+      })()`);
+      await expect.poll(() => customResult('plain'), { timeout: 5000 }).toBe(200);
+      expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  it('never answers a practice XMLHttpRequest the page gave up', async () => {
+    await withPreview(async ({ frame, service, preview, addCustomForm, submitCustom }) => {
+      await preview();
+      await addCustomForm('gaveup', `${SERVICE}/f/xhr`, `return await new Promise((resolve) => { const x = new XMLHttpRequest(); window.xhrLoads = 0; x.open('POST', '${SERVICE}/f/xhr'); x.onload = () => window.xhrLoads++; x.onabort = () => resolve('aborted'); x.send(new FormData(form)); setTimeout(() => x.abort(), 100); });`);
+      await submitCustom('gaveup');
+      await frame.waitForTimeout(1300);
+      expect(await frame.evaluate('window.xhrLoads')).toBe(0);
+      expect(service.requests).toHaveLength(0);
     });
   }, 30_000);
 
