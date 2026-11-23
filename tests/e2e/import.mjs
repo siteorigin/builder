@@ -1,6 +1,7 @@
 // Importing several large photos keeps the editor responsive: the main process keeps answering the window
 // while the photos' responsive copies are made, because decoding and resizing happen in the media worker.
 import assert from 'node:assert/strict';
+import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { createProject, launch, scratch, step, withTimeout } from './harness.mjs';
@@ -83,6 +84,57 @@ for (const id of run.result.assetIds) {
     assert.equal(meta.format, asset.mime === 'image/png' ? 'png' : 'jpeg', `${v.file} keeps its format`);
   }
 }
+
+// Issue #253: removing every image leaves their files for Undo; the Assets panel says how much they take and frees
+// it on request, showing first which Undo steps go with them.
+const assetDir = join(snap.dir, 'static', 'assets');
+const onDisk = () => readdirSync(assetDir).filter((f) => !f.startsWith('.'));
+const diskBytes = () => onDisk().reduce((n, f) => n + statSync(join(assetDir, f)).size, 0);
+const imported = onDisk();
+const importedBytes = diskBytes();
+const mb = (b) => `${(b / (1024 * 1024)).toFixed(1)} MB`;
+assert.equal(imported.length, PHOTOS * 4, 'each photo is an original and three responsive copies');
+
+step('remove every unused image: the files stay, and the Assets panel says they are kept for Undo');
+await win.getByRole('button', { name: 'Assets', exact: true }).click();
+const storage = win.getByTestId('asset-storage');
+await storage.getByText(`${PHOTOS * 4} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await win.getByRole('button', { name: /^Unused/ }).click();
+await win.getByRole('button', { name: `Remove all ${PHOTOS}` }).click();
+await storage.getByText('Kept for Undo').waitFor({ timeout: 15000 });
+await storage.getByText(`${PHOTOS * 4} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await storage.getByText('0 files · 0 bytes').waitFor();
+assert.deepEqual(onDisk().sort(), imported.sort(), 'removing keeps every file for Undo');
+
+step('normal removal stays undoable');
+assert.equal((await win.evaluate(() => window.builder.project.undo())).ok, true, 'undo the removal');
+assert.equal(Object.keys((await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets).length, PHOTOS, 'undo brings every image back');
+assert.equal((await win.evaluate(() => window.builder.project.redo())).ok, true, 'redo the removal');
+await storage.getByText('Kept for Undo').waitFor({ timeout: 15000 });
+
+step('Free up space shows what it deletes and which steps go, then frees it');
+await storage.getByRole('button', { name: 'Free up space…' }).click();
+const dialog = win.getByTestId('free-space-dialog');
+await dialog.waitFor();
+await dialog.getByText('Nothing will be left to undo.').waitFor();
+assert.deepEqual(await dialog.locator('.storage-steps li').allTextContents(), [`Remove ${PHOTOS} unused images`, `Import ${PHOTOS} images`], 'the lost steps, newest first');
+assert.equal(await win.evaluate(() => document.activeElement?.textContent?.trim()), 'Cancel', 'the safe choice has focus');
+const { plan, refused } = await win.evaluate(async () => {
+  const key = (await window.builder.project.snapshot()).workspaceKey;
+  const info = await window.builder.project.storage(key);
+  return { plan: info.reclaim, refused: await window.builder.project.reclaimStorage(info.reclaim.key, `${key}-another-opening`) };
+});
+assert.equal(refused.ok, false, 'a plan is only carried out in the opening it was made for');
+assert.deepEqual(plan.files, { files: PHOTOS * 4, bytes: importedBytes }, 'the plan frees every removed file');
+assert.deepEqual(onDisk().sort(), imported.sort(), 'nothing is deleted before the author confirms');
+await win.getByRole('button', { name: `Free ${mb(plan.files.bytes + plan.historyBytes)}`, exact: true }).click();
+await dialog.waitFor({ state: 'detached', timeout: 15000 });
+await win.locator('.toast', { hasText: 'Freed ' }).first().waitFor({ timeout: 15000 });
+assert.deepEqual(onDisk(), [], 'the removed files are deleted');
+await storage.waitFor({ state: 'detached', timeout: 15000 });
+const after = await win.evaluate(() => window.builder.project.snapshot());
+assert.equal(after.history.canUndo, false, 'the steps that could bring them back are gone');
+assert.deepEqual(after.state.assets.assets, {}, 'the library stays empty');
 assert.deepEqual(errors, [], 'no page errors');
 
 await app.close();

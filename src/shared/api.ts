@@ -139,6 +139,45 @@ export interface ProgressEvent {
   attempt?: string;
 }
 
+/** Files and bytes on disk. */
+export interface StorageSize {
+  files: number;
+  bytes: number;
+}
+
+/**
+ * Freeing the space that removed images and fonts take. History is trimmed from its ends only, so every step
+ * that stays still undoes and redoes; the files only the dropped steps could bring back are then deleted.
+ */
+export interface ReclaimPlan {
+  /** Names exactly this plan: a reclaim with another key (the project changed since) is refused. */
+  key: string;
+  /** The removed files deleted, and the history versions only the dropped steps used. */
+  files: StorageSize;
+  historyBytes: number;
+  /** Undo steps that go, oldest first. They are the oldest steps: everything after them stays undoable. */
+  undo: string[];
+  /** Redo steps that go, nearest first. They are the furthest ones: those before them can still be redone. */
+  redo: string[];
+  /** Undo and redo steps that stay. */
+  keptUndo: number;
+  keptRedo: number;
+}
+
+/** What the open project's media and undo history take on disk. */
+export interface StorageInfo {
+  /** Files the project uses now: library images and fonts with their responsive copies, and files code names. */
+  media: StorageSize;
+  /** Imported files nothing uses now, kept so that Undo, Redo or recovery can still bring them back. */
+  kept: StorageSize;
+  /** The saved document versions Undo and Redo restore. */
+  history: { steps: number; bytes: number };
+  /** What freeing up space would do; null when there is nothing to free. */
+  reclaim: ReclaimPlan | null;
+  /** Why space cannot be freed right now, if so. */
+  blocked?: string;
+}
+
 /** Exports are written as a new folder or a single ZIP file. */
 export type ExportFormat = 'folder' | 'zip';
 
@@ -350,6 +389,10 @@ export interface BuilderApi {
     locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string }>;
     /** Make again the smaller copies a library image is missing. */
     regenerateAssetCopies(assetId: string): Promise<{ ok: boolean; message?: string }>;
+    /** What the project of the opening `workspaceKey` takes on disk; null once another opening is current. */
+    storage(workspaceKey: string): Promise<StorageInfo | null>;
+    /** Carry out the reclaim `planKey` (from `storage`) in the opening `workspaceKey`, dropping the undo steps it named. */
+    reclaimStorage(planKey: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; freed?: number }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;
     exportStatic(format?: ExportFormat): Promise<ExportResult>;
     retryPreview(): Promise<void>;

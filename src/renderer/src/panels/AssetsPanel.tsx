@@ -8,17 +8,12 @@ import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { Picture, Thumb } from '../components/AssetPicture';
 import { openSiteStyles, selectPage } from '../lib/actions';
 import { SHOW_ASSET_EVENT } from '../lib/place';
+import { formatBytes, plural } from '../lib/storage';
+import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
 
 /** Above this an image is worth flagging: pages load smaller copies, but the original still ships with the site. */
 const LARGE = 1_500_000;
 
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
-
-function formatBytes(b: number): string {
-  if (b < 1024) return plural(b, 'byte', 'bytes');
-  if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`;
-  return `${(b / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function formatType(mime: string): string {
   if (mime === 'image/svg+xml') return 'SVG';
@@ -221,6 +216,11 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const [allPlaces, setAllPlaces] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const [fixing, setFixing] = useState(false);
+  const storage = useProjectStorage();
+  const [freeing, setFreeing] = useState(false);
+  // Free up space belongs to the project it was opened for.
+  const opening = snap?.workspaceKey;
+  useEffect(() => setFreeing(false), [opening]);
   const assetsDoc = snap?.state.assets.assets;
   // Images whose files are not in the project folder: their uses stay, and the details offer to bring the files back.
   const missingAssets = snap?.missingAssets;
@@ -787,7 +787,16 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         <div className={`panel-body${assets.length ? '' : ' asset-body-empty'}`}>
           {body}
           {!sel && !replacing && fonts.length > 0 && <FontList fonts={fonts} usage={usage} />}
+          {!sel && !replacing && storage.info && <StorageSummary
+              info={storage.info}
+              onFree={() => {
+                // The dialog shows the figures as they are when it opens.
+                storage.refresh();
+                setFreeing(true);
+              }}
+            />}
         </div>
+        {freeing && storage.info && <FreeSpaceDialog info={storage.info} onClose={() => setFreeing(false)} refresh={storage.refresh} />}
         {over && assets.length > 0 && (
           <div className="asset-drop-overlay" aria-hidden="true">
             <div>

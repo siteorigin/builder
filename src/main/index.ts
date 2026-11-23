@@ -248,6 +248,10 @@ function registerIpc() {
   handle('project:photoMetadata', (assetId: unknown) => (typeof assetId === 'string' ? controller.photoMetadata(assetId) : null));
   handle('project:locateAsset', (assetId: string, path?: string) => controller.locateAsset(String(assetId), typeof path === 'string' && path ? path : undefined));
   handle('project:regenerateAssetCopies', (assetId: string) => controller.regenerateAssetCopies(String(assetId)));
+  handle('project:storage', (key: unknown) => (typeof key === 'string' ? controller.storageInfo(key) : null));
+  handle('project:reclaimStorage', (plan: unknown, key: unknown) =>
+    typeof plan === 'string' && typeof key === 'string' ? controller.reclaimStorage(plan, key) : { ok: false, message: 'Nothing to free.' }
+  );
   // Export builds from the project folder and needs the writer lock (spec 20).
   handle('project:exportSource', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportSource(format === 'zip' ? 'zip' : 'folder')));
   handle('project:exportStatic', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportStatic(format === 'zip' ? 'zip' : 'folder')));

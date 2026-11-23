@@ -32,6 +32,8 @@ const api: BuilderApi = {
     photoMetadata: invoke('project:photoMetadata'),
     locateAsset: invoke('project:locateAsset'),
     regenerateAssetCopies: invoke('project:regenerateAssetCopies'),
+    storage: invoke('project:storage'),
+    reclaimStorage: invoke('project:reclaimStorage'),
     exportSource: invoke('project:exportSource'),
     exportStatic: invoke('project:exportStatic'),
     retryPreview: invoke('project:retryPreview'),
