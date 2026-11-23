@@ -133,7 +133,7 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
             const title = columnTitle(c, i);
             return (
               <div key={c.id} className="table-editor-col">
-                <DraftInput id={key(`colname-${c.id}`)} value={String(c.label ?? '')} ariaLabel={`Column ${i + 1} name`} onCommit={(v) => void onTable({ action: 'renameColumn', columnId: c.id, value: v })} />
+                <DraftInput id={key(`colname-${c.id}`)} value={typeof c.label === 'string' ? c.label : ''} ariaLabel={`Column ${i + 1} name`} onCommit={(v) => void onTable({ action: 'renameColumn', columnId: c.id, value: v })} />
                 <button className="icon-btn sm" id={key(`colleft-${c.id}`)} aria-label={`Move column ${title} left`} disabled={i === 0} onClick={() => move('column', c.id, i, 'left', title)}>
                   <ArrowLeft />
                 </button>

@@ -141,12 +141,14 @@ function readStored(v: unknown): unknown {
   // Each column that is kept, with its place in the saved list: cells saved in column order follow their column.
   const kept = v.columns.flatMap((c, i) => (isRecord(c) ? [{ id: c.id, label: c.label, at: i }] : []));
   const ids = new Set(kept.map((c) => c.id));
-  const inOrder = (cells: unknown[]) => kept.map((c) => cells[c.at]);
+  // A cell that is not text cannot be shown, so it reads as empty rather than blocking every step.
+  const cell = (x: unknown) => (typeof x === 'string' || typeof x === 'number' ? x : '');
+  const inOrder = (cells: unknown[]) => kept.map((c) => cell(cells[c.at]));
   const rows = Array.isArray(v.rows)
-    ? v.rows.flatMap((r) => {
+    ? v.rows.flatMap((r): unknown[] => {
         if (Array.isArray(r)) return [inOrder(r)];
         if (!isRecord(r)) return [];
-        const cells = isRecord(r.cells) ? Object.fromEntries(Object.entries(r.cells).filter(([k]) => ids.has(k))) : Array.isArray(r.cells) ? inOrder(r.cells) : {};
+        const cells = isRecord(r.cells) ? Object.fromEntries(Object.entries(r.cells).flatMap(([k, x]) => (ids.has(k) ? [[k, cell(x)]] : []))) : Array.isArray(r.cells) ? inOrder(r.cells) : {};
         return [{ id: r.id, cells }];
       })
     : v.rows;

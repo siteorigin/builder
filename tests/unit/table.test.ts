@@ -216,6 +216,13 @@ describe('table edits by ID', () => {
       { col_day: 'Monday', col_time: '10:00' },
       { col_day: 'Friday', col_time: '17:00' }
     ]);
+    // A saved cell that is not text reads as empty, in a bare row or under a column ID, so the rest stays editable.
+    node.props.table = { columns: TIMETABLE.columns, rows: [['Monday', {}, '10:00'], { id: 'row_2', cells: { col_day: 'Friday', col_workshop: [], col_time: '17:00' } }] };
+    const blanked = tableOf(applyOperations(s0, [edit(nodeId, owner, { action: 'setCell', rowId: 'row_2', columnId: 'col_workshop', value: 'Raku' })]).state, owner, nodeId);
+    expect(blanked.rows.map((r) => Object.values(r.cells))).toEqual([
+      ['Monday', '', '10:00'],
+      ['Friday', 'Raku', '17:00']
+    ]);
     // A row saved with its cells in column order keeps them when another step is applied, and is reported until then.
     node.props.table = { columns: TIMETABLE.columns, rows: [{ id: 'row_1', cells: ['Monday', 'Clay', '10:00'] }] };
     expect(validateState(s0).filter((d) => d.code === 'TABLE_DAMAGED')).toHaveLength(1);
