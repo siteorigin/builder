@@ -73,6 +73,7 @@ describe('a visitor’s journey in Preview', () => {
     expect(steps(h)).toEqual({ back: 'home', forward: 'contact' });
     // A page was deleted or moved meanwhile: a step could lead to a page that is gone, so a new journey starts.
     expect(steps(startJourney(h, siteAddresses(['/', '/about/'])))).toEqual({ back: null, forward: null });
+    expect(steps(startJourney(h, siteAddresses(['/', '/about-us/', '/contact/'])))).toEqual({ back: null, forward: null });
     // Edit again, and open Contact from the page picker: a new journey starts there.
     h = observe(h, frame(['home', 'about', 'contact2'], 2), false);
     h = enter(h);

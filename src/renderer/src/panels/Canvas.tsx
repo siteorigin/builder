@@ -36,6 +36,8 @@ const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').repl
 const ariaKeys = (k: string) => (isMac ? k : k.replace('Meta', 'Control'));
 
 const samePath = (a: string, b: string | null) => !!b && (a === b || a === b + '/' || a + '/' === b);
+/** The site's page addresses as they are now (see siteAddresses). */
+const siteNow = () => siteAddresses(Object.values(getState().snapshot?.state.pages ?? {}).map((pg) => pg.route));
 
 /** Back and Forward through a visitor's journey in Preview, for the keyboard (see App and Editor). */
 let visitorStep: ((dir: 'back' | 'forward') => boolean) | null = null;
@@ -186,8 +188,8 @@ export function Canvas() {
     frameTextFocus.active = false;
     endInlineEdit();
   }, [url, session]); // eslint-disable-line react-hooks/exhaustive-deps
-  // A new frame (another server, Try again) or another project starts a fresh journey.
-  useEffect(() => setJourney(NO_HISTORY), [url, session, workspaceKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A new frame (another server, Try again) or another project starts a fresh journey, on the site as it is now.
+  useEffect(() => setJourney({ ...NO_HISTORY, site: siteNow() }), [url, session, workspaceKey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => endInlineEdit(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Bridge messages
@@ -226,7 +228,7 @@ export function Canvas() {
           // A new page starts with nothing revealed.
           sentReveal.current = null;
           syncReveal();
-          const shown = s.pageId ? st?.pages[s.pageId]?.route : undefined;
+          // A page chosen while the preview was starting wins: the navigate effect opens it next.
           if (!s.pageId) syncPage(path);
           // The page picked wins, asked for once more (a page that loads somewhere else again is followed instead).
           else if (asked && !samePath(path, asked) && askedAgain.current !== asked) {
@@ -235,16 +237,11 @@ export function Canvas() {
             frameAt.current = null;
             post('navigate', { path: asked });
           } else if (reloaded) syncPage(path);
-          // A page chosen while the preview was starting wins: the navigate effect opens it next, and until then
-          // this one is on its way out.
-          else if (first && shown && !samePath(path, shown)) frameAt.current = null;
           break;
         }
         case 'history': {
-          // While a page the editor asked for is still opening, the entries on the way are not the visitor's: that
-          // page joins the journey once the frame confirms it (see navigated).
           const at = frameEntry(p);
-          if (at) setJourney(observe(journeyRef.current, at, getState().mode === 'preview' && frameAt.current !== null));
+          if (at) setJourney(observe(journeyRef.current, at, getState().mode === 'preview'));
           break;
         }
         case 'navigated': {
@@ -254,6 +251,7 @@ export function Canvas() {
           const path = String(p.path);
           if (getState().mode !== 'preview' && pendingNav.current && !samePath(path, pendingNav.current)) break;
           pendingNav.current = path;
+          const samePage = samePath(path, frameAt.current);
           // The page the frame is showing, so following it below does not send the frame back there (which would
           // drop a #section the visitor's link went to, and its scroll position).
           frameAt.current = path;
@@ -267,9 +265,12 @@ export function Canvas() {
           // What is outlined may be shown through a different placement on this page.
           syncTrack();
           // What the panel said about the last page's sends is not about this one, and nor is a live test's answer.
-          setLastSend(null);
-          setLiveRequest(null);
-          setFormsView((v) => v + 1);
+          // Back or Forward between sections of the same page keeps both.
+          if (!samePage) {
+            setLastSend(null);
+            setLiveRequest(null);
+            setFormsView((v) => v + 1);
+          }
           // A selection made with the page change (a usage list showing a placement on another page) asked to be
           // scrolled to before this page was there: now it is.
           if (getState().mode !== 'preview') {
@@ -551,8 +552,7 @@ export function Canvas() {
   // it starts, once the frame is there.
   useEffect(() => {
     if (mode !== 'preview') return;
-    const site = siteAddresses(Object.values(getState().snapshot?.state.pages ?? {}).map((pg) => pg.route));
-    setJourney(startJourney(journeyRef.current, site, frameAt.current !== null));
+    setJourney(startJourney(journeyRef.current, siteNow(), frameAt.current !== null));
   }, [mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Back or Forward: the frame steps through its own history, so the site restores the page and its scroll. */

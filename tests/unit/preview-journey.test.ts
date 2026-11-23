@@ -47,7 +47,9 @@ const previewing = () => frame().waitForFunction(`document.readyState === 'compl
 /** Follow a link as a visitor does, once the page is in Preview (links are picked, not followed, while editing). */
 async function follow(id: string) {
   await previewing();
-  await frame().click(`#${id}`);
+  // A scripted click, as a visitor's click is followed: mouse input routed into a frame on another origin can be
+  // dropped just after the browser starts.
+  await frame().evaluate(`document.getElementById('${id}').click()`);
 }
 /** Start over: a fresh frame on Home, in Preview, with nothing reported yet. */
 async function fresh() {
@@ -161,6 +163,17 @@ describe.skipIf(!browserInstalled)('a visitor’s journey through the preview fr
     // One step back is.
     await command('traverse', { key: at.back });
     await expect.poll(traverses).toBe(1);
+  }, 30000);
+
+  it('reports the address exactly as the page has it, keeping the #fragment when the query is very long', async () => {
+    await fresh();
+    await reported('/');
+    const query = '?q=%252F' + 'x'.repeat(2500);
+    await frame().evaluate(`history.pushState(null, '', '/about/${query}#team')`);
+    const at = await expect.poll(async () => (await latest())?.address ?? '').toMatch(/#team$/).then(latest);
+    expect(at!.address.startsWith('/about/?q=%252Fxxx')).toBe(true);
+    expect(at!.address.endsWith('…#team')).toBe(true);
+    expect(at!.address.length).toBeLessThanOrEqual(2000);
   }, 30000);
 
   it('says where the page still is when a step is interrupted, without reporting a page error', async () => {
