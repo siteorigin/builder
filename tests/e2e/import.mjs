@@ -6,23 +6,33 @@ import sharp from 'sharp';
 import { createProject, launch, scratch, step, withTimeout } from './harness.mjs';
 
 /**
- * The longest the main process may go without answering the window. A frame is 16 ms; a few frames of
- * scheduling noise under load is fine, a photo decoded on the main thread (several hundred ms) is not.
+ * The longest the main process may go without answering the window. With the pictures decoded in the media
+ * worker it answers within about 10 ms throughout; decoding them on the main thread stalled it for 280 ms.
  */
-const MAX_STALL_MS = 250;
+const MAX_STALL_MS = 100;
 const PHOTOS = 4;
 
 const { WORK, cleanup } = scratch('import');
 const { app, win, errors } = await launch(WORK);
 await createProject(win, { name: 'Import Test', parentDir: join(WORK, 's'), starter: 'blank', sampleImages: false });
 
-step(`make ${PHOTOS} large photos`);
+step(`make ${PHOTOS} large pictures`);
+const [W, H] = [6000, 4000];
 const photos = [];
 for (let i = 0; i < PHOTOS; i++) {
-  // Noise makes each 24-megapixel photo as costly to decode as a real one, and every one different.
-  const file = join(WORK, `photo-${i}.jpg`);
-  await sharp({ create: { width: 6000, height: 4000, channels: 3, noise: { type: 'gaussian', mean: 128, sigma: 40 } } }).jpeg({ quality: 85 }).toFile(file);
-  photos.push(file);
+  if (i % 2 === 0) {
+    // A 24-megapixel progressive JPEG of noise: as costly to decode as a real photo, and every one different.
+    const file = join(WORK, `photo-${i}.jpg`);
+    await sharp({ create: { width: W, height: H, channels: 3, noise: { type: 'gaussian', mean: 128, sigma: 40 } } }).jpeg({ quality: 85, progressive: true }).toFile(file);
+    photos.push(file);
+  } else {
+    // A 24-megapixel PNG of smooth colour: a small file that still decodes every pixel.
+    const px = Buffer.alloc(W * H * 3);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) px.set([(x * 255) / W, (y * 255) / H, i * 40], (y * W + x) * 3);
+    const file = join(WORK, `picture-${i}.png`);
+    await sharp(px, { raw: { width: W, height: H, channels: 3 } }).png().toFile(file);
+    photos.push(file);
+  }
 }
 
 step('import them while the window keeps asking the main process for something');
