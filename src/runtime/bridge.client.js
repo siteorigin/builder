@@ -547,7 +547,9 @@ function carriesAnswers(submit, url, body) {
   };
   let text = '';
   try {
-    text = decode(new URL(url, document.baseURI).search);
+    const query = new URL(url, document.baseURI).searchParams;
+    // A value in the query counts only whole (an answer of "json" is not ?format=json).
+    if ([...query.values()].some((v) => submit.answers.includes(v.trim()))) return true;
   } catch {
     // Not an address: nothing in it.
   }
@@ -618,7 +620,8 @@ window.fetch = function fetch(input, init) {
   const request = input instanceof Request ? input : null;
   const method = String(init?.method ?? request?.method ?? 'GET').toUpperCase();
   const url = request ? request.url : String(input);
-  const body = init?.body !== undefined ? init.body : request?.body ? UNREADABLE : undefined;
+  // A body of null or undefined is none given: the request's own is sent.
+  const body = init?.body != null ? init.body : request?.body ? UNREADABLE : undefined;
   const form = sendingForm(url, method, body);
   if (!form) return nativeFetch.call(window, input, init);
   const test = liveFor(form, url);
@@ -646,9 +649,18 @@ const DATA_OK = 'data:application/json,%7B%22ok%22%3Atrue%7D';
 const xhrTargets = new WeakMap();
 const xhrWatched = new WeakSet();
 XMLHttpRequest.prototype.open = function open(method, url, ...rest) {
-  // Recorded only once the browser has opened it: an open that throws leaves the earlier one in place.
-  const opened = xhrOpen.call(this, method, url, ...rest);
+  // Recorded before the browser opens it (its readystatechange handlers can send at once), and put back if the open
+  // throws, which leaves the earlier one in place.
+  const before = xhrTargets.get(this);
   xhrTargets.set(this, { method: String(method).toUpperCase(), url: new URL(String(url), document.baseURI).href });
+  let opened;
+  try {
+    opened = xhrOpen.call(this, method, url, ...rest);
+  } catch (error) {
+    if (before) xhrTargets.set(this, before);
+    else xhrTargets.delete(this);
+    throw error;
+  }
   if (!xhrWatched.has(this)) {
     xhrWatched.add(this);
     // Added when the request is first opened, ahead of handlers that could open it again before loadend.

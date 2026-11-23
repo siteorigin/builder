@@ -580,6 +580,23 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
     });
   }, 30_000);
 
+  it('practises an XMLHttpRequest sent as it opens, and a request whose body comes from a Request (review)', async () => {
+    await withPreview(async ({ service, preview, addCustomForm, submitCustom, customResult }) => {
+      await preview();
+      await addCustomForm(
+        'onopen',
+        `${SERVICE}/f/open`,
+        `return await new Promise((resolve) => { const x = new XMLHttpRequest(); const body = new FormData(form); x.onreadystatechange = () => { if (x.readyState === 1 && !x.sent) { x.sent = true; x.send(body); } }; x.onload = () => resolve(x.status); x.onerror = () => resolve('error'); x.open('POST', '${SERVICE}/relay'); });`
+      );
+      await submitCustom('onopen');
+      await expect.poll(() => customResult('onopen'), { timeout: 5000 }).toBe(200);
+      await addCustomForm('request', `${SERVICE}/f/request`, `return (await fetch(new Request('${SERVICE}/relay', { method: 'POST', body: new FormData(form) }), { body: null })).status;`);
+      await submitCustom('request');
+      await expect.poll(() => customResult('request'), { timeout: 5000 }).toBe(200);
+      expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
   it('practises a request that carries the answers in its query, and leaves writes that carry none alone (review)', async () => {
     await withPreview(async ({ frame, service, preview, addCustomForm, submitCustom, customResult }) => {
       await preview();
@@ -591,9 +608,15 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
       // Soon after, a write of the page's own that carries nothing the visitor typed goes out as usual, and so does a read.
       expect(await frame.evaluate(`fetch('${SERVICE}/api/preferences', { method: 'POST', body: JSON.stringify({ theme: 'dark' }) }).then((r) => r.status)`)).toBe(200);
       expect(await frame.evaluate(`fetch('${SERVICE}/api/news').then((r) => r.status)`)).toBe(200);
+      // An answer counts only as a whole value: one of "form" does not claim ?format=json.
+      await frame.evaluate(`document.querySelector('#subscribe input').value = 'form'`);
+      await submitCustom('subscribe');
+      await expect.poll(() => customResult('subscribe'), { timeout: 5000 }).toBe(200);
+      expect(await frame.evaluate(`fetch('${SERVICE}/api/news?format=json').then((r) => r.status)`)).toBe(200);
       expect(service.requests.map((r) => [r.method, r.url])).toEqual([
         ['POST', `${SERVICE}/api/preferences`],
-        ['GET', `${SERVICE}/api/news`]
+        ['GET', `${SERVICE}/api/news`],
+        ['GET', `${SERVICE}/api/news?format=json`]
       ]);
     });
   }, 30_000);
