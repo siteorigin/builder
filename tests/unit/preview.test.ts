@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 import { externalLink } from '@shared/links';
+import { devPlugin } from '@runtime/dev-plugin';
 import { projectSrcPath } from '@runtime/paths';
 import { chainOf, measuredRects, rectList } from '../../src/renderer/src/lib/payload';
 
@@ -37,6 +41,44 @@ describe('dev instrumentation paths', () => {
     expect(projectSrcPath('C:\\Users\\me\\Sites\\studio', 'C:/Users/me/Sites/studio/.svelte-kit/generated/root.js')).toBeNull();
     expect(projectSrcPath('C:\\Users\\Me\\sites\\Studio', 'c:/users/me/Sites/studio/src/a.js')).toBe('src/a.js');
     expect(projectSrcPath('\\\\server\\share\\studio', '/server/share/studio/src/a.js')).toBe('src/a.js');
+  });
+});
+
+describe('dev instrumentation plugin', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  /** A project with one component and the editor's instrumented variant of it, told apart by their markup. */
+  function project() {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'so-devplugin-')));
+    dirs.push(dir);
+    const put = (rel: string, text: string) => {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true });
+      writeFileSync(join(dir, rel), text);
+    };
+    const rel = 'src/lib/siteorigin/generated/foundation-contact-form.svelte';
+    const source = (marker: string) => `<script>\n\tconst uid = $props.id();\n</script>\n\n{#if heading}<h2${marker}>{heading}</h2>{/if}\n<input id={uid + '-0'} />\n\n<style>\n\th2 { margin: 0; }\n</style>\n`;
+    put(rel, source(''));
+    put(`.siteorigin/cache/dev/${rel}`, source(' data-so-node="n1"'));
+    return { load: devPlugin(dir).load, id: `${dir}/${rel}`, variant: source(' data-so-node="n1"') };
+  }
+
+  it('serves the instrumented variant in place of the component module', () => {
+    const { load, id, variant } = project();
+    expect(load(id)).toBe(variant);
+    // A dependency version stamp still names the module itself.
+    expect(load(`${id}?v=3f9a1c2e`)).toBe(variant);
+  });
+
+  it('leaves a component’s stylesheet and other derived requests to the plugins that serve them', () => {
+    const { load, id } = project();
+    // The component's stylesheet, as the browser imports it and as SvelteKit inlines it into a server-rendered page.
+    // Served the variant, the whole component source became the stylesheet, and its markup leaked into the page.
+    expect(load(`${id}?svelte&type=style&lang.css`)).toBeNull();
+    expect(load(`${id}?inline&svelte&type=style&lang.css`)).toBeNull();
+    for (const query of ['direct', 'raw', 'url', 'inline', 'v=1&raw', 'svelte&type=style&lang.css&v=1']) expect(load(`${id}?${query}`)).toBeNull();
   });
 });
 

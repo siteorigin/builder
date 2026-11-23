@@ -8,7 +8,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import bridgeSource from './bridge.client.js?raw';
 import { realFileInside } from './policy';
-import { projectSrcPath } from './paths';
+import { projectSrcPath, wholeModuleId } from './paths';
 
 /**
  * Hashes of the project files the dev variants stand in for, written by the editor next to the variants
@@ -59,6 +59,10 @@ export function devPlugin(dir: string) {
     },
     load(id: string) {
       if (id === '\0' + VIRTUAL + '.js') return bridgeSource;
+      // Only the module itself is replaced. A request for something derived from the file (a component's stylesheet
+      // above all) goes to the plugin that serves it: handed the variant, the whole component source became the
+      // stylesheet, and SvelteKit's server-rendered page parsed it as markup.
+      if (!wholeModuleId(id)) return null;
       const rel = projectSrcPath(names, id);
       if (!rel) return null;
       const variant = join(devRoot, ...rel.split('/'));
