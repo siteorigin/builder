@@ -778,3 +778,71 @@ describe('schema type changes on placed components', () => {
     expect((home(s).nodes[ins.results[0].nodeId as string] as InstanceNode).props.shown).toBe(true);
   });
 });
+
+describe('duplicating a page', () => {
+  /** A Contact page with an "Hours" section and links: to its own section, to the page itself, and to another page's section. */
+  const contactWithLinks = () => {
+    let s = fresh();
+    const [homeId, aboutId, contactId] = s.site.pageOrder;
+    const o = { kind: 'page' as const, id: contactId };
+    const sec = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: null, index: 0, componentId: 'layout.section' }]);
+    const sectionId = sec.results[0].nodeId as string;
+    s = applyOperations(sec.state, [{ type: 'node.setContent', owner: o, nodeId: sectionId, field: 'anchor', value: 'studio-hours' }]).state;
+    const button = (link: unknown) => {
+      const b = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: sectionId, slot: 'content', primitive: 'button', text: 'Go' }]);
+      const id = b.results[0].nodeId as string;
+      s = applyOperations(b.state, [{ type: 'node.setContent', owner: o, nodeId: id, field: 'link', value: link }]).state;
+      return id;
+    };
+    // Another page's section: About has one with this ID too, so a retargeted link would still look valid.
+    const aboutRoot = s.pages[aboutId].nodes[s.pages[aboutId].rootIds[0]];
+    s = structuredClone(s);
+    s.pages[aboutId].nodes[aboutRoot.id].anchor = 'team';
+    const own = button({ type: 'page', target: contactId, anchor: 'studio-hours' });
+    const whole = button({ type: 'page', target: contactId });
+    const other = button({ type: 'page', target: aboutId, anchor: 'team' });
+    const local = button({ type: 'anchor', target: 'studio-hours' });
+    // A link inside rich text, which the engine stores the same way.
+    const rich = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: sectionId, slot: 'content', primitive: 'richtext', text: 'See the hours' }]);
+    s = structuredClone(rich.state);
+    const richId = rich.results[0].nodeId as string;
+    const richNode = s.pages[contactId].nodes[richId] as { text: Array<{ spans: Array<Record<string, unknown>> }> };
+    richNode.text[0].spans[0].link = { type: 'page', target: contactId, anchor: 'studio-hours' };
+    return { s, homeId, aboutId, contactId, ids: { own, whole, other, local, richId } };
+  };
+  const linkOf = (s: ProjectState, pageId: string, id: string) => (s.pages[pageId].nodes[id] as { link: unknown }).link;
+
+  it("points the copy's links to its own sections at the copy, and leaves every other link alone", () => {
+    const { s, aboutId, contactId, ids } = contactWithLinks();
+    const r = applyOperations(s, [{ type: 'page.duplicate', pageId: contactId, title: 'Contact copy' }]);
+    const copyId = r.results[0].pageId as string;
+    const copy = r.state.pages[copyId];
+    // Nodes get new IDs; find the copied buttons by their links, in page order.
+    const links = Object.values(copy.nodes).filter((n) => n.kind === 'link').map((n) => (n as { link: Record<string, unknown> }).link);
+    expect(links).toContainEqual({ type: 'page', target: copyId, anchor: 'studio-hours' });
+    expect(links).toContainEqual({ type: 'page', target: contactId });
+    expect(links).toContainEqual({ type: 'page', target: aboutId, anchor: 'team' });
+    expect(links).toContainEqual({ type: 'anchor', target: 'studio-hours' });
+    expect(links.filter((l) => l.target === contactId && l.anchor)).toEqual([]);
+    const spans = Object.values(copy.nodes).flatMap((n) => (n.kind === 'text' && Array.isArray(n.text) ? (n.text as Array<{ spans?: Array<{ link?: unknown }> }>).flatMap((b) => b.spans ?? []) : []));
+    expect(spans.find((sp) => sp.link)?.link).toEqual({ type: 'page', target: copyId, anchor: 'studio-hours' });
+    // The original is untouched, and both pages have the section and a working link to it.
+    expect(linkOf(r.state, contactId, ids.own)).toEqual({ type: 'page', target: contactId, anchor: 'studio-hours' });
+    expect(s.pages[contactId]).toEqual(r.state.pages[contactId]);
+    expect(validateState(r.state).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('leaves a link to a header or footer section pointing at the source page', () => {
+    const { s, contactId } = contactWithLinks();
+    const header = s.site.shell.header;
+    const rootId = header.rootIds[0];
+    const target = (header.nodes[rootId] as { anchor?: string }).anchor ?? 'site-header';
+    (header.nodes[rootId] as { anchor?: string }).anchor = target;
+    const btn = Object.values(s.pages[contactId].nodes).find((n) => n.kind === 'link')!;
+    (btn as { link: unknown }).link = { type: 'page', target: contactId, anchor: target };
+    const r = applyOperations(s, [{ type: 'page.duplicate', pageId: contactId, title: 'Contact copy' }]);
+    const copy = r.state.pages[r.results[0].pageId as string];
+    const link = Object.values(copy.nodes).find((n) => n.kind === 'link' && (n as { link: { anchor?: string } }).link.anchor === target) as { link: { target: string } };
+    expect(link.link.target).toBe(contactId);
+  });
+});

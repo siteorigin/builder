@@ -26,6 +26,7 @@ import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily 
 import { getTheme, listThemes } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
+import { pageIds } from '@generator/checks';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, subtreeIds, allTrees } from './tree';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
@@ -488,8 +489,27 @@ function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult 
   const page: PageDoc = { ...clone(src), id, title, route: uniqueRoute(state, `/${slugify(title) || 'page'}/`), rootIds: [], nodes: {} };
   for (const rid of src.rootIds) page.rootIds.push(copySubtree(src, page, rid, state));
   state.pages[id] = page;
+  keepSectionLinksOnCopy(state, src.id, page);
   state.site.pageOrder.splice(state.site.pageOrder.indexOf(src.id) + 1, 0, id);
   return { pageId: id, route: page.route };
+}
+
+/**
+ * A copied link to one of the source page's own sections would send visitors back to the original. The copy has the
+ * same section IDs, so those links move to the copy. Links to another page, to the shared header or footer, and to
+ * the source page as a whole stay as they were: a link back to the source is one the author chooses.
+ */
+function keepSectionLinksOnCopy(state: ProjectState, sourceId: string, copy: PageDoc) {
+  // An empty shell set leaves the header and footer's IDs out: those are shared, so their links stay where they were.
+  const ids = pageIds(state, copy.id, new Set());
+  const walk = (v: unknown) => {
+    if (Array.isArray(v)) return v.forEach(walk);
+    if (!v || typeof v !== 'object') return;
+    const l = v as Partial<LinkValue>;
+    if (l.type === 'page' && l.target === sourceId && l.anchor && ids.has(l.anchor)) l.target = copy.id;
+    Object.values(v).forEach(walk);
+  };
+  walk(copy.nodes);
 }
 
 function rewritePageLinks(state: ProjectState, fromId: string, toId: string) {
