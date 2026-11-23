@@ -8,6 +8,7 @@ const HEADER_SOURCE = `<script>
 	 * Site header with a working, accessible mobile menu.
 	 * Foundation theme code component. Props are edited in SiteOrigin Builder.
 	 */
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import SoImage from '../runtime/Image.svelte';
@@ -43,6 +44,67 @@ const HEADER_SOURCE = `<script>
 	$effect(() => {
 		void current;
 		open = false;
+	});
+
+	/**
+	 * Publishes the height the header covers while it sticks (0 when it does not stick or is hidden) as
+	 * --so-header-offset on the page root. The theme's [id] scroll margin adds to it, so jump links land below it.
+	 */
+	function publishOffset(el) {
+		const root = el.ownerDocument.documentElement;
+		const value = (sticky && getComputedStyle(el).position === 'sticky' ? Math.ceil(el.getBoundingClientRect().height) : 0) + 'px';
+		if (root.style.getPropertyValue('--so-header-offset') !== value) root.style.setProperty('--so-header-offset', value);
+	}
+
+	// The height changes when the brand or the links wrap, at a breakpoint, and when the fonts load.
+	$effect(() => {
+		const el = header;
+		if (!el) return;
+		publishOffset(el);
+		const observer = new ResizeObserver(() => publishOffset(el));
+		observer.observe(el, { box: 'border-box' });
+		return () => {
+			observer.disconnect();
+			el.ownerDocument.documentElement.style.removeProperty('--so-header-offset');
+		};
+	});
+
+	// A visitor who opens a link to an anchor is scrolled there before the height above is published, so a tall
+	// header can cover the target. On a fresh visit, reveal it, and again once the fonts have loaded (they can make
+	// the header taller), until the visitor moves on. Reloads and history visits keep the position restored for them.
+	onMount(() => {
+		const el = header;
+		const doc = el?.ownerDocument;
+		const win = doc?.defaultView;
+		const hash = win?.location.hash ?? '';
+		if (hash.length < 2 || win.performance.getEntriesByType?.('navigation')[0]?.type !== 'navigate') return;
+		let done = false;
+		let frame = 0;
+		const stop = () => (done = true);
+		const moves = ['pointerdown', 'wheel', 'touchstart', 'keydown'];
+		for (const type of moves) win.addEventListener(type, stop, { capture: true, passive: true });
+		const reveal = () => {
+			if (done || win.location.hash !== hash) return;
+			let target;
+			try {
+				target = doc.getElementById(decodeURIComponent(hash.slice(1)));
+			} catch {
+				return;
+			}
+			if (!target || el.contains(target)) return;
+			publishOffset(el);
+			const box = target.getBoundingClientRect();
+			if (box.top < el.getBoundingClientRect().bottom - 0.5 && box.bottom > 0) target.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
+		};
+		reveal();
+		doc.fonts?.ready.then(() => {
+			if (!done) frame = win.requestAnimationFrame(reveal);
+		});
+		return () => {
+			stop();
+			win.cancelAnimationFrame(frame);
+			for (const type of moves) win.removeEventListener(type, stop, { capture: true });
+		};
 	});
 
 	function onKeydown(event) {

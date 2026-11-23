@@ -168,7 +168,7 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
         return html(
           `${rendered}<script>addEventListener('load', () => requestAnimationFrame(() => requestAnimationFrame(() => {
             const id = decodeURIComponent(location.hash.slice(1));
-            window.beforeScript = id ? document.getElementById(id).getBoundingClientRect().top : null;
+            window.beforeScript = id ? { top: document.getElementById(id).getBoundingClientRect().top, headerBottom: document.querySelector('header.so-header').getBoundingClientRect().bottom } : null;
             const s = document.createElement('script');
             s.src = '/site.js';
             s.onload = () => { const app = document.getElementById('app'); app.textContent = ''; mountCase(${JSON.stringify(name)}); window.started = true; };
@@ -187,11 +187,14 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
     }
   }
 
+  /** Opens the page at an anchor in a new document, and where the browser had put the anchor before the script ran. */
   const visit = async (page: Page, id: string) => {
-    await page.goto(`${ORIGIN}/#${id}`);
+    await page.goto('about:blank');
+    expect(await page.goto(`${ORIGIN}/#${id}`), 'a new document loads').not.toBeNull();
     await page.waitForFunction('window.started === true');
     await page.evaluate(settled);
-    return (await page.evaluate(landing(id))) as Landing;
+    const before = (await page.evaluate('window.beforeScript')) as { top: number; headerBottom: number };
+    return { before, after: (await page.evaluate(landing(id))) as Landing };
   };
 
   const follow = async (page: Page, id: string) => {
@@ -215,10 +218,32 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
   it.each([1024, 768, 390])('a direct visit to a heading or a section clears the sticky header at %ipx', async (width) => {
     await withSite('sticky', width, async (page) => {
       for (const id of [HEADING, SECTION]) {
-        const l = await visit(page, id);
-        expect((await page.evaluate('window.beforeScript')) as number, 'the browser jumped to the fragment before the script ran').toBeLessThan(200);
-        expectRevealed(`${id} at ${width}px`, l);
+        const { before, after } = await visit(page, id);
+        // The browser jumped to the fragment before the script ran, using the theme's fallback margin, which a
+        // header with wrapped labels covers; the collapsed phone header does not.
+        expect(before.top, 'the browser jumped to the fragment before the script ran').toBeLessThan(200);
+        if (width >= 768) expect(before.top, `${id} at ${width}px starts under the header`).toBeLessThan(before.headerBottom);
+        expectRevealed(`${id} at ${width}px`, after);
       }
+    });
+  }, 60_000);
+
+  it('a reload keeps the place the visitor scrolled to, even with the anchor under the header', async () => {
+    await withSite('sticky', 1024, async (page) => {
+      const { after } = await visit(page, HEADING);
+      expectRevealed('direct visit', after);
+      // Scrolled back just far enough for the heading to sit under the header, which a reload restores.
+      await page.evaluate(`scrollBy(0, ${Math.round(after.top - after.headerBottom / 2)})`);
+      await page.evaluate(settled);
+      const scrolled = (await page.evaluate('scrollY')) as number;
+      expect(await page.reload(), 'the page reloads').not.toBeNull();
+      await page.waitForFunction('window.started === true');
+      await page.evaluate(settled);
+      expect((await page.evaluate('performance.getEntriesByType("navigation")[0].type')) as string).toBe('reload');
+      // WebKit restores to within a few pixels; revealing the heading would move it a header's height away.
+      expect(Math.abs(((await page.evaluate('scrollY')) as number) - scrolled), 'the restored position stays').toBeLessThan(20);
+      const kept = (await page.evaluate(landing(HEADING))) as Landing;
+      expect(kept.top, describeLanding('after the reload', kept)).toBeLessThan(kept.headerBottom);
     });
   }, 60_000);
 
@@ -236,9 +261,8 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
 
   it('without a sticky header, anchors land at the top of the window', async () => {
     await withSite('static', 1024, async (page) => {
-      const direct = await visit(page, HEADING);
-      expectRevealed('direct visit', direct);
-      expect(direct.top, describeLanding('direct visit', direct)).toBeLessThanOrEqual(32);
+      // A direct visit keeps the place the browser chose, since nothing covers it.
+      expectRevealed('direct visit', (await visit(page, HEADING)).after);
       for (const width of [1024, 390]) {
         await page.setViewportSize({ width, height: 800 });
         await page.evaluate(settled);
