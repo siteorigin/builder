@@ -9,6 +9,7 @@ import { checkLocalBaseURL } from '@shared/local';
 import { Controller, defaultProjectsFolder } from './controller';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { menuKeyCopy } from './history-keys';
+import { createMenuCommands, type MenuCommand } from './menu-commands';
 import { loadSettings, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
@@ -76,6 +77,18 @@ const leaveGate = createLeaveGate({
   }
 });
 controller.beforeLeave = () => leaveGate.ask();
+// File menu commands reach the editor once it is ready for them, bringing up a window when there is none (macOS).
+const menuCommands = createMenuCommands<BrowserWindow>({
+  window: () => (win && !win.isDestroyed() ? win : null),
+  openWindow: () =>
+    void createWindow().catch((e: unknown) => {
+      console.error('The window could not be opened:', e);
+      menuCommands.windowFailed();
+    }),
+  opening: () => controller.openingKey,
+  send: (w, command) => w.webContents.send('menu:command', command)
+});
+controller.onOpeningChange = () => updateProjectMenu();
 let fixAbort: AbortController | null = null;
 
 async function orchestratorAdapter() {
@@ -314,6 +327,15 @@ function registerIpc() {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
     leaveGate.reply(requestId, answer);
   });
+  // The editor shows its screen and listens for File menu commands: one waiting for it is sent now.
+  ipcMain.on('menu:ready', (event) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame || !isEditorUrl(event.senderFrame.url)) return;
+    menuCommands.ready(win);
+  });
+  ipcMain.on('menu:received', (event, id: unknown) => {
+    if (!win || event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) return;
+    if (typeof id === 'number') menuCommands.received(id);
+  });
   ipcMain.on('inspect:result', (event, requestId: string, report: unknown) => {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
     pendingInspections.get(requestId)?.(report);
@@ -329,8 +351,20 @@ function rendererRoot() {
   return join(here, '../renderer');
 }
 
+/** Set while a window is being created but does not exist yet, so activation, a second launch or a menu command
+ *  arriving meanwhile joins it instead of opening another. */
+let windowComing = false;
+
 async function createWindow() {
-  const settings = (await loadSettings()).settings;
+  if ((win && !win.isDestroyed()) || windowComing) return;
+  windowComing = true;
+  let settings: Awaited<ReturnType<typeof loadSettings>>['settings'];
+  try {
+    settings = (await loadSettings()).settings;
+  } finally {
+    // Cleared in the same step the window is created in, so nothing can slip in between.
+    windowComing = false;
+  }
   nativeTheme.themeSource = settings.appearance;
   win = new BrowserWindow({
     width: 1480,
@@ -393,7 +427,6 @@ async function createWindow() {
     const relevant = (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', '\\', '|', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
     if (relevant) controller.send('input:key', { key: input.key, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt });
   });
-  nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
   // Closing the window first saves what is being typed. On macOS the project stays open without a window,
   // as before; elsewhere the last window closing quits, which then closes the project.
   const self = win;
@@ -407,23 +440,52 @@ async function createWindow() {
       self.close();
     });
   });
-  self.webContents.on('render-process-gone', () => leaveGate.editorGone());
+  self.webContents.on('render-process-gone', () => {
+    menuCommands.unready(self);
+    leaveGate.editorGone();
+  });
   self.on('unresponsive', () => leaveGate.editorUnresponsive());
   self.on('responsive', () => leaveGate.editorResponsive());
   self.webContents.on('did-start-navigation', (details) => {
     if (details.isMainFrame && !details.isSameDocument) leaveGate.editorReplaced();
   });
+  // A new page has replaced the editor (it committed): only it may say it is ready for menu commands from here on.
+  // A navigation the editor refuses never commits, so it leaves the editor ready.
+  self.webContents.on('did-navigate', () => menuCommands.unready(self));
   self.on('closed', () => {
     if (win === self) win = null;
+    menuCommands.closed(self);
     leaveGate.editorGone();
   });
   if (DEV_URL) await win.loadURL(DEV_URL);
   else await win.loadURL('app://editor/index.html');
 }
 
+/** A File menu command (chosen in the menu bar or by its shortcut), for the editor window. */
+function chooseCommand(cmd: MenuCommand) {
+  const w = win && !win.isDestroyed() ? win : null;
+  // A crashed editor cannot act on it: it is loaded again, and the command waits until the new page is ready.
+  if (w?.webContents.isCrashed()) w.webContents.reload();
+  if (w && !headless) {
+    if (w.isMinimized()) w.restore();
+    if (w.isVisible()) w.focus();
+  }
+  menuCommands.run(cmd);
+}
+
+/** Export and Close Project act on the open project, so the menu offers them only while one is open. */
+function updateProjectMenu() {
+  const open = controller.openingKey !== null;
+  for (const id of ['export', 'close-project']) {
+    const item = Menu.getApplicationMenu()?.getMenuItemById(id);
+    if (item) item.enabled = open;
+  }
+}
+
 function buildMenu() {
   const isMac = process.platform === 'darwin';
-  const send = (cmd: string) => () => controller.send('menu:command', cmd);
+  const send = (cmd: MenuCommand) => () => chooseCommand(cmd);
+  const projectOpen = controller.openingKey !== null;
   // Undo and Redo belong to whatever has focus, which only the editor knows: a text field (a visitor's in
   // Preview, too) keeps its own history and authoring surfaces undo the project. So these are not the
   // stock roles (text history only); the editor routes them. Their keys arrive here only when the page left
@@ -464,9 +526,9 @@ function buildMenu() {
           { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: send('new-project') },
           { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: send('open-project') },
           { type: 'separator' },
-          { label: 'Export…', accelerator: 'CmdOrCtrl+E', click: send('export') },
+          { id: 'export', label: 'Export…', accelerator: 'CmdOrCtrl+E', enabled: projectOpen, click: send('export') },
           { type: 'separator' },
-          { label: 'Close Project', accelerator: 'CmdOrCtrl+Shift+W', click: send('close-project') },
+          { id: 'close-project', label: 'Close Project', accelerator: 'CmdOrCtrl+Shift+W', enabled: projectOpen, click: send('close-project') },
           isMac ? { role: 'close' as const } : { role: 'quit' as const }
         ]
       },
@@ -511,6 +573,8 @@ app.whenReady().then(async () => {
   electronSession.defaultSession.on('will-download', (e) => e.preventDefault());
   registerIpc();
   buildMenu();
+  // Registered once, not per window: macOS brings up a new window after the last one closes.
+  nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
   await createWindow();
   app.on('activate', () => {
     if (!BrowserWindow.getAllWindows().length) void createWindow();

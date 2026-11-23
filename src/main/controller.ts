@@ -122,6 +122,8 @@ export class Controller {
   onSessionClosing: (() => Promise<void>) | null = null;
   /** Asks the editor to save what is still being typed before the project is unloaded; false keeps it open. */
   beforeLeave: (() => Promise<boolean>) | null = null;
+  /** A project opening began or ended (openingKey changed): a close that was allowed ends it as it starts. */
+  onOpeningChange: (() => void) | null = null;
   aiBusy = () => false;
   aiRunId = (): string | null => null;
 
@@ -381,6 +383,7 @@ export class Controller {
     this.localState = workspace;
     this.localDirty = false;
     this.workspaceKey = `${session.dir}#${++this.openings}`;
+    this.onOpeningChange?.();
     // Another app took the project over and edits its folder now: stop the preview running there at once (and any
     // install into it), then start it again from a private copy.
     session.on('lock-lost', () => {
@@ -638,7 +641,7 @@ export class Controller {
   close(): Promise<void> {
     const [key, session] = [this.workspaceKey, this.session];
     // A close that fails leaves the project open and editable under the same opening, and tells the editor.
-    this.closing ??= this.closeNow().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.broadcast(); throw e; }).finally(() => (this.closing = null));
+    this.closing ??= this.closeNow().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.onOpeningChange?.(), this.broadcast(); throw e; }).finally(() => (this.closing = null));
     return this.closing;
   }
 
@@ -655,6 +658,7 @@ export class Controller {
     if (!s) return this.endExports();
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
+    this.onOpeningChange?.();
     await this.onSessionClosing?.();
     // Written while this is still the open project, and only while it is still this app's: the lock is read again
     // first, so a takeover the heartbeat has not seen yet makes it read-only, which writes nothing.

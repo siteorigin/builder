@@ -351,13 +351,18 @@ export interface BuilderApi {
   on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
   on(channel: 'appearance', cb: (dark: boolean) => void): () => void;
   on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number }) => void): () => void;
-  on(channel: 'menu:command', cb: (cmd: string) => void): () => void;
+  /** A File menu command: confirm it with menuReceived(id); the same id may be offered again until then. */
+  on(channel: 'menu:command', cb: (command: { cmd: string; id: number }) => void): () => void;
   /** The app is about to leave the project (close, switch, close the window, quit): settle edits, then answer with leaveResult. */
   on(channel: 'lifecycle:request', cb: (req: { requestId: string }) => void): () => void;
   /** Edit → Undo or Redo, chosen from the menu or reached by its key (`fromKey`) when nothing on the page took the key. */
   on(channel: 'menu:history', cb: (e: { action: 'undo' | 'redo'; fromKey: boolean }) => void): () => void;
   on(channel: 'input:key', cb: (k: { key: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
+  /** The screen shown now listens for File menu commands (menu:command): one waiting for the editor is sent. */
+  menuReady(): void;
+  /** The File menu command `id` arrived, so the main process stops offering it. */
+  menuReceived(id: number): void;
   /** 'asking' while the author decides about a change that cannot be saved; then 'leave' or 'stay'. */
   leaveResult(requestId: string, answer: 'leave' | 'stay' | 'asking'): void;
   pathForFile(file: File): string;

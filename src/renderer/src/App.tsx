@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, toast, useStore } from './store';
 import { cleanDrafts, moveDraft, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
@@ -19,13 +19,19 @@ function historyContext(): HistoryContext {
 
 export function App() {
   const screen = useStore((s) => s.screen);
+  // No screen is shown until the project that is open (if any) is known, so a File menu command waiting for this
+  // window reaches the screen that will stay: Welcome, or the editor of a project left open with no window (macOS).
+  const [booted, setBooted] = useState(false);
 
   useEffect(() => {
     void api.app.getSettings().then((settings) => setState({ settings }));
     void api.ai.providers().then((providers) => setState({ providers }));
-    void api.project.snapshot().then((snap) => snap && openSnapshot(snap));
+    // A project opened or closed before the first snapshot arrives is newer than that snapshot.
+    let superseded = false;
+    let unmounted = false;
     const offs = [
       api.on('project:changed', (snap) => {
+        superseded = true;
         const s = getState();
         // Another opening (of another project, or of this one again) loads its own state, drafts included. A project
         // that is closing names no opening, and is not one.
@@ -37,6 +43,7 @@ export function App() {
         }
       }),
       api.on('project:closed', () => {
+        superseded = true;
         forgetCopy();
         opened++;
         projectClosed();
@@ -58,7 +65,14 @@ export function App() {
       api.on('runtime:status', (runtime) => setState({ runtime })),
       api.on('ai:event', applyAiEvent),
       api.on('inspect:request', (req) => void runInspection(req)),
-      api.on('menu:command', (cmd) => window.dispatchEvent(new CustomEvent('builder-command', { detail: cmd }))),
+      api.on('menu:command', ({ cmd, id }) => {
+        // Confirmed at once, so the main process stops offering it. It may have offered it twice (a screen said it was
+        // ready again before this confirmation arrived): it is acted on once.
+        api.menuReceived(id);
+        if (id <= lastMenuCommand) return;
+        lastMenuCommand = id;
+        window.dispatchEvent(new CustomEvent('builder-command', { detail: cmd }));
+      }),
       // Edit → Undo and Redo, and their keys when nothing on the page took them: a text field (a dialog's too,
       // so this runs before the editor's dialog guard) keeps its own history, the editor undoes the project.
       api.on('menu:history', ({ action, fromKey }) => {
@@ -75,12 +89,20 @@ export function App() {
       }),
       useStore.subscribe(persistChatState)
     ];
-    return () => offs.forEach((o) => o());
+    void api.project
+      .snapshot()
+      .then((snap) => !unmounted && !superseded && snap && openSnapshot(snap))
+      .catch(() => undefined)
+      .finally(() => !unmounted && setBooted(true));
+    return () => {
+      unmounted = true;
+      offs.forEach((o) => o());
+    };
   }, []);
 
   return (
     <>
-      {screen === 'welcome' ? <Welcome /> : <Editor />}
+      {booted && (screen === 'welcome' ? <Welcome /> : <Editor />)}
       <Toasts />
       <ConfirmHost />
     </>
@@ -115,6 +137,9 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
 
 /** Counts project openings and closings, so a reply that arrives after the project changed is ignored. */
 let opened = 0;
+
+/** The last File menu command this page acted on: the main process numbers them in the order they were chosen. */
+let lastMenuCommand = 0;
 
 /** Show the conversation that was open when the project was last used, with its unsent draft. */
 async function restoreConversation(seq: number, remembered: string | undefined) {
