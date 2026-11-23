@@ -61,6 +61,8 @@ export function App() {
       // Edit → Undo and Redo, and their keys when nothing on the page took them: a text field (a dialog's too,
       // so this runs before the editor's dialog guard) keeps its own history, the editor undoes the project.
       api.on('menu:history', ({ action, fromKey }) => {
+        // While the project is being left, the editor takes no input (see lib/leave.ts).
+        if (getState().leaving) return;
         const owner = menuHistoryOwner(historyContext(), fromKey);
         if (owner === 'text') void (action === 'redo' ? api.edit.redo() : api.edit.undo());
         else if (owner === 'project') projectHistory(action);

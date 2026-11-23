@@ -69,10 +69,12 @@ const PREVIEW_KEYS = new Set(['k', 's', 'e', 'j', '\\', '|']);
  * Whether an editor shortcut forwarded by the main process (the preview frame had focus, so the editor's own
  * keydown handler could not see it) should run. In Preview the page is the visitor's, and a text field on the
  * page keeps its keys in Edit mode too: Undo, Delete and paste belong to the field, never to the project. While
- * an editor menu or dialog is open, only the editor-wide shortcuts run, as from the editor itself.
+ * an editor menu or dialog is open, only the editor-wide shortcuts run, as from the editor itself. While site
+ * copy is edited on the page, only Save runs: it hands that text back and saves it.
  */
 export function forwardedKeyRuns(c: HistoryContext, key: string, mod: boolean): boolean {
-  if (!c.editor || c.inlineEdit || c.focus !== 'canvas') return false;
+  if (!c.editor || c.focus !== 'canvas') return false;
+  if (c.inlineEdit) return mod && key.toLowerCase() === 's';
   if (c.mode === 'edit' && !c.frameText && !c.overlay) return true;
   return mod ? PREVIEW_KEYS.has(key.toLowerCase()) : key === 'Escape';
 }

@@ -38,6 +38,11 @@ describe('undo and redo routing', () => {
     for (const key of ['z', 'y', 'c', 'v', 'd']) expect(forwardedKeyRuns(inline, key, true)).toBe(false);
     for (const key of ['Delete', 'Backspace']) expect(forwardedKeyRuns(inline, key, false)).toBe(false);
     expect(menu(inline)).toEqual({ click: 'text', key: 'text' });
+    // Save still runs: it hands the text being edited back and saves it. Nothing else of the editor's does.
+    for (const key of ['s', 'S']) expect(forwardedKeyRuns(inline, key, true)).toBe(true);
+    for (const key of ['k', 'e', 'j', '\\']) expect(forwardedKeyRuns(inline, key, true)).toBe(false);
+    expect(forwardedKeyRuns(inline, 's', false)).toBe(false);
+    expect(forwardedKeyRuns(inline, 'Escape', false)).toBe(false);
   });
 
   it('leaves a field on the canvas its own history in Edit mode too, whichever way Undo arrives', () => {
