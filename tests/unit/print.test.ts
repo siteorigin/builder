@@ -31,9 +31,9 @@ const QUESTIONS = [
   ['Can you recommend builders?', 'We work with a small group of trusted contractors and are happy to introduce them, or to work with your own builder.']
 ] as const;
 const PLANS = [
-  { name: 'Consultation', description: 'A focused session to explore ideas and priorities.', features: ['Two-hour site visit', 'Written summary', 'Budget guidance'], action: 'Book a session' },
-  { name: 'Design', description: 'A complete design package ready for builders to quote.', features: ['Concept and detailed design', 'Materials and finishes', 'Drawings for tender', 'Three review meetings'], action: 'Start a project' },
-  { name: 'Full service', description: 'Design plus coordination through to handover.', features: ['Everything in Design', 'Contractor coordination', 'Weekly site reports'], action: 'Talk to us' }
+  { name: 'Discovery visit', price: '$350', description: 'A focused session to explore ideas and priorities.', features: ['Two-hour site visit', 'Written summary', 'Budget guidance'], action: 'Book a session' },
+  { name: 'Studio design', price: '$4,800', description: 'A complete design package ready for builders to quote.', features: ['Concept and detailed design', 'Materials and finishes', 'Drawings for tender', 'Three review meetings'], action: 'Start a project' },
+  { name: 'Full service', price: '$9,500', description: 'Design plus coordination through to handover.', features: ['Everything in Design', 'Contractor coordination', 'Weekly site reports'], action: 'Talk to us' }
 ];
 const FORM_HEADING = 'Send us a message';
 const FIELDS = ['Your full name', 'Your email address', 'Best phone number', 'How can we help?'];
@@ -78,7 +78,11 @@ function exportedSite() {
   faq.props.items = (faq.props.items as ListItem[]).map((item, i) => ({ ...item, question: QUESTIONS[i][0], answer: QUESTIONS[i][1] }));
   const pricing = add('pricing.plans', {});
   // Each plan's action goes somewhere, so it is shown (a button without a destination is left out).
-  pricing.props.plans = (pricing.props.plans as ListItem[]).map((plan) => ({ ...plan, actionLink: { type: 'email', target: 'hello@example.com' } }));
+  pricing.props.plans = (pricing.props.plans as ListItem[]).map((plan, i) => ({ ...plan, name: PLANS[i].name, price: PLANS[i].price, actionLink: { type: 'email', target: 'hello@example.com' } }));
+  for (const [i, plan] of PLANS.entries()) {
+    const stored = (pricing.props.plans as ListItem[])[i];
+    if (stored.description !== plan.description || stored.actionLabel !== plan.action) throw new Error(`The default plan ${i + 1} has changed`);
+  }
   add('contact.form', {
     provider: 'netlify',
     submitLabel: SUBMIT,
@@ -93,6 +97,9 @@ function exportedSite() {
   for (const child of children) contact.nodes[child.id] = child;
   const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
   header.props = { ...header.props, ctaLabel: HEADER_ACTION, ctaLink: { type: 'email', target: 'hello@example.com' } };
+  // The starter dates its copyright from the clock; the test needs the same text every year.
+  const footer = s.site.shell.footer.nodes[s.site.shell.footer.rootIds[0]] as InstanceNode;
+  footer.props = { ...footer.props, copyright: COPYRIGHT };
   const files = generateProject(s);
   const css = ['tokens', 'theme', 'components', 'site'].map((n) => files.get(`${STYLES_DIR}/${n}.css`) ?? '').join('\n');
   return { files, css, pageFile: pageFile(contact) };
@@ -221,18 +228,19 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
   it('keeps the contact details and leaves out controls that only work on screen', async () => {
     const page = await openSite(browser, []);
     try {
-      // A button from the author's own component, which does nothing on paper either.
+      // Controls from an author's own component: a form's submit, reset and typeless buttons, which do nothing on
+      // paper, and a button whose label is a contact detail it copies, which a handout keeps.
       await page.evaluate(`(() => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = 'Copy the address';
-        document.querySelector('.so-foundation-layout-section__root p').after(button);
+        const own = document.createElement('div');
+        own.innerHTML = '<form><input type="submit" value="Send the request"><button type="reset">Clear the request</button><button>Request a callback</button></form>'
+          + '<button type="button" aria-label="Copy email address">studio@example.com</button>';
+        document.querySelector('.so-foundation-layout-section__root p').after(own);
       })()`);
       const text = squash((await print(page)).join('\n'));
-      for (const value of CONTACT_VALUES) expect(text, value).toContain(squash(value));
+      for (const value of [...CONTACT_VALUES, 'studio@example.com']) expect(text, value).toContain(squash(value));
       for (const field of FIELDS) expect(text, field).toContain(squash(field));
       for (const plan of PLANS) expect(text, plan.action).toContain(squash(plan.action));
-      for (const control of [SUBMIT, HEADER_ACTION, 'Copy the address', 'Open menu', 'Skip to content', 'This form is not connected to a form service yet', 'Leave this field empty'])
+      for (const control of [SUBMIT, HEADER_ACTION, 'Send the request', 'Clear the request', 'Request a callback', 'Open menu', 'Skip to content', 'This form is not connected to a form service yet', 'Leave this field empty'])
         expect(text, control).not.toContain(squash(control));
     } finally {
       await page.context().close();
@@ -243,13 +251,20 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
     const page = await openSite(browser, [], 390);
     try {
       await page.click('.so-header__toggle');
+      // A disclosure of the author's own whose icon says something (here, that weekend visits are included).
+      await page.evaluate(`(() => {
+        const own = document.createElement('details');
+        own.innerHTML = '<summary>Weekend visits <span class="so-icon" id="status-icon">✓</span></summary><p>By appointment.</p>';
+        document.querySelector('.so-foundation-layout-section__root p').after(own);
+      })()`);
       const styles = () =>
         page.evaluate<Record<string, string>>(`(() => {
           const display = (sel) => [...document.querySelectorAll(sel)].map((el) => getComputedStyle(el).display).join(',');
           return {
             toggle: display('.so-header__toggle'),
             nav: display('.so-header__nav'),
-            icons: display('details > summary .so-icon'),
+            icons: display('.so-foundation-faq-list__toggle-icon'),
+            status: display('#status-icon'),
             formActions: display('.so-form__actions'),
             formMessages: display('.so-form__messages'),
             header: getComputedStyle(document.querySelector('.so-header')).position
@@ -260,14 +275,16 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(screen.toggle).not.toBe('none');
       expect(screen.nav).not.toBe('none');
       expect(screen.icons.split(',')).not.toContain('none');
+      expect(screen.status).not.toBe('none');
       expect(screen.formActions).not.toBe('none');
       expect(screen.formMessages).not.toBe('none');
       expect(screen.header).toBe('sticky');
       await page.emulateMedia({ media: 'print' });
-      expect(await styles()).toEqual({ toggle: 'none', nav: 'none', icons: 'none,none,none,none', formActions: 'none', formMessages: 'none', header: 'static' });
+      expect(await styles()).toEqual({ toggle: 'none', nav: 'none', icons: 'none,none,none,none', status: screen.status, formActions: 'none', formMessages: 'none', header: 'static' });
       const text = squash((await print(page)).join('\n'));
       expect(text).not.toContain(squash(HEADER_ACTION));
       expect(text).toContain(squash(QUESTIONS[3][1]));
+      expect(text).toContain(squash('By appointment.'));
     } finally {
       await page.context().close();
     }
@@ -347,7 +364,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         const sheets = await print(page);
         const at = `${shift}px down`;
         for (const plan of PLANS) {
-          const parts = [plan.description, ...plan.features, plan.action];
+          const parts = [plan.name, plan.price, plan.description, ...plan.features, plan.action];
           const where = parts.map((part) => sheetsWith(sheets, part));
           expect(where[0], `${plan.name} ${at}`).toHaveLength(1);
           expect(where, `${plan.name} ${at}`).toEqual(parts.map(() => where[0]));

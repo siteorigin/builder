@@ -3,8 +3,9 @@
  *
  * Chromium writes PDFs with Skia: plain indirect objects (no object streams), FlateDecode content streams that
  * show text with `Tj` and `TJ`, and Type0 fonts whose /ToUnicode CMap maps each glyph code back to text. This
- * reads exactly that, so a test can check what a printout says, and in what ink, without a PDF library. Anything it cannot read
- * (an object stream, an encrypted file, a font without a CMap) throws rather than returning less text.
+ * reads exactly that, so a test can check what a printout says, and in what ink, without a PDF library. Anything
+ * it cannot read (an object stream, an encrypted file, a font without a CMap, right-to-left text) throws rather
+ * than misreading it.
  */
 import { inflateSync } from 'node:zlib';
 
@@ -245,6 +246,8 @@ export function pdfSheets(pdf: Buffer): PdfSheet[] {
           else if (op === 'rg' || ((op === 'sc' || op === 'scn') && numbers.length === 3)) fill = hex(numbers.slice(-3));
           else if (op === 'g') fill = hex([numbers[numbers.length - 1], numbers[numbers.length - 1], numbers[numbers.length - 1]]);
           else if (['f', 'F', 'f*', 'B', 'B*', 'b', 'b*'].includes(op)) sheet.fills.add(fill);
+          // Right-to-left text marked this way is stored in visual order, which this reader would return reversed.
+          else if ((op === 'BMC' || op === 'BDC') && operands[0] === 'ReversedChars') throw new Error('This PDF has right-to-left text, which pdf-text does not read');
           else if (op === 'BT') line = '';
           else if (op === 'ET') {
             if (line) sheet.runs.push({ text: line, fill });

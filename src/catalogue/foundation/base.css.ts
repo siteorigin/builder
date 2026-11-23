@@ -117,9 +117,13 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
   /* Every disclosure prints its content without being opened, so the questions a visitor opened are still the
      ones open after printing, or after cancelling the print dialog. */
   details::details-content { content-visibility: visible; display: block; }
-  details > summary .so-icon { display: none; }
-  /* Controls that only work on screen. Components' own (scoped) styles show some of them, hence !important. */
-  .so-skip-link, button, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap { display: none !important; }
+  /* The FAQ's open/close icon, in any copy of it. An icon of an author's own that tells something stays. */
+  details > summary [class*='__toggle-icon'] { display: none; }
+  /* Controls that only work on screen: submit and reset buttons (a button whose label is content, such as an
+     address it copies, stays), the skip link, the menu button and phone menu, and the contact form's actions and
+     service messages. Components' own (scoped) styles show some of them, hence !important. */
+  :is(button, input):is([type='submit'], [type='reset']), form button:not([type]),
+  .so-skip-link, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap { display: none !important; }
   .so-header { position: static !important; }
   /* Where the sheet has room: a heading, or a section's heading group, stays with what follows it, and short
      units (a plan, a contact method, a question and its answer, the contact form) stay whole. */
