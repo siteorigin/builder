@@ -212,7 +212,9 @@ describe('held edit row', () => {
   it('explains a changed field with what it holds now, and a gone target with what can still be done', () => {
     expect(heldPrompt({ phase: 'changed', text: 'Mine', currentText: 'Old' }, false)).toEqual({ message: 'Not applied: this changed while the AI was working and now holds “Old”. Replace it with your edit?', actions: ['replace', 'discard'] });
     expect(heldPrompt({ phase: 'changed', text: 'Mine', currentText: '' }, false).message).toContain('now holds nothing');
-    expect(heldPrompt({ phase: 'waiting', text: 'x' }, true, true).message).toBe('Not saved yet: the AI is waiting for your answer.');
+    expect(heldPrompt({ phase: 'waiting', text: 'x' }, true, 'asking').message).toBe('Not saved yet: the AI is waiting for your answer.');
+    // Stop while it waits: the row follows the toolbar to stopping, never back to working.
+    expect(heldPrompt({ phase: 'waiting', text: 'x' }, true, 'stopping').message).toBe('Not saved yet: the AI is stopping.');
     expect(heldPrompt({ phase: 'waiting', text: 'x' }, true).message).toBe('Not saved yet: the AI is working.');
     expect(heldPrompt({ phase: 'gone', text: 'Our people', note: 'page' }, false)).toEqual({
       message: 'Not applied: the page this edit was for no longer exists, so there is nothing to apply it to. Copy your text to use it elsewhere.',

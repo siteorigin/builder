@@ -6,6 +6,7 @@ import { Check, ChevronDown, CircleAlert, CircleCheck, Info, Pencil, X } from 'l
 import { aiActivity, applyHeld, commitDraft, discardHeld, getConfirm, markDraft, onConfirmChange, undoAvailable, useStore, type HeldEdit } from '../store';
 import { afterSettle, isSettling, reportRefused } from '../lib/pending';
 import { heldPrompt, type HeldAction } from '../lib/held';
+import { runPhase } from '../lib/savestate';
 import type { ProjectSnapshot } from '@shared/api';
 
 const setToasts = (toasts: ReturnType<typeof useStore.getState>['toasts']) => useStore.setState({ toasts });
@@ -740,8 +741,8 @@ const HELD_LABELS: Record<HeldAction, string> = {
 
 /** A typed edit made while the AI was working: kept, with what can be done with it now. */
 function HeldEditRow({ h, aiRunId }: { h: HeldEdit; aiRunId: string | null }) {
-  const asking = useStore((s) => s.runStatus === 'awaiting-input');
-  const { message, actions } = heldPrompt(h, !!aiRunId, asking);
+  const phase = useStore((s) => runPhase(s.runStatus));
+  const { message, actions } = heldPrompt(h, !!aiRunId, phase);
   const row = useRef<HTMLDivElement>(null);
   // The buttons change with the edit's state and the AI's. Focus that was on one stays in the row, and a
   // row that goes (saved or discarded) hands focus to the next one, never dropping it on the page.
