@@ -406,9 +406,9 @@ function batchAssetUsages(state: ProjectState, ctx: ApplyContext): Record<string
   return held.counts!;
 }
 
-/** How many links from the rest of the site go to a page: the links deleting it would move to a replacement. */
+/** How many links from the rest of the site go to a page: the links deleting it would move to a replacement (page lists' cards for it go with it). */
 export function pageLinkReferences(state: ProjectState, pageId: string): number {
-  return pageLinkUses(state, pageId).length;
+  return pageLinkUses(state, pageId).filter((u) => !u.card).length;
 }
 
 function routeTaken(state: ProjectState, route: string, exceptPageId?: string): boolean {
@@ -597,14 +597,22 @@ function sectionsOnReplacement(state: ProjectState, page: PageDoc, replacementId
 function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   const page = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
   if (state.site.pageOrder.length <= 1) fail('A site needs at least one page.');
-  const uses = pageLinkUses(state, page.id);
+  const all = pageLinkUses(state, page.id);
+  // Page lists' cards for this page go with it; every other link is pointed at the replacement.
+  const cards = all.filter((u) => u.card);
+  const uses = all.filter((u) => !u.card);
   const refs = uses.length;
   if (op.replacementPageId && !own(state.pages, op.replacementPageId)) fail('The replacement page does not exist.');
   if (op.replacementPageId === page.id) fail('The replacement must be a different page.');
   if (refs && !op.replacementPageId)
     throw new EngineError('VALIDATION_FAILED', `${refs} link${refs === 1 ? '' : 's'} point to "${page.title}". Choose a replacement page for them.`, { references: refs });
   if (op.sectionReplacements?.length && !op.replacementPageId) fail('Sections for links can only be chosen on a replacement page.');
-  // Sections are looked up before anything moves: the replacement page's IDs do not depend on the page going.
+  // The cards go first: a section on the replacement page that only they kept showing is gone for the links too.
+  for (const { card } of cards) {
+    const at = card!.items.indexOf(card!.item);
+    if (at >= 0) card!.items.splice(at, 1);
+  }
+  // Sections are looked up before anything else moves: the replacement page's IDs do not depend on the page going.
   const section = op.replacementPageId ? sectionsOnReplacement(state, page, op.replacementPageId, uses, op.sectionReplacements) : null;
   if (page.id === state.site.homePageId) {
     // The page replacing Home moves to "/". Its old address is not kept: this removes a page, it moves none.
@@ -626,7 +634,8 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   }
   delete state.pages[page.id];
   state.site.pageOrder = state.site.pageOrder.filter((id) => id !== page.id);
-  return {};
+  // Where each removed card was, for the change summary: what this removal did, not what the batch started with.
+  return cards.length ? { removedCards: cards.map((u) => u.where) } : {};
 }
 
 /** A page's address before and after an edit. */

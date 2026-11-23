@@ -18,6 +18,8 @@ import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { pageIds, planSectionPick, sharedPageIds } from '@generator/checks';
 import { contactMismatch } from '@shared/contact-links';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
+import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
+import { effectiveItem } from '@shared/page-teasers';
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
@@ -533,12 +535,12 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
  * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
  * its hint; without, it names itself with aria-label.
  */
-export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void }) {
+export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string }) {
   const name = id ? undefined : (label ?? schema.label);
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
     case 'string':
-      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} />;
+      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} placeholder={placeholder} />;
     case 'richtext':
       return (
         <DraftInput
@@ -585,12 +587,20 @@ export interface FieldAction {
  * titled card. `hint` replaces the schema's description and `error` replaces both, for text and link fields; a
  * link can also offer an `action` that fixes its problem.
  */
-export function ScalarField({ schema, value, onChange, state, label, hint, error, action, onLive }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void }) {
+export function ScalarField({ schema, value, onChange, state, label, hint, error, action, onLive, placeholder }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string }) {
   const id = useId();
   const shown = label ?? schema.label;
   const note = hint ?? schema.description;
   if (schema.type === 'boolean') return <SwitchRow checked={!!value} onChange={onChange} label={shown} hint={schema.description} />;
-  if (schema.type === 'image') return <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={shown} />;
+  if (schema.type === 'image')
+    return hint ? (
+      <div className="col" style={{ gap: 4 }}>
+        <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={shown} />
+        <div className="field-hint">{hint}</div>
+      </div>
+    ) : (
+      <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={shown} />
+    );
   // A link is two controls (kind and destination) that name themselves; the label names the pair.
   if (schema.type === 'link')
     return (
@@ -617,7 +627,7 @@ export function ScalarField({ schema, value, onChange, state, label, hint, error
     );
   return (
     <Field label={shown} hint={note} error={error} controlId={id}>
-      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} onLive={onLive} />
+      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} onLive={onLive} placeholder={placeholder} />
     </Field>
   );
 }
@@ -633,7 +643,7 @@ export interface ListItemNote {
 
 /** An edit to a list: `repair` is an explicit fix the inspector offers, its own undo step under `label`. */
 export type ListOp =
-  | { kind: 'insert' }
+  | { kind: 'insert'; item?: Record<string, unknown> }
   | { kind: 'remove'; itemId: string }
   | { kind: 'move'; itemId: string; index: number }
   | { kind: 'field'; itemId: string; field: string; value: unknown; edit?: PendingEdit }
@@ -874,10 +884,25 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
   }, [ids]); // eslint-disable-line react-hooks/exhaustive-deps
   const openId = focusItem ?? open;
   const reveal = useRevealedItem(place, openId ? items.find((x) => x.id === openId) : undefined);
-  const titleOf = (it: ListItem, i: number) => {
+  // A page list names each card by the title it shows: the page's own while the card has none.
+  const titleOf = (raw: ListItem, i: number) => {
+    const it = effectiveItem(state, schema, raw);
     const t = schema.titleField ? it[schema.titleField] : Object.values(it).find((v) => typeof v === 'string' && v && v !== it.id);
-    return (typeof t === 'string' && t) || `${schema.itemLabel} ${i + 1}`;
+    return (typeof t === 'string' && t.trim()) || `${schema.itemLabel} ${i + 1}`;
   };
+  const currentPageId = useStore((st) => st.pageId);
+  // While a page is being added, Add waits until the list changes (or a moment passes, so a request that failed does not
+  // block it for good): a second press adds neither a duplicate nor whichever page the picker moves on to.
+  const [asked, setAsked] = useState<string | null>(null);
+  const addPending = asked !== null && asked === ids;
+  useEffect(() => {
+    if (asked === null) return;
+    const t = setTimeout(() => setAsked(null), MOVE_PENDING_MS);
+    return () => clearTimeout(t);
+  }, [asked]);
+  const addable = schema.pageTeaser ? pagesToAdd(state, schema, items, currentPageId) : [];
+  const [toAdd, setToAdd] = useState('');
+  const adding = addable.includes(toAdd) ? toAdd : (addable[0] ?? '');
   const L = onList;
   const move = (it: ListItem, i: number, direction: MoveDirection) => {
     const index = direction === 'up' ? i - 1 : i + 1;
@@ -940,20 +965,24 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
                 <>
                   <FieldGroups
                     groups={fields}
-                    render={({ key, schema: fs, label }) => (
-                      <ScalarField
-                        key={key}
-                        schema={fs as ScalarPropSchema}
-                        label={label}
-                        value={it[key]}
-                        onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })}
-                        state={state}
-                        hint={note?.field === key ? note.hint : undefined}
-                        error={note?.field === key ? note.error : undefined}
-                        action={note?.field === key ? note.action : undefined}
-                        onLive={fs.type === 'string' ? reveal.typed(key) : undefined}
-                      />
-                    )}
+                    render={({ key, schema: fs, label }) => {
+                      const teaser = teaserFieldNote(state, schema, it, key);
+                      return (
+                        <ScalarField
+                          key={key}
+                          schema={fs as ScalarPropSchema}
+                          label={label}
+                          value={it[key]}
+                          onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })}
+                          state={state}
+                          hint={note?.field === key ? note.hint : teaser?.hint}
+                          placeholder={teaser?.placeholder}
+                          error={note?.field === key ? note.error : undefined}
+                          action={note?.field === key ? note.action : undefined}
+                          onLive={fs.type === 'string' ? reveal.typed(key) : undefined}
+                        />
+                      );
+                    }}
                   />
                   {linkPairs?.map((p) => (
                     <ContactMismatch key={p.link} text={it[p.text]} link={it[p.link]} onRepair={(link, label, revision) => L({ kind: 'repair', itemId: it.id, field: p.link, value: link, label, revision })} />
@@ -964,13 +993,38 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
           </div>
           );
         })}
-        <button className="btn btn-sm insp-add" aria-disabled={addNote ? true : undefined} aria-describedby={addNote ? addNoteId : undefined} title={addNote ?? undefined} onClick={() => {
-            if (addNote) return;
-            after.current = { kind: 'added', before: items.map((x) => x.id) };
-            L({ kind: 'insert' });
-          }}>
-          <Plus /> Add {schema.itemLabel.toLowerCase()}
-        </button>
+        {schema.pageTeaser ? (
+          // A page list adds a card for a page chosen here; each page appears once.
+          addable.length > 0 ? (
+            <div className="insp-link-row">
+              <select className="select sm grow" value={adding} aria-label={`${schema.itemLabel} to add`} aria-describedby={addNote ? addNoteId : undefined} onChange={(e) => setToAdd(e.target.value)}>
+                {addable.map((id) => (
+                  <option key={id} value={id}>
+                    {state.pages[id].title} ({state.pages[id].route})
+                  </option>
+                ))}
+              </select>
+              <button className="btn btn-sm insp-add" aria-disabled={addNote || addPending ? true : undefined} aria-describedby={addNote ? addNoteId : undefined} title={addNote ?? undefined} onClick={() => {
+                  if (addNote || addPending || !adding) return;
+                  after.current = { kind: 'added', before: items.map((x) => x.id) };
+                  setAsked(ids);
+                  L({ kind: 'insert', item: { [schema.pageTeaser!.link]: { type: 'page', target: adding } } });
+                }}>
+                <Plus /> Add {schema.itemLabel.toLowerCase()}
+              </button>
+            </div>
+          ) : (
+            <p className="insp-note muted">{items.length ? 'Every other page of the site is in this list.' : 'Add another page to the site to list it here.'}</p>
+          )
+        ) : (
+          <button className="btn btn-sm insp-add" aria-disabled={addNote ? true : undefined} aria-describedby={addNote ? addNoteId : undefined} title={addNote ?? undefined} onClick={() => {
+              if (addNote) return;
+              after.current = { kind: 'added', before: items.map((x) => x.id) };
+              L({ kind: 'insert' });
+            }}>
+            <Plus /> Add {schema.itemLabel.toLowerCase()}
+          </button>
+        )}
         {addNote && (
           <p className="insp-note muted" id={addNoteId}>
             {addNote}

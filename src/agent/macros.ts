@@ -5,7 +5,8 @@
  */
 import { findVariant, variantOptions } from '@shared/variants';
 import { z } from 'zod';
-import type { ComponentDefinition, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
+import { effectiveItem, followsPage, teaserFields } from '@shared/page-teasers';
 import type { EditOperation } from '@shared/ops';
 import { normalizeRoute, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
@@ -346,7 +347,11 @@ export function followStoredLinks(def: ComponentDefinition | undefined, prop: st
   return moved;
 }
 
-export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, sent: unknown[], stored: unknown[]): { items: unknown[]; ids: Array<string | undefined> } {
+/**
+ * Merge sent list items with the stored ones they stand for, so fields the sender left out keep their values. `shown`
+ * gives a stored item as it shows (a page list's empty fields filled from their pages), which is what the sender saw.
+ */
+export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, sent: unknown[], stored: unknown[], shown: (item: ListItem) => Record<string, unknown> = (item) => item): { items: unknown[]; ids: Array<string | undefined> } {
   const all = stored.filter((i): i is ListItem => !!i && typeof i === 'object' && typeof (i as ListItem).id === 'string');
   // An id two stored items share names neither of them.
   const items = all.filter((i) => all.filter((x) => x.id === i.id).length === 1);
@@ -360,27 +365,63 @@ export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, 
     used.add(id);
     return byId.get(id);
   });
+  /**
+   * Match each item without an id to the one stored item with the same key, when only one sent item has that key
+   * (with `unclaimed`, only one of those an id has not already matched).
+   */
+  const matchBy = (keyOf: (it: unknown) => string | undefined, eligible: (it: Record<string, unknown>) => boolean = () => true, storedKey: (it: ListItem) => string | undefined = keyOf, unclaimed = false) => {
+    const count = (k: string) => sent.filter((x, j) => keyOf(x) === k && !(unclaimed && matched[j])).length;
+    const countStored = (k: string) => all.filter((x) => storedKey(x) === k).length;
+    sent.forEach((it, i) => {
+      if (matched[i] || !isRow(it) || typeof it.id === 'string' || !eligible(it)) return;
+      const k = keyOf(it);
+      if (k === undefined || count(k) !== 1 || countStored(k) !== 1) return;
+      const old = items.find((x) => storedKey(x) === k);
+      if (!old || used.has(old.id)) return;
+      used.add(old.id);
+      matched[i] = old;
+    });
+  };
+  const teaser = schema.pageTeaser;
+  // A page list's cards are told apart by the page they stand for: a card sent for another page is a new card, even
+  // under the same title. Only one sent without a page is matched by its title, so it keeps the page it had.
+  // A page link, or a page's ID sent as it is (which the engine also takes).
+  const pageOf = (it: unknown) => {
+    const l = teaser && isRow(it) ? (it[teaser.link] as Partial<LinkValue> | string | undefined) : undefined;
+    if (typeof l === 'string') return l && !/[/:#@]/.test(l) ? l : undefined;
+    return l && typeof l === 'object' && l.type === 'page' && typeof l.target === 'string' && l.target ? l.target : undefined;
+  };
+  // A card an id already claimed is that card, wherever it now points: it leaves the page it names to the others.
+  if (teaser) matchBy(pageOf, undefined, undefined, true);
   const field = schema.titleField;
   if (field) {
     const titleOf = (it: unknown) => {
       const t = isRow(it) ? it[field] : undefined;
       return typeof t === 'string' && t.trim() ? t : undefined;
     };
-    const count = (list: unknown[], t: string) => list.filter((x) => titleOf(x) === t).length;
-    sent.forEach((it, i) => {
-      const t = titleOf(it);
-      if (matched[i] || !isRow(it) || typeof it.id === 'string' || t === undefined || count(sent, t) !== 1 || count(all, t) !== 1) return;
-      const old = items.find((x) => titleOf(x) === t);
-      if (!old || used.has(old.id)) return;
-      used.add(old.id);
-      matched[i] = old;
-    });
+    // A card is known by the title it shows, its page's own while it has none.
+    matchBy(titleOf, (it) => !teaser || it[teaser.link] === undefined, (it) => titleOf(teaser ? shown(it) : it));
   }
+  // A card's field sent back as the page shows it stays empty, so it keeps following the page: only while the card
+  // still stands for that page (a card pointed elsewhere keeps the text it was sent).
+  const follows = teaser ? teaserFields(teaser).map(([f]) => f) : [];
+  const unchanged = (old: ListItem, f: string, v: unknown) => {
+    if (!followsPage(old[f])) return false;
+    const now = shown(old)[f];
+    if (typeof v === 'string') return typeof now === 'string' && v.trim() === now.trim();
+    const img = v as Partial<ImageValue> | null;
+    const was = now as Partial<ImageValue> | undefined;
+    return !!img && typeof img === 'object' && !!was && typeof was === 'object' && !!img.assetId && img.assetId === was.assetId && String(img.alt ?? '').trim() === String(was.alt ?? '').trim() && !img.decorative;
+  };
   return {
     items: sent.map((it, i) => {
       if (!isRow(it)) return it;
       const { id: _id, ...fields } = it;
-      return matched[i] ? { ...structuredClone(matched[i]), ...fields, id: matched[i]!.id } : fields;
+      const old = matched[i];
+      if (!old) return fields;
+      const samePage = !teaser || !Object.hasOwn(fields, teaser.link) || (pageOf(fields) !== undefined && pageOf(fields) === pageOf(old));
+      if (samePage) for (const f of follows) if (Object.hasOwn(fields, f) && unchanged(old, f, fields[f])) delete fields[f];
+      return { ...structuredClone(old), ...fields, id: old.id };
     }),
     ids: matched.map((m) => m?.id)
   };
@@ -553,7 +594,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
         const schema = Object.hasOwn(props, prop) ? props[prop] : undefined;
         const stored = node.props[prop];
         if (schema?.type === 'list' && Array.isArray(value) && Array.isArray(stored)) {
-          const merged = withStoredFields(schema, value, stored);
+          const merged = withStoredFields(schema, value, stored, (item) => effectiveItem(scratch, schema, item));
           const def = scratch.components[node.definitionId];
           merged.ids.forEach((id, i) => {
             if (!id) return;

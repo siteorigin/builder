@@ -11,7 +11,7 @@ import { Field, Modal, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { resolveRef, treeFor } from '../lib/model';
 import { selectPage } from '../lib/actions';
-import { planPageRemoval, reviewPageRemoval } from '../lib/page-removal';
+import { planPageRemoval, reviewPageRemoval, withoutCards } from '../lib/page-removal';
 import { sectionOptions } from '../lib/sections';
 
 export function CreateComponentModal({ target }: { target: ElementRef }) {
@@ -189,7 +189,7 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
 function RemovedPageLink({ use }: { use: PageLinkUse }) {
   return (
     <li>
-      <span className="delete-page-link-label">“{use.label}”</span> <span className="muted">in {use.where}</span>
+      <span className="delete-page-link-label">“{use.label}”</span> <span className="muted">{use.card ? 'card ' : ''}in {use.where}</span>
       {use.link.anchor && <span className="delete-page-route"> #{use.link.anchor}</span>}
     </li>
   );
@@ -230,7 +230,8 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   const close = () => !busy && setState({ modal: null });
   if (!page) return null;
   const choose = (fragment: string, value: string) => setSections({ key, choices: new Map(choices).set(fragment, value) });
-  const { options } = sectionOptions(st, replacement);
+  // The replacement page's sections as they will be once this page's cards have left their lists.
+  const { options } = sectionOptions(review.cards.length ? withoutCards(st, pageId) : st, replacement);
   const remove = async () => {
     if (!plan.operations || busy || aiBusy) return;
     const workspaceKey = snap?.workspaceKey;
@@ -310,6 +311,18 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
               <RemovedPageLink key={i} use={u} />
             ))}
           </ul>
+        )}
+        {review.cards.length > 0 && (
+          <div className="col" style={{ gap: 6 }}>
+            <p className="delete-page-note" id="delete-page-cards" style={{ margin: 0 }}>
+              {review.cards.length === 1 ? 'Its card is removed from the page list it is in:' : `Its ${review.cards.length} cards are removed from the page lists they are in:`}
+            </p>
+            <ul className="delete-page-links" aria-labelledby="delete-page-cards">
+              {review.cards.map((u, i) => (
+                <RemovedPageLink key={i} use={u} />
+              ))}
+            </ul>
+          </div>
         )}
         {target &&
           review.missing.map((m) => {

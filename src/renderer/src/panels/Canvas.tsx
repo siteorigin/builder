@@ -256,8 +256,10 @@ export function Canvas() {
           // when editing began, checked before it is applied (held while the AI works).
           const snap = getState().snapshot;
           const typedText = typeof value === 'string' ? value : richTextToMarkdown(value, snap?.state.pages ?? {});
-          if (snap?.aiBusy || aiActivity() !== edit.ai) commitDraft(edit.base, () => void commitText(edit.ref, value, edit.base), typedText, { check: true });
-          else commitDraft(null, () => void commitText(edit.ref, value), typedText);
+          // An edit that leaves the field as it was rebuilds nothing: the page puts back the text it showed.
+          const restore = (r: 'restore' | void) => void (r === 'restore' && post('restoreText', { editId }));
+          if (snap?.aiBusy || aiActivity() !== edit.ai) commitDraft(edit.base, () => void commitText(edit.ref, value, edit.base).then(restore), typedText, { check: true });
+          else commitDraft(null, () => void commitText(edit.ref, value).then(restore), typedText);
           break;
         }
         case 'linkDropped':

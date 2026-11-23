@@ -5,6 +5,7 @@ import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtex
 import { displayName } from '@engine/tree';
 import { effectiveTokens } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
+import { teaserFields } from '@shared/page-teasers';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -124,7 +125,14 @@ export function propSchemaSummary(schema: Record<string, PropSchema>) {
   const out: Record<string, unknown> = {};
   for (const [k, s] of Object.entries(schema)) {
     if (s.type === 'list')
-      out[k] = { type: 'list', label: s.label, itemFields: Object.fromEntries(Object.entries(s.fields).map(([f, fs]) => [f, fs.type === 'enum' ? { type: 'enum', options: fs.options.map((o) => o.value) } : fs.type])), max: s.max };
+      out[k] = {
+        type: 'list',
+        label: s.label,
+        itemFields: Object.fromEntries(Object.entries(s.fields).map(([f, fs]) => [f, fs.type === 'enum' ? { type: 'enum', options: fs.options.map((o) => o.value) } : fs.type])),
+        max: s.max,
+        // A page list: these fields, left empty, show the linked page's own values and follow its later edits.
+        ...(s.pageTeaser ? { fromLinkedPage: { link: s.pageTeaser.link, ...Object.fromEntries(teaserFields(s.pageTeaser).map(([f, what]) => [f, `page ${what} when empty`])) } } : {})
+      };
     else if (s.type === 'enum') out[k] = { type: 'enum', label: s.label, options: s.options.map((o) => o.value) };
     else out[k] = { type: s.type, label: s.label };
   }

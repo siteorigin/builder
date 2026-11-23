@@ -15,20 +15,40 @@ export interface MissingSection {
 export interface PageRemovalReview {
   /** Every link from the rest of the site that moves to the replacement page. */
   uses: PageLinkUse[];
+  /** Cards for the page in page lists: they are removed from their lists with the page. */
+  cards: PageLinkUse[];
   /** Sections those links jump to that the replacement page lacks: each needs a section there, or the top. */
   missing: MissingSection[];
 }
 
 /**
- * What deleting a page with `replacementId` changes: the links that move to the replacement page, and the sections
- * they jump to that it has no ID for. Sections it does have are kept without asking.
+ * What deleting a page with `replacementId` changes: the links that move to the replacement page, the page lists'
+ * cards that go with the page, and the sections those links jump to that the replacement has no ID for. Sections it
+ * does have are kept without asking.
  */
 export function reviewPageRemoval(state: ProjectState, pageId: string, replacementId: string | undefined): PageRemovalReview {
-  const uses = pageLinkUses(state, pageId);
-  const ids = replacementId && Object.hasOwn(state.pages, replacementId) ? pageIds(state, replacementId) : new Set<string>();
+  const all = pageLinkUses(state, pageId);
+  const uses = all.filter((u) => !u.card);
+  const cards = all.filter((u) => u.card);
+  const view = cards.length ? withoutCards(state, pageId) : state;
+  const ids = replacementId && Object.hasOwn(view.pages, replacementId) ? pageIds(view, replacementId) : new Set<string>();
   const missing = new Map<string, PageLinkUse[]>();
   for (const u of uses) if (u.link.anchor && !ids.has(u.link.anchor)) missing.set(u.link.anchor, [...(missing.get(u.link.anchor) ?? []), u]);
-  return { uses, missing: [...missing].map(([fragment, list]) => ({ fragment, uses: list })) };
+  return { uses, cards, missing: [...missing].map(([fragment, list]) => ({ fragment, uses: list })) };
+}
+
+/**
+ * The project once the page's cards have left their page lists, which is when the engine looks at the replacement
+ * page's sections: one that only those cards kept showing is not there for the links.
+ */
+export function withoutCards(state: ProjectState, pageId: string): ProjectState {
+  if (!pageLinkUses(state, pageId).some((u) => u.card)) return state;
+  const view = structuredClone(state);
+  for (const { card } of pageLinkUses(view, pageId)) {
+    const at = card ? card.items.indexOf(card.item) : -1;
+    if (at >= 0) card!.items.splice(at, 1);
+  }
+  return view;
 }
 
 export interface PageRemovalPlan {
@@ -49,7 +69,9 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
   const review = reviewPageRemoval(state, pageId, replacementId);
   if (!review.uses.length && pageId !== state.site.homePageId) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
   if (!replacementId || !Object.hasOwn(state.pages, replacementId) || replacementId === pageId) return none;
-  const ids = pageIds(state, replacementId);
+  // Sections are the ones the replacement page still has once the cards are gone, as the engine finds them.
+  const view = review.cards.length ? withoutCards(state, pageId) : state;
+  const ids = pageIds(view, replacementId);
   const operations: EditOperation[] = [];
   const sectionReplacements: Array<{ from: string; to: string }> = [];
   // IDs given out in this batch, so two sections with the same heading get different ones.
@@ -65,8 +87,9 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
       const nodeId = choice.slice(SECTION_NODE.length);
       if (!given.has(nodeId)) {
         // A new ID never takes another missing section's name, which still means a different place.
-        const reserved = [...given.values(), ...review.missing.map((m) => m.fragment).filter((f) => f !== fragment)];
-        const plan = planSectionPick(state, replacementId, nodeId, reserved);
+        // Nor one the page has today, which links may still use even if only a removed card keeps it showing.
+        const reserved = [...given.values(), ...review.missing.map((m) => m.fragment).filter((f) => f !== fragment), ...pageIds(state, replacementId)];
+        const plan = planSectionPick(view, replacementId, nodeId, reserved);
         if (!plan) return none;
         operations.push(...plan.operations);
         given.set(nodeId, plan.anchor);
@@ -79,8 +102,10 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
   // them a new ID would take that ID off the page, from links that still jump to it.
   if (operations.length) {
     let after: ProjectState;
+    let afterView: ProjectState;
     try {
       after = applyOperations(state, operations).state;
+      afterView = view === state ? after : applyOperations(view, operations).state;
     } catch {
       return none;
     }
@@ -88,6 +113,9 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
     const kept = elementIds(after, replacementId);
     const lost = [...elementIds(state, replacementId)].filter((id) => !kept.has(id));
     if (lost.length) return { operations: null, lost };
+    // A section given an ID here must still be there once the cards are gone.
+    const there = pageIds(afterView, replacementId);
+    if (sectionReplacements.some((r) => r.to && !there.has(r.to))) return none;
   }
   operations.push({ type: 'page.remove', pageId, replacementPageId: replacementId, ...(sectionReplacements.length ? { sectionReplacements } : {}) });
   return { operations, lost: [] };

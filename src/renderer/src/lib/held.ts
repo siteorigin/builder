@@ -2,6 +2,7 @@ import type { EditOperation } from '@shared/ops';
 import type { GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { displayName } from '@engine/tree';
+import { followsPage, inheritedValue } from '@shared/page-teasers';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -101,7 +102,11 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const items = value === undefined && schema?.type === 'list' ? schema.default : value;
       const item = Array.isArray(items) ? items.find((i) => i && typeof i === 'object' && (i as { id?: unknown }).id === op.itemId) : undefined;
       if (!item) return gone('list item');
-      return withRoutes(state, op.value, { definitionId: node.definitionId, schema, value: op.field ? (item as Record<string, unknown>)[op.field] : item });
+      const row = item as Record<string, unknown>;
+      // A page list's card shows its page's values in the fields it leaves empty: the page it links to, and what
+      // that page gives the field, are part of what the author saw there.
+      const teaser = schema?.type === 'list' && schema.pageTeaser ? { page: row[schema.pageTeaser.link], shows: op.field ? inheritedValue(state, schema, row, op.field) : undefined } : {};
+      return withRoutes(state, op.value, { definitionId: node.definitionId, schema, value: op.field ? row[op.field] : item, ...teaser });
     }
     case 'node.setStyle': {
       // A variant rule lives on the component definition with every other rule of that option: not one field.
@@ -239,6 +244,8 @@ export function shownField(op: EditOperation, read: unknown): string | null {
   } else if (op.type === 'token.set') v = o.override ?? (o.custom as { value?: unknown } | undefined)?.value;
   else if (op.type === 'token.rename') v = (o.custom as { label?: unknown } | undefined)?.label;
   else if (op.type === 'instance.setProp' && !op.itemId) v = o.value ?? (o.schema as { default?: unknown } | undefined)?.default;
+  // A page list's empty card field shows its page's value, which is what the author sees there.
+  else if (op.type === 'instance.setProp' && followsPage(o.value) && typeof o.shows === 'string' && o.shows.trim()) v = o.shows;
   else if (op.type !== 'node.rename') v = o.value;
   return blank(v) ? '' : shownValue(v);
 }

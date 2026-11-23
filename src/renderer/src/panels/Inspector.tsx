@@ -45,6 +45,7 @@ import { StyleControls } from './StyleControls';
 import { ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
+import { teaserFieldNote } from '../lib/page-teasers';
 
 type Tokens = ReturnType<typeof effectiveTokens>;
 type Tone = 'local' | 'shared' | 'definition';
@@ -72,7 +73,7 @@ function formServiceHint(service: FormServiceSetup): ReactNode {
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): EditOperation {
   switch (op.kind) {
     case 'insert':
-      return { type: 'instance.listInsert', owner, nodeId, prop };
+      return { type: 'instance.listInsert', owner, nodeId, prop, ...(op.item ? { item: op.item } : {}) };
     case 'remove':
       return { type: 'instance.listRemove', owner, nodeId, prop, itemId: op.itemId };
     case 'move':
@@ -681,9 +682,11 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
               const item = listItems.find((x) => x.id === itemId);
               if (!field || !item) return null;
               const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${instNodeId}:${listProp}:${itemId}:${b.item}`);
+              // A page list's card says where an empty field's text comes from.
+              const teaser = teaserFieldNote(state, listSchema, item, b.item!);
               return (
                 <div key={`${itemId}:${b.item}`} style={{ display: 'contents' }} {...reveal.handlers}>
-                  <ScalarField schema={field} value={item[b.item!]} state={state} onChange={edit} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
+                  <ScalarField schema={field} value={item[b.item!]} state={state} onChange={edit} hint={teaser?.hint} placeholder={teaser?.placeholder} onLive={field.type === 'string' ? reveal.typed(b.item!) : undefined} {...flagged(b.kind)} />
                 </div>
               );
             }
@@ -1034,6 +1037,18 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         </Field>
         <Field label="Description" hint="Shown by search engines. About 150 characters.">
           <DraftInput multiline value={page.seo.description ?? ''} placeholder={state.site.description || 'Describe this page'} onCommit={(v) => upd({ description: v }, 'Change page description')} />
+        </Field>
+        <Field label="Sharing image" hint="Shown when the page is shared, and on this page’s card in page lists. None uses the site’s sharing image when shared.">
+          <select className="select" value={page.seo.socialImage ?? ''} onChange={(e) => upd({ socialImage: e.target.value || null }, 'Change sharing image')}>
+            <option value="">None</option>
+            {Object.values(state.assets.assets)
+              .filter((a) => a.kind === 'image')
+              .map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+          </select>
         </Field>
         <SwitchRow checked={!!page.seo.noindex} onChange={(v) => upd({ noindex: v })} label="Hide from search engines" hint="Search engines are asked not to list this page." />
       </Section>

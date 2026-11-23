@@ -4,7 +4,7 @@ import { FOUNDATION_TOKENS } from './foundation/tokens';
 import { FOUNDATION_BASE_CSS } from './foundation/base.css';
 import { FOUNDATION_CONTRAST_PAIRS } from './foundation/contrast';
 import { heroCentered, heroSplit, pageIntro } from './foundation/heroes';
-import { container, featuresGrid, gallery, mediaSplit, stats, textSection } from './foundation/content';
+import { container, featuresGrid, gallery, mediaSplit, pageList, stats, textSection } from './foundation/content';
 import { logoStrip, team, testimonials } from './foundation/people';
 import { contact, cta, faq, pricing } from './foundation/conversion';
 import { footer, header } from './foundation/shell';
@@ -55,6 +55,7 @@ const FOUNDATION: ThemePack = {
     team,
     pricing,
     faq,
+    pageList,
     gallery,
     cta,
     contact,

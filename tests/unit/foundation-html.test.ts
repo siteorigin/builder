@@ -30,7 +30,8 @@ const COMPONENTS = [
   'hero.split',
   'intro.page',
   'content.media',
-  'cta.banner'
+  'cta.banner',
+  'content.pages'
 ] as const;
 type ComponentId = (typeof COMPONENTS)[number];
 
@@ -385,5 +386,41 @@ describe('shell.header', () => {
       expect(empty).toMatch(/^<a\b[^>]*aria-label="Home"/);
       expect(empty).not.toContain('<span');
     }
+  });
+});
+
+describe('content.pages', () => {
+  it('links every card to its page, named by the page title unless the card has its own, and leaves out a card whose page has gone', () => {
+    const s = bundle.state;
+    s.assets.assets.a_kitchen = { id: 'a_kitchen', name: 'kitchen.jpg', file: 'static/assets/kitchen.jpg', mime: 'image/jpeg', bytes: 1, width: 1200, height: 800, hash: 'x', kind: 'image', altSuggestion: 'An oak kitchen', createdAt: '' };
+    s.pages.pg_kitchens = { ...structuredClone(s.pages[s.site.homePageId]), id: 'pg_kitchens', title: 'Kitchen renovations', route: '/projects/kitchens/', seo: { description: 'Three kitchens.', socialImage: 'a_kitchen' }, rootIds: [], nodes: {} };
+    s.pages.pg_gardens = { ...structuredClone(s.pages[s.site.homePageId]), id: 'pg_gardens', title: 'Gardens', route: '/work/gardens/', seo: {}, rootIds: [], nodes: {} };
+    const out = authoredHtml('content.pages', {
+      heading: 'Projects',
+      items: [
+        { id: 'i_1', pageLink: { type: 'page', target: 'pg_kitchens' }, title: '', description: '' },
+        { id: 'i_2', pageLink: { type: 'page', target: 'pg_gardens' }, title: 'Garden rooms', description: 'Our own words.' },
+        { id: 'i_3', pageLink: { type: 'page', target: 'pg_gone' }, title: 'Old project', description: 'Gone.' },
+        // Outside the site and with no title of its own: nothing to click, so no card.
+        { id: 'i_4', pageLink: { type: 'url', target: 'https://partner.example/' }, title: '', description: 'A partner with no name.' },
+        { id: 'i_5', pageLink: { type: 'url', target: 'https://partner.example/' }, title: 'Our partner', description: '' }
+      ]
+    });
+    const links = [...out.matchAll(/<a\b[^>]*href="([^"]+)"[^>]*>([^<]*)<\/a>/g)].map((m) => [m[1], m[2]]);
+    expect(links).toEqual([
+      ['/projects/kitchens/', 'Kitchen renovations'],
+      ['/work/gardens/', 'Garden rooms'],
+      ['https://partner.example/', 'Our partner']
+    ]);
+    expect(tags(out, 'li')).toHaveLength(3);
+    expect(out).not.toContain('A partner with no name.');
+    // The page's sharing image shows on its card, described by the library's suggestion; the others have none.
+    expect([...out.matchAll(/<img\b[^>]*>/g)].map((m) => [/src="([^"]+)"/.exec(m[0])?.[1], /alt="([^"]*)"/.exec(m[0])?.[1]])).toEqual([['/assets/kitchen.jpg', 'An oak kitchen']]);
+    expect(out).toContain('>Three kitchens.<');
+    expect(out).toContain('>Our own words.<');
+    expect(out).not.toContain('Old project');
+    expect(out).not.toMatch(EMPTY_HEADING);
+    // With no pages chosen yet the section is its heading alone: no empty list.
+    expect(authoredHtml('content.pages', { heading: 'Projects', items: [] })).not.toContain('<ul');
   });
 });

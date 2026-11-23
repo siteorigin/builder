@@ -4,6 +4,7 @@
  * grammar-constrained decoding on a local model.
  */
 import type { ComponentDefinition, PropSchema, ScalarPropSchema } from '@shared/types';
+import { teaserFields } from '@shared/page-teasers';
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -59,10 +60,22 @@ function scalarSchema(s: ScalarPropSchema): JsonSchema {
 export function propJsonSchema(s: PropSchema): JsonSchema {
   if (s.type !== 'list') return scalarSchema(s);
   const properties: Record<string, JsonSchema> = { id: { type: 'string', description: 'Keep the existing item ID when editing an item. Omit it for a new item.' } };
-  for (const [k, f] of Object.entries(s.fields)) properties[k] = scalarSchema(f);
+  // A page list's fields left empty show the linked page's own values, which follow that page's later edits.
+  const follows = new Map(s.pageTeaser ? teaserFields(s.pageTeaser) : []);
+  for (const [k, f] of Object.entries(s.fields)) {
+    const field = scalarSchema(f);
+    const what = follows.get(k);
+    if (what)
+      field.description =
+        what === 'image'
+          ? `${field.description}. Leave assetId null to show the linked page's sharing image; choose one only to override it on this card.`
+          : `${field.description}. Leave empty ("") to show the linked page's ${what}; set it only to override it on this card.`;
+    else if (k === s.pageTeaser?.link) field.description = `${field.description}. The page this card stands for, by its route.`;
+    properties[k] = field;
+  }
   return {
     type: 'array',
-    description: s.label,
+    description: s.pageTeaser ? `${s.label}. One card per page, in the order shown; deleting a page removes its card.` : s.label,
     ...(s.min !== undefined ? { minItems: s.min } : {}),
     ...(s.max !== undefined ? { maxItems: s.max } : {}),
     items: { type: 'object', properties, additionalProperties: false }

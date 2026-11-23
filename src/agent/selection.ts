@@ -212,7 +212,9 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     const a = args as z.infer<(typeof SELECTION_ARGS)['edit_selected_list']>;
     const schema = Object.hasOwn(r.properties, a.prop) ? r.properties[a.prop] : undefined;
     if (r.node.kind !== 'instance' || schema?.type !== 'list') return fieldError([{ field: 'prop', message: `"${a.prop}" is not a list here` }], note);
-    const items = (r.node.props[a.prop] as Array<{ id: string }> | undefined) ?? [];
+    // A placement without its own list shows (and edits) the definition's items.
+    const own = r.node.props[a.prop];
+    const items = (Array.isArray(own) ? own : own === undefined && Array.isArray(schema.default) ? schema.default : []) as Array<{ id: string }>;
     const selectedItem = target.itemId && items.some((i) => i.id === target.itemId) ? target.itemId : undefined;
     const itemId = a.itemId ?? selectedItem;
     const issues: FieldIssue[] = [];

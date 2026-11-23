@@ -129,8 +129,14 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Duplicated page ${where({ kind: 'page', id: op.pageId })}`, res.pageId && after.pages[res.pageId] ? { owner: { kind: 'page', id: res.pageId }, pageId: res.pageId } : {});
       case 'page.reorder':
         return plain(op, 'Reordered the pages');
-      case 'page.remove':
-        return plain(op, `Removed page ${quoted(before.pages[op.pageId]?.title ?? 'page')}`);
+      case 'page.remove': {
+        // Its cards in page lists went with it: name the pages those lists are on, from the removal's own result.
+        const cards = ((results[i] ?? {}) as { removedCards?: unknown }).removedCards;
+        const where = Array.isArray(cards) ? cards.filter((w): w is string => typeof w === 'string') : [];
+        const on = [...new Set(where.map(quoted))];
+        const also = on.length ? ` and its card${where.length === 1 ? '' : 's'} on ${joinWords(on)}` : '';
+        return plain(op, `Removed page ${quoted(before.pages[op.pageId]?.title ?? 'page')}${also}`);
+      }
       case 'page.setHome': {
         // The addresses this promotion moved, from its own result: a later edit in the run may move them again.
         const change = (results[i] ?? {}) as Partial<HomeChange>;
@@ -396,7 +402,10 @@ export function pagesTouched(ops: EditOperation[]): Set<string> | 'all' {
     } else if (op.type === 'page.setHome') {
       // Header and footer links change destination on every page, and a page can be styled by where its links go.
       return 'all';
-    } else if (op.type === 'page.update' || op.type === 'page.remove') pages.add(op.pageId);
+    } else if (op.type === 'page.remove' || (op.type === 'page.update' && (op.title !== undefined || op.description !== undefined || op.socialImage !== undefined))) {
+      // Page lists elsewhere show a page's title, description and sharing image, and drop its card when it goes.
+      return 'all';
+    } else if (op.type === 'page.update') pages.add(op.pageId);
     else if (op.type !== 'page.duplicate' && op.type !== 'page.reorder') return 'all';
   }
   return pages;

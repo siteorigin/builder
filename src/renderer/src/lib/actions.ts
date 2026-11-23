@@ -1,11 +1,11 @@
 import type { EditOperation } from '@shared/ops';
-import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@shared/types';
+import type { ElementRef, GraphNode, OwnerRef, RichText } from '@shared/types';
 import { sameRichText, toRichText } from '@shared/richtext';
 import { isBinding } from '@shared/types';
 import { findParent } from '@engine/tree';
 import { applyOps, commitOps, getState, saveLocal, setState, toast, undoAction } from '../store';
 import { showAsset } from './place';
-import { boundaryOf, listPropFor, refLabel, resolveRef, treeFor } from './model';
+import { boundaryOf, followsPageAt, listPropFor, refLabel, resolveRef, shownValue, treeFor } from './model';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
 
@@ -126,20 +126,6 @@ function inlineField(node: GraphNode | undefined): { field: 'text' | 'label'; va
   return null;
 }
 
-/** The value a reference's inline-editable field shows in `state`: a bound field shows its placement's value,
- *  or the property's default when the placement has none. */
-function currentValue(state: ProjectState, ref: ElementRef, bound: unknown): unknown {
-  if (!isBinding(bound)) return bound;
-  const r = resolveRef(state, ref);
-  const props = (r.instance?.props ?? {}) as Record<string, unknown>;
-  if ('$prop' in bound) return props[bound.$prop] ?? (r.def?.properties[bound.$prop] as { default?: unknown } | undefined)?.default;
-  const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
-  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
-  const items = list ? props[list] : undefined;
-  const item = Array.isArray(items) ? items.find((it) => (it as { id?: unknown } | null)?.id === itemId) : undefined;
-  return item ? (item as Record<string, unknown>)[bound.$item] : undefined;
-}
-
 /** Whether an edit leaves the field as it was. Rich text compares as canonical blocks, plain text as a string. */
 function sameValue(current: unknown, next: string | RichText): boolean {
   if (!Array.isArray(next)) return typeof current === 'string' && current === next;
@@ -151,12 +137,18 @@ function sameValue(current: unknown, next: string | RichText): boolean {
  * the project now; the project when editing began, for an edit checked because the AI ran meanwhile). Text
  * that ends up as it was makes no edit.
  */
-export async function commitText(ref: ElementRef, text: string | RichText, snapshot = getState().snapshot) {
+export async function commitText(ref: ElementRef, text: string | RichText, snapshot = getState().snapshot): Promise<'restore' | void> {
   if (!snapshot) return;
   const r = resolveRef(snapshot.state, ref);
   const target = inlineField(r.node as GraphNode | undefined);
   if (!target) return;
-  if (sameValue(currentValue(snapshot.state, ref, target.value), text)) return;
+  if (sameValue(shownValue(snapshot.state, ref, target.value), text)) return;
+  // Erasing a card's text that comes from its page leaves the card as it was (it has no text of its own to clear):
+  // the page puts its text back.
+  if (typeof text === 'string' && !text.trim() && followsPageAt(snapshot.state, ref, target.value)) {
+    toast('This card shows its page’s text while it has none of its own. Type different text to show it here instead.', 'info');
+    return 'restore';
+  }
   const label = (target.field === 'label' ? 'Edit button text' : 'Edit text') + (ref.owner.kind === 'component' ? ' everywhere' : '');
   if (!ref.instancePath.length) {
     await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label);
