@@ -184,25 +184,37 @@ await settle();
 const chip = async () => win.locator('.ov-chip').first().innerText();
 
 step('the first right-click in copy as its edit begins goes to the word under the pointer');
-await clickCanvas(h1);
-await settle();
-await dblclickCanvas(h1);
-await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'), 'the heading is being edited'));
-// The edit begins with the whole heading selected, ready to be typed over.
-assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve confirmation', 'the edit selects the whole heading');
-const freshChip = await chip();
-// Mark the misspelling already on the page as the spellchecker would, in the preview's own frame, then
-// right-click it at once: the hidden window's own idle check soon clears a marker it did not find itself.
+// The misspelling already on the page is marked as the spellchecker would mark it, in the preview's own frame,
+// just before the right-click: the hidden window's own idle check soon clears a marker it did not find itself,
+// and DevTools drops its markers when its session ends. If the marker goes before the click lands, the attempt
+// starts over from a new edit, so every attempt right-clicks inside the edit's untouched whole selection.
 const preview = await (await win.locator('.frame-box iframe').elementHandle()).contentFrame();
 const cdp = await win.context().newCDPSession(preview);
-const { root } = await cdp.send('DOM.getDocument', { depth: 0 });
-const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: 'h1' });
-const target = await canvasPoint(h1, 'recieve');
-const mark = () => cdp.send('DOM.setTextMarker', { nodeId, start: 0, end: 'recieve'.length, type: 'spelling' });
-const freshMenu = await nextWritingMenu(async () => {
-  await mark();
-  await win.mouse.click(target.x, target.y, { button: 'right' });
-});
+const mark = async () => {
+  const { root } = await cdp.send('DOM.getDocument', { depth: 0 });
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: 'h1' });
+  await cdp.send('DOM.setTextMarker', { nodeId, start: 0, end: 'recieve'.length, type: 'spelling' });
+};
+let freshMenu;
+let freshChip;
+for (let attempt = 1; attempt <= 3; attempt++) {
+  await clickCanvas(h1);
+  await settle();
+  await dblclickCanvas(h1);
+  await eventually(async () => assert.ok(await h1.getAttribute('contenteditable'), 'the heading is being edited'));
+  // The edit begins with the whole heading selected, ready to be typed over.
+  assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve confirmation', 'the edit selects the whole heading');
+  freshChip = await chip();
+  const target = await canvasPoint(h1, 'recieve');
+  freshMenu = await nextWritingMenu(async () => {
+    await mark();
+    await win.mouse.click(target.x, target.y, { button: 'right' });
+  });
+  if (freshMenu.word || attempt === 3) break;
+  console.log(`  the marker went before the click landed (attempt ${attempt}): starting the edit again`);
+  await win.keyboard.press('Escape');
+  await eventually(async () => assert.equal(await h1.getAttribute('contenteditable'), null, 'the edit ends'));
+}
 assertWritingMenu(freshMenu, 'heading as its edit begins');
 await settle();
 assert.equal(await openMenus(), 0, 'the element actions stay closed');
@@ -211,8 +223,8 @@ assert.equal(await chip(), freshChip, 'the selection stays on the heading');
 assert.equal(await h1.evaluate(() => getSelection().toString()), 'recieve', 'the right-click selects the misspelled word');
 await mark();
 await choose(freshMenu.suggestions[0]);
-await cdp.detach();
 await eventually(async () => assert.equal(await h1.innerText(), `${freshMenu.suggestions[0]} confirmation`, 'the suggestion replaces the word'));
+await cdp.detach();
 assert.ok(await h1.getAttribute('contenteditable'), 'the heading is still being edited');
 await win.keyboard.press('Escape');
 await eventually(async () => assert.equal(await h1.innerText(), 'recieve confirmation', 'Escape cancels the edit'));

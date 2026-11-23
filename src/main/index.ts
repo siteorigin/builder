@@ -473,7 +473,7 @@ async function createWindow() {
     // Nothing pops up during automated runs: the menu goes to the test, which chooses from it.
     if (headless) return void app.emit('test:writing-menu', menu, params);
     // From the keyboard (Shift+F10, the Menu key) it opens at the caret, not wherever the pointer was left.
-    const at = params.menuSourceType === 'keyboard' ? { x: params.x, y: params.y } : {};
+    const at = params.menuSourceType === 'keyboard' ? { x: params.x, y: params.y, sourceType: 'keyboard' as const } : {};
     menu.popup({ window: self, frame: params.frame ?? undefined, ...at });
   });
   self.on('unresponsive', () => leaveGate.editorUnresponsive());

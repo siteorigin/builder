@@ -33,9 +33,11 @@ describe('writing menu', () => {
     expect(labels(writingMenuTemplate(target(), actions()))).toEqual(['Cut', 'Copy', 'Paste', '—', 'Select All']);
   });
 
+  // Across the rows each flag has its own pattern, and none is always on or always off.
   it.each([
+    { canCut: true, canCopy: true, canPaste: false, canSelectAll: false },
     { canCut: true, canCopy: false, canPaste: true, canSelectAll: false },
-    { canCut: false, canCopy: true, canPaste: false, canSelectAll: true }
+    { canCut: false, canCopy: false, canPaste: true, canSelectAll: true }
   ])('enables each editing action only when the page can do it, and runs it on the page (%o)', (can) => {
     const a = actions();
     const t = writingMenuTemplate(target({ editFlags: flags(can) }), a);
