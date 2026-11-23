@@ -205,6 +205,8 @@ export function sanitizeSvg(bytes: Buffer): string {
   const stack: Array<{ name: string; kept: boolean }> = [];
   let skipDepth = 0;
   let sawSvg = false;
+  // A file cut short leaves its root open; what is still open at the end would otherwise be closed for it.
+  let rootClosed = false;
   let styleText = '';
   const re = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>|<!DOCTYPE[^>]*>|<\/\s*([A-Za-z][\w:.-]*)\s*>|<([A-Za-z][\w:.-]*)((?:\s+[^\s=/>]+(?:\s*=\s*(?:"[^"]*"|'[^']*'))?)*)\s*(\/?)>|([^<]+)|</g;
   let m: RegExpExecArray | null;
@@ -221,6 +223,7 @@ export function sanitizeSvg(bytes: Buffer): string {
       const name = closeName.toLowerCase();
       const at = stack.map((e) => e.name).lastIndexOf(name);
       if (at < 0) continue;
+      if (at === 0 && stack[0].kept) rootClosed = true;
       while (stack.length > at) {
         const top = stack.pop()!;
         if (!top.kept) {
@@ -250,7 +253,10 @@ export function sanitizeSvg(bytes: Buffer): string {
         }
         continue;
       }
-      if (name === 'svg') sawSvg = true;
+      if (name === 'svg') {
+        sawSvg = true;
+        if (selfClose) rootClosed = true;
+      }
       const attrs: string[] = [];
       for (const a of (attrText ?? '').matchAll(/([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?/g)) {
         const an = a[1].toLowerCase();
@@ -290,6 +296,7 @@ export function sanitizeSvg(bytes: Buffer): string {
     out.push(`</${CANONICAL[top.name] ?? top.name}>`);
   }
   if (!sawSvg) throw new Error('it does not contain an <svg> element');
+  if (!rootClosed) throw new Error('it is incomplete: the end of the file is missing, so the copy or download was probably cut short. Copy or download it again, then import the new copy');
   let result = out.join('');
   if (!/^<svg[^>]*\sxmlns=/.test(result)) result = result.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
   return result + '\n';

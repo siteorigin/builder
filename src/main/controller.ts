@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
-import type { ProjectState } from '@shared/types';
+import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { assetUsages, sourceHash } from '@engine/apply';
@@ -44,6 +44,18 @@ class ExportStopped extends Error {}
 /** Where new projects go by default: Documents/SiteOrigin. */
 export function defaultProjectsFolder(): string {
   return join(app.getPath('documents'), 'SiteOrigin');
+}
+
+/** The image a recovery was made for changed (relinked, removed) before its files could be written. */
+class AssetChanged extends Error {}
+
+/** Project health's missing-file entries; a project from a newer version may not follow this version's shapes. */
+function safeMissingDiagnostics(s: ProjectSession) {
+  try {
+    return missingFileDiagnostics(s.state, s.missingAssets);
+  } catch {
+    return [];
+  }
 }
 
 export function resourcesDir(): string {
@@ -184,7 +196,7 @@ export class Controller {
       revision: s.revision,
       history: s.historyInfo(),
       // Missing image files are for the author, not the AI: it cannot bring them back, and its checks compare messages.
-      diagnostics: [...s.diagnostics(), ...missingFileDiagnostics(s.state, s.missingAssets)],
+      diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s)],
       runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
@@ -1073,7 +1085,8 @@ export class Controller {
       const known = Object.values(s.state.assets.assets);
       for (const f of picked) {
         try {
-          const { record, existing, font } = await importAsset(s.dir, f, known);
+          // Written only while the project is still open and this app's; the decoding is done before.
+          const { record, existing, font } = await importAsset(s.dir, f, known, (write) => (this.session === s ? s.whileOwner(write) : Promise.resolve(false)));
           if (!ids.includes(record.id)) ids.push(record.id);
           if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
           if (!existing) {
@@ -1125,11 +1138,7 @@ export class Controller {
       if (record.file !== before.file || record.hash !== before.hash) return { ok: false, message: `${record.name.trim() || 'The image'} changed while the file was being chosen. Look at it again in Assets.` };
       const name = record.name.trim() || 'The image';
       try {
-        // Files are written only while this app still owns the project, and never once it has closed.
-        const run: { found?: Awaited<ReturnType<typeof locateAssetFile>> } = {};
-        if (this.session !== s || !(await s.whileOwner(async () => void (run.found = await locateAssetFile(s.dir, record, file))))) return closed;
-        const found = run.found;
-        if (!found) return closed;
+        const found = await locateAssetFile(s.dir, record, file, this.assetFence(s, record));
         if (found.same) {
           await this.checkAssetFiles(s);
           if (found.failed.length) return { ok: false, message: `${name} is back, but ${missingParts({ original: false, variants: found.failed })} could not be made again. Make the copies again in Assets.` };
@@ -1139,9 +1148,25 @@ export class Controller {
         if (!r.ok) return { ok: false, message: r.error?.message ?? `${name} could not be given the new file.` };
         return { ok: true, message: `${basename(file)} now shows wherever ${name} is used.` };
       } catch (e) {
+        if (e instanceof AssetChanged) return { ok: false, message: `${name} changed while the file was being chosen. Look at it again in Assets.` };
         return { ok: false, message: (e as Error).message };
       }
     });
+  }
+
+  /**
+   * Writes for one library image happen only while the project is still this one, open and owned by this app, and
+   * the image still has the file they were made for; the slow part (decoding, resizing) is done before.
+   */
+  private assetFence(s: ProjectSession, record: AssetRecord) {
+    return (write: () => Promise<void>) =>
+      this.session !== s
+        ? Promise.resolve(false)
+        : s.whileOwner(async () => {
+            const now = s.state.assets.assets[record.id];
+            if (now?.file !== record.file || now.hash !== record.hash) throw new AssetChanged();
+            await write();
+          });
   }
 
   /** Make again the smaller copies a library image lists that are missing from the project folder. */
@@ -1153,14 +1178,12 @@ export class Controller {
     if (record?.kind !== 'image') return { ok: false, message: 'That image is no longer in the library.' };
     const name = record.name.trim() || 'The image';
     try {
-      // Files are written only while this app still owns the project, and never once it has closed.
-      const run: { done?: Awaited<ReturnType<typeof restoreAssetFiles>> } = {};
-      if (this.session !== s || !(await s.whileOwner(async () => void (run.done = await restoreAssetFiles(s.dir, record)))) || !run.done) return { ok: false, message: 'The project was closed, or another app took it over, before the copies could be made.' };
-      const r = run.done;
+      const r = await restoreAssetFiles(s.dir, record, undefined, this.assetFence(s, record));
       await this.checkAssetFiles(s);
       if (r.failed.length) return { ok: false, message: `${name} is still missing ${missingParts({ original: false, variants: r.failed })}, which could not be made again. Import the picture again, or choose another image.` };
       return { ok: true, message: r.written.length ? `Made ${missingParts({ original: false, variants: r.written })} of ${name} again.` : `${name} has all its copies.` };
     } catch (e) {
+      if (e instanceof AssetChanged) return { ok: false, message: `${name} changed while its copies were being made. Look at it again in Assets.` };
       return { ok: false, message: (e as Error).message };
     }
   }

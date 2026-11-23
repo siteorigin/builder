@@ -55,7 +55,7 @@ export function missingFileDiagnostics(state: ProjectState, missing: MissingAsse
   for (const m of missing) {
     const a = state.assets.assets[m.assetId];
     if (!a) continue;
-    const name = a.name.trim() || 'An image';
+    const name = (typeof a.name === 'string' ? a.name.trim() : '') || 'An image';
     const fix = m.original ? 'Locate the file or choose another image in Assets.' : 'Make the copies again in Assets.';
     out.push({
       severity: used[a.id] ? 'error' : 'warning',

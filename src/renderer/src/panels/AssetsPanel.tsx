@@ -366,9 +366,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     if (!sel || withId === sel.id) return;
     const n = places.length || usage[sel.id] || 0;
     const target = getState().snapshot?.state.assets.assets[withId];
-    // An image whose file is gone has nothing left to offer once its uses show another: it leaves the library too.
-    const dead = missingOf.get(sel.id)?.original;
-    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }, ...(dead ? [{ type: 'asset.remove' as const, assetId: sel.id }] : [])], `Replace ${nameOf(sel)}`);
+    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], `Replace ${nameOf(sel)}`);
     if (r) {
       replaceSession.current++;
       setReplacing(false);

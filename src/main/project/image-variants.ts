@@ -44,15 +44,26 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, w
  * Whether the decoder can read the picture's image data, not just its header: a file whose structure is whole can
  * still hold pixel data no browser can decode. Decoded small, so a large photo costs little.
  */
-export async function isReadable(buf: Buffer): Promise<boolean> {
+export async function isReadable(buf: Buffer, mime?: string): Promise<boolean> {
+  const decode = (pages?: number) => sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', ...(pages ? { pages } : {}) }).resize(16, 16, { fit: 'inside' }).raw().toBuffer();
+  // Too many pixels to decode here, or a kind of file this decoder does not know (an AVIF image sequence, say),
+  // says nothing about the file: browsers may well show it.
+  const unknown = (e: unknown) => /pixel limit|unsupported image format/i.test((e as Error).message);
+  // Every frame of an animation, so a damaged later frame is found too. Frames that are too many pixels together
+  // are checked by the first alone.
+  if (mime === 'image/gif' || mime === 'image/webp') {
+    try {
+      await decode(-1);
+      return true;
+    } catch (e) {
+      if (!/pixel limit/i.test((e as Error).message)) return unknown(e);
+    }
+  }
   try {
-    // Every frame of an animation, so a damaged later frame is found too.
-    await sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', pages: -1 }).resize(16, 16, { fit: 'inside' }).raw().toBuffer();
+    await decode();
     return true;
   } catch (e) {
-    // Too many pixels to decode here, or a kind of file this decoder does not know (an AVIF image sequence, say),
-    // says nothing about the file: browsers may well show it.
-    return /pixel limit|unsupported image format/i.test((e as Error).message);
+    return unknown(e);
   }
 }
 
@@ -60,7 +71,7 @@ export async function isReadable(buf: Buffer): Promise<boolean> {
 export async function handleVariantRequest(m: VariantRequest): Promise<VariantReply> {
   try {
     const buf = Buffer.from(m.data.buffer, m.data.byteOffset, m.data.byteLength);
-    if (m.check && !(await isReadable(buf))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
+    if (m.check && !(await isReadable(buf, m.mime))) return { id: m.id, ok: false, error: 'The picture could not be decoded.', unreadable: true };
     const variants = await renderVariants(buf, m.mime, m.width, m.widths);
     return { id: m.id, ok: true, variants: variants.map((v) => ({ width: v.width, data: new Uint8Array(v.data.buffer, v.data.byteOffset, v.data.byteLength) })) };
   } catch (e) {

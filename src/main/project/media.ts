@@ -68,15 +68,14 @@ export function isAnimatedPng(buf: Buffer): boolean {
 /**
  * Why a raster image cannot be shown, without decoding it: 'empty' (no bytes), 'incomplete' (cut short: a part its
  * own structure says follows is missing) or 'unreadable' (not the format its type names). null when the file
- * holds a whole picture as far as its structure goes. SVG is only checked for its end here; the sanitizer checks the rest.
+ * holds a whole picture as far as its structure goes. SVG is checked by the sanitizer instead.
  */
 export type ImageProblem = 'empty' | 'incomplete' | 'unreadable';
 
 export function imageProblem(buf: Buffer, mime: string): ImageProblem | null {
   if (!buf.length) return 'empty';
-  // The sanitizer would close what a cut-short SVG left open, so its end is looked for here: the root element's
-  // closing tag, or a root that closes itself.
-  if (mime === 'image/svg+xml') return /<\/svg\s*>|^\s*(<\?xml[^>]*>\s*)?(<!--[\s\S]*?-->\s*)*<svg\b[^>]*\/>/i.test(buf.toString('utf8')) ? null : 'incomplete';
+  // An SVG is read whole by the sanitizer, which also notices one cut short.
+  if (mime === 'image/svg+xml') return null;
   let problem: ImageProblem | null;
   try {
     problem =

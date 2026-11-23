@@ -86,7 +86,8 @@ async function prepareFile(sourcePath: string, refuse: Refusal): Promise<Prepare
     try {
       buf = Buffer.from(sanitizeSvg(buf), 'utf8');
     } catch (e) {
-      throw refuse(`${(e as Error).message}. Export a plain SVG or use a PNG instead.`);
+      const reason = (e as Error).message;
+      throw refuse(reason.startsWith('it is incomplete') ? `${reason}.` : `${reason}. Export a plain SVG or use a PNG instead.`);
     }
   }
   // A font is only useful with its family, weight and style, so a file that does not declare them is refused.
@@ -104,11 +105,45 @@ async function prepareFile(sourcePath: string, refuse: Refusal): Promise<Prepare
 /** Where a library file lives and what it is: the part of an asset record a new file replaces. */
 export type StoredFile = Pick<AssetRecord, 'file' | 'mime' | 'bytes' | 'hash' | 'width' | 'height' | 'variants'>;
 
+/** A file to put in the project, made (checked, decoded, resized) before anything is written. */
+interface PendingFile {
+  rel: string;
+  data: Buffer;
+}
+
 /**
- * Write a checked file into static/assets/ under the importer's name, with a picture's responsive copies. A picture
- * the decoder cannot read is refused before anything is written.
+ * Runs the writes into the project only while they may still happen (the project is open and this app owns it),
+ * and says whether they ran. The work that can take a while is done before, so a fence is held only briefly.
  */
-async function storeFile(projectDir: string, p: PreparedFile, refuse: Refusal): Promise<StoredFile> {
+export type WriteFence = (write: () => Promise<void>) => Promise<boolean>;
+const unfenced: WriteFence = async (write) => {
+  await write();
+  return true;
+};
+const NOT_WRITTEN = 'the project was closed, or another app took it over, before it could be written';
+
+const isFile = (path: string) => fs.lstat(path).then((s) => s.isFile(), () => false);
+
+/**
+ * Write prepared files into the project, never through a link that leads out of it. `onlyMissing` leaves a file
+ * that is already there alone (one put back meanwhile). Returns the files written.
+ */
+async function writeFiles(projectDir: string, files: PendingFile[], onlyMissing = false): Promise<string[]> {
+  const written: string[] = [];
+  for (const f of files) {
+    const at = safeJoin(projectDir, f.rel);
+    if (onlyMissing && (await isFile(at))) continue;
+    await atomicWrite(at, f.data);
+    written.push(f.rel);
+  }
+  return written;
+}
+
+/**
+ * A checked file as the importer stores it in static/assets/: its record details, and the files to write, a
+ * picture's responsive copies included. A picture the decoder cannot read is refused here.
+ */
+async function planStore(p: PreparedFile, refuse: Refusal): Promise<{ stored: StoredFile; files: PendingFile[] }> {
   const isFont = p.mime.startsWith('font/');
   const info = isFont ? null : imageInfo(p.buf, p.mime);
   // Decoding allocates by pixel count, which a small file can inflate: very large pictures are not decoded at all
@@ -119,25 +154,26 @@ async function storeFile(projectDir: string, p: PreparedFile, refuse: Refusal): 
   const base = slugify(basename(p.source, p.ext)) || (isFont ? 'font' : 'image');
   const stem = `static/assets/${base}-${p.hash.slice(0, 8)}`;
   const file = `${stem}${p.ext === '.jpeg' ? '.jpg' : p.ext}`;
-  // Never through a link that leads out of the project folder.
-  await atomicWrite(safeJoin(projectDir, file), p.buf);
+  const files: PendingFile[] = [{ rel: file, data: p.buf }];
   const copies: Array<{ width: number; file: string }> = [];
   for (const v of variants) {
     const copy = `${stem}-${v.width}w.${p.mime === 'image/png' ? 'png' : 'jpg'}`;
-    await atomicWrite(safeJoin(projectDir, copy), v.data);
+    files.push({ rel: copy, data: v.data });
     copies.push({ width: v.width, file: copy });
   }
-  return { file, mime: p.mime, bytes: p.buf.length, hash: p.hash, ...(info ? { width: info.width, height: info.height } : {}), ...(copies.length ? { variants: copies } : {}) };
+  return { stored: { file, mime: p.mime, bytes: p.buf.length, hash: p.hash, ...(info ? { width: info.width, height: info.height } : {}), ...(copies.length ? { variants: copies } : {}) }, files };
 }
 
-export async function importAsset(projectDir: string, sourcePath: string, existing: AssetRecord[]): Promise<{ record: AssetRecord; existing: boolean; font?: AssetRecord['font'] }> {
+/** `fence` holds the writes while the project may be written to; the starter's own pictures need none. */
+export async function importAsset(projectDir: string, sourcePath: string, existing: AssetRecord[], fence: WriteFence = unfenced): Promise<{ record: AssetRecord; existing: boolean; font?: AssetRecord['font'] }> {
   const refuse = refusal(sourcePath, 'was not imported');
   const p = await prepareFile(sourcePath, refuse);
   const dup = existing.find((a) => a.hash === p.hash);
   // A font imported before metadata was recorded gets it now.
   if (dup) return { record: dup, existing: true, ...(p.font && !dup.font ? { font: p.font } : {}) };
   const isFont = p.mime.startsWith('font/');
-  const stored = await storeFile(projectDir, p, refuse);
+  const { stored, files } = await planStore(p, refuse);
+  if (!(await fence(async () => void (await writeFiles(projectDir, files))))) throw refuse(`${NOT_WRITTEN}.`);
   const record: AssetRecord = {
     id: newId('a'),
     name: isFont ? fontName(p.font!) : basename(sourcePath, p.ext).replace(/[-_]+/g, ' ').trim() || 'Image',
@@ -156,23 +192,22 @@ export async function importAsset(projectDir: string, sourcePath: string, existi
 
 /** A file the importer named, inside static/assets/: the only kind a library image may be restored to. */
 const LIBRARY_FILE = /^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png|webp|gif|avif|svg)$/;
-const isFile = (path: string) => fs.lstat(path).then((s) => s.isFile(), () => false);
 
 /**
  * Put back what a library image is missing in the project folder: its original, from `original` when that is
  * the same picture, and the smaller copies it lists, made again from the original at their recorded widths and
- * names. Files already there are left alone. Returns the files written and the copies that could not be made.
+ * names. Files already there are left alone, even ones put back while the copies were being made. Returns the
+ * files written and the copies that could not be made.
  */
-export async function restoreAssetFiles(projectDir: string, record: AssetRecord, original?: Buffer): Promise<{ written: string[]; failed: string[] }> {
+export async function restoreAssetFiles(projectDir: string, record: AssetRecord, original?: Buffer, fence: WriteFence = unfenced): Promise<{ written: string[]; failed: string[] }> {
   const name = record.name.trim() || 'This image';
   if (!LIBRARY_FILE.test(record.file)) throw new Error(`${name} has a file name SiteOrigin Builder did not give it, so it cannot be restored. Choose another image instead.`);
   const at = safeJoin(projectDir, record.file);
-  const written: string[] = [];
+  const files: PendingFile[] = [];
   const failed: string[] = [];
   let buf = original;
-  if (buf && !(await isFile(at))) {
-    await atomicWrite(at, buf);
-    written.push(record.file);
+  if (buf) {
+    if (!(await isFile(at))) files.push({ rel: record.file, data: buf });
   } else {
     buf = await fs.readFile(at).catch(() => undefined);
     if (!buf) throw new Error(`The original file of ${name} is missing. Locate it first.`);
@@ -184,19 +219,18 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
     if (!LIBRARY_FILE.test(v.file)) failed.push(v.file);
     else if (!(await isFile(safeJoin(projectDir, v.file)))) missing.push(v);
   }
-  if (!missing.length) return { written, failed };
-  const info = imageInfo(buf, record.mime);
-  const made = info && info.width * info.height <= MAX_VARIANT_PIXELS ? await mediaWorker.variants(buf, record.mime, info.width, missing.map((v) => v.width)) : [];
-  for (const v of missing) {
-    const copy = made.find((c) => c.width === v.width);
-    if (!copy) {
-      failed.push(v.file);
-      continue;
+  if (missing.length) {
+    const info = imageInfo(buf, record.mime);
+    const made = info && info.width * info.height <= MAX_VARIANT_PIXELS ? await mediaWorker.variants(buf, record.mime, info.width, missing.map((v) => v.width)) : [];
+    for (const v of missing) {
+      const copy = made.find((c) => c.width === v.width);
+      if (copy) files.push({ rel: v.file, data: copy.data });
+      else failed.push(v.file);
     }
-    await atomicWrite(safeJoin(projectDir, v.file), copy.data);
-    written.push(v.file);
   }
-  return { written, failed };
+  const out = { written: [] as string[], failed };
+  if (files.length && !(await fence(async () => void (out.written = await writeFiles(projectDir, files, true))))) throw new Error(`${name} was not restored because ${NOT_WRITTEN}.`);
+  return out;
 }
 
 /**
@@ -204,12 +238,14 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
  * library expects it, with its copies, and nothing else changes. A different picture is stored as an import would
  * store it, and what the image record should now say is returned for asset.relink.
  */
-export async function locateAssetFile(projectDir: string, record: AssetRecord, sourcePath: string): Promise<{ same: true; written: string[]; failed: string[] } | { same: false; stored: StoredFile }> {
+export async function locateAssetFile(projectDir: string, record: AssetRecord, sourcePath: string, fence: WriteFence = unfenced): Promise<{ same: true; written: string[]; failed: string[] } | { same: false; stored: StoredFile }> {
   const refuse = refusal(sourcePath, "can't be used");
   if (!isAssetOfKind(sourcePath, 'image')) throw refuse('it is not an image. Choose a JPEG, PNG, WebP, GIF, AVIF or SVG file.');
   const p = await prepareFile(sourcePath, refuse);
-  if (p.hash === record.hash) return { same: true, ...(await restoreAssetFiles(projectDir, record, p.buf)) };
-  return { same: false, stored: await storeFile(projectDir, p, refuse) };
+  if (p.hash === record.hash) return { same: true, ...(await restoreAssetFiles(projectDir, record, p.buf, fence)) };
+  const { stored, files } = await planStore(p, refuse);
+  if (!(await fence(async () => void (await writeFiles(projectDir, files))))) throw refuse(`${NOT_WRITTEN}.`);
+  return { same: false, stored };
 }
 
 const WEIGHT_NAMES: Record<string, string> = { '100': 'Thin', '200': 'Extra Light', '300': 'Light', '400': 'Regular', '500': 'Medium', '600': 'Semibold', '700': 'Bold', '800': 'Extra Bold', '900': 'Black' };

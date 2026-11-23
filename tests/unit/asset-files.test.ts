@@ -138,6 +138,28 @@ describe('importing a picture no browser can show', () => {
     await expect(importFile('cut.svg', Buffer.from(svg.slice(0, svg.indexOf('<rect'))))).rejects.toThrow(/^cut\.svg was not imported because it is incomplete/);
     expect((await importFile('whole.svg', Buffer.from(svg))).record.mime).toBe('image/svg+xml');
     expect((await importFile('closed.svg', Buffer.from('<!-- logo --><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>'))).record.mime).toBe('image/svg+xml');
+    const doctype = '\ufeff<?xml version="1.0"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><!-- a --><!-- b -->';
+    expect((await importFile('doctype.svg', Buffer.from(`${doctype}<svg xmlns="http://www.w3.org/2000/svg" data-x="a>b" viewBox="0 0 1 1"/>`))).record.mime).toBe('image/svg+xml');
+    expect((await importFile('nested.svg', Buffer.from('<SVG xmlns="http://www.w3.org/2000/svg"><svg><rect/></svg></SVG>\n<!-- end -->'))).record.mime).toBe('image/svg+xml');
+    // A closing tag inside a comment, or one that closes an inner SVG, does not finish the file.
+    await expect(importFile('comment.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><!-- </svg> --><rect width="1"'))).rejects.toThrow(/incomplete/);
+    await expect(importFile('inner.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><svg><rect/></svg><rect'))).rejects.toThrow(/incomplete/);
+    // Many comments before a cut-short root are read in a moment.
+    const started = Date.now();
+    await expect(importFile('comments.svg', Buffer.from(`${'<!-- x -->'.repeat(5000)}<svg xmlns="http://www.w3.org/2000/svg"`))).rejects.toThrow();
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('writes nothing once the project may no longer be written to', async () => {
+    const project = temp('project');
+    const closed = async () => false;
+    await expect(importAsset(project, sourceFile('late.png', await picture('png')), [], closed)).rejects.toThrow(/^late\.png was not imported because the project was closed, or another app took it over/);
+    const { dir, record, source } = await photoProject();
+    rmSync(join(dir, 'static/assets'), { recursive: true });
+    await expect(locateAssetFile(dir, record, source, closed)).rejects.toThrow(/was not restored because the project was closed/);
+    await expect(locateAssetFile(dir, record, sourceFile('other.png', await picture('png', 900, 600)), closed)).rejects.toThrow(/can't be used because the project was closed/);
+    expect(existsSync(join(project, 'static'))).toBe(false);
+    expect(existsSync(join(dir, 'static/assets'))).toBe(false);
   });
 
   it('never writes through an assets folder that links out of the project', async () => {
@@ -343,6 +365,8 @@ describe('giving a library image a new file', () => {
     s = applyOperations(s, [{ type: 'asset.add', asset: record() }]).state;
     const c = applyOperations(s, [{ type: 'component.createCode', name: 'Pic', source: '<p>x</p>\n', properties: { photo: { type: 'image', label: 'Photo' } } }]);
     s = applyOperations(c.state, [{ type: 'node.insert', owner: { kind: 'page', id: c.state.site.homePageId }, definitionId: c.results[0].definitionId as string, props: { photo: { assetId: 'a_pic', alt: 'The studio at dusk' } } }]).state;
+    const withCopies = applyOperations(s, [{ ...relink, file: 'static/assets/new-22222222.jpg', mime: 'image/jpeg', variants: [{ width: 480, file: 'static/assets/new-22222222-480w.jpg' }] }]).state.assets.assets.a_pic;
+    expect(withCopies.variants).toEqual([{ width: 480, file: 'static/assets/new-22222222-480w.jpg' }]);
     const after = applyOperations(s, [relink]).state;
     expect(after.assets.assets.a_pic).toEqual({ id: 'a_pic', name: 'Pic', file: relink.file, mime: 'image/webp', bytes: 20, width: 300, height: 200, hash: 'new', kind: 'image', createdAt: 'then', description: 'Our studio', altSuggestion: 'A studio' });
     expect(JSON.stringify(after.pages)).toContain('{"assetId":"a_pic","alt":"The studio at dusk"}');
@@ -494,6 +518,14 @@ describe('exporting with missing image files', () => {
     unlinkSync(join(dir, spare.file));
     expect(await missingWebsiteAssets(dir, state)).toEqual([{ asset: spare, missing: { assetId: spare.id, original: true, variants: [] }, used: false }]);
     expect(missingUnusedWarnings(await missingWebsiteAssets(dir, state))).toEqual(['Spare is missing its original file in the project folder. No page or code names it, so the website was exported without it.']);
+    // A copy the site does not name (only the original is, as a favicon would be) blocks nothing.
+    const page = readFileSync(join(dir, 'src/routes/+page.svelte'), 'utf8');
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), `<link rel="icon" href="/assets/${used.file.split('/').pop()}">`);
+    const copy = readFileSync(join(dir, used.variants![0].file));
+    unlinkSync(join(dir, used.variants![0].file));
+    expect((await missingWebsiteAssets(dir, state)).find((m) => m.asset.id === used.id)?.used).toBe(false);
+    writeFileSync(join(dir, used.variants![0].file), copy);
+    writeFileSync(join(dir, 'src/routes/+page.svelte'), page);
     unlinkSync(join(dir, used.variants![1].file));
     const copyGone = (await missingWebsiteAssets(dir, state)).filter((m) => m.used);
     expect(missingAssetsStop(copyGone).message).toBe('Reading nook is missing a smaller copy in the project folder, and the website uses it. Make the copies again in Assets, then export again.');

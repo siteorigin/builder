@@ -151,12 +151,13 @@ export async function missingWebsiteAssets(project: string, state: ProjectState)
   const missing = await findMissingAssetFiles(project, state.assets.assets);
   if (!missing.length) return [];
   const text = await websiteText(project, await websiteFiles(project, state));
-  // An image whose missing original is not named still matters when the site uses one of its copies: the copy's
-  // credits come from the original. So any of its files being named makes it used.
+  // A missing file the site names would fail the build. A missing original matters too when the site names only a
+  // copy of it, since the copy's credits come from the original; a missing copy the site does not name does not.
   return missing.map((m) => {
     const asset = state.assets.assets[m.assetId];
-    const files = [asset.file, ...(asset.variants ?? []).map((v) => v.file)];
-    return { asset, missing: m, used: files.some((f) => namesWholeFile(text, basename(f))) };
+    const named = (f: string) => namesWholeFile(text, basename(f));
+    const used = [...(m.original ? [asset.file] : []), ...m.variants].some(named) || (m.original && (asset.variants ?? []).some((v) => named(v.file)));
+    return { asset, missing: m, used };
   });
 }
 
