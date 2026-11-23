@@ -1,8 +1,9 @@
-import { ChevronRight, CircleAlert, CircleCheck, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
+import { ChevronRight, CircleAlert, CircleCheck, Ellipsis, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
 import type { RuntimeState } from '@shared/api';
 import { api, setState, useStore } from '../store';
 import { breadcrumb } from '../lib/model';
-import { Modal } from '../components/ui';
+import { Modal, useMenu } from '../components/ui';
+import { useTransitionAnnouncement } from '../lib/announce';
 
 function runtimeInfo(runtime: RuntimeState, pageIssue: string | null, frameReady: boolean) {
   const broken = runtime.state === 'error' || (runtime.state === 'ready' && !!pageIssue);
@@ -22,10 +23,28 @@ export function StatusBar() {
   const stylesOpen = useStore((s) => s.rightTab === 'styles' && s.dockOpen);
   const definitionMode = useStore((s) => s.definitionMode);
   const frameReady = useStore((s) => s.frameReady);
+  const menu = useMenu();
+  // Project health as "problems,warnings,conflicts,broken", for announcing a change once (never on a page
+  // switch). The toolbar announces a conflict appearing or clearing, so a change in conflicts alone is quiet
+  // here, but every count spoken includes them: this never says "No problems" while a conflict remains.
+  const health = useStore((s) => {
+    const d = s.snapshot?.diagnostics ?? [];
+    const conflicts = s.snapshot?.conflicts.length ?? 0;
+    const broken = s.runtime.state === 'error' || (s.runtime.state === 'ready' && !!s.previewIssue) ? 1 : 0;
+    return [d.filter((x) => x.severity === 'error' && x.code !== 'CONFLICT').length + conflicts + broken, d.filter((x) => x.severity === 'warning').length, conflicts, broken].join(',');
+  });
+  const announce = useTransitionAnnouncement(health, (prev, next) => {
+    const [pe, pw, pc, pb] = prev.split(',').map(Number);
+    const [e, w, c, b] = next.split(',').map(Number);
+    if (b !== pb) return b ? `Preview problem. ${e} problem${e === 1 ? '' : 's'} in this project` : `Preview working again${e ? `. ${e} problem${e === 1 ? '' : 's'} remain` : ''}`;
+    if (c !== pc && e - c === pe - pc && w === pw) return null;
+    return e ? `${e} problem${e === 1 ? '' : 's'} in this project` : w ? `${w} warning${w === 1 ? '' : 's'} in this project` : 'No problems';
+  });
   if (!snap) return null;
   // Problems = document errors plus file conflicts, so this never says "No problems" while the toolbar shows a conflict.
+  // The project's diagnostics already list each conflict (code CONFLICT); count each one once.
   const { dot, label, broken } = runtimeInfo(runtime, pageIssue, frameReady);
-  const errors = snap.diagnostics.filter((d) => d.severity === 'error').length + snap.conflicts.length + (broken ? 1 : 0);
+  const errors = snap.diagnostics.filter((d) => d.severity === 'error' && d.code !== 'CONFLICT').length + snap.conflicts.length + (broken ? 1 : 0);
   const warnings = snap.diagnostics.filter((d) => d.severity === 'warning').length;
   // While editing a component everywhere, the path starts at the component (plum), never at a page.
   const def = definitionMode ? snap.state.components[definitionMode.definitionId] : undefined;
@@ -34,28 +53,54 @@ export function StatusBar() {
     : selection && !stylesOpen
       ? breadcrumb(snap.state, selection).map((c) => ({ ...c, def: false }))
       : [];
+  // A deep path keeps its first item and the last two; the ones between collapse into one menu button.
+  const hidden = crumbs.length > 4 ? crumbs.slice(1, -2) : [];
+  const shown = hidden.length ? [crumbs[0], null, ...crumbs.slice(-2)] : crumbs;
+  const problemText = errors ? `${errors} problem${errors === 1 ? '' : 's'}` : warnings ? `${warnings} warning${warnings === 1 ? '' : 's'}` : 'No problems';
   return (
     <footer className="status-bar">
-      <button className="row" style={{ gap: 6 }} aria-live="polite" title="Preview status: open Project health" onClick={() => setState({ modal: { kind: 'health' } })}>
-        <span className={`status-dot ${dot}`} aria-hidden="true" />
+      <button className={`row preview-status${broken ? ' error' : ''}`} style={{ gap: 6 }} title="Preview status: open Project health" onClick={() => setState({ modal: { kind: 'health' } })}>
+        {broken ? <CircleAlert aria-hidden="true" /> : <span className={`status-dot ${dot}`} aria-hidden="true" />}
         {label}
       </button>
-      {crumbs.length > 0 && <span className="faint" aria-hidden="true">·</span>}
+      {crumbs.length > 0 && <span className="status-sep" aria-hidden="true" />}
       <nav className="crumbs grow" aria-label="Selected element">
-        {crumbs.map((c, i) => (
-          <span key={i} className="row" style={{ gap: 2 }}>
-            {i > 0 && <ChevronRight />}
-            <button className={c.def ? 'def' : undefined} onClick={() => setState({ selection: c.ref })}>
-              {c.label}
-            </button>
-          </span>
-        ))}
+        {crumbs.length > 0 && (
+          <ol>
+            {shown.map((c, i) => (
+              <li key={i}>
+                {i > 0 && <ChevronRight aria-hidden="true" />}
+                {c ? (
+                  <button className={c.def ? 'def' : undefined} aria-current={i === shown.length - 1 ? 'location' : undefined} title={c.label} onClick={() => setState({ selection: c.ref })}>
+                    {c.label}
+                  </button>
+                ) : (
+                  <button
+                    className="more"
+                    aria-haspopup="menu"
+                    aria-expanded={false}
+                    aria-label={`${hidden.length} more parent elements`}
+                    title={hidden.map((h) => h.label).join(' › ')}
+                    onClick={(e) => menu.openAt(e.currentTarget, hidden.map((h) => ({ label: h.label, onSelect: () => setState({ selection: h.ref }) })), 'Parent elements')}
+                  >
+                    <Ellipsis />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
       </nav>
-      <button onClick={() => setState({ modal: { kind: 'health' } })} title="Project health: check this project for problems">
-        {errors ? <CircleAlert color="var(--red)" /> : warnings ? <TriangleAlert color="var(--amber)" /> : <CircleCheck color="var(--green)" />}
-        {errors ? `${errors} problem${errors === 1 ? '' : 's'}` : warnings ? `${warnings} warning${warnings === 1 ? '' : 's'}` : 'No problems'}
+      <button className={`problems${errors ? ' error' : warnings ? ' warn' : ''}`} onClick={() => setState({ modal: { kind: 'health' } })} title="Project health: check this project for problems">
+        {errors ? <CircleAlert /> : warnings ? <TriangleAlert /> : <CircleCheck />}
+        {problemText}
+        <ChevronRight className="go" aria-hidden="true" />
       </button>
+      <span className="sr-only" role="status">
+        {announce}
+      </span>
       {dev && <span className="faint" title="Document revision">rev {snap.revision}</span>}
+      {menu.node}
     </footer>
   );
 }
@@ -109,7 +154,8 @@ export function HealthModal() {
             </div>
           )}
           <div className="col" style={{ gap: 6 }}>
-            {snap.diagnostics.map((d, i) => (
+            {/* Conflicts are listed below with their actions, so their diagnostic copies are skipped here. */}
+            {snap.diagnostics.filter((d) => d.code !== 'CONFLICT').map((d, i) => (
               <div key={i} className={`scope-note ${d.severity === 'error' ? 'danger' : 'site'}`}>
                 {d.severity === 'error' ? <CircleAlert /> : <TriangleAlert />}
                 <span className="grow">{d.message}</span>
