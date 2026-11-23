@@ -55,6 +55,16 @@ try {
   assert.match(await card().innerText(), /Your unsent message is kept for afterwards/);
   assert.equal(await win.getByRole('textbox', { name: 'Message' }).count(), 0, 'one text box while a question waits');
 
+  step('while it waits, the editor says who must act and nothing keeps moving (issue #267)');
+  const toolbarState = win.locator('.toolbar .save-state');
+  assert.match(await toolbarState.innerText(), /AI is waiting for you/);
+  assert.match(await win.locator('.ai-veil').innerText(), /question for you/);
+  assert.equal(await win.locator('.dock-tab .live').getAttribute('aria-label'), 'Waiting for your answer');
+  assert.equal(await win.locator('.chat .spinner').count(), 0, 'no spinner in the chat while it waits');
+  assert.equal(await win.locator('.msg-ai[aria-busy="true"]').count(), 0, 'a turn waiting for the author is not busy');
+  const running = () => win.evaluate(() => document.getAnimations().filter((a) => a.playState === 'running' && a.effect?.getComputedTiming().iterations === Infinity).length);
+  assert.equal(await running(), 0, 'no animation runs without end while the AI waits for an answer');
+
   step('an empty answer sends nothing');
   const before = posts().length;
   await answerBox().press('Enter');
