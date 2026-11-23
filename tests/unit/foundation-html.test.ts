@@ -509,6 +509,9 @@ describe('data.table', () => {
     const damaged = bare(html('data.table', { table: { columns: [null, { id: 'col_a', label: 'A' }], rows: [{ id: 'row_1', cells: null }, null, { id: 'row_2', cells: { col_a: 'kept' } }] } }));
     expect(tags(tags(damaged, 'thead')[0], 'th')).toEqual(['A']);
     expect(rowsOf(damaged)).toEqual([['td:'], ['td:kept']]);
+    // A label or cell that is not text renders empty instead of failing the page.
+    const odder = bare(html('data.table', { table: { columns: [{ id: 'col_a', label: { toString: null } }], rows: [{ id: 'row_1', cells: { col_a: { toString: null } } }] } }));
+    expect(rowsOf(odder)).toEqual([['td:']]);
     expect(() => html('data.table', { table: null })).not.toThrow();
   });
 });

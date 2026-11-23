@@ -11,7 +11,7 @@ import { teaserFields } from '@shared/page-teasers';
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 const isEntry = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-/** Characters of cell text a table summary shows in all; each cell is cut to its share (10 to 220). */
+/** Characters of cell text a table summary shows in all; each cell is cut to its share (4 to 220). */
 const TABLE_TEXT_BUDGET = 9000;
 /** A table at most this long (as JSON) is shown whole, IDs and all, wherever full props are shown: within a tool result. */
 const TABLE_FULL_CHARS = 18000;
@@ -21,16 +21,22 @@ const TABLE_FULL_CHARS = 18000;
  * addressed by ID. Long cells are cut to fit; a summary that cuts anything says so, and the engine refuses it if
  * it is written back as the whole table.
  */
-export function summarizeTable(t: unknown) {
+export function summarizeTable(t: unknown, budget = TABLE_TEXT_BUDGET) {
   if (!isEntry(t)) return t;
-  const columns = (Array.isArray(t.columns) ? t.columns : []).filter(isEntry).map((c) => ({ id: c.id, label: String(c.label ?? '') }));
+  const plain = (v: unknown) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
+  const columns = (Array.isArray(t.columns) ? t.columns : []).filter(isEntry).map((c) => ({ id: c.id, label: plain(c.label) }));
   const rowsIn = (Array.isArray(t.rows) ? t.rows : []).filter(isEntry);
-  const share = Math.max(10, Math.min(220, Math.floor(TABLE_TEXT_BUDGET / Math.max(1, rowsIn.length * columns.length))));
+  const share = Math.max(4, Math.min(220, Math.floor(budget / Math.max(1, rowsIn.length * columns.length))));
   let clipped = false;
+  // Cut by the length the text has in the tool result (quotes and backslashes are escaped there).
+  const sized = (s: string) => JSON.stringify(s).length - 2;
   const text = (v: unknown) => {
-    const s = v === undefined || v === null ? '' : String(v);
-    if (s.length > share) clipped = true;
-    return clip(s, share);
+    let s = plain(v);
+    if (sized(s) <= share) return s;
+    clipped = true;
+    s = clip(s, share);
+    while (s.length > 1 && sized(s) > share) s = clip(s, s.length - 1);
+    return s;
   };
   const rows = rowsIn.map((r) => ({ id: r.id, cells: columns.map((c) => text(isEntry(r.cells) ? r.cells[String(c.id)] : '')) }));
   if (!clipped) return { columns, rows };
@@ -50,7 +56,14 @@ export function summarizeTable(t: unknown) {
 export function agentProps(def: ComponentDefinition | undefined, props: Record<string, unknown>, pages: RichPages, full = false): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const schemas = def?.properties ?? {};
-  const table = (v: unknown) => (full && JSON.stringify(v ?? null).length <= TABLE_FULL_CHARS ? v : summarizeTable(v));
+  // Every table the placement shows shares one allowance, so together they fit in a tool result.
+  const tables = Object.values(schemas).filter((s) => s.type === 'table').length;
+  let room = TABLE_FULL_CHARS;
+  const table = (v: unknown) => {
+    const size = JSON.stringify(v ?? null).length;
+    if (full && size <= room) return (room -= size), v;
+    return summarizeTable(v, TABLE_TEXT_BUDGET / Math.max(1, tables));
+  };
   for (const [k, v] of Object.entries(props)) out[k] = Object.hasOwn(schemas, k) && schemas[k].type === 'table' && !isBinding(v) ? table(v) : full ? v : summarizeValue(v, pages, 1);
   for (const [k, schema] of Object.entries(schemas)) if (schema.type === 'table' && !Object.hasOwn(props, k)) out[k] = table(schema.default);
   return out;

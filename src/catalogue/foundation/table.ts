@@ -31,7 +31,7 @@ const TABLE_SOURCE = `<script>
 	const isEntry = (v) => !!v && typeof v === 'object';
 	const columns = $derived((Array.isArray(table?.columns) ? table.columns : []).filter(isEntry));
 	const rows = $derived((Array.isArray(table?.rows) ? table.rows : []).filter(isEntry));
-	const text = (v) => (v === undefined || v === null ? '' : String(v));
+	const text = (v) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '');
 	const cell = (row, column) => (isEntry(row.cells) ? text(row.cells[column.id]) : '');
 	// The scrolling region is named by the caption, else the heading, so it is never an unnamed stop.
 	const captionText = $derived(text(caption).trim());

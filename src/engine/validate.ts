@@ -31,6 +31,10 @@ export const blocksSaving = (d: Diagnostic) => d.severity === 'error' && !CONTEN
 /** "Home", "Home and About", "Home, About and Contact". */
 const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : (names[0] ?? ''));
 
+/** JSON with object keys in order, so two values that differ only in key order compare equal. */
+const sortedJson = (v: unknown): string =>
+  JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+
 /**
  * Schema and reference validation: IDs, references, nesting and routes, and links to sections that do not exist.
  * Save gates pass `sectionLinks: false`: those findings never block a save, so they need not be worked out.
@@ -136,12 +140,14 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         else
           for (const [k, schema] of Object.entries(def.properties)) {
             if (schema.type !== 'table' || !Object.hasOwn(n.props, k) || isBinding(n.props[k])) continue;
+            // A pure check of a saved value: whatever it throws, the project still opens and says what is wrong.
+            let problem: string | null = null;
             try {
-              normalizeTable(n.props[k], schema.label);
+              if (sortedJson(normalizeTable(n.props[k], schema.label)) !== sortedJson(n.props[k])) problem = 'it is not saved in the form the editor shows';
             } catch (e) {
-              if (!(e instanceof EngineError)) throw e;
-              out.push({ severity: 'warning', code: 'TABLE_DAMAGED', message: `${label}: part of a table in ${displayName(state, n)} cannot be read (${e.message}). Editing the table keeps the rows and columns that can.`, owner, nodeId: n.id });
+              problem = e instanceof EngineError ? e.message : 'it has a value that is not a table';
             }
+            if (problem) out.push({ severity: 'warning', code: 'TABLE_DAMAGED', message: `${label}: part of a table in ${displayName(state, n)} cannot be read (${problem}). Editing the table keeps the rows and columns that can.`, owner, nodeId: n.id });
           }
       }
       if (!seen.has(n.id)) out.push({ severity: 'warning', code: 'NODE_DETACHED', message: `${label}: ${displayName(state, n)} is not attached to the tree.`, owner, nodeId: n.id });

@@ -209,10 +209,26 @@ describe('table edits by ID', () => {
     const s = applyOperations(s0, [edit(nodeId, owner, { action: 'setCell', rowId: 'row_2', columnId: 'col_time', value: '19:00' })]).state;
     expect(tableOf(s, owner, nodeId)).toEqual({ columns: TIMETABLE.columns, rows: [TIMETABLE.rows[0], { ...TIMETABLE.rows[1], cells: { ...TIMETABLE.rows[1].cells, col_time: '19:00' } }] });
     expect(validateState(s).filter((d) => d.code === 'TABLE_DAMAGED')).toEqual([]);
-    // A row saved with its cells in column order keeps them when another step is applied.
+    // Cells saved in column order follow their own column past a damaged one, and a bare row of texts is kept.
+    node.props.table = { columns: [TIMETABLE.columns[0], null, TIMETABLE.columns[2]], rows: [{ id: 'row_1', cells: ['Monday', 'orphan', '10:00'] }, ['Friday', 'lost', '17:00']] };
+    const realigned = tableOf(applyOperations(s0, [edit(nodeId, owner, { action: 'renameColumn', columnId: 'col_time', value: 'Starts' })]).state, owner, nodeId);
+    expect(realigned.rows.map((r) => r.cells)).toEqual([
+      { col_day: 'Monday', col_time: '10:00' },
+      { col_day: 'Friday', col_time: '17:00' }
+    ]);
+    // A row saved with its cells in column order keeps them when another step is applied, and is reported until then.
     node.props.table = { columns: TIMETABLE.columns, rows: [{ id: 'row_1', cells: ['Monday', 'Clay', '10:00'] }] };
+    expect(validateState(s0).filter((d) => d.code === 'TABLE_DAMAGED')).toHaveLength(1);
     const renamed = applyOperations(s0, [edit(nodeId, owner, { action: 'renameColumn', columnId: 'col_time', value: 'Starts' })]).state;
     expect(tableOf(renamed, owner, nodeId).rows).toEqual([{ id: 'row_1', cells: { col_day: 'Monday', col_workshop: 'Clay', col_time: '10:00' } }]);
+  });
+
+  it('opens a project whose saved table holds a value that cannot even be named', () => {
+    const { s: s0, owner, nodeId } = withTable();
+    const node = s0.pages[owner.id].nodes[nodeId] as InstanceNode;
+    node.props.table = { columns: [{ id: { toString: null }, label: 'Day' }], rows: [] };
+    expect(() => validateState(s0)).not.toThrow();
+    expect(validateState(s0).find((d) => d.code === 'TABLE_DAMAGED')?.message).toContain('"an object" is not a valid ID');
   });
 
   it('refuses a table step on a property that is not a table', () => {
@@ -351,6 +367,24 @@ describe('the AI’s view of a table', () => {
     expect(normalizeTable(small.table, 'Table')).toEqual(TIMETABLE);
   });
 
+  it('keeps every row ID within a tool result, with escaped text and two large tables in one placement', () => {
+    const big = { columns: Array.from({ length: TABLE_LIMITS.columns }, (_, i) => ({ id: `col_${'c'.repeat(28)}${String(i).padStart(2, '0')}`, label: `"Column" \\ ${i}` })), rows: [] as TableValue['rows'] };
+    big.rows = Array.from({ length: TABLE_LIMITS.rows }, (_, r) => ({ id: `row_${'r'.repeat(28)}${String(r).padStart(2, '0')}`, cells: Object.fromEntries(big.columns.map((c) => [c.id, '\\'.repeat(15) + '"'.repeat(200)])) }));
+    const schema = { type: 'table', label: 'T', default: TIMETABLE } as const;
+    const def = { properties: { first: schema, second: schema } } as unknown as ComponentDefinition;
+    const { s } = withTable();
+    for (const full of [false, true]) {
+      const props = agentProps(def, { first: big, second: big }, s.pages, full) as Record<string, { rows: Array<{ id: string }> }>;
+      expect(JSON.stringify(props).length).toBeLessThan(24000);
+      for (const k of ['first', 'second']) expect(props[k].rows.map((r) => r.id)).toEqual(big.rows.map((r) => r.id));
+    }
+    // Two tables that each fit share the room: the second is shortened rather than overflowing the result.
+    const mid = { columns: [{ id: 'col_a', label: 'Notes' }], rows: Array.from({ length: 60 }, (_, i) => ({ id: `row_${i}`, cells: { col_a: 'z'.repeat(200) } })) };
+    const both = agentProps(def, { first: mid, second: mid }, s.pages, true) as Record<string, unknown>;
+    expect(both.first).toEqual(mid);
+    expect(both.second).toHaveProperty('cellsClipped', true);
+  });
+
   it('shows a table a placement takes from its definition, and never mistakes other props for one', () => {
     const { s, owner, nodeId } = withTable();
     const node = s.pages[owner.id].nodes[nodeId] as InstanceNode;
@@ -388,6 +422,15 @@ describe('typed table edits held while the AI works', () => {
     const s = applyOperations(s0, [time]).state;
     expect(checkHeld(s, [day], base[1]).kind).toBe('apply');
     expect(checkHeld(s, [time], base[0]).kind).toBe('changed');
+  });
+
+  it('notices a row given other content under the same ID, even when the edited cell reads the same', () => {
+    const { s, owner, nodeId } = withTable();
+    const cell = edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_time', value: '11:00' });
+    const base = [(readField(s, cell) as { value: unknown }).value];
+    const replaced = { ...TIMETABLE, rows: [{ id: 'row_1', cells: { col_day: 'Sunday', col_workshop: 'Raku', col_time: '10:00' } }, ...TIMETABLE.rows.slice(1)] };
+    const after = applyOperations(s, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: replaced }]).state;
+    expect(checkHeld(after, [cell], base).kind).toBe('changed');
   });
 
   it('reports a removed row or column as gone', () => {

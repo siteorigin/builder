@@ -125,9 +125,12 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       if (op.action === 'renameColumn') return found({ definitionId: node.definitionId, value: column.label });
       const row = (Array.isArray(table?.rows) ? table.rows : []).find((r) => r && r.id === op.rowId);
       if (!row) return gone('table row');
-      // A cell is its row and column, by ID, as a list item's field is its item's: other cells of the row may change
-      // (another held edit to the same row) without making this one a different field.
-      return found({ definitionId: node.definitionId, value: row.cells?.[column.id] ?? '' });
+      // A cell is its row and column by ID, and its row is also known by its name (its first cell), so a row given
+      // other content under the same ID is not the one the author edited. Other cells may change (another held edit
+      // to the same row) without making this a different field.
+      const first = (Array.isArray(table?.columns) ? table.columns : []).find((c) => c && typeof c.id === 'string');
+      const name = first && first.id !== column.id ? { name: row.cells?.[first.id] ?? '' } : {};
+      return found({ definitionId: node.definitionId, value: row.cells?.[column.id] ?? '', ...name });
     }
     case 'node.setStyle': {
       // A variant rule lives on the component definition with every other rule of that option: not one field.

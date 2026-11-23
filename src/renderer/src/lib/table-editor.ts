@@ -23,7 +23,7 @@ export function tableCount(t: TableValue): string {
 /** A cell's text, or '' when the row has none for that column. */
 export function cellText(row: TableRow, columnId: string): string {
   const v = entry(row.cells) ? row.cells[columnId] : undefined;
-  return v === undefined || v === null ? '' : String(v);
+  return typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
 }
 
 /** A row's name in the editor: its first two filled cells, else its position ("Row 2"). */
@@ -34,7 +34,7 @@ export function rowTitle(t: TableValue, row: TableRow, index: number): string {
 
 /** A column's name in the editor, or its position while it has none. */
 export function columnTitle(column: TableColumn, index: number): string {
-  return String(column.label ?? '').trim() || `Column ${index + 1}`;
+  return (typeof column.label === 'string' ? column.label.trim() : '') || `Column ${index + 1}`;
 }
 
 /** Why Add row does nothing, or null while there is room. */

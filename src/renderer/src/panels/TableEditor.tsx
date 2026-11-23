@@ -43,11 +43,11 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
   const [open, setOpen] = useState<string | null>(null);
   const [said, setSaid] = useState({ text: '', count: 0 });
   const after = useRef<After | null>(null);
-  const wantFocus = useRef<{ key: string; until: number } | null>(null);
+  const wantFocus = useRef<{ key: string; from: string; until: number } | null>(null);
   const uid = useId();
   const key = (k: string) => `${uid}${k}`;
   const find = (k: string) => document.getElementById(key(k));
-  const focusSoon = (k: string) => (wantFocus.current = { key: k, until: Date.now() + FOCUS_MS });
+  const focusSoon = (k: string, from: string) => (wantFocus.current = { key: k, from, until: Date.now() + FOCUS_MS });
   const shape = `${columns.map((c) => c.id).join(',')}|${rows.map((r) => r.id).join(',')}`;
   useEffect(() => {
     const a = after.current;
@@ -64,16 +64,16 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
       if (!added) return;
       after.current = null;
       if (!steer) return;
-      if (a.kind === 'addedColumn') return void focusSoon(`colname-${added.id}`);
+      if (a.kind === 'addedColumn') return void focusSoon(`colname-${added.id}`, a.from);
       setOpen(added.id);
-      focusSoon(columns[0] ? `cell-${added.id}-${columns[0].id}` : `rowhead-${added.id}`);
+      focusSoon(columns[0] ? `cell-${added.id}-${columns[0].id}` : `rowhead-${added.id}`, a.from);
     } else if (a.kind === 'removed') {
       const list: Array<{ id: string }> = a.axis === 'row' ? rows : columns;
       if (list.some((x) => x.id === a.id)) return;
       after.current = null;
       if (!steer) return;
       const next = focusAfterRemove(a.order, a.id, new Set(list.map((x) => x.id)));
-      focusSoon(next ? (a.axis === 'row' ? `rowhead-${next}` : `colname-${next}`) : a.axis === 'row' ? 'addrow' : 'addcol');
+      focusSoon(next ? (a.axis === 'row' ? `rowhead-${next}` : `colname-${next}`) : a.axis === 'row' ? 'addrow' : 'addcol', a.from);
     } else {
       // A move lands with a later revision; until then the entry is still where it was.
       const list: Array<{ id: string }> = a.axis === 'row' ? rows : columns;
@@ -83,7 +83,7 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
       after.current = null;
       const prefix = a.axis === 'row' ? 'row' : 'col';
       const target = tableMoveFocus(a.direction, a.index, list.length);
-      if (steer) focusSoon(target === 'head' ? (a.axis === 'row' ? `rowhead-${a.id}` : `colname-${a.id}`) : `${prefix}${target}-${a.id}`);
+      if (steer) focusSoon(target === 'head' ? (a.axis === 'row' ? `rowhead-${a.id}` : `colname-${a.id}`) : `${prefix}${target}-${a.id}`, a.from);
       setSaid((p) => announcementText(tableMoveAnnouncement(a.axis, a.title, a.index, list.length), p.count) ?? p);
     }
   }, [shape]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -92,6 +92,9 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
     const want = wantFocus.current;
     if (!want) return;
     if (Date.now() >= want.until) return void (wantFocus.current = null);
+    // Still only from where the step left focus: the author may have moved on before the control appeared.
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== find(want.from)) return void (wantFocus.current = null);
     const el = find(want.key);
     if (!el) return;
     wantFocus.current = null;

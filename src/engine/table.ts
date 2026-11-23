@@ -33,12 +33,15 @@ function columnName(v: unknown, what: string): string {
   return s;
 }
 
+/** A value named in a refusal: text as it is, anything else by its kind, so naming it can never fail. */
+const shown = (v: unknown) => (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? String(v) : v === null ? 'null' : Array.isArray(v) ? 'a list' : typeof v === 'object' ? 'an object' : typeof v);
+
 /** IDs for a list of entries: each one given is checked and kept, and the rest are new. */
 function settleIds(given: unknown[], pattern: RegExp, prefix: string, what: (i: number) => string): string[] {
   const taken = new Set<string>();
   given.forEach((id, i) => {
     if (id === undefined || id === null || id === '') return;
-    if (typeof id !== 'string' || !pattern.test(id)) fail(`${what(i)}: "${String(id).slice(0, 40)}" is not a valid ID (${prefix}_ and letters or digits).`);
+    if (typeof id !== 'string' || !pattern.test(id)) fail(`${what(i)}: "${shown(id).slice(0, 40)}" is not a valid ID (${prefix}_ and letters or digits).`);
     if (taken.has(id)) fail(`${what(i)}: the ID "${id}" is used twice.`);
     taken.add(id);
   });
@@ -134,20 +137,29 @@ function moveTo<T>(list: T[], from: number, index: number): T[] {
  * column the table does not have, are left out. One damaged entry in a saved file never blocks fixing the rest.
  */
 function readStored(v: unknown): unknown {
-  if (!isRecord(v)) return v;
-  const columns = Array.isArray(v.columns) ? v.columns.filter(isRecord).map((c) => ({ id: c.id, label: c.label })) : v.columns;
-  const ids = new Set(Array.isArray(columns) ? columns.map((c) => c.id) : []);
+  if (!isRecord(v) || !Array.isArray(v.columns)) return isRecord(v) ? { columns: v.columns, rows: v.rows } : v;
+  // Each column that is kept, with its place in the saved list: cells saved in column order follow their column.
+  const kept = v.columns.flatMap((c, i) => (isRecord(c) ? [{ id: c.id, label: c.label, at: i }] : []));
+  const ids = new Set(kept.map((c) => c.id));
+  const inOrder = (cells: unknown[]) => kept.map((c) => cells[c.at]);
   const rows = Array.isArray(v.rows)
-    ? v.rows.filter(isRecord).map((r) => ({
-        id: r.id,
-        cells: isRecord(r.cells) ? Object.fromEntries(Object.entries(r.cells).filter(([k]) => ids.has(k))) : Array.isArray(r.cells) ? r.cells.slice(0, ids.size) : {}
-      }))
+    ? v.rows.flatMap((r) => {
+        if (Array.isArray(r)) return [inOrder(r)];
+        if (!isRecord(r)) return [];
+        const cells = isRecord(r.cells) ? Object.fromEntries(Object.entries(r.cells).filter(([k]) => ids.has(k))) : Array.isArray(r.cells) ? inOrder(r.cells) : {};
+        return [{ id: r.id, cells }];
+      })
     : v.rows;
-  return { columns, rows };
+  return { columns: kept.map(({ id, label }) => ({ id, label })), rows };
 }
 
 export function editTable(current: unknown, edit: TableEdit, label: string): { value: TableValue; rowId?: string; columnId?: string } {
-  const table = normalizeTable(readStored(current), label);
+  const r = applyStep(normalizeTable(readStored(current), label), edit, label);
+  // Stored in its usual form: cells in column order, every limit checked on the result.
+  return { ...r, value: normalizeTable(r.value, label) };
+}
+
+function applyStep(table: TableValue, edit: TableEdit, label: string): { value: TableValue; rowId?: string; columnId?: string } {
   // Text is required where it is written: a missing value never clears a cell by accident.
   if ((edit.action === 'setCell' || edit.action === 'renameColumn') && typeof edit.value !== 'string') fail(`${label}: ${edit.action} needs a value${edit.action === 'setCell' ? ' ("" clears the cell)' : ''}.`);
   const rowAt = () => {
