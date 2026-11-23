@@ -567,7 +567,7 @@ function Control({
             requestAnimationFrame(() => picker.current?.focus());
           }}
         >
-          {def.kind === 'color' && <ColorPick className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
+          {def.kind === 'color' && <ColorPick key={scope} className="md" value={literal ? String(value) : colorText} onPick={onSet} label={`${label}: pick a color`} />}
           <DraftInput
             className={`input sm grow style-input${def.kind === 'color' ? ' mono' : ''}${literal ? ' is-set' : ''}`}
             value={literal ? String(value) : ''}

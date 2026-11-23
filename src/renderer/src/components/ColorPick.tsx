@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { colorFromPicker, paintableColor, retirePicks, toHex6 } from '@shared/color';
+import { colorFromPicker, paintableColor, retirePicks, toHex6, type SentPick } from '@shared/color';
 import { resolveCssColor } from '../lib/color';
 
+const LANDED_MS = 500; // how long a pick stays in flight after its save succeeds: the saved value arrives meanwhile (a save that changes nothing never sends one)
 /** A backstop for a pick whose save never reports back (the owner's `onPick` returns nothing to wait on): the swatch then goes back to the saved color. */
 const SAVE_WAIT_MS = 30000;
 
@@ -43,7 +44,7 @@ export function ColorPick({
   const paints = paintableColor(value);
   const [draft, setDraft] = useState<string | null>(null);
   /** What this swatch has sent that has not come back as the saved value yet, oldest first. */
-  const inflight = useRef<string[]>([]);
+  const inflight = useRef<SentPick[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const settle = () => {
     clearTimeout(timer.current);
@@ -70,20 +71,19 @@ export function ColorPick({
           onChange={(e) => {
             const picked = e.target.value;
             setDraft(picked);
-            const last = inflight.current[inflight.current.length - 1];
+            const last = inflight.current[inflight.current.length - 1]?.text;
             const base = last ?? value;
             const next = colorFromPicker(base, picked, last === undefined ? rgba : undefined);
             if (next === base) return;
-            inflight.current.push(next);
+            const mine = { text: next };
+            inflight.current.push(mine);
             clearTimeout(timer.current);
             timer.current = setTimeout(settle, SAVE_WAIT_MS);
-            const notSaved = () => {
-              const at = inflight.current.lastIndexOf(next);
-              if (at < 0) return;
-              inflight.current.splice(at, 1);
+            const retire = () => {
+              inflight.current = inflight.current.filter((p) => p !== mine);
               if (!inflight.current.length) settle();
             };
-            Promise.resolve(onPick(next)).then((saved) => (saved === null || saved === false ? notSaved() : undefined), notSaved);
+            Promise.resolve(onPick(next)).then((saved) => (saved === null || saved === false ? retire() : void setTimeout(retire, LANDED_MS)), retire);
           }}
         />
       )}

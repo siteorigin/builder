@@ -247,15 +247,24 @@ describe('paintableColor', () => {
 });
 
 describe('retirePicks', () => {
+  const sent = (...texts: string[]) => texts.map((text) => ({ text }));
+
   it('retires the picks up to the saved one, and none for a value nobody here sent', () => {
-    expect(retirePicks(['#00f', '#0f0'], '#00f')).toEqual(['#0f0']);
-    expect(retirePicks(['#00f', '#0f0'], '#0f0')).toEqual([]);
-    expect(retirePicks(['#00f', '#0f0', '#ff0'], '#0f0')).toEqual(['#ff0']);
+    const [blue, green, yellow] = sent('#00f', '#0f0', '#ff0');
+    expect(retirePicks([blue, green], '#00f')).toEqual([green]);
+    expect(retirePicks([blue, green], '#0f0')).toEqual([]);
+    expect(retirePicks([blue, green, yellow], '#0f0')).toEqual([yellow]);
     // An edit from elsewhere lands between our saves: the picks are still in flight and will land after it.
-    expect(retirePicks(['#00f', '#0f0'], '#f0f')).toEqual(['#00f', '#0f0']);
+    expect(retirePicks([blue, green], '#f0f')).toEqual([blue, green]);
     expect(retirePicks([], '#f00')).toEqual([]);
-    // Out and back to the same color: the first match retires itself, the rest are still on their way.
-    expect(retirePicks(['#00f', '#0f0', '#00f'], '#00f')).toEqual(['#0f0', '#00f']);
+  });
+
+  it('keeps two sends of the same color apart: the first match retires itself, the later one is still on its way', () => {
+    const [first, green, second] = sent('#00f', '#0f0', '#00f');
+    const left = retirePicks([first, green, second], '#00f');
+    expect(left).toHaveLength(2);
+    expect(left[0]).toBe(green);
+    expect(left[1]).toBe(second);
   });
 });
 

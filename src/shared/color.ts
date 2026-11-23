@@ -226,12 +226,17 @@ export function paintableColor(value: string): boolean {
   return !!value.trim() && !/currentcolor/i.test(value) && isSafeCssValue(value);
 }
 
+/** A color a swatch sent for saving: one object per send, so two sends of the same text stay apart. */
+export interface SentPick {
+  text: string;
+}
+
 /**
  * The picks still waiting on a save once `saved` is the value on record. Picks go out oldest first and come
  * back in that order, so the one that matches retires itself and every pick before it. A value that matches
  * none (an undo, an edit elsewhere) retires nothing: the picks are still on their way and will land after it.
  */
-export function retirePicks(inflight: string[], saved: string): string[] {
-  const at = inflight.indexOf(saved);
+export function retirePicks(inflight: SentPick[], saved: string): SentPick[] {
+  const at = inflight.findIndex((p) => p.text === saved);
   return at >= 0 ? inflight.slice(at + 1) : inflight;
 }
