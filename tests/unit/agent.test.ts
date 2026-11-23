@@ -1199,6 +1199,12 @@ describe('requests that create pages over several steps (#88)', () => {
       { title: 'Schedule', existing: [], reason: 'carried' }
     ];
     expect(missingPages(carried, final, final).map((w) => w.title)).toEqual(['Reader requests', 'About']);
+    // A taken route freed during the request is met by a new page there, whatever its title.
+    const { state: freed } = applyOperations(before, [
+      { type: 'page.update', pageId: about.id, route: '/team/' },
+      { type: 'page.create', title: 'Our story', route: '/about/' }
+    ]);
+    expect(missingPages([{ title: 'Somewhere', route: '/about/', reason: 'rejected' }], before, freed)).toEqual([]);
   });
 
   it('hints at a second step only when the batch failed on a page it was creating', async () => {
