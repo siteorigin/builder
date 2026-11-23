@@ -301,6 +301,10 @@ describe('what replacing keeps safe', () => {
     // A leading non-breaking space is a change the page shows.
     const plain = planReplace(s, findContent(s, 'Full price'), '\u00a0Full price');
     expect(plain.changes.map((c) => [c.before, c.after])).toEqual([['Full price', '\u00a0Full price']]);
+    // Spaces the page collapses are still stored: the review says the spacing changed.
+    const spaced = planReplace(s, findContent(s, 'Full price'), 'Full price ');
+    expect(spaced.operations).toHaveLength(1);
+    expect(spaced.changes.map((c) => [c.before, c.after])).toEqual([['Full price', 'Full price (spacing changed)']]);
     // A section link's # is not part of what is stored.
     const anchor = planReplace(s, findContent(s, 'foo').filter((m) => m.kind === 'link'), '#bar');
     expect(anchor.changes.map((c) => [c.kind, c.before, c.after])).toEqual([['link', '#foo on the same page', '#bar on the same page']]);
@@ -344,6 +348,54 @@ describe('what replacing keeps safe', () => {
     expect(m.map((x) => [x.field.label, x.blocked])).toEqual([['API address', expect.stringMatching(/custom code component/)]]);
     expect(planReplace(placed.state, m, 'other.example.org')).toMatchObject({ operations: [], skipped: 1 });
     expect(contentTarget(placed.state, m[0].field, contact.id)).toMatchObject({ section: 'content', focus: 'apiUrl' });
+  });
+
+  it('never changes a field a design hands to a contact form as a setting or as its fields', () => {
+    const s = fresh();
+    const contact = pageAt(s, '/contact/');
+    const added = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: contact.id }, componentId: 'contact.form' }]);
+    const st = added.state;
+    const formDef = st.components[(st.pages[contact.id].nodes[added.results[0].nodeId as string] as InstanceNode).definitionId];
+    // A section of the project's own that shows an address as text and hands the same address to its form as the
+    // endpoint, and its own list to the form as the form's fields.
+    st.components.proj_wrap = {
+      schemaVersion: formDef.schemaVersion,
+      id: 'proj_wrap',
+      componentId: 'project.wrap',
+      contractVersion: 1,
+      kind: 'managed',
+      owner: 'project',
+      name: 'Booking section',
+      description: '',
+      category: 'custom',
+      tags: [],
+      properties: { address: { type: 'string', label: 'Address', default: 'https://forms.example.org/f/abc' }, fields: structuredClone(formDef.properties.fields) },
+      parts: {},
+      tree: {
+        rootIds: ['w_root'],
+        nodes: {
+          w_root: { id: 'w_root', kind: 'element', tag: 'section', children: ['w_text', 'w_form'] },
+          w_text: { id: 'w_text', kind: 'text', tag: 'p', text: { $prop: 'address' } },
+          w_form: { id: 'w_form', kind: 'instance', definitionId: formDef.id, props: { provider: 'endpoint', endpoint: { $prop: 'address' }, fields: { $prop: 'fields' } } }
+        }
+      }
+    };
+    st.pages[contact.id].nodes.n_wrap = { id: 'n_wrap', kind: 'instance', definitionId: 'proj_wrap', props: {} };
+    st.pages[contact.id].rootIds.push('n_wrap');
+    const address = findContent(st, 'forms.example.org');
+    expect(address.map((m) => [m.field.nodeId, m.field.label, !!m.blocked])).toEqual([['n_wrap', 'Address', true]]);
+    const phone = findContent(st, 'Phone').filter((m) => m.field.nodeId === 'n_wrap');
+    expect(phone.map((m) => [m.field.label, !!m.blocked])).toEqual([['Fields › Phone › Label', true]]);
+  });
+
+  it('keeps the header’s rules for a header made unique twice', () => {
+    const s = fresh();
+    const header = { kind: 'shell' as const, id: 'header' };
+    const nodeId = s.site.shell.header.rootIds[0];
+    const once = applyOperations(s, [{ type: 'component.makeUnique', owner: header, nodeId, name: 'Shop header' }]).state;
+    const twice = applyOperations(once, [{ type: 'component.makeUnique', owner: header, nodeId, name: 'Sale header' }]).state;
+    expect(twice.components[(twice.site.shell.header.nodes[nodeId] as InstanceNode).definitionId].provenance?.forkedFrom).toMatch(/^proj/);
+    expect(findContent(twice, 'Test Studio').filter((m) => m.field.where === 'Header').map((m) => [m.field.label, !!m.blocked])).toEqual([['Site name', false]]);
   });
 
   it('lists the header’s name and action only while visitors see them', () => {

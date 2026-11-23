@@ -384,8 +384,15 @@ export interface RenderedContent {
  */
 function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
   if (def.owner === 'theme') return def.componentId === 'shell.header' || (def.componentId === 'contact.form' && namesFormFields(def)) ? def.componentId : undefined;
-  const from = def.provenance?.forkedFrom;
-  return from && (state.components[from]?.componentId ?? from.replace(/^[^.]+\./, '')) === 'shell.header' ? 'shell.header' : undefined;
+  // Back through every copy (a copy of a copy) to where it started.
+  let from = def.provenance?.forkedFrom;
+  for (let guard = 0; from && guard < 20; guard++) {
+    const prev = state.components[from];
+    if (!prev) return from.replace(/^[^.]+\./, '') === 'shell.header' ? 'shell.header' : undefined;
+    if (prev.owner === 'theme') return prev.componentId === 'shell.header' ? 'shell.header' : undefined;
+    from = prev.provenance?.forkedFrom;
+  }
+  return undefined;
 }
 
 /**
@@ -411,6 +418,7 @@ function shippedCodeShows(state: ProjectState, which: string, props: Record<stri
  */
 export function renderedContent(state: ProjectState, tree: NodeTree): RenderedContent[] {
   const out: RenderedContent[] = [];
+  const guarded = new Set<string>();
   const keyOf = (c: RenderedContent) =>
     JSON.stringify([c.kind, c.nodeId, c.source ? [c.source.kind, 'field' in c.source ? c.source.field : null, 'prop' in c.source ? c.source.prop : null, 'itemId' in c.source ? (c.source.itemId ?? null) : null] : [c.at ?? null]]);
   const seen = new Map<string, RenderedContent>();
@@ -450,45 +458,57 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
       const rich = !takesParagraphs(def);
       // The placement's own field each property is: directly, or through the binding a design hands it.
       const fieldOf = (key: string): PlacementField | undefined => (inDef ? placementField(n.props[key], scope) : { prop: key });
-      const add = (kind: 'text' | 'link', value: unknown, source: PlacementField | undefined, schema: PropSchema, at: string) =>
+      // A form's fields handed in by a design are edited on that design's list, where their submission keys are not kept.
+      const keyless = (key: string) => which === 'contact.form' && inDef && key === 'fields';
+      /** A field this code may read as a setting (or in ways its markup alone decides): never changed from here. */
+      const guard = (f: PlacementField | undefined) => f && guarded.add(JSON.stringify([reportId, f.prop, f.itemId ?? null, f.field ?? null]));
+      const add = (kind: 'text' | 'link', value: unknown, source: PlacementField | undefined, schema: PropSchema, at: string, custom: boolean) =>
         push({
           nodeId: reportId,
           kind,
           value,
           ...(source ? { source: { kind: 'prop', ...source } } : { at }),
-          ...(shows ? {} : { custom: true }),
+          ...(custom ? { custom: true } : {}),
           ...(inDef ? { direct: false } : {}),
           ...(schema.type === 'richtext' ? { rich: true, richLinks: rich } : {})
         });
-      const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, source: PlacementField | undefined, at: string) => {
+      const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, source: PlacementField | undefined, at: string, custom: boolean) => {
         const schema = schemas[key];
         const v = Object.hasOwn(values, key) ? values[key] : (schema as { default?: unknown }).default;
-        if (schema.type === 'string' || schema.type === 'richtext') add('text', v, source, schema, at);
+        if (custom) guard(source);
+        if (schema.type === 'string' || schema.type === 'richtext') add('text', v, source, schema, at, custom);
         if (schema.type !== 'link' || !isLinkValue(v) || !resolveLink(v, { state })) return;
         // A shipped component's own markup decides (above). Other code: a link named by a label property shows only
         // while that label has words, as the shipped header does.
         const labelKey = labelKeyFor(key);
         const named = Object.hasOwn(values, labelKey) ? values[labelKey] : (schemas[labelKey] as { default?: unknown } | undefined)?.default;
         if (!shows && schemas[labelKey]?.type === 'string' && !String(named ?? '').trim()) return;
-        add('link', v, source, schema, at);
+        add('link', v, source, schema, at, custom);
       };
       for (const [key, schema] of Object.entries(def.properties)) {
         const field = fieldOf(key);
         if (schema.type !== 'list') {
-          if (!shows || shows.has(key)) take(def.properties, props, key, field, `${placement}|${key}`);
+          // A shipped component's setting is not listed, and whatever else shows its field may not change it.
+          if (shows && !shows.has(key)) guard(field);
+          else take(def.properties, props, key, field, `${placement}|${key}`, !shows);
           continue;
         }
         for (const item of Array.isArray(props[key]) ? (props[key] as Array<Record<string, unknown>>) : []) {
           if (!item || typeof item !== 'object') continue;
           const itemId = typeof item.id === 'string' && item.id ? item.id : undefined;
           for (const f of Object.keys(schema.fields)) {
-            if (shows && !shows.has(`${key}.${f}`)) continue;
-            take(schema.fields, item, f, field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined, `${placement}|${key}|${String(item.id ?? '')}|${f}`);
+            const source = field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined;
+            if (shows && !shows.has(`${key}.${f}`)) guard(source);
+            else take(schema.fields, item, f, source, `${placement}|${key}|${String(item.id ?? '')}|${f}`, !shows || keyless(key));
           }
+          // A whole list handed in from a design is that design's field too.
+          if (!shows || keyless(key)) guard(field);
         }
       }
     }
   });
+  // A field any custom code or setting reads stays out of reach, however else it is shown.
+  for (const c of out) if (c.source?.kind === 'prop' && guarded.has(JSON.stringify([c.nodeId, c.source.prop, c.source.itemId ?? null, c.source.field ?? null]))) c.custom = true;
   return out;
 }
 

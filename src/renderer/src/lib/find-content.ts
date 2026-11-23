@@ -541,8 +541,10 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
   const reviewed = changes.flatMap((c): ContentChange[] => {
     const b = now.get(c.field.key);
     if (c.field.rich) return [b ? c : { ...c, after: c.kind === 'link' ? 'No link' : 'Not shown' }];
+    if (b && JSON.stringify(b.field.value) === JSON.stringify(c.field.value)) return [];
     const after = c.kind === 'link' ? (b?.links[0] ?? 'No link') : b ? b.text : 'Not shown';
-    return after === c.before ? [] : [{ ...c, after }];
+    // Spaces a page collapses still change what is stored: say so rather than show two equal lines.
+    return [{ ...c, after: after === c.before ? `${after} (spacing changed)` : after }];
   });
   // Anything else the edits change: a field that shows or hides with them, or a link the project moves itself.
   for (const key of new Set([...was.keys(), ...now.keys()])) {
