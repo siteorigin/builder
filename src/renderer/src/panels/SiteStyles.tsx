@@ -8,6 +8,7 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { allTrees, instancesOf } from '@engine/tree';
 import { importedFontStack, projectFontFamilies } from '@shared/fonts';
 import { api, applyOps, getState, toast, useStore } from '../store';
+import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection } from '../components/ui';
 import { CustomTokens } from './CustomTokens';
 import { fontFamilies, installedFonts } from '@catalogue/fonts';
@@ -373,7 +374,8 @@ export function SiteStyles() {
     if (byId(id)?.group === 'text') return TEXT_METRICS.some((k) => !sameValue(metricOf(v as TextStyleValue, k), metricOf(b as TextStyleValue, k)));
     return !sameValue(v, b);
   };
-  const set = (id: string, value: unknown) => void applyOps([{ type: 'token.set', tokenId: id, value }], `Change ${byId(id)?.label ?? id}`, `token:${id}`);
+  /** A picker's changes merge with each other, never with a typed value: undo returns to what was typed. */
+  const set = (id: string, value: unknown, by?: 'picker') => applyOps([{ type: 'token.set', tokenId: id, value }], `Change ${byId(id)?.label ?? id}`, by ? `token:${id}:${by}` : `token:${id}`);
   const group = (g: TokenDef['group']) => tokens.filter((t) => t.group === g);
   const changedNote = (ids: string[]) => {
     const n = ids.filter(changed).length;
@@ -489,9 +491,7 @@ export function SiteStyles() {
             <ChevronRight />
           </button>
         )}
-        <span className="ss-swatch">
-          <input type="color" disabled={!!follows} value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'} onChange={(e) => set(t.id, e.target.value)} aria-label={`${t.label} color`} />
-        </span>
+        <ColorPick value={value} disabled={!!follows} onPick={(next) => set(t.id, next, 'picker')} label={`${t.label} color`} />
         <div className="ss-color-text">
           <div className="ss-name">
             <NameWithReset label={compact ? `${t.label} color` : t.label} reset={changed(t.id) && <ResetDot label={t.label} theme={`color, ${themeHex(t.id)}`} onReset={() => set(t.id, null)} />} />
@@ -516,7 +516,7 @@ export function SiteStyles() {
           )}
         </div>
         {follows ? (
-          <span className="ss-hex ss-hex-linked mono" title={`Follows ${follows}. Choose "Use its own color" to set it separately.`}>
+          <span className="ss-hex ss-hex-linked mono" title={`${value}. Follows ${follows}. Choose "Use its own color" to set it separately.`}>
             {value}
           </span>
         ) : (

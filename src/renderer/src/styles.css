@@ -787,9 +787,6 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 }
 .panel-body .style-controls :is(input, select, button) { scroll-margin-top: var(--style-scroll-top, 150px); }
 .style-custom { display: flex; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; }
-.style-custom input[type='color'] { width: 26px; height: 26px; border: 1px solid var(--border-control); border-radius: var(--r-sm); padding: 2px; background: var(--raised); flex: none; }
-.style-custom input[type='color']::-webkit-color-swatch-wrapper { padding: 0; }
-.style-custom input[type='color']::-webkit-color-swatch { border: 0; border-radius: var(--r-xs); }
 .style-input.mono { font-family: var(--mono); font-size: 12px; }
 .style-input.is-set::placeholder { color: var(--text-2); }
 .editor.defining .style-row .reset-dot:hover { background: var(--plum-soft); }
@@ -870,9 +867,8 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 /* Colours: one row per role. Details (where it is used, linking) · swatch (the picker) · name and what it colours · hex. */
 .ss-color { display: grid; grid-template-columns: 16px 28px minmax(0, 1fr) 74px; align-items: center; column-gap: 8px; min-height: 44px; padding: 4px 0; margin-left: -6px; }
 .ss-color.compact { grid-template-columns: 44px minmax(0, 1fr) 74px; column-gap: 10px; margin-left: 0; }
-.ss-color.compact .ss-swatch, .ss-color.compact .ss-swatch input[type='color'] { width: 44px; height: 44px; }
-.ss-swatch input[type='color']:disabled { opacity: 1; outline: 1px dashed var(--border-control); outline-offset: 2px; }
-.ss-hex-linked { display: flex; align-items: center; height: 26px; padding: 0 8px; border-radius: var(--r-sm); border: 1px dashed var(--border-control); font-size: 12px; color: var(--text-2); outline-offset: 1px; }
+.ss-color.compact .color-pick { width: 44px; height: 44px; }
+.ss-hex-linked { display: block; height: 26px; line-height: 24px; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: var(--r-sm); border: 1px dashed var(--border-control); font-size: 12px; color: var(--text-2); outline-offset: 1px; }
 .ss-detail[hidden], .ss-text-body[hidden], .ss-review[hidden] { display: none; }
 .ss-disclose { display: grid; place-items: center; width: 22px; height: 28px; margin-right: -6px; padding: 0; border: 0; border-radius: var(--r-xs); background: none; color: var(--text-3); }
 .ss-disclose:hover { background: var(--hover); color: var(--text); }
@@ -882,11 +878,18 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .ss-detail-label { font-size: 12px; font-weight: 500; color: var(--text-2); }
 .ss-none { margin: 0; font-size: 12px; color: var(--text-3); }
 .ss-uses-block { display: flex; flex-direction: column; gap: 6px; }
-.ss-swatch { display: grid; width: 28px; height: 28px; }
-.ss-swatch input[type='color'] { width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--r-sm); background: none; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), 0 0 0 1px var(--border-control); overflow: hidden; }
-.ss-swatch input[type='color']::-webkit-color-swatch-wrapper { padding: 0; }
-.ss-swatch input[type='color']::-webkit-color-swatch { border: 0; border-radius: var(--r-sm); }
-@media (prefers-color-scheme: dark) { .ss-swatch input[type='color'] { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2), 0 0 0 1px var(--border-control); } }
+/* The colour swatch (ColorPick): the saved colour as it renders, over a checkerboard so opacity shows, with the native picker laid invisibly on top. */
+/* The colour swatch (ColorPick): the saved colour as it renders over a checkerboard, so opacity shows, with the native picker laid invisibly on top. */
+.color-pick { position: relative; display: grid; width: 28px; height: 28px; flex: none; border-radius: var(--r-sm); overflow: hidden; background: #fff conic-gradient(#d3d6dc 25%, #fff 0 50%, #d3d6dc 0 75%, #fff 0) 0 0 / 8px 8px; box-shadow: 0 0 0 1px var(--border-control); }
+.color-pick.md { width: 26px; height: 26px; }
+.color-pick.sm { width: 18px; height: 18px; border-radius: 4px; }
+.color-pick-fill { grid-area: 1 / 1; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18); }
+.color-pick input[type='color'] { grid-area: 1 / 1; width: 100%; height: 100%; min-width: 0; padding: 0; border: 0; opacity: 0; cursor: pointer; }
+.color-pick input[type='color']:disabled { cursor: default; }
+.color-pick:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.color-pick.linked { outline: 1px dashed var(--border-control); outline-offset: 2px; }
+.color-pick.unpainted { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--border-control) 5px 6px), var(--raised); }
+@media (prefers-color-scheme: dark) { .color-pick-fill { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2); } }
 .ss-color-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .ss-desc { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; font-size: 12px; line-height: 1.35; color: var(--text-3); }
 .ss-follows { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; font-size: 12px; line-height: 1.35; color: var(--text-2); }
