@@ -43,6 +43,29 @@ describe('revealing the list item open in the inspector', () => {
     expect(Object.values(revealTarget(nested, open(items[0].id), ctx)!.within)).toEqual([1, 1, 1, 1, 1, 1]);
   });
 
+  it('gives a node inside two repeats of the list the depth of the nearer one, whatever order the design lists them in', () => {
+    const twice = structuredClone(s);
+    const tree = twice.components[faq.definitionId].tree!;
+    // The inner repeat comes first in the design's nodes; the outer one, added later, wraps it.
+    const parent = Object.values(tree.nodes).find((n) => n.kind === 'element' && n.children.includes('questions')) as { children: string[] };
+    parent.children = parent.children.map((c) => (c === 'questions' ? 'outer' : c));
+    tree.nodes.outer = { id: 'outer', kind: 'repeat', name: 'Outer', list: { $prop: 'items' }, children: ['questions'] } as (typeof tree.nodes)[string];
+    const within = revealTarget(twice, open(items[0].id), ctx)!.within;
+    expect(within.questions).toBe(0);
+    expect(within.answer).toBe(1);
+  });
+
+  it('keeps a node called __proto__ as one of the nodes of the item', () => {
+    const odd = structuredClone(s);
+    const tree = odd.components[faq.definitionId].tree!;
+    const answer = tree.nodes.answer;
+    delete tree.nodes.answer;
+    tree.nodes.__proto__ = { ...answer, id: '__proto__' } as (typeof tree.nodes)[string];
+    const item = tree.nodes.item as { children: string[] };
+    item.children = item.children.map((c) => (c === 'answer' ? '__proto__' : c));
+    expect(Object.hasOwn(revealTarget(odd, open(items[0].id), ctx)!.within, '__proto__')).toBe(true);
+  });
+
   it('shows typed text in the plain text bound to the field being typed in', () => {
     expect(revealTarget(s, open(items[0].id, { field: 'answer', text: 'A new answer' }), ctx)?.text).toEqual({ nodes: ['answer'], value: 'A new answer' });
     expect(revealTarget(s, open(items[0].id, { field: 'question', text: '' }), ctx)?.text).toEqual({ nodes: ['question'], value: '' });

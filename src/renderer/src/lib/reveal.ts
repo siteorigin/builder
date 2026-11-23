@@ -66,9 +66,10 @@ export function revealTarget(state: ProjectState, item: RevealedItem, ctx: strin
     for (let p = findParent(tree, id)?.parentId, guard = 0; p && guard < 50; p = findParent(tree, p)?.parentId, guard++) if (tree.nodes[p]?.kind === 'repeat') n++;
     return n;
   };
-  const within: Record<string, number> = {};
-  for (const r of repeats) {
-    const depth = depthOf(r.id);
+  // Shallowest first, so a node inside two repeats of the list keeps the depth of the nearer one. No prototype: a
+  // node can be called anything, "__proto__" included.
+  const within: Record<string, number> = Object.create(null);
+  for (const [r, depth] of repeats.map((r) => [r, depthOf(r.id)] as const).sort((x, y) => x[1] - y[1])) {
     for (const id of subtreeIds(tree, r.id)) if (id !== r.id) within[id] = depth;
   }
   const target: RevealTarget = { ctx, list: item.list, items: item.itemId, nodes, within };
