@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compile, parse } from 'svelte/compiler';
-import type { ComponentDefinition, GraphNode, InstanceNode, ProjectState } from '@shared/types';
+import type { AssetRecord, ComponentDefinition, GraphNode, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { validateState } from '@engine/validate';
@@ -361,6 +361,30 @@ describe('SEO and performance', () => {
     const testimonials = [...files.entries()].find(([p]) => p.endsWith('testimonials-grid.svelte'))![1];
     expect(testimonials).toContain('sizes="44px"');
     expect(files.get(`${RUNTIME_DIR}/Image.svelte`)).toContain("fetchpriority={eager ? 'high' : undefined}");
+  });
+
+  /** A Section on the home page holding a Grid of three photos, built the way the editor builds it (issue #170). */
+  function manualGrid(s: ProjectState) {
+    const owner = { kind: 'page' as const, id: s.site.homePageId };
+    const photo: AssetRecord = { id: 'a_photo', name: 'Photo', file: 'static/assets/photo-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 2400, height: 1600, hash: 'h', kind: 'image', createdAt: 'now', variants: [480, 960, 1440].map((w) => ({ width: w, file: `static/assets/photo-1a2b3c4d-${w}w.jpg` })) };
+    let r = applyOperations(s, [{ type: 'asset.add', asset: photo }, { type: 'node.insert', owner, parentId: null, index: 1, componentId: 'layout.section' }]);
+    const section = r.results[1].nodeId as string;
+    r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'grid' }]);
+    const grid = r.results[0].nodeId as string;
+    for (let i = 0; i < 3; i++) {
+      r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: grid, primitive: 'image' }]);
+      r = applyOperations(r.state, [{ type: 'node.setContent', owner, nodeId: r.results[0].nodeId as string, field: 'image', value: { assetId: 'a_photo', alt: 'A room' } }]);
+    }
+    return { s: r.state, section, grid };
+  }
+
+  it('sizes images in a grid built on the page like the same grid in a preset (#170)', () => {
+    const { s } = manualGrid(fresh());
+    const page = generateProject(s).get('src/routes/+page.svelte')!;
+    const images = page.match(/<SoImage [^\n]*a_photo|<SoImage [^\n]*photo-1a2b3c4d[^\n]*/g) ?? [];
+    expect(images).toHaveLength(3);
+    // The Section's 1200px container holds a grid of three columns on desktop and one below it.
+    for (const img of images) expect(img).toContain('sizes="(min-width: 1024px) 400px, (min-width: 768px) 100vw, 100vw"');
   });
 });
 
