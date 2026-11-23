@@ -11,6 +11,12 @@
  *   npm run eval:agent -- --live --provider openai --model gpt-6.2-sol [--yes]
  * Keys come from OPENAI_API_KEY / ANTHROPIC_API_KEY. --input-price and --output-price (USD per million tokens)
  * set the prices the estimate assumes.
+ *
+ * A model on this computer is free, needs no key and runs without --yes:
+ *   npm run eval:agent -- --live --provider local [--base-url http://127.0.0.1:8080/v1] [--model id]
+ * Without --model it uses the first model the loopback server lists. --tool-mode auto|native|constrained-json
+ * overrides the model's capability profile. A server on another machine is never queried for its models:
+ *   npm run eval:agent -- --live --provider local --base-url http://host:8080/v1 --model id --allow-remote --yes
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -19,6 +25,7 @@ import type { AgentModelAdapter } from '@agent/types';
 import { AnthropicAdapter } from '@agent/anthropic';
 import { OpenAIAdapter } from '@agent/openai';
 import { EVAL_CASES, SUITE_VERSION } from './eval/cases';
+import { resolveLocalRun } from './eval/local';
 import { estimateCostUsd, runSuite, ScriptedAdapter, tracesToJsonl, type EvalCase, type EvalReport, type RunOptions } from './eval/harness';
 
 const ASSUMED_PRICES = { inputPerMillion: 5, outputPerMillion: 25 };
@@ -37,7 +44,7 @@ function liveAdapter(provider: string, model: string, baseURL?: string): () => A
     if (!key) throw new Error('Set ANTHROPIC_API_KEY to run against Anthropic.');
     return () => new AnthropicAdapter(key, model, opts);
   }
-  throw new Error(`Unknown provider "${provider}". Use openai or anthropic.`);
+  throw new Error(`Unknown provider "${provider}". Use openai, anthropic or local.`);
 }
 
 function printSummary(report: EvalReport) {
@@ -59,6 +66,8 @@ async function main(): Promise<number> {
       provider: { type: 'string' },
       model: { type: 'string' },
       'base-url': { type: 'string' },
+      'tool-mode': { type: 'string' },
+      'allow-remote': { type: 'boolean' },
       'input-price': { type: 'string' },
       'output-price': { type: 'string' }
     }
@@ -78,20 +87,26 @@ async function main(): Promise<number> {
   let options = scripted;
   let capabilities = new ScriptedAdapter([]).capabilities();
   if (values.live) {
-    if (!values.provider || !values.model) throw new Error('--live needs --provider and --model.');
-    const make = liveAdapter(values.provider, values.model, values['base-url']);
-    const prices = { inputPerMillion: Number(values['input-price'] ?? ASSUMED_PRICES.inputPerMillion), outputPerMillion: Number(values['output-price'] ?? ASSUMED_PRICES.outputPerMillion) };
-    if (!Number.isFinite(prices.inputPerMillion) || !Number.isFinite(prices.outputPerMillion)) throw new Error('Prices must be numbers.');
-    // The free scripted run measures how large these cases are.
-    const dry = await runSuite(cases, scripted, capabilities);
-    const usd = estimateCostUsd(dry.report.summary, prices);
-    console.warn(`\nWARNING: this calls ${values.provider} ${values.model} for ${cases.length} cases and costs real money.`);
-    console.warn(`Estimated cost: about $${usd.toFixed(2)} (at an assumed $${prices.inputPerMillion}/M input, $${prices.outputPerMillion}/M output, with a 3x margin for extra turns). Not a quote.`);
-    if (!values.yes) {
-      console.warn('Nothing was sent. Add --yes to run it.');
-      return 2;
+    if (!values.provider || (values.provider !== 'local' && !values.model)) throw new Error('--live needs --provider and --model.');
+    if (values.provider !== 'local' && (values['tool-mode'] !== undefined || values['allow-remote'])) throw new Error('--tool-mode and --allow-remote apply only to --provider local.');
+    const local = values.provider === 'local' ? await resolveLocalRun({ baseURL: values['base-url'], model: values.model, toolMode: values['tool-mode'], allowRemote: values['allow-remote'] }) : null;
+    const model = local?.model ?? values.model!;
+    const make = local?.make ?? liveAdapter(values.provider, model, values['base-url']);
+    // A model on this computer costs nothing and sends nothing anywhere, so there is nothing to confirm.
+    if (!local || local.remote) {
+      const prices = { inputPerMillion: Number(values['input-price'] ?? ASSUMED_PRICES.inputPerMillion), outputPerMillion: Number(values['output-price'] ?? ASSUMED_PRICES.outputPerMillion) };
+      if (!Number.isFinite(prices.inputPerMillion) || !Number.isFinite(prices.outputPerMillion)) throw new Error('Prices must be numbers.');
+      // The free scripted run measures how large these cases are.
+      const dry = await runSuite(cases, scripted, capabilities);
+      const usd = estimateCostUsd(dry.report.summary, prices);
+      console.warn(`\nWARNING: this calls ${values.provider} ${model} for ${cases.length} cases and ${local ? 'sends project content to another machine, which may cost money' : 'costs real money'}.`);
+      console.warn(`Estimated cost: about $${usd.toFixed(2)} (at an assumed $${prices.inputPerMillion}/M input, $${prices.outputPerMillion}/M output, with a 3x margin for extra turns). Not a quote.`);
+      if (!values.yes) {
+        console.warn('Nothing was sent. Add --yes to run it.');
+        return 2;
+      }
     }
-    options = { adapterName: values.provider, model: values.model, adapter: make };
+    options = { adapterName: values.provider, model, adapter: make };
     capabilities = make().capabilities();
   }
 
