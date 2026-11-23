@@ -1,18 +1,20 @@
 import Anthropic from '@anthropic-ai/sdk';
-import type { AgentModelAdapter, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolCall } from './types';
+import type { AdapterOptions, AgentModelAdapter, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolCall } from './types';
 import { classifyHttpError } from './types';
 import { modelInfo } from './models';
 
 /** Anthropic Messages API adapter with client-executed tools. */
 export class AnthropicAdapter implements AgentModelAdapter {
   private client: Anthropic;
-  constructor(apiKey: string, private model: string) {
-    this.client = new Anthropic({ apiKey, maxRetries: 0, timeout: 120_000 });
+  /** Lowered when a custom model rejects the requested output budget. */
+  private outputCap: number | null = null;
+  constructor(apiKey: string, private model: string, opts: AdapterOptions = {}) {
+    this.client = new Anthropic({ apiKey, maxRetries: 0, timeout: 120_000, ...(opts.fetch ? { fetch: opts.fetch } : {}), ...(opts.baseURL ? { baseURL: opts.baseURL } : {}) });
   }
 
   capabilities(): ModelCapabilities {
     const info = modelInfo('anthropic', this.model);
-    return { toolCalling: 'native', streaming: true, strictSchemas: false, parallelToolCalls: false, contextWindowTokens: info.contextWindow, maxOutputTokens: info.maxOutput };
+    return { toolCalling: 'native', streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: info.contextWindow, maxOutputTokens: this.outputCap ?? info.maxOutput };
   }
 
   private buildMessages(req: CanonicalModelRequest) {
@@ -41,56 +43,106 @@ export class AnthropicAdapter implements AgentModelAdapter {
   }
 
   async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
-    let text = '';
-    const queue: ModelEvent[] = [];
-    try {
-      const stream = this.client.messages.stream(
-        {
-          model: req.model,
-          max_tokens: req.maxOutputTokens,
-          system: req.system,
-          messages: this.buildMessages(req) as never,
-          tools: req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters as never }))
-        },
-        { signal }
-      );
-      let resolveWait: (() => void) | null = null;
-      let finished = false;
-      stream.on('text', (delta: string) => {
-        text += delta;
-        queue.push({ type: 'text', delta });
-        resolveWait?.();
-      });
-      const final = stream.finalMessage().finally(() => {
-        finished = true;
-        resolveWait?.();
-      });
-      while (!finished || queue.length) {
-        if (queue.length) {
-          yield queue.shift()!;
+    for (let attempt = 0; ; attempt++) {
+      let text = '';
+      let yielded = false;
+      let settled = false;
+      const queue: ModelEvent[] = [];
+      const maxTokens = this.outputCap ? Math.min(this.outputCap, req.maxOutputTokens) : req.maxOutputTokens;
+      let stream: ReturnType<Anthropic['messages']['stream']> | null = null;
+      try {
+        stream = this.client.messages.stream(
+          {
+            model: req.model,
+            max_tokens: maxTokens,
+            system: req.system,
+            messages: this.buildMessages(req) as never,
+            // Tool options are only sent with tools (the code fixer sends none).
+            ...(req.tools.length ? { tools: req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters as never })) } : {})
+          },
+          { signal }
+        );
+        let resolveWait: (() => void) | null = null;
+        let finished = false;
+        stream.on('text', (delta: string) => {
+          text += delta;
+          queue.push({ type: 'text', delta });
+          resolveWait?.();
+        });
+        const final = stream.finalMessage().finally(() => {
+          finished = true;
+          resolveWait?.();
+        });
+        // Observed here so a consumer that stops early never leaves an unhandled rejection behind.
+        final.catch(() => undefined);
+        while (!finished || queue.length) {
+          if (queue.length) {
+            yielded = true;
+            yield queue.shift()!;
+            continue;
+          }
+          await new Promise<void>((r) => (resolveWait = r));
+          resolveWait = null;
+        }
+        const msg = await final;
+        settled = true;
+        const sr = msg.stop_reason as string;
+        const usage = { inputTokens: msg.usage.input_tokens, outputTokens: msg.usage.output_tokens };
+        const blocks = msg.content as Array<{ type: string; id?: string; name?: string; input?: unknown; text?: string }>;
+        // The finished message is the record; streamed deltas are only for live display.
+        const finalText = blocks.filter((b) => b.type === 'text').map((b) => b.text ?? '').join('');
+        if (finalText) text = finalText;
+        if (sr === 'max_tokens') {
+          // A cut-off turn may end inside a tool call whose input is incomplete. Nothing from it is
+          // executed or replayed: the caller retries the turn and asks for smaller steps.
+          yield { type: 'done', stopReason: 'max_tokens', text, toolCalls: [], usage };
+          return;
+        }
+        const calls: ToolCall[] = [];
+        for (const b of blocks) if (b.type === 'tool_use') calls.push({ id: b.id!, name: b.name!, arguments: JSON.stringify(b.input ?? {}) });
+        for (const c of calls) yield { type: 'tool_call', call: c };
+        yield {
+          type: 'done',
+          stopReason: sr === 'tool_use' ? 'tool_use' : sr === 'refusal' ? 'refusal' : sr === 'end_turn' || sr === 'stop_sequence' ? (calls.length ? 'tool_use' : 'end') : calls.length ? 'tool_use' : 'other',
+          text,
+          toolCalls: calls,
+          providerData: msg.content,
+          usage
+        };
+        return;
+      } catch (e) {
+        settled = true;
+        if (signal.aborted) {
+          yield { type: 'error', code: 'cancelled', message: 'Cancelled' };
+          return;
+        }
+        // The SDK parses tool input as it streams; input it cannot parse means the turn was cut off.
+        if (e instanceof SyntaxError) {
+          yield { type: 'done', stopReason: 'max_tokens', text, toolCalls: [] };
+          return;
+        }
+        const next = !yielded && attempt < 2 ? this.lowerBudget(e, maxTokens) : 0;
+        if (next) {
+          this.outputCap = next;
           continue;
         }
-        await new Promise<void>((r) => (resolveWait = r));
-        resolveWait = null;
+        yield { type: 'error', ...classifyHttpError(e) };
+        return;
+      } finally {
+        // A consumer that stops early (Stop, or an error upstream) must not leave the request running.
+        if (!settled) stream?.abort();
       }
-      const msg = await final;
-      const calls: ToolCall[] = [];
-      for (const b of msg.content as Array<{ type: string; id?: string; name?: string; input?: unknown }>) {
-        if (b.type === 'tool_use') calls.push({ id: b.id!, name: b.name!, arguments: JSON.stringify(b.input ?? {}) });
-      }
-      for (const c of calls) yield { type: 'tool_call', call: c };
-      const sr = msg.stop_reason as string;
-      yield {
-        type: 'done',
-        stopReason: sr === 'tool_use' ? 'tool_use' : sr === 'max_tokens' ? 'max_tokens' : sr === 'refusal' ? 'refusal' : sr === 'end_turn' || sr === 'stop_sequence' ? 'end' : calls.length ? 'tool_use' : 'other',
-        text,
-        toolCalls: calls,
-        providerData: msg.content,
-        usage: { inputTokens: msg.usage.input_tokens, outputTokens: msg.usage.output_tokens }
-      };
-    } catch (e) {
-      yield { type: 'error', ...classifyHttpError(e) };
     }
+  }
+
+  /** A smaller output budget when an HTTP 400 says the requested max_tokens is above the model's limit. */
+  private lowerBudget(e: unknown, requested: number): number {
+    const err = e as { status?: number; message?: string };
+    const msg = String(err?.message ?? '');
+    if (err?.status !== 400 || !/max_tokens/.test(msg) || !/maximum|> ?\d|exceeds|too (large|high)/i.test(msg)) return 0;
+    const reported = [...msg.matchAll(/\d{3,6}/g)].map((m) => Number(m[0])).filter((n) => n >= 256 && n < requested);
+    const next = reported.length ? Math.max(...reported) : requested > 8192 ? 8192 : requested > 4096 ? 4096 : 0;
+    return next && next < requested ? next : 0;
   }
 }
 
@@ -102,9 +154,9 @@ function safeParse(s: string): unknown {
   }
 }
 
-export async function testAnthropic(apiKey: string, model: string): Promise<{ ok: boolean; message: string }> {
+export async function testAnthropic(apiKey: string, model: string, opts: AdapterOptions = {}): Promise<{ ok: boolean; message: string }> {
   try {
-    const c = new Anthropic({ apiKey, maxRetries: 0, timeout: 30_000 });
+    const c = new Anthropic({ apiKey, maxRetries: 0, timeout: 30_000, ...(opts.fetch ? { fetch: opts.fetch } : {}), ...(opts.baseURL ? { baseURL: opts.baseURL } : {}) });
     await c.models.retrieve(model);
     return { ok: true, message: `Connected. ${model} is available.` };
   } catch (e) {

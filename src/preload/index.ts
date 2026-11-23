@@ -48,7 +48,8 @@ const api: BuilderApi = {
     stop: invoke('ai:stop'),
     answer: invoke('ai:answer'),
     undoTurn: invoke('ai:undoTurn'),
-    fixCode: invoke('ai:fixCode')
+    fixCode: invoke('ai:fixCode'),
+    cancelFix: invoke('ai:cancelFix')
   } as BuilderApi['ai'],
   on: ((channel: string, cb: (payload: unknown) => void) => {
     if (!ALLOWED_EVENTS.has(channel)) throw new Error(`Unknown channel ${channel}`);

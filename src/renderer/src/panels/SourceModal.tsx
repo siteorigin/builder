@@ -1,10 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Code, Lock } from 'lucide-react';
 import { applyOps, api, setState, toast, useStore, confirmDialog } from '../store';
 import { Field, Modal, TabPanel, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
 import { prepareCodeForSave } from '../lib/code';
 import { CodeEditor } from '../components/CodeEditor';
+
+/** False once the modal has closed; closing also cancels an automatic code fix still running. */
+function useAlive(): () => boolean {
+  const open = useRef(true);
+  useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+      void api.ai.cancelFix();
+    };
+  }, []);
+  return () => open.current;
+}
 
 export function SourceModal({ definitionId }: { definitionId: string }) {
   const def = useStore((s) => s.snapshot?.state.components[definitionId]);
@@ -13,6 +26,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const [tab, setTab] = useState<'source' | 'manifest'>('source');
   const [errors, setErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
+  // Closing the editor cancels an automatic fix that is still running, and a save in progress.
+  const alive = useAlive();
   useEffect(() => {
     void api.project.readSource(definitionId).then((r) => {
       setSrc(r);
@@ -28,8 +43,9 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       : setState({ modal: null });
   const save = async () => {
     setErrors([]);
-    const r = await prepareCodeForSave(draft, setStatus);
+    const r = await prepareCodeForSave(draft, setStatus, alive);
     if (!r.ok) return setErrors(r.problems);
+    if (!alive()) return;
     if (r.source !== draft) setDraft(r.source);
     if (await applyOps([{ type: 'component.updateSource', definitionId, source: r.source, expectedHash: src!.hash }], `Edit ${def.name} source`))
       toast(r.fixed ? `Fixed and saved: ${r.fixed}` : r.warnings?.length ? `Saved with ${r.warnings.length} warning${r.warnings.length === 1 ? '' : 's'}. ${r.warnings[0]}` : 'Saved. Every page using this component is updated.');
@@ -144,6 +160,7 @@ export function NewCodeComponentModal() {
   const [source, setSource] = useState(STARTER);
   const [errors, setErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
+  const alive = useAlive();
   // Every way out (×, Escape, backdrop, Cancel) goes through here, so unsaved code is never dropped silently.
   const close = () =>
     source !== STARTER || name.trim()
@@ -151,8 +168,9 @@ export function NewCodeComponentModal() {
       : setState({ modal: null });
   const create = async () => {
     setErrors([]);
-    const checked = await prepareCodeForSave(source, setStatus);
+    const checked = await prepareCodeForSave(source, setStatus, alive);
     if (!checked.ok) return setErrors(checked.problems);
+    if (!alive()) return;
     if (checked.fixed) toast(`Fixed before saving: ${checked.fixed}`);
     const r = await applyOps(
       [{ type: 'component.createCode', name: name.trim(), source: checked.source, properties: { heading: { type: 'string', label: 'Heading', default: 'Hello' }, text: { type: 'string', label: 'Text', default: 'A custom component.' } } }],

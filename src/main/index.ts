@@ -45,6 +45,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: t
 // ---------------------------------------------------------------------------
 
 const pendingInspections = new Map<string, (report: unknown) => void>();
+let fixAbort: AbortController | null = null;
 
 async function orchestratorAdapter() {
   return orchestratorDeps.adapter();
@@ -182,11 +183,16 @@ function registerIpc() {
     await setKey(p, key);
     return providerStatuses();
   });
-  handle('ai:test', async (p: ProviderId) => {
-    const key = await getKey(p);
+  // Tests the key and model as typed in Settings when given, so an unsaved key can be checked before saving.
+  handle('ai:test', async (p: ProviderId, typedKey?: unknown, typedModel?: unknown) => {
+    if (p !== 'openai' && p !== 'anthropic') return { ok: false, message: 'Unknown provider.' };
+    const typed = typeof typedKey === 'string' ? typedKey.trim() : '';
+    const custom = typeof typedModel === 'string' ? typedModel.trim() : '';
+    if (typed.length > 1000 || custom.length > 200) return { ok: false, message: 'That key or model ID is too long.' };
+    const key = typed || (await getKey(p))?.key;
     if (!key) return { ok: false, message: 'No API key is set.' };
-    const model = (await loadSettings()).settings.ai.models[p];
-    return p === 'openai' ? testOpenAI(key.key, model) : testAnthropic(key.key, model);
+    const model = custom || (await loadSettings()).settings.ai.models[p];
+    return p === 'openai' ? testOpenAI(key, model) : testAnthropic(key, model);
   });
   handle('ai:conversations', () => orchestrator.loadConversations());
   handle('ai:newConversation', () => orchestrator.newConversation());
@@ -197,10 +203,23 @@ function registerIpc() {
   handle('ai:answer', (runId: string, answer: string) => orchestrator.answer(runId, answer));
   handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));
   handle('ai:fixCode', async (source: string) => {
-    const ad = await orchestratorAdapter();
-    if ('error' in ad) return { ok: false, message: ad.error };
-    // The repaired code is written by the assistant, so it must pass the assistant's stricter policy.
-    return fixComponentSource(ad.adapter, ad.model, String(source), (src) => checkSvelteSource(src, { strict: true }), new AbortController().signal);
+    // One fix at a time; closing the code editor cancels it (ai:cancelFix). The controller is registered
+    // before anything is awaited so a cancel can never miss it.
+    fixAbort?.abort();
+    const abort = (fixAbort = new AbortController());
+    try {
+      const ad = await orchestratorAdapter();
+      if (abort.signal.aborted) return { ok: false, cancelled: true, message: 'Cancelled' };
+      if ('error' in ad) return { ok: false, message: ad.error };
+      // The repaired code is written by the assistant, so it must pass the assistant's stricter policy.
+      return await fixComponentSource(ad.adapter, ad.model, String(source), (src) => checkSvelteSource(src, { strict: true }), abort.signal);
+    } finally {
+      if (fixAbort === abort) fixAbort = null;
+    }
+  });
+  handle('ai:cancelFix', () => {
+    fixAbort?.abort();
+    fixAbort = null;
   });
   ipcMain.on('inspect:result', (event, requestId: string, report: unknown) => {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;

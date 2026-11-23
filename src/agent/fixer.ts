@@ -11,6 +11,8 @@ export interface FixResult {
   source?: string;
   explanation?: string;
   message?: string;
+  /** The request was cancelled (for example, the code editor was closed). */
+  cancelled?: boolean;
   attempts: number;
 }
 
@@ -36,22 +38,30 @@ export async function fixComponentSource(
   let problems = await check(current);
   let explanation = '';
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal.aborted) return { ok: false, cancelled: true, message: 'Cancelled', attempts: attempt - 1 };
     const list = problems.map((p) => `- ${p.severity}${p.line ? ` (line ${p.line})` : ''}: ${p.message}`).join('\n');
     let text = '';
     let failed: string | null = null;
+    let cancelled = false;
     for await (const ev of adapter.streamTurn(
-      { model, system: SYSTEM, tools: [], maxOutputTokens: 12000, items: [{ kind: 'user', text: `Problems found:\n${list}\n\nComponent:\n\`\`\`svelte\n${current}\n\`\`\`` }] },
+      { model, system: SYSTEM, tools: [], maxOutputTokens: Math.min(adapter.capabilities().maxOutputTokens, 16000), items: [{ kind: 'user', text: `Problems found:\n${list}\n\nComponent:\n\`\`\`svelte\n${current}\n\`\`\`` }] },
       signal
     )) {
       if (ev.type === 'done') text = ev.text;
-      if (ev.type === 'error') failed = ev.message;
+      if (ev.type === 'error') {
+        failed = ev.message;
+        cancelled = ev.code === 'cancelled';
+      }
     }
+    if (signal.aborted || cancelled) return { ok: false, cancelled: true, message: 'Cancelled', attempts: attempt };
     if (failed) return { ok: false, message: failed, attempts: attempt };
     const code = text.match(/```(?:svelte|html)?\s*\n([\s\S]*?)```/)?.[1];
     if (!code) return { ok: false, message: 'The fixer did not return a component.', attempts: attempt };
     explanation = text.slice(0, text.indexOf('```')).trim().split('\n')[0];
     current = code.replace(/\s+$/, '\n');
     problems = await check(current);
+    // Closing the editor while the result is being checked still cancels it.
+    if (signal.aborted) return { ok: false, cancelled: true, message: 'Cancelled', attempts: attempt };
     if (!problems.some((p) => p.severity === 'error') && !problems.some((p) => p.message.startsWith('Browser-only'))) {
       return { ok: true, source: current, explanation: explanation || 'Fixed the problems.', attempts: attempt };
     }

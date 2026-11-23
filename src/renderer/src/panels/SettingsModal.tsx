@@ -11,15 +11,21 @@ export function SettingsModal() {
   const [tab, setTab] = useState<string>(modal?.kind === 'settings' && modal.tab ? modal.tab : 'general');
   const [keys, setKeys] = useState<Record<ProviderId, string>>({ openai: '', anthropic: '' });
   const [testing, setTesting] = useState<ProviderId | null>(null);
-  const [custom, setCustom] = useState(false);
-  // An unlisted saved model shows its ID until the user asks for the list.
-  const [listForced, setListForced] = useState(false);
+  // Per provider: whether the model is typed as a custom ID. Unset follows the saved model (an unlisted ID
+  // shows as typed text until the user asks for the list).
+  const [customMode, setCustomMode] = useState<Partial<Record<ProviderId, boolean>>>({});
+  const [modelDrafts, setModelDrafts] = useState<Partial<Record<ProviderId, string>>>({});
   useEffect(() => void api.ai.providers().then((p) => setState({ providers: p })), []);
   if (!settings) return null;
   const unsavedProviders = (Object.keys(keys) as ProviderId[]).filter((p) => keys[p].trim());
   // A pasted key is never dropped silently: closing with one typed asks first. Save keeps every typed key
   // (for each provider), Discard drops them, and dismissing the question keeps Settings open.
-  const close = () =>
+  const close = () => {
+    // A typed model ID counts as entered even if the field still has focus (Escape closes without a blur).
+    if (custom) commitModelDraft();
+    closeKeys();
+  };
+  const closeKeys = () =>
     unsavedProviders.length
       ? void confirmDialog({
           title: unsavedProviders.length > 1 ? 'Save the API keys you entered?' : 'Save the API key you entered?',
@@ -37,7 +43,22 @@ export function SettingsModal() {
   const provider = settings.ai.provider ?? 'openai';
   const status = providers.find((p) => p.id === provider);
   const model = settings.ai.models[provider];
-  const known = status?.models.some((m) => m.id === model);
+  const known = !!status?.models.some((m) => m.id === model);
+  const custom = customMode[provider] ?? !known;
+  const modelDraft = modelDrafts[provider] ?? model;
+  const setModel = (id: string) => update({ ai: { models: { ...settings.ai.models, [provider]: id } } });
+  const commitModelDraft = () => {
+    const id = modelDraft.trim();
+    if (id && id !== model) void setModel(id);
+    // An emptied field goes back to showing the saved model.
+    if (!id) setModelDrafts({ ...modelDrafts, [provider]: undefined });
+  };
+  const chooseFromList = () => {
+    setCustomMode({ ...customMode, [provider]: false });
+    setModelDrafts({ ...modelDrafts, [provider]: undefined });
+    // The list cannot show an unlisted ID, so switching to it picks the recommended model.
+    if (!known && status?.models[0]) void setModel(status.models[0].id);
+  };
   const saveKey = async () => {
     setState({ providers: await api.ai.setKey(provider, keys[provider].trim()) });
     setKeys({ ...keys, [provider]: '' });
@@ -129,10 +150,19 @@ export function SettingsModal() {
             )}
             <Field label="Model">
               <div className="row">
-                {custom || (!known && !listForced) ? (
-                  <input className="input grow mono" defaultValue={model} onBlur={(e) => e.target.value.trim() && void update({ ai: { models: { ...settings.ai.models, [provider]: e.target.value.trim() } } })} aria-label="Custom model ID" />
+                {custom ? (
+                  <input
+                    key={provider}
+                    className="input grow mono"
+                    value={modelDraft}
+                    onChange={(e) => setModelDrafts({ ...modelDrafts, [provider]: e.target.value })}
+                    onBlur={commitModelDraft}
+                    onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commitModelDraft()}
+                    aria-label="Custom model ID"
+                    spellCheck={false}
+                  />
                 ) : (
-                  <select className="select grow" value={model} onChange={(e) => void update({ ai: { models: { ...settings.ai.models, [provider]: e.target.value } } })} aria-label="Model">
+                  <select key={provider} className="select grow" value={model} onChange={(e) => void setModel(e.target.value)} aria-label="Model">
                     {status?.models.map((m) => (
                       <option key={m.id} value={m.id}>
                         {m.label}
@@ -141,23 +171,32 @@ export function SettingsModal() {
                     ))}
                   </select>
                 )}
-                {(settings.developerMode || custom || !known) && <button className="btn" onClick={() => (custom || (!known && !listForced) ? (setCustom(false), setListForced(true)) : (setCustom(true), setListForced(false)))}>
-                  {custom || (!known && !listForced) ? 'Choose from list' : 'Other model…'}
-                </button>}
+                {(settings.developerMode || custom || !known) && (
+                  <button
+                    className="btn"
+                    // Keep focus in the model field so its blur does not save the typed ID on the way to the list.
+                    onMouseDown={(e) => custom && e.preventDefault()}
+                    onClick={() => (custom ? chooseFromList() : setCustomMode({ ...customMode, [provider]: true }))}
+                  >
+                    {custom ? 'Choose from list' : 'Other model…'}
+                  </button>
+                )}
               </div>
             </Field>
             <div className="row">
               <button
                 className="btn"
-                disabled={!status?.configured || !!testing}
+                disabled={(!status?.configured && !unsavedKey) || !!testing}
+                title={unsavedKey ? 'Tests the key you typed. Press Save to keep it.' : undefined}
                 onClick={async () => {
                   setTesting(provider);
-                  const r = await api.ai.testProvider(provider);
+                  // What is on screen is what gets tested: a typed but unsaved key, and a typed model ID.
+                  const r = await api.ai.testProvider(provider, keys[provider].trim() || undefined, custom ? modelDraft.trim() || undefined : undefined);
                   setTesting(null);
-                  toast(r.message, r.ok ? 'info' : 'error');
+                  toast(unsavedKey && r.ok ? `${r.message} Press Save to keep this key.` : r.message, r.ok ? 'info' : 'error');
                 }}
               >
-                {testing ? 'Testing…' : 'Test connection'}
+                {testing ? 'Testing…' : unsavedKey ? 'Test this key' : 'Test connection'}
               </button>
             </div>
             <SwitchRow checked={settings.ai.sendOnEnter} onChange={(v) => void update({ ai: { sendOnEnter: v } })} label="Press Enter to send messages" hint="When off, use ⌘ Enter to send and Enter for a new line." />

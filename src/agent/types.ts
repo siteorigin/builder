@@ -50,9 +50,47 @@ export interface AgentModelAdapter {
   streamTurn(request: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent>;
 }
 
+/** Options shared by the provider adapters. Tests inject `fetch` to replay recorded wire traffic. */
+export interface AdapterOptions {
+  fetch?: typeof globalThis.fetch;
+  baseURL?: string;
+}
+
+const QUOTA = 'The provider account has no remaining credit or quota. Check billing for this API key.';
+const redact = (s: string) => s.replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-…');
+
+/**
+ * Classify a provider error code or type that arrived without an HTTP status, such as an SSE `error` or
+ * `response.failed` event after a 200 response. Returns null when the code says nothing useful.
+ */
+export function classifyProviderCode(code: unknown, message?: string, retryAfterMs?: number): { code: ModelErrorCode; message: string; retryAfterMs?: number } | null {
+  const c = String(code ?? '').toLowerCase();
+  const msg = redact(String(message ?? ''));
+  if (!c) return null;
+  if (/insufficient_quota|billing/.test(c)) return { code: 'invalid_request', message: QUOTA };
+  if (/rate_limit|too_many_requests/.test(c)) return { code: 'rate_limit', message: 'The provider is rate limiting requests.', retryAfterMs };
+  if (/overloaded|server_error|internal_error|api_error|service_unavailable|timeout|unavailable/.test(c)) return { code: 'overloaded', message: 'The provider is temporarily unavailable.', retryAfterMs };
+  if (/authentication|permission|invalid_api_key|unauthorized/.test(c)) return { code: 'auth', message: 'The API key was rejected. Check it in Settings.' };
+  if (/invalid_request|invalid_prompt|not_found|context_length|bad_request|unsupported/.test(c)) return { code: 'invalid_request', message: msg || c };
+  return null;
+}
+
+/** Every structured code or type on an SDK error, joined, so a generic value never masks a specific one. */
+export function errorCodes(e: unknown): string {
+  const err = e as { code?: unknown; type?: unknown; error?: { type?: unknown; code?: unknown; error?: { type?: unknown } } } | null;
+  return [err?.code, err?.type, err?.error?.code, err?.error?.type, err?.error?.error?.type].filter((x) => typeof x === 'string' && x).join(' ');
+}
+
+/** A request the caller aborted, as opposed to a provider error whose text happens to mention aborting. */
+export function isAbort(e: unknown): boolean {
+  const err = e as { name?: string; message?: string; status?: number } | null;
+  if (err?.status) return false;
+  return err?.name === 'AbortError' || err?.name === 'APIUserAbortError' || /^(request was aborted|this operation was aborted|the operation was aborted)/i.test(String(err?.message ?? ''));
+}
+
 export function classifyHttpError(e: unknown): { code: ModelErrorCode; message: string; retryAfterMs?: number } {
   const err = e as { status?: number; message?: string; name?: string; headers?: Record<string, string> | Headers };
-  if (err?.name === 'AbortError' || /aborted/i.test(String(err?.message))) return { code: 'cancelled', message: 'Cancelled' };
+  if (isAbort(e)) return { code: 'cancelled', message: 'Cancelled' };
   const status = err?.status;
   const header = (k: string): string | undefined => {
     const h = err?.headers;
@@ -62,11 +100,18 @@ export function classifyHttpError(e: unknown): { code: ModelErrorCode; message: 
   };
   const retryAfter = Number(header('retry-after'));
   const retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : undefined;
-  const msg = String(err?.message ?? e).replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-…');
+  const msg = redact(String(err?.message ?? e));
   if (status === 401 || status === 403) return { code: 'auth', message: 'The API key was rejected. Check it in Settings.' };
+  const codes = errorCodes(e);
+  if (status === 429 && /insufficient_quota/.test(`${codes} ${msg}`)) return { code: 'invalid_request', message: QUOTA };
   if (status === 429) return { code: 'rate_limit', message: 'The provider is rate limiting requests.', retryAfterMs };
   if (status === 529 || (status && status >= 500)) return { code: 'overloaded', message: 'The provider is temporarily unavailable.', retryAfterMs };
-  if (status === 400 || status === 404 || status === 422) return { code: 'invalid_request', message: msg };
-  if (/fetch failed|ENOTFOUND|ECONNRESET|ETIMEDOUT|network/i.test(msg)) return { code: 'network', message: 'Could not reach the provider. Check your network connection.' };
+  if (status === 400 || status === 404 || status === 413 || status === 422) return { code: 'invalid_request', message: msg };
+  // Errors delivered inside a stream carry a code or type instead of a status.
+  if (!status) {
+    const byCode = classifyProviderCode(codes, msg, retryAfterMs);
+    if (byCode) return byCode;
+  }
+  if (/fetch failed|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|network|terminated|timed out/i.test(msg)) return { code: 'network', message: 'Could not reach the provider. Check your network connection.' };
   return { code: 'unknown', message: msg };
 }

@@ -148,6 +148,8 @@ export interface ChatMessage {
     canUndo: boolean;
     error?: string;
     usage?: { inputTokens: number; outputTokens: number };
+    /** The run stopped at a budget with valid work kept; the user can ask it to continue. */
+    incomplete?: boolean;
   };
   question?: { text: string; choices: string[]; answered?: string };
 }
@@ -213,7 +215,8 @@ export interface BuilderApi {
   ai: {
     providers(): Promise<ProviderStatus[]>;
     setKey(provider: ProviderId, key: string | null): Promise<ProviderStatus[]>;
-    testProvider(provider: ProviderId): Promise<{ ok: boolean; message: string }>;
+    /** Test a key and model; the typed (unsaved) key and model are used when given. */
+    testProvider(provider: ProviderId, key?: string, model?: string): Promise<{ ok: boolean; message: string }>;
     conversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }>;
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;
@@ -222,7 +225,9 @@ export interface BuilderApi {
     stop(): Promise<void>;
     answer(runId: string, answer: string): Promise<void>;
     undoTurn(runId: string): Promise<{ ok: boolean; message?: string }>;
-    fixCode(source: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string }>;
+    fixCode(source: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string; cancelled?: boolean }>;
+    /** Cancel an in-flight fixCode request. */
+    cancelFix(): Promise<void>;
   };
   on(channel: 'project:changed', cb: (snap: ProjectSnapshot) => void): () => void;
   on(channel: 'project:closed', cb: () => void): () => void;

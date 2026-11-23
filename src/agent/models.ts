@@ -15,6 +15,10 @@ export const PROVIDER_MODELS: Record<ProviderId, Array<{ id: string; label: stri
   ]
 };
 
+/**
+ * Limits for a model. A custom ID gets a generous output budget, because reasoning models spend part of it
+ * thinking; the adapters lower it automatically if the model rejects it.
+ */
 export function modelInfo(provider: ProviderId, id: string) {
-  return PROVIDER_MODELS[provider].find((m) => m.id === id) ?? { id, label: id, contextWindow: 128000, maxOutput: 8000 };
+  return PROVIDER_MODELS[provider].find((m) => m.id === id) ?? { id, label: id, contextWindow: 128000, maxOutput: 32000 };
 }
