@@ -369,9 +369,13 @@ document.addEventListener(
       return;
     }
     if (!(e.target instanceof HTMLFormElement)) return;
-    // Any form: one without method="post" can still send from its own code.
-    lastSubmit = { form: e.target, at: Date.now() };
-    if (liveTest && liveTest.form === e.target) liveTest.submitted = true;
+    // Any form: one without method="post" can still send its answers from its own code.
+    lastSubmit = { form: e.target, at: Date.now(), answers: answersOf(e.target) };
+    if (!liveTest) return;
+    if (liveTest.form === e.target && !liveTest.submitted) liveTest.submitted = true;
+    // Another submission while the confirmed one is dispatched (the form's code submitting a second form): the
+    // confirmation was for one submission only.
+    else liveTest.void = true;
   },
   true
 );
@@ -413,11 +417,11 @@ const PRACTICE_DELAY = 800;
 const SUBMIT_WINDOW = 10000;
 /** The reply practice sends get: 'success' or 'error'. */
 let practiceResult = 'success';
-/** The form last submitted in Preview, and when. */
+/** The form last submitted in Preview, when, and the answers the visitor typed into it. */
 let lastSubmit = null;
 /**
  * A confirmed live test, only while the one submission it starts is being dispatched: { form, id, target, requestId,
- * submitted, sent }. A send the form's code makes later (after waiting for something) is a practice like any other,
+ * submitted, sent, void }. A send the form's code makes later (after waiting for something) is a practice like any other,
  * so no other attempt, earlier or later, can ever use the author's confirmation.
  */
 let liveTest = null;
@@ -509,30 +513,72 @@ function reportForms() {
   send('forms', { forms });
 }
 const scheduleForms = () => (formsTimer ||= setTimeout(reportForms, 100));
-new MutationObserver(scheduleForms).observe(document.body, {
+// The whole document: a <base href> in the head changes where a relative action goes.
+new MutationObserver(scheduleForms).observe(document.documentElement, {
   childList: true,
   subtree: true,
   characterData: true,
   attributes: true,
-  attributeFilter: ['action', 'method', 'data-netlify', 'value', 'aria-labelledby', 'aria-label']
+  attributeFilter: ['action', 'method', 'data-netlify', 'value', 'aria-labelledby', 'aria-label', 'href']
 });
 
+/** What the visitor typed into a form: its text answers, long enough to recognise in a request. */
+function answersOf(form) {
+  const answers = [];
+  for (const el of Element.prototype.querySelectorAll.call(form, 'input, textarea, select')) {
+    if (el instanceof HTMLInputElement && !['text', 'email', 'tel', 'url', 'search', 'number'].includes(el.type)) continue;
+    const value = String(el.value ?? '').trim();
+    if (value.length >= 3) answers.push(value);
+  }
+  return answers.slice(0, 50);
+}
+
+/** A body the page cannot read back without waiting (a Blob, a stream, a request's own body). */
+const UNREADABLE = Symbol('unreadable');
+/** Whether a request carries any of a submission's answers, in its query or its body. */
+function carriesAnswers(submit, url, body) {
+  if (body === UNREADABLE || body instanceof Blob || body instanceof ArrayBuffer || ArrayBuffer.isView(body) || body instanceof ReadableStream) return true;
+  const decode = (text) => {
+    try {
+      return decodeURIComponent(text.replace(/\+/g, ' '));
+    } catch {
+      return text;
+    }
+  };
+  let text = '';
+  try {
+    text = decode(new URL(url, document.baseURI).search);
+  } catch {
+    // Not an address: nothing in it.
+  }
+  if (typeof body === 'string') text += '\n' + body + '\n' + decode(body);
+  else if (body instanceof URLSearchParams || body instanceof FormData) for (const v of body.values()) if (typeof v === 'string') text += '\n' + v;
+  return submit.answers.some((a) => text.includes(a));
+}
+
 /**
- * The form a send belongs to: the form just submitted when it posts there (two forms can share a service's address),
- * else the form that posts to the same address, else the form submitted just before it.
+ * The form a send belongs to, or null when it is not a form's. A write to where a form posts is that form's (the form
+ * just submitted first, as two forms can share a service's address). Any other request soon after a submission is
+ * that form's only when it carries the visitor's answers: a GET to another site with them in its query counts, while
+ * the site's own pages and data, and requests that carry nothing the visitor typed, go out as usual.
  */
-function sendingForm(url) {
+function sendingForm(url, method, body) {
+  const write = method !== 'GET' && method !== 'HEAD';
   const to = destinationOf(url);
   // Still counted once the form has left the page or the visitor has moved on: its code may be sending yet.
-  const recent = lastSubmit && Date.now() - lastSubmit.at < SUBMIT_WINDOW ? lastSubmit.form : null;
-  if (recent && postsForm(recent) && postsTo(recent) === to) return recent;
-  return (to && formsOnPage().find((f) => postsTo(f) === to)) || recent;
+  const recent = lastSubmit && Date.now() - lastSubmit.at < SUBMIT_WINDOW ? lastSubmit : null;
+  if (write) {
+    if (recent && postsForm(recent.form) && postsTo(recent.form) === to) return recent.form;
+    const posting = to && formsOnPage().find((f) => postsTo(f) === to);
+    if (posting) return posting;
+  } else if (!to || new URL(to).origin === location.origin) return null;
+  return recent && carriesAnswers(recent, url, body) ? recent.form : null;
 }
 
 /** The confirmed live test this send is, or null: the form and the whole address must be the ones confirmed. */
 function liveFor(form, url) {
   const test = liveTest;
-  return mode === 'preview' && test && test.form === form && test.submitted && !test.sent && targetOf(url) === test.target ? test : null;
+  return mode === 'preview' && test && test.form === form && test.submitted && !test.void && !test.sent && targetOf(url) === test.target ? test : null;
 }
 /** Reports on a live test, with where it went and, when the service passed it on, where it ended up. */
 function liveReply(test) {
@@ -572,10 +618,12 @@ window.fetch = function fetch(input, init) {
   const request = input instanceof Request ? input : null;
   const method = String(init?.method ?? request?.method ?? 'GET').toUpperCase();
   const url = request ? request.url : String(input);
-  const form = method === 'GET' || method === 'HEAD' ? null : sendingForm(url);
+  const body = init?.body !== undefined ? init.body : request?.body ? UNREADABLE : undefined;
+  const form = sendingForm(url, method, body);
   if (!form) return nativeFetch.call(window, input, init);
   const test = liveFor(form, url);
-  if (!test) return practise(form, init && 'signal' in init ? init.signal : request?.signal);
+  // A signal given as undefined is no signal given: the request's own still counts.
+  if (!test) return practise(form, init?.signal !== undefined ? init.signal : request?.signal);
   const reply = liveReply(test);
   reply('sending');
   return nativeFetch.call(window, input, init).then(
@@ -593,36 +641,59 @@ window.fetch = function fetch(input, init) {
 const xhrOpen = XMLHttpRequest.prototype.open;
 const xhrSend = XMLHttpRequest.prototype.send;
 const xhrAbort = XMLHttpRequest.prototype.abort;
-/** Each request's method and address, resolved when it is opened, as the browser resolves it. */
+const DATA_OK = 'data:application/json,%7B%22ok%22%3Atrue%7D';
+/** Each request's method and address as the browser opened it, and its outcome once it has one. */
 const xhrTargets = new WeakMap();
+const xhrWatched = new WeakSet();
 XMLHttpRequest.prototype.open = function open(method, url, ...rest) {
+  // Recorded only once the browser has opened it: an open that throws leaves the earlier one in place.
+  const opened = xhrOpen.call(this, method, url, ...rest);
   xhrTargets.set(this, { method: String(method).toUpperCase(), url: new URL(String(url), document.baseURI).href });
-  return xhrOpen.call(this, method, url, ...rest);
+  if (!xhrWatched.has(this)) {
+    xhrWatched.add(this);
+    // Added when the request is first opened, ahead of handlers that could open it again before loadend.
+    this.addEventListener('readystatechange', () => {
+      const target = this.readyState === 4 ? xhrTargets.get(this) : null;
+      if (target) Object.assign(target, { status: this.status, responseURL: this.responseURL });
+    });
+  }
+  return opened;
 };
 XMLHttpRequest.prototype.abort = function abort() {
   const target = xhrTargets.get(this);
-  if (target) target.aborted = true;
+  if (target?.practising) {
+    // A practice send the page gives up before its reply: the page hears the abort as it would from the network.
+    clearTimeout(target.practising);
+    target.practising = 0;
+    xhrOpen.call(this, 'GET', DATA_OK);
+    xhrSend.call(this);
+  }
   return xhrAbort.call(this);
 };
 XMLHttpRequest.prototype.send = function send(body) {
   const target = xhrTargets.get(this);
-  const form = target && target.method !== 'GET' && target.method !== 'HEAD' ? sendingForm(target.url) : null;
+  const form = target ? sendingForm(target.url, target.method, body) : null;
   if (!form) return xhrSend.call(this, body);
   const test = liveFor(form, target.url);
   if (test) {
     const reply = liveReply(test);
     reply('sending');
-    this.addEventListener('loadend', () => reply(!this.status ? 'unreadable' : this.status < 400 ? 'sent' : 'refused', this.status, this.responseURL && targetOf(this.responseURL) !== test.target ? targetOf(this.responseURL) : ''), { once: true });
+    this.addEventListener(
+      'loadend',
+      () => reply(!target.status ? 'unreadable' : target.status < 400 ? 'sent' : 'refused', target.status, target.responseURL && targetOf(target.responseURL) !== test.target ? targetOf(target.responseURL) : ''),
+      { once: true }
+    );
     return xhrSend.call(this, body);
   }
   const report = practiceReports(form);
   const result = practiceResult;
   report('sending');
-  setTimeout(() => {
-    // The page gave this request up, or opened it again for something else, while it waited.
-    if (target.aborted || xhrTargets.get(this) !== target) return;
-    this.addEventListener('loadend', () => report(this.status === 200 ? 'success' : 'error'), { once: true });
-    xhrOpen.call(this, 'GET', result === 'success' ? 'data:application/json,%7B%22ok%22%3Atrue%7D' : 'data:');
+  target.practising = setTimeout(() => {
+    target.practising = 0;
+    // The page opened the request again for something else while it waited.
+    if (xhrTargets.get(this) !== target) return;
+    this.addEventListener('loadend', () => report(target.status === 200 ? 'success' : 'error'), { once: true });
+    xhrOpen.call(this, 'GET', result === 'success' ? DATA_OK : 'data:');
     xhrSend.call(this);
   }, PRACTICE_DELAY);
 };
@@ -630,7 +701,7 @@ XMLHttpRequest.prototype.send = function send(body) {
 if (navigator.sendBeacon) {
   const beacon = navigator.sendBeacon;
   navigator.sendBeacon = function sendBeacon(url, data) {
-    return sendingForm(String(url)) ? true : beacon.call(navigator, url, data);
+    return sendingForm(String(url), 'POST', data) ? true : beacon.call(navigator, url, data);
   };
 }
 

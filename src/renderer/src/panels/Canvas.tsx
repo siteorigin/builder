@@ -62,7 +62,13 @@ export function Canvas() {
   const [forms, setForms] = useState<PreviewForm[]>([]);
   const [practice, setPractice] = useState<PracticeResult>('success');
   const [lastSend, setLastSend] = useState<FormSend | null>(null);
-  const [liveRequest, setLiveRequest] = useState<string | null>(null);
+  const [liveRequest, setLiveRequestState] = useState<string | null>(null);
+  /** The live test the editor is waiting on, read by message handlers that may run before React re-renders. */
+  const liveRequestRef = useRef<string | null>(null);
+  const setLiveRequest = (id: string | null) => {
+    liveRequestRef.current = id;
+    setLiveRequestState(id);
+  };
   /** Changes with each page shown, so a live-test confirmation never outlives the page it was opened on. */
   const [formsView, setFormsView] = useState(0);
   const [practiceH, setPracticeH] = useState(0);
@@ -354,7 +360,7 @@ export function Canvas() {
         case 'formResult': {
           const send = formSendOf(p);
           // A live test's reports count only for the test the editor asked for.
-          if (!send || (send.kind === 'live' && send.requestId !== liveRequest)) break;
+          if (!send || (send.kind === 'live' && send.requestId !== liveRequestRef.current)) break;
           if (send.kind === 'live' && sendSettled(send)) setLiveRequest(null);
           setLastSend(send);
           break;

@@ -12,6 +12,10 @@ describe('forms in Preview, as the editor reads the preview bridge (issue #193)'
     expect(formsOf([{ id: 'n', service: 'netlify', destination: 'https://elsewhere.test/', live: true }])).toEqual([{ id: 'n', label: '', place: 'page', service: 'netlify', destination: '', live: false }]);
     expect(formsOf([{ id: 'u', service: 'mystery', place: 'sidebar' }])).toEqual([{ id: 'u', label: '', place: 'page', service: 'none', destination: '', live: false }]);
     expect(formsOf([{ ...FORM, place: 'header' }])[0].place).toBe('header');
+    expect(formsOf([{ ...FORM, place: 'footer' }])[0].place).toBe('footer');
+    // An address too long to show whole is never offered for a live test.
+    const long = `https://forms.test/f?sig=${'x'.repeat(2100)}`;
+    expect(formsOf([{ ...FORM, destination: long }])[0]).toMatchObject({ destination: long.slice(0, 2000), live: false });
     expect(formsOf(Array.from({ length: 30 }, (_, i) => ({ ...FORM, id: `f${i}` })))).toHaveLength(20);
   });
 

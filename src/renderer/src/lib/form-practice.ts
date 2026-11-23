@@ -43,6 +43,8 @@ const RESULTS: Record<FormSend['kind'], ReadonlySet<string>> = {
   live: new Set(['sending', 'sent', 'refused', 'unreadable', 'invalid', 'not-sent', 'unavailable'])
 };
 const str = (v: unknown, max = 500) => (typeof v === 'string' ? v.slice(0, max) : '');
+/** The longest form address the editor shows. */
+const MAX_DESTINATION = 2000;
 
 /** The bridge's list of forms, or none when it is not one. */
 export function formsOf(value: unknown): PreviewForm[] {
@@ -53,8 +55,11 @@ export function formsOf(value: unknown): PreviewForm[] {
     const id = str(r.id, 100);
     if (!id) return [];
     const service = r.service === 'endpoint' || r.service === 'netlify' ? r.service : 'none';
-    const destination = service === 'endpoint' ? str(r.destination, 2000) : '';
-    return [{ id, label: str(r.label, 80), place: r.place === 'header' || r.place === 'footer' ? r.place : 'page', service, destination, live: r.live === true && !!destination }];
+    const whole = service === 'endpoint' && typeof r.destination === 'string' ? r.destination : '';
+    // An address too long to show whole is shown cut short, and never offered for a live test: the author would confirm
+    // an address they could not read, and the page would refuse the shortened one.
+    const destination = whole.slice(0, MAX_DESTINATION);
+    return [{ id, label: str(r.label, 80), place: r.place === 'header' || r.place === 'footer' ? r.place : 'page', service, destination, live: r.live === true && !!destination && destination === whole }];
   });
 }
 

@@ -523,14 +523,78 @@ describe.skipIf(!browserInstalled)('contact forms in the preview (issue #193)', 
     });
   }, 30_000);
 
-  it('never answers a practice XMLHttpRequest the page gave up', async () => {
-    await withPreview(async ({ frame, service, preview, addCustomForm, submitCustom }) => {
+  it('never answers a practice XMLHttpRequest the page gave up, and lets the page hear its abort', async () => {
+    await withPreview(async ({ frame, service, preview, addCustomForm, submitCustom, customResult }) => {
       await preview();
       await addCustomForm('gaveup', `${SERVICE}/f/xhr`, `return await new Promise((resolve) => { const x = new XMLHttpRequest(); window.xhrLoads = 0; x.open('POST', '${SERVICE}/f/xhr'); x.onload = () => window.xhrLoads++; x.onabort = () => resolve('aborted'); x.send(new FormData(form)); setTimeout(() => x.abort(), 100); });`);
       await submitCustom('gaveup');
+      await expect.poll(() => customResult('gaveup')).toBe('aborted');
       await frame.waitForTimeout(1300);
       expect(await frame.evaluate('window.xhrLoads')).toBe(0);
       expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  it('never lets a second submission inside a confirmed one use the confirmation (review)', async () => {
+    await withPreview(async ({ frame, service, results, preview, toFrame, forms, customResult }) => {
+      await preview();
+      // Submitting A submits B, whose code posts B's answers to A's address.
+      await frame.evaluate(`(() => {
+        document.getElementById('app').insertAdjacentHTML('beforeend', '<form id="a" method="post" action="${SERVICE}/f/a"><input name="q" value="Confirmed answers"></form><form id="b" method="post" action="${SERVICE}/f/b"><input name="q" value="Other answers"></form>');
+        window.customResults = {};
+        document.getElementById('b').addEventListener('submit', (e) => {
+          e.preventDefault();
+          fetch('${SERVICE}/f/a', { method: 'POST', body: new FormData(e.target) }).then((r) => (window.customResults.b = r.status));
+        });
+        document.getElementById('a').addEventListener('submit', (e) => {
+          e.preventDefault();
+          document.getElementById('b').requestSubmit();
+          fetch('${SERVICE}/f/a', { method: 'POST', body: new FormData(e.target) }).then((r) => (window.customResults.a = r.status));
+        });
+      })()`);
+      await expect.poll(async () => (await forms()).length).toBe(3);
+      const id = (await forms()).find((f) => f.destination === `${SERVICE}/f/a`)!.id;
+      await toFrame('formLiveTest', { id, target: `${SERVICE}/f/a`, requestId: 'live-1' });
+      await expect.poll(() => customResult('b'), { timeout: 5000 }).toBe(200);
+      await expect.poll(() => customResult('a'), { timeout: 5000 }).toBe(200);
+      await expect.poll(async () => (await results()).filter((r) => r.kind === 'live')).toEqual([{ requestId: 'live-1', kind: 'live', result: 'not-sent' }]);
+      expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  it('never sends an XMLHttpRequest live to an address it failed to open (review)', async () => {
+    await withPreview(async ({ service, results, preview, toFrame, forms, addCustomForm, customResult }) => {
+      await preview();
+      // Opened to one address; opening it again to the confirmed one throws, and the code sends anyway.
+      await addCustomForm(
+        'reopen',
+        `${SERVICE}/f/b`,
+        `const x = new XMLHttpRequest(); x.open('POST', '${SERVICE}/f/a'); x.timeout = 5; try { x.open('POST', '${SERVICE}/f/b', false); } catch {} return await new Promise((resolve) => { x.onload = () => resolve(x.status); x.onerror = () => resolve('error'); x.send(new FormData(form)); });`
+      );
+      await expect.poll(async () => (await forms()).length).toBe(2);
+      const id = (await forms()).find((f) => f.destination === `${SERVICE}/f/b`)!.id;
+      await toFrame('formLiveTest', { id, target: `${SERVICE}/f/b`, requestId: 'live-1' });
+      await expect.poll(() => customResult('reopen'), { timeout: 5000 }).toBe(200);
+      await expect.poll(async () => (await results()).filter((r) => r.kind === 'live')).toEqual([{ requestId: 'live-1', kind: 'live', result: 'not-sent' }]);
+      expect(service.requests).toHaveLength(0);
+    });
+  }, 30_000);
+
+  it('practises a request that carries the answers in its query, and leaves writes that carry none alone (review)', async () => {
+    await withPreview(async ({ frame, service, preview, addCustomForm, submitCustom, customResult }) => {
+      await preview();
+      await addCustomForm('subscribe', `${SERVICE}/f/news`, `return (await fetch('${SERVICE}/subscribe?email=' + encodeURIComponent(new FormData(form).get('q')))).status;`);
+      await frame.evaluate(`document.querySelector('#subscribe input').value = 'ada@example.com'`);
+      await submitCustom('subscribe');
+      await expect.poll(() => customResult('subscribe'), { timeout: 5000 }).toBe(200);
+      expect(service.requests).toHaveLength(0);
+      // Soon after, a write of the page's own that carries nothing the visitor typed goes out as usual, and so does a read.
+      expect(await frame.evaluate(`fetch('${SERVICE}/api/preferences', { method: 'POST', body: JSON.stringify({ theme: 'dark' }) }).then((r) => r.status)`)).toBe(200);
+      expect(await frame.evaluate(`fetch('${SERVICE}/api/news').then((r) => r.status)`)).toBe(200);
+      expect(service.requests.map((r) => [r.method, r.url])).toEqual([
+        ['POST', `${SERVICE}/api/preferences`],
+        ['GET', `${SERVICE}/api/news`]
+      ]);
     });
   }, 30_000);
 
