@@ -118,7 +118,7 @@ const SEARCH_SOURCE = `<script>
 				</div>
 			</form>
 			<p class="so-search__status" id={uid + '-status'} role="status">
-				{#if status === 'empty'}{emptyMessage}{:else if status === 'searching'}Searching…{:else if status === 'failed'}The search could not load. Check your connection and try again.{:else if status === 'done' && found}{#if found.total === 0}No pages match “{found.words}”. {noResultsMessage}{:else if found.total === 1}1 page matches “{found.words}”.{:else if found.total > shown}{found.total} pages match “{found.words}”. The first {shown} are shown; add words to narrow the search.{:else}{found.total} pages match “{found.words}”.{/if}{/if}
+				{#if status === 'empty'}{emptyMessage}{:else if status === 'searching'}Searching…{:else if status === 'failed'}The search could not load. Reload the page and try again.{:else if status === 'done' && found}{#if found.total === 0}No pages match “{found.words}”. {noResultsMessage}{:else if found.total === 1}1 page matches “{found.words}”.{:else if found.total > shown}{found.total} pages match “{found.words}”. The first {shown} are shown; add words to narrow the search.{:else}{found.total} pages match “{found.words}”.{/if}{/if}
 			</p>
 			{#if status === 'done' && found && shown}
 				<ol class="so-search__results" aria-label={'Pages matching ' + found.words}>

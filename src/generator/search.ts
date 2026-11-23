@@ -154,8 +154,11 @@ function prepare(page) {
 	return p;
 }
 
-/** Every place each word is in the folded text, as ranges of the text itself, merged where they touch. */
-function marks(f, words) {
+/**
+ * Every place each word is in the folded text, as ranges of the text itself, merged where they touch or only
+ * spaces part them, so a phrase found reads as one.
+ */
+function marks(text, f, words) {
 	const ranges = [];
 	for (const w of words) {
 		for (let at = f.text.indexOf(w); at >= 0; at = f.text.indexOf(w, at + w.length)) ranges.push([startOf(f, at), endOf(f, at + w.length)]);
@@ -164,7 +167,7 @@ function marks(f, words) {
 	const out = [];
 	for (const r of ranges) {
 		const last = out[out.length - 1];
-		if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+		if (last && (r[0] <= last[1] || !text.slice(last[1], r[0]).trim())) last[1] = Math.max(last[1], r[1]);
 		else out.push([r[0], r[1]]);
 	}
 	return out;
@@ -174,7 +177,7 @@ function marks(f, words) {
 function parts(text, f, words, start = 0, end = text.length) {
 	const out = [];
 	let at = start;
-	for (const [a, b] of marks(f, words)) {
+	for (const [a, b] of marks(text, f, words)) {
 		if (b <= start || a >= end) continue;
 		const s = Math.max(a, start);
 		const e = Math.min(b, end);
