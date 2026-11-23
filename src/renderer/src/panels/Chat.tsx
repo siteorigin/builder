@@ -1,13 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUp, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, FileText, Globe, History, Info, KeyRound, MousePointerClick, Plus, RotateCcw, Settings2, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, FileText, Globe, History, Info, KeyRound, MousePointerClick, Play, Plus, RotateCcw, Settings2, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChatActivity, ChatChange, ChatContext, ChatMessage } from '@shared/api';
 import { refKey } from '@shared/types';
 import { api, getState, setState, toast, useStore, confirmDialog, selectChatDraft, setChatDraft } from '../store';
 import { afterSend, draftFor, moveDraft, unsentDrafts, withDraft } from '../lib/chatDrafts';
 import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
-import { canOpen, changeTarget, changeText, checksOf } from '../lib/result';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, resumableId } from '../lib/result';
 import { composerAction, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
@@ -37,6 +37,7 @@ const PHASE: Record<string, string> = {
 /** How a finished turn is headed: one icon and one word per outcome, never color alone. */
 function outcome(r: NonNullable<ChatMessage['result']>) {
   if (r.status === 'completed' && r.incomplete) return { icon: <CircleDashed />, label: 'Partly done' };
+  if (r.status === 'no-changes' && r.incomplete) return { icon: <CircleDashed />, label: 'Not finished' };
   switch (r.status) {
     case 'completed':
       return { icon: <CircleCheck />, label: 'Completed' };
@@ -122,6 +123,7 @@ export function Chat() {
   // undoes in order, so any later edit (manual or AI) makes an older turn's Undo fail.
   const topRun = history?.canUndo ? [...history.entries].reverse().find((e) => e.applied)?.runId : undefined;
   const undoableId = topRun ? msgs.find((m) => m.role === 'assistant' && m.runId === topRun && m.result?.canUndo)?.id : undefined;
+  const resumable = running ? undefined : resumableId(msgs);
   const firstAsk = msgs.find((m) => m.role === 'user')?.text;
   const title = msgs.length ? (conversation?.title && conversation.title !== 'New conversation' ? conversation.title : firstAsk ?? 'New conversation') : 'New conversation';
 
@@ -212,14 +214,15 @@ export function Chat() {
     if (typed) setAnswerBox((b) => (b.key === key ? { key, text: '' } : b));
   };
 
-  const send = async (text = draft) => {
+  /** `context` replaces the editor's own, for a message that continues an earlier request. */
+  const send = async (text = draft, context?: ChatContext) => {
     if (!text.trim() || running || sending || !conversation) return;
     if (!configured) return openSettings();
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
     const opening = snap.workspaceKey;
     // Freeze the exact context at send time.
-    const ctx: ChatContext = {
+    const ctx: ChatContext = context ?? {
       pageId: ctxOn.page && page ? page.id : st.site.homePageId,
       pageTitle: ctxOn.page && page ? page.title : st.pages[st.site.homePageId]?.title ?? '',
       selection: ctxOn.selection && selection ? structuredClone(selection) : null,
@@ -233,6 +236,8 @@ export function Chat() {
     const r = await api.ai.send(text.trim(), ctx, conversationId);
     setSending(false);
     if (!r.ok) return toast(r.message ?? 'Could not start the request.', 'error');
+    // A continuation was never typed, so whatever is in the composer is the user's own next message.
+    if (context) return;
     // Clear what was sent, but never text typed while the request was starting.
     const s = getState();
     if (s.snapshot?.workspaceKey !== opening) return;
@@ -240,6 +245,20 @@ export function Chat() {
     if (drafts === s.chatDrafts) return;
     setState({ chatDrafts: drafts });
     if (taRef.current && s.conversation?.id === conversationId) taRef.current.style.height = '';
+  };
+
+  /** Carry on with an unfinished request, with that request's own page and selection, leaving the draft alone. */
+  const continueRequest = (user: ChatMessage | undefined) => {
+    const c = continueContext(user, st, viewport);
+    if ('error' in c) {
+      // The user picks the target in the editor and sends "Continue" from the composer, never over a draft.
+      toast(c.error, 'info');
+      const s = getState();
+      if (conversation && !draftFor(s.chatDrafts, conversation.id).trim()) setState({ chatDrafts: withDraft(s.chatDrafts, conversation.id, 'Continue') });
+      focusComposer();
+      return;
+    }
+    void send('Continue', c.ctx);
   };
 
   // Switching conversations shows that conversation's own draft; a failed switch stays where it was. A reply that
@@ -360,7 +379,13 @@ export function Chat() {
             </p>
           </div>
         )}
-        {msgs.map((m) => (m.role === 'user' ? <UserMessage key={m.id} m={m} /> : <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} undoable={m.id === undoableId} asking={asking} />))}
+        {msgs.map((m, i) =>
+          m.role === 'user' ? (
+            <UserMessage key={m.id} m={m} />
+          ) : (
+            <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} undoable={m.id === undoableId} asking={asking} onContinue={m.id === resumable && !sending ? () => continueRequest(msgs[i - 1]) : undefined} />
+          )
+        )}
       </div>
       {running && (
         <div className={`run-strip${waiting ? ' waiting' : ''}`}>
@@ -596,7 +621,7 @@ function Steps({ items, waiting, stopped, recent }: { items: ChatActivity[]; wai
   );
 }
 
-function AssistantMessage({ m, live, undoable, asking }: { m: ChatMessage; live: boolean; undoable: boolean; asking: WaitingQuestion | null }) {
+function AssistantMessage({ m, live, undoable, asking, onContinue }: { m: ChatMessage; live: boolean; undoable: boolean; asking: WaitingQuestion | null; onContinue?: () => void }) {
   const r = m.result;
   const activities = m.activities ?? [];
   const waitingHere = asking?.messageId === m.id;
@@ -632,7 +657,7 @@ function AssistantMessage({ m, live, undoable, asking }: { m: ChatMessage; live:
           )}
         </div>
       ))}
-      {r && <ResultCard m={m} undoable={undoable} />}
+      {r && <ResultCard m={m} undoable={undoable} onContinue={onContinue} />}
     </div>
   );
 }
@@ -649,7 +674,7 @@ function openChange(c: ChatChange) {
   if (target.note) toast(target.note, 'info');
 }
 
-function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
+function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boolean; onContinue?: () => void }) {
   const r = m.result!;
   const devMode = useStore((s) => !!s.settings?.developerMode);
   const [open, setOpen] = useState(false);
@@ -807,8 +832,13 @@ function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
           </ul>
         )}
       </div>
-      {((r.canUndo && undoable) || undone || authProblem) && (
+      {((r.canUndo && undoable) || undone || authProblem || onContinue) && (
         <div className="result-foot">
+          {onContinue && (
+            <button className="btn btn-sm btn-primary" onClick={onContinue}>
+              <Play /> Continue
+            </button>
+          )}
           {authProblem && (
             <button className="btn btn-sm btn-primary" onClick={() => setState({ modal: { kind: 'settings', tab: 'ai' } })}>
               <KeyRound /> Update API key

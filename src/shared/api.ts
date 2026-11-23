@@ -205,8 +205,18 @@ export interface ChatMessage {
     canUndo: boolean;
     error?: string;
     usage?: { inputTokens: number; outputTokens: number };
-    /** The run stopped at a budget with valid work kept; the user can ask it to continue. */
+    /**
+     * The request is not finished: the run stopped at a budget, or ended with requested work still missing. Any
+     * valid work is kept, and the user can ask it to continue.
+     */
     incomplete?: boolean;
+    /**
+     * Pages the request tried to create that still do not exist; a "continue" request checks for them again.
+     * `existing` lists pages that already had the title, which do not count as the one that was wanted.
+     */
+    unfinished?: Array<{ title: string; route?: string; existing?: string[] }>;
+    /** Links still waiting for a page to take their route; a "continue" request connects them when it does. */
+    pendingLinks?: Array<{ route: string; pageId: string; nodeId: string; prop: string; itemId?: string; field?: string }>;
   };
   /** Every question the assistant asked during this turn, in the order asked. */
   questions?: ChatQuestion[];

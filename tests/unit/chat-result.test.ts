@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { canOpen, changeTarget, changeText, checksOf } from '../../src/renderer/src/lib/result';
+import type { ChatMessage } from '@shared/api';
+import { canOpen, changeTarget, changeText, checksOf, continueContext, resumableId } from '../../src/renderer/src/lib/result';
 
 describe('AI result card', () => {
   it('counts only passing checks as passed, keeping unchecked ones apart from site problems', () => {
@@ -53,5 +54,51 @@ describe('AI result card', () => {
     expect(changeText({ label: 'node.setContent' })).toEqual({ label: 'Made a change', operations: ['node.setContent'] });
     expect(changeText({ label: 'Added image to Home', operations: ['node.insert'] })).toEqual({ label: 'Added image to Home', operations: ['node.insert'] });
     expect(changeText({ label: 'Added image to Home' })).toEqual({ label: 'Added image to Home', operations: [] });
+  });
+});
+
+describe('continuing an unfinished request (#88)', () => {
+  const user = (id: string, context?: ChatMessage['context']): ChatMessage => ({ id, role: 'user', text: 'Add two pages', time: '', ...(context ? { context } : {}) });
+  const reply = (id: string, result?: Partial<NonNullable<ChatMessage['result']>>): ChatMessage => ({
+    id,
+    role: 'assistant',
+    text: '',
+    time: '',
+    ...(result ? { result: { status: 'completed', summary: '', changes: [], validation: [], canUndo: false, ...result } } : {})
+  });
+
+  it('offers Continue only on the latest result, and only when it is unfinished', () => {
+    expect(resumableId([user('u1'), reply('a1', { incomplete: true })])).toBe('a1');
+    expect(resumableId([user('u1'), reply('a1', { status: 'no-changes', incomplete: true })])).toBe('a1');
+    expect(resumableId([user('u1'), reply('a1')])).toBeUndefined();
+    // A newer request has moved on from the unfinished one.
+    expect(resumableId([user('u1'), reply('a1', { incomplete: true }), user('u2'), reply('a2')])).toBeUndefined();
+    expect(resumableId([user('u1'), reply('a1', { incomplete: true }), user('u2')])).toBeUndefined();
+    // A failed run is offered Edit and try again instead; a stopped or conflicted one is the user's to review.
+    expect(resumableId([user('u1'), reply('a1', { status: 'failed', incomplete: true })])).toBeUndefined();
+    expect(resumableId([user('u1'), reply('a1', { status: 'cancelled', incomplete: true })])).toBeUndefined();
+    expect(resumableId([user('u1'), reply('a1', { status: 'conflicted', incomplete: true })])).toBeUndefined();
+    // Still running: its message has no result yet.
+    expect(resumableId([user('u1'), reply('a1')])).toBeUndefined();
+  });
+
+  it('continues with the original page and selection, and never guesses a target that has gone', () => {
+    const state = createStarterState('business', 'Test', false);
+    const home = state.site.homePageId;
+    const about = Object.values(state.pages).find((p) => p.route === '/about/')!;
+    const hero = about.rootIds[0];
+    const selection = { owner: { kind: 'page' as const, id: about.id }, instancePath: [], nodeId: hero };
+    const ctx = { pageId: about.id, pageTitle: 'About', selection, selectionLabel: 'Hero', viewport: 390 };
+    expect(continueContext(user('u', ctx), state, 1280)).toEqual({ ctx });
+    // A request saved before messages carried a context was about the whole site.
+    expect(continueContext(user('u'), state, 1280)).toEqual({ ctx: { pageId: home, pageTitle: state.pages[home].title, selection: null, selectionLabel: null, viewport: 1280 } });
+    // The user picks the target: a selection is never dropped (it would widen the request), a page never swapped.
+    const { state: without } = applyOperations(state, [{ type: 'node.remove', owner: { kind: 'page', id: about.id }, nodeId: hero }]);
+    expect(continueContext(user('u', ctx), without, 1280)).toEqual({ error: 'Hero is no longer in the site. Choose what to change, then send "Continue".' });
+    const { state: noAbout } = applyOperations(state, [{ type: 'page.remove', pageId: about.id, replacementPageId: home }]);
+    expect(continueContext(user('u', { ...ctx, selection: null, selectionLabel: null }), noAbout, 1280)).toEqual({ error: 'About is no longer in the site. Choose what to change, then send "Continue".' });
+    // A card without its request before it (an irregular saved conversation) is not continued blind.
+    expect(continueContext(reply('a'), state, 1280)).toEqual({ error: 'Choose what to change, then send "Continue".' });
+    expect(continueContext(undefined, state, 1280)).toEqual({ error: 'Choose what to change, then send "Continue".' });
   });
 });

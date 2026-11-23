@@ -159,6 +159,66 @@ await composerIs('Use navy for the buttons too');
 await pick('Add a photo to the home page');
 await composerIs('Add another photo here');
 
+step('an unfinished request offers Continue, sent with its own context and leaving the draft alone (#88)');
+// Sends are captured in the main process, so nothing reaches a provider.
+await app.evaluate(({ ipcMain }) => {
+  globalThis.__sent = [];
+  ipcMain.removeHandler('ai:send');
+  ipcMain.handle('ai:send', (_e, text, ctx, conversationId) => {
+    globalThis.__sent.push({ text, ctx, conversationId });
+    return { ok: true, runId: 'run_captured' };
+  });
+});
+const homeId = (await win.evaluate(() => window.builder.project.snapshot())).state.site.homePageId;
+const missing = 'The page Reader requests (/reader-requests/) was not created.';
+const ask = 'Add Staff picks and Reader requests pages';
+const originalCtx = { pageId: homeId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 390 };
+const unfinished = (id, title, min, context, status = 'completed') => ({
+  id,
+  title,
+  createdAt: t(min),
+  messages: [
+    { id: `m_u${min}`, role: 'user', text: title, time: t(min), runId: `r_${min}`, context },
+    {
+      id: `m_a${min}`,
+      role: 'assistant',
+      text: '',
+      time: t(min + 1),
+      runId: `r_${min}`,
+      result: { status, summary: `This request is not finished yet. ${missing}`, changes: [], validation: [missing], checks: [{ status: 'issue', text: missing }], canUndo: false, incomplete: true, unfinished: [{ title: 'Reader requests', route: '/reader-requests/' }] }
+    }
+  ]
+});
+writeFileSync(join(chatDir, 'c_unfinished.json'), JSON.stringify(unfinished('c_unfinished', ask, 40, originalCtx)));
+// A request about a page that has since been deleted.
+const gone = 'Finish the testimonials on the Events page';
+writeFileSync(join(chatDir, 'c_gone.json'), JSON.stringify(unfinished('c_gone', gone, 50, { ...originalCtx, pageId: 'pg_deleted0', pageTitle: 'Events' }, 'no-changes')));
+const continueButton = () => win.locator('.result-card').getByRole('button', { name: 'Continue' });
+assert.equal(await continueButton().count(), 0, 'a finished request offers no Continue');
+await pick(ask);
+await eventually(async () => assert.equal(await chatTitle().textContent(), ask));
+await win.locator('.result-card .result-title', { hasText: 'Partly done' }).waitFor();
+// A draft that happens to read "Continue" is still the user's own: the button never clears it.
+await type('Continue');
+await continueButton().click();
+const sent = await eventually(async () => {
+  const s = await app.evaluate(() => globalThis.__sent);
+  assert.equal(s.length, 1, 'one continuation is sent');
+  return s;
+});
+assert.deepEqual(sent[0], { text: 'Continue', ctx: originalCtx, conversationId: 'c_unfinished' }, 'sent with the original request’s page and width, to its own conversation');
+await composerIs('Continue');
+await message().fill('');
+
+step('Continue never guesses a page that has gone: the user picks where to carry on');
+await pick(gone);
+await win.locator('.result-card .result-title', { hasText: 'Not finished' }).waitFor();
+await continueButton().click();
+await composerIs('Continue');
+await win.locator('.toast', { hasText: 'Events is no longer in the site' }).waitFor();
+assert.equal((await app.evaluate(() => globalThis.__sent)).length, 1, 'nothing is sent for a page that has gone');
+await message().fill('');
+
 await app.close();
 allErrors.push(...errors);
 assert.deepEqual(allErrors, [], 'no uncaught errors in the editor');
