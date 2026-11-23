@@ -423,7 +423,11 @@ export interface BuilderApi {
     /** Carry out the reclaim `planKey` (from `storage`) in the opening `workspaceKey`, dropping the undo steps it named. */
     reclaimStorage(planKey: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; freed?: number }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;
-    exportStatic(format?: ExportFormat): Promise<ExportResult>;
+    /**
+     * Build the website. `published` is the IDs of the pages the author was shown as published: an export whose
+     * snapshot would publish other pages stops instead, so a page shown as a draft is never published unseen.
+     */
+    exportStatic(format?: ExportFormat, published?: string[]): Promise<ExportResult>;
     retryPreview(): Promise<void>;
     repairDependencies(): Promise<void>;
     readSource(definitionId: string): Promise<{ source: string; hash: string; path: string; editable: boolean }>;

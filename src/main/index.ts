@@ -260,7 +260,11 @@ function registerIpc() {
   );
   // Export builds from the project folder and needs the writer lock (spec 20).
   handle('project:exportSource', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportSource(format === 'zip' ? 'zip' : 'folder')));
-  handle('project:exportStatic', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportStatic(format === 'zip' ? 'zip' : 'folder')));
+  handle('project:exportStatic', (format?: unknown, published?: unknown) =>
+    readOnlyReason()
+      ? { ok: false, message: readOnlyReason(), warnings: [] }
+      : controller.exportStatic(format === 'zip' ? 'zip' : 'folder', Array.isArray(published) ? published.filter((id): id is string => typeof id === 'string') : undefined)
+  );
   handle('project:retryPreview', () => controller.startRuntime());
   handle('project:repairDependencies', () => controller.repairDependencies());
   handle('project:readSource', (id: string) => controller.readSource(id));

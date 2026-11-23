@@ -28,11 +28,14 @@ export const SECTION_ARGS = z.object({
 });
 export type SectionInput = Omit<z.infer<typeof SECTION_ARGS>, 'index'>;
 
+const DRAFT_DESCRIPTION = 'true keeps the page as a draft: editable and previewed, but left out of the exported website. false publishes it. Omit to leave it as it is. The home page is never a draft.';
+
 export const UPSERT_ARGS = z.object({
   slug: z.string().min(1).max(120).describe('Page path such as "services" or "/about/team/". "home" or "/" is the home page.'),
   title: z.string().min(1).max(80).optional().describe('Page title. Defaults to one made from the slug for a new page.'),
   navLabel: z.string().max(40).optional(),
   description: z.string().max(320).optional().describe('Search engine description.'),
+  draft: z.boolean().optional().describe(DRAFT_DESCRIPTION),
   addToHeaderNav: z.boolean().optional(),
   addToFooterNav: z.boolean().optional(),
   removeOtherSections: z.boolean().optional(),
@@ -551,17 +554,24 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     opSection.push(section);
   };
   if (createOp) push(createOp);
-  else if ((args.title && args.title.trim() !== page!.title) || args.navLabel !== undefined || args.description !== undefined) {
+  else if ((args.title && args.title.trim() !== page!.title) || args.navLabel !== undefined || args.description !== undefined || args.draft !== undefined) {
     push({
       type: 'page.update',
       pageId,
       ...(args.title && args.title.trim() !== page!.title ? { title: args.title.trim() } : {}),
       ...(args.navLabel !== undefined ? { navLabel: args.navLabel } : {}),
-      ...(args.description !== undefined ? { description: args.description } : {})
+      ...(args.description !== undefined ? { description: args.description } : {}),
+      ...(args.draft !== undefined ? { draft: args.draft } : {})
     });
   }
-  if (createOp && (args.navLabel !== undefined || args.description !== undefined))
-    push({ type: 'page.update', pageId, ...(args.navLabel !== undefined ? { navLabel: args.navLabel } : {}), ...(args.description !== undefined ? { description: args.description } : {}) });
+  if (createOp && (args.navLabel !== undefined || args.description !== undefined || args.draft !== undefined))
+    push({
+      type: 'page.update',
+      pageId,
+      ...(args.navLabel !== undefined ? { navLabel: args.navLabel } : {}),
+      ...(args.description !== undefined ? { description: args.description } : {}),
+      ...(args.draft !== undefined ? { draft: args.draft } : {})
+    });
 
   const plan = planSections(scratch, page, good, !!args.removeOtherSections && !!args.sections);
   for (const id of plan.removed) push({ type: 'node.remove', owner, nodeId: id });
@@ -726,6 +736,7 @@ export function upsertToolSchema(state: ProjectState): JsonSchema {
       title: { type: 'string', maxLength: 80 },
       navLabel: { type: 'string', maxLength: 40 },
       description: { type: 'string', maxLength: 320, description: 'Search engine description.' },
+      draft: { type: 'boolean', description: DRAFT_DESCRIPTION },
       addToHeaderNav: { type: 'boolean', description: 'true adds a header link if missing. false or omitted leaves navigation as it is.' },
       addToFooterNav: { type: 'boolean', description: 'true adds a footer link if missing. false or omitted leaves navigation as it is.' },
       removeOtherSections: { type: 'boolean', description: 'Remove existing sections (theme or project components) that are not in this list. Hand-built layout stays.' },

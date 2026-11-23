@@ -391,6 +391,12 @@ export interface PageDoc extends NodeTree {
   navLabel?: string;
   seo: PageSeo;
   shell: 'default' | 'none';
+  /**
+   * A draft stays in the project (editable, previewed, in the editable project export) but is left out of the
+   * website: no page file, no sitemap entry, no old address leading to it. Unlike seo.noindex, which publishes the
+   * page and only asks search engines not to list it. The Home page is never a draft.
+   */
+  draft?: boolean;
 }
 
 export interface SiteDoc {

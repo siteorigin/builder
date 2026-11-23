@@ -11,13 +11,13 @@ import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { assetUsages, sourceHash } from '@engine/apply';
 import { themeUpdates } from '@engine/theme-updates';
-import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects } from '@generator/index';
+import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import type { BuildFailureContext } from './build-failure';
 import { zipDirectory } from './zip';
 import { NOT_A_PROJECT_ZIP, readProjectZip, unpackProject, WEBSITE_ZIP, ZipError } from './unzip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
+import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind, locateAssetFile, restoreAssetFiles } from './project/assets';
@@ -1397,14 +1397,17 @@ export class Controller {
     return this.exportSourceTo(dest, format);
   }
 
-  async exportStatic(format: ExportFormat = 'folder'): Promise<ExportResult> {
+  async exportStatic(format: ExportFormat = 'folder', published?: string[]): Promise<ExportResult> {
     const blocked = this.exportBlocked();
     if (blocked) return blocked;
     const s = this.session;
+    // Published pages that link to a draft would send visitors to a page the website leaves out.
+    const drafts = draftLinksStop(s!.state) ?? publishedChanged(s!.state, published);
+    if (drafts) return { ok: false, ...drafts };
     const dest = await this.chooseExportTarget('site', format);
     if (!dest) return { ok: false, message: '', warnings: [] };
     if (this.session !== s) return { ok: false, message: 'The project was closed before the export started.', warnings: [] };
-    return this.buildStaticTo(dest, format);
+    return this.buildStaticTo(dest, format, published);
   }
 
   private exportBlocked(): ExportResult | null {
@@ -1481,7 +1484,11 @@ export class Controller {
       const folder = join(staging, 'project');
       const snap = await this.snapshotSource(s, folder);
       if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
-      warnings.push(...sectionLinkWarnings(snap.state), ...unlinkedButtonWarnings(snap.state));
+      // The exported source is the published site; its drafts are kept to edit but not built.
+      const live = publishedState(snap.state);
+      warnings.push(...draftSourceNotes(snap.state), ...sectionLinkWarnings(live), ...unlinkedButtonWarnings(live));
+      for (const { file, route, draft } of withheldStaticFiles(folder, snap.state))
+        warnings.push(`${file} is served at ${route}, the address of the draft ${draft}, so a build of the exported project publishes it there. Remove or move the file before building.`);
       const kept = locationKeptNote(await locatedPhotos(folder, snap.state));
       if (kept) warnings.push(kept);
       warnings.push(...missingSourceWarnings(snap.state, await findMissingAssetFiles(folder, snap.state.assets.assets)));
@@ -1493,15 +1500,18 @@ export class Controller {
     });
   }
 
-  /** Build the production site and copy it to `dest` (a new folder, or a ZIP file). Used by export and tests. */
-  async buildStaticTo(dest: string, format: ExportFormat = 'folder'): Promise<ExportResult> {
+  /**
+   * Build the production site and copy it to `dest` (a new folder, or a ZIP file). Used by export and tests. With
+   * `published`, the pages the author was shown as published, a snapshot that would publish others stops.
+   */
+  async buildStaticTo(dest: string, format: ExportFormat = 'folder', published?: string[]): Promise<ExportResult> {
     const blocked = this.exportBlocked();
     if (blocked) return blocked;
     const s = this.session!;
     const bad = this.badExportTarget(s, dest, format);
     if (bad) return { ok: false, message: bad, warnings: [] };
     // Build an isolated snapshot so the running preview and later edits cannot mix into the output.
-    return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format));
+    return this.withStaging((staging) => this.buildFromStaging(s, staging, dest, format, published));
   }
 
   /** A fresh staging folder per export: only the folder created here is ever removed. */
@@ -1535,6 +1545,8 @@ export class Controller {
       const edited = await editedGeneratedFile(s.dir);
       if (edited) return stop(`${edited} was changed outside SiteOrigin Builder. Open Project health to restore it, then export again.`);
       await copyProjectSource(s.dir, dest, { keepAsset: exportedAssetFilter(s.state) });
+      // Both exports carry the published site's generated files; the drafts stay in the canonical documents.
+      await leaveOutDrafts(dest, s.state);
       if (opts.forBuild) {
         if (!(await isTrusted(s.dir, await configHash(dest)))) return stop("This project's build settings changed outside SiteOrigin Builder. Reopen the project to review them.");
       } else await finishExportedSource(dest, s.state, starterNotice());
@@ -1567,11 +1579,17 @@ export class Controller {
     };
   }
 
-  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat): Promise<ExportResult> {
+  private async buildFromStaging(s: ProjectSession, staging: string, dest: string, format: ExportFormat, shown?: string[]): Promise<ExportResult> {
     const project = join(staging, 'project');
     const snap = await this.snapshotSource(s, project, { forBuild: true });
     if (!snap.ok) return { ok: false, message: snap.message, warnings: [] };
     const { revision, state } = snap;
+    // The snapshot may differ from what the export was started on (the folder picker gives the project time to
+    // change): check its links to drafts again, and that it publishes the pages the author was shown.
+    const draftStop = draftLinksStop(state) ?? publishedChanged(state, shown);
+    if (draftStop) return { ok: false, ...draftStop };
+    // What visitors get: the published pages and the old addresses that lead to them.
+    const live = publishedState(state);
     // An image file the site uses but the folder does not have fails the build without naming the picture: stop first,
     // naming it. The staged copy is checked, not what Project health last saw, so the answer is right for this export.
     const missingFiles = await missingWebsiteAssets(project, state);
@@ -1595,23 +1613,32 @@ export class Controller {
       return { ok: false, message: 'The website tools are not set up. Open Project health and reinstall them, then export again.', warnings: [(e as Error).message] };
     }
     const build = await buildProject(project);
-    if (!build.ok) return { ok: false, ...explainBuildFailure(state, build, this.buildFailureContext(staging, project, s.dir)) };
+    if (!build.ok) return { ok: false, ...explainBuildFailure(live, build, this.buildFailureContext(staging, project, s.dir)) };
     const out = join(project, 'build');
     const warnings: string[] = [];
     // Verify page inventory.
-    for (const id of state.site.pageOrder) {
-      const p = state.pages[id];
+    for (const id of live.site.pageOrder) {
+      const p = live.pages[id];
       const file = join(out, p.route === '/' ? 'index.html' : join(p.route, 'index.html'));
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings };
       const html = await fs.readFile(file, 'utf8');
       if (/data-so-(ctx|node)|siteorigin-bridge/.test(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings };
     }
     // Old addresses kept working are pages of their own on a static host: each must be there to send visitors on.
-    for (const { from } of liveRedirects(state)) {
+    for (const { from } of liveRedirects(live)) {
       const file = join(out, from, 'index.html');
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${from}, an old address that should send visitors on.`, warnings };
       if (/data-so-(ctx|node)|siteorigin-bridge/.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings };
     }
+    // Nothing may answer at a draft's address, or at an old address that leads to one: a file of the same name in
+    // static/, say, would publish the address the author kept back.
+    const kept = new Set(liveRedirects(live).map((r) => r.from.toLowerCase()));
+    const withheld = [
+      ...Object.values(state.pages).filter((p) => !Object.hasOwn(live.pages, p.id)).map((p) => ({ route: p.route, page: p })),
+      ...liveRedirects(state).filter((r) => !kept.has(r.from.toLowerCase())).map((r) => ({ route: r.from, page: r.page }))
+    ];
+    for (const { route, page } of withheld)
+      if (existsSync(join(out, route, 'index.html'))) return { ok: false, message: `The website has a page at ${route}, which leads to the draft ${page.title}. Remove the file that puts it there, then export again.`, warnings };
     for (const f of await listFiles(out)) {
       if (/\.js$/.test(f) && /siteorigin-bridge|data-so-ctx/.test(await fs.readFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings };
     }
@@ -1619,9 +1646,9 @@ export class Controller {
     const unchecked = await cleanBuiltSite(out);
     if (unchecked.length) return { ok: false, message: builtPhotosMessage(unchecked), warnings };
     if (!state.site.baseUrl) warnings.push('No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.');
-    const placeholders = placeholderImageCount(state);
+    const placeholders = placeholderImageCount(live);
     if (placeholders) warnings.push(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
-    warnings.push(...unlinkedButtonWarnings(state));
+    warnings.push(...unlinkedButtonWarnings(live));
     const absent = new Set(missingFiles.filter((m) => m.missing.original).map((m) => m.asset.id));
     for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
     warnings.push(...missingUnusedWarnings(missingFiles));
@@ -1629,18 +1656,19 @@ export class Controller {
     if (left) warnings.push(left);
     const located = locationRemovedNote(photos.located);
     if (located) warnings.push(located);
-    const pages = state.site.pageOrder.length;
+    const pages = live.site.pageOrder.length;
+    const exported = `${pages} page${pages === 1 ? '' : 's'}`;
     const problem = await this.publish(s, out, dest, format);
     if (problem) return { ok: false, message: problem, warnings };
     const exportedAt = new Date().toISOString();
     this.exportPaths.add(dest);
     if (format === 'zip') {
       this.recordExport(s, { kind: 'site', format, path: dest, revision, exportedAt });
-      return { ok: true, path: dest, message: `Exported ${pages} pages as a ZIP file.`, warnings, revision };
+      return { ok: true, path: dest, message: `Exported ${exported} as a ZIP file.`, warnings, revision };
     }
     // The export is done either way; a preview that cannot start only loses the preview button.
     const previewUrl = await this.previewAndRecord(s, { kind: 'site', format, path: dest, revision, exportedAt }, basePath(state));
-    return { ok: true, path: dest, message: `Exported ${pages} pages.`, warnings, revision, previewUrl };
+    return { ok: true, path: dest, message: `Exported ${exported}.`, warnings, revision, previewUrl };
   }
 
   /**

@@ -1,11 +1,20 @@
-import { useEffect, useId, useRef, useState } from 'react';
-import { ChevronRight, CircleCheck, Cloud, Copy, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { ChevronRight, CircleCheck, Cloud, Copy, FilePen, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
+import { describeDraftLink, publicationPlan } from '@generator/checks';
+import type { PageDoc } from '@shared/types';
 import type { ExportFormat, ExportResult, RecentExport } from '@shared/api';
 import { api, editRunStatus, setState, useStore } from '../store';
 import { Modal, Segmented, Spinner } from '../components/ui';
 import { openAsset } from '../lib/actions';
 
 const NO_EXPORTS: RecentExport[] = [];
+
+/** "Home", "Home and About", "Home, About and Contact". Pages that share a title are told apart by their address. */
+function listTitles(pages: PageDoc[], all: PageDoc[]): string {
+  const key = (p: PageDoc) => p.title.trim().toLowerCase();
+  const titles = pages.map((p) => (all.some((o) => o.id !== p.id && key(o) === key(p)) ? `${p.title} (${p.route})` : p.title));
+  return titles.length < 2 ? (titles[0] ?? '') : `${titles.slice(0, -1).join(', ')} and ${titles[titles.length - 1]}`;
+}
 
 /** When an export finished: the time today, or the date and time on an earlier day. */
 function finishedAt(iso: string): string {
@@ -59,6 +68,10 @@ export function ExportModal() {
   const conflicts = useStore((s) => s.snapshot?.conflicts.length ?? 0);
   // Kept by the project, not this dialog: closing and reopening it still shows what was handed off.
   const recent = useStore((s) => s.snapshot?.recentExports ?? NO_EXPORTS);
+  const state = useStore((s) => s.snapshot?.state);
+  // What the website export publishes, worked out the way the export itself does.
+  const plan = useMemo(() => (state ? publicationPlan(state) : null), [state]);
+  const draftLinks = plan?.draftLinks ?? [];
   const [busy, setBusy] = useState<'static' | 'source' | null>(null);
   const [result, setResult] = useState<ExportResult | null>(null);
   const [format, setFormat] = useState<ExportFormat>('folder');
@@ -75,11 +88,12 @@ export function ExportModal() {
     target?.focus();
   }, [busy, result]);
   const run = async (kind: 'static' | 'source') => {
-    if (busy || blocked) return;
+    if (busy || blocked || (kind === 'static' && draftLinks.length)) return;
     setBusy(kind);
     setResult(null);
     try {
-      const r = kind === 'static' ? await api.project.exportStatic(format) : await api.project.exportSource(format);
+      // The website is built only if it still publishes the pages listed here.
+      const r = kind === 'static' ? await api.project.exportStatic(format, plan?.published.map((p) => p.id)) : await api.project.exportSource(format);
       if (r.message || !r.ok) setResult(r);
       settle.current = r.message ? 'result' : kind;
     } catch (e) {
@@ -118,11 +132,42 @@ export function ExportModal() {
             )}
           </div>
         )}
-        <button ref={(el) => void (buttons.current.static = el)} className="welcome-action" aria-disabled={!!busy || !!blocked || undefined} onClick={() => void run('static')}>
+        {plan && (
+          <div className="export-pages" data-testid="export-pages">
+            <p>
+              <Globe size={14} aria-hidden /> <span>
+                <strong>The website publishes {plan.published.length === 1 ? '1 page' : `${plan.published.length} pages`}:</strong> {listTitles(plan.published, [...plan.published, ...plan.drafts])}.
+              </span>
+            </p>
+            {plan.drafts.length > 0 && (
+              <p data-testid="export-drafts">
+                <FilePen size={14} aria-hidden /> <span>
+                  <strong>{plan.drafts.length === 1 ? '1 draft is' : `${plan.drafts.length} drafts are`} left out:</strong> {listTitles(plan.drafts, [...plan.published, ...plan.drafts])}. Drafts stay in the editable project. A page hidden from search engines is still published.
+                </span>
+              </p>
+            )}
+          </div>
+        )}
+        {state && draftLinks.length > 0 && (
+          <div className="scope-note danger" role="status" data-testid="export-draft-links" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+            <div className="row">
+              <TriangleAlert size={15} />
+              <strong className="grow" id="export-draft-links-summary">
+                {draftLinks.length === 1 ? 'A published page links to a draft.' : `Published pages have ${draftLinks.length} links to drafts.`} Change {draftLinks.length === 1 ? 'it' : 'them'} or publish the draft before exporting the website.
+              </strong>
+            </div>
+            <ul className="export-draft-links">
+              {draftLinks.map((l, i) => (
+                <li key={i}>{describeDraftLink(state, l)}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <button ref={(el) => void (buttons.current.static = el)} className="welcome-action" aria-disabled={!!busy || !!blocked || draftLinks.length > 0 || undefined} aria-describedby={draftLinks.length ? 'export-draft-links-summary' : undefined} onClick={() => void run('static')}>
           <span className="ico">{busy === 'static' ? <Spinner decorative /> : <Globe size={18} />}</span>
           <span className="grow">
             <strong>Website files, ready to upload</strong>
-            <span>{format === 'zip' ? 'Every page as a finished website, in one ZIP file to upload to any web host.' : 'Every page as a finished website folder. Upload it to any web host.'}</span>
+            <span>{format === 'zip' ? 'Every published page as a finished website, in one ZIP file to upload to any web host.' : 'Every published page as a finished website folder. Upload it to any web host.'}</span>
             <span data-testid="export-photo-privacy" style={{ display: 'block', marginTop: 4 }}>Photos leave out where they were taken and the camera details. Credits, copyright, orientation and colour stay.</span>
           </span>
           <ChevronRight className="chev" />

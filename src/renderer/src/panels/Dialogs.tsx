@@ -6,6 +6,7 @@ import { planHomeChange } from '@engine/apply';
 import { uniqueCopyName } from '@engine/definitions';
 import type { PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
+import { isDraftPage } from '@generator/index';
 import { applyOps, api, getState, setState, toast, useStore } from '../store';
 import { Field, Modal, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
@@ -205,12 +206,13 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   const snap = useStore((s) => s.snapshot);
   const st = snap!.state;
   const page = st.pages[pageId];
-  const others = st.site.pageOrder.filter((id) => id !== pageId);
   const isHome = st.site.homePageId === pageId;
+  // The Home page is always published: a draft is never offered to replace it.
+  const others = st.site.pageOrder.filter((id) => id !== pageId && !(isHome && st.pages[id] && isDraftPage(st, st.pages[id])));
   const [picked, setPicked] = useState(isHome ? others[0] : st.site.homePageId);
   // A replacement that has gone since it was picked (an undo, the assistant) is never swapped for another page
   // without asking: the author chooses again.
-  const replacement = picked && picked !== pageId && Object.hasOwn(st.pages, picked) ? picked : undefined;
+  const replacement = picked && picked !== pageId && Object.hasOwn(st.pages, picked) && !(isHome && isDraftPage(st, st.pages[picked])) ? picked : undefined;
   // Section choices hold only for the replacement and the project they were made for: a new replacement or any
   // change to the project (an undo, the assistant) asks again.
   const [sections, setSections] = useState<{ key: string; choices: Map<string, string> }>({ key: '', choices: new Map() });
@@ -282,7 +284,9 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
               isHome
                 ? target
                   ? `${target.title} becomes the home page and moves from ${target.route} to /.${linkHint}`
-                  : 'Another page must become the home page.'
+                  : others.length
+                    ? 'Another page must become the home page.'
+                    : 'Every other page is a draft. Publish one to make it the home page.'
                 : `The ${refs} link${refs === 1 ? '' : 's'} below point${refs === 1 ? 's' : ''} to this page now.`
             }
           >
@@ -298,7 +302,9 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
                 const shared = others.some((o) => o !== id && st.pages[o].title.trim().toLowerCase() === p.title.trim().toLowerCase());
                 return (
                   <option key={id} value={id}>
+                    {/* Links sent to a draft stop the website export until it is published. */}
                     {shared ? `${p.title} (${p.route})` : p.title}
+                    {isDraftPage(st, p) ? ' · draft' : ''}
                   </option>
                 );
               })}
@@ -378,8 +384,8 @@ export function SetHomeModal({ pageId }: { pageId: string }) {
   const close = () => setState({ modal: null });
   const st = snap?.state;
   const page = st?.pages[pageId];
-  const gone = !!st && (!page || st.site.homePageId === pageId);
-  // The page was removed or made Home elsewhere (an undo, the AI): this question no longer applies.
+  const gone = !!st && (!page || st.site.homePageId === pageId || isDraftPage(st, page));
+  // The page was removed, made Home or kept as a draft elsewhere (an undo, the AI): this question no longer applies.
   useEffect(() => {
     if (gone) setState({ modal: null });
   }, [gone]);

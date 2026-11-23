@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Copy, FileText, House, Menu, MoreHorizontal, Pencil, Plus, Settings2, Trash2, ArrowUp, ArrowDown, Code } from 'lucide-react';
+import { Copy, FilePen, FileText, Globe, House, Menu, MoreHorizontal, Pencil, Plus, Settings2, Trash2, ArrowUp, ArrowDown, Code } from 'lucide-react';
 import { slugify, validateRoute } from '@shared/routes';
 import type { ProjectState } from '@shared/types';
 import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
@@ -8,6 +8,7 @@ import { openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { selectPage } from '../lib/actions';
 import { headerMenu as findHeaderMenu } from '@engine/tree';
+import { isDraftPage } from '@generator/index';
 
 /**
  * The address a new page with this title gets: its slug (made valid when it is a reserved name), with a
@@ -189,6 +190,7 @@ export function PagesPanel() {
   const pageMenu = (el: HTMLElement | { x: number; y: number; row: HTMLElement }, id: string) => {
     const i = order.indexOf(id);
     const isHome = id === homeId;
+    const draft = isDraftPage(st, st.pages[id]);
     setMenuFor(id);
     const open = (items: Parameters<typeof menu.openAt>[1], label: string) => (el instanceof HTMLElement ? menu.openAt(el, items, label) : menu.open(el.x, el.y, items, label, el.row));
     open([
@@ -199,7 +201,15 @@ export function PagesPanel() {
         const r = await applyOps([{ type: 'page.duplicate', pageId: id }], 'Duplicate page');
         if (r?.[0]?.pageId) selectPage(r[0].pageId as string);
       } },
-      ...(isHome ? [] : [{ label: 'Make home page…', icon: <House />, onSelect: () => setState({ modal: { kind: 'set-home', pageId: id } }) }]),
+      // The Home page is always published, so a draft is published before it can be Home.
+      ...(isHome || draft ? [] : [{ label: 'Make home page…', icon: <House />, onSelect: () => setState({ modal: { kind: 'set-home', pageId: id } }) }]),
+      ...(isHome
+        ? []
+        : [
+            draft
+              ? { label: 'Publish page', icon: <Globe />, onSelect: () => void applyOps([{ type: 'page.update', pageId: id, draft: false }], 'Publish page') }
+              : { label: 'Keep as draft', icon: <FilePen />, onSelect: () => void applyOps([{ type: 'page.update', pageId: id, draft: true }], 'Keep page as draft') }
+          ]),
       ...(useStore.getState().settings?.developerMode ? [{ label: 'View generated source…', icon: <Code />, onSelect: () => setState({ modal: { kind: 'page-source', pageId: id } }) }] : []),
       { separator: true },
       { label: 'Move up', icon: <ArrowUp />, disabled: i === 0, onSelect: () => { const o = [...order]; o.splice(i - 1, 0, o.splice(i, 1)[0]); void reorder(o); } },
@@ -281,9 +291,11 @@ export function PagesPanel() {
               const p = st.pages[id];
               const selected = id === pageId;
               const isHome = id === homeId;
+              const draft = isDraftPage(st, p);
               const cls = [
                 'list-item',
                 'page-row',
+                draft && 'draft',
                 selected && 'selected',
                 menu.isOpen && menuFor === id && 'menu-open',
                 dragId === id && 'dragging',
@@ -299,12 +311,12 @@ export function PagesPanel() {
                   role="option"
                   data-page={id}
                   aria-selected={selected}
-                  aria-label={isHome ? `${p.title}, home page` : p.title}
+                  aria-label={isHome ? `${p.title}, home page` : draft ? `${p.title}, draft` : p.title}
                   aria-description={p.route}
                   aria-keyshortcuts="F2 Shift+F10"
                   // The list's one tab stop is the open page (else the first); arrows move focus between rows.
                   tabIndex={id === tabStop ? 0 : -1}
-                  title={`${p.title}\n${p.route}${isHome ? ' · home page' : ''}`}
+                  title={`${p.title}\n${p.route}${isHome ? ' · home page' : draft ? ' · draft, left out of the website' : ''}`}
                   draggable={!renaming}
                   onDragStart={(e) => {
                     e.dataTransfer.effectAllowed = 'move';
@@ -347,9 +359,16 @@ export function PagesPanel() {
                     pageMenu({ x: e.clientX, y: e.clientY, row: e.currentTarget }, id);
                   }}
                 >
-                  {isHome ? <House className="page-icon" aria-hidden /> : <FileText className="page-icon" aria-hidden />}
+                  {isHome ? <House className="page-icon" aria-hidden /> : draft ? <FilePen className="page-icon" aria-hidden /> : <FileText className="page-icon" aria-hidden />}
                   <span className="page-text">
-                    <span className="page-title ellipsis">{p.title}</span>
+                    <span className="page-title-line">
+                      <span className="page-title ellipsis">{p.title}</span>
+                      {draft && (
+                        <span className="badge amber page-draft" aria-hidden>
+                          Draft
+                        </span>
+                      )}
+                    </span>
                     <RouteText route={p.route} />
                   </span>
                   <span className="actions">
