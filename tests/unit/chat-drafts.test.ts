@@ -3,11 +3,11 @@
  * returning to a thread restores its draft, a sent message is cleared only from its own thread, and a message is
  * only ever sent to the conversation it was written in.
  */
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ChatContext } from '@shared/api';
+import type { ChatContext, Conversation } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
@@ -27,6 +27,7 @@ describe('drafts per conversation', () => {
     expect(draftFor(drafts, null)).toBe('');
     // Only a conversation's own entry counts, never anything an object inherits.
     expect(draftFor(drafts, 'constructor')).toBe('');
+    expect(draftFor(Object.create({ c_home: 'Inherited' }) as ChatDrafts, 'c_home')).toBe('');
   });
 
   it('keeps identical text in two threads apart, and an emptied draft leaves no entry', () => {
@@ -47,6 +48,8 @@ describe('drafts per conversation', () => {
     expect(afterSend(edited, 'c_a', 'Make it warmer')).toBe(edited);
     const newline = { ...drafts, c_a: 'Make it warmer\n' };
     expect(afterSend(newline, 'c_a', 'Make it warmer')).toBe(newline);
+    const leading = { ...drafts, c_a: ' Make it warmer' };
+    expect(afterSend(leading, 'c_a', 'Make it warmer')).toBe(leading);
     expect(afterSend(drafts, 'c_gone', 'Make it warmer')).toBe(drafts);
   });
 
@@ -64,7 +67,7 @@ describe('drafts per conversation', () => {
     expect(cleanDrafts(['x'])).toEqual({});
     expect(cleanDrafts(undefined)).toEqual({});
     expect(cleanDrafts(null)).toEqual({});
-    expect(cleanDrafts({ 'c_bad-id': 'x', c_UPPER: 'x' })).toEqual({});
+    expect(cleanDrafts({ 'c_bad-id': 'x', c_UPPER: 'x', c_: 'x' })).toEqual({});
   });
 
   it('reopens the conversation that was open last time, so its draft comes back', () => {
@@ -88,6 +91,8 @@ describe('saving the composer state', () => {
     expect(chatStatePatch(st('/a#1', drafts, 'c_a'), st('/a#1', drafts, 'c_b'))).toEqual({ key: '/a#1', patch: { chatConversation: 'c_b' } });
     expect(chatStatePatch(st('/a#1', {}, 'c_a'), st('/a#1', drafts, 'c_b'))).toEqual({ key: '/a#1', patch: { chatDrafts: drafts, chatConversation: 'c_b' } });
     expect(chatStatePatch(st('/a#1', drafts, 'c_a'), st('/a#1', drafts, 'c_a'))).toBeNull();
+    // No conversation shown (yet) is not a switch to remember.
+    expect(chatStatePatch(st('/a#1', drafts, 'c_a'), st('/a#1', drafts, null))).toBeNull();
   });
 
   it('saves nothing when a project’s own state is loaded, or the project is left', () => {
@@ -95,6 +100,8 @@ describe('saving the composer state', () => {
     // Leaving Kloof for the welcome screen.
     expect(chatStatePatch(st('/kloof#1', kloof, 'c_k'), st(null, {}, null))).toBeNull();
     expect(chatStatePatch(st(null, {}, null), st(null, kloof, null))).toBeNull();
+    // Opening Kloof from the welcome screen loads its drafts; nothing is written back.
+    expect(chatStatePatch(st(null, {}, null), st('/kloof#1', kloof, null))).toBeNull();
     // Opening 灯台 straight from Kloof: 灯台's state is loaded, and Kloof's text is not written into it.
     expect(chatStatePatch(st('/kloof#1', kloof, 'c_k'), st('/lighthouse#2', {}, null))).toBeNull();
     // Reopening Kloof loads its state again; that is not an edit either.
@@ -141,12 +148,19 @@ async function setup() {
     onBusyChange: () => undefined
   });
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
+  const chatDir = join(dir, '.siteorigin', 'sessions', 'chat');
+  // Finished, and its transcript written (that happens just after the assistant counts as idle).
   const settle = async () => {
     adapter.release();
     for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 10));
     expect(orch.busy).toBe(false);
+    const file = join(chatDir, `${orch.conversation!.id}.json`);
+    const sent = orch.conversation!.messages.filter((m) => m.role === 'user').length;
+    const saved = () => existsSync(file) && (JSON.parse(readFileSync(file, 'utf8')) as Conversation).messages.filter((m) => m.role === 'user').length === sent;
+    for (let i = 0; i < 200 && !saved(); i++) await new Promise((r) => setTimeout(r, 10));
+    expect(saved()).toBe(true);
   };
-  return { session, orch, ctx, settle, adapter, swap: (s: ProjectSession | null) => (current = s), chatDir: join(dir, '.siteorigin', 'sessions', 'chat') };
+  return { session, orch, ctx, settle, adapter, swap: (s: ProjectSession | null) => (current = s), chatDir };
 }
 
 describe('conversations in the assistant', () => {
@@ -167,6 +181,18 @@ describe('conversations in the assistant', () => {
     const asked = async (id: string) => (await orch.openConversation(id)).messages.filter((m) => m.role === 'user').map((m) => m.text);
     expect(await asked(first)).toEqual(['First request']);
     expect(await asked(fresh.id)).toEqual(['Second request']);
+  });
+
+  it('opening the open conversation again shows it as it is, never an older copy on disk', async () => {
+    const { orch, ctx, settle, chatDir } = await setup();
+    await orch.send('First request', ctx);
+    await settle();
+    await orch.send('Second request', ctx, orch.conversation!.id);
+    const open = orch.conversation!;
+    // The file still holds the first turn only, as while the finished request is being written.
+    writeFileSync(join(chatDir, `${open.id}.json`), JSON.stringify({ ...open, messages: open.messages.slice(0, 2) }));
+    expect((await orch.openConversation(open.id)).messages.filter((m) => m.role === 'user').map((m) => m.text)).toEqual(['First request', 'Second request']);
+    await settle();
   });
 
   it('sends a message only to the conversation it was written in', async () => {
@@ -244,8 +270,10 @@ describe('conversations in the assistant', () => {
     swap(other);
     await expect(opening).rejects.toThrow(/project changed/);
     swap(session);
+    const before = orch.conversation!.id;
     const clearing = orch.clearHistory();
     swap(other);
     await expect(clearing).rejects.toThrow(/project changed/);
+    expect(orch.conversation!.id).toBe(before);
   });
 });

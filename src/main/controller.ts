@@ -372,6 +372,8 @@ export class Controller {
     await this.dev?.stop();
     this.dev = null;
     await this.flushLocalState();
+    // One more try if that write failed: this is the last chance before the lock goes.
+    if (this.localDirty) await this.flushLocalState();
     await this.session.close();
     this.session = null;
     // The next project loads its own workspace state, or starts empty.
@@ -410,6 +412,11 @@ export class Controller {
     this.localDirty = true;
     if (this.localTimer) clearTimeout(this.localTimer);
     this.localTimer = setTimeout(() => void this.flushLocalState(), 300);
+  }
+
+  /** The opening of the project that is open now (see saveLocalState), or null. */
+  get openingKey(): string | null {
+    return this.workspaceKey;
   }
 
   /** Write pending workspace state now. Writes run one at a time, in order, so an older state never lands last. */

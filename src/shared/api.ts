@@ -245,7 +245,8 @@ export interface BuilderApi {
     conversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }>;
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;
-    clearHistory(): Promise<Conversation>;
+    /** `workspaceKey` is the opening of the project the user confirmed this in; main refuses any other. */
+    clearHistory(workspaceKey?: string): Promise<Conversation>;
     /** `conversationId` is the conversation the message was written in; main refuses it if another one is open. */
     send(text: string, context: ChatContext, conversationId?: string): Promise<{ ok: boolean; runId?: string; message?: string }>;
     stop(): Promise<void>;

@@ -229,7 +229,7 @@ export function Chat() {
         setState({ conversation: c, ...(drafts ? { chatDrafts: drafts(c) } : {}) });
         focusComposer();
       },
-      (e: Error) => toast(e.message || 'Could not open that conversation.', 'error')
+      (e: Error) => stillOpen() && toast(e.message || 'Could not open that conversation.', 'error')
     );
 
   const openHistory = async (el: HTMLElement) => {
@@ -259,7 +259,7 @@ export function Chat() {
         ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: day(c.createdAt), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
         { separator: true },
         // Unsent drafts belong to the conversations being removed, so they go with them.
-        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'All AI conversations in this project, including this one, will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(), () => ({}))) }
+        { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'All AI conversations in this project, including this one, will be removed. Changes the AI made to your site stay, and can still be undone.', confirmLabel: 'Clear history', danger: true }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => ({}))) }
       ],
       'Conversations'
     );

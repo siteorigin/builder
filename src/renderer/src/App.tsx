@@ -18,7 +18,8 @@ export function App() {
     const offs = [
       api.on('project:changed', (snap) => {
         const s = getState();
-        if (s.screen !== 'editor') openSnapshot(snap);
+        // Another opening (of another project, or of this one again) loads its own state, drafts included.
+        if (s.screen !== 'editor' || snap.workspaceKey !== s.snapshot?.workspaceKey) openSnapshot(snap);
         else {
           // Keep the current page valid.
           const pageId = s.pageId && snap.state.pages[s.pageId] ? s.pageId : snap.state.site.homePageId;
@@ -93,6 +94,10 @@ async function restoreConversation(seq: number, remembered: string | undefined) 
     if (!current()) return;
     setState({ conversation, chatDrafts: plan.kind === 'fresh' ? moveDraft(getState().chatDrafts, plan.from, conversation.id) : getState().chatDrafts });
   } catch {
-    // The project closed while its conversations were loading (or they could not be read): nothing to show.
+    // The project closed while its conversations were loading: nothing to show. If they could not be read, a new
+    // conversation still lets the panel work.
+    if (!current()) return;
+    const fresh = await api.ai.newConversation().catch(() => null);
+    if (fresh && current()) setState({ conversation: fresh });
   }
 }

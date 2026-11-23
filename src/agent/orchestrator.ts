@@ -165,7 +165,8 @@ ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}${preferred}`;
 
 export class Orchestrator {
   private run: ActiveRun | null = null;
-  private clearing = false;
+  /** Clear-history calls in progress. */
+  private clearing = 0;
   conversation: Conversation | null = null;
 
   constructor(private deps: OrchestratorDeps) {}
@@ -237,6 +238,8 @@ export class Orchestrator {
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
     if (!/^c_[a-z0-9]+$/.test(id)) throw new Error('Unknown conversation.');
+    // The open conversation is newer than its file, which a finished request may still be writing.
+    if (this.conversation?.id === id) return this.conversation;
     const c = JSON.parse(await fs.readFile(join(dir, `${id}.json`), 'utf8')) as Conversation;
     if (c.id !== id) throw new Error('Unknown conversation.');
     this.sameSession(session);
@@ -252,11 +255,11 @@ export class Orchestrator {
     const session = this.deps.session();
     const dir = this.chatDir();
     // No request may start while the files are going: it would add to a conversation that is being removed.
-    this.clearing = true;
+    this.clearing++;
     try {
       if (dir) await fs.rm(dir, { recursive: true, force: true });
     } finally {
-      this.clearing = false;
+      this.clearing--;
     }
     this.sameSession(session);
     this.conversation = this.freshConversation();
@@ -299,10 +302,16 @@ export class Orchestrator {
   /** `conversationId` is the conversation the message was written in; it is sent only if that one is still open. */
   async send(text: string, context: ChatContext, conversationId?: string): Promise<{ ok: boolean; runId?: string; message?: string }> {
     if (this.run) return { ok: false, message: 'The AI is already working on a request.' };
-    if (this.clearing) return { ok: false, message: 'The conversation history is being cleared. Send your message again in a moment.' };
+    const clearing = { ok: false, message: 'The conversation history is being cleared. Send your message again in a moment.' };
+    if (this.clearing) return clearing;
     const session = this.deps.session();
     if (!session) return { ok: false, message: 'Open a project first.' };
-    if (!this.conversation) await this.loadConversations();
+    if (!this.conversation) {
+      await this.loadConversations();
+      // Checked again: a request or a clear may have started while the list was loading.
+      if (this.run) return { ok: false, message: 'The AI is already working on a request.' };
+      if (this.clearing) return clearing;
+    }
     const conv = this.conversation!;
     if (conversationId !== undefined && conv.id !== conversationId) return { ok: false, message: 'That conversation is no longer open, so your message was not sent. It is still in the message box.' };
     const runId = newId('run');
@@ -316,11 +325,10 @@ export class Orchestrator {
     this.emitMessage(userMsg, runId);
     this.emitMessage(assistant, runId);
     void this.execute(runId, userMsg, assistant, history).finally(async () => {
-      // Saved before the run counts as finished, so opening this thread again never reads the older transcript.
-      // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
-      await this.saveConversation().catch(() => undefined);
       this.run = null;
       this.deps.onBusyChange(false);
+      // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
+      await this.saveConversation().catch(() => undefined);
     });
     return { ok: true, runId };
   }

@@ -122,6 +122,7 @@ describe('workspace state per project', () => {
     // A late save from the previous project arrives after the switch.
     c.saveLocalState({ chatDrafts: { c_alpha: 'Typed just before switching' } }, alpha);
     c.saveLocalState({ chatDrafts: { c_alpha: 'Named by folder' } }, a);
+    c.saveLocalState({ pageId: 'p_named_by_folder' }, b);
     expect(c.snapshot()!.localState).toEqual({});
     await c.flushLocalState();
     expect(onDisk(b)).toEqual({});
@@ -151,5 +152,10 @@ describe('workspace state per project', () => {
     expect(c.snapshot()!.localState.chatDrafts).toEqual({ c_alpha: 'Newer draft' });
     await c.close();
     expect(onDisk(a).chatDrafts).toEqual({ c_alpha: 'Newer draft' });
+    // The drafts are saved whole: one sent away and emptied is gone, not merged back.
+    expect(await c.open(a)).toEqual({ ok: true });
+    c.saveLocalState({ chatDrafts: {} }, opening(c));
+    await c.close();
+    expect(onDisk(a).chatDrafts).toEqual({});
   });
 });
