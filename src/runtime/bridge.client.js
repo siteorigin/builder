@@ -15,6 +15,8 @@ let linkEditor = null; // { host, input, range }
 /** Larger commits than this would be dropped by the editor's message size check, or refused by the editor. */
 const MAX_COMMIT_CHARS = 150000;
 const MAX_TEXT_CHARS = 20000;
+/** On macOS a Control-click opens the context menu, as a right-click does. */
+const IS_MAC = /Mac/.test(navigator.platform);
 const errors = [];
 
 function send(type, payload = {}) {
@@ -147,6 +149,9 @@ document.addEventListener(
   'contextmenu',
   (e) => {
     if (mode !== 'edit' || (linkEditor && e.target === linkEditor.host)) return;
+    // A right-click in the text being edited is for that text: the app's writing menu (spelling, cut, copy,
+    // paste) opens for the word under the pointer, and the selection stays where it is.
+    if (editing && editing.el.contains(e.target)) return;
     e.preventDefault();
     send('contextmenu', { chain: chainFrom(e.target), x: e.clientX, y: e.clientY });
   },
@@ -199,7 +204,8 @@ function beginTextEdit(desc, editId) {
   if (!el) return send('textCancel', { desc, editId });
   if (editing) commitEdit();
   const rich = el.classList.contains('so-rich');
-  editing = { el, desc, editId, original: el.innerHTML, rich };
+  // selectedAll: the whole text is still selected as the edit began (until a key or a press inside it).
+  editing = { el, desc, editId, original: el.innerHTML, rich, selectedAll: true };
   // Rich text keeps its bold, italic (⌘B, ⌘I) and links (⌘K); everything else is plain text.
   el.setAttribute('contenteditable', rich ? 'true' : 'plaintext-only');
   el.setAttribute('spellcheck', 'true');
@@ -216,9 +222,34 @@ function beginTextEdit(desc, editId) {
   el.addEventListener('input', scheduleRects);
   el.addEventListener('paste', onEditPaste);
   el.addEventListener('drop', onEditDrop);
+  el.addEventListener('pointerdown', onEditPress);
+  // Edit → Select All, which reaches the text with no key or press: the selection is now the author's.
+  el.addEventListener('selectstart', onEditSelectStart);
   send('textEditStarted', { desc });
 }
+/**
+ * A right-click (or Control-click) on text the edit selected when it began goes to the word under the pointer,
+ * as it does anywhere else in the text: kept inside the whole selection, it would get no spelling suggestions.
+ * A selection the author made is left for Cut and Copy.
+ */
+function onEditPress(e) {
+  if (!editing) return;
+  const fresh = editing.selectedAll;
+  editing.selectedAll = false;
+  if (!fresh || !(e.button === 2 || (IS_MAC && e.button === 0 && e.ctrlKey))) return;
+  const at = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+  if (!at || !editing.el.contains(at.startContainer)) return;
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(at);
+}
+function onEditSelectStart() {
+  if (editing) editing.selectedAll = false;
+}
+/** Keys that only hold a modifier (Control before a Control-click) leave the selection as it is. */
+const MODIFIER_KEYS = new Set(['Control', 'Shift', 'Alt', 'Meta', 'CapsLock', 'Fn']);
 function onEditKey(e) {
+  if (editing && !MODIFIER_KEYS.has(e.key)) editing.selectedAll = false;
   e.stopPropagation();
   // Keys that compose a character (an IME, a dead key for an accent) belong to the composition.
   if (e.isComposing || e.keyCode === 229) return;
@@ -361,6 +392,8 @@ function endEdit() {
   el.removeEventListener('input', scheduleRects);
   el.removeEventListener('paste', onEditPaste);
   el.removeEventListener('drop', onEditDrop);
+  el.removeEventListener('pointerdown', onEditPress);
+  el.removeEventListener('selectstart', onEditSelectStart);
   editing = null;
   getSelection()?.removeAllRanges();
   // The edited element no longer takes typing, but keeps focus without a focus event.
