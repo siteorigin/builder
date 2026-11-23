@@ -5,7 +5,7 @@
  */
 import { findVariant, variantOptions } from '@shared/variants';
 import { z } from 'zod';
-import type { ComponentDefinition, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { effectiveItem, followsPage, teaserFields } from '@shared/page-teasers';
 import type { EditOperation } from '@shared/ops';
 import { normalizeRoute, validateRoute } from '@shared/routes';
@@ -365,14 +365,17 @@ export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, 
     used.add(id);
     return byId.get(id);
   });
-  /** Match each item without an id to the one stored item with the same key, when only one sent item has that key. */
-  const matchBy = (keyOf: (it: unknown) => string | undefined, eligible: (it: Record<string, unknown>) => boolean = () => true, storedKey: (it: ListItem) => string | undefined = keyOf) => {
-    const count = (list: unknown[], k: string) => list.filter((x) => keyOf(x) === k).length;
+  /**
+   * Match each item without an id to the one stored item with the same key, when only one sent item has that key
+   * (with `unclaimed`, only one of those an id has not already matched).
+   */
+  const matchBy = (keyOf: (it: unknown) => string | undefined, eligible: (it: Record<string, unknown>) => boolean = () => true, storedKey: (it: ListItem) => string | undefined = keyOf, unclaimed = false) => {
+    const count = (k: string) => sent.filter((x, j) => keyOf(x) === k && !(unclaimed && matched[j])).length;
     const countStored = (k: string) => all.filter((x) => storedKey(x) === k).length;
     sent.forEach((it, i) => {
       if (matched[i] || !isRow(it) || typeof it.id === 'string' || !eligible(it)) return;
       const k = keyOf(it);
-      if (k === undefined || count(sent, k) !== 1 || countStored(k) !== 1) return;
+      if (k === undefined || count(k) !== 1 || countStored(k) !== 1) return;
       const old = items.find((x) => storedKey(x) === k);
       if (!old || used.has(old.id)) return;
       used.add(old.id);
@@ -382,13 +385,12 @@ export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, 
   const teaser = schema.pageTeaser;
   // A page list's cards are told apart by the page they stand for: a card sent for another page is a new card, even
   // under the same title. Only one sent without a page is matched by its title, so it keeps the page it had.
-  if (teaser) {
-    const pageOf = (it: unknown) => {
-      const l = isRow(it) ? (it[teaser.link] as Partial<LinkValue> | undefined) : undefined;
-      return l && typeof l === 'object' && l.type === 'page' && typeof l.target === 'string' && l.target ? l.target : undefined;
-    };
-    matchBy(pageOf);
-  }
+  const pageOf = (it: unknown) => {
+    const l = teaser && isRow(it) ? (it[teaser.link] as Partial<LinkValue> | undefined) : undefined;
+    return l && typeof l === 'object' && l.type === 'page' && typeof l.target === 'string' && l.target ? l.target : undefined;
+  };
+  // A card an id already claimed is that card, wherever it now points: it leaves the page it names to the others.
+  if (teaser) matchBy(pageOf, undefined, undefined, true);
   const field = schema.titleField;
   if (field) {
     const titleOf = (it: unknown) => {
@@ -398,16 +400,25 @@ export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, 
     // A card is known by the title it shows, its page's own while it has none.
     matchBy(titleOf, (it) => !teaser || it[teaser.link] === undefined, (it) => titleOf(teaser ? shown(it) : it));
   }
-  // A card's field sent back as the page shows it stays empty, so it keeps following the page.
+  // A card's field sent back as the page shows it stays empty, so it keeps following the page: only while the card
+  // still stands for that page (a card pointed elsewhere keeps the text it was sent).
   const follows = teaser ? teaserFields(teaser).map(([f]) => f) : [];
-  const unchanged = (old: ListItem, f: string, v: unknown) => followsPage(old[f]) && typeof v === 'string' && v.trim() === String(shown(old)[f] ?? '').trim();
+  const unchanged = (old: ListItem, f: string, v: unknown) => {
+    if (!followsPage(old[f])) return false;
+    const now = shown(old)[f];
+    if (typeof v === 'string') return typeof now === 'string' && v.trim() === now.trim();
+    const img = v as Partial<ImageValue> | null;
+    const was = now as Partial<ImageValue> | undefined;
+    return !!img && typeof img === 'object' && !!was && typeof was === 'object' && !!img.assetId && img.assetId === was.assetId && String(img.alt ?? '').trim() === String(was.alt ?? '').trim() && !img.decorative;
+  };
   return {
     items: sent.map((it, i) => {
       if (!isRow(it)) return it;
       const { id: _id, ...fields } = it;
       const old = matched[i];
       if (!old) return fields;
-      for (const f of follows) if (Object.hasOwn(fields, f) && unchanged(old, f, fields[f])) delete fields[f];
+      const samePage = !teaser || !Object.hasOwn(fields, teaser.link) || (pageOf(fields) !== undefined && pageOf(fields) === pageOf(old));
+      if (samePage) for (const f of follows) if (Object.hasOwn(fields, f) && unchanged(old, f, fields[f])) delete fields[f];
       return { ...structuredClone(old), ...fields, id: old.id };
     }),
     ids: matched.map((m) => m?.id)

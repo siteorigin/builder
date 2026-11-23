@@ -11,7 +11,7 @@ import { Field, Modal, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { resolveRef, treeFor } from '../lib/model';
 import { selectPage } from '../lib/actions';
-import { planPageRemoval, reviewPageRemoval } from '../lib/page-removal';
+import { planPageRemoval, reviewPageRemoval, withoutCards } from '../lib/page-removal';
 import { sectionOptions } from '../lib/sections';
 
 export function CreateComponentModal({ target }: { target: ElementRef }) {
@@ -230,7 +230,8 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   const close = () => !busy && setState({ modal: null });
   if (!page) return null;
   const choose = (fragment: string, value: string) => setSections({ key, choices: new Map(choices).set(fragment, value) });
-  const { options } = sectionOptions(st, replacement);
+  // The replacement page's sections as they will be once this page's cards have left their lists.
+  const { options } = sectionOptions(review.cards.length ? withoutCards(st, pageId) : st, replacement);
   const remove = async () => {
     if (!plan.operations || busy || aiBusy) return;
     const workspaceKey = snap?.workspaceKey;

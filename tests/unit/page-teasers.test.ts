@@ -238,6 +238,13 @@ describe('deleting a listed page', () => {
     // Home shows #cards now, but only through A's own card, which leaves with A.
     expect(reviewPageRemoval(linked, 'pg_a', linked.site.homePageId).missing.map((m) => m.fragment)).toEqual(['cards']);
     expect(planPageRemoval(linked, 'pg_a', linked.site.homePageId, new Map([['cards', '#cards']])).operations).toBeNull();
+    // A section with no ID yet that only A's card keeps showing is no place to send them either.
+    home.nodes.n_more = { id: 'n_more', kind: 'instance', definitionId: def.id, props: { items: [{ id: 'i_2', pageLink: { type: 'page', target: 'pg_a' }, title: 'More from A' }] } };
+    home.rootIds.push('n_more');
+    const withMore = applyOperations(linked, []).state;
+    withMore.pages[withMore.site.homePageId].nodes.n_more = structuredClone(home.nodes.n_more);
+    withMore.pages[withMore.site.homePageId].rootIds.push('n_more');
+    expect(planPageRemoval(withMore, 'pg_a', withMore.site.homePageId, new Map([['cards', 'node:n_more']])).operations).toBeNull();
     const ops = planPageRemoval(linked, 'pg_a', linked.site.homePageId, new Map([['cards', '']])).operations!;
     const after = applyOperations(linked, ops).state;
     expect((after.site.shell.header.nodes[headerId] as InstanceNode).props.ctaLink).toEqual({ type: 'page', target: after.site.homePageId });
@@ -299,6 +306,21 @@ describe('page list schema', () => {
     const echoed = withStoredFields(schema, [{ title: 'About', description: 'Revised' }], inherited, showsAbout);
     expect(echoed.ids).toEqual(['i_b']);
     expect(echoed.items[0]).toEqual({ id: 'i_b', pageLink: { type: 'page', target: 'pg_b' }, title: '', description: 'Revised' });
+    // Sent back with what the page shows, the image keeps following the page too.
+    const withImage = [{ id: 'i_c', pageLink: { type: 'page', target: 'pg_c' }, title: '', image: { assetId: null, alt: '' } }];
+    const showsImage = (it: ListItem) => ({ ...it, title: 'C', image: { assetId: 'a_c', alt: 'A photo' } });
+    expect(withStoredFields(schema, [{ id: 'i_c', image: { assetId: 'a_c', alt: 'A photo' } }], withImage, showsImage).items[0]).toMatchObject({ image: { assetId: null } });
+    // Pointed somewhere else, the card keeps the title it was sent, even one that was its old page's.
+    const moved = withStoredFields(schema, [{ id: 'i_b', pageLink: { type: 'url', target: 'https://partner.example/' }, title: 'About' }], inherited, showsAbout);
+    expect(moved.items[0]).toMatchObject({ pageLink: { type: 'url' }, title: 'About' });
+    // A card an id moved to a page leaves that page's own card to be found by its page.
+    const two = [
+      { id: 'i_about', pageLink: { type: 'page', target: 'pg_about' }, title: '', description: 'Our story, told our way' },
+      { id: 'i_work', pageLink: { type: 'page', target: 'pg_work' }, title: '', description: '' }
+    ];
+    const swapped = withStoredFields(schema, [{ id: 'i_work', pageLink: { type: 'page', target: 'pg_about' } }, { pageLink: { type: 'page', target: 'pg_about' } }], two);
+    expect(swapped.ids).toEqual(['i_work', 'i_about']);
+    expect(swapped.items[1]).toMatchObject({ description: 'Our story, told our way' });
     // An id names its card before anything else does.
     expect(withStoredFields(schema, [{ id: 'i_a', pageLink: { type: 'page', target: 'pg_b' } }], stored).ids).toEqual(['i_a']);
     // Sent for the same page without its id, it is that card too, whatever its title.
