@@ -621,7 +621,7 @@ function commitEdit() {
     return send('textCancel', { desc, editId, reason: 'too-large' });
   }
   endEdit();
-  committed = { el, editId, original };
+  committed = { el, editId, original, left: el.innerHTML };
   send('textCommit', payload);
 }
 /** Text, element names, inline marks, list kinds and links of what an edit left, as plain data; null when too large. */
@@ -877,7 +877,8 @@ window.addEventListener('message', async (e) => {
     // and the editor is told so it can say.
     // The editor kept nothing from that edit and nothing will rebuild: show the element as it was.
     case 'restoreText':
-      if (committed && committed.editId === m.payload.editId && committed.el.isConnected && editing?.el !== committed.el) committed.el.innerHTML = committed.original;
+      // Only over the text the author left: anything newer (a rebuild, another edit) stays.
+      if (committed && committed.editId === m.payload.editId && committed.el.isConnected && editing?.el !== committed.el && committed.el.innerHTML === committed.left) committed.el.innerHTML = committed.original;
       committed = null;
       break;
     case 'commitTextEdit':

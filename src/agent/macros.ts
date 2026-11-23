@@ -6,6 +6,7 @@
 import { findVariant, variantOptions } from '@shared/variants';
 import { z } from 'zod';
 import type { ComponentDefinition, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
+import { effectiveItem, followsPage, teaserFields } from '@shared/page-teasers';
 import type { EditOperation } from '@shared/ops';
 import { normalizeRoute, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
@@ -346,7 +347,11 @@ export function followStoredLinks(def: ComponentDefinition | undefined, prop: st
   return moved;
 }
 
-export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, sent: unknown[], stored: unknown[]): { items: unknown[]; ids: Array<string | undefined> } {
+/**
+ * Merge sent list items with the stored ones they stand for, so fields the sender left out keep their values. `shown`
+ * gives a stored item as it shows (a page list's empty fields filled from their pages), which is what the sender saw.
+ */
+export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, sent: unknown[], stored: unknown[], shown: (item: ListItem) => Record<string, unknown> = (item) => item): { items: unknown[]; ids: Array<string | undefined> } {
   const all = stored.filter((i): i is ListItem => !!i && typeof i === 'object' && typeof (i as ListItem).id === 'string');
   // An id two stored items share names neither of them.
   const items = all.filter((i) => all.filter((x) => x.id === i.id).length === 1);
@@ -361,13 +366,14 @@ export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, 
     return byId.get(id);
   });
   /** Match each item without an id to the one stored item with the same key, when only one sent item has that key. */
-  const matchBy = (keyOf: (it: unknown) => string | undefined, eligible: (it: Record<string, unknown>) => boolean = () => true) => {
+  const matchBy = (keyOf: (it: unknown) => string | undefined, eligible: (it: Record<string, unknown>) => boolean = () => true, storedKey: (it: ListItem) => string | undefined = keyOf) => {
     const count = (list: unknown[], k: string) => list.filter((x) => keyOf(x) === k).length;
+    const countStored = (k: string) => all.filter((x) => storedKey(x) === k).length;
     sent.forEach((it, i) => {
       if (matched[i] || !isRow(it) || typeof it.id === 'string' || !eligible(it)) return;
       const k = keyOf(it);
-      if (k === undefined || count(sent, k) !== 1 || count(all, k) !== 1) return;
-      const old = items.find((x) => keyOf(x) === k);
+      if (k === undefined || count(sent, k) !== 1 || countStored(k) !== 1) return;
+      const old = items.find((x) => storedKey(x) === k);
       if (!old || used.has(old.id)) return;
       used.add(old.id);
       matched[i] = old;
@@ -389,13 +395,20 @@ export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, 
       const t = isRow(it) ? it[field] : undefined;
       return typeof t === 'string' && t.trim() ? t : undefined;
     };
-    matchBy(titleOf, (it) => !teaser || it[teaser.link] === undefined);
+    // A card is known by the title it shows, its page's own while it has none.
+    matchBy(titleOf, (it) => !teaser || it[teaser.link] === undefined, (it) => titleOf(teaser ? shown(it) : it));
   }
+  // A card's field sent back as the page shows it stays empty, so it keeps following the page.
+  const follows = teaser ? teaserFields(teaser).map(([f]) => f) : [];
+  const unchanged = (old: ListItem, f: string, v: unknown) => followsPage(old[f]) && typeof v === 'string' && v.trim() === String(shown(old)[f] ?? '').trim();
   return {
     items: sent.map((it, i) => {
       if (!isRow(it)) return it;
       const { id: _id, ...fields } = it;
-      return matched[i] ? { ...structuredClone(matched[i]), ...fields, id: matched[i]!.id } : fields;
+      const old = matched[i];
+      if (!old) return fields;
+      for (const f of follows) if (Object.hasOwn(fields, f) && unchanged(old, f, fields[f])) delete fields[f];
+      return { ...structuredClone(old), ...fields, id: old.id };
     }),
     ids: matched.map((m) => m?.id)
   };
@@ -568,7 +581,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
         const schema = Object.hasOwn(props, prop) ? props[prop] : undefined;
         const stored = node.props[prop];
         if (schema?.type === 'list' && Array.isArray(value) && Array.isArray(stored)) {
-          const merged = withStoredFields(schema, value, stored);
+          const merged = withStoredFields(schema, value, stored, (item) => effectiveItem(scratch, schema, item));
           const def = scratch.components[node.definitionId];
           merged.ids.forEach((id, i) => {
             if (!id) return;

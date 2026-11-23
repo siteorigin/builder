@@ -891,11 +891,16 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
     return (typeof t === 'string' && t.trim()) || `${schema.itemLabel} ${i + 1}`;
   };
   const currentPageId = useStore((st) => st.pageId);
-  // A page just asked for stays out of the picker until the list changes (or the request is old, so one that failed
-  // does not hide the page for good): a second press adds no duplicate.
-  const [asked, setAsked] = useState<{ ids: string; pageId: string; at: number } | null>(null);
-  const pendingAdd = asked && asked.ids === ids && Date.now() - asked.at < MOVE_PENDING_MS ? asked.pageId : null;
-  const addable = schema.pageTeaser ? pagesToAdd(state, schema, items, currentPageId).filter((id) => id !== pendingAdd) : [];
+  // While a page is being added, Add waits until the list changes (or a moment passes, so a request that failed does not
+  // block it for good): a second press adds neither a duplicate nor whichever page the picker moves on to.
+  const [asked, setAsked] = useState<string | null>(null);
+  const addPending = asked !== null && asked === ids;
+  useEffect(() => {
+    if (asked === null) return;
+    const t = setTimeout(() => setAsked(null), MOVE_PENDING_MS);
+    return () => clearTimeout(t);
+  }, [asked]);
+  const addable = schema.pageTeaser ? pagesToAdd(state, schema, items, currentPageId) : [];
   const [toAdd, setToAdd] = useState('');
   const adding = addable.includes(toAdd) ? toAdd : (addable[0] ?? '');
   const L = onList;
@@ -999,10 +1004,10 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
                   </option>
                 ))}
               </select>
-              <button className="btn btn-sm insp-add" aria-disabled={addNote ? true : undefined} aria-describedby={addNote ? addNoteId : undefined} title={addNote ?? undefined} onClick={() => {
-                  if (addNote || !adding) return;
+              <button className="btn btn-sm insp-add" aria-disabled={addNote || addPending ? true : undefined} aria-describedby={addNote ? addNoteId : undefined} title={addNote ?? undefined} onClick={() => {
+                  if (addNote || addPending || !adding) return;
                   after.current = { kind: 'added', before: items.map((x) => x.id) };
-                  setAsked({ ids, pageId: adding, at: Date.now() });
+                  setAsked(ids);
                   L({ kind: 'insert', item: { [schema.pageTeaser!.link]: { type: 'page', target: adding } } });
                 }}>
                 <Plus /> Add {schema.itemLabel.toLowerCase()}

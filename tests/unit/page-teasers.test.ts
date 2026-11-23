@@ -213,6 +213,36 @@ describe('deleting a listed page', () => {
     expect((after.pages[after.site.homePageId].nodes.n_cta as InstanceNode).props.items).toEqual([]);
   });
 
+  it('asks where a link goes when the section it jumps to on the replacement page is shown only by the cards that go', () => {
+    const s = createStarterState('business', 'Test Studio', false);
+    const def = managed({
+      componentId: 'test.bare-cards',
+      name: 'Bare cards',
+      description: '',
+      category: 'custom',
+      tags: [],
+      icon: 'square',
+      properties: { items: P.list('Cards', 'Card', { pageLink: P.link('Page'), title: P.str('Title', '') }, [], { titleField: 'title', pageTeaser: { link: 'pageLink', title: 'title' } }) },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) => b.el('root', 'ul', { collapseEmpty: true }, [b.repeat('cards', 'items', [b.el('card', 'li', { when: { $item: 'pageLink' } }, [b.link('link', { $item: 'pageLink' }, { $item: 'title' }, 'plain')])])])
+    });
+    def.id = 'proj.bare-cards';
+    def.owner = 'project';
+    s.components[def.id] = def;
+    const r = applyOperations(s, [{ type: 'page.create', pageId: 'pg_a', title: 'A', route: '/a/' }]).state;
+    const home = r.pages[r.site.homePageId];
+    home.nodes.n_cards = { id: 'n_cards', kind: 'instance', definitionId: def.id, anchor: 'cards', props: { items: [{ id: 'i_1', pageLink: { type: 'page', target: 'pg_a' }, title: '' }] } };
+    home.rootIds.push('n_cards');
+    const headerId = r.site.shell.header.rootIds[0];
+    const linked = applyOperations(r, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: headerId, prop: 'ctaLink', value: { type: 'page', target: 'pg_a', anchor: 'cards' } }]).state;
+    // Home shows #cards now, but only through A's own card, which leaves with A.
+    expect(reviewPageRemoval(linked, 'pg_a', linked.site.homePageId).missing.map((m) => m.fragment)).toEqual(['cards']);
+    expect(planPageRemoval(linked, 'pg_a', linked.site.homePageId, new Map([['cards', '#cards']])).operations).toBeNull();
+    const ops = planPageRemoval(linked, 'pg_a', linked.site.homePageId, new Map([['cards', '']])).operations!;
+    const after = applyOperations(linked, ops).state;
+    expect((after.site.shell.header.nodes[headerId] as InstanceNode).props.ctaLink).toEqual({ type: 'page', target: after.site.homePageId });
+  });
+
   it('removes a card from a component’s default list too', () => {
     const s = createStarterState('business', 'Test Studio', false);
     const about = s.site.pageOrder.find((id) => s.pages[id].route === '/about/')!;
@@ -263,6 +293,14 @@ describe('page list schema', () => {
     const kept = withStoredFields(schema, [{ title: 'Featured', description: 'Updated copy' }], stored);
     expect(kept.ids).toEqual(['i_a']);
     expect(kept.items[0]).toMatchObject({ pageLink: { type: 'page', target: 'pg_a' }, description: 'Updated copy' });
+    // A card that shows its page's title is known by that title, and sending it back unchanged keeps it following the page.
+    const inherited = [{ id: 'i_b', pageLink: { type: 'page', target: 'pg_b' }, title: '', description: '' }];
+    const showsAbout = (it: ListItem) => ({ ...it, title: 'About' });
+    const echoed = withStoredFields(schema, [{ title: 'About', description: 'Revised' }], inherited, showsAbout);
+    expect(echoed.ids).toEqual(['i_b']);
+    expect(echoed.items[0]).toEqual({ id: 'i_b', pageLink: { type: 'page', target: 'pg_b' }, title: '', description: 'Revised' });
+    // An id names its card before anything else does.
+    expect(withStoredFields(schema, [{ id: 'i_a', pageLink: { type: 'page', target: 'pg_b' } }], stored).ids).toEqual(['i_a']);
     // Sent for the same page without its id, it is that card too, whatever its title.
     const same = withStoredFields(schema, [{ pageLink: { type: 'page', target: 'pg_a' }, description: 'Again' }], stored);
     expect(same.ids).toEqual(['i_a']);

@@ -30,10 +30,24 @@ export function reviewPageRemoval(state: ProjectState, pageId: string, replaceme
   const all = pageLinkUses(state, pageId);
   const uses = all.filter((u) => !u.card);
   const cards = all.filter((u) => u.card);
-  const ids = replacementId && Object.hasOwn(state.pages, replacementId) ? pageIds(state, replacementId) : new Set<string>();
+  const view = cards.length ? withoutCards(state, pageId) : state;
+  const ids = replacementId && Object.hasOwn(view.pages, replacementId) ? pageIds(view, replacementId) : new Set<string>();
   const missing = new Map<string, PageLinkUse[]>();
   for (const u of uses) if (u.link.anchor && !ids.has(u.link.anchor)) missing.set(u.link.anchor, [...(missing.get(u.link.anchor) ?? []), u]);
   return { uses, cards, missing: [...missing].map(([fragment, list]) => ({ fragment, uses: list })) };
+}
+
+/**
+ * The project once the page's cards have left their page lists, which is when the engine looks at the replacement
+ * page's sections: one that only those cards kept showing is not there for the links.
+ */
+function withoutCards(state: ProjectState, pageId: string): ProjectState {
+  const view = structuredClone(state);
+  for (const { card } of pageLinkUses(view, pageId)) {
+    const at = card ? card.items.indexOf(card.item) : -1;
+    if (at >= 0) card!.items.splice(at, 1);
+  }
+  return view;
 }
 
 export interface PageRemovalPlan {
@@ -54,7 +68,8 @@ export function planPageRemoval(state: ProjectState, pageId: string, replacement
   const review = reviewPageRemoval(state, pageId, replacementId);
   if (!review.uses.length && pageId !== state.site.homePageId) return { operations: [{ type: 'page.remove', pageId }], lost: [] };
   if (!replacementId || !Object.hasOwn(state.pages, replacementId) || replacementId === pageId) return none;
-  const ids = pageIds(state, replacementId);
+  // A section is one the replacement page still has once the cards are gone, as the engine checks it.
+  const ids = pageIds(review.cards.length ? withoutCards(state, pageId) : state, replacementId);
   const operations: EditOperation[] = [];
   const sectionReplacements: Array<{ from: string; to: string }> = [];
   // IDs given out in this batch, so two sections with the same heading get different ones.
