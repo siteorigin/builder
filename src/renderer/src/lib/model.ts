@@ -184,20 +184,24 @@ export interface Crumb {
   component?: 'theme' | 'custom';
 }
 
-/** The nodes above `nodeId` in a tree, outermost first (the tree's roots included, `nodeId` not). */
-function ancestorsIn(tree: NodeTree, nodeId: string): Array<{ id: string; inRepeat: boolean }> {
-  const out: string[] = [];
+/** The nodes above `nodeId` in a tree, outermost first (the tree's roots included, `nodeId` not), each with how
+ *  many repeats it sits outside of on the way down to `nodeId` (a repeat counts itself). */
+function ancestorsIn(tree: NodeTree, nodeId: string): Array<{ id: string; outside: number }> {
+  const out: Array<{ id: string; outside: number }> = [];
   const seen = new Set([nodeId]);
-  for (let p = findParent(tree, nodeId); p?.parentId && !seen.has(p.parentId); p = findParent(tree, p.parentId)) (seen.add(p.parentId), out.push(p.parentId));
-  // Going up, everything below the first repeat is inside the repeated item the selection is in.
-  let inRepeat = true;
-  return out
-    .map((id) => {
-      const r = { id, inRepeat };
-      if (tree.nodes[id]?.kind === 'repeat') inRepeat = false;
-      return r;
-    })
-    .reverse();
+  let outside = 0;
+  for (let p = findParent(tree, nodeId); p?.parentId && !seen.has(p.parentId); p = findParent(tree, p.parentId)) {
+    seen.add(p.parentId);
+    if (tree.nodes[p.parentId]?.kind === 'repeat') outside++;
+    out.push({ id: p.parentId, outside });
+  }
+  return out.reverse();
+}
+
+/** The repeated items a layer above the selection is inside: the selection's own, less the repeats it is outside. */
+function itemsFor(itemPath: string[] | undefined, outside: number): Pick<ElementRef, 'itemPath'> {
+  const kept = itemPath?.slice(0, Math.max(0, itemPath.length - outside));
+  return kept?.length ? { itemPath: kept } : {};
 }
 
 /**
@@ -216,19 +220,17 @@ export function breadcrumb(state: ProjectState, ref: ElementRef): Crumb[] {
       return { label, full: `${label}, part of ${res.def.name}`, ref: r };
     }
     if (!res.node) return { label: 'Element', full: 'Element', ref: r };
-    const l = layerLabel(state, res.node, res.def);
+    // A node of the component being edited everywhere is named within that component (its settings, say).
+    const l = layerLabel(state, res.node, res.def ?? (r.owner.kind === 'component' ? own(state.components, r.owner.id) : undefined));
     const def = res.node.kind === 'instance' ? own(state.components, res.node.definitionId) : undefined;
     if (!def) return { label: l.label, full: l.full, ref: r };
     const custom = def.owner === 'project';
     return { label: l.label, full: `${l.full}, ${custom ? 'component made in this project' : 'component'}`, ref: r, component: custom ? 'custom' : 'theme' };
   };
   const ownerTree = treeFor(state, ref.owner);
-  // The root of a component being edited is the component itself, the path's first crumb.
-  const defRoot = ref.owner.kind === 'component' ? ownerTree?.rootIds[0] : undefined;
   const anchor = ref.instancePath[0] ?? ref.nodeId;
-  if (ownerTree)
-    for (const a of ancestorsIn(ownerTree, anchor))
-      if (a.id !== defRoot) out.push(crumb({ owner: ref.owner, instancePath: [], nodeId: a.id, ...(!ref.instancePath.length && a.inRepeat && ref.itemPath?.length ? { itemPath: ref.itemPath } : {}) }));
+  // While a component is edited everywhere, its first crumb is the component's overview and the next its root.
+  if (ownerTree) for (const a of ancestorsIn(ownerTree, anchor)) out.push(crumb({ owner: ref.owner, instancePath: [], nodeId: a.id, ...(ref.instancePath.length ? {} : itemsFor(ref.itemPath, a.outside)) }));
   for (let i = 0; i < ref.instancePath.length; i++) {
     out.push(crumb({ owner: ref.owner, instancePath: ref.instancePath.slice(0, i), nodeId: ref.instancePath[i] }));
     // Inside the component: the parts that hold the next component or the selection (other nodes there are
@@ -241,10 +243,10 @@ export function breadcrumb(state: ProjectState, ref: ElementRef): Crumb[] {
     for (const a of ancestorsIn(inner, next)) {
       const partId = partIdFor(res.def, a.id);
       if (!partId || a.id === inner.rootIds[0]) continue;
-      out.push(crumb({ owner: ref.owner, instancePath: ref.instancePath.slice(0, i + 1), nodeId: a.id, partId, ...(last && a.inRepeat && ref.itemPath?.length ? { itemPath: ref.itemPath } : {}) }));
+      out.push(crumb({ owner: ref.owner, instancePath: ref.instancePath.slice(0, i + 1), nodeId: a.id, partId, ...(last ? itemsFor(ref.itemPath, a.outside) : {}) }));
     }
   }
-  if (ref.nodeId !== defRoot || ref.instancePath.length) out.push(crumb(ref));
+  out.push(crumb(ref));
   return out;
 }
 

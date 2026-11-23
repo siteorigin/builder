@@ -3,7 +3,7 @@ import type { ElementRef, InstanceNode, Op, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { breadcrumb } from '../../src/renderer/src/lib/model';
-import { clip, layerLabel, ownVisibility, rowVisibility, showHereOp } from '../../src/renderer/src/lib/layers';
+import { clip, everySizeEdits, hideHereEdits, layerLabel, ownVisibility, rowVisibility, showHereEdits, type Size, type VisibilityEdit } from '../../src/renderer/src/lib/layers';
 
 /** A home page whose first section holds a Grid with a paragraph in it: Section > Grid > Text. */
 function nested() {
@@ -53,7 +53,7 @@ describe('the breadcrumb shows every layer the selection sits in', () => {
     expect(crumbs[2].ref).toEqual({ owner: t.owner, instancePath: [], nodeId: card });
   });
 
-  it('starts at the component while it is edited everywhere, without repeating its root', () => {
+  it('starts at the component while it is edited everywhere, then its root', () => {
     const t = nested();
     const made = applyOperations(t.s, [{ type: 'component.createFromNode', owner: t.owner, nodeId: t.grid, name: 'Maker grid' }]);
     const defId = made.results[0].definitionId as string;
@@ -61,11 +61,22 @@ describe('the breadcrumb shows every layer the selection sits in', () => {
     const root = tree.rootIds[0];
     const text = Object.values(tree.nodes).find((n) => n.kind === 'text')!.id;
     const owner = { kind: 'component' as const, id: defId };
-    expect(labels(breadcrumb(made.state, { owner, instancePath: [], nodeId: root }))).toEqual(['Maker grid']);
+    const atRoot = breadcrumb(made.state, { owner, instancePath: [], nodeId: root });
+    expect(atRoot.map((c) => c.ref?.nodeId ?? null)).toEqual([null, root]);
+    expect(atRoot[0].label).toBe('Maker grid');
+    // The root is a destination of its own: the text directly inside it can reach it.
     const inner = breadcrumb(made.state, { owner, instancePath: [], nodeId: text });
-    expect(inner[0].label).toBe('Maker grid');
-    expect(inner.at(-1)!.ref?.nodeId).toBe(text);
-    expect(inner.map((c) => c.ref?.nodeId)).not.toContain(root);
+    expect(inner.map((c) => c.ref?.nodeId ?? null)).toEqual([null, root, text]);
+  });
+
+  it('keeps the repeated item for the parts inside it, and drops it above the repeat', () => {
+    const t = nested();
+    t.run([{ type: 'node.insert', owner: t.owner, parentId: null, index: 0, componentId: 'features.grid' }]);
+    const fg = t.s.pages[t.pageId].rootIds[0];
+    const crumbs = breadcrumb(t.s, { owner: t.owner, instancePath: [fg], nodeId: 'card-title', partId: 'cardTitle', itemPath: ['i1'] });
+    expect(labels(crumbs)).toEqual(['Home', 'Services grid', 'Card grid', 'Card', 'Card title']);
+    expect(crumbs.map((c) => c.ref?.itemPath ?? null)).toEqual([null, null, null, ['i1'], ['i1']]);
+    expect(crumbs[2].ref).toMatchObject({ instancePath: [fg], nodeId: 'grid', partId: 'grid' });
   });
 });
 
@@ -100,26 +111,28 @@ describe('layer names', () => {
 });
 
 describe('visibility at the previewed size', () => {
-  const hide = (t: ReturnType<typeof nested>, nodeId: string, scope: 'base' | 'phone' | 'tablet' | 'desktop', value: boolean | null = true) =>
-    t.run([{ type: 'node.setStyle', owner: t.owner, nodeId, scope, property: 'hidden', value }]);
+  type Scope = 'base' | 'phone' | 'tablet' | 'desktop';
+  const hide = (t: ReturnType<typeof nested>, nodeId: string, scope: Scope, value: boolean | null = true, partId?: string) =>
+    t.run([{ type: 'node.setStyle', owner: t.owner, nodeId, ...(partId ? { partId } : {}), scope, property: 'hidden', value }]);
+  const apply = (t: ReturnType<typeof nested>, nodeId: string, edits: VisibilityEdit[]) => edits.forEach((e) => hide(t, nodeId, e.scope, e.value, e.partId));
+  const row = (t: ReturnType<typeof nested>, nodeId: string, size: Size, partId?: string) => rowVisibility(t.s, t.s.pages[t.pageId], t.node(nodeId), size, partId);
 
   it('tells "hidden on phone" apart from a hide at every size', () => {
     const t = nested();
     hide(t, t.para, 'phone');
-    const tree = t.s.pages[t.pageId];
-    const onPhone = rowVisibility(t.s, tree, t.node(t.para), 'phone');
+    const onPhone = row(t, t.para, 'phone');
     expect(onPhone.hiddenHere).toBe(true);
-    expect(onPhone.own).toMatchObject({ hiddenAt: ['phone'], everywhere: false });
+    expect(onPhone.own).toEqual({ hiddenAt: ['phone'], by: { phone: 'size' } });
     expect(onPhone.note).toBe('hidden on phone');
-    const onDesktop = rowVisibility(t.s, tree, t.node(t.para), 'desktop');
+    const onDesktop = row(t, t.para, 'desktop');
     expect(onDesktop.hiddenHere).toBe(false);
-    // Still said, so the row explains what the phone preview will show.
+    // Still said on desktop, so the row explains what the phone preview shows.
     expect(onDesktop.note).toBe('hidden on phone');
 
     hide(t, t.para, 'phone', null);
     hide(t, t.para, 'base');
-    const everywhere = rowVisibility(t.s, t.s.pages[t.pageId], t.node(t.para), 'desktop');
-    expect(everywhere.own).toMatchObject({ hiddenAt: ['phone', 'tablet', 'desktop'], everywhere: true });
+    const everywhere = row(t, t.para, 'desktop');
+    expect(everywhere.own).toEqual({ hiddenAt: ['phone', 'tablet', 'desktop'], by: { phone: 'base', tablet: 'base', desktop: 'base' } });
     expect(everywhere.note).toBe('hidden at every size');
   });
 
@@ -127,43 +140,86 @@ describe('visibility at the previewed size', () => {
     const t = nested();
     hide(t, t.para, 'base');
     hide(t, t.para, 'phone', false);
-    const v = ownVisibility(t.node(t.para));
-    expect(v.hiddenAt).toEqual(['tablet', 'desktop']);
-    expect(rowVisibility(t.s, t.s.pages[t.pageId], t.node(t.para), 'phone').hiddenHere).toBe(false);
+    expect(ownVisibility(t.s, t.node(t.para)).hiddenAt).toEqual(['tablet', 'desktop']);
+    expect(row(t, t.para, 'phone')).toMatchObject({ hiddenHere: false, note: 'hidden on tablet and desktop' });
   });
 
   it('shows a layer again on one size only, leaving the other sizes as they were', () => {
     const t = nested();
     hide(t, t.para, 'phone');
     // Hidden on phone alone: the phone setting is taken away.
-    expect(showHereOp(t.node(t.para), 'phone')).toEqual({ scope: 'phone', value: null });
-    expect(showHereOp(t.node(t.para), 'desktop')).toBeNull();
-    // Hidden at every size: phone shows it, the other sizes keep hiding it.
+    expect(showHereEdits(t.s, t.node(t.para), 'phone')).toEqual([{ scope: 'phone', value: null }]);
+    expect(showHereEdits(t.s, t.node(t.para), 'desktop')).toEqual([]);
+    // Hidden at every size as well: phone shows it, the other sizes keep hiding it.
     hide(t, t.para, 'base');
-    expect(showHereOp(t.node(t.para), 'phone')).toEqual({ scope: 'phone', value: false });
-    expect(showHereOp(t.node(t.para), 'desktop')).toEqual({ scope: 'desktop', value: false });
-    const op = showHereOp(t.node(t.para), 'desktop')!;
-    t.run([{ type: 'node.setStyle', owner: t.owner, nodeId: t.para, scope: op.scope, property: 'hidden', value: op.value }]);
-    expect(ownVisibility(t.node(t.para)).hiddenAt).toEqual(['phone', 'tablet']);
+    expect(showHereEdits(t.s, t.node(t.para), 'phone')).toEqual([{ scope: 'phone', value: false }]);
+    apply(t, t.para, showHereEdits(t.s, t.node(t.para), 'desktop'));
+    expect(ownVisibility(t.s, t.node(t.para)).hiddenAt).toEqual(['phone', 'tablet']);
+  });
+
+  it('hides a layer on one size only, undoing a size’s own exception first', () => {
+    const t = nested();
+    apply(t, t.para, hideHereEdits(t.s, t.node(t.para), 'phone'));
+    expect(ownVisibility(t.s, t.node(t.para)).hiddenAt).toEqual(['phone']);
+    expect(hideHereEdits(t.s, t.node(t.para), 'phone')).toEqual([]);
+    hide(t, t.para, 'phone', null);
+    hide(t, t.para, 'base');
+    hide(t, t.para, 'phone', false);
+    expect(hideHereEdits(t.s, t.node(t.para), 'phone')).toEqual([{ scope: 'phone', value: null }]);
+  });
+
+  it('hides and shows at every size, as the eye always has', () => {
+    const t = nested();
+    apply(t, t.para, everySizeEdits(t.s, t.node(t.para), true));
+    expect(ownVisibility(t.s, t.node(t.para)).hiddenAt).toEqual(['phone', 'tablet', 'desktop']);
+    apply(t, t.para, everySizeEdits(t.s, t.node(t.para), false));
+    expect(t.node(t.para).styles?.base?.hidden).toBeUndefined();
+    // A size with its own hide keeps it.
+    hide(t, t.para, 'phone');
+    apply(t, t.para, everySizeEdits(t.s, t.node(t.para), true));
+    apply(t, t.para, everySizeEdits(t.s, t.node(t.para), false));
+    expect(ownVisibility(t.s, t.node(t.para)).hiddenAt).toEqual(['phone']);
   });
 
   it('explains a hide inherited from a container, only at the size it applies to', () => {
     const t = nested();
     hide(t, t.grid, 'phone');
-    const tree = t.s.pages[t.pageId];
-    const onPhone = rowVisibility(t.s, tree, t.node(t.para), 'phone');
-    expect(onPhone.hiddenHere).toBe(true);
-    expect(onPhone.hiddenBy).toMatchObject({ id: t.grid, name: 'Grid', sizes: ['phone'] });
+    const onPhone = row(t, t.para, 'phone');
+    expect(onPhone.hiddenHere).toBe(false);
+    expect(onPhone.hiddenBy).toEqual({ id: t.grid, name: 'Grid', sizes: ['phone'] });
     expect(onPhone.note).toBe('hidden on phone because Grid is hidden on phone');
-    expect(rowVisibility(t.s, tree, t.node(t.para), 'desktop')).toMatchObject({ hiddenHere: false, hiddenBy: null, note: '' });
+    expect(row(t, t.para, 'desktop')).toMatchObject({ hiddenHere: false, hiddenBy: null, note: '' });
   });
 
-  it('reads a placed component’s hide from its root override', () => {
+  it('finds a section’s Container part hiding what is placed in its slot, even over a child’s own "show"', () => {
     const t = nested();
-    t.run([{ type: 'node.setStyle', owner: t.owner, nodeId: t.section, partId: 'root', scope: 'tablet', property: 'hidden', value: true }]);
-    expect(ownVisibility(t.node(t.section)).hiddenAt).toEqual(['tablet']);
-    expect(showHereOp(t.node(t.section), 'tablet')).toEqual({ partId: 'root', scope: 'tablet', value: null });
-    const child = rowVisibility(t.s, t.s.pages[t.pageId], t.node(t.grid), 'tablet');
-    expect(child.hiddenBy?.id).toBe(t.section);
+    hide(t, t.section, 'phone', true, 'container');
+    hide(t, t.para, 'phone', false);
+    const onPhone = row(t, t.para, 'phone');
+    expect(onPhone.hiddenBy).toEqual({ id: t.section, part: { id: 'container', nodeId: 'inner' }, name: 'Section › Container', sizes: ['phone'] });
+    expect(row(t, t.grid, 'phone').hiddenBy?.part?.id).toBe('container');
+    expect(row(t, t.para, 'desktop').hiddenBy).toBeNull();
+    // The section itself still shows on phone: only what its Container holds is hidden.
+    expect(ownVisibility(t.s, t.node(t.section)).hiddenAt).toEqual([]);
+  });
+
+  it('reads a placed component’s hide from its root override, and edits that override', () => {
+    const t = nested();
+    hide(t, t.section, 'tablet', true, 'root');
+    expect(ownVisibility(t.s, t.node(t.section)).hiddenAt).toEqual(['tablet']);
+    expect(showHereEdits(t.s, t.node(t.section), 'tablet')).toEqual([{ partId: 'root', scope: 'tablet', value: null }]);
+    expect(row(t, t.grid, 'tablet').hiddenBy?.id).toBe(t.section);
+  });
+
+  it('counts the option a placement chose: one can show a part its design hides on phone', () => {
+    const t = nested();
+    t.run([{ type: 'node.insert', owner: t.owner, parentId: null, index: 0, componentId: 'features.grid' }]);
+    const fg = t.s.pages[t.pageId].rootIds[0];
+    const def = t.s.components[(t.node(fg) as InstanceNode).definitionId];
+    def.tree!.nodes.grid.styles = { ...def.tree!.nodes.grid.styles, phone: { hidden: true } };
+    def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { hidden: false } } };
+    expect(ownVisibility(t.s, t.node(fg), 'grid').hiddenAt).toEqual(['phone']);
+    (t.node(fg) as InstanceNode).variants = { layout: 'two-columns' };
+    expect(ownVisibility(t.s, t.node(fg), 'grid').hiddenAt).toEqual([]);
   });
 });
