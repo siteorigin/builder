@@ -560,6 +560,62 @@ export function useRovingTabStop(ref: React.RefObject<HTMLElement | null>, role:
   });
 }
 
+/**
+ * Keyboard model for a grid of tiles (WAI-ARIA APG grid): each `[role="grid"]` is one tab stop, the arrow
+ * keys move between its cells by their on-screen position (so it follows a CSS grid at any column count),
+ * Home/End go to the row's ends and Ctrl+Home/End to the grid's. Focus only: activating a cell stays with
+ * Enter or Space, because moving through a palette must never insert anything. Each cell holds one
+ * focusable control, found with `[role="gridcell"] > *`.
+ */
+export function gridKeys(e: React.KeyboardEvent<HTMLElement>) {
+  if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  if (e.metaKey || e.altKey || e.shiftKey || (e.ctrlKey && e.key !== 'Home' && e.key !== 'End')) return;
+  const grid = (e.target as HTMLElement).closest<HTMLElement>('[role="grid"]');
+  if (!grid) return;
+  const cells = [...grid.querySelectorAll<HTMLElement>('[role="gridcell"] > *')];
+  const i = cells.indexOf((document.activeElement as HTMLElement | null)?.closest('[role="gridcell"] > *') as HTMLElement);
+  if (i < 0) return;
+  const boxes = cells.map((c) => c.getBoundingClientRect());
+  const cur = boxes[i];
+  const sameRow = (b: DOMRect) => Math.abs(b.top - cur.top) < cur.height / 2;
+  let n = i;
+  if (e.key === 'ArrowLeft') n = Math.max(0, i - 1);
+  else if (e.key === 'ArrowRight') n = Math.min(cells.length - 1, i + 1);
+  else if (e.key === 'Home') n = e.ctrlKey ? 0 : boxes.findIndex(sameRow);
+  else if (e.key === 'End') n = e.ctrlKey ? cells.length - 1 : boxes.length - 1 - [...boxes].reverse().findIndex(sameRow);
+  else {
+    const down = e.key === 'ArrowDown';
+    // The cell directly above or below, in the same column; at the grid's edge (or a short last row) focus stays.
+    const cx = cur.left + cur.width / 2;
+    const below = boxes
+      .map((b, k) => ({ b, k }))
+      .filter(({ b }) => (down ? b.top >= cur.bottom - 1 : b.bottom <= cur.top + 1) && b.left <= cx && b.right >= cx)
+      .sort((a, b) => (down ? a.b.top - b.b.top : b.b.top - a.b.top));
+    if (below.length) n = below[0].k;
+  }
+  e.preventDefault();
+  if (n === i || !cells[n]) return;
+  for (const c of cells) {
+    c.tabIndex = c === cells[n] ? 0 : -1;
+    if (c === cells[n]) c.dataset.rove = '1';
+    else delete c.dataset.rove;
+  }
+  cells[n].focus();
+}
+
+/** After render, make each grid inside the container exactly one tab stop (the cell last focused, else the first). */
+export function useGridTabStops(ref: React.RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    for (const grid of el.querySelectorAll<HTMLElement>('[role="grid"]')) {
+      const cells = [...grid.querySelectorAll<HTMLElement>('[role="gridcell"] > *')];
+      const keep = cells.find((c) => c.dataset.rove === '1') ?? cells[0];
+      for (const c of cells) c.tabIndex = c === keep ? 0 : -1;
+    }
+  });
+}
+
 /** The panel half of Tabs: give it the same idBase and the value it shows. */
 export function TabPanel({ idBase, value, children, className, style }: { idBase: string; value: string; children: ReactNode; className?: string; style?: React.CSSProperties }) {
   return (
