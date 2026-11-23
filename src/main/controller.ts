@@ -12,7 +12,7 @@ import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { assetUsages, sourceHash } from '@engine/apply';
 import { themeUpdates } from '@engine/theme-updates';
-import { basePath, generateManagedComponent, generatePage, defFile } from '@generator/index';
+import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
 import { copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, sectionLinkWarnings, uniqueChild } from './export';
@@ -1024,6 +1024,12 @@ export class Controller {
       if (!existsSync(file)) return { ok: false, message: `The build is missing ${p.route}.`, warnings };
       const html = await fs.readFile(file, 'utf8');
       if (/data-so-(ctx|node)|siteorigin-bridge/.test(html)) return { ok: false, message: `Editor-only markup was found in ${p.route}. Export aborted.`, warnings };
+    }
+    // Old addresses kept working are pages of their own on a static host: each must be there to send visitors on.
+    for (const { from } of liveRedirects(state)) {
+      const file = join(out, from, 'index.html');
+      if (!existsSync(file)) return { ok: false, message: `The build is missing ${from}, an old address that should send visitors on.`, warnings };
+      if (/data-so-(ctx|node)|siteorigin-bridge/.test(await fs.readFile(file, 'utf8'))) return { ok: false, message: `Editor-only markup was found in ${from}. Export aborted.`, warnings };
     }
     for (const f of await listFiles(out)) {
       if (/\.js$/.test(f) && /siteorigin-bridge|data-so-ctx/.test(await fs.readFile(join(out, f), 'utf8'))) return { ok: false, message: 'Editor-only code was found in the build. Export aborted.', warnings };

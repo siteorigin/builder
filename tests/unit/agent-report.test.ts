@@ -37,6 +37,28 @@ function run(start: ProjectState, steps: Array<(s: ProjectState, results: unknow
 const RAW = new RegExp(`\\b(${Object.keys(OPERATION_SCHEMAS).join('|').replace(/\./g, '\\.')})\\b`);
 
 describe('change descriptions', () => {
+  it('names both address changes, the address kept working and the menu links to check when a page becomes Home (#37)', () => {
+    const start = createStarterState('business', 'Test', false);
+    const about = Object.values(start.pages).find((p) => p.title === 'About')!.id;
+    const { changes } = run(start, [() => [{ type: 'page.setHome', pageId: about }]]);
+    expect(changes).toHaveLength(1);
+    expect(changes[0].label).toBe(
+      'Made About the home page: “About” moved from /about/ to / and “Home” moved from / to /home/. /about/ still works and sends visitors to “About”. Check the header and footer links “Home” and “About”: they keep their words and go to the new addresses.'
+    );
+    expect(changes[0].label).not.toMatch(RAW);
+    const declined = run(start, [() => [{ type: 'page.setHome', pageId: about, keepOldAddress: false }]]).changes[0].label;
+    expect(declined).not.toContain('still works');
+    // A page given the address later in the run takes it over: the report does not promise the redirect.
+    const claimed = run(start, [() => [{ type: 'page.setHome', pageId: about }], () => [{ type: 'page.create', title: 'Team', route: '/about/' }]]).changes[0].label;
+    expect(claimed).toContain('“About” moved from /about/ to /');
+    expect(claimed).not.toContain('still works');
+    // Each promotion is described by its own moves, not by where the pages ended up after the run.
+    const twice = run(start, [() => [{ type: 'page.setHome', pageId: about }], () => [{ type: 'page.setHome', pageId: start.site.homePageId }]]).changes.map((c) => c.label);
+    // /about/ was About's again by the end, so the first promotion no longer claims it still sends visitors on.
+    expect(twice[0]).toBe('Made About the home page: “About” moved from /about/ to / and “Home” moved from / to /home/. Check the header and footer links “Home” and “About”: they keep their words and go to the new addresses.');
+    expect(twice[1]).toMatch(/^Made Home the home page: “Home” moved from \/home\/ to \/ and “About” moved from \/ to \/about\/\. \/home\/ still works/);
+  });
+
   it('describes an image inserted and given a photo and alt text in the same request, linked to the image', () => {
     const { state, pageId, owner } = project();
     const { changes } = run(state, [
@@ -238,7 +260,9 @@ describe('check results', () => {
     // A copy changes only the page it lands on.
     expect(pagesTouched([{ type: 'node.copy', owner: page(home), nodeId: node, toOwner: page(about) }])).toEqual(new Set([about]));
     expect(pagesTouched([{ type: 'node.paste', clipboardId: 'c', toOwner: page(home) }])).toEqual(new Set([home]));
-    expect(pagesTouched([{ type: 'page.update', pageId: about, seoTitle: 'x' }, { type: 'page.setHome', pageId: home }])).toEqual(new Set([about, home]));
+    // A new Home moves header and footer links on every page.
+    expect(pagesTouched([{ type: 'page.setHome', pageId: home }])).toBe('all');
+    expect(pagesTouched([{ type: 'page.update', pageId: about, seoTitle: 'x' }, { type: 'page.setHome', pageId: home }])).toBe('all');
     expect(pagesTouched([{ type: 'page.remove', pageId: about }, { type: 'page.reorder', pageIds: [about, home] }])).toEqual(new Set([about]));
     expect(pagesTouched([{ type: 'page.create', title: 'New' }])).toEqual(new Set());
     expect(pagesTouched([{ type: 'page.create', title: 'New', addToNavigation: true }])).toBe('all');

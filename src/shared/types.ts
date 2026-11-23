@@ -332,6 +332,17 @@ export interface SiteDoc {
   themeId: string;
   /** Shared header and footer instances. */
   shell: { header: NodeTree; footer: NodeTree };
+  /**
+   * Addresses a page used to have, kept working for old links and bookmarks: each sends visitors to its page's
+   * current address. No page uses one of these routes; a page given one takes it over.
+   */
+  redirects?: SiteRedirect[];
+}
+
+/** An old address that sends visitors on to a page, by ID, so it follows that page's later route changes. */
+export interface SiteRedirect {
+  from: string;
+  pageId: string;
 }
 
 export interface AssetRecord {

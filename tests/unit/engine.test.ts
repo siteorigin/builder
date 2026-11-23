@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { applyOperations } from '@engine/apply';
+import { applyOperations, planHomeChange } from '@engine/apply';
+import { pageIds, shellPageLinks } from '@generator/checks';
 import { EngineError, instancesOf } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
-import { pageIds } from '@generator/checks';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -843,5 +843,218 @@ describe('duplicating a page', () => {
     const copy = r.state.pages[r.results[0].pageId as string];
     const link = Object.values(copy.nodes).find((n) => n.kind === 'link' && (n as { link: { anchor?: string } }).link.anchor === 'so-site-nav') as { link: { target: string } };
     expect(link.link.target).toBe(contactId);
+  });
+});
+
+describe('making another page Home keeps its old address working (#37)', () => {
+  const byTitle = (s: ProjectState, title: string) => Object.values(s.pages).find((p) => p.title === title)!;
+  const setHome = (s: ProjectState, pageId: string, keepOldAddress?: boolean) => applyOperations(s, [{ type: 'page.setHome', pageId, ...(keepOldAddress === undefined ? {} : { keepOldAddress }) }]);
+  const errors = (s: ProjectState) => validateState(s).filter((d) => d.severity === 'error');
+  /** The generated route at `dir`: "redirect" with its destination, "page" for a page, or undefined. */
+  const routeAt = (s: ProjectState, dir: string) => {
+    const f = generateProject(s).get(`src/routes/${dir}/+page.svelte`);
+    if (f === undefined) return undefined;
+    return f.includes('http-equiv="refresh"') ? `redirect ${f.match(/resolve\(("[^"]*")\)/)![1]}` : 'page';
+  };
+
+  it('moves both pages, reports it, and generates a redirect at the vacated address', () => {
+    const s = fresh();
+    const about = byTitle(s, 'About').id;
+    const homeId = s.site.homePageId;
+    const r = setHome(s, about);
+    expect(r.results[0]).toEqual({ moved: [{ pageId: about, from: '/about/', to: '/' }, { pageId: homeId, from: '/', to: '/home/' }], kept: '/about/' });
+    expect(r.state.pages[about].route).toBe('/');
+    expect(r.state.pages[homeId].route).toBe('/home/');
+    expect(r.state.site.redirects).toEqual([{ from: '/about/', pageId: about }]);
+    expect(errors(r.state)).toEqual([]);
+    expect(routeAt(r.state, 'about')).toBe('redirect "/"');
+    expect(routeAt(r.state, 'home')).toBe('page');
+    // The redirect is not a page: the sitemap and page count stay as they were.
+    expect(r.state.site.pageOrder).toHaveLength(3);
+  });
+
+  it('never gives the previous Home the address it keeps, even when the titles match', () => {
+    let s = fresh();
+    const about = byTitle(s, 'About').id;
+    const homeId = s.site.homePageId;
+    s = applyOperations(s, [{ type: 'page.update', pageId: homeId, title: 'About' }]).state;
+    const r = setHome(s, about);
+    expect(r.state.pages[homeId].route).toBe('/about-2/');
+    expect(r.state.site.redirects).toEqual([{ from: '/about/', pageId: about }]);
+    expect(routeAt(r.state, 'about')).toBe('redirect "/"');
+    expect(routeAt(r.state, 'about-2')).toBe('page');
+    expect(errors(r.state)).toEqual([]);
+    // Without keeping it, the previous Home may take the address, and the preview says so exactly.
+    const plain = setHome(s, about, false);
+    expect(plain.state.pages[homeId].route).toBe('/about/');
+    expect(planHomeChange(s, about, false)).toEqual(plain.results[0]);
+    expect(routeAt(plain.state, 'about')).toBe('page');
+  });
+
+  it('keeps nothing when asked not to', () => {
+    const s = fresh();
+    const r = setHome(s, byTitle(s, 'About').id, false);
+    expect(r.results[0]).toEqual({ moved: expect.any(Array) });
+    expect(r.state.site.redirects).toBeUndefined();
+    expect(r.results[0]).toEqual({ moved: [{ pageId: r.state.site.homePageId, from: '/about/', to: '/' }, expect.objectContaining({ to: '/home/' })] });
+    expect(routeAt(r.state, 'about')).toBeUndefined();
+  });
+
+  it('gives a page its own old address back when it stops being Home', () => {
+    let s = fresh();
+    const about = byTitle(s, 'About').id;
+    const homeId = s.site.homePageId;
+    s = setHome(s, about).state;
+    const r = setHome(s, homeId);
+    expect(r.state.pages[homeId].route).toBe('/');
+    expect(r.state.pages[about].route).toBe('/about/');
+    // Old links to /home/ still reach the original Home page; /about/ is a page again.
+    expect(r.state.site.redirects).toEqual([{ from: '/home/', pageId: homeId }]);
+    expect(routeAt(r.state, 'about')).toBe('page');
+    expect(routeAt(r.state, 'home')).toBe('redirect "/"');
+    expect(errors(r.state)).toEqual([]);
+  });
+
+  it('changes no link, menu label or unrelated link: page links follow the pages', () => {
+    let s = fresh();
+    const about = byTitle(s, 'About').id;
+    const homeId = s.site.homePageId;
+    const header = s.site.shell.header.rootIds[0];
+    const links = (s.site.shell.header.nodes[header] as InstanceNode).props.links as Array<{ id: string; label: string }>;
+    const aboutItem = links.find((l) => l.label === 'About')!.id;
+    s = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'links', itemId: aboutItem, field: 'label', value: 'Our practice' }]).state;
+    const shellBefore = structuredClone(s.site.shell);
+    const r = setHome(s, about);
+    expect(r.state.site.shell).toEqual(shellBefore);
+    const shown = shellPageLinks(r.state, [about, homeId]).map((l) => `${l.part}:${l.label}->${r.state.pages[l.pageId].route}`);
+    expect(shown).toEqual(['header:Home->/home/', 'header:Our practice->/', 'footer:Home->/home/', 'footer:About->/']);
+    const layout = generateProject(r.state).get('src/routes/+layout.svelte')!;
+    expect(layout).toContain('Our practice');
+    expect(layout).toContain('"/contact/"');
+    expect(layout).toContain('hello@example.com');
+  });
+
+  it('lets a page take over a kept address it is given, and skips one when choosing an address itself', () => {
+    let s = fresh();
+    const about = byTitle(s, 'About').id;
+    s = setHome(s, about).state;
+    const auto = applyOperations(s, [{ type: 'page.create', title: 'About' }]);
+    expect(auto.results[0].route).toBe('/about-2/');
+    expect(auto.state.site.redirects).toEqual([{ from: '/about/', pageId: about }]);
+    const dup = applyOperations(s, [{ type: 'page.duplicate', pageId: byTitle(s, 'Contact').id, title: 'About' }]);
+    expect(dup.results[0].route).toBe('/about-2/');
+    const chosen = applyOperations(s, [{ type: 'page.create', title: 'Team', route: '/about/' }]);
+    expect(chosen.state.site.redirects).toBeUndefined();
+    // Taking one address over leaves the others.
+    const two = { ...s, site: { ...s.site, redirects: [...s.site.redirects!, { from: '/old/', pageId: about }] } };
+    expect(applyOperations(two, [{ type: 'page.create', title: 'Team', route: '/about/' }]).state.site.redirects).toEqual([{ from: '/old/', pageId: about }]);
+    expect(routeAt(chosen.state, 'about')).toBe('page');
+    const moved = applyOperations(s, [{ type: 'page.update', pageId: byTitle(s, 'Contact').id, route: '/ABOUT/' }]);
+    expect(moved.state.site.redirects).toBeUndefined();
+    expect(errors(moved.state)).toEqual([]);
+  });
+
+  it('sends a kept address to the replacement when its page is removed, or drops it', () => {
+    let s = fresh();
+    const about = byTitle(s, 'About').id;
+    const contact = byTitle(s, 'Contact').id;
+    s = setHome(s, about).state;
+    const replaced = applyOperations(s, [{ type: 'page.remove', pageId: about, replacementPageId: contact }]).state;
+    expect(replaced.pages[contact].route).toBe('/');
+    expect(replaced.site.redirects).toEqual([{ from: '/about/', pageId: contact }]);
+    expect(errors(replaced)).toEqual([]);
+    // A page nothing links to can go without a replacement; its kept address goes with it.
+    let t = fresh();
+    const homeId = t.site.homePageId;
+    const extra = applyOperations(t, [{ type: 'page.create', title: 'Team' }]);
+    const team = extra.results[0].pageId as string;
+    t = setHome(extra.state, team).state;
+    t = applyOperations(t, [{ type: 'page.update', pageId: team, title: 'Crew' }]).state;
+    t = setHome(t, homeId).state;
+    expect(t.pages[team].route).toBe('/crew/');
+    expect(t.site.redirects).toEqual([{ from: '/team/', pageId: team }, { from: '/home/', pageId: homeId }]);
+    const gone = applyOperations(t, [{ type: 'page.remove', pageId: team }]).state;
+    expect(gone.site.redirects).toEqual([{ from: '/home/', pageId: homeId }]);
+    expect(errors(gone)).toEqual([]);
+    // Removing Home promotes another page, which keeps no address of its own.
+    const homeGone = applyOperations(replaced, [{ type: 'page.remove', pageId: contact, replacementPageId: byTitle(replaced, 'Home').id }]).state;
+    expect(homeGone.pages[byTitle(replaced, 'Home').id].route).toBe('/');
+    expect(homeGone.site.redirects).toEqual([{ from: '/about/', pageId: byTitle(replaced, 'Home').id }]);
+  });
+
+  it('gives the previous Home a valid address when its title is a reserved name', () => {
+    let s = fresh();
+    const homeId = s.site.homePageId;
+    s = applyOperations(s, [{ type: 'page.update', pageId: homeId, title: 'API' }]).state;
+    const r = setHome(s, byTitle(s, 'About').id);
+    expect(r.state.pages[homeId].route).toBe('/api-page/');
+    expect(errors(r.state)).toEqual([]);
+  });
+
+  it('previews the change without making it', () => {
+    const s = fresh();
+    const before = structuredClone(s);
+    const about = byTitle(s, 'About').id;
+    expect(planHomeChange(s, about, true)).toEqual(setHome(s, about).results[0]);
+    expect(planHomeChange(s, about, false).kept).toBeUndefined();
+    expect(planHomeChange(s, s.site.homePageId, true)).toEqual({ moved: [] });
+    expect(s).toEqual(before);
+  });
+
+  it('reports damaged or colliding kept addresses, and never generates one outside the routes folder', () => {
+    const s = fresh();
+    const about = byTitle(s, 'About').id;
+    s.site.redirects = [
+      { from: '/about/', pageId: about },
+      { from: '/../../escape/', pageId: about },
+      { from: '/gone/', pageId: 'pg_missing' },
+      { from: '/', pageId: about }
+    ];
+    const codes = validateState(s).map((d) => d.code);
+    expect(codes).toEqual(expect.arrayContaining(['ROUTE_DUPLICATE', 'ROUTE_INVALID', 'REDIRECT_TARGET']));
+    expect(validateState(s).some((d) => d.code === 'ROUTE_INVALID' && d.message.startsWith('Old address /:'))).toBe(true);
+    expect(validateState(s).some((d) => d.code === 'ROUTE_INVALID' && d.message.startsWith('Old address /../../escape/:'))).toBe(true);
+    const files = generateProject(s);
+    expect([...files.values()].filter((f) => f.includes('http-equiv="refresh"'))).toEqual([]);
+    expect([...files.keys()].some((f) => f.includes('..'))).toBe(false);
+    (s.site as { redirects: unknown }).redirects = { from: '/x/' };
+    expect(validateState(s).map((d) => d.code)).toContain('REDIRECT_INVALID');
+    expect(() => generateProject(s)).not.toThrow();
+  });
+
+  it('refuses a replacement Home that is not one of the pages', () => {
+    const s = fresh();
+    expect(() => applyOperations(s, [{ type: 'page.remove', pageId: s.site.homePageId, replacementPageId: 'toString' }])).toThrow(/replacement page does not exist/);
+  });
+
+  it('removes the list once its last kept address goes', () => {
+    let s = fresh();
+    const about = byTitle(s, 'About').id;
+    s = setHome(s, about).state;
+    expect(s.site.redirects).toHaveLength(1);
+    const claimed = applyOperations(s, [{ type: 'page.create', title: 'Team', route: '/about/' }]).state;
+    expect('redirects' in claimed.site).toBe(false);
+    const team = applyOperations(s, [{ type: 'page.create', title: 'Team' }]);
+    const teamId = team.results[0].pageId as string;
+    // A page nothing links to, owning the only kept address, goes with it.
+    const only = { ...team.state, site: { ...team.state.site, redirects: [{ from: '/about/', pageId: teamId }] } };
+    expect('redirects' in applyOperations(only, [{ type: 'page.remove', pageId: teamId }]).state.site).toBe(false);
+  });
+
+  it('lists the header and footer links visitors see, with their own words, wherever they are', () => {
+    let s = fresh();
+    const about = byTitle(s, 'About').id;
+    const header = s.site.shell.header.rootIds[0];
+    // A labelled call to action counts; one without a label is not shown, so it is not listed.
+    s = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'ctaLink', value: { type: 'page', target: about } }]).state;
+    expect(shellPageLinks(s, [about]).map((l) => `${l.part}:${l.label}`)).toEqual(['header:About', 'header:Book a call', 'footer:About']);
+    s = applyOperations(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header, prop: 'ctaLabel', value: '' }]).state;
+    expect(shellPageLinks(s, [about]).map((l) => `${l.part}:${l.label}`)).toEqual(['header:About', 'footer:About']);
+    // A link inside footer text counts too, and names the footer element it is in.
+    const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'shell', id: 'footer' }, primitive: 'richtext' }]);
+    const text = r.results[0].nodeId as string;
+    (r.state.site.shell.footer.nodes[text] as { text: unknown }).text = [{ type: 'p', spans: [{ text: 'Read ' }, { text: 'our story', link: { type: 'page', target: about } }] }];
+    const inText = shellPageLinks(r.state, [about]).find((l) => l.nodeId === text);
+    expect(inText).toMatchObject({ part: 'footer', label: 'our story', pageId: about });
   });
 });

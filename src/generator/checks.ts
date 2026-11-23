@@ -341,6 +341,24 @@ function renderedLinks(state: ProjectState, tree: NodeTree): RenderedLink[] {
   return out;
 }
 
+/** A link the shared header or footer shows that goes to a page, with the words visitors see on it. */
+export type ShellPageLink = { part: 'header' | 'footer'; nodeId: string; label: string; pageId: string; anchor?: string };
+
+/**
+ * The header and footer links visitors see that go to any of `pageIds`, in order: menu items, buttons, links in
+ * text and the links components inside them render. `nodeId` is the header or footer element that holds each one.
+ */
+export function shellPageLinks(state: ProjectState, pageIds: string[]): ShellPageLink[] {
+  const out: ShellPageLink[] = [];
+  for (const part of ['header', 'footer'] as const) {
+    for (const r of renderedLinks(state, state.site.shell[part])) {
+      if (r.link.type !== 'page' || !pageIds.includes(r.link.target)) continue;
+      out.push({ part, nodeId: r.reportId, label: r.label, pageId: r.link.target, ...(r.link.anchor ? { anchor: r.link.anchor } : {}) });
+    }
+  }
+  return out;
+}
+
 
 export interface SectionLinkIssue {
   /** Where the link is: a page or the shared header or footer. */
