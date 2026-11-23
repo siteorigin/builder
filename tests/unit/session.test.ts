@@ -230,6 +230,7 @@ describe('copy and paste (#62)', () => {
     const id = r.results![0].nodeId as string;
     const copy = contact(s).nodes[id] as InstanceNode;
     expect(contact(s).rootIds).toHaveLength(before + 1);
+    expect(contact(s).rootIds).toContain(id);
     expect(copy.definitionId).toBe(original.definitionId);
     expect(copy.props.heading).toBe(original.props.heading);
     expect(s.state.pages[home.id].nodes[original.id]).toBeUndefined();

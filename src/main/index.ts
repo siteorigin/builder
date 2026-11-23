@@ -184,8 +184,8 @@ function registerIpc() {
   handle('project:snapshot', () => controller.snapshot());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
   handle('project:copy', (pageId: unknown, nodeId: unknown, rev: unknown) =>
-    typeof pageId === 'string' && typeof nodeId === 'string' && controller.session
-      ? controller.session.copy(pageId, nodeId, typeof rev === 'number' ? rev : undefined)
+    typeof pageId === 'string' && typeof nodeId === 'string' && typeof rev === 'number' && controller.session
+      ? controller.session.copy(pageId, nodeId, rev)
       : { ok: false, message: 'Nothing to copy.' }
   );
   handle('project:undo', () => controller.session?.undo());

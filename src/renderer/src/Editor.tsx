@@ -45,10 +45,15 @@ function isTyping(e: KeyboardEvent) {
 }
 
 /** What Cmd+C last copied: a section or element on a page. The open project holds the content itself, taken
- *  when it was copied, so editing or deleting the original afterwards does not change what is pasted. */
-let copied: { dir: string; clipboardId: string; label: string; section: boolean } | null = null;
-/** A copy still being taken; a paste pressed straight after it waits for it. */
-let copying: Promise<void> | null = null;
+ *  when it was copied, so editing or deleting the original afterwards does not change what is pasted.
+ *  `clipboardId` settles once the project has taken the copy, or to null when it could not. */
+type Copied = { dir: string; label: string; section: boolean; clipboardId: Promise<string | null> };
+let copied: Copied | null = null;
+
+/** Each project holds its own copy, so a copy is forgotten when its project closes. */
+export function forgetCopy() {
+  copied = null;
+}
 
 const textSelected = () => {
   const sel = window.getSelection();
@@ -66,37 +71,44 @@ function copySelection(): boolean {
   }
   const snap = s.snapshot;
   const label = refLabel(snap.state, t);
-  const section = snap.state.pages[t.owner.id]?.rootIds.includes(t.nodeId) ?? false;
-  const run = api.project.copy(t.owner.id, t.nodeId, snap.revision).then(
-    (r) => {
-      if (!r.ok || !r.clipboardId) return void toast(r.message ?? `${label} could not be copied.`, 'error');
-      copied = { dir: snap.dir, clipboardId: r.clipboardId, label, section };
-      toast(`Copied ${label}. Paste it on any page with ⌘V.`, 'info');
-    },
-    () => toast(`${label} could not be copied.`, 'error')
-  );
-  copying = run;
-  void run.then(() => {
-    if (copying === run) copying = null;
-  });
+  // A copy that fails leaves the project holding the one before it, so that one stays available to paste.
+  const previous = copied;
+  const current = () => copied === entry && getState().snapshot?.dir === snap.dir;
+  const failed = (message?: string) => {
+    if (current()) copied = previous;
+    toast(message ?? `${label} could not be copied.`, 'error');
+    return null;
+  };
+  const entry: Copied = {
+    dir: snap.dir,
+    label,
+    section: snap.state.pages[t.owner.id]?.rootIds.includes(t.nodeId) ?? false,
+    clipboardId: api.project.copy(t.owner.id, t.nodeId, snap.revision).then(
+      (r) => {
+        if (!r.ok || !r.clipboardId) return failed(r.message);
+        if (current()) toast(`Copied ${label}. Paste it on any page with ⌘V.`, 'info');
+        return r.clipboardId;
+      },
+      () => failed()
+    )
+  };
+  copied = entry;
   return true;
 }
 
-/** Paste the copy, as it was when copied, after the selection (or at the end of the page), with new IDs, and select it. */
-async function pasteCopied() {
-  if (copying) await copying;
-  const s = getState();
-  if (!copied || !s.snapshot) return;
-  // Each project holds its own copy: one taken in a project that has since closed is gone.
-  if (copied.dir !== s.snapshot.dir) {
-    copied = null;
-    return;
-  }
-  const at = insertionPoint(copied.section ? 'section' : 'element');
+/** Paste a copy, as it was when copied, after the selection (or at the end of the page), with new IDs, and
+ *  select it. The place is taken when ⌘V is pressed, even if the copy is still being taken. */
+async function pasteCopied(entry: Copied) {
+  const at = insertionPoint(entry.section ? 'section' : 'element');
   if (!at) return;
-  const r = await applyOps([{ type: 'node.paste', clipboardId: copied.clipboardId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${copied.label}`);
+  const clipboardId = await entry.clipboardId;
+  // A copy that failed has said so; a project closed in the meantime took its copy with it.
+  if (!clipboardId || getState().snapshot?.dir !== entry.dir) return;
+  const r = await applyOps([{ type: 'node.paste', clipboardId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${entry.label}`);
   const id = r?.[0]?.nodeId as string | undefined;
-  if (id) setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
+  const here = getState();
+  if (id && here.snapshot?.dir === entry.dir && here.pageId === at.owner.id && !here.definitionMode)
+    setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
 }
 
 /** Global editor shortcuts. Also called for keys forwarded from the preview frame. */
@@ -131,8 +143,9 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   // editor's own focus checks, and Preview mode keeps the site's own copy and paste.
   if (mod && !shift && (key.toLowerCase() === 'c' || key.toLowerCase() === 'v') && !textSelected() && s.mode === 'edit' && !s.definitionMode && !s.modal && !openDialogs.length && !openMenus.count) {
     if (key.toLowerCase() === 'c') return copySelection();
-    if (!copied && !copying) return false;
-    void pasteCopied();
+    if (copied && copied.dir !== s.snapshot?.dir) copied = null;
+    if (!copied) return false;
+    void pasteCopied(copied);
     return true;
   }
   if (mod && key.toLowerCase() === 'j') {

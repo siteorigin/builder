@@ -218,7 +218,13 @@ describe('paste what was copied (#62)', () => {
   it('pastes the content as it was copied, not as it was edited since, every time with fresh IDs', () => {
     let s = fresh();
     const grid = firstInstance(s, 'features.grid');
+    const heading = grid.props.heading as string;
+    const titles = items(grid).map((i) => i.title);
     const clip = captureClipboard(s, s.site.homePageId, grid.id);
+    // The copy shares nothing with the document it was taken from, even when that is changed in place.
+    items(grid)[1].title = 'Changed in place';
+    expect(items(clip.tree.nodes[grid.id] as InstanceNode)[1].title).toBe(titles[1]);
+    items(grid)[1].title = titles[1];
     s = applyOperations(s, [
       { type: 'instance.setProp', owner: owner(s), nodeId: grid.id, prop: 'heading', value: 'Edited after copying' },
       { type: 'instance.listRemove', owner: owner(s), nodeId: grid.id, prop: 'items', itemId: items(grid)[0].id }
@@ -228,13 +234,13 @@ describe('paste what was copied (#62)', () => {
     const a = pasted(first, otherPage(s));
     const b = pasted(second, otherPage(s));
     for (const copy of [a, b]) {
-      expect(copy.props.heading).toBe(grid.props.heading);
-      expect(items(copy).map((i) => i.title)).toEqual(items(grid).map((i) => i.title));
+      expect(copy.props.heading).toBe(heading);
+      expect(items(copy).map((i) => i.title)).toEqual(titles);
     }
     expect(a.id).not.toBe(b.id);
     expect(items(a).some((i) => items(b).some((x) => x.id === i.id))).toBe(false);
     // The clipboard itself is never changed by a paste, and the edited original keeps its edits.
-    expect((clip.tree.nodes[grid.id] as InstanceNode).props.heading).toBe(grid.props.heading);
+    expect((clip.tree.nodes[grid.id] as InstanceNode).props.heading).toBe(heading);
     expect((home(second.state).nodes[grid.id] as InstanceNode).props.heading).toBe('Edited after copying');
   });
 
@@ -261,9 +267,50 @@ describe('paste what was copied (#62)', () => {
       { type: 'node.setStyle', owner: { kind: 'component', id: defId }, nodeId: root, scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } },
       { type: 'component.rename', definitionId: defId, name: 'Our services' }
     ]).state;
+    expect(s.components[defId].tree!.nodes[root].styles?.base?.paddingBlock).toEqual({ token: 'space.lg' });
     expect(pasted(paste(s, clip), otherPage(s)).definitionId).toBe(defId);
-    s = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: defId, prop: 'note', schema: { type: 'string', label: 'Note' } }]).state;
-    rejects(() => paste(s, clip), /content "Services grid" takes has changed since it was copied/);
+    const changed = /content "Services grid" takes has changed since it was copied/;
+    const heading = s.components[defId].properties.heading;
+    expect(heading.type).toBe('string');
+    rejects(() => paste(applyOperations(s, [{ type: 'component.setPropSchema', definitionId: defId, prop: 'heading', schema: { ...heading, maxLength: 999 } }]).state, clip), changed);
+    rejects(() => paste(applyOperations(s, [{ type: 'component.setPropSchema', definitionId: defId, prop: 'note', schema: { type: 'string', label: 'Note' } }]).state, clip), changed);
+    rejects(() => paste(applyOperations(s, [{ type: 'component.setSlot', definitionId: defId, slot: 'extra', label: 'Extra' }]).state, clip), changed);
+  });
+
+  it('drops variant options and parts removed since copying, as from every live placement', () => {
+    const f = applyOperations(fresh(), [{ type: 'component.fork', definitionId: firstInstance(fresh(), 'features.grid').definitionId }]);
+    const defId = f.results[0].definitionId as string;
+    const def = f.state.components[defId];
+    const [axis, a] = Object.entries(def.variantAxes!).find(([, x]) => Object.keys(x.options).some((o) => o !== x.default))!;
+    const option = Object.keys(a.options).find((o) => o !== a.default)!;
+    const part = Object.keys(def.parts).find((p) => p !== 'root')!;
+    const grid = firstInstance(f.state, 'features.grid');
+    let s = applyOperations(f.state, [
+      { type: 'instance.setVariant', owner: owner(f.state), nodeId: grid.id, variant: option, axis },
+      { type: 'node.setStyle', owner: owner(f.state), nodeId: grid.id, partId: part, scope: 'base', property: 'color', value: '#ff0000' },
+      { type: 'node.setStyle', owner: owner(f.state), nodeId: grid.id, scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } }
+    ]).state;
+    const clip = captureClipboard(s, s.site.homePageId, grid.id);
+    // Unchanged, the choices come along.
+    const kept = pasted(paste(s, clip), otherPage(s));
+    expect(kept.variants?.[axis]).toBe(option);
+    expect(kept.overrides?.[part]).toBeDefined();
+    s = applyOperations(s, [
+      { type: 'component.removeVariant', definitionId: defId, variant: option, axis },
+      { type: 'component.removePart', definitionId: defId, partId: part }
+    ]).state;
+    const copy = pasted(paste(s, clip), otherPage(s));
+    expect(copy.variants?.[axis]).toBeUndefined();
+    expect(copy.overrides?.[part]).toBeUndefined();
+    expect(copy.overrides?.root).toBeDefined();
+  });
+
+  it('pastes onto pages only', () => {
+    const f = applyOperations(fresh(), [{ type: 'component.fork', definitionId: firstInstance(fresh(), 'hero.split').definitionId }]);
+    const defId = f.results[0].definitionId as string;
+    const s = f.state;
+    const clip = captureClipboard(s, s.site.homePageId, firstInstance(s, 'stats.row').id);
+    rejects(() => paste(s, clip, { kind: 'component', id: defId } as never, { parentId: s.components[defId].tree!.rootIds[0] }), /Paste onto a page/);
   });
 
   it('names what the copy needs that was removed after copying, and pastes nothing', () => {
@@ -282,6 +329,13 @@ describe('paste what was copied (#62)', () => {
     expect(base.pages[about].title).toBe('About');
     const linked = sectionWith(base, { link: { type: 'page', target: about } });
     const linkClip = captureClipboard(linked.s, linked.s.site.homePageId, linked.section);
+    // While the page is there, the section and the button in its slot paste with new IDs and the same link.
+    const ok = paste(linked.s, linkClip);
+    const okSection = pasted(ok, otherPage(linked.s));
+    const button = ok.state.pages[otherPage(linked.s)].nodes[okSection.slots!.content[0]];
+    const source = linked.s.pages[linked.s.site.homePageId].nodes[(linked.s.pages[linked.s.site.homePageId].nodes[linked.section] as InstanceNode).slots!.content[0]];
+    expect(button.id).not.toBe(source.id);
+    expect(button).toMatchObject({ kind: 'link', link: { type: 'page', target: about } });
     s = applyOperations(linked.s, [
       { type: 'node.remove', owner: owner(linked.s), nodeId: linked.section },
       { type: 'page.remove', pageId: about, replacementPageId: linked.s.site.homePageId }
@@ -296,6 +350,18 @@ describe('paste what was copied (#62)', () => {
       { type: 'asset.remove', assetId: 'a_pic' }
     ]).state;
     rejects(() => paste(s, picClip, owner(s)), /shows the image "Pic", which has been removed/);
+
+    const styled = applyOperations(fresh(), [{ type: 'token.create', group: 'color', label: 'Teal', value: '#008080' }]);
+    s = styled.state;
+    const tokenId = styled.results[0].tokenId as string;
+    const g = firstInstance(s, 'features.grid');
+    s = applyOperations(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: g.id, scope: 'base', property: 'background', value: { token: tokenId } }]).state;
+    const tokenClip = captureClipboard(s, s.site.homePageId, g.id);
+    s = applyOperations(s, [
+      { type: 'node.remove', owner: owner(s), nodeId: g.id },
+      { type: 'token.remove', tokenId }
+    ]).state;
+    rejects(() => paste(s, tokenClip), new RegExp(`uses the site style "${tokenId}", which has been removed`));
   });
 
   it('refuses a paste without the clipboard it names', () => {

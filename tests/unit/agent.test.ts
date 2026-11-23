@@ -492,7 +492,7 @@ describe('tool definitions', () => {
     expect(withCode.types).not.toContain('node.paste');
     expect(withCode.required).not.toContain('scope');
     const noCode = applySchema(toolDefinitions({ codeEnabled: false }));
-    for (const t of ['component.createCode', 'component.updateSource', 'component.convertToCode']) expect(noCode.types).not.toContain(t);
+    for (const t of ['component.createCode', 'component.updateSource', 'component.convertToCode', 'node.paste']) expect(noCode.types).not.toContain(t);
     expect(noCode.types).toContain('page.create');
     const names = (codeEnabled: boolean) => toolDefinitions({ codeEnabled }).map((d) => d.name);
     expect(names(false)).not.toContain('apply_source_patch');

@@ -212,7 +212,7 @@ export interface BuilderApi {
     snapshot(): Promise<ProjectSnapshot | null>;
     apply(batch: EditBatch, opts?: { label?: string; coalesceKey?: string }): Promise<ApplyResult>;
     /** Copy page content as it is now, for a later `node.paste` with the returned clipboard ID. */
-    copy(pageId: string, nodeId: string, expectedRevision?: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }>;
+    copy(pageId: string, nodeId: string, expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }>;
     undo(): Promise<ApplyResult>;
     redo(): Promise<ApplyResult>;
     importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }>;

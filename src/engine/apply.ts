@@ -759,6 +759,8 @@ export function captureClipboard(state: ProjectState, pageId: string, nodeId: st
  */
 function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | null | undefined): OpResult {
   if (!clip || clip.id !== op.clipboardId) fail('Nothing copied is available to paste. Copy it again.');
+  // The editor pastes onto pages only; content placed inside a definition follows other rules.
+  if (op.toOwner.kind !== 'page') fail('Paste onto a page.');
   const gone = (what: string) => fail(`Nothing was pasted: the copy ${what}, which has been removed since it was copied.`);
   for (const [id, c] of Object.entries(clip.components)) {
     const def = own(state.components, id);
@@ -769,7 +771,22 @@ function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | 
   for (const [id, name] of Object.entries(clip.assets)) if (!own(state.assets.assets, id)) gone(`shows the image "${name}"`);
   const tokens = new Set(effectiveTokens(state).map((t) => t.id));
   for (const t of clip.tokens) if (!tokens.has(t)) gone(`uses the site style "${t}"`);
-  return placeCopy(state, clip.tree, clip.tree.rootIds[0], op);
+  const result = placeCopy(state, clip.tree, clip.tree.rootIds[0], op);
+  // Variant options and parts removed since copying are dropped, as they were from every live placement.
+  const to = getTree(state, op.toOwner);
+  for (const id of subtreeIds(to, result.nodeId as string)) {
+    const n = to.nodes[id];
+    if (n.kind !== 'instance') continue;
+    const def = state.components[n.definitionId];
+    for (const [axis, v] of Object.entries(n.variants ?? {})) {
+      const a = def.variantAxes && own(def.variantAxes, axis);
+      if (!a || typeof v !== 'string' || !own(a.options, v)) delete n.variants![axis];
+    }
+    if (n.variants && !Object.keys(n.variants).length) delete n.variants;
+    for (const part of Object.keys(n.overrides ?? {})) if (part !== 'root' && !own(def.parts, part)) delete n.overrides![part];
+    if (n.overrides && !Object.keys(n.overrides).length) delete n.overrides;
+  }
+  return result;
 }
 
 /** Place a copy of `from`'s subtree at `op`'s destination, with new IDs; shared by copy and paste. */

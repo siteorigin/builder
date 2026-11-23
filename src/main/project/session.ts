@@ -841,9 +841,9 @@ export class ProjectSession extends EventEmitter {
    * original. `expectedRevision` is the revision the editor showed when Copy was pressed: a change that landed
    * since (another window, a file edited outside the app) could make the copy differ from what was on screen.
    */
-  copy(pageId: string, nodeId: string, expectedRevision?: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }> {
+  copy(pageId: string, nodeId: string, expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }> {
     return this.serialize(async () => {
-      if (expectedRevision !== undefined && expectedRevision !== this.revision) return { ok: false, message: 'The project changed while copying. Copy it again.' };
+      if (expectedRevision !== this.revision) return { ok: false, message: 'The project changed while copying. Copy it again.' };
       try {
         this.clipboard = captureClipboard(this.state, pageId, nodeId);
         return { ok: true, clipboardId: this.clipboard.id };
