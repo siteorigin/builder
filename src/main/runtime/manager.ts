@@ -9,7 +9,7 @@ import type { WebsiteTools } from '@shared/api';
 import { sha } from '../project/fsutil';
 import { statesFailure, type BuildErrorInfo } from '../../runtime/build-diagnostics';
 import { LineTail } from './line-tail';
-import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, nativeNotInstalled, npmErrorCode, type LockedPackage, type ToolsAvailability } from './availability';
+import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, nativeNotInstalled, npmErrorCode, npmLibc, type LockedPackage, type ToolsAvailability } from './availability';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -132,6 +132,7 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
     cache = await seedCache(true);
     tools = await checkTools(dir, [cache]);
   }
+  const libc = npmLibc(npmDir());
   const base = [
     npmCli,
     existsSync(join(dir, 'package-lock.json')) ? 'ci' : 'install',
@@ -145,6 +146,7 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
     // The packages the check worked out, laid out where it expects them, whatever those settings say.
     `--os=${process.platform}`,
     `--cpu=${process.arch}`,
+    ...(libc ? [`--libc=${libc}`] : []),
     '--include=dev',
     '--include=optional',
     '--include=peer',

@@ -7,7 +7,11 @@ import { join } from 'node:path';
 export interface LockedPackage {
   location: string;
   integrity?: string;
-  /** Built for particular platforms (a native tool): npm skips such an optional package silently when its fetch fails. */
+  /**
+   * A binary built for particular CPUs, one of several a tool picks from (a build tool's native part): npm skips such
+   * an optional package silently when its fetch fails, and the tool then cannot run. A package bound only to an
+   * operating system (macOS's `fsevents`) is an optional extra the tools work without.
+   */
   native?: boolean;
 }
 
@@ -21,6 +25,13 @@ export interface ToolsAvailability {
   needed: number;
 }
 
+/** The C library npm judges this computer's native packages by (Linux only), as the npm in `npmDir` detects it. */
+export function npmLibc(npmDir: string): string | undefined {
+  if (process.platform !== 'linux') return undefined;
+  const { currentEnv } = createRequire(join(npmDir, 'package.json'))('npm-install-checks');
+  return currentEnv.libc(process.platform) ?? undefined;
+}
+
 /** A platform other than this computer's, for tests; npm judges this computer's own by default. */
 export interface Platform {
   os?: string;
@@ -31,7 +42,7 @@ export interface Platform {
 interface IdealNode {
   location: string;
   integrity?: string | null;
-  package: { os?: unknown; cpu?: unknown; libc?: unknown };
+  package: { cpu?: unknown };
   isProjectRoot?: boolean;
   isLink?: boolean;
   inBundle?: boolean;
@@ -64,7 +75,7 @@ export async function lockedPackages(npmDir: string, dir: string, platform: Plat
   const tree: { inventory: Map<string, IdealNode> } = await arb.buildIdealTree();
   return [...tree.inventory.values()]
     .filter((n) => !n.isProjectRoot && !n.isLink && !n.inBundle && !n.inert)
-    .map((n) => ({ location: n.location, integrity: n.integrity ?? undefined, native: !!(n.package.os || n.package.cpu || n.package.libc) }));
+    .map((n) => ({ location: n.location, integrity: n.integrity ?? undefined, native: !!n.package.cpu }));
 }
 
 // The digest npm reads a package from is the strongest one its integrity lists that this Node can compute (ssri's

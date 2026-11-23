@@ -122,6 +122,9 @@ describe('a development build, with no tools shipped', () => {
     expect(npm.runs[0]).toEqual(
       expect.arrayContaining(['ci', `--cache=${userCache()}`, `--os=${process.platform}`, `--cpu=${process.arch}`, '--include=dev', '--include=optional', '--include=peer', '--install-strategy=hoisted', '--color=false', '--heading=npm'])
     );
+    // The C library too, on Linux, where the author's npm settings could name another.
+    if (process.platform !== 'linux') expect(npm.runs[0].some((a) => a.startsWith('--libc'))).toBe(false);
+    else expect(npm.runs[0].some((a) => /^--libc=(glibc|musl)$/.test(a))).toBe(true);
     expect(existsSync(marker())).toBe(true);
   });
 
@@ -169,7 +172,7 @@ describe('a development build, with no tools shipped', () => {
     expect(modes()).toEqual([['--offline']]);
   });
 
-  for (const code of ['ENOTFOUND', 'EIDLETIMEOUT']) {
+  for (const code of ['ENOTFOUND', 'EIDLETIMEOUT', 'FETCH_ERROR']) {
     it(`reports a registry it could not reach as a failed download (${code})`, async () => {
       npm.results.push({ code: 1, stderr: `npm error code ${code}\nnpm error request to https://registry.npmjs.org/x failed\n` });
       const error = await install().catch((e) => e);
@@ -192,6 +195,12 @@ describe('a development build, with no tools shipped', () => {
   it('leaves it to npm whether an optional package that is not a native tool is needed', async () => {
     const plain = needed.find((p) => !p.native)!;
     npm.skip.push(plain.location);
+    await install();
+    expect(existsSync(marker())).toBe(true);
+  });
+
+  it.runIf(process.platform === 'darwin')('does not hold the tools up for macOS’s optional file watcher, which they work without', async () => {
+    npm.skip.push('node_modules/fsevents');
     await install();
     expect(existsSync(marker())).toBe(true);
   });

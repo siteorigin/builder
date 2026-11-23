@@ -45,6 +45,7 @@ describe('the website tools setup installs', () => {
     // Native tools are told apart: npm skips one it could not fetch without failing.
     expect(packages.find((p) => p.location === 'node_modules/@rolldown/binding-darwin-arm64')?.native).toBe(true);
     expect(packages.find((p) => p.location === 'node_modules/@sveltejs/kit')?.native).toBe(false);
+    expect(packages.find((p) => p.location === 'node_modules/fsevents')?.native).toBe(false);
     expect(mac).toContain('node_modules/@rolldown/binding-darwin-arm64');
     expect(mac).not.toContain('node_modules/@rolldown/binding-linux-x64-gnu');
     // The WebAssembly binding is optional and for another CPU; its own dependencies have no platform of their own but
@@ -85,6 +86,14 @@ describe('the website tools setup installs', () => {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: deps }));
     writeFileSync(join(dir, 'package-lock.json'), JSON.stringify({ name: 'x', lockfileVersion: 3, requires: true, packages: { '': { name: 'x', dependencies: deps } } }));
     await expect(lockedPackages(npmDir, dir, macArm, tempDir())).rejects.toMatchObject({ code: 'EALLOWGIT' });
+  });
+
+  it('never fetches a remote tarball the lock does not settle, as npm’s own defaults never do', async () => {
+    const dir = tempDir();
+    const deps = { z: 'https://example.invalid/z-1.0.0.tgz' };
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: deps }));
+    writeFileSync(join(dir, 'package-lock.json'), JSON.stringify({ name: 'x', lockfileVersion: 3, requires: true, packages: { '': { name: 'x', dependencies: deps } } }));
+    await expect(lockedPackages(npmDir, dir, macArm, tempDir())).rejects.toMatchObject({ code: 'EALLOWREMOTE' });
   });
 
   it('cannot be told from a project whose lock does not settle them, without asking the registry', async () => {
