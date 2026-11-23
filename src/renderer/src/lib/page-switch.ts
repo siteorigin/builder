@@ -33,3 +33,11 @@ export function matchesWords(query: string, text: string): boolean {
 
 /** The text a command is searched by: its label, then its detail (a page's address) when it has one. */
 export const commandText = (label: string, detail?: string): string => (detail ? `${label} ${detail}` : label);
+
+/** Puts the entries whose detail is exactly the query first (stable otherwise), so a page typed by its full address survives a result cap. */
+export function exactDetailFirst<T extends { detail?: string }>(entries: T[], query: string): T[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return entries;
+  const exact = (e: T) => e.detail?.toLowerCase() === q;
+  return [...entries.filter(exact), ...entries.filter((e) => !exact(e))];
+}

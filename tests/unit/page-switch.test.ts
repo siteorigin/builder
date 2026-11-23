@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
-import { commandText, matchesWords, pageChoices } from '../../src/renderer/src/lib/page-switch';
+import { commandText, exactDetailFirst, matchesWords, pageChoices } from '../../src/renderer/src/lib/page-switch';
 
 /** The issue's studio site: two pages titled Portfolio, at /lookbook/ and /portfolio-archive/. */
 function twoPortfolios() {
@@ -68,5 +68,13 @@ describe('page switchers', () => {
     expect(matchesWords('   ', 'Undo')).toBe(true);
     expect(matchesWords('PAGE go', 'Go to page')).toBe(true);
     expect(matchesWords('go nowhere', 'Go to page')).toBe(false);
+  });
+
+  it('puts an exact address first so a result cap cannot drop it', () => {
+    const entries = [...Array.from({ length: 45 }, (_, i) => ({ id: `n${i}`, detail: `/lookbook/collection-${i}/` })), { id: 'exact', detail: '/lookbook/' }];
+    expect(exactDetailFirst(entries, ' /LOOKBOOK/ ')[0].id).toBe('exact');
+    expect(exactDetailFirst(entries, '/lookbook/').slice(1).map((e) => e.id)).toEqual(entries.slice(0, 45).map((e) => e.id));
+    expect(exactDetailFirst(entries, '')).toBe(entries);
+    expect(exactDetailFirst(entries, 'lookbook')[0].id).toBe('n0');
   });
 });

@@ -6,7 +6,7 @@ import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
 import { api, setState, useStore } from '../store';
 import { insert, selectPage, askAiAbout, setMode, openSiteStyles } from '../lib/actions';
-import { pageChoices, matchesWords, commandText } from '../lib/page-switch';
+import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { LucideIcon } from './InsertPanel';
 
@@ -51,7 +51,7 @@ export function CommandMenu() {
       { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];
   }, [snap]);
-  const filtered = cmds.filter((c) => matchesWords(q, commandText(c.label, c.detail))).slice(0, 40);
+  const filtered = exactDetailFirst(cmds.filter((c) => matchesWords(q, commandText(c.label, c.detail))), q).slice(0, 40);
   const pick = (c: Cmd | undefined) => {
     if (!c) return;
     if (useStore.getState().modal?.kind === 'cmdk') setState({ modal: null });
@@ -90,10 +90,10 @@ export function CommandMenu() {
         </div>
         <div className="cmdk-list" role="listbox" id={listId} aria-label="Commands">
           {filtered.map((c, i) => (
-            <div key={c.id} id={`${listId}-${i}`} data-index={i} role="option" aria-selected={i === active} aria-label={c.detail ? `${c.label}, ${c.detail}` : undefined} className={`menu-item${i === active ? ' focused' : ''}`} onMouseMove={() => i !== active && setActive(i)} onClick={() => pick(c)}>
+            <div key={c.id} id={`${listId}-${i}`} data-index={i} role="option" aria-selected={i === active} className={`menu-item${i === active ? ' focused' : ''}`} onMouseMove={() => i !== active && setActive(i)} onClick={() => pick(c)}>
               {c.icon}
               <span className="grow">{c.label}</span>
-              {c.detail && <span className="hint cmdk-detail">{c.detail}</span>}
+              {c.detail && <span className="hint cmdk-detail" title={c.detail}>{c.detail}</span>}
               {c.kbd && <kbd className="kbd">{c.kbd}</kbd>}
               <span className="hint">{c.group}</span>
             </div>

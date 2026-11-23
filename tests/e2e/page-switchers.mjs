@@ -28,7 +28,7 @@ const openCmdk = async (q) => {
   await win.locator('.cmdk').waitFor();
   if (q) await win.keyboard.type(q);
 };
-const options = async () => (await win.locator('.cmdk [role="option"]').evaluateAll((els) => els.map((e) => ({ name: e.getAttribute('aria-label') ?? e.textContent, text: e.textContent })))).map((o) => ({ ...o, name: o.name.replace(/\s+/g, ' ').trim() }));
+const options = async () => (await win.locator('.cmdk [role="option"]').evaluateAll((els) => els.map((e) => ({ name: e.innerText })))).map((o) => ({ name: o.name.replace(/\s+/g, ' ').trim() }));
 
 step('toolbar page menu shows each address');
 await openToolbar();
@@ -41,12 +41,12 @@ await win.locator('[role="menu"]').waitFor({ state: 'detached' });
 step('command menu shows and searches by address');
 await openCmdk('portfolio');
 let opts = await options();
-assert.deepEqual(opts.filter((o) => o.name.startsWith('Go to Portfolio')).map((o) => o.name).sort(), ['Go to Portfolio, /lookbook/', 'Go to Portfolio, /portfolio-archive/']);
+assert.deepEqual(opts.filter((o) => o.name.startsWith('Go to Portfolio')).map((o) => o.name).sort(), ['Go to Portfolio /lookbook/ Page', 'Go to Portfolio /portfolio-archive/ Page']);
 await win.keyboard.press('Escape');
 await win.locator('.cmdk').waitFor({ state: 'detached' });
 await openCmdk('/lookbook/');
 opts = await options();
-assert.deepEqual(opts.map((o) => o.name), ['Go to Portfolio, /lookbook/'], 'the address finds exactly that page');
+assert.deepEqual(opts.map((o) => o.name), ['Go to Portfolio /lookbook/ Page'], 'the address finds exactly that page');
 
 step('keyboard choice opens the page shown');
 await win.keyboard.press('Enter');
@@ -65,6 +65,13 @@ await win.keyboard.press('Enter');
 await win.locator('.cmdk').waitFor({ state: 'detached' });
 await eventually(async () => assert.match(await current(), /\/portfolio-archive\/$/, 'the archive page is open'));
 
+step('keyboard choice from the toolbar menu opens the page shown');
+await openToolbar();
+await win.locator('[role="menu"] [role^="menuitem"]', { hasText: '/lookbook/' }).focus();
+await win.keyboard.press('Enter');
+await win.locator('[role="menu"]').waitFor({ state: 'detached' });
+await eventually(async () => assert.match(await current(), /\/lookbook\/$/, 'the lookbook page is open'));
+
 step('both menus follow a rename');
 assert.ok((await apply([{ type: 'page.update', pageId: first, title: 'Lookbook', route: '/looks/' }], 'Rename')).ok);
 await openToolbar();
@@ -73,7 +80,7 @@ assert.ok(names.some((n) => /^Lookbook\s*\/looks\/$/.test(n)), `the toolbar show
 await win.keyboard.press('Escape');
 await win.locator('[role="menu"]').waitFor({ state: 'detached' });
 await openCmdk('/looks/');
-assert.deepEqual((await options()).map((o) => o.name), ['Go to Lookbook, /looks/']);
+assert.deepEqual((await options()).map((o) => o.name), ['Go to Lookbook /looks/ Page']);
 await win.keyboard.press('Escape');
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
