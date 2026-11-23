@@ -3,6 +3,7 @@
  * generated from the selected component's own contract, and each call compiles to ordinary edit operations
  * that the run's authority still checks.
  */
+import { findVariant, variantOptions } from '@shared/variants';
 import { z } from 'zod';
 import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
@@ -109,7 +110,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
   const r = resolve(state, target);
   if (!r || !Object.keys(r.properties).length) return null;
   const tools: ToolDefinition[] = [];
-  const variants = Object.keys(r.def?.variants ?? {});
+  const variants = r.def ? [...new Set(variantOptions(r.def).map((o) => o.id))] : [];
   tools.push({
     name: 'update_selected_props',
     description: SELECTION_DESCRIPTIONS.update_selected_props,
@@ -198,7 +199,7 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     const { props, deferred } = checkProps(def, a.props ?? {}, state, 'props', issues);
     // A selection edit cannot create pages, so a link must point at one that exists.
     for (const d of deferred) issues.push({ field: `props.${d.prop}${d.itemIndex !== undefined ? `[${d.itemIndex}].${d.field}` : ''}`, message: `no page uses the route ${d.route}` });
-    if (a.variant !== undefined && !Object.hasOwn(r.def?.variants ?? {}, a.variant)) issues.push({ field: 'variant', message: `must be one of: ${Object.keys(r.def?.variants ?? {}).join(', ') || 'none'}` });
+    if (a.variant !== undefined && (!r.def || 'error' in findVariant(r.def, a.variant))) issues.push({ field: 'variant', message: `must be one of: ${(r.def ? [...new Set(variantOptions(r.def).map((o) => o.id))] : []).join(', ') || 'none'}` });
     if (issues.length) return fieldError(issues, note);
     const ops: EditOperation[] = Object.entries(props).map(([prop, value]) =>
       r.node.kind === 'instance' ? { type: 'instance.setProp', owner, nodeId, prop, value } : { type: 'node.setContent', owner, nodeId, field: prop as 'text', value }

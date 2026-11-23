@@ -7,6 +7,7 @@ import { isBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
+import { findVariant } from '@shared/variants';
 import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, instancesOf } from './tree';
 import { clone } from './install';
@@ -223,24 +224,34 @@ export function removePart(state: ProjectState, op: Op<'component.removePart'>):
 export function setVariant(state: ProjectState, op: Op<'component.setVariant'>): OpResult {
   const def = projectDef(state, op.definitionId);
   if (!validId(op.variant, /^[a-z][a-z0-9-]{0,39}$/)) fail(`Variant IDs use lowercase letters, numbers and hyphens ("${op.variant}").`);
-  def.variants ??= {};
-  const prev = own(def.variants, op.variant);
-  def.variants[op.variant] = { ...(prev ?? {}), label: op.label.trim() };
-  if (op.makeDefault) def.defaultVariant = op.variant;
-  else def.defaultVariant ??= Object.keys(def.variants)[0];
+  const existing = Object.keys(def.variantAxes ?? {});
+  const holding = existing.filter((a) => Object.hasOwn(def.variantAxes![a].options, op.variant));
+  // Without a named axis: the axis that already has this option, the only axis, or a first one.
+  const axisId = op.axis ?? (holding.length === 1 ? holding[0] : existing.length === 1 ? existing[0] : existing.length ? fail(`"${def.name}" has several variant axes (${existing.join(', ')}). Name the axis.`) : 'style');
+  if (!validId(axisId)) fail(`Variant axis names must be camelCase identifiers ("${axisId}").`);
+  def.variantAxes ??= {};
+  const axis = own(def.variantAxes, axisId) ?? (def.variantAxes[axisId] = { label: axisId.charAt(0).toUpperCase() + axisId.slice(1), default: op.variant, options: {} });
+  if (op.axisLabel) axis.label = op.axisLabel.trim();
+  axis.options[op.variant] = { ...(own(axis.options, op.variant) ?? {}), label: op.label.trim() };
+  if (op.makeDefault) axis.default = op.variant;
   return {};
 }
 
 export function removeVariant(state: ProjectState, op: Op<'component.removeVariant'>): OpResult {
   const def = projectDef(state, op.definitionId);
-  if (!own(def.variants, op.variant)) fail(`"${def.name}" has no variant "${op.variant}".`);
-  delete def.variants![op.variant];
-  const left = Object.keys(def.variants!);
-  if (!left.length) {
-    delete def.variants;
-    delete def.defaultVariant;
-  } else if (def.defaultVariant === op.variant) def.defaultVariant = left[0];
-  for (const { node } of instancesOf(state, def.id)) if (node.variant === op.variant) delete node.variant;
+  const found = findVariant(def, op.variant, op.axis);
+  if ('error' in found) fail(found.error);
+  const axis = def.variantAxes![found.axis];
+  delete axis.options[found.id];
+  const left = Object.keys(axis.options);
+  if (!left.length) delete def.variantAxes![found.axis];
+  else if (axis.default === found.id) axis.default = left[0];
+  if (!Object.keys(def.variantAxes!).length) delete def.variantAxes;
+  for (const { node } of instancesOf(state, def.id)) {
+    if (node.variants?.[found.axis] !== found.id) continue;
+    delete node.variants[found.axis];
+    if (!Object.keys(node.variants).length) delete node.variants;
+  }
   return {};
 }
 

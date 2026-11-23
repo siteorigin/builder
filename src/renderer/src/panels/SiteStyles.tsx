@@ -1,3 +1,4 @@
+import { variantOptions } from '@shared/variants';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Globe, Link2, Palette, RotateCcw } from 'lucide-react';
 import type { ProjectState, TextStyleValue, TokenDef } from '@shared/types';
@@ -122,7 +123,7 @@ function tokenUses(state: ProjectState): Map<string, TokenUse> {
     if (t.owner.kind === 'component') {
       const def = state.components[t.owner.id];
       if (!def || !instancesOf(state, def.id).length) continue;
-      for (const v of Object.values(def.variants ?? {})) for (const st of Object.values(v.styles ?? {})) scan(st, mark);
+      for (const { option: v } of variantOptions(def)) for (const st of Object.values(v.styles ?? {})) scan(st, mark);
     }
     for (const n of Object.values(t.tree.nodes)) {
       scan(n.styles, mark);

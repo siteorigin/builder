@@ -610,13 +610,15 @@ describe('operation reach', () => {
     deny({ type: 'component.setPropSchema', definitionId: 'foundation.hero.split', prop: 'tagline', schema: { type: 'string', label: 'Tagline', default: '' } });
     allow({ type: 'component.setPart', definitionId: def.id, partId: 'newPart', nodeId: leaf, label: 'New part' });
     deny({ type: 'component.setPart', definitionId: def.id, partId: 'newPart', nodeId: root, label: 'New part' });
-    const hasVariants = Object.keys(def.variants ?? {}).length > 0;
+    const hasVariants = Object.keys(def.variantAxes ?? {}).length > 0;
     expect(hasVariants).toBe(true);
-    allow({ type: 'component.setVariant', definitionId: def.id, variant: 'quiet', label: 'Quiet' });
-    deny({ type: 'component.setVariant', definitionId: def.id, variant: 'quiet', label: 'Quiet', makeDefault: true });
+    allow({ type: 'component.setVariant', definitionId: def.id, axis: 'tone', variant: 'quiet', label: 'Quiet' });
+    deny({ type: 'component.setVariant', definitionId: def.id, axis: 'tone', variant: 'quiet', label: 'Quiet', makeDefault: true });
+    // A new axis gives every placement a new default.
+    deny({ type: 'component.setVariant', definitionId: def.id, axis: 'density', variant: 'quiet', label: 'Quiet' });
     // The first variant of a component becomes every placement's default.
     const noVariants = structuredClone(state);
-    noVariants.components[def.id].variants = {};
+    noVariants.components[def.id].variantAxes = {};
     expect(checkAuthority(noVariants, [{ type: 'component.setVariant', definitionId: def.id, variant: 'quiet', label: 'Quiet' }], authority)).toMatch(/changes more than/);
     allow({ type: 'component.setSlot', definitionId: def.id, slot: 'extra', label: 'Extra' });
     deny({ type: 'component.removePropSchema', definitionId: def.id, prop });

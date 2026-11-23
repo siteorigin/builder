@@ -342,12 +342,9 @@ export const contactForm: ComponentDefinition = {
     errorMessage: P.text('Error message', 'Sorry, your message could not be sent. Please try again or contact us directly.')
   },
   parts: { root: { nodeId: 'root', label: 'Form section' } },
-  variants: {
-    default: { label: 'Default' },
-    muted: { label: 'Soft background' },
-    inverse: { label: 'Dark' }
+  variantAxes: {
+    tone: { label: 'Tone', default: 'default', options: { default: { label: 'Default' }, muted: { label: 'Soft background' }, inverse: { label: 'Dark' } } }
   },
-  defaultVariant: 'default',
   source: FORM_SOURCE,
   provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: 'contact.form' },
   license: 'GPL-3.0-or-later'

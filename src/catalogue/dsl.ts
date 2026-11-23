@@ -19,7 +19,7 @@ import type {
   ScalarPropSchema,
   StyleProps,
   TextTag,
-  VariantDef
+  VariantAxis
 } from '@shared/types';
 import { SCHEMA_VERSION, isBinding } from '@shared/types';
 import { toRichText, type RichListType } from '@shared/richtext';
@@ -91,8 +91,7 @@ export interface ComponentSpec {
   icon: string;
   properties: Record<string, PropSchema>;
   parts: Record<string, PartDef>;
-  variants?: Record<string, VariantDef>;
-  defaultVariant?: string;
+  variantAxes?: Record<string, VariantAxis>;
   slots?: Record<string, { label: string }>;
   build: (b: TreeBuilder) => string;
   examples?: ComponentDefinition['examples'];
@@ -109,10 +108,15 @@ export function managed(spec: ComponentSpec): ComponentDefinition {
   const b = new TreeBuilder();
   const rootId = spec.build(b);
   // Shared variant helpers may style nodes a particular component does not have; keep only real nodes.
-  const variants = spec.variants && Object.fromEntries(
-    Object.entries(spec.variants).map(([id, v]) => [
-      id,
-      v.styles ? { ...v, styles: Object.fromEntries(Object.entries(v.styles).filter(([nid]) => nid in b.nodes)) } : v
+  const variantAxes = spec.variantAxes && Object.fromEntries(
+    Object.entries(spec.variantAxes).map(([axis, a]) => [
+      axis,
+      {
+        ...a,
+        options: Object.fromEntries(
+          Object.entries(a.options).map(([id, v]) => [id, v.styles ? { ...v, styles: Object.fromEntries(Object.entries(v.styles).filter(([nid]) => nid in b.nodes)) } : v])
+        )
+      }
     ])
   );
   return {
@@ -130,8 +134,7 @@ export function managed(spec: ComponentSpec): ComponentDefinition {
     properties: spec.properties,
     parts: spec.parts,
     slots: spec.slots,
-    variants,
-    defaultVariant: spec.defaultVariant,
+    variantAxes,
     tree: { rootIds: [rootId], nodes: b.nodes },
     provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: spec.componentId },
     license: 'GPL-3.0-or-later',

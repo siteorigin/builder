@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ComponentDefinition, GraphNode, StyleProps, TokenDef } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { selectedVariantStyles } from '@shared/variants';
 import { listThemes } from '@catalogue/index';
 
 type RGBA = { r: number; g: number; b: number; a: number };
@@ -78,11 +79,19 @@ interface Finding {
   min: number;
 }
 
-function check(def: ComponentDefinition, variant: string, tokens: TokenDef[]): Finding[] {
+/** Every combination of one option per variant axis. */
+function combinations(def: ComponentDefinition): Array<Record<string, string>> {
+  return Object.entries(def.variantAxes ?? {}).reduce<Array<Record<string, string>>>(
+    (acc, [axis, a]) => acc.flatMap((c) => Object.keys(a.options).map((id) => ({ ...c, [axis]: id }))),
+    [{}]
+  );
+}
+
+function check(def: ComponentDefinition, selection: Record<string, string>, tokens: TokenDef[]): Finding[] {
+  const variant = Object.values(selection).join('+') || 'default';
   const color = resolver(tokens);
   const out: Finding[] = [];
   const tree = def.tree!;
-  const vstyles = def.variants?.[variant]?.styles ?? {};
   const pageBg = color({ token: 'color.background' }, hex('#000'));
   const text = color({ token: 'color.text' }, pageBg);
   /**
@@ -95,7 +104,7 @@ function check(def: ComponentDefinition, variant: string, tokens: TokenDef[]): F
   const walk = (id: string, fg: RGBA, bg: RGBA, groups: Group[]) => {
     const n: GraphNode | undefined = tree.nodes[id];
     if (!n) return;
-    const styles: StyleProps = { ...(n.styles?.base ?? {}), ...(vstyles[id]?.base ?? {}) };
+    const styles: StyleProps = Object.assign({}, n.styles?.base, ...selectedVariantStyles(def, selection, id).map((l) => l.base));
     const opacity = styles.opacity !== undefined ? Number(styles.opacity) : 1;
     const inner = opacity < 1 ? [...groups, { opacity, under: bg }] : groups;
     let nodeFg = fg;
@@ -133,8 +142,8 @@ describe('Foundation contrast (WCAG AA)', () => {
       let checked = 0;
       for (const def of theme.components) {
         if (def.kind !== 'managed' || !def.tree) continue;
-        for (const variant of Object.keys(def.variants ?? { default: {} })) {
-          findings.push(...check(def, variant, theme.tokens));
+        for (const selection of combinations(def)) {
+          findings.push(...check(def, selection, theme.tokens));
           checked++;
         }
       }
@@ -146,14 +155,14 @@ describe('Foundation contrast (WCAG AA)', () => {
   it('catches text that inherits a light colour into a white card', () => {
     const theme = listThemes()[0];
     const def = structuredClone(theme.components.find((c) => c.componentId === 'features.grid')!);
-    def.variants!.inverse.styles!['card-text'] = { base: { color: { token: 'color.on-inverse' } } };
-    expect(check(def, 'inverse', theme.tokens).map((f) => f.node)).toContain('card-text');
+    def.variantAxes!.tone.options.inverse.styles!['card-text'] = { base: { color: { token: 'color.on-inverse' } } };
+    expect(check(def, { tone: 'inverse', layout: 'four-columns' }, theme.tokens).map((f) => f.node)).toContain('card-text');
   });
 
   it('catches a brand-coloured eyebrow on the dark tone', () => {
     const theme = listThemes()[0];
     const def = structuredClone(theme.components.find((c) => c.componentId === 'hero.centered')!);
-    delete def.variants!.inverse.styles!.eyebrow;
-    expect(check(def, 'inverse', theme.tokens).map((f) => f.node)).toEqual(['eyebrow']);
+    delete def.variantAxes!.tone.options.inverse.styles!.eyebrow;
+    expect(check(def, { tone: 'inverse' }, theme.tokens).map((f) => f.node)).toEqual(['eyebrow']);
   });
 });

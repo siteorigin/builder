@@ -1,5 +1,5 @@
 import { P, managed, tok } from '../dsl';
-import { headingBlock, mutedStyles, sectionShell, toneVariants } from './common';
+import { headingBlock, mutedStyles, sectionShell, toneAxis } from './common';
 
 const img = { assetId: null, alt: '' };
 
@@ -32,8 +32,7 @@ export const logoStrip = managed({
     row: { nodeId: 'row', label: 'Logo row', styleControls: ['gap', 'justify'] },
     wordmark: { nodeId: 'wordmark', label: 'Wordmark', styleControls: ['textStyle', 'color', 'fontFamily'] }
   },
-  variants: toneVariants(['heading', 'wordmark']),
-  defaultVariant: 'default',
+  variantAxes: { tone: toneAxis(['heading', 'wordmark']) },
   build: (b) =>
     sectionShell(
       b,
@@ -82,8 +81,7 @@ export const testimonials = managed({
     card: { nodeId: 'card', label: 'Card', styleControls: ['background', 'border', 'radius', 'shadow'] },
     quote: { nodeId: 'quote', label: 'Quote', styleControls: ['textStyle', 'color'] }
   },
-  variants: toneVariants(['lead']),
-  defaultVariant: 'muted',
+  variantAxes: { tone: toneAxis(['lead'], {}, 'muted') },
   build: (b) =>
     sectionShell(b, [
       headingBlock(b),
@@ -137,8 +135,7 @@ export const team = managed({
     portrait: { nodeId: 'portrait', label: 'Portrait', styleControls: ['aspectRatio', 'radius'] },
     name: { nodeId: 'name', label: 'Name', styleControls: ['textStyle', 'color'] }
   },
-  variants: toneVariants(['lead', 'role', 'bio']),
-  defaultVariant: 'default',
+  variantAxes: { tone: toneAxis(['lead', 'role', 'bio']) },
   build: (b) =>
     sectionShell(b, [
       headingBlock(b),

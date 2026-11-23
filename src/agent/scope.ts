@@ -3,7 +3,7 @@
  * by declaring a different scope. A request sent with a selection attached is limited to that element
  * until the user explicitly approves a wider change.
  */
-import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import type { ComponentDefinition, ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
 import { getTree, subtreeIds } from '@engine/tree';
 
@@ -92,12 +92,22 @@ function definitionOpAllowed(state: ProjectState, op: EditOperation, authority: 
       return op.definitionId === def.id && !Object.hasOwn(def.parts, op.partId) && allowed.has(op.nodeId);
     case 'component.setVariant':
       // The first variant becomes the default for every placement, so it is not a local addition.
-      return op.definitionId === def.id && !op.makeDefault && Object.keys(def.variants ?? {}).length > 0 && !Object.hasOwn(def.variants ?? {}, op.variant);
+      return op.definitionId === def.id && !op.makeDefault && addsOptionToExistingAxis(def, op.variant, op.axis, op.axisLabel);
     case 'component.setSlot':
       return op.definitionId === def.id && !Object.hasOwn(def.slots ?? {}, op.slot);
     default:
       return false;
   }
+}
+
+/** A new option on an axis that already exists changes no placement; a new axis gives every placement a default. */
+function addsOptionToExistingAxis(def: ComponentDefinition, option: string, axis?: string, axisLabel?: string): boolean {
+  const axes = Object.keys(def.variantAxes ?? {});
+  const id = axis ?? (axes.length === 1 ? axes[0] : undefined);
+  const target = id !== undefined && Object.hasOwn(def.variantAxes ?? {}, id) ? def.variantAxes![id] : undefined;
+  // Renaming the axis shows in every placement's Inspector.
+  if (axisLabel !== undefined && axisLabel.trim() !== target?.label) return false;
+  return !!target && !Object.hasOwn(target.options, option);
 }
 
 /** Returns null when every operation stays within the authority, otherwise a reason. */

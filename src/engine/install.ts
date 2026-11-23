@@ -2,6 +2,7 @@ import type { ComponentDefinition, InstanceNode, ListItem, ProjectState, PropSch
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import { newId } from '@shared/ids';
 import { definitionHash } from '@shared/migrations';
+import { findVariant } from '@shared/variants';
 
 export { definitionHash };
 
@@ -40,7 +41,7 @@ export function defaultProps(def: ComponentDefinition): Record<string, unknown> 
   return out;
 }
 
-export function makeInstance(def: ComponentDefinition, props: Record<string, unknown> = {}, variant?: string): InstanceNode {
+export function makeInstance(def: ComponentDefinition, props: Record<string, unknown> = {}, variants?: string | Record<string, string>): InstanceNode {
   const merged = { ...defaultProps(def), ...clone(props) };
   const node: InstanceNode = {
     id: newId('n'),
@@ -48,6 +49,9 @@ export function makeInstance(def: ComponentDefinition, props: Record<string, unk
     definitionId: def.id,
     props: freshListIds(def.properties, merged)
   };
-  if (variant && def.variants?.[variant]) node.variant = variant;
+  if (typeof variants === 'string') {
+    const found = findVariant(def, variants);
+    if (!('error' in found)) node.variants = { [found.axis]: found.id };
+  } else if (variants && Object.keys(variants).length) node.variants = { ...variants };
   return node;
 }

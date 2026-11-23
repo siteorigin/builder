@@ -1,3 +1,4 @@
+import { axesOf, selectedVariants } from '@shared/variants';
 import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
@@ -70,7 +71,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       base.componentId = def?.componentId;
       base.definitionId = n.definitionId;
       if (def?.owner === 'project') base.projectOwned = true;
-      if (n.variant ?? def?.defaultVariant) base.variant = n.variant ?? def?.defaultVariant;
+      if (def?.variantAxes) base.variants = selectedVariants(def, n.variants);
       base.props = summarizeValue(n.props, state.pages);
       if (n.overrides) base.styleOverrides = n.overrides;
       if (n.slots && depth < 4) base.slots = Object.fromEntries(Object.entries(n.slots).map(([k, ids]) => [k, ids.map((c) => compactNode(state, tree, c, depth + 1))]));
@@ -140,8 +141,7 @@ export function componentDetail(def: ComponentDefinition) {
     owner: def.owner,
     properties: propSchemaSummary(def.properties),
     parts: Object.fromEntries(Object.entries(def.parts).map(([k, p]) => [k, { label: p.label, styleControls: p.styleControls ?? [] }])),
-    variants: Object.fromEntries(Object.entries(def.variants ?? {}).map(([k, v]) => [k, v.label])),
-    defaultVariant: def.defaultVariant,
+    variantAxes: Object.fromEntries(axesOf(def).map(([axis, a]) => [axis, { label: a.label, default: a.default, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, v.label])) }])),
     slots: def.slots ?? {},
     examples: def.examples ?? []
   };
@@ -166,7 +166,7 @@ export function catalogueIndex(themeId: string) {
       componentId: e.componentId,
       name: e.name,
       category: e.category,
-      variants: e.variants.map((v) => v.id),
+      variants: e.axes,
       props: def ? Object.fromEntries(Object.entries(def.properties).map(([k, s]) => [k, propSignature(s)])) : {},
       parts: def ? Object.keys(def.parts) : [],
       ...(def?.slots && Object.keys(def.slots).length ? { slots: Object.keys(def.slots) } : {})

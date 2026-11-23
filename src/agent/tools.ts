@@ -254,7 +254,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     }
     case 'search_components': {
       const a = args as z.infer<(typeof TOOL_ARGS)['search_components']>;
-      const themed = searchCatalogue(state.site.themeId, a.query, a.limit ?? 8).map((e) => ({ componentId: e.componentId, name: e.name, description: e.description, variants: e.variants.map((v) => v.id) }));
+      const themed = searchCatalogue(state.site.themeId, a.query, a.limit ?? 8).map((e) => ({ componentId: e.componentId, name: e.name, description: e.description, variants: e.axes }));
       const q = a.query.toLowerCase();
       const project = Object.values(state.components)
         .filter((d) => d.owner === 'project' && d.category !== 'shell' && `${d.name} ${d.description}`.toLowerCase().includes(q))

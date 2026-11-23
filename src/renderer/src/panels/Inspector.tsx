@@ -1,3 +1,4 @@
+import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
@@ -63,13 +64,12 @@ function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): Edi
 }
 
 /** Default styles a definition gives a node (base + selected variant), used as inherited placeholders. */
-function inheritedStyles(def: ComponentDefinition, nodeId: string, variant?: string): ResponsiveStyles {
+function inheritedStyles(def: ComponentDefinition, nodeId: string, variants: InstanceNode['variants']): ResponsiveStyles {
   const base = def.tree?.nodes[nodeId]?.styles ?? {};
-  const v = variant ?? def.defaultVariant;
-  const vs = (v && def.variants?.[v]?.styles?.[nodeId]) || {};
+  const layers = selectedVariantStyles(def, variants, nodeId);
   const out: ResponsiveStyles = {};
   for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
-    const merged = { ...(base[scope] ?? {}), ...(vs[scope] ?? {}) };
+    const merged = Object.assign({}, base[scope], ...layers.map((l) => l[scope]));
     if (Object.keys(merged).length) out[scope] = merged;
   }
   return out;
@@ -293,7 +293,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   if (!def) return null;
   const title = node.name ?? def.name;
   const shell = owner.kind === 'shell';
-  const variants = Object.entries(def.variants ?? {});
+  // An axis with one option is not a choice. Every kind of component offers its axes, code components included.
+  const axes = axesOf(def).filter(([, a]) => Object.keys(a.options).length > 1);
+  const selectedAxes = selectedVariants(def, node.variants);
   const uses = instancesOf(state, def.id).length;
   const partIds = def.kind === 'managed' ? Object.keys(def.parts).filter((p) => p !== 'root') : [];
   const rootPart = def.parts.root;
@@ -377,6 +379,21 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           )}
         />
       </Section>
+      {axes.length > 0 && (
+        <Section title="Design" id="design" level={LEVEL}>
+          {axes.map(([axisId, axis]) => (
+            <Field key={axisId} label={axis.label}>
+              <select className="select" value={String(selectedAxes[axisId])} onChange={(e) => void applyOps([{ type: 'instance.setVariant', owner, nodeId: node.id, axis: axisId, variant: e.target.value }], `Change ${axis.label.toLowerCase()}`)}>
+                {Object.entries(axis.options).map(([id, v]) => (
+                  <option key={id} value={id}>
+                    {v.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ))}
+        </Section>
+      )}
       {def.kind === 'managed' && (
         <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={overrides ? `Whole section · ${changes(overrides)}` : 'Whole section'}>
           {partIds.length > 0 && (
@@ -392,20 +409,9 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               ))}
             </p>
           )}
-          {variants.length > 1 && (
-            <Field label="Design variant">
-              <select className="select" value={node.variant ?? def.defaultVariant} onChange={(e) => void applyOps([{ type: 'instance.setVariant', owner, nodeId: node.id, variant: e.target.value }], 'Change variant')}>
-                {variants.map(([id, v]) => (
-                  <option key={id} value={id}>
-                    {v.label}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          )}
           <StyleControls
             styles={node.overrides?.root}
-            inherited={inheritedStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variant)}
+            inherited={inheritedStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variants)}
             allowed={withHidden(rootPart?.styleControls)}
             tokens={tokens}
             onSet={onStyle('root')}
@@ -604,7 +610,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
         <Section title="Style" id="part-style" level={LEVEL} scope={[listSchema ? styleReach.charAt(0).toUpperCase() + styleReach.slice(1) : '', countStyles(inst.overrides?.[partId!]) ? changes(countStyles(inst.overrides?.[partId!])) : ''].filter(Boolean).join(' · ') || undefined}>
           <StyleControls
             styles={inst.overrides?.[partId!]}
-            inherited={inheritedStyles(def, part.nodeId, inst.variant)}
+            inherited={inheritedStyles(def, part.nodeId, inst.variants)}
             allowed={part.styleControls}
             tokens={tokens}
             onSet={(property, value) => void applyOps([{ type: 'node.setStyle', owner: instOwner, nodeId: instNodeId, partId, scope, property, value }], `Style ${part.label}`, `${instNodeId}:${partId}:${scope}:${property}`)}

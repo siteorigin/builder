@@ -159,10 +159,10 @@ describe('responsive overrides', () => {
   it('drives button colours through --so-btn-bg / --so-btn-fg so hover follows them', () => {
     const s = fresh();
     const hero = addToHome(s, 'hero.centered');
-    hero.variant = 'brand';
+    hero.variants = { tone: 'brand' };
     const files = generateProject(s);
     const components = files.get(`${STYLES_DIR}/components.css`)!;
-    const rule = components.match(/hero-centered--brand \.so-foundation-hero-centered__primary \{[^}]*\}/)![0];
+    const rule = components.match(/hero-centered--tone-brand \.so-foundation-hero-centered__primary \{[^}]*\}/)![0];
     expect(rule).toContain('--so-btn-bg: var(--so-color-on-brand)');
     expect(rule).toContain('--so-btn-bg-hover: initial');
     expect(rule).toContain('--so-btn-fg: var(--so-color-brand-strong)');

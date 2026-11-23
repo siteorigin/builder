@@ -1,3 +1,4 @@
+import { variantOptions } from '@shared/variants';
 import type { ProjectState, ResponsiveStyles, TokenDef } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { allTrees } from './tree';
@@ -34,7 +35,7 @@ export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site:
     if (t.owner.kind === 'component') {
       const def = state.components[t.owner.id];
       if (!def || def.owner !== 'project') continue;
-      for (const v of Object.values(def.variants ?? {})) for (const st of Object.values(v.styles ?? {})) styles(st, t.label);
+      for (const { option: v } of variantOptions(def)) for (const st of Object.values(v.styles ?? {})) styles(st, t.label);
     }
     for (const n of Object.values(t.tree.nodes)) {
       styles(n.styles, t.label);

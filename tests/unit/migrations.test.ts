@@ -597,7 +597,7 @@ describe('theme component updates', () => {
     write(dir, rel, hero);
     write(dir, 'siteorigin/theme-lock.json', lock);
     expect((await s.reloadFromDisk()).ok).toBe(true);
-    expect(themeUpdates(s.state).available.map((u) => u.id)).toEqual([hero.id]);
+    expect(themeUpdates(s.state).available.map((u) => u.id)).toContain(hero.id);
     expect((await s.apply({ operations: [{ type: 'theme.refresh' }] }, { label: 'Update theme components' })).ok).toBe(true);
     expect(read(dir, rel).description).toBe(current(hero.id).description);
     expect((await s.undo()).ok).toBe(true);

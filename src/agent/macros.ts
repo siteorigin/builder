@@ -3,6 +3,7 @@
  * batch that goes through the same scope checks, validation and undo group as any other edit, so a small
  * model never has to carry page IDs or revisions from one turn to the next.
  */
+import { findVariant, variantOptions } from '@shared/variants';
 import { z } from 'zod';
 import type { ComponentDefinition, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
@@ -398,8 +399,8 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
       return null;
     }
     const { def, ref } = resolved;
-    if (s.variant !== undefined && !Object.hasOwn(def.variants ?? {}, s.variant))
-      issues.push({ field: `${at}.variant`, message: `"${def.name}" has no variant "${s.variant}". Variants: ${Object.keys(def.variants ?? {}).join(', ') || 'none'}` });
+    if (s.variant !== undefined && 'error' in findVariant(def, s.variant))
+      issues.push({ field: `${at}.variant`, message: `"${def.name}" has no variant "${s.variant}". Variants: ${[...new Set(variantOptions(def).map((o) => o.id))].join(', ') || 'none'}` });
     const { props, deferred } = checkProps(def, s.props ?? {}, scratch, `${at}.props`, issues);
     return { def, ref, props, deferred, variant: s.variant, defId: def.id, publicId: def.componentId };
   });
@@ -546,7 +547,7 @@ export function upsertToolSchema(state: ProjectState): JsonSchema {
   ];
   const section = {
     oneOf: defs.map((d) => {
-      const variants = Object.keys(d.variants ?? {});
+      const variants = [...new Set(variantOptions(d).map((o) => o.id))];
       return {
         type: 'object',
         properties: {

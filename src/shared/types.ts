@@ -184,7 +184,8 @@ export interface InstanceNode extends NodeBase {
   kind: 'instance';
   definitionId: string;
   props: Record<string, unknown>;
-  variant?: string;
+  /** The option chosen on each of the definition's variant axes. An axis left out uses its default. */
+  variants?: Record<string, string>;
   /** Instance style overrides keyed by public part ID ("root" is the instance boundary). */
   overrides?: Record<string, ResponsiveStyles>;
   /** Content placed into the definition's declared slots. */
@@ -226,6 +227,14 @@ export interface VariantDef {
   styles?: Record<string, ResponsiveStyles>;
 }
 
+/** One independent design choice, such as tone or layout. A placement picks one option on every axis. */
+export interface VariantAxis {
+  label: string;
+  /** Option ID used by placements that have not chosen one. */
+  default: string;
+  options: Record<string, VariantDef>;
+}
+
 export interface ComponentDefinition {
   schemaVersion: number;
   /** Unique installed definition identity. */
@@ -242,8 +251,7 @@ export interface ComponentDefinition {
   properties: Record<string, PropSchema>;
   parts: Record<string, PartDef>;
   slots?: Record<string, { label: string }>;
-  variants?: Record<string, VariantDef>;
-  defaultVariant?: string;
+  variantAxes?: Record<string, VariantAxis>;
   /** Managed graph (managed components only). */
   tree?: NodeTree;
   /** Svelte source for code components bundled with a theme. */

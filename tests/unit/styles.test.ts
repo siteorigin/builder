@@ -214,15 +214,15 @@ describe('custom CSS in the wide range', () => {
 
 describe('style precedence', () => {
   const grid = (s: ProjectState) => instanceOf(s, 'features.grid');
-  const VARIANT = '.so-foundation-features-grid--two-columns .so-foundation-features-grid__grid';
+  const VARIANT = '.so-foundation-features-grid--layout-two-columns .so-foundation-features-grid__grid';
 
   it('orders definition, variant and instance rules by strength', () => {
     const s = fresh();
     const def = defOf(s, 'features.grid');
-    def.variants!['two-columns'].styles = { grid: { base: { gap: '11px' } } };
+    def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { gap: '11px' } } };
     def.tree!.nodes.grid.styles = { base: { layout: 'grid', gap: '10px' } };
     const inst = grid(s);
-    inst.variant = 'two-columns';
+    inst.variants = { layout: 'two-columns' };
     inst.overrides = { grid: { base: { gap: '12px' } } };
     const components = css(s, 'components');
     const definition = components.indexOf('.so-foundation-features-grid__grid {\n\tgap: 10px');
@@ -247,7 +247,7 @@ describe('style precedence', () => {
   it('keeps the phone layout when a variant sets columns for all sizes', () => {
     const s = fresh();
     const def = defOf(s, 'features.grid');
-    def.variants!['two-columns'].styles = { grid: { base: { columns: 2 } } };
+    def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { columns: 2 } } };
     const out = css(s, 'components');
     expect(section(out, null)).not.toContain(`${VARIANT} {\n\tgrid-template-columns`);
     expect(ruleOf(section(out, WIDE), VARIANT)).toContain('repeat(2, minmax(0, 1fr))');
@@ -256,7 +256,7 @@ describe('style precedence', () => {
   it('lets a variant keep an explicit phone column count', () => {
     const s = fresh();
     const def = defOf(s, 'features.grid');
-    def.variants!['two-columns'].styles = { grid: { base: { columns: 3 }, phone: { columns: 2 } } };
+    def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { columns: 3 }, phone: { columns: 2 } } };
     const out = css(s, 'components');
     expect(ruleOf(section(out, PHONE), VARIANT)).toContain('repeat(2, minmax(0, 1fr))');
     expect(ruleOf(section(out, WIDE), VARIANT)).toContain('repeat(3, minmax(0, 1fr))');
@@ -320,21 +320,21 @@ describe('style precedence', () => {
     const s = fresh();
     const def = defOf(s, 'features.grid');
     def.tree!.nodes.heading.styles = { ...def.tree!.nodes.heading.styles, base: { ...def.tree!.nodes.heading.styles?.base, hidden: true } };
-    def.variants!['two-columns'].styles = { heading: { base: { hidden: false } } };
+    def.variantAxes!.layout.options['two-columns'].styles = { heading: { base: { hidden: false } } };
     const out = css(s, 'components');
-    for (const q of [PHONE, TABLET]) expect(ruleOf(section(out, q), '.so-foundation-features-grid--two-columns .so-foundation-features-grid__heading')).toContain('display: revert');
-    expect(section(out, null)).not.toMatch(/--two-columns \.so-foundation-features-grid__heading \{[^}]*display/);
+    for (const q of [PHONE, TABLET]) expect(ruleOf(section(out, q), '.so-foundation-features-grid--layout-two-columns .so-foundation-features-grid__heading')).toContain('display: revert');
+    expect(section(out, null)).not.toMatch(/--layout-two-columns \.so-foundation-features-grid__heading \{[^}]*display/);
   });
 
   it('restores display only where a part is hidden, leaving other ranges their own layout', () => {
     const s = fresh();
     const def = defOf(s, 'features.grid');
     def.tree!.nodes.grid.styles = { base: { layout: 'grid' }, phone: { hidden: true }, tablet: { layout: 'stack' } };
-    def.variants!['two-columns'].styles = { grid: { base: { hidden: false } } };
+    def.variantAxes!.layout.options['two-columns'].styles = { grid: { base: { hidden: false } } };
     const out = css(s, 'components');
     expect(ruleOf(section(out, PHONE), VARIANT)).toContain('display: grid');
     expect(section(out, TABLET)).not.toContain(VARIANT);
-    expect(section(out, null)).not.toMatch(/--two-columns \.so-foundation-features-grid__grid \{[^}]*display/);
+    expect(section(out, null)).not.toMatch(/--layout-two-columns \.so-foundation-features-grid__grid \{[^}]*display/);
   });
 
   it('shows a hidden button again as a button, not as the browser default', () => {
@@ -358,7 +358,7 @@ describe('style precedence', () => {
     const outerId = 'project.wrapper';
     const nested = makeInstance(inner);
     nested.overrides = { root: { base: { gap: '1px' } } };
-    s.components[outerId] = { ...structuredClone(inner), id: outerId, componentId: 'project.wrapper', owner: 'project', properties: {}, variants: undefined, defaultVariant: undefined, parts: { root: { nodeId: nested.id, label: 'Root' } }, tree: { rootIds: [nested.id], nodes: { [nested.id]: nested } } };
+    s.components[outerId] = { ...structuredClone(inner), id: outerId, componentId: 'project.wrapper', owner: 'project', properties: {}, variantAxes: undefined, parts: { root: { nodeId: nested.id, label: 'Root' } }, tree: { rootIds: [nested.id], nodes: { [nested.id]: nested } } };
     const placed = makeInstance(s.components[outerId]);
     placed.overrides = { root: { base: { gap: '2px' } } };
     home(s).nodes[placed.id] = placed;
@@ -370,9 +370,9 @@ describe('style precedence', () => {
   it('lets an instance show a part the active variant hides', () => {
     const s = fresh();
     const def = defOf(s, 'features.grid');
-    def.variants!['two-columns'].styles = { heading: { base: { hidden: true } } };
+    def.variantAxes!.layout.options['two-columns'].styles = { heading: { base: { hidden: true } } };
     const inst = grid(s);
-    inst.variant = 'two-columns';
+    inst.variants = { layout: 'two-columns' };
     inst.overrides = { heading: { base: { hidden: false } } };
     const cls = `so-o-${inst.id}-heading`;
     const out = css(s, 'site');

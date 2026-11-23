@@ -345,7 +345,7 @@ describe('selection tools', () => {
     const hero = nodeAt(session.state, 0);
     expect(hero.props.heading).toBe('Sharper headline');
     expect((hero.props.primaryLink as LinkValue).type).toBe('page');
-    expect(hero.variant).toBe('muted');
+    expect(hero.variants?.tone).toBe('muted');
     expect(nodeAt(session.state, 1).props).toEqual(before);
     // The hero has an image, so it can also look up assets; it has no list.
     expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['update_selected_props', 'style_selected_element', 'request_wider_scope', 'search_assets']);

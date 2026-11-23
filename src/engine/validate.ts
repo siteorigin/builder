@@ -1,6 +1,7 @@
 import type { ProjectState, ResponsiveStyles } from '@shared/types';
 import { ELEMENT_TAGS, TEXT_TAGS, isBinding } from '@shared/types';
 import { validateRoute } from '@shared/routes';
+import { variantIdsValid, variantOptions } from '@shared/variants';
 import { allTrees, childLists, displayName, subtreeIds } from './tree';
 import { boundSchema } from './schema';
 import { declaredTokens, findTokenCycle } from './tokens';
@@ -164,12 +165,20 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
         for (const s of Object.keys(n.slots ?? {}))
           if (target && !Object.hasOwn(target.slots ?? {}, s))
             out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: content is placed in "${s}", which ${target.name} does not have.`, owner, nodeId: n.id });
+        for (const [axis, v] of Object.entries(n.variants ?? {})) {
+          if (!target || isBinding(v)) continue;
+          const a = target.variantAxes && Object.hasOwn(target.variantAxes, axis) ? target.variantAxes[axis] : undefined;
+          if (!a || !Object.hasOwn(a.options, v)) out.push({ severity: 'warning', code: 'VARIANT_UNKNOWN', message: `${label}: ${target.name} has no ${axis} "${String(v)}", so it shows its default.`, owner, nodeId: n.id });
+        }
         for (const o of Object.values(n.overrides ?? {})) checkStyles(o, label, owner, n.id);
       }
       checkStyles(n.styles, label, owner, n.id);
     }
     if (def) {
-      for (const v of Object.values(def.variants ?? {})) for (const [nid, st] of Object.entries(v.styles ?? {})) checkStyles(st, label, owner, nid);
+      for (const { option: v } of variantOptions(def)) for (const [nid, st] of Object.entries(v.styles ?? {})) checkStyles(st, label, owner, nid);
+      if (!variantIdsValid(def)) out.push({ severity: 'warning', code: 'VARIANT_ID_INVALID', message: `${label}: a variant name uses characters that cannot be generated, so that variant is ignored.`, owner });
+      for (const [axis, a] of Object.entries(def.variantAxes ?? {}))
+        if (!Object.hasOwn(a.options ?? {}, a.default)) out.push({ severity: 'error', code: 'VARIANT_INVALID', message: `${label}: the default of the "${a.label ?? axis}" variant axis ("${a.default}") is not one of its options.`, owner });
       const reachable = new Set(tree.rootIds.flatMap((r) => subtreeIds(tree, r)));
       if (def.kind === 'managed')
         for (const s of Object.keys(def.slots ?? {}))

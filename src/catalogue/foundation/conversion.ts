@@ -1,5 +1,5 @@
 import { P, managed, tok } from '../dsl';
-import { headingBlock, mutedStyles, sectionShell, toneVariants } from './common';
+import { headingBlock, mutedStyles, sectionShell, toneAxis } from './common';
 
 export const pricing = managed({
   componentId: 'pricing.plans',
@@ -40,8 +40,7 @@ export const pricing = managed({
     plan: { nodeId: 'plan', label: 'Plan card', styleControls: ['background', 'border', 'radius', 'shadow'] },
     price: { nodeId: 'price', label: 'Price', styleControls: ['textStyle', 'color'] }
   },
-  variants: toneVariants(['lead']),
-  defaultVariant: 'default',
+  variantAxes: { tone: toneAxis(['lead']) },
   build: (b) =>
     sectionShell(b, [
       headingBlock(b),
@@ -99,8 +98,7 @@ export const faq = managed({
     question: { nodeId: 'question', label: 'Question text', styleControls: ['textStyle', 'color'] },
     answer: { nodeId: 'answer', label: 'Answer', styleControls: ['textStyle', 'color'] }
   },
-  variants: toneVariants(['lead', 'answer']),
-  defaultVariant: 'default',
+  variantAxes: { tone: toneAxis(['lead', 'answer']) },
   build: (b) =>
     sectionShell(
       b,
@@ -123,7 +121,7 @@ export const faq = managed({
     )
 });
 // The toggle icon switches to the accent colour on the dark tone for contrast.
-faq.variants!.inverse.styles!['toggle-icon'] = { base: { color: tok('color.accent') } };
+faq.variantAxes!.tone.options.inverse.styles!['toggle-icon'] = { base: { color: tok('color.accent') } };
 
 export const cta = managed({
   componentId: 'cta.banner',
@@ -146,12 +144,17 @@ export const cta = managed({
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
     lead: { nodeId: 'lead', label: 'Supporting text', styleControls: ['textStyle', 'color'] }
   },
-  variants: {
-    default: { label: 'Brand panel' },
-    muted: { label: 'Soft panel', styles: { panel: { base: { background: tok('color.surface-alt'), color: tok('color.text') } }, lead: { base: { color: tok('color.muted'), opacity: 1 } }, primary: { base: { background: tok('color.brand'), color: tok('color.on-brand') } } } },
-    inverse: { label: 'Dark panel', styles: { panel: { base: { background: tok('color.inverse'), color: tok('color.on-inverse') } } } }
+  variantAxes: {
+    tone: {
+      label: 'Tone',
+      default: 'default',
+      options: {
+        default: { label: 'Brand panel' },
+        muted: { label: 'Soft panel', styles: { panel: { base: { background: tok('color.surface-alt'), color: tok('color.text') } }, lead: { base: { color: tok('color.muted'), opacity: 1 } }, primary: { base: { background: tok('color.brand'), color: tok('color.on-brand') } } } },
+        inverse: { label: 'Dark panel', styles: { panel: { base: { background: tok('color.inverse'), color: tok('color.on-inverse') } } } }
+      }
+    }
   },
-  defaultVariant: 'default',
   build: (b) =>
     sectionShell(b, [
       b.el('panel', 'div', { name: 'Panel', styles: { base: { layout: 'stack', align: 'center', textAlign: 'center', gap: tok('space.lg'), paddingBlock: 'clamp(3rem, 2rem + 4vw, 5.5rem)', paddingInline: tok('space.xl'), background: tok('color.brand'), color: tok('color.on-brand'), radius: tok('radius.lg') } } }, [
@@ -197,8 +200,7 @@ export const contact = managed({
     list: { nodeId: 'list', label: 'Contact list', styleControls: ['gap', 'columns'] },
     method: { nodeId: 'method', label: 'Contact method', styleControls: ['background', 'border', 'radius'] }
   },
-  variants: toneVariants(['lead']),
-  defaultVariant: 'default',
+  variantAxes: { tone: toneAxis(['lead']) },
   build: (b) =>
     sectionShell(b, [
       b.el('grid', 'div', { name: 'Layout', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.2xl') }, desktop: { columns: 2, gap: tok('space.3xl') } } }, [

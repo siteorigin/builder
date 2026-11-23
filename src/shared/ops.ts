@@ -75,7 +75,8 @@ export const OPERATION_SCHEMAS = {
     primitive: z.enum(['container', 'stack', 'row', 'grid', 'heading', 'paragraph', 'richtext', 'image', 'button', 'icon', 'divider', 'slot', 'repeat']).optional(),
     bind: z.string().optional().describe('Component definitions only: the list property a "repeat" repeats, or the declared slot a "slot" renders.'),
     props: z.record(z.string(), z.unknown()).optional().describe('Initial property values for a component.'),
-    variant: z.string().optional(),
+    variant: z.string().optional().describe('One variant option, found on whichever axis has it.'),
+    variants: z.record(z.string(), z.string()).optional().describe('Options by axis, e.g. { "tone": "inverse", "layout": "two-columns" }.'),
     text: z.string().optional().describe('Initial text for heading, paragraph or button primitives.')
   }),
   'node.remove': z.object({ type: z.literal('node.remove'), owner, nodeId: z.string() }),
@@ -105,7 +106,8 @@ export const OPERATION_SCHEMAS = {
     owner,
     nodeId: z.string(),
     partId: z.string().optional().describe('For component instances: the public part to style. Defaults to "root".'),
-    variant: z.string().optional().describe('Component definitions only: set the rule for this variant.'),
+    variant: z.string().optional().describe('Component definitions only: set the rule for this variant option.'),
+    axis: z.string().optional().describe('The variant axis, when the option ID is on several.'),
     scope,
     property: z.string().describe('Style property ID, e.g. paddingBlock, background, textStyle, gap, columns.'),
     value: styleValue.nullable().describe('Literal value or {"token": "space.lg"}. null removes the override.')
@@ -116,6 +118,7 @@ export const OPERATION_SCHEMAS = {
     nodeId: z.string(),
     partId: z.string().optional(),
     variant: z.string().optional(),
+    axis: z.string().optional(),
     scope: scope.optional()
   }),
   'node.setContent': z.object({
@@ -152,7 +155,13 @@ export const OPERATION_SCHEMAS = {
   }),
   'instance.listRemove': z.object({ type: z.literal('instance.listRemove'), owner, nodeId: z.string(), prop: z.string(), itemId: z.string() }),
   'instance.listMove': z.object({ type: z.literal('instance.listMove'), owner, nodeId: z.string(), prop: z.string(), itemId: z.string(), index: z.number().int().min(0) }),
-  'instance.setVariant': z.object({ type: z.literal('instance.setVariant'), owner, nodeId: z.string(), variant: z.string() }),
+  'instance.setVariant': z.object({
+    type: z.literal('instance.setVariant'),
+    owner,
+    nodeId: z.string(),
+    variant: z.string().describe('The option to show. Other axes keep their current choice.'),
+    axis: z.string().optional().describe('The variant axis (e.g. "tone", "layout"), when the option ID is on several.')
+  }),
 
   'token.set': z.object({
     type: z.literal('token.set'),
@@ -227,11 +236,13 @@ export const OPERATION_SCHEMAS = {
   'component.setVariant': z.object({
     type: z.literal('component.setVariant'),
     definitionId: z.string(),
+    axis: z.string().optional().describe('The variant axis to add to. A new name creates the axis. Defaults to the only axis, or "style".'),
+    axisLabel: z.string().min(1).max(40).optional(),
     variant: z.string(),
     label: z.string().min(1).max(60),
     makeDefault: z.boolean().optional()
   }),
-  'component.removeVariant': z.object({ type: z.literal('component.removeVariant'), definitionId: z.string(), variant: z.string() }),
+  'component.removeVariant': z.object({ type: z.literal('component.removeVariant'), definitionId: z.string(), variant: z.string(), axis: z.string().optional() }),
   'component.setSlot': z.object({ type: z.literal('component.setSlot'), definitionId: z.string(), slot: z.string(), label: z.string().min(1).max(60) }),
   'component.removeSlot': z.object({ type: z.literal('component.removeSlot'), definitionId: z.string(), slot: z.string() }),
 
@@ -290,7 +301,7 @@ export interface ApplyResult {
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Fields whose string values are used as lookup keys. Content (text, labels) may contain any words. */
-const KEY_FIELDS = /(^id$|Id$|^prop$|^field$|^property$|^variant$|^slot$|^parentId$|^bind$|^\$prop$|^\$item$)/;
+const KEY_FIELDS = /(^id$|Id$|^prop$|^field$|^property$|^variant$|^axis$|^slot$|^parentId$|^bind$|^\$prop$|^\$item$)/;
 function hasForbidden(v: unknown, depth = 0): boolean {
   if (depth > 12) return true;
   if (Array.isArray(v)) return v.some((x) => hasForbidden(x, depth + 1));

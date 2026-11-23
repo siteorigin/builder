@@ -15,7 +15,7 @@
  * The pipeline advances each document's `schemaVersion` after every step and keeps the theme lock truthful, so a
  * migration deals with neither.
  */
-import type { ComponentDefinition, ProjectState } from './types';
+import type { ComponentDefinition, GraphNode, NodeTree, ProjectState, VariantAxis, VariantDef } from './types';
 import { stableHash } from './ids';
 
 export interface Migration {
@@ -195,8 +195,77 @@ export const MIGRATIONS: Migration[] = [
     id: 'structured-rich-text',
     description: 'Store rich text as blocks of spans instead of strings with ** and * marks.',
     migrate: structureRichText
+  },
+  {
+    id: 'variant-axes',
+    description: 'Replace the single variant of a component with named axes, so tone and layout can combine.',
+    migrate(project, due) {
+      for (const def of Object.values(project.components) as LegacyDefinition[]) {
+        if (!due(def)) continue;
+        const axes = legacyAxes(def);
+        // The axes take the old field's place in the document, so an unchanged theme definition still matches
+        // the theme's own copy byte for byte.
+        const entries = Object.entries(def).flatMap(([k, v]): Array<[string, unknown]> => (k === 'variants' ? (axes ? [['variantAxes', axes]] : []) : k === 'defaultVariant' ? [] : [[k, v]]));
+        for (const k of Object.keys(def)) delete (def as unknown as Record<string, unknown>)[k];
+        Object.assign(def, Object.fromEntries(entries));
+      }
+      const convert = (tree: NodeTree) => {
+        for (const node of Object.values(tree.nodes) as Array<GraphNode & { variant?: unknown }>) {
+          if (node.kind !== 'instance' || !('variant' in node)) continue;
+          const value = node.variant;
+          delete node.variant;
+          const axes = project.components[node.definitionId]?.variantAxes;
+          const selection = axes && typeof value === 'string' ? legacySelection(axes, value) : undefined;
+          if (selection) node.variants = selection;
+        }
+      };
+      if (due(project.site)) {
+        convert(project.site.shell.header);
+        convert(project.site.shell.footer);
+      }
+      for (const page of Object.values(project.pages)) if (due(page)) convert(page);
+      for (const def of Object.values(project.components)) if (due(def) && def.tree) convert(def.tree);
+    }
   }
 ];
+
+type LegacyDefinition = ComponentDefinition & { variants?: Record<string, VariantDef>; defaultVariant?: string };
+
+/** Variant IDs that only ever changed a section's colours in the first format. */
+const LEGACY_TONES = new Set(['default', 'muted', 'inverse', 'brand', 'light']);
+
+const hasStyles = (v: VariantDef | undefined) => Object.values(v?.styles ?? {}).some((rules) => Object.values(rules ?? {}).some((scope) => Object.keys(scope ?? {}).length > 0));
+
+/**
+ * The axes for a first-format variant list. Tones and layouts are separated only where that cannot change how an
+ * existing placement renders: a managed design whose "default" tone adds no styles of its own, which a placement
+ * on a layout variant can therefore combine with. Everything else stays one axis of mutually exclusive options.
+ * Code reads one `variant` value, so it always stays on one axis.
+ */
+function legacyAxes(def: LegacyDefinition): Record<string, VariantAxis> | undefined {
+  const variants = def.variants;
+  const ids = Object.keys(variants ?? {});
+  if (!variants || !ids.length) return undefined;
+  const fallback = def.defaultVariant && Object.hasOwn(variants, def.defaultVariant) ? def.defaultVariant : ids[0];
+  const tones = ids.filter((id) => LEGACY_TONES.has(id));
+  const layouts = ids.filter((id) => !LEGACY_TONES.has(id));
+  if (!layouts.length) return { tone: { label: 'Tone', default: fallback, options: variants } };
+  if (def.kind !== 'managed' || !Object.hasOwn(variants, 'default') || hasStyles(variants.default)) return { style: { label: 'Style', default: fallback, options: variants } };
+  const pick = (list: string[]) => Object.fromEntries(list.map((id) => [id, variants[id]]));
+  return {
+    tone: { label: 'Tone', default: tones.includes(fallback) ? fallback : 'default', options: pick(tones) },
+    layout: { label: 'Layout', default: layouts.includes(fallback) ? fallback : 'default', options: { default: { label: 'Standard' }, ...pick(layouts) } }
+  };
+}
+
+/** What a first-format variant value selects: the option, plus the plain option on any axis it was exclusive of. */
+function legacySelection(axes: Record<string, VariantAxis>, value: string): Record<string, string> | undefined {
+  const axis = Object.keys(axes).find((a) => Object.hasOwn(axes[a].options, value));
+  if (!axis) return undefined;
+  const out: Record<string, string> = { [axis]: value };
+  for (const [other, a] of Object.entries(axes)) if (other !== axis && a.default !== 'default' && Object.hasOwn(a.options, 'default')) out[other] = 'default';
+  return out;
+}
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length + 1;
 

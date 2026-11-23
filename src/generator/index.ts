@@ -32,6 +32,7 @@ import { routeDir } from '@shared/routes';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
+import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -92,7 +93,7 @@ const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_id', 'so_eager', 
  * component already uses for itself are renamed, avoiding the names of the definition's other properties.
  */
 export function propKey(def: ComponentDefinition, name: string): string {
-  if (def.kind !== 'managed' || !(INTERNAL_KEYS.has(name) || name.startsWith('slot_'))) return name;
+  if (def.kind !== 'managed' || !(INTERNAL_KEYS.has(name) || name.startsWith('slot_') || name.startsWith('variant_'))) return name;
   let key = `prop_${name}`;
   while (Object.hasOwn(def.properties, key)) key = `prop_${key}`;
   return key;
@@ -104,7 +105,7 @@ export function propLocals(def: ComponentDefinition): Map<string, string> {
   const taken = new Set<string>();
   for (const name of Object.keys(def.properties).sort()) {
     let local = /^[a-zA-Z_$][\w$]*$/.test(name) ? name : `_${name.replace(/[^\w$]/g, '_')}`;
-    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || /^(\$|slot_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
+    if (RESERVED_WORDS.has(local) || INTERNAL_LOCALS.has(local) || /^(\$|slot_|variant_|C_|item\d*$)/.test(local)) local = `prop_${local.replace(/^\$/, '_')}`;
     let unique = local;
     for (let i = 2; taken.has(unique); i++) unique = `${local}_${i}`;
     taken.add(unique);
@@ -314,11 +315,11 @@ function nodeDisplay(layout: unknown): string | null {
  * For a part shown again by an instance (`hidden: false`), the display value that undoes the definition's or
  * variant's `display: none` at that scope, or null when nothing hides it there.
  */
-function unhider(def: ComponentDefinition, nodeId: string, variant: string | undefined, override: ResponsiveStyles) {
+function unhider(def: ComponentDefinition, nodeId: string, variants: InstanceNode['variants'] | null, override: ResponsiveStyles, earlier: ResponsiveStyles[] = []) {
   const node = def.tree?.nodes[nodeId];
   // What the theme gives this kind of element; `revert` would fall back to the browser's default instead.
   const natural = node?.kind === 'image' || node?.kind === 'icon' ? 'block' : node?.kind === 'link' ? (node.appearance === 'link' || node.appearance === 'plain' ? 'inline' : 'inline-flex') : 'revert';
-  const layers = [def.tree?.nodes[nodeId]?.styles, variant ? def.variants?.[variant]?.styles?.[nodeId] : undefined].filter(Boolean) as ResponsiveStyles[];
+  const layers = [def.tree?.nodes[nodeId]?.styles, ...earlier, ...(variants === null ? [] : selectedVariantStyles(def, variants, nodeId))].filter(Boolean) as ResponsiveStyles[];
   return (scope: ResponsiveScope): string | null => {
     const scopes: ResponsiveScope[] = scope === 'base' ? ['base', 'phone', 'tablet', 'desktop'] : ['base', scope];
     if (!layers.some((l) => scopes.some((s) => l[s]?.hidden === true))) return null;
@@ -415,6 +416,22 @@ function emitRules(rules: RuleSet): string {
 export function nodeClass(def: ComponentDefinition, nodeId: string): string {
   return `so-${defKey(def.id)}__${nodeId}`;
 }
+/** The class a definition's root carries for one option of a variant axis. */
+export function variantClass(def: ComponentDefinition, axis: string, option: string): string {
+  return `so-${defKey(def.id)}--${axis}-${option}`;
+}
+/** Code converted before conversions carried their own CSS still uses the definition's one-class-per-variant names. */
+function usesLegacyVariantClass(state: ProjectState, def: ComponentDefinition): boolean {
+  const prefix = `so-${defKey(def.id)}--`;
+  return Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && !!d.source?.includes(prefix));
+}
+/** Code converted in the first format still places this component with a single `variant` attribute. */
+function hasLegacyVariantCaller(state: ProjectState, def: ComponentDefinition): boolean {
+  const file = `/${defFile(def).split('/').pop()}`;
+  return Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && !!d.source?.includes(file) && /\bvariant=/.test(d.source));
+}
+/** The prop a component receives an axis's selected option through. */
+const variantProp = (axis: string) => `variant_${safeIdent(axis)}`;
 export function overrideClass(instanceId: string, partId: string): string {
   return `so-o-${instanceId}-${partId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
@@ -437,15 +454,21 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
     addRules(rules, wrap(`.${nodeClass(def, id)}`), n.styles, { link: n.kind === 'link' });
     if (n.kind === 'instance' && n.overrides) addOverrideRules(rules, state, n, `.${nodeClass(def, id)}`, wrap);
   }
-  for (const vid of Object.keys(def.variants ?? {}).sort()) {
-    const v = def.variants![vid];
-    const vc = `.so-${defKey(def.id)}--${vid}`;
-    for (const nid of Object.keys(v.styles ?? {}).sort()) {
-      const rootId = def.tree.rootIds[0];
-      const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `${vc} .${nodeClass(def, nid)}`;
-      addRules(rules, wrap(sel), v.styles![nid], { link: def.tree.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, undefined, v.styles![nid]) });
+  const axes = axesOf(def);
+  const legacy = usesLegacyVariantClass(state, def);
+  axes.forEach(([axis, a], index) => {
+    for (const vid of Object.keys(a.options).sort()) {
+      const v = a.options[vid];
+      const vc = legacy ? `:is(.${variantClass(def, axis, vid)}, .so-${defKey(def.id)}--${vid})` : `.${variantClass(def, axis, vid)}`;
+      for (const nid of Object.keys(v.styles ?? {}).sort()) {
+        const rootId = def.tree!.rootIds[0];
+        const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `${vc} .${nodeClass(def, nid)}`;
+        // An axis earlier in the cascade may be what hides this node, so showing it again has to undo that too.
+        const earlier = axes.slice(0, index).flatMap(([, x]) => Object.values(x.options).flatMap((o) => (o.styles?.[nid] ? [o.styles[nid]] : [])));
+        addRules(rules, wrap(sel), v.styles![nid], { link: def.tree!.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, null, v.styles![nid], earlier) });
+      }
     }
-  }
+  });
   return rules;
 }
 
@@ -482,7 +505,7 @@ function overrideOpts(def: ComponentDefinition, inst: InstanceNode, partId: stri
   return {
     link: def.tree?.nodes[nodeId]?.kind === 'link',
     wideColumns: true,
-    unhide: unhider(def, nodeId, inst.variant ?? def.defaultVariant, inst.overrides?.[partId] ?? {})
+    unhide: unhider(def, nodeId, inst.variants, inst.overrides?.[partId] ?? {})
   };
 }
 
@@ -580,7 +603,7 @@ function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string 
     const parts = [js(nodeClass(ctx.def, node.id)), ...extra];
     for (const [pid, p] of Object.entries(ctx.def.parts)) if (p.nodeId === node.id) parts.push(`so_o?.[${js(pid)}]`);
     if (node.id === ctx.def.tree?.rootIds[0]) {
-      if (ctx.def.variants && Object.keys(ctx.def.variants).length) parts.push(`\`so-${defKey(ctx.def.id)}--\${variant}\``);
+      for (const [axis] of axesOf(ctx.def)) parts.push(`\`so-${defKey(ctx.def.id)}--${axis}-\${${variantProp(axis)}}\``);
       parts.push('className');
     }
     return `{[${parts.join(', ')}]}`;
@@ -776,8 +799,15 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     }
     attrs.push(propAttr(propKey(def, propName), expr));
   }
-  const variant = node.variant ?? def.defaultVariant;
-  if (variant && def.variants?.[variant]) attrs.push(`variant=${js(variant)}`);
+  const chosen = Object.entries(selectedVariants(def, node.variants));
+  const variantExpr = (v: unknown) => (isBinding(v) ? `{${bindExpr(ctx, v)}}` : js(v));
+  for (const [axis, value] of chosen) {
+    // A code component gets an axis prop only if its source reads it; anything else would land in its rest props.
+    if (def.kind === 'code' && (Object.hasOwn(def.properties, variantProp(axis)) || !def.source?.includes(variantProp(axis)))) continue;
+    attrs.push(`${variantProp(axis)}=${variantExpr(value)}`);
+  }
+  // Code components read the first axis as `variant`, the contract they have always had.
+  if (def.kind === 'code' && chosen.length && !Object.hasOwn(def.properties, 'variant')) attrs.push(`variant=${variantExpr(chosen[0][1])}`);
   // A section's anchor lands on its component's root element.
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);
@@ -873,7 +903,14 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
       const head = key === local ? local : `${/^[a-zA-Z_$][\w$]*$/.test(key) ? key : js(key)}: ${local}`;
       return `\t\t${head} = ${propDefaultExpr(schema, ctx.rctx)},`;
     });
-  if (def.variants && Object.keys(def.variants).length) propDecls.push(`\t\tvariant = ${js(def.defaultVariant ?? Object.keys(def.variants)[0])},`);
+  const legacyCaller = hasLegacyVariantCaller(state, def);
+  if (legacyCaller) propDecls.push(`\t\tvariant = undefined,`);
+  for (const [axis, a] of axesOf(def)) {
+    // A single first-format value selects its own axis and the plain option of the others.
+    const plain = Object.hasOwn(a.options, 'default') ? 'default' : a.default;
+    const fallback = legacyCaller ? `${js(Object.keys(a.options))}.includes(variant) ? variant : variant === undefined ? ${js(a.default)} : ${js(plain)}` : js(a.default);
+    propDecls.push(`\t\t${variantProp(axis)} = ${fallback},`);
+  }
   for (const slotName of Object.keys(def.slots ?? {}).sort()) propDecls.push(`\t\tslot_${safeIdent(slotName)} = undefined,`);
   propDecls.push(`\t\tso_o = undefined,`);
   propDecls.push(`\t\tso_id = undefined,`);

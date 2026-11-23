@@ -1,5 +1,5 @@
 import { P, managed, tok } from '../dsl';
-import { eyebrowStyles, mutedStyles, sectionShell, toneVariants } from './common';
+import { eyebrowStyles, mutedStyles, layoutAxis, sectionShell, toneAxis } from './common';
 
 const actions = (b: import('../dsl').TreeBuilder, align: 'start' | 'center') =>
   b.el('actions', 'div', { name: 'Actions', styles: { base: { layout: 'row', wrap: true, gap: tok('space.sm'), justify: align, marginBlockStart: tok('space.sm') } } }, [
@@ -35,10 +35,9 @@ export const heroCentered = managed({
   icon: 'text-align-center',
   properties: heroProps,
   parts: heroParts,
-  variants: toneVariants(['lead'], {
+  variantAxes: { tone: toneAxis(['lead'], {
     brand: { label: 'Brand', styles: { root: { base: { background: tok('color.brand'), color: tok('color.on-brand') } }, eyebrow: { base: { color: tok('color.on-brand'), opacity: 0.8 } }, lead: { base: { color: tok('color.on-brand'), opacity: 0.85 } }, primary: { base: { background: tok('color.on-brand'), color: tok('color.brand-strong') } } } }
-  }),
-  defaultVariant: 'default',
+  }) },
   build: (b) =>
     sectionShell(
       b,
@@ -67,11 +66,13 @@ export const heroSplit = managed({
     ...heroParts,
     media: { nodeId: 'media', label: 'Image', styleControls: ['aspectRatio', 'radius', 'shadow'] }
   },
-  variants: {
-    ...toneVariants(['lead']),
-    'media-start': { label: 'Image first', styles: { 'media-wrap': { desktop: { order: -1 } } } }
+  variantAxes: {
+    tone: toneAxis(['lead']),
+    layout: layoutAxis({
+      default: { label: 'Image last' },
+      'media-start': { label: 'Image first', styles: { 'media-wrap': { desktop: { order: -1 } } } }
+    })
   },
-  defaultVariant: 'default',
   build: (b) =>
     sectionShell(b, [
       b.el(
@@ -117,8 +118,7 @@ export const pageIntro = managed({
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
     lead: { nodeId: 'lead', label: 'Description', styleControls: ['textStyle', 'color'] }
   },
-  variants: toneVariants(['lead']),
-  defaultVariant: 'muted',
+  variantAxes: { tone: toneAxis(['lead'], {}, 'muted') },
   build: (b) =>
     sectionShell(
       b,

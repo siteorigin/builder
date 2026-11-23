@@ -314,7 +314,7 @@ describe('migrating documents to structured rich text', () => {
   it('converts values, defaults, literal text and the list marker', () => {
     const { s, pricingId, textId, lit } = oldProject();
     const out = migrateProject(s)!;
-    expect(out.applied).toEqual(['structured-rich-text']);
+    expect(out.applied[0]).toBe('structured-rich-text');
     const page = out.state.pages[out.state.site.homePageId];
     expect((page.nodes[textId] as InstanceNode).props.body).toEqual([
       p('Plain'),

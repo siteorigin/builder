@@ -118,7 +118,7 @@ describe('components', () => {
     const r = applyOperations(s, [{ type: 'component.makeUnique', owner: owner(s), nodeId: stats.id }]);
     const node = home(r.state).nodes[stats.id] as InstanceNode;
     expect(node.definitionId).toBe(r.results[0].definitionId);
-    expect(node.variant).toBe('inverse');
+    expect(node.variants?.tone).toBe('inverse');
     expect(node.overrides?.value?.tablet?.color).toBe('#ff0000');
     expect(r.state.components[node.definitionId].owner).toBe('project');
   });
@@ -416,14 +416,14 @@ describe('create component from a selection (§2.3)', () => {
     const f = fork(fresh(), 'features.grid');
     const own = { kind: 'component' as const, id: f.id };
     // A variant that restyles the card text is something the new component could not follow.
-    f.state.components[f.id].variants!.inverse.styles!['card-text'] = { base: { opacity: 0.78 } };
+    f.state.components[f.id].variantAxes!.tone.options.inverse.styles!['card-text'] = { base: { opacity: 0.78 } };
     expect(() => applyOperations(f.state, [{ type: 'component.createFromNode', owner: own, nodeId: 'card', name: 'Card' }])).toThrow(/variant styles elements inside/);
-    const styled = Object.entries(f.state.components[f.id].variants!).filter(([, v]) => v.styles?.['card-text']);
+    const styled = Object.entries(f.state.components[f.id].variantAxes!.tone.options).filter(([, v]) => v.styles?.['card-text']);
     const reset = applyOperations(
       f.state,
       styled.map(([vid]) => ({ type: 'node.resetStyles' as const, owner: own, nodeId: 'card-text', variant: vid }))
     ).state;
-    for (const [vid] of styled) expect(reset.components[f.id].variants![vid].styles?.['card-text']).toBeUndefined();
+    for (const [vid] of styled) expect(reset.components[f.id].variantAxes!.tone.options[vid].styles?.['card-text']).toBeUndefined();
     const r = applyOperations(reset, [{ type: 'component.createFromNode', owner: own, nodeId: 'card', name: 'Card' }]);
     const s = r.state;
     const card = s.components[r.results[0].definitionId as string];
@@ -480,7 +480,7 @@ describe('definition editing operations (§2.5)', () => {
     s = applyOperations(s, [
       { type: 'component.setPart', definitionId: id, partId: 'cardText', nodeId: 'card-text', label: 'Card text' },
       { type: 'node.setStyle', owner: owner(s), nodeId: grid.id, partId: 'cardText', scope: 'base', property: 'color', value: '#ff0000' },
-      { type: 'component.setVariant', definitionId: id, variant: 'compact', label: 'Compact' },
+      { type: 'component.setVariant', definitionId: id, axis: 'layout', variant: 'compact', label: 'Compact' },
       { type: 'node.setStyle', owner: own, nodeId: 'grid', variant: 'compact', scope: 'desktop', property: 'gap', value: { token: 'space.sm' } },
       { type: 'instance.setVariant', owner: owner(s), nodeId: grid.id, variant: 'compact' },
       { type: 'component.setSlot', definitionId: id, slot: 'footer', label: 'Footer' },
@@ -488,9 +488,9 @@ describe('definition editing operations (§2.5)', () => {
     ]).state;
     const def = s.components[id];
     expect(def.parts.cardText.styleControls).toContain('textStyle');
-    expect(def.variants!.compact.styles!.grid.desktop!.gap).toEqual({ token: 'space.sm' });
+    expect(def.variantAxes!.layout.options.compact.styles!.grid.desktop!.gap).toEqual({ token: 'space.sm' });
     const css = generateProject(s).get('src/lib/siteorigin/styles/components.css')!;
-    expect(css).toMatch(/--compact \.so-[^{]*__grid \{\n\t\tgap: var\(--so-space-sm\)/);
+    expect(css).toMatch(/--layout-compact \.so-[^{]*__grid \{\n\t\tgap: var\(--so-space-sm\)/);
     expect(errors(s)).toEqual([]);
     expect(() => applyOperations(s, [{ type: 'component.setPart', definitionId: id, partId: 'again', nodeId: 'card-text', label: 'x' }])).toThrow(/already the "cardText" part/);
     expect(() => applyOperations(s, [{ type: 'component.removePart', definitionId: id, partId: 'root' }])).toThrow();
@@ -502,8 +502,8 @@ describe('definition editing operations (§2.5)', () => {
     ]).state;
     const after = home(s).nodes[grid.id] as InstanceNode;
     expect(after.overrides?.cardText).toBeUndefined();
-    expect(after.variant).toBeUndefined();
-    expect(s.components[id].variants?.compact).toBeUndefined();
+    expect(after.variants?.layout).toBeUndefined();
+    expect(s.components[id].variantAxes?.layout.options.compact).toBeUndefined();
     expect(s.components[id].slots).toBeUndefined();
     expect(Object.values(s.components[id].tree!.nodes).some((n) => n.kind === 'slot')).toBe(false);
     expect(errors(s)).toEqual([]);
@@ -745,7 +745,7 @@ describe('review follow-ups for definition editing', () => {
 
   it('rejects variant rules on elements that render nothing', () => {
     const f = fork(fresh(), 'features.grid');
-    const variant = Object.keys(f.state.components[f.id].variants!)[0];
+    const variant = Object.keys(f.state.components[f.id].variantAxes!.tone.options)[0];
     expect(() => applyOperations(f.state, [{ type: 'node.setStyle', owner: { kind: 'component', id: f.id }, nodeId: 'cards', variant, scope: 'base', property: 'gap', value: '1px' }])).toThrow(/render no element/);
   });
 

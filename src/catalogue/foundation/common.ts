@@ -1,4 +1,4 @@
-import type { ResponsiveStyles, VariantDef } from '@shared/types';
+import type { ResponsiveStyles, VariantAxis, VariantDef } from '@shared/types';
 import { TreeBuilder, tok } from '../dsl';
 
 /** Standard section shell: full-bleed root with vertical rhythm, centered content container. */
@@ -66,6 +66,16 @@ export function toneVariants(mutedNodes: string[] = [], extra: Record<string, Va
     inverse: { label: 'Dark', styles: inverse },
     ...extra
   };
+}
+
+/** The tone axis most sections share. */
+export function toneAxis(mutedNodes: string[] = [], extra: Record<string, VariantDef> = {}, defaultTone = 'default'): VariantAxis {
+  return { label: 'Tone', default: defaultTone, options: toneVariants(mutedNodes, extra) };
+}
+
+/** A layout axis. Its "default" option is the arrangement the design has with no layout rules. */
+export function layoutAxis(options: Record<string, VariantDef>): VariantAxis {
+  return { label: 'Layout', default: 'default', options };
 }
 
 export const eyebrowStyles = { textStyle: tok('text.eyebrow'), color: tok('color.brand') };

@@ -1,5 +1,5 @@
 import { P, managed, tok } from '../dsl';
-import { eyebrowStyles, headingBlock, mutedStyles, sectionShell, toneVariants } from './common';
+import { eyebrowStyles, headingBlock, mutedStyles, layoutAxis, sectionShell, toneAxis } from './common';
 
 const card = { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), background: tok('color.surface'), color: tok('color.text'), border: tok('border.default'), radius: tok('radius.lg') } as const;
 
@@ -40,11 +40,14 @@ export const featuresGrid = managed({
     cardTitle: { nodeId: 'card-title', label: 'Card title', styleControls: ['textStyle', 'color'] },
     cardIcon: { nodeId: 'card-icon', label: 'Card icon', styleControls: ['color', 'background'] }
   },
-  variants: toneVariants(['lead'], {
-    'two-columns': { label: 'Two columns', styles: { grid: { desktop: { columns: 2 } } } },
-    'four-columns': { label: 'Four columns', styles: { grid: { desktop: { columns: 4 } } } }
-  }),
-  defaultVariant: 'default',
+  variantAxes: {
+    tone: toneAxis(['lead']),
+    layout: layoutAxis({
+      default: { label: 'Three columns' },
+      'two-columns': { label: 'Two columns', styles: { grid: { desktop: { columns: 2 } } } },
+      'four-columns': { label: 'Four columns', styles: { grid: { desktop: { columns: 4 } } } }
+    })
+  },
   build: (b) =>
     sectionShell(b, [
       headingBlock(b),
@@ -88,10 +91,13 @@ export const mediaSplit = managed({
     media: { nodeId: 'media', label: 'Image', styleControls: ['aspectRatio', 'radius', 'shadow'] },
     action: { nodeId: 'action', label: 'Action' }
   },
-  variants: toneVariants(['body'], {
-    'media-end': { label: 'Image last', styles: { 'media-wrap': { desktop: { order: 2 } } } }
-  }),
-  defaultVariant: 'default',
+  variantAxes: {
+    tone: toneAxis(['body']),
+    layout: layoutAxis({
+      default: { label: 'Image first' },
+      'media-end': { label: 'Image last', styles: { 'media-wrap': { desktop: { order: 2 } } } }
+    })
+  },
   build: (b) =>
     sectionShell(b, [
       b.el('grid', 'div', { name: 'Layout', styles: { base: { layout: 'grid', columns: 1, gap: tok('space.2xl'), align: 'center' }, desktop: { columns: 2, gap: tok('space.3xl') } } }, [
@@ -127,8 +133,7 @@ export const textSection = managed({
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
     body: { nodeId: 'body', label: 'Text', styleControls: ['textStyle', 'color'] }
   },
-  variants: toneVariants(['body']),
-  defaultVariant: 'default',
+  variantAxes: { tone: toneAxis(['body']) },
   build: (b) =>
     sectionShell(
       b,
@@ -168,8 +173,7 @@ export const stats = managed({
     value: { nodeId: 'value', label: 'Value', styleControls: ['textStyle', 'color'] },
     label: { nodeId: 'label', label: 'Label', styleControls: ['textStyle', 'color'] }
   },
-  variants: toneVariants(['label']),
-  defaultVariant: 'default',
+  variantAxes: { tone: toneAxis(['label']) },
   build: (b) =>
     sectionShell(b, [
       b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
@@ -216,8 +220,7 @@ export const gallery = managed({
     image: { nodeId: 'image', label: 'Image', styleControls: ['aspectRatio', 'radius'] },
     caption: { nodeId: 'caption', label: 'Caption', styleControls: ['textStyle', 'color'] }
   },
-  variants: toneVariants(['lead', 'caption']),
-  defaultVariant: 'default',
+  variantAxes: { tone: toneAxis(['lead', 'caption']) },
   build: (b) =>
     sectionShell(b, [
       headingBlock(b),
@@ -247,10 +250,9 @@ export const container = managed({
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'paddingInline', 'background', 'color', 'minHeight'] },
     container: { nodeId: 'inner', label: 'Container', styleControls: ['maxWidth', 'gap', 'layout', 'columns', 'align', 'justify', 'textAlign'] }
   },
-  variants: toneVariants([]),
-  defaultVariant: 'default',
+  variantAxes: { tone: toneAxis([]) },
   build: (b) => sectionShell(b, [b.slot('content-slot', 'content', { name: 'Content' })], { inner: { base: { gap: tok('space.lg') } } })
 });
 
 // Figures switch to the accent color on the dark tone for contrast.
-stats.variants!.inverse.styles!.value = { base: { color: tok('color.accent') } };
+stats.variantAxes!.tone.options.inverse.styles!.value = { base: { color: tok('color.accent') } };

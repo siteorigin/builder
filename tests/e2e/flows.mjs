@@ -154,6 +154,23 @@ await win.locator('.insp-scope.definition').first().waitFor();
 await win.locator('.mode-band-done').click();
 await win.locator('.mode-band').waitFor({ state: 'detached' });
 
+step('tone and layout combine, and a code component offers its tone');
+const axis = (label) => win.locator('#dock-panel-inspect .field', { hasText: new RegExp(`^${label}`) }).locator('select').first();
+await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
+await axis('Tone').selectOption('inverse');
+await axis('Layout').selectOption('four-columns');
+await eventually(() => {
+  const page = read('src/routes/+page.svelte');
+  assert.match(page, /variant_tone="inverse"/, 'the section keeps its dark tone');
+  assert.match(page, /variant_layout="four-columns"/, 'alongside its four-column layout');
+});
+await win.getByRole('button', { name: 'Insert', exact: true }).click();
+await win.getByRole('button', { name: 'Contact form' }).click();
+await win.locator('#dock-panel-inspect .insp-name h3', { hasText: 'Contact form' }).waitFor();
+await axis('Tone').selectOption('muted');
+await eventually(() => assert.match(read('src/routes/+page.svelte'), /variant="muted"/, 'the form takes the tone chosen in the Inspector'));
+await eventually(async () => assert.equal(await frame.locator('section.so-form--muted').count(), 1, 'the preview shows the form in that tone'));
+
 step('site styles and chat panels');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
 await win.locator('#dock-panel-styles').waitFor();

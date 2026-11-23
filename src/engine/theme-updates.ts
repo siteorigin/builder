@@ -15,6 +15,7 @@ import { isBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { getTheme } from '@catalogue/index';
 import { definitionHash } from '@shared/migrations';
+import { variantOptions } from '@shared/variants';
 import { clone } from './install';
 import { EngineError, fail, instancesOf, subtreeIds } from './tree';
 import { codeNeeds, directDependencies } from './definitions';
@@ -57,7 +58,7 @@ export function contractConflicts(state: ProjectState, def: ComponentDefinition,
     if (now.type === 'enum') for (const v of usedValues(state, def.id, p)) if (!now.options.some((o) => o.value === v)) conflicts.push(`${def.name}: property "${p}" has no option "${String(v)}".`);
   }
   for (const p of Object.keys(def.parts)) if (!own(next.parts, p)) conflicts.push(`${def.name}: part "${p}" is missing.`);
-  for (const v of Object.keys(def.variants ?? {})) if (!own(next.variants ?? {}, v)) conflicts.push(`${def.name}: variant "${v}" is missing.`);
+  for (const { axis, id } of variantOptions(def)) if (!own(own(next.variantAxes ?? {}, axis)?.options ?? {}, id)) conflicts.push(`${def.name}: ${axis} variant "${id}" is missing.`);
   for (const sl of Object.keys(def.slots ?? {})) if (!own(next.slots ?? {}, sl)) conflicts.push(`${def.name}: slot "${sl}" is missing.`);
   return conflicts;
 }

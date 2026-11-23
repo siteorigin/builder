@@ -332,11 +332,16 @@ export const footer = managed({
     brand: { nodeId: 'brand-name', label: 'Site name', styleControls: ['textStyle', 'color'] },
     copyright: { nodeId: 'copyright', label: 'Copyright', styleControls: ['textStyle', 'color'] }
   },
-  variants: {
-    default: { label: 'Dark' },
-    light: { label: 'Light', styles: { root: { base: { background: tok('color.surface-alt'), color: tok('color.text') } } } }
+  variantAxes: {
+    tone: {
+      label: 'Tone',
+      default: 'default',
+      options: {
+        default: { label: 'Dark' },
+        light: { label: 'Light', styles: { root: { base: { background: tok('color.surface-alt'), color: tok('color.text') } } } }
+      }
+    }
   },
-  defaultVariant: 'default',
   build: (b) => {
     const linkGroup = (id: string, headingProp: string, listProp: string) =>
       b.el(`${id}-group`, 'nav', { name: 'Link group', styles: { layout: 'stack', gap: tok('space.md') } }, [

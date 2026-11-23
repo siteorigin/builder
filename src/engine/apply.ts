@@ -20,6 +20,7 @@ import type { EditOperation, Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
+import { findVariant, variantOptions } from '@shared/variants';
 import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily } from '@shared/fonts';
 import { getTheme, listThemes } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
@@ -88,7 +89,7 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
             delete def.parts[pid];
             dropPartOverrides(state, def.id, pid);
           }
-        for (const v of Object.values(def.variants ?? {})) for (const nid of Object.keys(v.styles ?? {})) if (removed.has(nid)) delete v.styles![nid];
+        for (const { option: v } of variantOptions(def)) for (const nid of Object.keys(v.styles ?? {})) if (removed.has(nid)) delete v.styles![nid];
       }
       return {};
     }
@@ -136,8 +137,8 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
     }
     case 'instance.setVariant': {
       const { node, def } = instanceTarget(state, op.owner, op.nodeId);
-      if (!own(def.variants ?? {}, op.variant)) fail(`"${def.name}" has no variant "${op.variant}". Variants: ${Object.keys(def.variants ?? {}).join(', ') || 'none'}.`);
-      node.variant = op.variant;
+      const found = variantOption(def, op.variant, op.axis);
+      node.variants = { ...node.variants, [found.axis]: found.id };
       return {};
     }
     case 'token.set':
@@ -281,6 +282,12 @@ function editableTree(state: ProjectState, owner: OwnerRef): NodeTree {
     }
   }
   return getTree(state, owner);
+}
+
+function variantOption(def: ComponentDefinition, id: string, axis?: string) {
+  const found = findVariant(def, id, axis);
+  if ('error' in found) fail(found.error);
+  return found;
 }
 
 function projectDef(state: ProjectState, id: string): ComponentDefinition {
@@ -564,7 +571,13 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
     } else fail('node.insert needs componentId, definitionId or primitive.');
     if (def.category === 'shell') fail('Header and footer are shared across pages and cannot be inserted.');
     if (op.owner.kind === 'component' && (def.id === op.owner.id || dependsOn(state, def.id, op.owner.id))) fail('A component cannot contain itself.');
-    const inst = makeInstance(def, {}, op.variant);
+    const chosen: Record<string, string> = {};
+    if (op.variant) {
+      const found = variantOption(def, op.variant);
+      chosen[found.axis] = found.id;
+    }
+    for (const [axis, id] of Object.entries(op.variants ?? {})) chosen[axis] = variantOption(def, id, axis).id;
+    const inst = makeInstance(def, {}, chosen);
     if (op.props) {
       for (const [k, v] of Object.entries(op.props)) {
         const schema = def.properties[k];
@@ -572,7 +585,6 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
         inst.props[k] = normalizeProp(schema, v, state, `${def.name} → ${schema.label}`);
       }
     }
-    if (op.variant && !own(def.variants ?? {}, op.variant)) fail(`"${def.name}" has no variant "${op.variant}".`);
     nodes = [inst];
   }
   for (const n of nodes) tree.nodes[n.id] = n;
@@ -698,7 +710,7 @@ function checkTokenRef(state: ProjectState, value: StyleValue) {
 }
 
 /** Style rules a definition's variant sets on one of its nodes. */
-function variantStyles(state: ProjectState, owner: OwnerRef, nodeId: string, variant: string, partId?: string) {
+function variantStyles(state: ProjectState, owner: OwnerRef, nodeId: string, variant: string, partId?: string, axis?: string) {
   if (owner.kind !== 'component') fail('Variants belong to component definitions. Edit the component to style a variant.');
   const tree = editableTree(state, owner);
   const node = getNode(tree, nodeId);
@@ -706,12 +718,14 @@ function variantStyles(state: ProjectState, owner: OwnerRef, nodeId: string, var
   if (node.kind === 'repeat' || node.kind === 'slot') fail('Repeats and slots render no element of their own; style an element inside them.');
   if (tree.rootIds.indexOf(nodeId) > 0) fail('Only the first top-level element carries the variant; style an element inside it.');
   const def = state.components[owner.id];
-  const v = own(def.variants ?? {}, variant) ?? fail(`"${def.name}" has no variant "${variant}". Variants: ${Object.keys(def.variants ?? {}).join(', ') || 'none'}.`);
+  const found = variantOption(def, variant, axis);
+  const v = def.variantAxes![found.axis].options[found.id];
   v.styles ??= {};
   return v;
 }
 
 function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
+  if (op.axis !== undefined && op.variant === undefined) fail('"axis" needs a "variant": name the option to style.');
   const tree = editableTree(state, op.owner);
   const node = getNode(tree, op.nodeId);
   if (!own(STYLE_PROP_MAP, op.property)) fail(`Unknown style property "${op.property}". Valid: ${Object.keys(STYLE_PROP_MAP).join(', ')}.`);
@@ -728,7 +742,7 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
   }
   const scope = op.scope as ResponsiveScope;
   if (op.variant !== undefined) {
-    const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId);
+    const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId, op.axis);
     v.styles![op.nodeId] ??= {};
     setStyle(v.styles![op.nodeId] as Record<string, Record<string, StyleValue>>, scope, op.property, op.value);
     if (!Object.keys(v.styles![op.nodeId]).length) delete v.styles![op.nodeId];
@@ -770,9 +784,10 @@ function setStyle(styles: Record<string, Record<string, StyleValue>>, scope: str
 }
 
 function nodeResetStyles(state: ProjectState, op: Op<'node.resetStyles'>): OpResult {
+  if (op.axis !== undefined && op.variant === undefined) fail('"axis" needs a "variant": name the option to reset.');
   const node = getNode(editableTree(state, op.owner), op.nodeId);
   if (op.variant !== undefined) {
-    const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId);
+    const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId, op.axis);
     const rules = v.styles![op.nodeId];
     if (rules && op.scope) delete rules[op.scope];
     if (rules && (!op.scope || !Object.keys(rules).length)) delete v.styles![op.nodeId];
@@ -1343,7 +1358,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
         delete ownerDef.parts[pid];
       }
     }
-    for (const v of Object.values(ownerDef.variants ?? {})) {
+    for (const { option: v } of variantOptions(ownerDef)) {
       if (!v.styles) continue;
       // Variant rules inside the selection would need the new component to know the owner's variant.
       const inner = Object.keys(v.styles).filter((nid) => nid !== op.nodeId && removed.has(nid));
@@ -1398,7 +1413,7 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   // Parts keep their node IDs: the converted source keeps each part's class and so_o hook, so existing
   // placement overrides still reach the same elements.
   // Variant styles now live in the source; the variant names remain the component's contract.
-  if (copy.variants) copy.variants = Object.fromEntries(Object.entries(copy.variants).map(([k, v]) => [k, { label: v.label }]));
+  if (copy.variantAxes) copy.variantAxes = Object.fromEntries(Object.entries(copy.variantAxes).map(([axis, a]) => [axis, { ...a, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, { label: v.label }])) }]));
   if (deps.length) copy.dependencies = deps;
   else delete copy.dependencies;
   state.components[copy.id] = copy;

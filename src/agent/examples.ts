@@ -1,4 +1,5 @@
 /** Keyword retrieval over the theme's worked examples (ai-profile), checked against the real catalogue. */
+import { findVariant } from '@shared/variants';
 import type { ComponentDefinition, ProjectState } from '@shared/types';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import type { AiExample } from '@catalogue/foundation/ai-examples';
@@ -9,7 +10,7 @@ export function checkExample(state: ProjectState, ex: AiExample): FieldIssue[] {
   const def: ComponentDefinition | undefined = catalogueComponent(state.site.themeId, ex.componentId);
   if (!def || def.category === 'shell') return [{ field: 'componentId', message: `unknown component "${ex.componentId}"` }];
   const issues: FieldIssue[] = [];
-  if (ex.variant !== undefined && !Object.hasOwn(def.variants ?? {}, ex.variant)) issues.push({ field: 'variant', message: `no variant "${ex.variant}"` });
+  if (ex.variant !== undefined && 'error' in findVariant(def, ex.variant)) issues.push({ field: 'variant', message: `no variant "${ex.variant}"` });
   checkProps(def, ex.props, state, 'props', issues);
   return issues;
 }

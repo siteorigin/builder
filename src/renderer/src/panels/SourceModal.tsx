@@ -129,7 +129,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
               <PropSchemaEditor rows={rows} onChange={setRows} readOnly={!!status} />
             </div>
           ) : tab === 'manifest' ? (
-            <pre className="code-view" tabIndex={0}>{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.keys(def.variants ?? {}) }, null, 2)}</pre>
+            <pre className="code-view" tabIndex={0}>{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.fromEntries(Object.entries(def.variantAxes ?? {}).map(([axis, a]) => [axis, Object.keys(a.options)])) }, null, 2)}</pre>
           ) : src?.editable ? (
             <CodeEditor value={draft} onChange={setDraft} />
           ) : src ? (

@@ -60,7 +60,7 @@ const FOUNDATION: ThemePack = {
     examples: FOUNDATION_EXAMPLES,
     guidance: [
       'Foundation is calm and restrained: generous whitespace, a serif display face for headings and a sans-serif body.',
-      'Alternate section tones (Default, Soft background, Dark) to create rhythm; avoid two Dark sections in a row.',
+      'Alternate the tone axis (default, muted, inverse) to create rhythm; avoid two Dark sections in a row.',
       'Begin the home page with a hero, inner pages with a Page introduction, and end most pages with a Call to action.',
       'Prefer site tokens (color.*, space.*, text.*) over literal values so that brand changes stay consistent.',
       'Keep headings short (under ten words) and supporting text to one or two sentences.'
@@ -101,7 +101,8 @@ export interface CatalogueEntry {
   category: string;
   tags: string[];
   icon?: string;
-  variants: Array<{ id: string; label: string }>;
+  /** Option IDs on each variant axis. */
+  axes: Record<string, string[]>;
 }
 
 export function catalogueEntries(themeId: string): CatalogueEntry[] {
@@ -114,7 +115,7 @@ export function catalogueEntries(themeId: string): CatalogueEntry[] {
       category: c.category,
       tags: c.tags,
       icon: c.icon,
-      variants: Object.entries(c.variants ?? {}).map(([id, v]) => ({ id, label: v.label }))
+      axes: Object.fromEntries(Object.entries(c.variantAxes ?? {}).map(([axis, a]) => [axis, Object.keys(a.options)]))
     }));
 }
 
