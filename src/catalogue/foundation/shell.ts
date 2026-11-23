@@ -48,30 +48,49 @@ const HEADER_SOURCE = `<script>
 	});
 
 	/**
-	 * Publishes how far down the header reaches while it stays in view (0 when it scrolls away or is hidden) as
-	 * --so-header-offset on the page root. The theme's [id] scroll margin adds to it, so jump links land below it.
-	 * The computed position also counts a sticky or fixed position set as a style rather than by the setting.
+	 * Publishes how far down the window the header reaches while it stays at the top (0 when it scrolls away, is
+	 * hidden or stays at the bottom) as --so-header-offset on the page root. The theme's [id] scroll margin adds
+	 * to it, so jump links land below it. The computed style also counts a position set as a style: a sticky
+	 * header stays in view only with a top inset, and a fixed one covers the top when it sits in the top half.
 	 */
 	function publishOffset(el) {
 		const root = el.ownerDocument.documentElement;
 		const style = getComputedStyle(el);
-		const height = el.getBoundingClientRect().height;
-		const stays = (style.position === 'sticky' || style.position === 'fixed') && height > 0;
-		const value = (stays ? Math.ceil(height + Math.max(parseFloat(style.top) || 0, 0)) : 0) + 'px';
+		const box = el.getBoundingClientRect();
+		const top = parseFloat(style.top);
+		let reach = 0;
+		if (box.height > 0 && style.position === 'sticky' && Number.isFinite(top)) reach = Math.max(top, 0) + box.height;
+		else if (box.height > 0 && style.position === 'fixed' && box.top < el.ownerDocument.defaultView.innerHeight / 2) reach = Math.max(box.bottom, 0);
+		const value = Math.ceil(reach) + 'px';
 		if (root.style.getPropertyValue('--so-header-offset') !== value) root.style.setProperty('--so-header-offset', value);
 	}
 
-	// The height changes when the brand or the links wrap, at a breakpoint, and when the fonts load. The sticky
-	// setting changes the position without the size, which the observer would miss.
+	// The height changes when the brand or the links wrap, at a breakpoint, and when the fonts load; an inset in
+	// window units changes with the window. The sticky setting changes the position without the size, which the
+	// observer would miss.
 	$effect(() => {
 		const el = header;
 		if (!el) return;
 		void sticky;
-		publishOffset(el);
-		const observer = new ResizeObserver(() => publishOffset(el));
+		const win = el.ownerDocument.defaultView;
+		const update = () => publishOffset(el);
+		// Chromium can resolve window units against the old size for a frame after the resize event.
+		let frame = 0;
+		const resized = () => {
+			win.cancelAnimationFrame(frame);
+			frame = win.requestAnimationFrame(() => {
+				update();
+				frame = win.requestAnimationFrame(update);
+			});
+		};
+		update();
+		const observer = new ResizeObserver(update);
 		observer.observe(el, { box: 'border-box' });
+		win.addEventListener('resize', resized);
 		return () => {
 			observer.disconnect();
+			win.removeEventListener('resize', resized);
+			win.cancelAnimationFrame(frame);
 			el.ownerDocument.documentElement.style.removeProperty('--so-header-offset');
 		};
 	});

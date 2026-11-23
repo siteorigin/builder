@@ -179,14 +179,14 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
    * the navigation the header mounts in (a visit starts with `enter`); `?font` adds a web font the test holds back;
    * `?early` starts the script as soon as the document is parsed, before the browser's jump to the fragment.
    */
-  async function withSite(name: keyof typeof sites, width: number, body: (site: Site) => Promise<void>, motion: 'reduce' | 'no-preference' = 'reduce') {
+  async function withSite(name: keyof typeof sites, width: number, body: (site: Site) => Promise<void>, motion: 'reduce' | 'no-preference' = 'reduce', extraCss = '') {
     // Reduced motion turns off the theme's smooth scrolling, so a jump has finished when it is measured.
     const context = await browser.newContext({ viewport: { width, height: 800 }, reducedMotion: motion });
     context.setDefaultTimeout(10_000);
     const held: Route[] = [];
     try {
       const page = await context.newPage();
-      const head = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sites[name].css}</style>`;
+      const head = `<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${sites[name].css}${extraCss}</style>`;
       let rendered = '';
       await page.route(`${ORIGIN}/**`, (route) => {
         const path = new URL(route.request().url()).pathname;
@@ -387,6 +387,37 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
       // Each step changes the header's height, so a stale offset in either direction shows.
       for (let i = 1; i < heights.length; i++) expect(heights[i], `header heights ${heights.join(', ')}`).not.toBeCloseTo(heights[i - 1], 0);
     });
+  }, 60_000);
+
+  it.each([
+    ['a sticky header set lower with an inset', 'sticky', '.so-header { top: 10vh !important; }', 'below'],
+    ['a header made sticky without a top inset, which scrolls away', 'static', '.so-header { position: sticky !important; }', 'top'],
+    ['a header fixed to the bottom of the window', 'sticky', '.so-header { position: fixed !important; top: auto !important; bottom: 0; left: 0; right: 0; }', 'top']
+  ] as const)('with %s, links clear what covers the top of the window', async (_case, name, css, where) => {
+    await withSite(
+      name,
+      1024,
+      async ({ page }) => {
+        await page.goto(`${ORIGIN}/`);
+        await page.waitForFunction('window.started === true');
+        for (const height of [800, 600]) {
+          await page.setViewportSize({ width: 1024, height });
+          await page.evaluate(settled);
+          for (const id of [HEADING, SECTION]) {
+            const l = await follow(page, id);
+            const label = `link to ${id} in a ${height}px window`;
+            if (where === 'below') expectLanded(label, l);
+            else {
+              expect(l.hits, describeLanding(label, l)).toEqual(['target', 'target'].slice(0, l.hits.length));
+              expect(l.top, describeLanding(label, l)).toBeGreaterThanOrEqual(GAP.min);
+              expect(l.top, describeLanding(label, l)).toBeLessThanOrEqual(GAP.max);
+            }
+          }
+        }
+      },
+      'reduce',
+      css
+    );
   }, 60_000);
 
   it('without a sticky header, links land 1rem from the top and a direct visit stays where the browser put it', async () => {
