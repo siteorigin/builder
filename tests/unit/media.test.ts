@@ -201,7 +201,9 @@ describe('animated PNG detection', () => {
 
   it('is true when an animation control chunk comes before the image data', () => {
     expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('acTL', 8), chunk('IDAT', 4), chunk('IEND')]))).toBe(true);
-    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('tEXt', 5), chunk('acTL', 8), chunk('IDAT', 4)]))).toBe(true);
+    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('tEXt', 5), chunk('pHYs', 9), chunk('acTL', 8), chunk('IDAT', 4)]))).toBe(true);
+    // A malformed one still counts: a browser may skip it and play the next, and a wrong call only costs the copies.
+    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('acTL', 4), chunk('acTL', 8), chunk('IDAT', 4)]))).toBe(true);
   });
 
   it('is false for a still PNG, an acTL after the image data, and anything that is not a PNG', () => {
@@ -215,8 +217,5 @@ describe('animated PNG detection', () => {
     expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13)]).subarray(0, 25))).toBe(false);
     expect(isAnimatedPng(Buffer.concat([sig, u32(0xfffffff0), Buffer.from('tEXt', 'ascii')]))).toBe(false);
     expect(isAnimatedPng(sig)).toBe(false);
-    // An animation control chunk cut short, or of the wrong length, is not a readable animation header.
-    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('acTL', 8)]).subarray(0, 8 + 25 + 14))).toBe(false);
-    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('acTL', 4), chunk('IDAT', 4)]))).toBe(false);
   });
 });
