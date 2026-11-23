@@ -65,6 +65,125 @@ export function isAnimatedPng(buf: Buffer): boolean {
   return false;
 }
 
+/**
+ * Why a raster image cannot be shown, without decoding it: 'empty' (no bytes), 'incomplete' (cut short: a part its
+ * own structure says follows is missing) or 'unreadable' (not the format its type names). null when the file
+ * holds a whole picture as far as its structure goes. SVG is checked by the sanitizer instead.
+ */
+export type ImageProblem = 'empty' | 'incomplete' | 'unreadable';
+
+export function imageProblem(buf: Buffer, mime: string): ImageProblem | null {
+  if (!buf.length) return 'empty';
+  if (mime === 'image/svg+xml') return null;
+  let problem: ImageProblem | null;
+  try {
+    problem =
+      mime === 'image/jpeg' ? jpegProblem(buf) : mime === 'image/png' ? pngProblem(buf) : mime === 'image/gif' ? gifProblem(buf) : mime === 'image/webp' ? webpProblem(buf) : mime === 'image/avif' ? avifProblem(buf) : 'unreadable';
+  } catch {
+    // A read past the end: the structure promised more bytes than the file has.
+    return 'incomplete';
+  }
+  if (problem) return problem;
+  const info = imageInfo(buf, mime);
+  return info && info.width > 0 && info.height > 0 ? null : 'unreadable';
+}
+
+/** Markers up to the first scan, then the end-of-image marker after it. Inside scan data 0xff is always escaped. */
+function jpegProblem(buf: Buffer): ImageProblem | null {
+  if (buf.length < 2 || buf[0] !== 0xff || buf[1] !== 0xd8) return 'unreadable';
+  let i = 2;
+  let frame = false;
+  for (;;) {
+    if (i + 2 > buf.length) return 'incomplete';
+    if (buf[i] !== 0xff) return 'unreadable';
+    while (buf[i + 1] === 0xff && i + 2 < buf.length) i++;
+    const marker = buf[i + 1];
+    if (marker === 0xd9) return 'unreadable';
+    if ((marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+      i += 2;
+      continue;
+    }
+    if (i + 4 > buf.length) return 'incomplete';
+    const len = buf.readUInt16BE(i + 2);
+    if (len < 2) return 'unreadable';
+    if (i + 2 + len > buf.length) return 'incomplete';
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) frame = true;
+    if (marker === 0xda) return !frame ? 'unreadable' : buf.indexOf(JPEG_END, i + 2 + len) >= 0 ? null : 'incomplete';
+    i += 2 + len;
+  }
+}
+const JPEG_END = Buffer.from([0xff, 0xd9]);
+
+/** Every chunk whole, from the header through the image data to the end chunk. */
+function pngProblem(buf: Buffer): ImageProblem | null {
+  if (buf.length < 8 || !buf.subarray(0, 8).equals(PNG_SIGNATURE)) return 'unreadable';
+  let data = false;
+  for (let i = 8; ; ) {
+    if (i + 12 > buf.length) return 'incomplete';
+    const len = buf.readUInt32BE(i);
+    const type = buf.toString('latin1', i + 4, i + 8);
+    if (len > 0x7fffffff || (i === 8) !== (type === 'IHDR')) return 'unreadable';
+    if (i + 12 + len > buf.length) return 'incomplete';
+    if (type === 'IDAT') data = true;
+    if (type === 'IEND') return data ? null : 'unreadable';
+    i += 12 + len;
+  }
+}
+
+/** Blocks from the screen descriptor to the trailer; a file that ends cleanly after a whole picture is accepted. */
+function gifProblem(buf: Buffer): ImageProblem | null {
+  if (buf.length < 13 || !/^GIF8[79]a$/.test(buf.toString('latin1', 0, 6))) return 'unreadable';
+  const table = (flags: number) => (flags & 0x80 ? 3 * (1 << ((flags & 7) + 1)) : 0);
+  let p = 13 + table(buf[10]);
+  let picture = false;
+  /** Data sub-blocks up to their terminator; false when the file ends first. */
+  const subBlocks = () => {
+    for (;;) {
+      if (p >= buf.length) return false;
+      const n = buf[p++];
+      if (!n) return true;
+      p += n;
+    }
+  };
+  for (;;) {
+    if (p >= buf.length) return p === buf.length && picture ? null : 'incomplete';
+    const block = buf[p++];
+    if (block === 0x3b) return picture ? null : 'unreadable';
+    if (block === 0x21) {
+      p++;
+      if (!subBlocks()) return 'incomplete';
+    } else if (block === 0x2c) {
+      if (p + 9 > buf.length) return 'incomplete';
+      p += 9 + table(buf[p + 8]) + 1;
+      if (!subBlocks()) return 'incomplete';
+      picture = true;
+    } else return 'unreadable';
+  }
+}
+
+/** The RIFF container says how long the file is. */
+function webpProblem(buf: Buffer): ImageProblem | null {
+  if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WEBP') return 'unreadable';
+  return buf.readUInt32LE(4) + 8 > buf.length ? 'incomplete' : null;
+}
+
+/** Top-level boxes, starting with the file type, each ending inside the file. */
+function avifProblem(buf: Buffer): ImageProblem | null {
+  if (buf.length < 12 || buf.toString('ascii', 4, 8) !== 'ftyp') return 'unreadable';
+  for (let p = 0; p < buf.length; ) {
+    if (p + 8 > buf.length) return 'incomplete';
+    let size = buf.readUInt32BE(p);
+    if (size === 1) {
+      if (p + 16 > buf.length) return 'incomplete';
+      size = Number(buf.readBigUInt64BE(p + 8));
+    } else if (size === 0) size = buf.length - p;
+    if (size < 8) return 'unreadable';
+    if (p + size > buf.length) return 'incomplete';
+    p += size;
+  }
+  return null;
+}
+
 /** Back-compatible dimensions only. */
 export function imageSize(buf: Buffer, mime: string): { width: number; height: number } | null {
   const info = imageInfo(buf, mime);

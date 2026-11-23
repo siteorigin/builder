@@ -7,7 +7,7 @@ import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
 import { atomicWrite, sha } from './fsutil';
 import { sanitizeSvg } from './svg';
-import { fontInfo, imageInfo } from './media';
+import { fontInfo, imageInfo, imageProblem, type ImageProblem } from './media';
 import { createVariantClient, MAX_VARIANT_PIXELS } from './media-client';
 
 export { imageSize } from './media';
@@ -39,6 +39,16 @@ export function svgProblem(text: string): string | null {
   return null;
 }
 
+const FORMAT_NAMES: Record<string, string> = { 'image/jpeg': 'JPEG', 'image/png': 'PNG', 'image/webp': 'WebP', 'image/gif': 'GIF', 'image/avif': 'AVIF', 'image/svg+xml': 'SVG' };
+
+/** The end of "{file} was not imported because …": what is wrong with the file, and what to do about it. */
+function unusableReason(problem: ImageProblem, mime: string): string {
+  if (problem === 'empty') return 'the file is empty. Choose the original file, or save or download it again.';
+  if (problem === 'incomplete') return 'it is incomplete: the end of the picture is missing, so the copy or download was probably cut short. Copy or download it again, then import the new copy.';
+  const format = FORMAT_NAMES[mime] ?? 'picture';
+  return `it is not a ${format} image, although its name says it is. Open it in an image editor and save it as JPEG, PNG or WebP.`;
+}
+
 /** Is this a file of the given kind, going by its extension? */
 export function isAssetOfKind(path: string, kind: 'image' | 'font'): boolean {
   const mime = MIME[extname(path).toLowerCase()];
@@ -52,6 +62,9 @@ export async function importAsset(projectDir: string, sourcePath: string, existi
   const stat = await fs.stat(sourcePath);
   if (stat.size > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
   let buf = await fs.readFile(sourcePath);
+  // A picture no browser can show never becomes a library image an author could choose.
+  const problem = mime.startsWith('image/') ? imageProblem(buf, mime) : buf.length ? null : 'empty';
+  if (problem) throw new Error(`${basename(sourcePath)} was not imported because ${unusableReason(problem, mime)}`);
   if (mime === 'image/svg+xml') {
     // Save a rebuilt, allowlisted SVG rather than the original bytes.
     try {
