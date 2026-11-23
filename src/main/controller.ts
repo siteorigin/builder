@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState, WebsiteTools } from '@shared/api';
+import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState, StorageInfo, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -1076,6 +1076,26 @@ export class Controller {
     if (!this.session || !key || this.workspaceKey !== key)
       return Promise.resolve({ ok: false, revision: this.session?.revision ?? 0, error: { code: 'CONFLICT', message: 'That change was made in a project that is no longer open.', recoverable: false } });
     return this.session.undoEntry(entryId);
+  }
+
+  /** What the open project's media and undo history take on disk, and what freeing up space would do. */
+  async storageInfo(key: string): Promise<StorageInfo | null> {
+    const s = this.session;
+    if (!s || !key || this.workspaceKey !== key) return null;
+    const info = await s.storageInfo();
+    if (this.session !== s || this.workspaceKey !== key) return null;
+    return !info.blocked && this.aiBusy() ? { ...info, blocked: 'Wait for the AI to finish, then try again.' } : info;
+  }
+
+  /**
+   * Free the space `plan` (from storageInfo) offered in the opening `key` of the project. Undo steps the plan named
+   * are dropped for good, so only a plan the author confirmed is carried out, and only in the project it was made for.
+   */
+  async reclaimStorage(plan: string, key: string): Promise<{ ok: boolean; message?: string; freed?: number }> {
+    const s = this.session;
+    if (!s || !key || this.workspaceKey !== key || this.closing) return { ok: false, message: 'That project is no longer open.' };
+    if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
+    return s.reclaimStorage(plan);
   }
 
   /** What private metadata an image asset's original carries. Only a library file inside the project is read. */

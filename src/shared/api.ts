@@ -373,6 +373,10 @@ export interface BuilderApi {
     locateAsset(assetId: string, path?: string): Promise<{ ok: boolean; message?: string }>;
     /** Make again the smaller copies a library image is missing. */
     regenerateAssetCopies(assetId: string): Promise<{ ok: boolean; message?: string }>;
+    /** What the project of the opening `workspaceKey` takes on disk; null once another opening is current. */
+    storage(workspaceKey: string): Promise<StorageInfo | null>;
+    /** Carry out the reclaim `planKey` (from `storage`) in the opening `workspaceKey`, dropping the undo steps it named. */
+    reclaimStorage(planKey: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; freed?: number }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;
     exportStatic(format?: ExportFormat): Promise<ExportResult>;
     retryPreview(): Promise<void>;
