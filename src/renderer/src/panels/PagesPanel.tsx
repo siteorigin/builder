@@ -3,6 +3,7 @@ import { Copy, FileText, House, Menu, MoreHorizontal, Pencil, Plus, Settings2, T
 import { slugify, validateRoute } from '@shared/routes';
 import type { ProjectState } from '@shared/types';
 import { applyOps, markDraft, setState, toast, useStore } from '../store';
+import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { selectPage } from '../lib/actions';
@@ -65,10 +66,12 @@ export function PagesPanel() {
    *  or out of a row's menu, continues from it. Opening a page moves the stop to that page. */
   const [focusedRow, setFocusedRow] = useState<string | null>(null);
   useEffect(() => setFocusedRow(null), [pageId]);
+  // A new page with a title typed is waiting for Add page; an empty form holds nothing to lose.
+  const addPending = adding && !!title.trim();
   useEffect(() => {
-    markDraft('page-add', adding);
-    return () => markDraft('page-add', false);
-  }, [adding]);
+    markDraft(PAGE_ADD_DRAFT, addPending);
+    return () => markDraft(PAGE_ADD_DRAFT, false);
+  }, [addPending]);
   useEffect(() => {
     markDraft('page-rename', !!renaming);
     return () => markDraft('page-rename', false);

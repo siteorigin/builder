@@ -117,6 +117,8 @@ export class Controller {
   private closing: Promise<void> | null = null;
   onSessionOpened: ((s: ProjectSession) => Promise<void>) | null = null;
   onSessionClosing: (() => Promise<void>) | null = null;
+  /** Asks the editor to save what is still being typed before the project is unloaded; false keeps it open. */
+  beforeLeave: (() => Promise<boolean>) | null = null;
   aiBusy = () => false;
 
   constructor(private getWindow: () => BrowserWindow | null) {}
@@ -182,6 +184,7 @@ export class Controller {
     if (!name) return { ok: false, message: 'Enter a project name.' };
     let dir = join(opts.parentDir, slugify(name) || 'website');
     if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
+    if (!(await this.mayLeave())) return { ok: false };
     const createdDir = !existsSync(dir);
     this.createAbort = new AbortController();
     const signal = this.createAbort.signal;
@@ -275,12 +278,15 @@ export class Controller {
       if (!manifest.ok) return { ok: false, message: manifest.message };
       return { ok: false, needsTrust: { dir, name: manifest.name } };
     }
+    // Switching projects: the one open now is left only once what is being typed in it is saved.
+    if (!(await this.mayLeave())) return { ok: false };
     return this.openTrusted(dir);
   }
 
   async trustAndOpen(opened: string): Promise<{ ok: boolean; message?: string }> {
     try {
       const dir = canonicalDir(opened);
+      if (!(await this.mayLeave())) return { ok: false };
       await trust(dir, await configHash(dir));
       return await this.openTrusted(dir);
     } catch (e) {
@@ -330,6 +336,8 @@ export class Controller {
   async unlock(): Promise<{ ok: boolean; message?: string }> {
     const s = this.session;
     if (!s?.readOnly?.canUnlock) return { ok: false, message: 'This project is not locked.' };
+    // Reopening closes this read-only session: a page being added in it is settled (or kept) first.
+    if (!(await this.mayLeave())) return { ok: false };
     return this.openTrusted(s.dir, { force: true });
   }
 
@@ -587,9 +595,26 @@ export class Controller {
     });
   }
 
+  /** Whether the open project may be unloaded: the editor saves what is still being typed first, or the author
+   *  chooses to keep editing a change that cannot be saved. */
+  async mayLeave(): Promise<boolean> {
+    // Already closing: leaving was settled when that close was allowed.
+    if (!this.session || this.closing || !this.beforeLeave) return true;
+    return this.beforeLeave();
+  }
+
+  /** Close the project when the author asks to (Close Project, a new project): pending edits are saved first. */
+  async closeProject(): Promise<{ ok: boolean }> {
+    if (!(await this.mayLeave())) return { ok: false };
+    await this.close();
+    return { ok: true };
+  }
+
   /** Close the project. A close already under way is joined, so quitting waits for its preview copy to go too. */
   close(): Promise<void> {
-    this.closing ??= this.closeNow().finally(() => (this.closing = null));
+    const [key, session] = [this.workspaceKey, this.session];
+    // A close that fails leaves the project open and editable under the same opening, and tells the editor.
+    this.closing ??= this.closeNow().catch((e) => { if (session && this.session === session && !this.workspaceKey) (this.workspaceKey = key), this.broadcast(); throw e; }).finally(() => (this.closing = null));
     return this.closing;
   }
 
@@ -692,10 +717,14 @@ export class Controller {
   // Editing
   // -------------------------------------------------------------------------
 
-  async apply(batch: EditBatch, opts: { label?: string; coalesceKey?: string } = {}): Promise<ApplyResult> {
-    if (!this.session) return { ok: false, revision: 0, error: { code: 'INVALID_ARGUMENT', message: 'No project is open.', recoverable: false } };
+  async apply(batch: EditBatch, opts: { label?: string; coalesceKey?: string; opening?: string } = {}): Promise<ApplyResult> {
+    const session = this.session;
+    if (!session) return { ok: false, revision: 0, error: { code: 'INVALID_ARGUMENT', message: 'No project is open.', recoverable: false } };
+    // Made in an opening of a project that has since started closing, closed or been switched away from (even
+    // one reopened at the same folder): never applied to this one.
+    if (opts.opening !== undefined && opts.opening !== this.workspaceKey) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
     const codeOps = new Set(['component.createCode', 'component.updateSource', 'component.convertToCode']);
-    const state = this.session.state;
+    const state = session.state;
     const copiesCode = (o: { type: string; definitionId?: string; owner?: { kind: string; id: string }; nodeId?: string }) => {
       if (o.type === 'component.duplicate') return state.components[o.definitionId ?? '']?.kind === 'code';
       if (o.type === 'component.makeUnique' && o.owner && o.nodeId) {
@@ -706,8 +735,10 @@ export class Controller {
       return codeOps.has(o.type);
     };
     if (!(await loadSettings()).settings.developerMode && batch.operations.some((o) => copiesCode(o as never)))
-      return { ok: false, revision: this.session.revision, error: { code: 'SCOPE_MISMATCH', message: 'Turn on Developer mode in Settings to work with code.', recoverable: true } };
-    return this.session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user' });
+      return { ok: false, revision: session.revision, error: { code: 'SCOPE_MISMATCH', message: 'Turn on Developer mode in Settings to work with code.', recoverable: true } };
+    // An edit belongs to the project it was made in: one closing, closed or switched meanwhile never receives it.
+    if (this.session !== session || this.closing) return { ok: false, revision: session.revision, error: { code: 'CONFLICT', message: 'The project was closed before this change could be saved.', recoverable: false } };
+    return session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user' });
   }
 
   /** Import files. `only` limits a picker that can only use one kind, before anything is written to the project. */

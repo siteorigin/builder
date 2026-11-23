@@ -22,6 +22,7 @@ import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSit
 import { refLabel } from './lib/model';
 import { useTransitionAnnouncement } from './lib/announce';
 import { PANEL_LIMITS, fitPanels, panelMax, resizePanel, type PanelPrefs, type PanelSide } from './lib/layout';
+import { closeProject, endEditingHold, saveNow } from './lib/leave';
 
 const LEFT_TABS = [
   { id: 'pages', label: 'Pages', icon: <FileText /> },
@@ -118,6 +119,8 @@ async function pasteCopied(latest: Copied) {
 /** Global editor shortcuts. Also called for keys forwarded from the preview frame. */
 export function handleShortcut(key: string, mod: boolean, shift: boolean): boolean {
   const s = getState();
+  // While the project is being left, nothing may change it any more (the editor itself is inert then).
+  if (s.leaving) return true;
   if (mod && key.toLowerCase() === 'z') {
     void (shift ? api.project.redo() : api.project.undo()).then((r) => r && !r.ok && r.error && toast(r.error.message, 'error'));
     return true;
@@ -131,11 +134,9 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
     return true;
   }
   if (mod && key.toLowerCase() === 's') {
-    // A save notice only describes the moment it was asked for: if a new edit has started by the time the
-    // save finishes, say nothing (the toolbar shows "Editing…"); the notice also leaves once editing resumes.
-    void api.project.flush().then(() => {
-      if (!getState().drafting) toast('All changes are saved on this computer.', 'success');
-    });
+    // Commits the field being typed in (or the text being edited on the page) and waits for it to land. The
+    // same settling runs before every way of leaving the project.
+    void saveNow();
     return true;
   }
   if (mod && key.toLowerCase() === 'd') {
@@ -285,6 +286,7 @@ export function Editor() {
   const prefs: PanelPrefs = { left: leftTab ? leftWidth : null, right: dockOpen ? rightWidth : null };
   const shown = fitPanels(windowWidth, prefs);
   const aiBusy = useStore((s) => !!s.runStatus);
+  const leaving = useStore((s) => s.leaving);
   // Joined, so each new snapshot (a fresh array over IPC) does not repeat the same notes.
   const recovery = useStore((s) => s.snapshot?.recoveryNotes.join('\n') ?? '');
 
@@ -309,27 +311,32 @@ export function Editor() {
         const t = e.target as HTMLElement;
         if (t !== document.body && !t.closest('[role="tree"], .canvas, .ov-chip, .pages-list, .insp-head')) return;
       }
-      // Save from inside a field: commit the field first so the flush includes it.
-      if (mod && e.key.toLowerCase() === 's' && isTyping(e)) (e.target as HTMLElement).blur();
       if (handleShortcut(e.key, mod, e.shiftKey)) e.preventDefault();
     };
     const onCmd = (e: Event) => {
-      if (openDialogs.length || openMenus.count) return;
+      if (openDialogs.length || openMenus.count || getState().leaving) return;
       const cmd = (e as CustomEvent).detail;
       if (cmd === 'export') setState({ modal: { kind: 'export' } });
-      if (cmd === 'close-project') void api.projects.close();
-      // Switching projects from the editor uses the same New project and Trust dialogs as Welcome.
+      // Leaving the project saves what is being typed first (the main process asks; see lib/leave.ts).
+      if (cmd === 'close-project') void closeProject();
+      // Switching projects from the editor uses the same New project and Trust dialogs as Welcome. The intent
+      // is dropped again if the author keeps editing instead, so a later close does not act on it.
+      const closeFor = (intent: NonNullable<ReturnType<typeof getState>['welcomeIntent']>) => {
+        setState({ welcomeIntent: intent });
+        void closeProject().then((r) => !r.ok && getState().welcomeIntent === intent && setState({ welcomeIntent: null }));
+      };
       if (cmd === 'open-project')
-        void api.projects.open().then((r) => {
-          if (r.needsTrust) {
-            setState({ welcomeIntent: { kind: 'trust', ...r.needsTrust } });
-            void api.projects.close();
-          } else if (!r.ok && r.message) toast(r.message, 'error');
-        }).catch((e) => toast(`Could not open the project: ${errorText(e)}`, 'error'));
-      if (cmd === 'new-project') {
-        setState({ welcomeIntent: { kind: 'new' } });
-        void api.projects.close();
-      }
+        void api.projects.open().then(
+          (r) => {
+            if (r.needsTrust) closeFor({ kind: 'trust', ...r.needsTrust });
+            else if (!r.ok && r.message) toast(r.message, 'error');
+          },
+          (e: unknown) => {
+            endEditingHold();
+            toast(`Could not open the project: ${errorText(e)}`, 'error');
+          }
+        );
+      if (cmd === 'new-project') closeFor({ kind: 'new' });
     };
     window.addEventListener('keydown', onKey);
     window.addEventListener('builder-command', onCmd);
@@ -376,7 +383,7 @@ export function Editor() {
   const modeAnnouncement = useTransitionAnnouncement(defName, (prev, next) => (next ? `Editing ${next} everywhere. Layout and style changes apply wherever it is used.` : prev ? `Finished editing ${prev} everywhere` : null));
 
   return (
-    <div className={`editor${defining ? ' defining' : ''}${pageInspected ? '' : ' page-quiet'}`}>
+    <div className={`editor${defining ? ' defining' : ''}${pageInspected ? '' : ' page-quiet'}`} inert={leaving || undefined}>
       <Toolbar />
       {defining && defInfo && (
         <div className="mode-band" role="region" aria-label="Editing a component everywhere">

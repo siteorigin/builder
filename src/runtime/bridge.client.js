@@ -609,6 +609,17 @@ window.addEventListener('message', async (e) => {
     case 'beginTextEdit':
       beginTextEdit(m.payload.desc, m.payload.editId);
       break;
+    // The editor is saving, or leaving the project: hand back the text being edited, as leaving it would. A
+    // link still being typed is left out, as moving focus away does (a link already there keeps its address),
+    // and the editor is told so it can say.
+    case 'commitTextEdit':
+      if (!editing) break;
+      if (linkEditor) {
+        closeLinkEditor(false);
+        send('linkDropped', { desc: editing.desc, editId: editing.editId });
+      }
+      commitEdit();
+      break;
     case 'measure': {
       const descs = Array.isArray(m.payload.descs) ? m.payload.descs.slice(0, 200) : [];
       send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => { const el = findAll(d)[0]; return el ? rectOf(el) : null; }) });

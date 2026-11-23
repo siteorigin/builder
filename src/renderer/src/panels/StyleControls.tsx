@@ -497,6 +497,7 @@ function Control({
           const n = Number(t.trim().replace(/%$/, ''));
           if (t.trim() === '') onSet(null);
           else if (Number.isFinite(n)) onSet(/%$/.test(t.trim()) && def.max === 1 ? n / 100 : n);
+          else return false;
         }}
       />
     );
@@ -586,7 +587,7 @@ function Control({
             value={literal ? String(value) : ''}
             placeholder={currentText ?? (def.kind === 'color' ? '#1c2742' : def.placeholder ? `For example ${def.placeholder}` : undefined)}
             autoFocus={!literal}
-            onCommit={(t) => t.trim() && onSet(t.trim())}
+            onCommit={(t) => (t.trim() ? onSet(t.trim()) : false)}
             ariaLabel={`${label} value`}
           />
         </div>

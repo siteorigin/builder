@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Code, Lock } from 'lucide-react';
-import { applyOps, api, setState, toast, useStore, confirmDialog } from '../store';
+import { applyOps, api, markDraft, setState, toast, useStore, confirmDialog } from '../store';
+import { CODE_DRAFT } from '../lib/pending';
 import { Field, Modal, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
 import { prepareCodeForSave } from '../lib/code';
@@ -48,6 +49,12 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     if (!propsDirty) setRows(rowsFromProperties(def?.properties ?? {}));
     setSavedProps(propsKey);
   }, [propsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Leaving the project (closing the window, quitting) asks about unsaved code, as closing this editor does.
+  const unsavedCode = !!src?.editable && (draft !== src.source || propsDirty);
+  useEffect(() => {
+    markDraft(CODE_DRAFT, unsavedCode);
+    return () => markDraft(CODE_DRAFT, false);
+  }, [unsavedCode]);
   if (!def) return null;
   const dirty = !!src && (draft !== src.source || propsDirty);
   // Unsaved code is never lost to Escape, the backdrop or ×: ask first.
@@ -225,9 +232,15 @@ export function NewCodeComponentModal() {
   const [errors, setErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const alive = useAlive();
+  const unsaved = source !== STARTER || !!name.trim() || JSON.stringify(propertiesFromRows(rows)) !== initialProps;
+  // Leaving the project (closing the window, quitting) asks about it too.
+  useEffect(() => {
+    markDraft(CODE_DRAFT, unsaved);
+    return () => markDraft(CODE_DRAFT, false);
+  }, [unsaved]);
   // Every way out (×, Escape, backdrop, Cancel) goes through here, so unsaved code is never dropped silently.
   const close = () =>
-    source !== STARTER || name.trim() || JSON.stringify(propertiesFromRows(rows)) !== initialProps
+    unsaved
       ? void confirmDialog({ title: 'Discard this new component?', body: 'Your code has not been saved.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', danger: true }).then((ok) => ok === true && setState({ modal: null }))
       : setState({ modal: null });
   const create = async () => {

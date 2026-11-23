@@ -99,7 +99,8 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
                   ariaLabel={`Font family name for ${a.name}`}
                   onCommit={(v) => {
                     const family = v.replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 60);
-                    if (family && family !== a.font?.family) renameFamily(a, family);
+                    if (!family) return false;
+                    if (family !== a.font?.family) renameFamily(a, family);
                   }}
                 />
                 <select className="select sm" value={variable ? a.font!.weight : a.font?.weight ?? '400'} disabled={variable} aria-label={`Weight of ${a.name}`} title={variable ? 'A variable font covers a range of weights.' : undefined} onChange={(e) => update(a, { weight: e.target.value }, `Set ${a.name} weight`)}>
@@ -597,7 +598,10 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               value={sel.name}
               onLive={() => nameError && setNameError(null)}
               onCommit={(v) => {
-                if (!v.trim()) return setNameError('An image needs a name, so the old one was kept.');
+                if (!v.trim()) {
+                  setNameError('An image needs a name, so the old one was kept.');
+                  return false;
+                }
                 setNameError(null);
                 if (v.trim() === sel.name) return;
                 void applyOps([{ type: 'asset.update', assetId: sel.id, name: v.trim() }], 'Rename image');

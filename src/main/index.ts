@@ -6,6 +6,7 @@ import type { LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api
 import { externalLink } from '@shared/links';
 import { checkLocalBaseURL } from '@shared/local';
 import { Controller, defaultProjectsFolder } from './controller';
+import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { loadSettings, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
@@ -48,6 +49,31 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: t
 // ---------------------------------------------------------------------------
 
 const pendingInspections = new Map<string, (report: unknown) => void>();
+
+// Leaving a project (Close Project, switching, closing the window, quitting) first lets the editor save what
+// is still being typed, and ask the author about a change that cannot be saved.
+const leaveGate = createLeaveGate({
+  request: (requestId) => {
+    if (!win || win.isDestroyed() || win.webContents.isCrashed()) return false;
+    controller.send('lifecycle:request', { requestId });
+    return true;
+  },
+  // Tests never see a native dialog: a page that stops answering there is left.
+  onTimeout: async (signal) => {
+    if (headless || !win || win.isDestroyed()) return 'leave';
+    const r = await dialog.showMessageBox(win, {
+      type: 'warning',
+      buttons: ['Wait', 'Leave Anyway'],
+      defaultId: 0,
+      cancelId: 0,
+      message: 'SiteOrigin Builder is not responding',
+      detail: 'A change you were typing may not be saved yet. Wait for it, or leave without it.',
+      signal
+    });
+    return r.response === 1 ? 'leave' : 'wait';
+  }
+});
+controller.beforeLeave = () => leaveGate.ask();
 let fixAbort: AbortController | null = null;
 
 async function orchestratorAdapter() {
@@ -179,7 +205,7 @@ function registerIpc() {
   handle('projects:cancelCreate', () => controller.cancelCreate());
   handle('projects:open', (dir?: string) => controller.open(dir));
   handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
-  handle('projects:close', () => controller.close());
+  handle('projects:close', () => controller.closeProject());
   handle('projects:duplicate', () => controller.duplicate());
   handle('projects:reveal', (p?: string) => controller.revealInFinder(p));
   handle('project:snapshot', () => controller.snapshot());
@@ -270,6 +296,10 @@ function registerIpc() {
     fixAbort?.abort();
     fixAbort = null;
   });
+  ipcMain.on('lifecycle:result', (event, requestId: string, answer: LeaveAnswer) => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
+    leaveGate.reply(requestId, answer);
+  });
   ipcMain.on('inspect:result', (event, requestId: string, report: unknown) => {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
     pendingInspections.get(requestId)?.(report);
@@ -349,8 +379,28 @@ async function createWindow() {
     if (relevant) controller.send('input:key', { key: input.key, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt });
   });
   nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
-  win.on('closed', () => {
-    win = null;
+  // Closing the window first saves what is being typed. On macOS the project stays open without a window,
+  // as before; elsewhere the last window closing quits, which then closes the project.
+  const self = win;
+  let closeApproved = false;
+  self.on('close', (e) => {
+    if (closeApproved || quitState === 'closing' || quitState === 'done' || !controller.session || self.webContents.isCrashed()) return;
+    e.preventDefault();
+    void controller.mayLeave().then((ok) => {
+      if (!ok || self.isDestroyed()) return;
+      closeApproved = true;
+      self.close();
+    });
+  });
+  self.webContents.on('render-process-gone', () => leaveGate.editorGone());
+  self.on('unresponsive', () => leaveGate.editorUnresponsive());
+  self.on('responsive', () => leaveGate.editorResponsive());
+  self.webContents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) leaveGate.editorReplaced();
+  });
+  self.on('closed', () => {
+    if (win === self) win = null;
+    leaveGate.editorGone();
   });
   if (DEV_URL) await win.loadURL(DEV_URL);
   else await win.loadURL('app://editor/index.html');
@@ -428,21 +478,30 @@ app.on('window-all-closed', () => {
 // The media worker would be ended with the app anyway; stopping it first settles any import still waiting on it.
 app.on('will-quit', () => stopMediaWorker());
 
-let quitting = false;
-let closedForQuit = false;
+// Quitting saves what is being typed, then closes the project (writing its unsaved workspace state), then
+// quits. A quit asked again while that is under way waits for it; one the author turns down ("Keep editing")
+// leaves the app running. A close already under way still has a preview to stop and its private copy to remove.
+let quitState: 'idle' | 'asking' | 'closing' | 'done' = 'idle';
 app.on('before-quit', (e) => {
-  if (closedForQuit) return;
-  // A second Quit while the project is still closing waits for it too, so its unsaved state is written first.
-  if (quitting) return e.preventDefault();
-  // A close already under way still has a preview to stop and its private copy to remove.
-  if (controller.session || controller.isClosing) {
-    e.preventDefault();
-    quitting = true;
-    void controller.close().finally(() => {
-      closedForQuit = true;
+  if (quitState === 'done' || (quitState === 'idle' && !controller.session && !controller.isClosing)) return;
+  e.preventDefault();
+  // Quit again while the editor's question is open: re-ask, which brings back Wait or Leave Anyway if it hung.
+  if (quitState === 'asking') void controller.mayLeave();
+  if (quitState !== 'idle') return;
+  quitState = 'asking';
+  void controller.mayLeave().then(async (ok) => {
+    if (!ok) {
+      quitState = 'idle';
+      return;
+    }
+    quitState = 'closing';
+    try {
+      await controller.close();
+    } finally {
+      quitState = 'done';
       app.quit();
-    });
-  }
+    }
+  });
 });
 
 void readFileSync;

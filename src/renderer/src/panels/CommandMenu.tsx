@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { FileText, FolderOpen, History, Plus, Redo2, Search, Undo2, Settings, Sparkles, Upload, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
+import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
 import { api, setState, useStore } from '../store';
 import { insert, selectPage, askAiAbout, setMode, openSiteStyles } from '../lib/actions';
@@ -44,7 +45,7 @@ export function CommandMenu() {
       { id: 'history', label: 'History…', group: 'Project', icon: <History />, run: () => setState({ modal: { kind: 'history' } }) },
       { id: 'health', label: 'Project health', group: 'Project', icon: <Stethoscope />, run: () => setState({ modal: { kind: 'health' } }) },
       { id: 'dock', kbd: '⇧⌘\\', label: 'Show or hide the right panel', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },
-      { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void api.projects.close() }
+      { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];
   }, [snap]);
   const filtered = cmds.filter((c) => q.trim().toLowerCase().split(/\s+/).every((w) => c.label.toLowerCase().includes(w))).slice(0, 40);

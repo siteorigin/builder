@@ -4,6 +4,7 @@ import type { EditOperation } from '@shared/ops';
 import type { ElementRef, ResponsiveScope } from '@shared/types';
 import { chatStatePatch, draftFor, withDraft, type ChatDrafts } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
+import { draftCount, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
 
 export const api = window.builder;
 
@@ -45,6 +46,8 @@ interface State {
   frameReady: boolean;
   /** Fields holding typed text that is not committed yet (the toolbar says "Editing…" rather than "Saved"). */
   drafting: number;
+  /** The project is about to close (pending edits are saved): the editor takes no more input. */
+  leaving: boolean;
   /** A problem the preview page itself reported (a component that failed to render), in plain words. */
   previewIssue: string | null;
   /** Whether the right dock (Inspector / AI / Site styles) is shown. */
@@ -85,6 +88,7 @@ export const useStore = create<State>((set) => ({
   welcomeIntent: null,
   frameReady: false,
   drafting: 0,
+  leaving: false,
   previewIssue: null,
   dockOpen: true,
   leftWidth: PANEL_DEFAULTS.left,
@@ -157,19 +161,33 @@ export interface PendingEdit {
  * `expectedRevision`, the batch applies only to the project as it was at that revision.
  */
 export async function applyOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<Array<Record<string, unknown>> | null> {
+  // Followed until it lands, so saving and leaving the project wait for it and hear if it failed.
+  let landed!: (o: ApplyOutcome) => void;
+  trackApply(new Promise<ApplyOutcome>((r) => (landed = r)));
   const s = getState();
   if (s.snapshot?.aiBusy) {
-    toast('The AI is making changes. Stop it to edit manually.', 'error', { label: 'Stop AI', run: () => void api.ai.stop() });
+    const message = 'The AI is making changes. Stop it to edit manually.';
+    toast(message, 'error', { label: 'Stop AI', run: () => void api.ai.stop() });
+    landed({ ok: false, message });
     return null;
   }
   setState({ pendingSave: s.pendingSave + 1 });
   try {
-    const r = await api.project.apply(expectedRevision === undefined ? { operations } : { operations, expectedRevision }, { label, coalesceKey });
+    // Named by the opening of its project, so a change sent just as that project closes never lands in the next.
+    const r = await api.project.apply(expectedRevision === undefined ? { operations } : { operations, expectedRevision }, { label, coalesceKey, opening: s.snapshot?.workspaceKey });
     if (!r.ok) {
-      toast(r.error?.code === 'STALE_REVISION' ? 'The project changed while you were choosing. Choose again.' : (r.error?.message ?? 'That change could not be applied.'), 'error');
+      const message = r.error?.code === 'STALE_REVISION' ? 'The project changed while you were choosing. Choose again.' : (r.error?.message ?? 'That change could not be applied.');
+      toast(message, 'error');
+      landed({ ok: false, message });
       return null;
     }
+    landed({ ok: true });
     return r.results ?? [];
+  } catch (e) {
+    const message = `That change could not be saved${e instanceof Error && e.message ? `: ${e.message}` : '.'}`;
+    toast(message, 'error');
+    landed({ ok: false, message });
+    return null;
   } finally {
     setState({ pendingSave: Math.max(0, getState().pendingSave - 1) });
   }
@@ -205,13 +223,10 @@ export function applyAiEvent(e: AiEvent) {
   }
 }
 
-const drafts = new Set<string>();
 /** Mark or clear an uncommitted edit (a field, an inline rename, canvas text) so the toolbar says "Editing…". */
 export function markDraft(key: string, on: boolean) {
-  if (on === drafts.has(key)) return;
-  if (on) drafts.add(key);
-  else drafts.delete(key);
-  useStore.setState({ drafting: drafts.size });
+  if (!setDraft(key, on)) return;
+  useStore.setState({ drafting: draftCount() });
   // A new draft retires any "saved" notice still on screen: it no longer describes what you are typing.
   if (on) {
     const toasts = useStore.getState().toasts;
@@ -220,6 +235,8 @@ export function markDraft(key: string, on: boolean) {
 }
 
 export interface ConfirmRequest {
+  /** Each question is its own dialog, so one replacing another starts with its own safe focus. */
+  id: number;
   title: string;
   body: string;
   confirmLabel: string;
@@ -241,10 +258,15 @@ export function onConfirmChange(fn: () => void) {
   return () => confirmListeners.delete(fn);
 }
 /** Ask a yes/no question in the app's own dialog (never the system's), resolving to the answer. */
-export function confirmDialog(req: Omit<ConfirmRequest, 'resolve'>): Promise<boolean | null> {
+let confirmIds = 0;
+export function confirmDialog(req: Omit<ConfirmRequest, 'resolve' | 'id'>): Promise<boolean | null> {
+  // One question at a time: a new one dismisses an open one (as Escape would), so its caller hears an
+  // answer instead of waiting forever.
+  confirmQueue?.resolve(null);
   return new Promise((resolve) => {
     confirmQueue = {
       ...req,
+      id: ++confirmIds,
       resolve: (ok) => {
         confirmQueue = null;
         confirmListeners.forEach((f) => f());

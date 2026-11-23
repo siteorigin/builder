@@ -118,7 +118,7 @@ function StyleRow({ t, uses, tokens }: { t: TokenDef; uses: number; tokens: Toke
     <div className="ss-custom-row" data-ss-row style={{ display: 'grid', gap: 6, paddingBlock: 6, borderBottom: '1px solid var(--line, #e5e5e5)' }}>
       <div className="row" style={{ gap: 8 }}>
         {t.group === 'color' && typeof t.value === 'string' && <span className="ss-swatch" aria-hidden="true" style={{ width: 18, height: 18, borderRadius: 4, background: t.value, flex: 'none' }} />}
-        <DraftInput className="input sm grow" value={t.label} onCommit={(v) => v.trim() && void applyOps([{ type: 'token.rename', tokenId: t.id, label: v.trim() }], `Rename ${t.label}`)} ariaLabel={`${t.label} name`} />
+        <DraftInput className="input sm grow" value={t.label} onCommit={(v) => (v.trim() ? void applyOps([{ type: 'token.rename', tokenId: t.id, label: v.trim() }], `Rename ${t.label}`) : false)} ariaLabel={`${t.label} name`} />
         <button type="button" className="btn btn-sm btn-ghost" aria-label={`Remove ${t.label}`} aria-expanded={removing} onClick={() => (uses ? setRemoving(!removing) : void remove())}>
           <Trash2 />
         </button>
@@ -129,7 +129,7 @@ function StyleRow({ t, uses, tokens }: { t: TokenDef; uses: number; tokens: Toke
         <span className="ss-custom-uses">{times(uses)}</span>
         <span className="mono grow" style={{ textAlign: 'end', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={shown}>
           {t.group !== 'text' && !isRef(t.value) ? (
-            <DraftInput className="input sm mono" value={shown} onCommit={(v) => v.trim() && void applyOps([{ type: 'token.set', tokenId: t.id, value: v.trim() }], `Change ${t.label}`, `token:${t.id}`)} ariaLabel={`${t.label} value`} />
+            <DraftInput className="input sm mono" value={shown} onCommit={(v) => (v.trim() ? void applyOps([{ type: 'token.set', tokenId: t.id, value: v.trim() }], `Change ${t.label}`, `token:${t.id}`) : false)} ariaLabel={`${t.label} value`} />
           ) : (
             shown
           )}
