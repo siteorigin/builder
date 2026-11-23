@@ -9,6 +9,7 @@ import { announcementText } from '../lib/announce';
 
 const MOVE_PENDING_MS = 3000;
 import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
+import { importAndPlace } from '../lib/place';
 import { assetUrl } from '../lib/model';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { pageIds, pageSections, planSectionPick, sharedPageIds } from '@generator/checks';
@@ -199,12 +200,21 @@ export function LinkEditor({ value, onChange, state, label }: { value: LinkValue
   );
 }
 
+/** The value for a newly chosen image, from the one it replaces: its suggested description, else the old one,
+ *  which is then `carried` (flagged until it is checked), and whether it is decorative. */
+function chosen(from: ImageValue, assetId: string, suggestion?: string): { value: ImageValue; carried: boolean } {
+  const cur = from ?? { assetId: null, alt: '' };
+  return { value: { assetId, alt: suggestion || cur.alt || '', decorative: cur.decorative }, carried: !suggestion && !!cur.alt && !!cur.assetId };
+}
+
 /**
  * Image editor: one card holding the picture, its description and whether it is decorative. `title` puts the
  * field's name inside the card (like the other field groups); a standalone image passes none.
  */
 export function ImageEditor({ value, onChange, state, title }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string }) {
   const runtime = useStore((s) => s.runtime);
+  // The project as this editor shows it: an import checks its placement against it.
+  const snapshot = useStore((s) => s.snapshot);
   const altId = useId();
   const titleId = useId();
   // A description carried over from the previous image may no longer be true; say so until it is edited.
@@ -218,9 +228,9 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
   const pick = (id: string, suggestion?: string) => {
     const cur = latest.current;
     if (id === cur.assetId) return;
-    const keep = !suggestion && !!cur.alt && !!cur.assetId;
-    setCarried(keep);
-    onChange({ assetId: id, alt: suggestion || cur.alt || '', decorative: cur.decorative });
+    const next = chosen(cur, id, suggestion);
+    setCarried(next.carried);
+    onChange(next.value);
   };
   const [browsing, setBrowsing] = useState(false);
   const [q, setQ] = useState('');
@@ -228,6 +238,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
   const [importing, setImporting] = useState(false);
   const browseId = useId();
   const chooseBtn = useRef<HTMLButtonElement>(null);
+  const browser = useRef<HTMLDivElement>(null);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -243,23 +254,46 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
     setQ('');
     if (focus) requestAnimationFrame(() => chooseBtn.current?.focus());
   };
-  /** Import through the file picker (no paths) or dropped files, then use the first image that arrived. */
+  /**
+   * Import through the file picker (no paths) or dropped files, then use the first image that arrived. The image
+   * goes to this field as it was when the import began, through the change handler it had then, even if the author
+   * has moved to another section meanwhile; a change made to the field since (another image, a description, the
+   * section removed) wins, and the image is kept in Assets with a note saying so (see importAndPlace).
+   */
   const importAndPick = async (paths?: string[]) => {
     if (importing) return;
     setImporting(true);
-    const before = JSON.stringify(latest.current);
-    try {
-      const r = await api.project.importAssets(paths, 'image').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
-      if (r.message) toast(r.message, r.assetIds.length ? 'info' : 'error');
-      // Fonts can arrive in the same drop; only an image can fill an image field.
-      const all = useStore.getState().snapshot?.state.assets.assets ?? {};
-      const id = r.assetIds.find((x) => all[x]?.kind === 'image');
-      // A change made while the import ran (another image, a description, closing the inspector) wins.
-      if (!id || !alive.current || JSON.stringify(latest.current) !== before) return;
-      pick(id, all[id]?.altSuggestion);
-      // Focus returns to the chooser unless it has moved somewhere else on purpose.
+    const start = latest.current;
+    const write = onChange;
+    let carry: boolean | null = null;
+    // Where focus may come back to the chooser from: the image browser this closes, the chooser, or nowhere.
+    const fromChooser = () => {
       const at = document.activeElement;
-      closeBrowser(!at || at === document.body || !!chooseBtn.current?.closest('.insp-image')?.contains(at));
+      return !at || at === document.body || at === chooseBtn.current || !!browser.current?.contains(at);
+    };
+    try {
+      const r = await importAndPlace({
+        paths,
+        base: snapshot,
+        // On screen: mounted, and not in a dock tab that is hidden (AI, Site styles).
+        shown: () => alive.current && !!chooseBtn.current?.isConnected && chooseBtn.current.offsetParent !== null,
+        holds: (a) => a.id === start.assetId,
+        place: (a) => {
+          // The same picture again: the field is checked, not written.
+          if (a.id === start.assetId) return write(start);
+          const next = chosen(start, a.id, a.altSuggestion);
+          carry = next.carried;
+          write(next.value);
+          if (next.carried) return 'Check its description still fits.';
+        }
+      });
+      if (r.kind !== 'placed' || !alive.current) return;
+      if (carry !== null) setCarried(carry);
+      // Never from a field the author has moved to meanwhile, the description included; checked again when the
+      // browser has closed, in case focus moved in between.
+      const refocus = fromChooser();
+      closeBrowser(false);
+      if (refocus) requestAnimationFrame(() => alive.current && fromChooser() && chooseBtn.current?.focus());
     } finally {
       if (alive.current) setImporting(false);
     }
@@ -331,6 +365,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
       </div>
       {browsing && (
         <div
+          ref={browser}
           className="insp-pick"
           id={browseId}
           role="group"

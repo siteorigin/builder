@@ -7,6 +7,7 @@ import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { assetUrl } from '../lib/model';
 import { openSiteStyles, selectPage } from '../lib/actions';
+import { SHOW_ASSET_EVENT } from '../lib/place';
 
 /** Above this an image is worth flagging: pages load smaller copies, but the original still ships with the site. */
 const LARGE = 1_500_000;
@@ -243,6 +244,25 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       if (hadFocus) requestAnimationFrame(() => (document.querySelector<HTMLElement>('.asset-tools input') ?? document.querySelector<HTMLElement>('.asset-drop'))?.focus());
     }
   }, [selected, assetsDoc]);
+  // "Show image" (an import kept here rather than placed) opens that image's details.
+  useEffect(() => {
+    let frame = 0;
+    const onShow = (e: Event) => {
+      const { opening, assetId } = ((e as CustomEvent).detail ?? {}) as { opening?: string; assetId?: string };
+      const s = getState().snapshot;
+      if (!assetId || !s || s.workspaceKey !== opening || s.state.assets.assets[assetId]?.kind !== 'image') return;
+      replaceSession.current++;
+      setReplacing(false);
+      setSelected(assetId);
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
+    };
+    window.addEventListener(SHOW_ASSET_EVENT, onShow);
+    return () => {
+      window.removeEventListener(SHOW_ASSET_EVENT, onShow);
+      cancelAnimationFrame(frame);
+    };
+  }, []);
   if (!snap) return null;
   const usage = snap.assetUsage;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;

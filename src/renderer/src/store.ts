@@ -5,7 +5,7 @@ import type { ElementRef, ResponsiveScope } from '@shared/types';
 import { chatStatePatch, draftFor, withDraft, type ChatDrafts } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
-import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText } from './lib/held';
+import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText, whereOf } from './lib/held';
 
 export const api = window.builder;
 
@@ -258,6 +258,8 @@ export async function applyOps(operations: EditOperation[], label: string, coale
 
 /** Like `applyOps`, but returns the whole result: with the history entry the change made, for an Undo beside it. */
 export async function commitOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<(ApplyResult & { workspaceKey: string }) | null> {
+  // Asked for earlier and checked before it is applied (commitIfUnchanged), whose caller follows it until it lands.
+  if (checked) return applyChecked(checked, operations, label, coalesceKey, expectedRevision);
   // Followed until it lands, so saving and leaving the project wait for it and hear if it failed.
   let landed!: (o: ApplyOutcome) => void;
   trackApply(new Promise<ApplyOutcome>((r) => (landed = r)));
@@ -493,6 +495,105 @@ export function undoAvailable(t: UndoTarget, snap: ProjectSnapshot | null): bool
   if (!snap || snap.workspaceKey !== t.workspaceKey) return false;
   if (snap.revision < t.revision) return true;
   return snap.history.entries.some((e) => e.id === t.entryId && e.applied);
+}
+
+/** What became of an edit committed with commitIfUnchanged. `where` names what it writes ("Split hero on Home"). */
+export type CheckedOutcome =
+  | { kind: 'applied'; where: string }
+  /** Checked only (`checkOnly`): every field it writes still holds what it held, and nothing was written. */
+  | { kind: 'unchanged'; where: string }
+  /** Something it writes was edited meanwhile: applying it would replace that newer edit. */
+  | { kind: 'changed'; where: string }
+  /** What it writes was removed meanwhile: `what` says what is missing ("list item", "element", "page"). */
+  | { kind: 'gone'; what: string; where: string }
+  /** The project is busy: the AI is working on it, or (with `message`) the project said why it is locked. */
+  | { kind: 'busy'; message?: string }
+  /** The project it was asked for in is no longer open. */
+  | { kind: 'closed' }
+  | { kind: 'failed'; message: string };
+
+interface CheckedCommit {
+  base: ProjectSnapshot;
+  checkOnly: boolean;
+  outcome: Promise<CheckedOutcome> | null;
+}
+/** The commit in progress in commitIfUnchanged: commitOps checks the edit it is handed. */
+let checked: CheckedCommit | null = null;
+
+/**
+ * Commit an edit the author asked for earlier, once the work it waited on (an import) has finished, wherever the
+ * author is by then. `commit` calls the change handler of the field the edit was asked for, kept from that moment,
+ * so the edit goes to that field and never to whatever is selected now. `base` is the project as that field's
+ * editor showed it then. The edit applies only in the same opening of the project, and only while every field it
+ * writes still holds what it held in `base`: it never replaces a newer edit, and never lands on something removed
+ * meanwhile. With `checkOnly`, the edit names the field and is checked the same way, but not written (the field
+ * already holds what was asked for). One edit per commit. The caller follows the work as a save in flight, from
+ * where it began.
+ */
+export function commitIfUnchanged(base: ProjectSnapshot, commit: () => unknown, opts: { checkOnly?: boolean } = {}): Promise<CheckedOutcome> {
+  const prev = checked;
+  const c: CheckedCommit = { base, checkOnly: !!opts.checkOnly, outcome: null };
+  checked = c;
+  try {
+    commit();
+  } catch (e) {
+    c.outcome ??= Promise.resolve({ kind: 'failed', message: errorText(e) });
+  } finally {
+    checked = prev;
+  }
+  return c.outcome ?? Promise.resolve({ kind: 'failed', message: 'That change could not be made.' });
+}
+
+function applyChecked(c: CheckedCommit, operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<(ApplyResult & { workspaceKey: string }) | null> {
+  // One edit per commit: a second one is never applied, checked or not.
+  if (c.outcome) return Promise.resolve(null);
+  let result: (ApplyResult & { workspaceKey: string }) | null = null;
+  c.outcome = checkAndApply(c, operations, label, coalesceKey, expectedRevision, (r) => (result = { ...r, workspaceKey: c.base.workspaceKey }));
+  return c.outcome.then(() => result);
+}
+
+async function checkAndApply(c: CheckedCommit, operations: EditOperation[], label: string, coalesceKey: string | undefined, expectedRevision: number | undefined, done: (result: ApplyResult) => void): Promise<CheckedOutcome> {
+  const { base } = c;
+  const reads = readFields(base.state, operations);
+  if (!reads || reads.some((r) => !r.found)) return { kind: 'failed', message: 'That change could not be checked.' };
+  const before = reads.map((r) => (r.found ? r.value : undefined));
+  // Checked first against the project as this window has it. That copy can be behind: a refusal is made only
+  // after checking the project itself, and a write sent from a copy that was behind is refused and checked again.
+  let snap = getState().snapshot;
+  let fresh = false;
+  for (let tries = 0; ; ) {
+    if (!snap || snap.workspaceKey !== base.workspaceKey) return { kind: 'closed' };
+    const check = checkHeld(snap.state, operations, before);
+    const where = whereOf(check.kind === 'gone' ? base.state : snap.state, operations[0]);
+    const refusal: CheckedOutcome | null = snap.aiBusy
+      ? { kind: 'busy' }
+      : check.kind === 'gone'
+        ? { kind: 'gone', what: check.what, where }
+        : // Edits planned against a revision (a section's new ID before the link to it) hold only for that revision.
+          check.kind === 'changed' || (expectedRevision !== undefined && snap.revision !== expectedRevision)
+          ? { kind: 'changed', where }
+          : null;
+    if (refusal && fresh) return refusal;
+    // Nothing is written to refuse a check made on a copy that is behind, so it is made on the project's own.
+    if (!refusal && c.checkOnly && fresh) return { kind: 'unchanged', where };
+    if (!refusal && !c.checkOnly) {
+      const r = await api.project
+        .apply({ operations, expectedRevision: snap.revision }, { label, coalesceKey, opening: base.workspaceKey })
+        .catch((e: unknown) => ({ ok: false as const, revision: 0, error: { code: 'FAILED' as const, message: errorText(e) } }));
+      if (r.ok) {
+        done(r);
+        return { kind: 'applied', where };
+      }
+      if (r.error?.code === 'BUSY') return { kind: 'busy', message: r.error.message };
+      if (r.error?.code !== 'STALE_REVISION' || ++tries > 2) return { kind: 'failed', message: r.error?.message ?? 'That change could not be applied.' };
+    }
+    try {
+      snap = await api.project.snapshot();
+      fresh = true;
+    } catch (e) {
+      return { kind: 'failed', message: errorText(e) };
+    }
+  }
 }
 
 export function applyAiEvent(e: AiEvent) {
