@@ -171,6 +171,33 @@ await axis('Tone').selectOption('muted');
 await eventually(() => assert.match(read('src/routes/+page.svelte'), /variant="muted"/, 'the form takes the tone chosen in the Inspector'));
 await eventually(async () => assert.equal(await frame.locator('section.so-form--muted').count(), 1, 'the preview shows the form in that tone'));
 
+step('copy a section, delete it, then paste it on another page');
+const sectionsOn = (title) =>
+  win.evaluate(async (t) => {
+    const s = await window.builder.project.snapshot();
+    const p = Object.values(s.state.pages).find((x) => x.title === t);
+    return p.rootIds.map((id) => s.state.components[p.nodes[id].definitionId]?.name ?? p.nodes[id].kind);
+  }, title);
+const pageRow = (title) => win.locator('.side-panel-view:not([hidden]) [data-page]', { hasText: title }).first();
+assert.ok(!(await sectionsOn('Contact')).includes('Services grid'), 'Contact starts without a services grid');
+await win.locator('.rail [aria-label="Layers"]').click();
+await win.locator('[role="tree"] .list-item', { hasText: 'Services grid' }).first().click();
+await win.keyboard.press(`${MOD}+c`);
+await win.locator('.toast', { hasText: 'Copied Services grid' }).waitFor();
+await win.keyboard.press('Delete');
+await eventually(async () => assert.ok(!(await sectionsOn('Home')).includes('Services grid'), 'the original section is deleted'));
+await win.locator('.rail [aria-label="Pages"]').click();
+await pageRow('Contact').click();
+await win.keyboard.press(`${MOD}+v`);
+await eventually(async () => assert.ok((await sectionsOn('Contact')).includes('Services grid'), 'the copy is pasted on Contact although its original is gone'));
+await eventually(() => assert.match(read('src/routes/contact/+page.svelte'), /variant_layout="four-columns"/, 'the copy keeps the layout it had when copied'));
+assert.equal(await win.locator('.toast.error').count(), 0, 'no paste error is shown');
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.ok(!(await sectionsOn('Contact')).includes('Services grid'), 'undo takes the paste back'));
+await win.keyboard.press(`${MOD}+z`);
+await eventually(async () => assert.ok((await sectionsOn('Home')).includes('Services grid'), 'a second undo restores the original'));
+await pageRow('Home').click();
+
 step('site styles and chat panels');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
 await win.locator('#dock-panel-styles').waitFor();

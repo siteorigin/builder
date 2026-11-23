@@ -183,6 +183,11 @@ function registerIpc() {
   handle('projects:reveal', (p?: string) => controller.revealInFinder(p));
   handle('project:snapshot', () => controller.snapshot());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
+  handle('project:copy', (pageId: unknown, nodeId: unknown, rev: unknown) =>
+    typeof pageId === 'string' && typeof nodeId === 'string' && controller.session
+      ? controller.session.copy(pageId, nodeId, typeof rev === 'number' ? rev : undefined)
+      : { ok: false, message: 'Nothing to copy.' }
+  );
   handle('project:undo', () => controller.session?.undo());
   handle('project:redo', () => controller.session?.redo());
   handle('project:importAssets', (paths?: string[], only?: 'image' | 'font') => controller.importAssets(paths, only === 'image' || only === 'font' ? only : undefined));

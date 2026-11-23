@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { applyOperations } from '@engine/apply';
+import { applyOperations, captureClipboard } from '@engine/apply';
 import { EngineError, codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { defFile, generateProject, overrideClass } from '@generator/index';
@@ -172,6 +172,146 @@ describe('copy and paste', () => {
     const heroRoot = s.components[heroOwn].tree!.rootIds[0];
     rejects(() => applyOperations(s, [{ type: 'node.copy', owner: owner(s), nodeId: codeInst.id, toOwner: { kind: 'component', id: heroOwn }, parentId: heroRoot }]), /contain itself/);
     rejects(() => applyOperations(s, [{ type: 'node.copy', owner: owner(s), nodeId: grid.id, toOwner: { kind: 'component', id: heroOwn } }]), /inside the component/);
+  });
+});
+
+describe('paste what was copied (#62)', () => {
+  const to = (s: ProjectState) => ({ kind: 'page' as const, id: otherPage(s) });
+  const items = (n: InstanceNode) => n.props.items as Array<{ id: string; title: string }>;
+  const paste = (s: ProjectState, clip: ReturnType<typeof captureClipboard>, toOwner = to(s), extra: { parentId?: string | null; index?: number } = {}) =>
+    applyOperations(s, [{ type: 'node.paste', clipboardId: clip.id, toOwner, ...extra }], { clipboard: clip });
+  const pasted = (r: ReturnType<typeof paste>, pageId: string) => r.state.pages[pageId].nodes[r.results[0].nodeId as string] as InstanceNode;
+  /** A section holding a button and an image, to copy. */
+  const sectionWith = (s: ProjectState, content: { link?: unknown; image?: unknown }) => {
+    const r = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: null, index: 0, componentId: 'layout.section' }]);
+    const section = r.results[0].nodeId as string;
+    let next = r.state;
+    if (content.link) {
+      const b = applyOperations(next, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'button', text: 'Go' }]);
+      next = applyOperations(b.state, [{ type: 'node.setContent', owner: owner(s), nodeId: b.results[0].nodeId as string, field: 'link', value: content.link }]).state;
+    }
+    if (content.image) {
+      const i = applyOperations(next, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'image' }]);
+      next = applyOperations(i.state, [{ type: 'node.setContent', owner: owner(s), nodeId: i.results[0].nodeId as string, field: 'image', value: content.image }]).state;
+    }
+    return { s: next, section };
+  };
+
+  it('pastes a section on another page after the original is deleted, with new IDs and its anchor', () => {
+    let s = fresh();
+    const grid = firstInstance(s, 'features.grid');
+    s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: grid.id, field: 'anchor', value: 'services' }]).state;
+    const clip = captureClipboard(s, s.site.homePageId, grid.id);
+    s = applyOperations(s, [{ type: 'node.remove', owner: owner(s), nodeId: grid.id }]).state;
+    const r = paste(s, clip, to(s), { parentId: null, index: 0 });
+    const copy = pasted(r, otherPage(s));
+    expect(r.state.pages[otherPage(s)].rootIds[0]).toBe(copy.id);
+    expect(copy.id).not.toBe(grid.id);
+    expect(copy.definitionId).toBe(grid.definitionId);
+    expect(copy.anchor).toBe('services');
+    expect(copy.props.heading).toBe(grid.props.heading);
+    expect(items(copy).map((i) => i.title)).toEqual(items(grid).map((i) => i.title));
+    expect(items(copy).some((i) => items(grid).some((g) => g.id === i.id))).toBe(false);
+    expect(validateState(r.state).filter((d) => d.severity === 'error')).toEqual([]);
+  });
+
+  it('pastes the content as it was copied, not as it was edited since, every time with fresh IDs', () => {
+    let s = fresh();
+    const grid = firstInstance(s, 'features.grid');
+    const clip = captureClipboard(s, s.site.homePageId, grid.id);
+    s = applyOperations(s, [
+      { type: 'instance.setProp', owner: owner(s), nodeId: grid.id, prop: 'heading', value: 'Edited after copying' },
+      { type: 'instance.listRemove', owner: owner(s), nodeId: grid.id, prop: 'items', itemId: items(grid)[0].id }
+    ]).state;
+    const first = paste(s, clip);
+    const second = paste(first.state, clip);
+    const a = pasted(first, otherPage(s));
+    const b = pasted(second, otherPage(s));
+    for (const copy of [a, b]) {
+      expect(copy.props.heading).toBe(grid.props.heading);
+      expect(items(copy).map((i) => i.title)).toEqual(items(grid).map((i) => i.title));
+    }
+    expect(a.id).not.toBe(b.id);
+    expect(items(a).some((i) => items(b).some((x) => x.id === i.id))).toBe(false);
+    // The clipboard itself is never changed by a paste, and the edited original keeps its edits.
+    expect((clip.tree.nodes[grid.id] as InstanceNode).props.heading).toBe(grid.props.heading);
+    expect((home(second.state).nodes[grid.id] as InstanceNode).props.heading).toBe('Edited after copying');
+  });
+
+  it('keeps an anchor on the same page only once the original no longer uses it', () => {
+    let s = fresh();
+    const grid = firstInstance(s, 'features.grid');
+    s = applyOperations(s, [{ type: 'node.setContent', owner: owner(s), nodeId: grid.id, field: 'anchor', value: 'services' }]).state;
+    const clip = captureClipboard(s, s.site.homePageId, grid.id);
+    expect(pasted(paste(s, clip, owner(s)), s.site.homePageId).anchor).toBeUndefined();
+    const moved = applyOperations(s, [{ type: 'node.remove', owner: owner(s), nodeId: grid.id }]).state;
+    expect(pasted(paste(moved, clip, owner(s)), s.site.homePageId).anchor).toBe('services');
+  });
+
+  it('pastes after the component is restyled, and refuses once what it takes has changed', () => {
+    const f = applyOperations(fresh(), [{ type: 'component.fork', definitionId: firstInstance(fresh(), 'features.grid').definitionId }]);
+    let s = f.state;
+    const defId = f.results[0].definitionId as string;
+    const grid = firstInstance(s, 'features.grid');
+    expect(grid.definitionId).toBe(defId);
+    const clip = captureClipboard(s, s.site.homePageId, grid.id);
+    const root = s.components[defId].tree!.rootIds[0];
+    s = applyOperations(s, [
+      { type: 'node.remove', owner: owner(s), nodeId: grid.id },
+      { type: 'node.setStyle', owner: { kind: 'component', id: defId }, nodeId: root, scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } },
+      { type: 'component.rename', definitionId: defId, name: 'Our services' }
+    ]).state;
+    expect(pasted(paste(s, clip), otherPage(s)).definitionId).toBe(defId);
+    s = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: defId, prop: 'note', schema: { type: 'string', label: 'Note' } }]).state;
+    rejects(() => paste(s, clip), /content "Services grid" takes has changed since it was copied/);
+  });
+
+  it('names what the copy needs that was removed after copying, and pastes nothing', () => {
+    const fork = applyOperations(fresh(), [{ type: 'component.fork', definitionId: firstInstance(fresh(), 'features.grid').definitionId }]);
+    let s = fork.state;
+    const grid = firstInstance(s, 'features.grid');
+    const clip = captureClipboard(s, s.site.homePageId, grid.id);
+    s = applyOperations(s, [
+      { type: 'node.remove', owner: owner(s), nodeId: grid.id },
+      { type: 'component.remove', definitionId: fork.results[0].definitionId as string }
+    ]).state;
+    rejects(() => paste(s, clip), /the copy uses the "Services grid" component, which has been removed since it was copied/);
+
+    const base = fresh();
+    const about = otherPage(base);
+    expect(base.pages[about].title).toBe('About');
+    const linked = sectionWith(base, { link: { type: 'page', target: about } });
+    const linkClip = captureClipboard(linked.s, linked.s.site.homePageId, linked.section);
+    s = applyOperations(linked.s, [
+      { type: 'node.remove', owner: owner(linked.s), nodeId: linked.section },
+      { type: 'page.remove', pageId: about, replacementPageId: linked.s.site.homePageId }
+    ]).state;
+    rejects(() => paste(s, linkClip, owner(s)), /links to the "About" page, which has been removed/);
+
+    const pic = { id: 'a_pic', name: 'Pic', file: 'static/assets/pic.png', mime: 'image/png', bytes: 10, hash: 'h', kind: 'image' as const, createdAt: 'now' };
+    const withAsset = sectionWith(applyOperations(fresh(), [{ type: 'asset.add', asset: pic }]).state, { image: { assetId: 'a_pic', alt: 'A room' } });
+    const picClip = captureClipboard(withAsset.s, withAsset.s.site.homePageId, withAsset.section);
+    s = applyOperations(withAsset.s, [
+      { type: 'node.remove', owner: owner(withAsset.s), nodeId: withAsset.section },
+      { type: 'asset.remove', assetId: 'a_pic' }
+    ]).state;
+    rejects(() => paste(s, picClip, owner(s)), /shows the image "Pic", which has been removed/);
+  });
+
+  it('refuses a paste without the clipboard it names', () => {
+    const s = fresh();
+    const grid = firstInstance(s, 'features.grid');
+    const clip = captureClipboard(s, s.site.homePageId, grid.id);
+    rejects(() => applyOperations(s, [{ type: 'node.paste', clipboardId: clip.id, toOwner: to(s) }]), /Copy it again/);
+    rejects(() => applyOperations(s, [{ type: 'node.paste', clipboardId: 'clip_other', toOwner: to(s) }], { clipboard: clip }), /Copy it again/);
+  });
+
+  it('copies only attached page content, never the shared header', () => {
+    const s = fresh();
+    rejects(() => captureClipboard(s, s.site.homePageId, 'n_missing'), /does not exist/);
+    rejects(() => captureClipboard(s, 'pg_missing', firstInstance(s, 'features.grid').id), /does not exist/);
+    const h = headerInst(s);
+    rejects(() => captureClipboard(s, s.site.homePageId, h.id), /does not exist/);
   });
 });
 

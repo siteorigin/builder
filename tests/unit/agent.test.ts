@@ -489,6 +489,7 @@ describe('tool definitions', () => {
     expect(withCode.types).toContain('page.create');
     expect(withCode.types).toContain('component.createCode');
     expect(withCode.types).not.toContain('asset.add');
+    expect(withCode.types).not.toContain('node.paste');
     expect(withCode.required).not.toContain('scope');
     const noCode = applySchema(toolDefinitions({ codeEnabled: false }));
     for (const t of ['component.createCode', 'component.updateSource', 'component.convertToCode']) expect(noCode.types).not.toContain(t);

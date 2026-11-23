@@ -20,7 +20,6 @@ import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/So
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal } from './panels/Dialogs';
 import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
 import { refLabel } from './lib/model';
-import type { OwnerRef } from '@shared/types';
 import { useTransitionAnnouncement } from './lib/announce';
 
 const LEFT_TABS = [
@@ -45,8 +44,11 @@ function isTyping(e: KeyboardEvent) {
   return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
 }
 
-/** What Cmd+C last copied: a section or element on a page, pasted by reference to the page it lives on. */
-let copied: { owner: OwnerRef; nodeId: string; label: string; section: boolean } | null = null;
+/** What Cmd+C last copied: a section or element on a page. The open project holds the content itself, taken
+ *  when it was copied, so editing or deleting the original afterwards does not change what is pasted. */
+let copied: { dir: string; clipboardId: string; label: string; section: boolean } | null = null;
+/** A copy still being taken; a paste pressed straight after it waits for it. */
+let copying: Promise<void> | null = null;
 
 const textSelected = () => {
   const sel = window.getSelection();
@@ -62,26 +64,37 @@ function copySelection(): boolean {
     toast(t.owner.kind === 'shell' ? 'The shared header and footer are on every page already, so they aren’t copied.' : 'Copy sections from a page. Inside a component, use Duplicate.', 'error');
     return true;
   }
-  const page = s.snapshot.state.pages[t.owner.id];
-  const label = refLabel(s.snapshot.state, t);
-  copied = { owner: t.owner, nodeId: t.nodeId, label, section: page?.rootIds.includes(t.nodeId) ?? false };
-  toast(`Copied ${label}. Paste it on any page with ⌘V.`, 'info');
+  const snap = s.snapshot;
+  const label = refLabel(snap.state, t);
+  const section = snap.state.pages[t.owner.id]?.rootIds.includes(t.nodeId) ?? false;
+  const run = api.project.copy(t.owner.id, t.nodeId, snap.revision).then(
+    (r) => {
+      if (!r.ok || !r.clipboardId) return void toast(r.message ?? `${label} could not be copied.`, 'error');
+      copied = { dir: snap.dir, clipboardId: r.clipboardId, label, section };
+      toast(`Copied ${label}. Paste it on any page with ⌘V.`, 'info');
+    },
+    () => toast(`${label} could not be copied.`, 'error')
+  );
+  copying = run;
+  void run.then(() => {
+    if (copying === run) copying = null;
+  });
   return true;
 }
 
-/** Paste the copy after the selection (or at the end of the page), with new IDs, and select it. */
+/** Paste the copy, as it was when copied, after the selection (or at the end of the page), with new IDs, and select it. */
 async function pasteCopied() {
+  if (copying) await copying;
   const s = getState();
   if (!copied || !s.snapshot) return;
-  const src = s.snapshot.state.pages[copied.owner.id];
-  if (!src?.nodes[copied.nodeId]) {
-    toast(`${copied.label} no longer exists, so there is nothing to paste.`, 'error');
+  // Each project holds its own copy: one taken in a project that has since closed is gone.
+  if (copied.dir !== s.snapshot.dir) {
     copied = null;
     return;
   }
   const at = insertionPoint(copied.section ? 'section' : 'element');
   if (!at) return;
-  const r = await applyOps([{ type: 'node.copy', owner: copied.owner, nodeId: copied.nodeId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${copied.label}`);
+  const r = await applyOps([{ type: 'node.paste', clipboardId: copied.clipboardId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${copied.label}`);
   const id = r?.[0]?.nodeId as string | undefined;
   if (id) setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
 }
@@ -118,7 +131,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   // editor's own focus checks, and Preview mode keeps the site's own copy and paste.
   if (mod && !shift && (key.toLowerCase() === 'c' || key.toLowerCase() === 'v') && !textSelected() && s.mode === 'edit' && !s.definitionMode && !s.modal && !openDialogs.length && !openMenus.count) {
     if (key.toLowerCase() === 'c') return copySelection();
-    if (!copied) return false;
+    if (!copied && !copying) return false;
     void pasteCopied();
     return true;
   }
