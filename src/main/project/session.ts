@@ -42,10 +42,12 @@ const assetToken = (name: string) => name.match(ASSET_TOKEN_RE)?.[1] ?? name;
 const MENTION_CACHE_LIMIT = 200_000;
 /** Project files are searched this much at a time, so a file of any size can be searched. */
 const SEARCH_CHUNK = 1024 * 1024;
-/** Folders that are not the project's own work: tools, caches, history and builds. */
+/** Top-level folders that are not the project's own work: tools, caches, history and builds. */
 const NOT_SEARCHED = new Set(['node_modules', '.git', LOCAL_DIR, '.svelte-kit', 'build']);
-/** The ordinary sweep searches files up to this size, so a large video never holds up a save. */
-const SWEEP_SEARCH_LIMIT = 32 * 1024 * 1024;
+/** Folders never searched wherever they are: installed packages and version control. */
+const NEVER_SEARCHED = new Set(['node_modules', '.git']);
+/** Top-level folders searched even through a link, as the project's documents, source and public files. */
+const OWN_FOLDERS = new Set([DOC_DIR, 'src', 'static']);
 
 /** The files in static/assets/, with what still needs each (see assetInventory). */
 interface AssetInventory {
@@ -1533,14 +1535,13 @@ export class ProjectSession extends EventEmitter {
     return tokens.filter((t) => known!.get(t));
   }
 
-  /** Which of `tokens` the project file `rel` holds; null when it could not be read. One over `limit` is not searched. */
-  private async namedInFile(rel: string, tokens: string[], limit = Infinity): Promise<string[] | null> {
+  /** Which of `tokens` the project file `rel` holds; null when it could not be read. */
+  private async namedInFile(rel: string, tokens: string[]): Promise<string[] | null> {
     const abs = join(this.dir, rel);
     const gone = (e: unknown) => ((e as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null);
     let stamp: string;
     try {
       const st = await fs.stat(abs);
-      if (st.size > limit) return [];
       stamp = `${st.size}:${st.mtimeMs}:${st.ctimeMs}:${st.ino}`;
     } catch (e) {
       return gone(e);
@@ -1564,10 +1565,10 @@ export class ProjectSession extends EventEmitter {
   /**
    * Which of `tokens` the project names as it is now: any of its documents in memory, the version on disk of a
    * document held in conflict, and any file in the project folder, whatever kind of file it is, except its tools,
-   * caches, history and builds (NOT_SEARCHED) and the imported files themselves. Links are not followed. Anything
-   * that cannot be read is taken to name them all. Files over `limit` are not searched.
+   * caches, history and builds (NOT_SEARCHED, NEVER_SEARCHED) and the imported files themselves. Links are not
+   * followed, except to the project's own top-level folders. Anything that cannot be read is taken to name them all.
    */
-  private async namedNow(tokens: string[], limit = Infinity): Promise<Set<string>> {
+  private async namedNow(tokens: string[]): Promise<Set<string>> {
     const found = new Set<string>();
     const look = (text: string | null) => {
       if (text) for (const t of tokens) if (!found.has(t) && text.includes(t)) found.add(t);
@@ -1594,10 +1595,10 @@ export class ProjectSession extends EventEmitter {
         const open = tokens.filter((t) => !found.has(t));
         if (!complete || !open.length) return;
         const child = rel ? `${rel}/${e.name}` : e.name;
-        if (e.isDirectory()) {
-          if (!NOT_SEARCHED.has(e.name)) await walk(child);
+        if (e.isDirectory() || (!rel && e.isSymbolicLink() && OWN_FOLDERS.has(e.name))) {
+          if (!NEVER_SEARCHED.has(e.name) && !(!rel && NOT_SEARCHED.has(e.name))) await walk(child);
         } else if (e.isFile() && !(rel === 'static/assets' && IMPORTED_ASSET_RE.test(e.name))) {
-          const hits = await this.namedInFile(child, open, limit);
+          const hits = await this.namedInFile(child, open);
           if (hits) hits.forEach((t) => found.add(t));
           else complete = false;
         }
@@ -1644,7 +1645,7 @@ export class ProjectSession extends EventEmitter {
       for (const [i, e] of h.entries.entries()) for (const b of entryBlobs(e)) for (const t of await this.namedIn(b, tokens)) byEntry[i].add(t);
       const kept = (t: string) => pinned.has(t) || byEntry.some((s) => s.has(t));
       const ask = mode === 'storage' ? tokens : [...new Set(candidates.filter((f) => !kept(f.token) && now - f.mtimeMs >= ASSET_GRACE_MS).map((f) => f.token))];
-      if (ask.length) current = await this.namedNow(ask, mode === 'sweep' ? SWEEP_SEARCH_LIMIT : Infinity);
+      if (ask.length) current = await this.namedNow(ask);
     }
     const inHistory = (t: string) => byEntry.some((s) => s.has(t));
     const inUse = (f: AssetFile) => listed(f) || current.has(f.token);

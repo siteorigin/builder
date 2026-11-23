@@ -181,11 +181,12 @@ describe('project storage', () => {
     const gone = image(dir, 'other', 'ccccdddd');
     await add(s, [styled.asset, built.asset, aliased.asset, gone.asset], 'Import 4 images');
     await remove(s, [styled.asset, built.asset, aliased.asset, gone.asset], 'Remove 4 images');
-    // Build configuration at the project's top level names one by an alias.
+    // Build configuration at the project's top level names one by an alias; a style sheet in a public folder named
+    // build (only the top-level build output is left out) names another's copy.
     write(dir, 'vite.config.ts', `export default { resolve: { alias: { hero: '/static/assets/${aliased.files[0]}' } } };\n`);
     // A hand-written style sheet uses one small copy by its address; a caption file of a kind no list of text
     // extensions would name builds the other's address from its parts.
-    write(dir, 'static/css/extra.css', `.hero { background: url(/assets/${styled.files[1]}); }\n`);
+    write(dir, 'static/build/extra.css', `.hero { background: url(/assets/${styled.files[1]}); }\n`);
     write(dir, 'src/lib/captions.vtt', `WEBVTT\n\n00:00.000 --> 00:01.000\n<img src="/assets/third-' + 'eeeeffff' + '.png">\n`);
     // A document named a copy of the third image for a while: undoing the second edit would bring that mention back.
     await site(s, { description: `See /assets/${gone.files[2]}` }, 'Describe with image');
