@@ -15,6 +15,9 @@ const conv = (...messages: ChatMessage[]): Conversation => ({ id: 'c_1', title: 
 describe('the question the composer answers', () => {
   it('is the last unanswered question of the active run while it waits for input', () => {
     expect(waitingQuestion(conv(turn()), 'run_1', 'awaiting-input')).toEqual({ runId: 'run_1', messageId: 'm_a', question: tone });
+    // An earlier turn's unanswered question (a stopped request) is never the one waiting.
+    const earlier = turn({ id: 'm_old', runId: 'run_0', questions: [{ id: 'q_0', text: 'Old?', choices: [] }] });
+    expect(waitingQuestion(conv(earlier, turn()), 'run_1', 'awaiting-input')?.question.id).toBe('q_2');
   });
 
   it('is none while the run works, for another run, once answered, after the result, or without an ID', () => {
@@ -36,6 +39,13 @@ describe('the question the composer answers', () => {
     expect(composerAction({ text: 'Now the footer', waiting: false, running: false })).toBe('send');
     expect(composerAction({ text: '', waiting: false, running: false })).toBe('none');
   });
+
+  it('never sends the message that comes back with an Enter pressed right after a typed answer', () => {
+    expect(composerAction({ text: 'Now the footer', waiting: false, running: false, sinceAnswerMs: 200 })).toBe('none');
+    expect(composerAction({ text: 'Now the footer', waiting: false, running: false, sinceAnswerMs: 1500 })).toBe('send');
+    // A second answer is never held back.
+    expect(composerAction({ text: 'Calm', waiting: true, running: true, sinceAnswerMs: 200 })).toBe('answer');
+  });
 });
 
 describe('a turn shows every question it asked', () => {
@@ -48,6 +58,11 @@ describe('a turn shows every question it asked', () => {
       [audience.text, 'Both equally'],
       [tone.text, undefined]
     ]);
+  });
+
+  it('leaves out a malformed stored question', () => {
+    const m = turn({ questions: [null as never, { text: 'Kept?', choices: [], answered: 'Yes' }] });
+    expect(shownQuestions(m, null).map((q) => q.text)).toEqual(['Kept?']);
   });
 
   it('shows a question stored by an earlier version', () => {

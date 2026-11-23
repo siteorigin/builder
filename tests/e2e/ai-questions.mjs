@@ -10,9 +10,13 @@ import { MockOpenAIServer, envelopeReply } from '../unit/mock-openai-server.ts';
 
 const { WORK, SHOTS, cleanup } = scratch('ai-questions');
 const server = await new MockOpenAIServer().start();
-let { app, win, errors } = await launch(WORK);
+let app;
+let passed = false;
 
 try {
+  const launched = await launch(WORK);
+  app = launched.app;
+  const { win, errors } = launched;
   await win.evaluate((baseURL) => window.builder.app.setSettings({ ai: { provider: 'local', models: { local: 'test-model' }, local: { baseURL, allowRemote: false, toolMode: 'constrained-json' } } }), server.baseURL);
   await win.reload();
   await win.waitForSelector('.welcome');
@@ -26,6 +30,8 @@ try {
   const posts = () => server.requests.filter((r) => r.method === 'POST');
   /** Everything the model was sent in its latest request, as text. */
   const lastSent = () => JSON.stringify(posts().at(-1)?.body.messages ?? []);
+  /** What the user side said in the latest request (requests, answers and tool results), never the assistant's own words. */
+  const userSaid = () => JSON.stringify((posts().at(-1)?.body.messages ?? []).filter((m) => m.role === 'user' || m.role === 'tool'));
 
   const audience = { question: 'Who is the Contact page mainly for?', choices: ['New clients', 'Existing clients', 'Both equally'] };
   const tone = { question: 'Which tone should it take?', choices: ['Warm and friendly', 'Calm and understated', 'Direct and brisk'] };
@@ -58,11 +64,15 @@ try {
   assert.equal(await card().getByText(audience.question).count(), 1, 'still waiting on the first question');
 
   step('a choice answers the first question; the second keeps the first exchange in view');
+  // Text half typed for the first question belongs to it, and never carries over to the next.
+  await answerBox().fill('Maybe new');
   await card().getByRole('button', { name: 'Both equally' }).click();
   await card().getByText(tone.question).waitFor({ timeout: 15000 });
   await exchanges().getByText(audience.question).waitFor();
   assert.match(await exchanges().first().innerText(), /You answered: Both equally/);
-  assert.match(lastSent(), /Both equally/, 'the model heard the first answer');
+  assert.equal(await answerBox().inputValue(), '', 'the next question starts with an empty answer box');
+  assert.match(userSaid(), /Both equally/, 'the model heard the first answer');
+  assert.doesNotMatch(userSaid(), /Maybe new/);
 
   await win.locator('.chat').screenshot({ path: join(SHOTS, 'ai-questions-waiting.png') });
 
@@ -73,12 +83,20 @@ try {
   assert.equal(await card().count(), 0, 'no question waits once the request is done');
   assert.deepEqual(await exchanges().allInnerTexts(), [`${audience.question}\nYou answered: Both equally`, `${tone.question}\nYou answered: Calm and understated`], 'both exchanges, in the order asked');
   assert.match(await log().innerText(), /Talk to us, whenever suits you/);
-  assert.match(lastSent(), /Calm and understated/);
+  assert.match(userSaid(), /Calm and understated/, 'the model heard the typed answer');
 
   step('back to ordinary chat: the drafted message returns and sends as a new request');
   await eventually(async () => assert.equal(await message().inputValue(), 'Now make the footer darker'));
   server.script(envelopeReply('finish', { message: 'Noted, nothing to change yet.' }));
-  await message().press('Enter');
+  // An Enter straight after the typed answer is taken as the same key press, so press until the message goes.
+  await eventually(
+    async () => {
+      if (await message().inputValue()) await message().press('Enter');
+      assert.equal(await message().inputValue(), '');
+    },
+    10000,
+    400
+  );
   await log().getByText('Noted, nothing to change yet.').waitFor({ timeout: 15000 });
   await eventually(async () => assert.equal(await message().inputValue(), ''));
   const followUp = lastSent();
@@ -93,12 +111,12 @@ try {
   assert.deepEqual(await exchanges().allInnerTexts(), [`${audience.question}\nYou answered: Both equally`, `${tone.question}\nYou answered: Calm and understated`]);
 
   assert.deepEqual(errors, [], 'no page errors');
+  passed = true;
   console.log('\nai-questions: all checks passed');
-  await app.close();
-  await server.stop();
-  cleanup();
-} catch (e) {
-  await app.close().catch(() => undefined);
+} finally {
+  // A failed run still closes the app and the model server, so the script ends instead of hanging; it keeps
+  // its scratch folder for inspection.
+  await app?.close().catch(() => undefined);
   await server.stop().catch(() => undefined);
-  throw e;
+  if (passed) cleanup();
 }

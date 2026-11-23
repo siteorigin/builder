@@ -270,6 +270,20 @@ describe('clarification questions', () => {
     return pending()!;
   };
   const runIdOf = (env: Awaited<ReturnType<typeof setup>>) => env.events.find((e) => e.runId)!.runId;
+  /** The conversation as saved on disk, once the finished request's write has landed. */
+  const saved = async (env: Awaited<ReturnType<typeof setup>>, check: (c: Conversation) => boolean) => {
+    const file = join(env.session.local('sessions', 'chat'), `${env.orch.conversation!.id}.json`);
+    for (let i = 0; i < 200; i++) {
+      try {
+        const c = JSON.parse(readFileSync(file, 'utf8')) as Conversation;
+        if (check(c)) return c;
+      } catch {
+        /* not written yet */
+      }
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    throw new Error('The conversation was not saved.');
+  };
   const audience = { question: 'Who is the Contact page mainly for?', choices: ['New clients', 'Existing clients', 'Both equally'] };
   const tone = { question: 'Which tone should it take?', choices: ['Warm and friendly', 'Calm and understated', 'Direct and brisk'] };
   const extra = { question: 'Should the headline mention the studio name?', choices: ['Yes', 'No'] };
@@ -306,9 +320,9 @@ describe('clarification questions', () => {
       ['done', `Asked: ${tone.question}`]
     ]);
 
-    // Reopening the thread shows both exchanges: they are in the saved transcript.
-    const saved = JSON.parse(readFileSync(join(env.session.local('sessions', 'chat'), `${env.orch.conversation!.id}.json`), 'utf8')) as Conversation;
-    expect(saved.messages.find((m) => m.role === 'assistant')?.questions?.map((q) => q.answered)).toEqual(['Both equally', 'Calm and understated']);
+    // Reopening the thread shows both exchanges: they are in the saved transcript, IDs and all.
+    const onDisk = await saved(env, (c) => !!c.messages.find((m) => m.role === 'assistant')?.result);
+    expect(onDisk.messages.find((m) => m.role === 'assistant')?.questions).toEqual(turn.questions);
 
     // The next request in the thread hears each question and answer in the order they were said, then the reply.
     const before = env.adapter.requests.length;
@@ -329,7 +343,6 @@ describe('clarification questions', () => {
       () => [call('q1', 'request_clarification', audience)],
       () => [call('q2', 'request_clarification', tone)],
       () => [call('q3', 'request_clarification', extra)],
-      () => finish('Unreachable.'),
       () => finish('Noted.')
     ]);
     const pending = env.run('Interview me about the Contact page');
@@ -344,6 +357,7 @@ describe('clarification questions', () => {
     const { result } = await pending;
     expect(result?.status).toBe('cancelled');
     const statuses = env.events.filter((e) => e.kind === 'status').map((e) => e.status);
+    expect(statuses).toContain('stopping');
     expect(statuses.slice(statuses.indexOf('stopping'))).not.toContain('running');
     const turn = env.orch.conversation!.messages.find((m) => m.role === 'assistant')!;
     expect(turn.questions?.map((q) => q.text)).toEqual([audience.question, tone.question, extra.question]);
@@ -370,6 +384,8 @@ describe('clarification questions', () => {
     expect(env.orch.answer(runIdOf(env), first.id!, '   ')).toBe(false);
     expect(env.orch.answer('run_other', first.id!, 'New clients')).toBe(false);
     expect(env.orch.answer(runIdOf(env), first.id!, 'New clients')).toBe(true);
+    // A double click: the second answer for the same question is refused at once.
+    expect(env.orch.answer(runIdOf(env), first.id!, 'New clients')).toBe(false);
     // A second click on the first question's choice lands while the second question waits.
     const second = (await asked(env, 2))[1];
     expect(env.orch.answer(runIdOf(env), first.id!, 'Existing clients')).toBe(false);
@@ -382,8 +398,10 @@ describe('clarification questions', () => {
     const env = await setup([
       () => [call('q1', 'request_clarification', { question: 'Which colour should the brand use?', choices: ['Navy', 'Forest green'] })],
       (req) => {
-        const answer = JSON.stringify(req.items.at(-1));
-        return [call('e1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'token.set', tokenId: 'color.brand', value: answer.includes('Forest green') ? '#1f5130' : '#000080' }] })];
+        // The question tool's result carries the answer.
+        const last = req.items.at(-1);
+        const answer = last?.kind === 'tool_result' && last.callId === 'q1' ? (JSON.parse(last.content) as { answer?: string }).answer : undefined;
+        return [call('e1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'token.set', tokenId: 'color.brand', value: answer === 'Forest green' ? '#1f5130' : '#000080' }] })];
       },
       () => finish('Changed the brand colour to forest green.')
     ]);
@@ -407,7 +425,7 @@ describe('clarification questions', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
       messages: [
         { id: 'm_u', role: 'user', text: 'Ask me about the tone', time: '2026-01-01T00:00:00.000Z' },
-        { id: 'm_a', role: 'assistant', text: 'Going calm.', time: '2026-01-01T00:00:01.000Z', runId: 'run_old', question: { text: 'Which tone?', choices: ['Calm', 'Bold'], answered: 'Calm' }, result: { status: 'no-changes', summary: 'Going calm.', changes: [], validation: [], canUndo: false } }
+        { id: 'm_a', role: 'assistant', text: 'Calm it is.', time: '2026-01-01T00:00:01.000Z', runId: 'run_old', question: { text: 'Which tone?', choices: ['Calm', 'Bold'], answered: 'Calm' }, result: { status: 'no-changes', summary: 'Going calm.', changes: [], validation: [], canUndo: false } }
       ]
     };
     writeFileSync(join(dir, 'c_legacy1.json'), JSON.stringify(legacy));
@@ -416,11 +434,36 @@ describe('clarification questions', () => {
     expect(env.adapter.requests[0].items.slice(0, -1).map((i) => (i.kind === 'tool_result' ? '' : i.text))).toEqual(['Ask me about the tone', 'Which tone?\nChoices: Calm | Bold', 'Calm', 'Going calm.']);
   });
 
+  it('leaves out malformed stored questions instead of failing the next request, and refuses answers while idle (#22)', async () => {
+    const env = await setup([() => finish('Sure.'), () => finish('Again.')]);
+    expect((env.orch.answer as (...a: unknown[]) => boolean)()).toBe(false);
+    const dir = env.session.local('sessions', 'chat');
+    mkdirSync(dir, { recursive: true });
+    const broken = {
+      id: 'c_broken1',
+      title: 'Broken',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      messages: [
+        { id: 'm_u', role: 'user', text: 'Ask me', time: '2026-01-01T00:00:00.000Z' },
+        { id: 'm_a', role: 'assistant', text: 'Done.', time: '2026-01-01T00:00:01.000Z', questions: [{ text: 'No choices stored?', answered: 'Fine' }, { text: '', choices: [], answered: 'Blank' }, null] }
+      ]
+    };
+    writeFileSync(join(dir, 'c_broken1.json'), JSON.stringify(broken));
+    await env.orch.openConversation('c_broken1');
+    const { result } = await env.run('Carry on');
+    expect(result?.status).toBe('no-changes');
+    expect(env.adapter.requests[0].items.slice(0, -1).map((i) => (i.kind === 'tool_result' ? '' : i.text))).toEqual(['Ask me', 'No choices stored?', 'Fine', 'Done.']);
+    // The run released the project: another request starts normally.
+    expect((await env.run('And again')).result?.status).toBe('no-changes');
+  });
+
   it('tells the assistant to ask with choices when the user wants to be interviewed or to choose (#22)', async () => {
     const env = await setup([() => finish('Done.')]);
     await env.run('Interview me about the Contact page');
     const { system, tools } = env.adapter.requests[0];
     expect(system).toMatch(/interview them[^.]*request_clarification/);
+    expect(system).toContain('one question per call, its options as choices');
+    expect(system).toContain('Wait for each answer before asking the next question');
     expect(system).toContain('reply in chat and change nothing');
     expect(tools.find((t) => t.name === 'request_clarification')?.description).toMatch(/interview/);
   });

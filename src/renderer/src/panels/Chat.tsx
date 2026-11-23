@@ -9,6 +9,7 @@ import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf } from '../lib/result';
 import { composerAction, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
@@ -113,6 +114,8 @@ export function Chat() {
   const answerText = askingKey && answerBox.key === askingKey ? answerBox.text : '';
   const composerText = asking ? answerText : draft;
   const answering = useRef<string | null>(null);
+  /** When the last typed answer went in: an Enter right after it never sends the message that comes back. */
+  const answeredAt = useRef(0);
   const working = msgs.find((m) => m.runId === activeRunId && m.role === 'assistant');
   const workingUser = working ? msgs[msgs.indexOf(working) - 1] : null;
   // Undo turn is offered only while that turn is the newest step in the project's undo history: history
@@ -193,9 +196,14 @@ export function Chat() {
     const key = `${q.runId}:${q.question.id}`;
     if (!text.trim() || answering.current === key) return;
     answering.current = key;
+    if (typed) answeredAt.current = Date.now();
     const ok = await api.ai.answer(q.runId, q.question.id, text.trim()).catch(() => false);
     if (!ok) {
-      answering.current = null;
+      if (answering.current === key) answering.current = null;
+      answeredAt.current = 0;
+      // Refused while the same question still waits (the app could not deliver it): say so, and keep the text.
+      const s = getState();
+      if (waitingQuestion(s.conversation, s.activeRunId, s.runStatus)?.question.id === q.question.id) toast('Your answer could not be sent. Try again.', 'error');
       return;
     }
     // The typed answer is sent: clear it, unless more was typed meanwhile (that question is answered either way).
@@ -381,7 +389,8 @@ export function Chat() {
           <span>{provider.warning}</span>
         </div>
       )}
-      {configured && asking && (
+      {/* Shown whenever a question waits, even if the provider was changed meanwhile: the run still needs it. */}
+      {asking && (
         // The question waiting for an answer sits by the composer, which answers it; a choice answers it in one click.
         <div className="question-card" role="group" aria-labelledby="ai-question-text">
           <div className="question-text" id="ai-question-text">
@@ -389,9 +398,9 @@ export function Chat() {
           </div>
           {asking.question.choices.length > 0 && (
             <div className="choices">
-              {asking.question.choices.map((c) => (
+              {asking.question.choices.map((c, i) => (
                 <button
-                  key={c}
+                  key={`${i}:${c}`}
                   className="btn btn-sm choice"
                   onClick={() => {
                     void answer(asking, c, false);
@@ -404,12 +413,16 @@ export function Chat() {
             </div>
           )}
           <p className="question-hint" id="ai-question-hint">
-            {asking.question.widen ? 'Choose an option, or type a reply below. Only a yes allows changes beyond the selection.' : asking.question.choices.length ? 'Choose an option, or type your own answer below.' : 'Type your answer below.'}
+            {asking.question.widen
+              ? 'Choose an option, or type a reply below. Only the first option, or a plain “yes”, allows changes beyond the selection.'
+              : asking.question.choices.length
+                ? 'Choose an option, or type your own answer below.'
+                : 'Type your answer below.'}
             {draft.trim() ? ' Your unsent message is kept for afterwards.' : ''}
           </p>
         </div>
       )}
-      {configured ? (
+      {configured || asking ? (
         <div className="composer">
           {(page || selLabel) && (
             <div className="chips" role="group" aria-label="Your next message applies to">
@@ -465,10 +478,13 @@ export function Chat() {
             }}
             onKeyDown={(e) => {
               const sendOnEnter = getState().settings?.ai.sendOnEnter ?? true;
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing && (sendOnEnter ? !e.shiftKey : e.metaKey || e.ctrlKey)) {
+              if (e.key === 'Enter' && !isImeComposing(e) && (sendOnEnter ? !e.shiftKey : e.metaKey || e.ctrlKey)) {
                 e.preventDefault();
+                // A held-down Enter submits once; and the message that comes back after an answer is never sent
+                // by an Enter meant for the answer.
+                if (e.repeat) return;
                 // An empty box sends nothing; a waiting question takes the text as its answer.
-                const action = composerAction({ text: composerText, waiting: !!asking, running });
+                const action = composerAction({ text: composerText, waiting: !!asking, running, sinceAnswerMs: Date.now() - answeredAt.current });
                 if (action === 'answer') void answer(asking!, composerText, true);
                 else if (action === 'hold') toast('Your message is kept here. You can send it when the current request finishes.', 'info');
                 else if (action === 'send') void send();
@@ -487,7 +503,16 @@ export function Chat() {
             )}
             <span className="grow" />
             {asking ? (
-              <button className="send-btn" disabled={!answerText.trim()} title="Send answer" aria-label="Send answer" onClick={() => void answer(asking, answerText, true)}>
+              <button
+                className="send-btn"
+                disabled={!answerText.trim()}
+                title="Send answer"
+                aria-label="Send answer"
+                onClick={() => {
+                  void answer(asking, answerText, true);
+                  focusComposer();
+                }}
+              >
                 <ArrowUp />
               </button>
             ) : (

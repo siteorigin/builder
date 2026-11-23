@@ -513,6 +513,18 @@ describe('update_site_brand', () => {
   });
 });
 
+describe('asking the user (#22)', () => {
+  it('tells a focused site run to ask with request_clarification, and lets it finish with advice', async () => {
+    const { adapter, run } = await setup([() => finish('Try: Talk to us, whenever suits you.')], { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' });
+    const { result } = await run('Interview me about the Contact page, then suggest a headline in chat only');
+    expect(result?.status).toBe('no-changes');
+    const { system, tools } = adapter.requests[0];
+    expect(tools.map((t) => t.name)).toContain('request_clarification');
+    expect(system).toMatch(/request_clarification asks the user one question[^\n]*interview them[^\n]*one question per call/);
+    expect(system).toContain('when the user asked only for advice or ideas, with that advice');
+  });
+});
+
 describe('selection tools', () => {
   const heroRef = (s: ProjectState): ElementRef => ({ owner: { kind: 'page', id: s.site.homePageId }, instancePath: [], nodeId: pageAt(s, '/')!.rootIds[0] });
   const focused = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'constrained-json' as const };

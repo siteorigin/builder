@@ -42,7 +42,7 @@ export const TOOL_ARGS = {
   inspect_layout: z.object({ pageId: z.string(), viewport: z.enum(['phone', 'tablet', 'desktop']) }),
   validate_project: z.object({ profile: z.enum(['schema', 'component']).optional() }),
   request_clarification: z.object({
-    question: z.string().max(300),
+    question: z.string().min(1).max(300),
     choices: z.array(z.string().max(80)).max(4).optional(),
     widenScope: z.boolean().optional().describe('Set true to ask permission to change more than the selected element. The app shows yes/no choices; on yes, the run may change anything.')
   }),

@@ -64,7 +64,7 @@ Response format (this overrides anything above about calling several tools in a 
 Reply with exactly one JSON object and nothing else:
 {"brief_status":"<a few words on what you are doing>","action":{"tool":"<tool name>","args":{...}}}
 Each reply makes exactly one tool call; you get its result in the next message.
-When the whole request is done, use the tool "${FINISH_ACTION}" with args {"message":"<one or two plain sentences saying what changed>"}.
+When the whole request is done, use the tool "${FINISH_ACTION}" with args {"message":"<one or two plain sentences saying what changed, or the advice the user asked for>"}.
 A field typed "json" takes a plain string, number, boolean or null directly. An object or array goes in as {"${OPEN_VALUE_KEY}":"<the value encoded as a JSON string>"}. A field typed "json-object" always uses that form.
 
 Tools:

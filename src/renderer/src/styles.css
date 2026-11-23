@@ -1015,11 +1015,13 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .result-body .checks .pass-detail { padding-left: 18px; }
 .result-foot { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--panel-2); }
 /* The question the AI is waiting on sits right above the composer, which answers it. */
-.question-card { flex: none; margin: 8px 12px 0; max-height: 45%; overflow: auto; padding: 12px; border-radius: var(--r-md); border: 1px solid var(--accent); background: var(--raised); box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; }
+.question-card { flex: 0 1 auto; min-height: 72px; margin: 8px 12px 0; max-height: 45%; overflow: auto; padding: 12px; border-radius: var(--r-md); border: 1px solid var(--accent); background: var(--raised); box-shadow: var(--shadow-sm); display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; }
 .question-text { font-size: 13px; font-weight: 600; line-height: 1.45; color: var(--text); border-radius: var(--r-xs); }
 .question-card .choices { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
 .question-card .choice { justify-content: flex-start; height: auto; min-height: 30px; padding: 5px 10px; text-align: left; white-space: normal; line-height: 1.35; }
 .question-hint { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+/* On a short window the card scrolls before the conversation disappears. */
+.chat:has(> .question-card) .chat-log { min-height: 96px; }
 .answered { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border); font-size: 12px; line-height: 1.45; color: var(--text-2); }
 .answered strong { color: var(--text); font-weight: 600; }
 .answered.unanswered > span:last-child { color: var(--text-3); font-style: italic; }

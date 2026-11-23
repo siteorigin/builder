@@ -22,16 +22,22 @@ export function waitingQuestion(conversation: Conversation | null | undefined, a
  */
 export function shownQuestions(m: ChatMessage, waiting: WaitingQuestion | null): Array<ChatQuestion & { key: string }> {
   return turnQuestions(m)
-    .map((q, i) => ({ ...q, key: q.id ?? `${m.id}:${i}` }))
+    .map((q, i) => (q && typeof q.text === 'string' ? { ...q, key: q.id ?? `${m.id}:${i}` } : null))
+    .filter((q): q is ChatQuestion & { key: string } => !!q)
     .filter((q) => q.answered !== undefined || !(waiting?.messageId === m.id && waiting.question.id === q.id));
 }
 
+/** How soon after a typed answer an Enter is taken as a second press of the same key, not a new message. */
+export const ANSWER_ECHO_MS = 1000;
+
 /**
- * What the composer's Enter (or Send) does with its text: answer a waiting question, send a new request, keep the
- * text for after the current request, or nothing (an empty box sends nothing).
+ * What the composer's Enter does with its text: answer a waiting question, send a new request, keep the text for
+ * after the current request, or nothing. An empty box sends nothing, and an Enter that comes right after a typed
+ * answer never sends the message the composer shows again once the question is answered.
  */
-export function composerAction(opts: { text: string; waiting: boolean; running: boolean }): 'answer' | 'send' | 'hold' | 'none' {
+export function composerAction(opts: { text: string; waiting: boolean; running: boolean; sinceAnswerMs?: number }): 'answer' | 'send' | 'hold' | 'none' {
   if (!opts.text.trim()) return 'none';
   if (opts.waiting) return 'answer';
-  return opts.running ? 'hold' : 'send';
+  if (opts.running) return 'hold';
+  return (opts.sinceAnswerMs ?? Infinity) < ANSWER_ECHO_MS ? 'none' : 'send';
 }

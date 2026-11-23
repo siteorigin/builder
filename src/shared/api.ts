@@ -210,7 +210,8 @@ export interface ChatQuestion {
 
 /** A turn's questions in order, including one stored by an earlier version as `question`. */
 export function turnQuestions(m: Pick<ChatMessage, 'questions' | 'question'>): ChatQuestion[] {
-  return m.questions ?? (m.question ? [m.question] : []);
+  if (Array.isArray(m.questions)) return m.questions;
+  return m.question ? [m.question] : [];
 }
 
 export interface Conversation {
