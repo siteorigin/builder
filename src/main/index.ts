@@ -10,6 +10,7 @@ import { Controller, defaultProjectsFolder } from './controller';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
 import { menuKeyCopy } from './history-keys';
 import { createMenuCommands, type MenuCommand } from './menu-commands';
+import { writingMenuTemplate } from './writing-menu';
 import { loadSettings, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
@@ -446,6 +447,31 @@ async function createWindow() {
   self.webContents.on('render-process-gone', () => {
     menuCommands.unready(self);
     leaveGate.editorGone();
+  });
+  // A right-click in text that takes typing offers its spelling suggestions and the editing actions, natively:
+  // a native menu leaves focus where it is, so a word being edited on the canvas stays in its edit. The canvas
+  // leaves only that right-click to the page; elsewhere it shows its element actions instead.
+  self.webContents.on('context-menu', (_e, params) => {
+    const contents = self.webContents;
+    const live = () => !self.isDestroyed() && !contents.isDestroyed();
+    const template = writingMenuTemplate(params, {
+      // The page replaces the misspelling in its focused frame: only while that is still the frame clicked in.
+      replaceMisspelling: (s) => {
+        if (!live()) return;
+        const focused = contents.focusedFrame;
+        if (params.frame && focused && focused !== params.frame) return;
+        contents.replaceMisspelling(s);
+      },
+      cut: () => live() && contents.cut(),
+      copy: () => live() && contents.copy(),
+      paste: () => live() && contents.paste(),
+      selectAll: () => live() && contents.selectAll()
+    });
+    if (!template) return;
+    const menu = Menu.buildFromTemplate(template);
+    // Nothing pops up during automated runs: the menu goes to the test, which chooses from it.
+    if (headless) return void app.emit('test:writing-menu', menu, params);
+    menu.popup({ window: self, frame: params.frame ?? undefined });
   });
   self.on('unresponsive', () => leaveGate.editorUnresponsive());
   self.on('responsive', () => leaveGate.editorResponsive());
