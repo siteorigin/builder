@@ -392,4 +392,33 @@ describe('placing an imported image (issue #262)', () => {
     await set(b, 'Plain');
     expect(image(b).alt).toBe('Plain');
   });
+
+  it('checks the same picture against the project itself, not a copy that is behind', async () => {
+    const { a, field, owner } = await setup();
+    await write([{ type: 'asset.add', asset: photo }]);
+    await write([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: photo.id, alt: 'Here' } }]);
+    const run = startImport(field(a), { start: { assetId: photo.id, alt: 'Here' } });
+    // Removed in the main process; this window has not heard yet.
+    quiet = true;
+    await write([{ type: 'node.remove', owner, nodeId: a }]);
+    quiet = false;
+    await importing!.release([photo.id]);
+    expect(await run).toEqual({ kind: 'kept', assetId: photo.id });
+    expect(lastToast()!.text).toBe('“Studio at sunrise.png” was added to Assets but not placed: the Split hero on Home was removed while it was being added.');
+  });
+
+  it('offers the image it found in the project, even when this window has not heard of it yet', async () => {
+    const { a, owner, image, field } = await setup();
+    const run = startImport(field(a));
+    // The hero is edited and the picture recorded, all before this window hears of either.
+    quiet = true;
+    await write([{ type: 'instance.setProp', owner, nodeId: a, prop: 'image', value: { assetId: null, alt: 'Typed elsewhere' } }]);
+    await importing!.release();
+    expect(await run).toEqual({ kind: 'kept', assetId: photo.id });
+    quiet = false;
+    expect(image(a)).toEqual({ assetId: null, alt: 'Typed elsewhere' });
+    const note = lastToast()!;
+    expect(note.text).toBe('“Studio at sunrise.png” was added to Assets but not placed: the Split hero on Home was edited while it was being added.');
+    expect(note.action?.label).toBe('Show image');
+  });
 });

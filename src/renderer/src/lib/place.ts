@@ -1,6 +1,6 @@
 import type { ProjectSnapshot } from '@shared/api';
 import type { AssetRecord } from '@shared/types';
-import { api, commitIfUnchanged, getState, setState, toast } from '../store';
+import { api, commitIfUnchanged, errorText, getState, setState, toast } from '../store';
 import { trackApply, type ApplyOutcome } from './pending';
 
 /** Asks the Assets panel to open on one image. `detail`: { opening, assetId }. */
@@ -51,7 +51,13 @@ export async function importAndPlace(opts: { paths?: string[]; base: ProjectSnap
       return r.assetIds.map((id) => (Object.hasOwn(assets, id) ? assets[id] : undefined)).find((a) => a?.kind === 'image');
     };
     // This window hears of the new records after the import answers, at the latest: ask the project when it has not yet.
-    const asset = imageIn(getState().snapshot) ?? imageIn(await api.project.snapshot().catch(() => null));
+    const project = () => api.project.snapshot().catch(() => null);
+    let asset = imageIn(getState().snapshot);
+    if (!asset) {
+      const snap = await project();
+      asset = imageIn(snap);
+      if (!snap) outcome = { ok: false, message: 'The image was added, but it could not be placed. Choose it from Assets.' };
+    }
     if (!asset) return { kind: 'none' };
     let note: string | void = undefined;
     const done = await commitIfUnchanged(base, () => (note = opts.place(asset)), { checkOnly: !!opts.holds?.(asset) });
@@ -63,7 +69,8 @@ export async function importAndPlace(opts: { paths?: string[]; base: ProjectSnap
     if (done.kind === 'closed' || getState().snapshot?.workspaceKey !== base.workspaceKey) return { kind: 'kept', assetId: asset.id };
     const lead = `“${asset.name}” was added to Assets but not placed`;
     // Undone (or removed) before it could be placed: it is not in Assets either.
-    if (getState().snapshot?.state.assets.assets[asset.id]?.kind !== 'image') {
+    const inAssets = (snap: ProjectSnapshot | null | undefined) => snap?.workspaceKey === base.workspaceKey && snap.state.assets.assets[asset.id]?.kind === 'image';
+    if (!inAssets(getState().snapshot) && !inAssets(await project())) {
       outcome = { ok: false, message: `“${asset.name}” was not placed: it was removed from Assets while it was being added.` };
       toast(outcome.message!, 'error');
       return { kind: 'none' };
@@ -79,6 +86,9 @@ export async function importAndPlace(opts: { paths?: string[]; base: ProjectSnap
     outcome = { ok: false, message };
     toast(message, 'error', { label: 'Show image', run: () => showAsset(base.workspaceKey, asset.id) });
     return { kind: 'kept', assetId: asset.id };
+  } catch (e) {
+    outcome = { ok: false, message: errorText(e) };
+    throw e;
   } finally {
     setState({ pendingSave: Math.max(0, getState().pendingSave - 1) });
     landed(outcome);

@@ -574,8 +574,9 @@ async function checkAndApply(c: CheckedCommit, operations: EditOperation[], labe
           ? { kind: 'changed', where }
           : null;
     if (refusal && fresh) return refusal;
-    if (!refusal && c.checkOnly) return { kind: 'unchanged', where };
-    if (!refusal) {
+    // Nothing is written to refuse a check made on a copy that is behind, so it is made on the project's own.
+    if (!refusal && c.checkOnly && fresh) return { kind: 'unchanged', where };
+    if (!refusal && !c.checkOnly) {
       const r = await api.project
         .apply({ operations, expectedRevision: snap.revision }, { label, coalesceKey, opening: base.workspaceKey })
         .catch((e: unknown) => ({ ok: false as const, revision: 0, error: { code: 'FAILED' as const, message: errorText(e) } }));
