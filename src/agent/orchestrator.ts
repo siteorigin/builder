@@ -348,6 +348,8 @@ export class Orchestrator {
     };
 
     const addActivity = (label: string, tool: string): ChatActivity => {
+      // A repair pass is finished once the next real step starts.
+      for (const x of activities) if (x.tool === 'repair' && x.status === 'running') x.status = 'done';
       const a: ChatActivity = { id: newId('act'), label, status: 'running', tool };
       activities.push(a);
       this.emitMessage(msg, runId);
@@ -357,7 +359,8 @@ export class Orchestrator {
     const revertAndFinish = async (status: RunStatus, summary: string, error?: string) => {
       const r = await session.abortRun();
       if (r.conflict) {
-        await finish('conflicted', `${summary} A file was changed outside the app, so the AI changes were kept for you to review.`, { error });
+        // The AI's edits stay in place, so list them: the card is where the user goes to review them.
+        await finish('conflicted', `${summary} A file was changed outside the app, so the AI changes were kept for you to review.`, { error, changes: describeOps(executedOps, startState, session.state, opResults) });
         return;
       }
       await finish(status, mutated && r.restored ? `${summary} The project was restored to how it was before this request.` : summary, { error, usage });
@@ -441,7 +444,7 @@ export class Orchestrator {
               continue outer;
             }
             v.status = 'done';
-            checks.push('Project structure, links and references are valid.', 'All Svelte components compile.');
+            checks.push('Project structure, links and references are valid.', baseline.size ? 'No new build errors.' : 'All components build without errors.');
             if (baseline.size) checks.push(`${baseline.size} pre-existing issue${baseline.size === 1 ? '' : 's'} remain.`);
             const changes = describeOps(executedOps, startState, session.state, opResults);
             const label = (finalText.split(/(?<=[.!?])\s/)[0] || userMsg.text).slice(0, 80);
@@ -467,6 +470,12 @@ export class Orchestrator {
           const outcome = tools.some((t) => t.name === call.name)
             ? await executeTool(call.name, call.arguments, host, call.id)
             : { ok: false, content: { error: 'INVALID_ARGUMENT', message: `Unknown tool "${call.name}".` } };
+          // Record a landed edit before honouring Stop, so the stopped result reports the rollback truthfully.
+          if (outcome.mutated) {
+            mutated = true;
+            executedOps.push(...(outcome.ops ?? []));
+            opResults.push(...(outcome.results ?? (outcome.ops ?? []).map(() => ({}))));
+          }
           if (signal.aborted) throw new Error('Cancelled');
           activity.status = outcome.ok ? 'done' : 'error';
           if (!outcome.ok) {
@@ -476,19 +485,14 @@ export class Orchestrator {
             const n = (failures.get(key) ?? 0) + 1;
             failures.set(key, n);
             if (n >= LIMITS.repeatedFailures) {
-              await revertAndFinish('failed', `Stopped after the same step failed twice: ${activity.detail ?? 'unknown error'}`, activity.detail);
+              await revertAndFinish('failed', 'Stopped because the same step failed twice. The details are in the steps.', activity.detail);
               return;
             }
-          }
-          if (outcome.mutated) {
-            mutated = true;
-            executedOps.push(...(outcome.ops ?? []));
-            opResults.push(...(outcome.results ?? (outcome.ops ?? []).map(() => ({}))));
           }
           if (call.name === 'inspect_layout' && outcome.ok) {
             const c = outcome.content as { viewport: string; report?: { issues?: Array<{ kind: string }> } };
             const overflow = c.report?.issues?.some((i) => i.kind === 'horizontal-overflow');
-            checks.push(`Checked layout at ${c.viewport} width: ${overflow ? 'horizontal overflow detected' : 'no horizontal overflow detected'}.`);
+            checks.push(!c.report ? `Couldn't check the layout at ${c.viewport} width.` : overflow ? `Content is wider than the screen at ${c.viewport} width.` : `Fits the screen at ${c.viewport} width.`);
           }
           this.emitMessage(msg, runId);
           items.push({ kind: 'tool_result', callId: call.id, name: call.name, content: serializeResult(outcome.content), isError: !outcome.ok });
