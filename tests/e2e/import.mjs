@@ -251,7 +251,6 @@ if (CONVERTS) {
 }
 
 step('the inspector image picker: Choose image → Import reviews the photo and places it at once');
-const home = now.state.site.homePageId;
 const inserted = await win.evaluate((pageId) => window.builder.project.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: pageId }, componentId: 'hero.split' }] }, { label: 'Insert hero' }), home);
 assert.equal(inserted.ok, true, `a hero is inserted: ${inserted.error?.message}`);
 const heroId = inserted.results[0].nodeId;
