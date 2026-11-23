@@ -373,3 +373,176 @@ describe('section links', () => {
     expect(s.state.pages[contact.id].nodes[contact.rootIds[1]].anchor).toBeUndefined();
   });
 });
+
+describe('undoing one history entry', () => {
+  const homeOwner = (s: ProjectSession) => ({ kind: 'page' as const, id: s.state.site.homePageId });
+  const home = (s: ProjectSession) => s.state.pages[s.state.site.homePageId];
+  const logos = (s: ProjectSession) => home(s).rootIds.map((id) => home(s).nodes[id] as InstanceNode).find((n) => s.state.components[n.definitionId]?.componentId === 'logos.strip')!;
+  const setTitle = (s: ProjectSession, seoTitle: string) => s.apply({ operations: [{ type: 'page.update', pageId: home(s).id, seoTitle }] }, { label: 'Edit browser title' });
+  const unchanged = (s: ProjectSession) => ({ revision: s.revision, history: s.historyInfo(), state: structuredClone(s.state) });
+
+  it('reports the history entry each change was recorded in', async () => {
+    const { s } = await make();
+    const r = await s.apply({ operations: [{ type: 'site.update', name: 'One' }] }, { label: 'Rename site', coalesceKey: 'site-name' });
+    expect(r.entryId).toBe(s.historyInfo().entries.at(-1)!.id);
+    // A change folded into the previous entry belongs to that entry.
+    const folded = await s.apply({ operations: [{ type: 'site.update', name: 'Two' }] }, { label: 'Rename site', coalesceKey: 'site-name' });
+    expect(folded.entryId).toBe(r.entryId);
+    const same = await s.apply({ operations: [{ type: 'site.update', name: 'Two' }] }, { label: 'Rename site' });
+    expect(same.ok).toBe(true);
+    expect(same.entryId).toBeUndefined();
+  });
+
+  it('undoes the newest entry like Undo, keeping Redo', async () => {
+    const { s } = await make();
+    const id = logos(s).id;
+    const r = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: id }] }, { label: 'Delete Logo strip' });
+    expect((await s.undoEntry(r.entryId!)).ok).toBe(true);
+    expect(home(s).nodes[id]).toBeDefined();
+    expect(s.historyInfo()).toMatchObject({ canRedo: true, redoLabel: 'Delete Logo strip' });
+    expect(await s.undoEntry(r.entryId!)).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: '“Delete Logo strip” was already undone.' } });
+    expect(await s.undoEntry('h_missing')).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: 'That change is no longer in History.' } });
+  });
+
+  it('puts an older section removal back on its own as a new change that survives reopening', async () => {
+    const { dir, s } = await make();
+    const id = logos(s).id;
+    const order = [...home(s).rootIds];
+    const r = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: id }] }, { label: 'Delete Logo strip' });
+    await setTitle(s, 'November client proof');
+    const u = await s.undoEntry(r.entryId!);
+    expect(u.ok).toBe(true);
+    expect(u.entryId).toBe(s.historyInfo().entries.at(-1)!.id);
+    expect(home(s).rootIds).toEqual(order);
+    expect(home(s).seo.title).toBe('November client proof');
+    expect(s.historyInfo().entries.map((e) => e.label).slice(-3)).toEqual(['Delete Logo strip', 'Edit browser title', 'Restore Logo strip']);
+    await s.close();
+    const again = await ProjectSession.open(dir, 'test');
+    expect(again.state.pages[again.state.site.homePageId].rootIds).toEqual(order);
+    await again.undo();
+    expect(again.state.pages[again.state.site.homePageId].nodes[id]).toBeUndefined();
+    expect(again.state.pages[again.state.site.homePageId].seo.title).toBe('November client proof');
+    await again.close();
+  });
+
+  it('refuses an older change it cannot undo on its own, changing nothing', async () => {
+    const { s } = await make();
+    const site = await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });
+    await setTitle(s, 'Later');
+    const before = unchanged(s);
+    expect(await s.undoEntry(site.entryId!)).toMatchObject({ ok: false, error: { code: 'CONFLICT', message: 'Other changes came after “Rename site”. Open History to undo it.' } });
+    expect(unchanged(s)).toEqual(before);
+  });
+
+  it('refuses to bring back a section whose component has been removed since', async () => {
+    const { s } = await make();
+    const node = logos(s);
+    const r = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: node.id }] }, { label: 'Delete Logo strip' });
+    const removed = await s.apply({ operations: [{ type: 'component.remove', definitionId: node.definitionId }] }, { label: 'Remove component' });
+    expect(removed.error?.message).toBeUndefined();
+    const before = unchanged(s);
+    const u = await s.undoEntry(r.entryId!);
+    expect(u).toMatchObject({ ok: false, error: { code: 'CONFLICT' } });
+    expect(u.error!.message).toMatch(/^Other changes came after “Delete Logo strip”, so it can’t be undone on its own\. .+ Open History to undo it\.$/);
+    expect(unchanged(s)).toEqual(before);
+  });
+
+  it('refuses a deletion made in one step with another change to the page', async () => {
+    const { s } = await make();
+    const r = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: logos(s).id }, { type: 'page.update', pageId: home(s).id, seoTitle: 'Together' }] }, { label: 'Delete Logo strip' });
+    await s.apply({ operations: [{ type: 'site.update', name: 'Later' }] }, { label: 'Rename site' });
+    const before = unchanged(s);
+    expect(await s.undoEntry(r.entryId!)).toMatchObject({ ok: false, error: { message: 'Other changes came after “Delete Logo strip”. Open History to undo it.' } });
+    expect(unchanged(s)).toEqual(before);
+  });
+
+  it('undoes a whole entry that later edits were folded into, as Undo would', async () => {
+    const { s } = await make();
+    const r = await s.apply({ operations: [{ type: 'site.update', name: 'One' }] }, { label: 'Rename site', coalesceKey: 'site-name' });
+    await s.apply({ operations: [{ type: 'site.update', name: 'Two' }] }, { label: 'Rename site', coalesceKey: 'site-name' });
+    expect((await s.undoEntry(r.entryId!)).ok).toBe(true);
+    expect(s.state.site.name).toBe('Persist');
+    await s.redo();
+    expect(s.state.site.name).toBe('Two');
+  });
+
+  it('refuses to bring back an anchor something else on the page has taken since', async () => {
+    const { s } = await make();
+    const node = logos(s);
+    expect((await s.apply({ operations: [{ type: 'node.setContent', owner: homeOwner(s), nodeId: node.id, field: 'anchor', value: 'offer' }] }, { label: 'Anchor' })).ok).toBe(true);
+    const r = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: node.id }] }, { label: 'Delete Logo strip' });
+    const other = home(s).rootIds[0];
+    expect((await s.apply({ operations: [{ type: 'node.setContent', owner: homeOwner(s), nodeId: other, field: 'anchor', value: 'offer' }] }, { label: 'Anchor' })).ok).toBe(true);
+    const before = unchanged(s);
+    expect((await s.undoEntry(r.entryId!)).error?.message).toBe('Other changes came after “Delete Logo strip”, so it can’t be undone on its own. Something else on the page now uses its anchor “#offer”. Open History to undo it.');
+    expect(unchanged(s)).toEqual(before);
+  });
+
+  it('refuses, changing nothing, when history no longer holds the page it needs', async () => {
+    const { dir, s } = await make();
+    const r = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: logos(s).id }] }, { label: 'Delete Logo strip' });
+    await setTitle(s, 'Later');
+    const entry = JSON.parse(readFileSync(join(dir, '.siteorigin/history/history.json'), 'utf8')).entries.find((e: { id: string }) => e.id === r.entryId);
+    const [doc] = Object.values(entry.docs) as Array<{ before: string }>;
+    rmSync(join(dir, '.siteorigin/history/blobs', `${doc.before}.json`));
+    const before = unchanged(s);
+    expect((await s.undoEntry(r.entryId!)).error?.message).toBe('Other changes came after “Delete Logo strip”, so it can’t be undone on its own. History no longer holds the page as it was. Open History to undo it.');
+    expect(unchanged(s)).toEqual(before);
+  });
+
+  it('never puts a section into a page made again with the same ID', async () => {
+    const { s } = await make();
+    const pageId = 'pg_demo1';
+    await s.apply({ operations: [{ type: 'page.create', pageId, title: 'Demo', starter: 'intro' }] }, { label: 'Add page' });
+    const owner = { kind: 'page' as const, id: pageId };
+    const r = await s.apply({ operations: [{ type: 'node.remove', owner, nodeId: s.state.pages[pageId].rootIds[0] }] }, { label: 'Delete Intro' });
+    await s.apply({ operations: [{ type: 'page.remove', pageId }] }, { label: 'Delete page' });
+    await s.apply({ operations: [{ type: 'page.create', pageId, title: 'Demo', starter: 'empty' }] }, { label: 'Add page' });
+    const before = unchanged(s);
+    expect((await s.undoEntry(r.entryId!)).error?.message).toBe('Other changes came after “Delete Intro”, so it can’t be undone on its own. Its page has been deleted and made again since. Open History to undo it.');
+    expect(unchanged(s)).toEqual(before);
+  });
+
+  it('orders neighbours put back by their Undo from what the page went through, never from a change undone since', async () => {
+    const { s } = await make();
+    const order = [...home(s).rootIds];
+    const [a, b] = order.slice(1, 3);
+    const del = async (id: string) => (await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: id }] }, { label: 'Delete' })).entryId!;
+    const x = await del(a);
+    const y = await del(b);
+    expect((await s.undoEntry(x)).ok).toBe(true);
+    expect((await s.undoEntry(y)).ok).toBe(true);
+    expect(home(s).rootIds).toEqual(order);
+    // Move B in front of A, then take back the move and B's restore with Undo: the page shows A alone again.
+    await s.apply({ operations: [{ type: 'node.move', owner: homeOwner(s), nodeId: b, parentId: null, index: 1 }] }, { label: 'Move up' });
+    expect(home(s).rootIds.slice(1, 3)).toEqual([b, a]);
+    await s.undo();
+    await s.undo();
+    expect(home(s).rootIds).toEqual(order.filter((id) => id !== b));
+    expect((await s.undoEntry(y)).ok).toBe(true);
+    expect(home(s).rootIds).toEqual(order);
+  });
+
+  it('refuses to order a section by guesswork when history has lost the version that showed it', async () => {
+    const { dir, s } = await make();
+    const order = [...home(s).rootIds];
+    const [a, b] = order.slice(1, 3);
+    const x = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: a }] }, { label: 'Delete A' });
+    const y = await s.apply({ operations: [{ type: 'node.remove', owner: homeOwner(s), nodeId: b }] }, { label: 'Delete B' });
+    expect((await s.undoEntry(x.entryId!)).ok).toBe(true);
+    // The page before A was deleted is the only version holding both A and B.
+    const entry = JSON.parse(readFileSync(join(dir, '.siteorigin/history/history.json'), 'utf8')).entries.find((e: { id: string }) => e.id === x.entryId);
+    const [doc] = Object.values(entry.docs) as Array<{ before: string }>;
+    rmSync(join(dir, '.siteorigin/history/blobs', `${doc.before}.json`));
+    const before = unchanged(s);
+    expect((await s.undoEntry(y.entryId!)).error?.message).toBe('Other changes came after “Delete B”, so it can’t be undone on its own. History no longer holds the page as it was. Open History to undo it.');
+    expect(unchanged(s)).toEqual(before);
+  });
+
+  it('waits for the AI like Undo', async () => {
+    const { s } = await make();
+    const r = await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });
+    await s.beginRun('run_entry');
+    expect(await s.undoEntry(r.entryId!)).toMatchObject({ ok: false, error: { code: 'BUSY' } });
+  });
+});

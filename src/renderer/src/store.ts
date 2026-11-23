@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { AiEvent, AppSettings, ChatMessage, Conversation, LocalWorkspaceState, ProjectSnapshot, ProviderStatus, RunStatus, RuntimeState } from '@shared/api';
-import type { EditOperation } from '@shared/ops';
+import type { ApplyResult, EditOperation } from '@shared/ops';
 import type { ElementRef, ResponsiveScope } from '@shared/types';
 import { chatStatePatch, draftFor, withDraft, type ChatDrafts } from './lib/chatDrafts';
 import { PANEL_DEFAULTS } from './lib/layout';
@@ -11,7 +11,7 @@ export const api = window.builder;
 
 export type LeftTab = 'pages' | 'layers' | 'insert' | 'assets';
 export type RightTab = 'inspect' | 'chat' | 'styles';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'create-component'; ref: ElementRef } | { kind: 'delete-page'; pageId: string } | { kind: 'history' } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' };
+export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'create-component'; ref: ElementRef } | { kind: 'delete-page'; pageId: string } | { kind: 'history'; entryId?: string } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' };
 
 export interface Rect {
   x: number;
@@ -76,7 +76,15 @@ export interface Toast {
   id: number;
   text: string;
   kind: 'info' | 'success' | 'error';
-  action?: { label: string; run: () => void };
+  action?: { label: string; run: () => void; undoes?: UndoTarget };
+}
+
+/** One committed change, in the opening of the project it was made in (see `undoAction`). */
+export interface UndoTarget {
+  entryId: string;
+  workspaceKey: string;
+  /** The revision the change produced: a snapshot older than this has not heard of the entry yet. */
+  revision: number;
 }
 
 interface State {
@@ -244,6 +252,12 @@ export interface PendingEdit {
  * `expectedRevision`, the batch applies only to the project as it was at that revision.
  */
 export async function applyOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<Array<Record<string, unknown>> | null> {
+  const r = await commitOps(operations, label, coalesceKey, expectedRevision);
+  return r ? (r.results ?? []) : null;
+}
+
+/** Like `applyOps`, but returns the whole result: with the history entry the change made, for an Undo beside it. */
+export async function commitOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<(ApplyResult & { workspaceKey: string }) | null> {
   // Followed until it lands, so saving and leaving the project wait for it and hear if it failed.
   let landed!: (o: ApplyOutcome) => void;
   trackApply(new Promise<ApplyOutcome>((r) => (landed = r)));
@@ -264,6 +278,7 @@ export async function applyOps(operations: EditOperation[], label: string, coale
       return null;
     }
   }
+  const workspaceKey = s.snapshot?.workspaceKey ?? '';
   setState({ pendingSave: s.pendingSave + 1 });
   try {
     // Named by the opening of its project, so a change sent just as that project closes never lands in the next.
@@ -277,7 +292,7 @@ export async function applyOps(operations: EditOperation[], label: string, coale
       return null;
     }
     landed({ ok: true });
-    return r.results ?? [];
+    return { ...r, workspaceKey };
   } catch (e) {
     const message = `That change could not be saved${e instanceof Error && e.message ? `: ${e.message}` : '.'}`;
     toast(message, 'error');
@@ -442,6 +457,42 @@ export async function applyHeld(id: number, opts: { replace?: boolean; stopRunId
 export function applyWith(edit: PendingEdit | undefined, operations: EditOperation[], label: string, coalesceKey?: string) {
   if (!edit) return applyOps(operations, label, coalesceKey);
   return applyOps([...edit.operations, ...operations], label, edit.operations.length ? undefined : coalesceKey, edit.expectedRevision);
+}
+
+/**
+ * The Undo for a notification about one committed change (a `commitOps` result). It undoes that history entry, in
+ * the project it was made in, and never whatever happens to be newest: when later edits leave it no way to do that
+ * on its own, it says why and opens History at the entry. None when the change made no history entry, or its
+ * project is no longer the one open.
+ */
+export function undoAction(r: { entryId?: string; revision: number; workspaceKey: string }): Toast['action'] {
+  const { entryId, workspaceKey } = r;
+  if (!entryId || !workspaceKey || getState().snapshot?.workspaceKey !== workspaceKey) return undefined;
+  // History opens at the entry only while its project is still the one open.
+  const history = {
+    label: 'History',
+    run: () => {
+      if (getState().snapshot?.workspaceKey === workspaceKey) setState({ modal: { kind: 'history', entryId } });
+    }
+  };
+  return {
+    label: 'Undo',
+    undoes: { entryId, workspaceKey, revision: r.revision },
+    run: () =>
+      void api.project.undoEntry(entryId, workspaceKey).then(
+        (res) => {
+          if (!res.ok) toast(res.error?.message ?? 'That change could not be undone.', 'error', res.error?.code === 'CONFLICT' ? history : undefined);
+        },
+        () => toast('That change could not be undone.', 'error', history)
+      )
+  };
+}
+
+/** Whether a notification's Undo still has its change to undo: same project, and the entry is still applied. */
+export function undoAvailable(t: UndoTarget, snap: ProjectSnapshot | null): boolean {
+  if (!snap || snap.workspaceKey !== t.workspaceKey) return false;
+  if (snap.revision < t.revision) return true;
+  return snap.history.entries.some((e) => e.id === t.entryId && e.applied);
 }
 
 export function applyAiEvent(e: AiEvent) {

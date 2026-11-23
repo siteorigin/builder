@@ -3,7 +3,7 @@ import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@s
 import { sameRichText, toRichText } from '@shared/richtext';
 import { isBinding } from '@shared/types';
 import { findParent } from '@engine/tree';
-import { api, applyOps, getState, saveLocal, setState, toast } from '../store';
+import { applyOps, commitOps, getState, saveLocal, setState, toast, undoAction } from '../store';
 import { boundaryOf, listPropFor, refLabel, resolveRef, treeFor } from './model';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
@@ -33,10 +33,11 @@ export async function deleteSelection() {
   if (!t || !s.snapshot) return;
   const label = refLabel(s.snapshot.state, t);
   if (t.owner.kind === 'shell') return toast('The shared header and footer cannot be deleted. Hide a page’s header and footer in its page settings instead.', 'error');
-  if (await applyOps([{ type: 'node.remove', owner: t.owner, nodeId: t.nodeId }], `Delete ${label}`)) {
-    setState({ selection: null });
-    toast(`Deleted ${label}`, 'info', { label: 'Undo', run: () => void api.project.undo() });
-  }
+  const r = await commitOps([{ type: 'node.remove', owner: t.owner, nodeId: t.nodeId }], `Delete ${label}`);
+  // A reply that arrives after its project closed has nothing left here to select or announce.
+  if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
+  setState({ selection: null });
+  toast(`Deleted ${label}`, 'info', undoAction(r));
 }
 
 export async function duplicateSelection() {
