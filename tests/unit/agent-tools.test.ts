@@ -250,6 +250,84 @@ describe('upsert_page_with_sections', () => {
     expect(after.map((p) => p.id)).toEqual(ids);
   });
 
+  it('matches team members by id or unchanged name, never by position', async () => {
+    const portraits = ['a_p1', 'a_p2', 'a_p3'];
+    const teamOf = (s: ProjectState) => {
+      const about = pageAt(s, '/about/')!;
+      return about.rootIds.map((id) => about.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'team.grid')!;
+    };
+    let ids: string[] = [];
+    const { session, run } = await setup(
+      [
+        () => {
+          ids = (teamOf(session.state).props.people as ListItem[]).map((p) => p.id);
+          const people = [
+            { name: 'Sofia Alvarez', bio: 'Now first.' },
+            { id: ids[0], name: 'Hannah Wells-Grant', bio: 'Renamed, with her id.' },
+            { name: 'Dana Fox', role: 'Junior designer', bio: 'Joined this year.' }
+          ];
+          return [call('t1', 'upsert_page_with_sections', { slug: 'about', sections: [{ componentId: 'team.grid', props: { people } }] })];
+        },
+        () => finish()
+      ],
+      {},
+      'business',
+      (s) => {
+        for (const id of portraits) s.assets.assets[id] = { id, name: id, file: `static/assets/${id}.jpg`, mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' };
+        (teamOf(s).props.people as ListItem[]).forEach((p, i) => (p.portrait = { assetId: portraits[i], alt: `Portrait of ${p.name}` }));
+      }
+    );
+    await run('Reorder the team, rename Hannah and add Dana');
+    const people = teamOf(session.state).props.people as Array<ListItem & { portrait: { assetId: string | null } }>;
+    expect(people.map((p) => [p.id, p.name, p.role, p.portrait.assetId])).toEqual([
+      [ids[2], 'Sofia Alvarez', 'Interior designer', 'a_p3'],
+      [ids[0], 'Hannah Wells-Grant', 'Founder & lead designer', 'a_p1'],
+      [expect.any(String), 'Dana Fox', 'Junior designer', null]
+    ]);
+    expect(ids).not.toContain(people[2].id);
+  });
+
+  it('updates a fork requested by its definition, not an earlier theme copy of the same section', async () => {
+    let forkId = '';
+    const { session, run } = await setup([() => [call('f1', 'upsert_page_with_sections', { slug: 'home', removeOtherSections: true, sections: [{ componentId: forkId, props: { heading: 'The fork' } }] })], () => finish()]);
+    const homeId = session.state.site.homePageId;
+    const home = () => session.state.pages[homeId];
+    const ctaId = home().rootIds.find((id) => session.state.components[(home().nodes[id] as InstanceNode).definitionId]?.componentId === 'cta.banner')!;
+    const fork = await session.apply({ operations: [{ type: 'component.fork', definitionId: (home().nodes[ctaId] as InstanceNode).definitionId }] }, { label: 'Edit everywhere', source: 'user' });
+    forkId = (fork.results?.[0] as { definitionId: string }).definitionId;
+    const theme = await session.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: homeId }, index: 0, componentId: 'cta.banner' }] }, { label: 'Add banner', source: 'user' });
+    expect(theme.ok).toBe(true);
+    expect(session.state.components[(home().nodes[home().rootIds[0]] as InstanceNode).definitionId].owner).toBe('theme');
+
+    await run('Keep only our banner');
+    expect(home().rootIds).toEqual([ctaId]);
+    expect((home().nodes[ctaId] as InstanceNode).definitionId).toBe(forkId);
+    expect((home().nodes[ctaId] as InstanceNode).props.heading).toBe('The fork');
+  });
+
+  it('lets a new link value replace one still waiting, and keeps a waiting link an update leaves out', async () => {
+    const plans = (link?: string) => ({ slug: 'pricing', title: 'Pricing', sections: [{ componentId: 'intro.page', props: { heading: 'Pricing' } }, { componentId: 'pricing.plans', props: { plans: [{ name: 'One', price: '$1', features: 'A', ...(link !== undefined ? { actionLink: link } : {}) }, { name: 'Two', price: '$2', features: 'B', actionLink: '/later/' }] } }] });
+    const stub = (slug: string) => ({ slug, title: slug, sections: [{ componentId: 'intro.page', props: { heading: slug } }] });
+    const { session, run } = await setup([
+      () => [call('p1', 'upsert_page_with_sections', plans('/booking/'))],
+      () => [call('p2', 'upsert_page_with_sections', { ...plans('/reserve/'), sections: [plans().sections[0], { componentId: 'pricing.plans', props: { plans: [{ name: 'One', actionLink: '/reserve/' }, { name: 'Two', price: '$3' }] } }] })],
+      () => [call('p3', 'upsert_page_with_sections', stub('booking'))],
+      () => [call('p4', 'upsert_page_with_sections', stub('later'))],
+      (req) => {
+        expect(lastResult(req).linksWaitingForPages).toEqual(['/reserve/']);
+        return [call('p5', 'upsert_page_with_sections', stub('reserve'))];
+      },
+      () => finish()
+    ]);
+    await run('Build pricing, change a link, then build the pages');
+    const page = pageAt(session.state, '/pricing/')!;
+    const items = (page.nodes[page.rootIds[1]] as InstanceNode).props.plans as Array<ListItem & { actionLink: LinkValue }>;
+    expect(items.map((i) => [i.name, i.price, i.actionLink])).toEqual([
+      ['One', '$1', { type: 'page', target: pageAt(session.state, '/reserve/')!.id }],
+      ['Two', '$3', { type: 'page', target: pageAt(session.state, '/later/')!.id }]
+    ]);
+  });
+
   it('connects a link to a page built later, including a link inside a list item', async () => {
     const pricing = { slug: 'pricing', title: 'Pricing', sections: [{ componentId: 'intro.page', props: { heading: 'Pricing' } }, { componentId: 'pricing.plans', props: { plans: [{ name: 'One', price: '$1', features: 'A', actionLabel: 'Book', actionLink: '/booking/' }] } }] };
     const { session, run } = await setup([
