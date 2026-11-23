@@ -5,6 +5,7 @@ import { instancesOf } from '@engine/tree';
 import { pageLinkReferences } from '@engine/apply';
 import { applyOps, api, getState, setState, useStore } from '../store';
 import { Field, Modal } from '../components/ui';
+import { isImeComposing } from '../lib/ime';
 import { resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
 
@@ -36,7 +37,7 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
           Turn this into a component you can reuse. Each copy keeps its own text, images and buttons, while its layout and style stay in step everywhere.
         </p>
         <Field label="Component name">
-          <input className="input" autoFocus value={name} placeholder="Feature highlight" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && name.trim() && void create()} />
+          <input className="input" autoFocus value={name} placeholder="Feature highlight" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && name.trim() && void create()} />
         </Field>
       </div>
     </Modal>

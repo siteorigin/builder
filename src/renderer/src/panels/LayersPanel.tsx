@@ -5,6 +5,7 @@ import { refKey, sameRef } from '@shared/types';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
 import { applyOps, markDraft, setState, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
+import { isImeComposing } from '../lib/ime';
 import { askAiAbout, deleteSelection, duplicateSelection, moveSelection } from '../lib/actions';
 
 /*
@@ -591,6 +592,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
             }}
             onKeyDown={(e) => {
               e.stopPropagation();
+              if (isImeComposing(e)) return;
               if (e.key === 'Enter') e.currentTarget.blur();
               if (e.key === 'Escape') {
                 e.preventDefault();
