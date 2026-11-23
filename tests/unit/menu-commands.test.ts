@@ -3,15 +3,16 @@ import { createMenuCommands, type MenuCommand } from '../../src/main/menu-comman
 
 type Win = { id: number };
 
-/** A router over fake windows: `openWindow` records the request, and the test decides when one exists. */
+/** A router over fake windows: `openWindow` records the request, and the test decides when one exists. A window
+ *  whose renderer is `crashed` cannot take a command. */
 function setup({ window = null as Win | null, opening = null as string | null } = {}) {
-  const state = { window, opening, opens: 0 };
+  const state = { window, opening, opens: 0, crashed: false };
   const sent: [number, MenuCommand][] = [];
   const router = createMenuCommands<Win>({
     window: () => state.window,
     openWindow: () => void state.opens++,
     opening: () => state.opening,
-    send: (w, cmd) => void sent.push([w.id, cmd])
+    send: (w, cmd) => !state.crashed && sent.push([w.id, cmd]) > 0
   });
   return { router, state, sent };
 }
@@ -88,6 +89,26 @@ describe('File menu commands', () => {
       [15, 'open-project'],
       [15, 'new-project']
     ]);
+  });
+
+  it('keeps a command the editor could not take (its renderer crashed unnoticed) until it is ready again', () => {
+    const w = { id: 19 };
+    const { router, state, sent } = setup({ window: w });
+    router.ready(w);
+    router.navigating(w);
+    router.run('new-project');
+    state.crashed = true;
+    // The loading stops as the renderer goes, before its loss is reported.
+    router.navigated(w, false);
+    expect(sent).toEqual([]);
+    expect(router.pending).toBe('new-project');
+    // It is not sent again until the reloaded editor says it is ready.
+    state.crashed = false;
+    router.navigated(w, false);
+    expect(sent).toEqual([]);
+    router.navigated(w, true);
+    router.ready(w);
+    expect(sent).toEqual([[19, 'new-project']]);
   });
 
   it('waits after the editor crashed until it has loaded again', () => {

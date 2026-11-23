@@ -86,7 +86,16 @@ const menuCommands = createMenuCommands<BrowserWindow>({
       menuCommands.windowFailed();
     }),
   opening: () => controller.openingKey,
-  send: (w, cmd) => w.webContents.send('menu:command', cmd)
+  send: (w, cmd) => {
+    // A renderer that crashed before its loss was reported cannot take it: it is loaded again (unless that is
+    // already under way), and the command waits for the new page.
+    if (w.webContents.isCrashed()) {
+      if (!w.webContents.isLoading()) w.webContents.reload();
+      return false;
+    }
+    w.webContents.send('menu:command', cmd);
+    return true;
+  }
 });
 controller.onOpeningChange = () => updateProjectMenu();
 let fixAbort: AbortController | null = null;
@@ -383,15 +392,20 @@ async function createWindow() {
       backgroundThrottling: !headless
     }
   });
+  // This window, for handlers that run after another may have replaced it.
+  const self = win;
   // Open maximized: the editor is used with as much room for the site preview as the screen allows.
   win.once('ready-to-show', () => {
     if (headless) return;
     win?.maximize();
     win?.show();
   });
-  // Restrict navigation and new windows from the editor.
+  // Restrict navigation and new windows from the editor. A navigation refused here never commits: the editor stays,
+  // and File menu commands held while it started go to it.
   win.webContents.on('will-navigate', (e, url) => {
-    if (!isEditorUrl(url)) e.preventDefault();
+    if (isEditorUrl(url)) return;
+    e.preventDefault();
+    menuCommands.navigated(self, false);
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
     const link = externalLink(url);
@@ -411,7 +425,9 @@ async function createWindow() {
   });
   // A server-side redirect is a navigation too: the preview cannot bounce a frame to another origin.
   win.webContents.on('will-redirect', (e) => {
-    if (e.isMainFrame ? !isEditorUrl(e.url) : !previewNavigationAllowed(e.url)) e.preventDefault();
+    if (e.isMainFrame ? isEditorUrl(e.url) : previewNavigationAllowed(e.url)) return;
+    e.preventDefault();
+    if (e.isMainFrame) menuCommands.navigated(self, false);
   });
   // Editor shortcuts come from real keyboard input (including while the preview frame has focus),
   // so content inside the previewed site cannot fake them.
@@ -425,7 +441,6 @@ async function createWindow() {
   });
   // Closing the window first saves what is being typed. On macOS the project stays open without a window,
   // as before; elsewhere the last window closing quits, which then closes the project.
-  const self = win;
   let closeApproved = false;
   self.on('close', (e) => {
     if (closeApproved || quitState === 'closing' || quitState === 'done' || !controller.session || self.webContents.isCrashed()) return;
@@ -447,9 +462,13 @@ async function createWindow() {
     menuCommands.navigating(self);
     leaveGate.editorReplaced();
   });
-  // A new page has replaced the editor: only it may say it is ready for menu commands from here on. A navigation
-  // the editor refused (will-navigate) ends with no commit, only the loading stopping: the editor is still there.
+  // A new page has replaced the editor: only it may say it is ready for menu commands from here on. That is an error
+  // page too when the load failed (did-fail-load, never sent for a navigation that was called off). A navigation
+  // called off another way ends with no commit, only the loading stopping: the editor is still there.
   self.webContents.on('did-navigate', () => menuCommands.navigated(self, true));
+  self.webContents.on('did-fail-load', (_e, _code, _description, _url, isMainFrame) => {
+    if (isMainFrame) menuCommands.navigated(self, true);
+  });
   self.webContents.on('did-stop-loading', () => menuCommands.navigated(self, false));
   self.on('closed', () => {
     if (win === self) win = null;

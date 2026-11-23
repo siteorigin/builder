@@ -18,8 +18,9 @@ export interface MenuCommandOptions<W> {
   openWindow: () => void;
   /** Names the current opening of the open project, or null while none is open or it is closing. */
   opening: () => string | null;
-  /** Hand the command to the window's editor. */
-  send: (w: W, cmd: MenuCommand) => void;
+  /** Hand the command to the window's editor. False when it cannot take it (its renderer crashed): the command then
+   *  waits until the editor has loaded again and says it is ready. */
+  send: (w: W, cmd: MenuCommand) => boolean;
 }
 
 /** The commands that act on the open project rather than start or choose one. */
@@ -41,10 +42,12 @@ export function createMenuCommands<W>(opts: MenuCommandOptions<W>) {
     }
     const w = opts.window();
     if (!w || w !== ready || w === navigating) return;
-    const { cmd } = pending;
+    const sending = pending;
     // Cleared before sending, so a second ready message cannot send it again.
     pending = null;
-    opts.send(w, cmd);
+    if (opts.send(w, sending.cmd)) return;
+    ready = null;
+    pending = sending;
   };
 
   return {
