@@ -1,0 +1,257 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.intro.page",
+  "componentId": "intro.page",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Page introduction",
+  "description": "A compact title and description for the top of inner pages.",
+  "category": "hero",
+  "tags": [
+    "intro",
+    "title",
+    "page header",
+    "heading",
+    "inner page"
+  ],
+  "icon": "heading-1",
+  "properties": {
+    "eyebrow": {
+      "type": "string",
+      "label": "Eyebrow",
+      "default": "About us"
+    },
+    "heading": {
+      "type": "string",
+      "label": "Heading",
+      "default": "A small team with a long view"
+    },
+    "lead": {
+      "type": "string",
+      "label": "Description",
+      "default": "Learn how we work, what we value and the people behind every project.",
+      "multiline": true
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Section",
+      "styleControls": [
+        "paddingBlock",
+        "background"
+      ]
+    },
+    "eyebrow": {
+      "nodeId": "eyebrow",
+      "label": "Eyebrow",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "heading": {
+      "nodeId": "heading",
+      "label": "Heading",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "lead": {
+      "nodeId": "lead",
+      "label": "Description",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Default"
+    },
+    "muted": {
+      "label": "Soft background",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            }
+          }
+        }
+      }
+    },
+    "inverse": {
+      "label": "Dark",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        },
+        "eyebrow": {
+          "base": {
+            "color": {
+              "token": "color.accent"
+            }
+          }
+        },
+        "lead": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "muted",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "eyebrow": {
+        "id": "eyebrow",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "eyebrow"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.eyebrow"
+            },
+            "color": {
+              "token": "color.brand"
+            }
+          }
+        },
+        "when": {
+          "$prop": "eyebrow"
+        },
+        "name": "Eyebrow"
+      },
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "tag": "h1",
+        "text": {
+          "$prop": "heading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.h1"
+            }
+          }
+        },
+        "name": "Heading"
+      },
+      "lead": {
+        "id": "lead",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "lead"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.lead"
+            },
+            "color": {
+              "token": "color.muted"
+            }
+          }
+        },
+        "when": {
+          "$prop": "lead"
+        },
+        "name": "Description"
+      },
+      "content": {
+        "id": "content",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "eyebrow",
+          "heading",
+          "lead"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.md"
+            },
+            "maxWidth": "780px"
+          }
+        },
+        "name": "Content"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "content"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.2xl"
+            },
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "section",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": "clamp(3.5rem, 2.5rem + 4vw, 6rem)",
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.background"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "name": "Section"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "intro.page"
+  },
+  "license": "GPL-3.0-or-later"
+}

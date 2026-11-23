@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.shell.header",
+  "componentId": "shell.header",
+  "contractVersion": 1,
+  "kind": "code",
+  "owner": "theme",
+  "name": "Header",
+  "description": "Site name or logo, navigation links, an optional action and a working mobile menu.",
+  "category": "shell",
+  "tags": [
+    "header",
+    "navigation",
+    "menu",
+    "nav",
+    "logo"
+  ],
+  "icon": "panel-top",
+  "properties": {
+    "siteName": {
+      "type": "string",
+      "label": "Site name",
+      "default": "Studio"
+    },
+    "logo": {
+      "type": "image",
+      "label": "Logo",
+      "default": {
+        "assetId": null,
+        "alt": ""
+      }
+    },
+    "showSiteName": {
+      "type": "boolean",
+      "label": "Show site name",
+      "default": true,
+      "description": "With a logo, turn this off to show the logo alone."
+    },
+    "links": {
+      "type": "list",
+      "label": "Navigation",
+      "itemLabel": "Link",
+      "fields": {
+        "label": {
+          "type": "string",
+          "label": "Label",
+          "default": "Page"
+        },
+        "link": {
+          "type": "link",
+          "label": "Destination",
+          "default": {
+            "type": "none",
+            "target": ""
+          }
+        }
+      },
+      "default": [],
+      "max": 10,
+      "titleField": "label"
+    },
+    "ctaLabel": {
+      "type": "string",
+      "label": "Action label",
+      "default": ""
+    },
+    "ctaLink": {
+      "type": "link",
+      "label": "Action link",
+      "default": {
+        "type": "none",
+        "target": ""
+      }
+    },
+    "ctaStyle": {
+      "group": "Action",
+      "type": "enum",
+      "label": "Action style",
+      "default": "primary",
+      "options": [
+        {
+          "value": "primary",
+          "label": "Filled button"
+        },
+        {
+          "value": "secondary",
+          "label": "Outlined button"
+        }
+      ]
+    },
+    "surface": {
+      "type": "enum",
+      "label": "Background",
+      "default": "background",
+      "options": [
+        {
+          "value": "background",
+          "label": "Page background"
+        },
+        {
+          "value": "surface",
+          "label": "Cards and panels"
+        },
+        {
+          "value": "subtle",
+          "label": "Alternate background"
+        },
+        {
+          "value": "inverse",
+          "label": "Dark"
+        }
+      ]
+    },
+    "sticky": {
+      "type": "boolean",
+      "label": "Stick to top while scrolling",
+      "default": true
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Header",
+      "styleControls": [
+        "paddingBlock",
+        "background",
+        "color",
+        "border",
+        "shadow",
+        "hidden"
+      ]
+    }
+  },
+  "source": "<script>\n\t/**\n\t * Site header with a working, accessible mobile menu.\n\t * Foundation theme code component. Props are edited in SiteOrigin Builder.\n\t */\n\timport { page } from '$app/state';\n\timport { resolve } from '$app/paths';\n\timport SoImage from '../runtime/Image.svelte';\n\n\tlet {\n\t\tsiteName = 'Studio',\n\t\tlogo = null,\n\t\tlinks = [],\n\t\tctaLabel = '',\n\t\tctaLink = null,\n\t\tctaStyle = 'primary',\n\t\tsticky = true,\n\t\tsurface = 'background',\n\t\tshowSiteName = true,\n\t\tclass: className = ''\n\t} = $props();\n\n\tlet open = $state(false);\n\tlet header = $state();\n\tlet toggle = $state();\n\t// Route IDs (\"/about\") do not depend on the base path the site is published under.\n\tconst current = $derived(page.route.id);\n\n\t/** Site-relative links go through resolve() so the site works under a sub-path. */\n\tconst href = (link) => (link?.href?.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link?.href);\n\tconst isCurrent = (link) => !!link?.href?.startsWith('/') && !link.href.includes('#') && (link.href.length > 1 && link.href.endsWith('/') ? link.href.slice(0, -1) : link.href) === current;\n\n\t$effect(() => {\n\t\tvoid current;\n\t\topen = false;\n\t});\n\n\tfunction onKeydown(event) {\n\t\tif (event.key === 'Escape' && open) {\n\t\t\topen = false;\n\t\t\ttoggle?.focus();\n\t\t}\n\t}\n\n\tfunction onPointerdown(event) {\n\t\tif (open && header && !header.contains(event.target)) open = false;\n\t}\n</script>\n\n<svelte:window onkeydown={onKeydown} onpointerdown={onPointerdown} />\n\n<header class={['so-header', `so-header--${surface}`, sticky && 'so-header--sticky', open && 'so-header--open', className]} bind:this={header}>\n\t<div class=\"so-header__inner\">\n\t\t<!-- Without the visible name, the link is still named for screen readers. -->\n\t\t<a class=\"so-header__brand\" href={resolve('/')} aria-label={logo?.src && !showSiteName ? siteName?.trim() || logo?.alt || 'Home' : undefined}>\n\t\t\t{#if logo?.src}\n\t\t\t\t<SoImage image={logo} class=\"so-header__logo\" eager />\n\t\t\t{/if}\n\t\t\t{#if showSiteName || !logo?.src}\n\t\t\t\t<span>{siteName}</span>\n\t\t\t{/if}\n\t\t</a>\n\n\t\t<button\n\t\t\tbind:this={toggle}\n\t\t\ttype=\"button\"\n\t\t\tclass=\"so-header__toggle\"\n\t\t\taria-expanded={open}\n\t\t\taria-controls=\"so-site-nav\"\n\t\t\tonclick={() => (open = !open)}\n\t\t>\n\t\t\t<span class=\"so-visually-hidden\">{open ? 'Close menu' : 'Open menu'}</span>\n\t\t\t<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\">\n\t\t\t\t{#if open}\n\t\t\t\t\t<path d=\"M6 6l12 12M18 6L6 18\" />\n\t\t\t\t{:else}\n\t\t\t\t\t<path d=\"M4 7h16M4 12h16M4 17h16\" />\n\t\t\t\t{/if}\n\t\t\t</svg>\n\t\t</button>\n\n\t\t<!-- Choosing a link closes the menu, including links to the current page or an anchor on it. -->\n\t\t<nav id=\"so-site-nav\" class=\"so-header__nav\" aria-label=\"Main\">\n\t\t\t<ul>\n\t\t\t\t{#each links as item (item.id)}\n\t\t\t\t\t<li>\n\t\t\t\t\t\t<a\n\t\t\t\t\t\t\thref={href(item.link) ?? '#'}\n\t\t\t\t\t\t\ttarget={item.link?.newTab ? '_blank' : undefined}\n\t\t\t\t\t\t\trel={item.link?.newTab ? 'noopener noreferrer' : undefined}\n\t\t\t\t\t\t\taria-current={isCurrent(item.link) ? 'page' : undefined}\n\t\t\t\t\t\t\tonclick={() => (open = false)}>{item.label}</a\n\t\t\t\t\t\t>\n\t\t\t\t\t</li>\n\t\t\t\t{/each}\n\t\t\t</ul>\n\t\t\t{#if ctaLabel && ctaLink?.href}\n\t\t\t\t<a\n\t\t\t\t\tclass={['so-btn', ctaStyle === 'secondary' ? 'so-btn--secondary' : 'so-btn--primary', 'so-header__cta']}\n\t\t\t\t\thref={href(ctaLink)}\n\t\t\t\t\ttarget={ctaLink.newTab ? '_blank' : undefined}\n\t\t\t\t\trel={ctaLink.newTab ? 'noopener noreferrer' : undefined}\n\t\t\t\t\tonclick={() => (open = false)}>{ctaLabel}</a\n\t\t\t\t>\n\t\t\t{/if}\n\t\t</nav>\n\t</div>\n</header>\n\n<style>\n\t.so-header {\n\t\tposition: relative;\n\t\tz-index: 50;\n\t\tbackground: var(--so-color-background);\n\t\t/* Everything inside takes its colour from here, so one colour change reaches the whole header. */\n\t\tcolor: var(--so-color-text);\n\t\tborder-bottom: 1px solid color-mix(in srgb, var(--so-color-border) 70%, transparent);\n\t}\n\t.so-header--sticky {\n\t\tposition: sticky;\n\t\ttop: 0;\n\t}\n\t.so-header--surface,\n\t.so-header--surface .so-header__nav {\n\t\tbackground: var(--so-color-surface);\n\t}\n\t.so-header--subtle,\n\t.so-header--subtle .so-header__nav {\n\t\tbackground: var(--so-color-surface-alt);\n\t}\n\t.so-header--inverse,\n\t.so-header--inverse .so-header__nav {\n\t\tbackground: var(--so-color-inverse);\n\t\tborder-color: transparent;\n\t\tcolor: var(--so-color-on-inverse);\n\t}\n\t.so-header__inner {\n\t\tdisplay: flex;\n\t\talign-items: center;\n\t\tjustify-content: space-between;\n\t\tgap: var(--so-space-lg);\n\t\tmax-width: calc(var(--so-container-content) + 2 * var(--so-container-gutter));\n\t\tmin-height: 72px;\n\t\tmargin-inline: auto;\n\t\tpadding-inline: var(--so-container-gutter);\n\t}\n\t.so-header__brand {\n\t\tdisplay: inline-flex;\n\t\talign-items: center;\n\t\tgap: 10px;\n\t\tmin-width: 0;\n\t\toverflow-wrap: anywhere;\n\t\tcolor: inherit;\n\t\tfont-family: var(--so-font-display);\n\t\tfont-size: 1.35rem;\n\t\tfont-weight: 520;\n\t\tletter-spacing: -0.02em;\n\t\ttext-decoration: none;\n\t}\n\t.so-header__brand :global(.so-header__logo) {\n\t\twidth: auto;\n\t\theight: 34px;\n\t}\n\t.so-header__toggle {\n\t\tdisplay: none;\n\t\talign-items: center;\n\t\tjustify-content: center;\n\t\twidth: 44px;\n\t\theight: 44px;\n\t\tmargin-right: -10px;\n\t\tborder: 0;\n\t\tborder-radius: var(--so-radius-md);\n\t\tbackground: transparent;\n\t\tcolor: inherit;\n\t\tcursor: pointer;\n\t}\n\t.so-header__toggle svg {\n\t\twidth: 24px;\n\t\theight: 24px;\n\t}\n\t.so-header__nav {\n\t\tdisplay: flex;\n\t\tflex-wrap: wrap;\n\t\tjustify-content: flex-end;\n\t\talign-items: center;\n\t\tmin-width: 0;\n\t\tgap: var(--so-space-xl);\n\t}\n\t.so-header__nav ul {\n\t\tdisplay: flex;\n\t\tflex-wrap: wrap;\n\t\talign-items: center;\n\t\tgap: var(--so-space-lg);\n\t}\n\t@media (min-width: 768px) and (max-width: 1023.98px) {\n\t\t.so-header__nav,\n\t\t.so-header__nav ul {\n\t\t\tgap: var(--so-space-md);\n\t\t}\n\t}\n\t.so-header__nav ul a {\n\t\tposition: relative;\n\t\tcolor: color-mix(in srgb, currentColor 72%, transparent);\n\t\tfont-size: 0.95rem;\n\t\tfont-weight: 500;\n\t\ttext-decoration: none;\n\t\ttransition: color 150ms ease;\n\t}\n\t.so-header__nav ul a:hover,\n\t.so-header__nav ul a[aria-current='page'] {\n\t\tcolor: inherit;\n\t}\n\t.so-header__nav ul a[aria-current='page']::after {\n\t\tcontent: '';\n\t\tposition: absolute;\n\t\tleft: 0;\n\t\tright: 0;\n\t\tbottom: -6px;\n\t\theight: 2px;\n\t\tborder-radius: 2px;\n\t\tbackground: var(--so-color-brand);\n\t}\n\t.so-header__cta {\n\t\tmin-height: 40px;\n\t\tpadding: 0.55em 1.15em;\n\t\tfont-size: 0.92rem;\n\t}\n\n\t/* Matches the phone breakpoint used by every other component (MEDIA_QUERIES.phone). */\n\t@media (max-width: 767.98px) {\n\t\t.so-header__toggle {\n\t\t\tdisplay: inline-flex;\n\t\t}\n\t\t.so-header__nav {\n\t\t\tposition: absolute;\n\t\t\ttop: 100%;\n\t\t\tleft: 0;\n\t\t\tright: 0;\n\t\t\tdisplay: none;\n\t\t\tflex-direction: column;\n\t\t\talign-items: stretch;\n\t\t\tgap: var(--so-space-md);\n\t\t\tpadding: var(--so-space-md) var(--so-container-gutter) var(--so-space-xl);\n\t\t\tbackground: var(--so-color-background);\n\t\t\tborder-bottom: 1px solid var(--so-color-border);\n\t\t\tbox-shadow: var(--so-shadow-md);\n\t\t}\n\t\t.so-header--open .so-header__nav {\n\t\t\tdisplay: flex;\n\t\t}\n\t\t.so-header__nav ul {\n\t\t\tflex-direction: column;\n\t\t\talign-items: stretch;\n\t\t\tgap: 0;\n\t\t}\n\t\t.so-header__nav ul a {\n\t\t\tdisplay: block;\n\t\t\tpadding: 14px 0;\n\t\t\tfont-size: 1.05rem;\n\t\t\tborder-bottom: 1px solid var(--so-color-border);\n\t\t}\n\t\t.so-header__nav ul a[aria-current='page']::after {\n\t\t\tdisplay: none;\n\t\t}\n\t}\n</style>\n",
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "shell.header"
+  },
+  "license": "GPL-3.0-or-later"
+}

@@ -1,0 +1,598 @@
+{
+  "schemaVersion": 1,
+  "id": "pg_04pktz26",
+  "title": "Home",
+  "route": "/",
+  "seo": {
+    "description": "Fixture Studio is an independent interior design studio creating calm, practical homes and small workplaces."
+  },
+  "shell": "default",
+  "rootIds": [
+    "n_23hd3xoz",
+    "n_91vho76t",
+    "n_3tn5vp1t",
+    "n_65xbmz1n",
+    "n_vrjryegl",
+    "n_mh611pnc",
+    "n_e03guk62",
+    "n_ee7mnqag",
+    "n_nt7lxkme",
+    "n_tw3eyp1t",
+    "n_usu2qz04",
+    "n_053o80wi",
+    "n_dyoejlii",
+    "n_g95bf8rz",
+    "n_6r0vdftt",
+    "n_lyzgr7j0",
+    "n_1j0a98l6"
+  ],
+  "nodes": {
+    "n_23hd3xoz": {
+      "id": "n_23hd3xoz",
+      "kind": "instance",
+      "definitionId": "foundation.hero.split",
+      "props": {
+        "eyebrow": "Interior design studio",
+        "heading": "Calm, considered spaces for everyday life",
+        "lead": "Fixture Studio designs homes and small workplaces that feel good to live and work in, with clear plans, honest materials and no surprises.",
+        "primaryLabel": "Start a project",
+        "primaryLink": {
+          "type": "page",
+          "target": "pg_sblgq4l1"
+        },
+        "secondaryLabel": "About the studio",
+        "secondaryLink": {
+          "type": "page",
+          "target": "pg_ux4t3w59"
+        },
+        "image": {
+          "assetId": null,
+          "alt": "A bright living room with oak furniture and linen curtains"
+        }
+      }
+    },
+    "n_91vho76t": {
+      "id": "n_91vho76t",
+      "kind": "instance",
+      "definitionId": "foundation.logos.strip",
+      "props": {
+        "heading": "Trusted by homeowners and local businesses",
+        "logos": [
+          {
+            "id": "i_yv2s16nj",
+            "name": "Fernhill",
+            "logo": {
+              "assetId": null,
+              "alt": ""
+            }
+          },
+          {
+            "id": "i_5bh4cwsn",
+            "name": "Copperline",
+            "logo": {
+              "assetId": null,
+              "alt": ""
+            }
+          },
+          {
+            "id": "i_f75ohvk0",
+            "name": "Marlow & Co",
+            "logo": {
+              "assetId": null,
+              "alt": ""
+            }
+          },
+          {
+            "id": "i_ohew59xk",
+            "name": "Bright Harbour",
+            "logo": {
+              "assetId": null,
+              "alt": ""
+            }
+          },
+          {
+            "id": "i_bizk0stw",
+            "name": "Oakhurst",
+            "logo": {
+              "assetId": null,
+              "alt": ""
+            }
+          }
+        ]
+      }
+    },
+    "n_3tn5vp1t": {
+      "id": "n_3tn5vp1t",
+      "kind": "instance",
+      "definitionId": "foundation.features.grid",
+      "props": {
+        "eyebrow": "Services",
+        "heading": "Everything your project needs, in one place",
+        "lead": "Choose a single stage or let us guide the whole project from first sketch to final styling.",
+        "items": [
+          {
+            "id": "i_15bfnbxf",
+            "icon": "compass",
+            "title": "Planning & layout",
+            "description": "Room-by-room plans that make the most of light, flow and storage before anything is built.",
+            "linkLabel": "",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          },
+          {
+            "id": "i_77m7a511",
+            "icon": "palette",
+            "title": "Materials & colour",
+            "description": "Finishes, colours and lighting chosen to work together and to last for years.",
+            "linkLabel": "",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          },
+          {
+            "id": "i_3ddq2kje",
+            "icon": "hammer",
+            "title": "Project delivery",
+            "description": "We coordinate trusted trades and keep you informed until the final handover.",
+            "linkLabel": "",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          }
+        ]
+      }
+    },
+    "n_65xbmz1n": {
+      "id": "n_65xbmz1n",
+      "kind": "instance",
+      "definitionId": "foundation.content.media",
+      "props": {
+        "eyebrow": "Our approach",
+        "heading": "Good design starts with listening",
+        "body": [
+          "Before we draw anything we spend time understanding how you live and work, what matters most and what you would happily leave behind.",
+          "That conversation shapes **every decision** that follows, from the first sketch to the last cushion."
+        ],
+        "image": {
+          "assetId": null,
+          "alt": "Material samples and drawings spread across a studio table"
+        },
+        "actionLabel": "Meet the team",
+        "actionLink": {
+          "type": "page",
+          "target": "pg_ux4t3w59"
+        }
+      },
+      "variant": "media-end"
+    },
+    "n_vrjryegl": {
+      "id": "n_vrjryegl",
+      "kind": "instance",
+      "definitionId": "proj.statistics-k9ltd",
+      "props": {
+        "heading": "",
+        "items": [
+          {
+            "id": "i_g2bhtuf8",
+            "value": "15",
+            "label": "Years in practice"
+          },
+          {
+            "id": "i_odw75u1c",
+            "value": "240+",
+            "label": "Projects completed"
+          },
+          {
+            "id": "i_wy352mwx",
+            "value": "98%",
+            "label": "Clients who return"
+          },
+          {
+            "id": "i_w09ksqsw",
+            "value": "6",
+            "label": "Industry awards"
+          }
+        ]
+      },
+      "variant": "inverse"
+    },
+    "n_mh611pnc": {
+      "id": "n_mh611pnc",
+      "kind": "instance",
+      "definitionId": "foundation.media.gallery",
+      "props": {
+        "eyebrow": "Selected work",
+        "heading": "Recent projects",
+        "lead": "",
+        "images": [
+          {
+            "id": "i_3783gi1y",
+            "image": {
+              "assetId": null,
+              "alt": "A calm kitchen with timber cabinets and a stone worktop"
+            },
+            "caption": "Kitchen, Millbrook"
+          },
+          {
+            "id": "i_x9cxcs4c",
+            "image": {
+              "assetId": null,
+              "alt": "A quiet bedroom with soft morning light"
+            },
+            "caption": "Bedroom, Ashford"
+          },
+          {
+            "id": "i_36tlphcm",
+            "image": {
+              "assetId": null,
+              "alt": "A reading corner with an armchair and shelves of books"
+            },
+            "caption": "Reading room, Old Mill"
+          }
+        ]
+      }
+    },
+    "n_e03guk62": {
+      "id": "n_e03guk62",
+      "kind": "instance",
+      "definitionId": "foundation.testimonials.grid",
+      "props": {
+        "eyebrow": "Kind words",
+        "heading": "What our clients say",
+        "lead": "",
+        "items": [
+          {
+            "id": "i_jlm92rt0",
+            "quote": "They listened properly, explained every option and delivered exactly what was promised. The house finally works for us.",
+            "name": "Amelia Hart",
+            "role": "Homeowner, Ashford",
+            "portrait": {
+              "assetId": null,
+              "alt": ""
+            }
+          },
+          {
+            "id": "i_blzeuy4s",
+            "quote": "Calm, organised and genuinely good company. We would not hesitate to work with the team again.",
+            "name": "Daniel Okafor",
+            "role": "Owner, Copperline Café",
+            "portrait": {
+              "assetId": null,
+              "alt": ""
+            }
+          },
+          {
+            "id": "i_4rrr7bnk",
+            "quote": "The attention to detail is remarkable. Every visitor asks who designed our new studio.",
+            "name": "Priya Raman",
+            "role": "Founder, Fernhill Yoga",
+            "portrait": {
+              "assetId": null,
+              "alt": ""
+            }
+          }
+        ]
+      },
+      "variant": "muted"
+    },
+    "n_ee7mnqag": {
+      "id": "n_ee7mnqag",
+      "kind": "instance",
+      "definitionId": "foundation.cta.banner",
+      "props": {
+        "heading": "Let’s make your space work better",
+        "lead": "Tell us about your home or workplace and we will arrange a free first conversation.",
+        "primaryLabel": "Get in touch",
+        "primaryLink": {
+          "type": "page",
+          "target": "pg_sblgq4l1"
+        },
+        "secondaryLabel": "",
+        "secondaryLink": {
+          "type": "none",
+          "target": ""
+        }
+      }
+    },
+    "n_nt7lxkme": {
+      "id": "n_nt7lxkme",
+      "kind": "instance",
+      "definitionId": "foundation.hero.split",
+      "props": {
+        "eyebrow": "Independent studio",
+        "heading": "Image first hero",
+        "lead": "We help small teams plan, design and deliver projects that feel considered from the first conversation to the final handover.",
+        "primaryLabel": "Start a project",
+        "primaryLink": {
+          "type": "none",
+          "target": ""
+        },
+        "secondaryLabel": "See our work",
+        "secondaryLink": {
+          "type": "none",
+          "target": ""
+        },
+        "image": {
+          "assetId": null,
+          "alt": "A calm, light-filled studio workspace"
+        }
+      },
+      "variant": "media-start",
+      "overrides": {
+        "root": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.lg"
+            }
+          }
+        }
+      }
+    },
+    "n_tw3eyp1t": {
+      "id": "n_tw3eyp1t",
+      "kind": "instance",
+      "definitionId": "foundation.features.grid",
+      "props": {
+        "eyebrow": "What we do",
+        "heading": "Four columns",
+        "lead": "Every engagement is different. These are the ways we most often help.",
+        "items": [
+          {
+            "id": "i_vqyeiixe",
+            "icon": "compass",
+            "title": "Planning",
+            "description": "Clear priorities, a realistic budget and a schedule everyone understands before work begins.",
+            "linkLabel": "",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          },
+          {
+            "id": "i_z6wftudk",
+            "icon": "pen-tool",
+            "title": "Design",
+            "description": "Considered layouts, materials and details developed with you through focused reviews.",
+            "linkLabel": "",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          },
+          {
+            "id": "i_pm9b88sj",
+            "icon": "hammer",
+            "title": "Delivery",
+            "description": "We coordinate trusted specialists and keep you informed at every stage of the build.",
+            "linkLabel": "",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          }
+        ]
+      },
+      "variant": "four-columns"
+    },
+    "n_usu2qz04": {
+      "id": "n_usu2qz04",
+      "kind": "instance",
+      "definitionId": "foundation.features.grid",
+      "props": {
+        "eyebrow": "What we do",
+        "heading": "Dark features",
+        "lead": "Every engagement is different. These are the ways we most often help.",
+        "items": [
+          {
+            "id": "i_yh29bzik",
+            "icon": "compass",
+            "title": "Planning",
+            "description": "Clear priorities, a realistic budget and a schedule everyone understands before work begins.",
+            "linkLabel": "",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          },
+          {
+            "id": "i_9rt1sauz",
+            "icon": "pen-tool",
+            "title": "Design",
+            "description": "Considered layouts, materials and details developed with you through focused reviews.",
+            "linkLabel": "",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          },
+          {
+            "id": "i_tfjgyshx",
+            "icon": "hammer",
+            "title": "Delivery",
+            "description": "We coordinate trusted specialists and keep you informed at every stage of the build.",
+            "linkLabel": "",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          }
+        ]
+      },
+      "variant": "inverse"
+    },
+    "n_053o80wi": {
+      "id": "n_053o80wi",
+      "kind": "instance",
+      "definitionId": "foundation.content.media",
+      "props": {
+        "eyebrow": "Our approach",
+        "heading": "Image last",
+        "body": [
+          "Before we draw anything we spend time understanding how you live and work, what matters most and what you would happily leave behind.",
+          "That conversation shapes **every decision** that follows, from the first sketch to the final finishes."
+        ],
+        "image": {
+          "assetId": null,
+          "alt": "Two people reviewing plans at a table"
+        },
+        "actionLabel": "More about us",
+        "actionLink": {
+          "type": "none",
+          "target": ""
+        }
+      },
+      "variant": "media-end"
+    },
+    "n_dyoejlii": {
+      "id": "n_dyoejlii",
+      "kind": "instance",
+      "definitionId": "foundation.content.media",
+      "props": {
+        "eyebrow": "Our approach",
+        "heading": "Soft media",
+        "body": [
+          "Before we draw anything we spend time understanding how you live and work, what matters most and what you would happily leave behind.",
+          "That conversation shapes **every decision** that follows, from the first sketch to the final finishes."
+        ],
+        "image": {
+          "assetId": null,
+          "alt": "Two people reviewing plans at a table"
+        },
+        "actionLabel": "More about us",
+        "actionLink": {
+          "type": "none",
+          "target": ""
+        }
+      },
+      "variant": "muted"
+    },
+    "n_g95bf8rz": {
+      "id": "n_g95bf8rz",
+      "kind": "instance",
+      "definitionId": "foundation.hero.centered",
+      "props": {
+        "eyebrow": "Independent studio",
+        "heading": "Brand hero",
+        "lead": "We help small teams plan, design and deliver projects that feel considered from the first conversation to the final handover.",
+        "primaryLabel": "Start a project",
+        "primaryLink": {
+          "type": "none",
+          "target": ""
+        },
+        "secondaryLabel": "See our work",
+        "secondaryLink": {
+          "type": "none",
+          "target": ""
+        }
+      },
+      "variant": "brand"
+    },
+    "n_6r0vdftt": {
+      "id": "n_6r0vdftt",
+      "kind": "instance",
+      "definitionId": "foundation.contact.form",
+      "props": {
+        "eyebrow": "Contact",
+        "heading": "Soft form",
+        "lead": "Tell us a little about what you need and we will reply within two working days.",
+        "provider": "endpoint",
+        "endpoint": "",
+        "accessKey": "",
+        "formName": "contact",
+        "fields": [
+          {
+            "id": "i_egxcjzxt",
+            "label": "Name",
+            "name": "name",
+            "type": "text",
+            "required": true,
+            "placeholder": ""
+          },
+          {
+            "id": "i_li7m13r2",
+            "label": "Email",
+            "name": "email",
+            "type": "email",
+            "required": true,
+            "placeholder": ""
+          },
+          {
+            "id": "i_9q835noh",
+            "label": "Phone",
+            "name": "phone",
+            "type": "tel",
+            "required": false,
+            "placeholder": ""
+          },
+          {
+            "id": "i_07e3r6vi",
+            "label": "Message",
+            "name": "message",
+            "type": "textarea",
+            "required": true,
+            "placeholder": ""
+          }
+        ],
+        "submitLabel": "Send message",
+        "successMessage": "Thank you. Your message has been sent.",
+        "errorMessage": "Sorry, your message could not be sent. Please try again or contact us directly."
+      },
+      "variant": "muted"
+    },
+    "n_lyzgr7j0": {
+      "id": "n_lyzgr7j0",
+      "kind": "instance",
+      "definitionId": "foundation.cta.banner",
+      "props": {
+        "heading": "Dark panel",
+        "lead": "Tell us a little about what you have in mind and we will be in touch within two working days.",
+        "primaryLabel": "Get in touch",
+        "primaryLink": {
+          "type": "none",
+          "target": ""
+        },
+        "secondaryLabel": "",
+        "secondaryLink": {
+          "type": "none",
+          "target": ""
+        }
+      },
+      "variant": "inverse"
+    },
+    "n_1j0a98l6": {
+      "id": "n_1j0a98l6",
+      "kind": "instance",
+      "definitionId": "proj.statistics-k9ltd",
+      "props": {
+        "heading": "Forked stats",
+        "items": [
+          {
+            "id": "i_jzrp2n36",
+            "value": "15",
+            "label": "Years in practice"
+          },
+          {
+            "id": "i_cankasys",
+            "value": "240+",
+            "label": "Projects completed"
+          },
+          {
+            "id": "i_0aom69wx",
+            "value": "98%",
+            "label": "Clients who return"
+          },
+          {
+            "id": "i_f58q3tm6",
+            "value": "6",
+            "label": "Industry awards"
+          }
+        ]
+      },
+      "variant": "muted"
+    }
+  }
+}

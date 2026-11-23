@@ -1,0 +1,442 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.media.gallery",
+  "componentId": "media.gallery",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Gallery",
+  "description": "A responsive grid of images with optional captions.",
+  "category": "media",
+  "tags": [
+    "gallery",
+    "images",
+    "photos",
+    "portfolio",
+    "work",
+    "grid"
+  ],
+  "icon": "images",
+  "properties": {
+    "eyebrow": {
+      "type": "string",
+      "label": "Eyebrow",
+      "default": "Selected work"
+    },
+    "heading": {
+      "type": "string",
+      "label": "Heading",
+      "default": "Recent projects"
+    },
+    "lead": {
+      "type": "string",
+      "label": "Supporting text",
+      "default": "",
+      "multiline": true
+    },
+    "images": {
+      "type": "list",
+      "label": "Images",
+      "itemLabel": "Image",
+      "fields": {
+        "image": {
+          "type": "image",
+          "label": "Image",
+          "default": {
+            "assetId": null,
+            "alt": ""
+          }
+        },
+        "caption": {
+          "type": "string",
+          "label": "Caption",
+          "default": ""
+        }
+      },
+      "default": [
+        {
+          "id": "item-1",
+          "image": {
+            "assetId": null,
+            "alt": ""
+          },
+          "caption": "Garden room, Ashford"
+        },
+        {
+          "id": "item-2",
+          "image": {
+            "assetId": null,
+            "alt": ""
+          },
+          "caption": "Kitchen, Millbrook"
+        },
+        {
+          "id": "item-3",
+          "image": {
+            "assetId": null,
+            "alt": ""
+          },
+          "caption": "Studio, Harbour Lane"
+        },
+        {
+          "id": "item-4",
+          "image": {
+            "assetId": null,
+            "alt": ""
+          },
+          "caption": "Living room, Westfield"
+        },
+        {
+          "id": "item-5",
+          "image": {
+            "assetId": null,
+            "alt": ""
+          },
+          "caption": "Library, Old Mill"
+        },
+        {
+          "id": "item-6",
+          "image": {
+            "assetId": null,
+            "alt": ""
+          },
+          "caption": "Courtyard, Elm Street"
+        }
+      ],
+      "max": 24,
+      "titleField": "caption"
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Section",
+      "styleControls": [
+        "paddingBlock",
+        "background"
+      ]
+    },
+    "grid": {
+      "nodeId": "grid",
+      "label": "Grid",
+      "styleControls": [
+        "columns",
+        "gap"
+      ]
+    },
+    "image": {
+      "nodeId": "image",
+      "label": "Image",
+      "styleControls": [
+        "aspectRatio",
+        "radius"
+      ]
+    },
+    "caption": {
+      "nodeId": "caption",
+      "label": "Caption",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Default"
+    },
+    "muted": {
+      "label": "Soft background",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            }
+          }
+        }
+      }
+    },
+    "inverse": {
+      "label": "Dark",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        },
+        "eyebrow": {
+          "base": {
+            "color": {
+              "token": "color.accent"
+            }
+          }
+        },
+        "lead": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        },
+        "caption": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "default",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "eyebrow": {
+        "id": "eyebrow",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "eyebrow"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.eyebrow"
+            },
+            "color": {
+              "token": "color.brand"
+            }
+          }
+        },
+        "when": {
+          "$prop": "eyebrow"
+        },
+        "name": "Eyebrow"
+      },
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "tag": "h2",
+        "text": {
+          "$prop": "heading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.h2"
+            }
+          }
+        },
+        "name": "Heading"
+      },
+      "lead": {
+        "id": "lead",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "lead"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.lead"
+            },
+            "color": {
+              "token": "color.muted"
+            }
+          }
+        },
+        "when": {
+          "$prop": "lead"
+        },
+        "name": "Lead"
+      },
+      "intro": {
+        "id": "intro",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "eyebrow",
+          "heading",
+          "lead"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.md"
+            },
+            "maxWidth": "760px",
+            "textAlign": "start"
+          }
+        },
+        "name": "Heading group"
+      },
+      "image": {
+        "id": "image",
+        "kind": "image",
+        "image": {
+          "$item": "image"
+        },
+        "styles": {
+          "base": {
+            "aspectRatio": "4/3",
+            "radius": {
+              "token": "radius.md"
+            },
+            "objectFit": "cover"
+          }
+        },
+        "name": "Image"
+      },
+      "caption": {
+        "id": "caption",
+        "kind": "text",
+        "tag": "figcaption",
+        "text": {
+          "$item": "caption"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.small"
+            },
+            "color": {
+              "token": "color.muted"
+            }
+          }
+        },
+        "when": {
+          "$item": "caption"
+        },
+        "name": "Caption"
+      },
+      "photo-figure": {
+        "id": "photo-figure",
+        "kind": "element",
+        "tag": "figure",
+        "children": [
+          "image",
+          "caption"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.sm"
+            }
+          }
+        },
+        "name": "Figure"
+      },
+      "photo": {
+        "id": "photo",
+        "kind": "element",
+        "tag": "li",
+        "children": [
+          "photo-figure"
+        ],
+        "name": "Photo"
+      },
+      "photos": {
+        "id": "photos",
+        "kind": "repeat",
+        "list": {
+          "$prop": "images"
+        },
+        "children": [
+          "photo"
+        ]
+      },
+      "grid": {
+        "id": "grid",
+        "kind": "element",
+        "tag": "ul",
+        "children": [
+          "photos"
+        ],
+        "styles": {
+          "base": {
+            "layout": "grid",
+            "columns": 1,
+            "gap": {
+              "token": "space.lg"
+            }
+          },
+          "tablet": {
+            "columns": 2
+          },
+          "desktop": {
+            "columns": 3
+          }
+        },
+        "name": "Grid"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "intro",
+          "grid"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.2xl"
+            },
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "section",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.section"
+            },
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.background"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "name": "Section"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "media.gallery"
+  },
+  "license": "GPL-3.0-or-later"
+}

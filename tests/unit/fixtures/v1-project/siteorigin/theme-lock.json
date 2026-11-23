@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "theme": {
+    "id": "foundation",
+    "version": "0.1.0"
+  },
+  "components": {
+    "foundation.hero.split": {
+      "componentId": "hero.split",
+      "version": "0.1.0",
+      "hash": "18iycue"
+    },
+    "foundation.logos.strip": {
+      "componentId": "logos.strip",
+      "version": "0.1.0",
+      "hash": "18v10ev"
+    },
+    "foundation.features.grid": {
+      "componentId": "features.grid",
+      "version": "0.1.0",
+      "hash": "19erg74"
+    },
+    "foundation.content.media": {
+      "componentId": "content.media",
+      "version": "0.1.0",
+      "hash": "18uyih1"
+    },
+    "foundation.stats.row": {
+      "componentId": "stats.row",
+      "version": "0.1.0",
+      "hash": "13xu8me"
+    },
+    "foundation.media.gallery": {
+      "componentId": "media.gallery",
+      "version": "0.1.0",
+      "hash": "1hjejdx"
+    },
+    "foundation.testimonials.grid": {
+      "componentId": "testimonials.grid",
+      "version": "0.1.0",
+      "hash": "1feepeh"
+    },
+    "foundation.cta.banner": {
+      "componentId": "cta.banner",
+      "version": "0.1.0",
+      "hash": "1pebfsv"
+    },
+    "foundation.intro.page": {
+      "componentId": "intro.page",
+      "version": "0.1.0",
+      "hash": "rtk5iy"
+    },
+    "foundation.team.grid": {
+      "componentId": "team.grid",
+      "version": "0.1.0",
+      "hash": "oosm6w"
+    },
+    "foundation.contact.details": {
+      "componentId": "contact.details",
+      "version": "0.1.0",
+      "hash": "kuhf7d"
+    },
+    "foundation.faq.list": {
+      "componentId": "faq.list",
+      "version": "0.1.0",
+      "hash": "6xl4yk"
+    },
+    "foundation.shell.header": {
+      "componentId": "shell.header",
+      "version": "0.1.0",
+      "hash": "5v9d3c"
+    },
+    "foundation.shell.footer": {
+      "componentId": "shell.footer",
+      "version": "0.1.0",
+      "hash": "1y3po3b"
+    },
+    "foundation.hero.centered": {
+      "componentId": "hero.centered",
+      "version": "0.1.0",
+      "hash": "1fiijae"
+    },
+    "foundation.contact.form": {
+      "componentId": "contact.form",
+      "version": "0.1.0",
+      "hash": "1u1xv8x"
+    }
+  }
+}

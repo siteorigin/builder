@@ -70,6 +70,7 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'component.setSlot': 'definition',
   'component.removeSlot': 'wider',
   'theme.apply': 'wider',
+  'theme.refresh': 'wider',
   'asset.add': 'wider',
   'asset.update': 'wider',
   'asset.remove': 'wider',

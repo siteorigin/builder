@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "id": "pg_sblgq4l1",
+  "title": "Contact",
+  "route": "/contact/",
+  "seo": {
+    "description": "Contact Fixture Studio."
+  },
+  "shell": "default",
+  "rootIds": [
+    "n_8xwwcn1j",
+    "n_062osmk2",
+    "n_coweg6r1"
+  ],
+  "nodes": {
+    "n_8xwwcn1j": {
+      "id": "n_8xwwcn1j",
+      "kind": "instance",
+      "definitionId": "foundation.intro.page",
+      "props": {
+        "eyebrow": "Contact",
+        "heading": "Let’s talk",
+        "lead": "Whether you are planning a single room or a whole building, we would love to hear about it."
+      }
+    },
+    "n_062osmk2": {
+      "id": "n_062osmk2",
+      "kind": "instance",
+      "definitionId": "foundation.contact.details",
+      "props": {
+        "eyebrow": "",
+        "heading": "Get in touch",
+        "lead": "The quickest way to reach us is by email or phone. We reply to every enquiry within two working days.",
+        "items": [
+          {
+            "id": "i_uh0r8g1p",
+            "icon": "mail",
+            "label": "Email",
+            "value": "hello@example.com",
+            "link": {
+              "type": "email",
+              "target": "hello@example.com"
+            }
+          },
+          {
+            "id": "i_tn20x518",
+            "icon": "phone",
+            "label": "Phone",
+            "value": "+1 555 0134",
+            "link": {
+              "type": "tel",
+              "target": "+15550134"
+            }
+          },
+          {
+            "id": "i_8w9y7xe8",
+            "icon": "map-pin",
+            "label": "Studio",
+            "value": "12 Harbour Lane, Millbrook",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          },
+          {
+            "id": "i_3otttchm",
+            "icon": "clock",
+            "label": "Hours",
+            "value": "Monday to Friday, 9am – 5pm",
+            "link": {
+              "type": "none",
+              "target": ""
+            }
+          }
+        ],
+        "actionLabel": "Email us",
+        "actionLink": {
+          "type": "email",
+          "target": "hello@example.com"
+        }
+      }
+    },
+    "n_coweg6r1": {
+      "id": "n_coweg6r1",
+      "kind": "instance",
+      "definitionId": "foundation.faq.list",
+      "props": {
+        "eyebrow": "Questions",
+        "heading": "Frequently asked questions",
+        "lead": "Cannot find what you are looking for? Get in touch and we will be happy to help.",
+        "items": [
+          {
+            "id": "i_rqc096jq",
+            "question": "How long does a typical project take?",
+            "answer": "Most design projects take six to ten weeks from the first meeting to final drawings. We agree a schedule with you at the start."
+          },
+          {
+            "id": "i_twgakc9t",
+            "question": "Do you work outside the local area?",
+            "answer": "Yes. We regularly work across the region and can arrange remote consultations for early planning."
+          },
+          {
+            "id": "i_847s6bmw",
+            "question": "How are your fees calculated?",
+            "answer": "We quote a fixed fee for each stage once we understand the scope, so you always know the cost before work begins."
+          },
+          {
+            "id": "i_r5h3930s",
+            "question": "Can you recommend builders?",
+            "answer": "We work with a small group of trusted contractors and are happy to introduce them, or to work with your own builder."
+          }
+        ]
+      },
+      "variant": "muted"
+    }
+  }
+}

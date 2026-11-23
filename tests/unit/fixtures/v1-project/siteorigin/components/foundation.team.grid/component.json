@@ -1,0 +1,481 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.team.grid",
+  "componentId": "team.grid",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Team",
+  "description": "People with portraits, names, roles and a short bio.",
+  "category": "social-proof",
+  "tags": [
+    "team",
+    "people",
+    "staff",
+    "about",
+    "founders",
+    "employees"
+  ],
+  "icon": "users",
+  "properties": {
+    "eyebrow": {
+      "type": "string",
+      "label": "Eyebrow",
+      "default": "The team"
+    },
+    "heading": {
+      "type": "string",
+      "label": "Heading",
+      "default": "The people you will work with"
+    },
+    "lead": {
+      "type": "string",
+      "label": "Supporting text",
+      "default": "A small, experienced team who care about getting the details right.",
+      "multiline": true
+    },
+    "people": {
+      "type": "list",
+      "label": "People",
+      "itemLabel": "Person",
+      "fields": {
+        "portrait": {
+          "type": "image",
+          "label": "Portrait",
+          "default": {
+            "assetId": null,
+            "alt": ""
+          }
+        },
+        "name": {
+          "type": "string",
+          "label": "Name",
+          "default": "Name"
+        },
+        "role": {
+          "type": "string",
+          "label": "Role",
+          "default": "Role"
+        },
+        "bio": {
+          "type": "string",
+          "label": "Bio",
+          "default": "",
+          "multiline": true
+        }
+      },
+      "default": [
+        {
+          "id": "item-1",
+          "portrait": {
+            "assetId": null,
+            "alt": ""
+          },
+          "name": "Hannah Wells",
+          "role": "Founder & lead designer",
+          "bio": "Fifteen years designing homes and small workplaces."
+        },
+        {
+          "id": "item-2",
+          "portrait": {
+            "assetId": null,
+            "alt": ""
+          },
+          "name": "Marcus Lee",
+          "role": "Project manager",
+          "bio": "Keeps every schedule, budget and contractor on track."
+        },
+        {
+          "id": "item-3",
+          "portrait": {
+            "assetId": null,
+            "alt": ""
+          },
+          "name": "Sofia Alvarez",
+          "role": "Interior designer",
+          "bio": "Specialises in materials, colour and lighting."
+        }
+      ],
+      "max": 16,
+      "titleField": "name"
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Section",
+      "styleControls": [
+        "paddingBlock",
+        "background"
+      ]
+    },
+    "heading": {
+      "nodeId": "heading",
+      "label": "Heading",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "grid": {
+      "nodeId": "grid",
+      "label": "Grid",
+      "styleControls": [
+        "columns",
+        "gap"
+      ]
+    },
+    "portrait": {
+      "nodeId": "portrait",
+      "label": "Portrait",
+      "styleControls": [
+        "aspectRatio",
+        "radius"
+      ]
+    },
+    "name": {
+      "nodeId": "name",
+      "label": "Name",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Default"
+    },
+    "muted": {
+      "label": "Soft background",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            }
+          }
+        }
+      }
+    },
+    "inverse": {
+      "label": "Dark",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        },
+        "eyebrow": {
+          "base": {
+            "color": {
+              "token": "color.accent"
+            }
+          }
+        },
+        "lead": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        },
+        "role": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        },
+        "bio": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "default",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "eyebrow": {
+        "id": "eyebrow",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "eyebrow"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.eyebrow"
+            },
+            "color": {
+              "token": "color.brand"
+            }
+          }
+        },
+        "when": {
+          "$prop": "eyebrow"
+        },
+        "name": "Eyebrow"
+      },
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "tag": "h2",
+        "text": {
+          "$prop": "heading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.h2"
+            }
+          }
+        },
+        "name": "Heading"
+      },
+      "lead": {
+        "id": "lead",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "lead"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.lead"
+            },
+            "color": {
+              "token": "color.muted"
+            }
+          }
+        },
+        "when": {
+          "$prop": "lead"
+        },
+        "name": "Lead"
+      },
+      "intro": {
+        "id": "intro",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "eyebrow",
+          "heading",
+          "lead"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.md"
+            },
+            "maxWidth": "760px",
+            "textAlign": "start"
+          }
+        },
+        "name": "Heading group"
+      },
+      "portrait": {
+        "id": "portrait",
+        "kind": "image",
+        "image": {
+          "$item": "portrait"
+        },
+        "styles": {
+          "base": {
+            "aspectRatio": "4/5",
+            "radius": {
+              "token": "radius.lg"
+            },
+            "objectFit": "cover",
+            "marginBlockEnd": {
+              "token": "space.sm"
+            }
+          }
+        },
+        "name": "Portrait"
+      },
+      "name": {
+        "id": "name",
+        "kind": "text",
+        "tag": "h3",
+        "text": {
+          "$item": "name"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.h3"
+            }
+          }
+        },
+        "name": "Name"
+      },
+      "role": {
+        "id": "role",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$item": "role"
+        },
+        "styles": {
+          "base": {
+            "color": {
+              "token": "color.brand"
+            },
+            "fontWeight": "500",
+            "fontSize": "0.95rem"
+          }
+        },
+        "name": "Role"
+      },
+      "bio": {
+        "id": "bio",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$item": "bio"
+        },
+        "styles": {
+          "base": {
+            "color": {
+              "token": "color.muted"
+            },
+            "textStyle": {
+              "token": "text.small"
+            }
+          }
+        },
+        "when": {
+          "$item": "bio"
+        },
+        "name": "Bio"
+      },
+      "member": {
+        "id": "member",
+        "kind": "element",
+        "tag": "li",
+        "children": [
+          "portrait",
+          "name",
+          "role",
+          "bio"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.xs"
+            }
+          }
+        },
+        "name": "Person"
+      },
+      "members": {
+        "id": "members",
+        "kind": "repeat",
+        "list": {
+          "$prop": "people"
+        },
+        "children": [
+          "member"
+        ]
+      },
+      "grid": {
+        "id": "grid",
+        "kind": "element",
+        "tag": "ul",
+        "children": [
+          "members"
+        ],
+        "styles": {
+          "base": {
+            "layout": "grid",
+            "columns": 1,
+            "gap": {
+              "token": "space.xl"
+            }
+          },
+          "tablet": {
+            "columns": 2
+          },
+          "desktop": {
+            "columns": 3
+          }
+        },
+        "name": "Grid"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "intro",
+          "grid"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.2xl"
+            },
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "section",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.section"
+            },
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.background"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "name": "Section"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "team.grid"
+  },
+  "license": "GPL-3.0-or-later"
+}

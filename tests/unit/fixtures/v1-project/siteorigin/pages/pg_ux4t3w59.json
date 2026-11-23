@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "id": "pg_ux4t3w59",
+  "title": "About",
+  "route": "/about/",
+  "seo": {
+    "description": "Meet the team behind Fixture Studio."
+  },
+  "shell": "default",
+  "rootIds": [
+    "n_yyd9wtdf",
+    "n_os0d35wq",
+    "n_89815o6r",
+    "n_2txnv19w"
+  ],
+  "nodes": {
+    "n_yyd9wtdf": {
+      "id": "n_yyd9wtdf",
+      "kind": "instance",
+      "definitionId": "foundation.intro.page",
+      "props": {
+        "eyebrow": "About",
+        "heading": "A small studio with a long view",
+        "lead": "Fixture Studio was founded to make good design straightforward, personal and affordable."
+      }
+    },
+    "n_os0d35wq": {
+      "id": "n_os0d35wq",
+      "kind": "instance",
+      "definitionId": "foundation.content.media",
+      "props": {
+        "eyebrow": "Our story",
+        "heading": "Fifteen years of homes, studios and cafés",
+        "body": [
+          "We started as a two-person practice working on family homes. Today we are a team of five, still working from the same small studio on Harbour Lane.",
+          "We take on a limited number of projects each year so that every client gets our full attention."
+        ],
+        "image": {
+          "assetId": null,
+          "alt": "A dining table set beside a tall window"
+        },
+        "actionLabel": "",
+        "actionLink": {
+          "type": "none",
+          "target": ""
+        }
+      }
+    },
+    "n_89815o6r": {
+      "id": "n_89815o6r",
+      "kind": "instance",
+      "definitionId": "foundation.team.grid",
+      "props": {
+        "eyebrow": "The team",
+        "heading": "The people you will work with",
+        "lead": "A small, experienced team who care about getting the details right.",
+        "people": [
+          {
+            "id": "i_w6hn642o",
+            "portrait": {
+              "assetId": null,
+              "alt": "Portrait of Hannah Wells"
+            },
+            "name": "Hannah Wells",
+            "role": "Founder & lead designer",
+            "bio": "Fifteen years designing homes and small workplaces."
+          },
+          {
+            "id": "i_kwspgzys",
+            "portrait": {
+              "assetId": null,
+              "alt": "Portrait of Marcus Lee"
+            },
+            "name": "Marcus Lee",
+            "role": "Project manager",
+            "bio": "Keeps every schedule, budget and contractor on track."
+          },
+          {
+            "id": "i_8gnwzj2a",
+            "portrait": {
+              "assetId": null,
+              "alt": "Portrait of Sofia Alvarez"
+            },
+            "name": "Sofia Alvarez",
+            "role": "Interior designer",
+            "bio": "Specialises in materials, colour and lighting."
+          }
+        ]
+      },
+      "variant": "muted"
+    },
+    "n_2txnv19w": {
+      "id": "n_2txnv19w",
+      "kind": "instance",
+      "definitionId": "foundation.cta.banner",
+      "props": {
+        "heading": "Have a project in mind?",
+        "lead": "Tell us a little about what you have in mind and we will be in touch within two working days.",
+        "primaryLabel": "Contact the studio",
+        "primaryLink": {
+          "type": "page",
+          "target": "pg_sblgq4l1"
+        },
+        "secondaryLabel": "",
+        "secondaryLink": {
+          "type": "none",
+          "target": ""
+        }
+      }
+    }
+  }
+}

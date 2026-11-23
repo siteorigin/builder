@@ -1,0 +1,321 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.stats.row",
+  "componentId": "stats.row",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Statistics",
+  "description": "A row of large figures with short labels.",
+  "category": "social-proof",
+  "tags": [
+    "stats",
+    "numbers",
+    "figures",
+    "metrics",
+    "results",
+    "facts"
+  ],
+  "icon": "chart-line",
+  "properties": {
+    "heading": {
+      "type": "string",
+      "label": "Heading",
+      "default": ""
+    },
+    "items": {
+      "type": "list",
+      "label": "Figures",
+      "itemLabel": "Figure",
+      "fields": {
+        "value": {
+          "type": "string",
+          "label": "Value",
+          "default": "100+"
+        },
+        "label": {
+          "type": "string",
+          "label": "Label",
+          "default": "Projects completed"
+        }
+      },
+      "default": [
+        {
+          "id": "item-1",
+          "value": "15",
+          "label": "Years in practice"
+        },
+        {
+          "id": "item-2",
+          "value": "240+",
+          "label": "Projects completed"
+        },
+        {
+          "id": "item-3",
+          "value": "98%",
+          "label": "Clients who return"
+        },
+        {
+          "id": "item-4",
+          "value": "6",
+          "label": "Industry awards"
+        }
+      ],
+      "max": 8,
+      "titleField": "label"
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Section",
+      "styleControls": [
+        "paddingBlock",
+        "background"
+      ]
+    },
+    "grid": {
+      "nodeId": "grid",
+      "label": "Grid",
+      "styleControls": [
+        "columns",
+        "gap"
+      ]
+    },
+    "value": {
+      "nodeId": "value",
+      "label": "Value",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "label": {
+      "nodeId": "label",
+      "label": "Label",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Default"
+    },
+    "muted": {
+      "label": "Soft background",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            }
+          }
+        }
+      }
+    },
+    "inverse": {
+      "label": "Dark",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        },
+        "label": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        },
+        "value": {
+          "base": {
+            "color": {
+              "token": "color.accent"
+            }
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "default",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "tag": "h2",
+        "text": {
+          "$prop": "heading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.h2"
+            }
+          }
+        },
+        "when": {
+          "$prop": "heading"
+        },
+        "name": "Heading"
+      },
+      "value": {
+        "id": "value",
+        "kind": "text",
+        "tag": "dd",
+        "text": {
+          "$item": "value"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.stat"
+            },
+            "color": {
+              "token": "color.brand"
+            },
+            "order": -1
+          }
+        },
+        "name": "Value"
+      },
+      "label": {
+        "id": "label",
+        "kind": "text",
+        "tag": "dt",
+        "text": {
+          "$item": "label"
+        },
+        "styles": {
+          "base": {
+            "color": {
+              "token": "color.muted"
+            },
+            "textStyle": {
+              "token": "text.small"
+            }
+          }
+        },
+        "name": "Label"
+      },
+      "figure": {
+        "id": "figure",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "value",
+          "label"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.xs"
+            },
+            "paddingInline": "0",
+            "border": "0",
+            "marginBlockStart": "0"
+          }
+        },
+        "name": "Figure"
+      },
+      "figures": {
+        "id": "figures",
+        "kind": "repeat",
+        "list": {
+          "$prop": "items"
+        },
+        "children": [
+          "figure"
+        ]
+      },
+      "grid": {
+        "id": "grid",
+        "kind": "element",
+        "tag": "dl",
+        "children": [
+          "figures"
+        ],
+        "styles": {
+          "base": {
+            "layout": "grid",
+            "columns": 2,
+            "gap": {
+              "token": "space.xl"
+            }
+          },
+          "desktop": {
+            "columns": 4
+          }
+        },
+        "name": "Grid"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "heading",
+          "grid"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.2xl"
+            },
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "section",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.section"
+            },
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.background"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "name": "Section"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "stats.row"
+  },
+  "license": "GPL-3.0-or-later"
+}

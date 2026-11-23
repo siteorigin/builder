@@ -1,5 +1,6 @@
 import type { ApplyResult, EditBatch } from './ops';
 import type { ElementRef, ProjectState } from './types';
+import type { ThemeUpdates } from '@engine/theme-updates';
 
 export type Appearance = 'system' | 'light' | 'dark';
 export type ProviderId = 'openai' | 'anthropic';
@@ -72,6 +73,8 @@ export interface ProjectSnapshot {
   conflicts: Array<{ path: string; reason: string; kind: 'canonical' | 'generated' }>;
   /** Set when the project is open for inspection only (a newer format, or another app is editing it). */
   readOnly?: { reason: string; canUnlock: boolean } | null;
+  /** Installed theme components with a newer version in the theme. */
+  themeUpdates?: ThemeUpdates;
   localState: LocalWorkspaceState;
 }
 

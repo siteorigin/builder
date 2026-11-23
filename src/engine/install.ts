@@ -1,13 +1,12 @@
 import type { ComponentDefinition, InstanceNode, ListItem, ProjectState, PropSchema } from '@shared/types';
 import { catalogueComponent, getTheme } from '@catalogue/index';
-import { newId, stableHash } from '@shared/ids';
+import { newId } from '@shared/ids';
+import { definitionHash } from '@shared/migrations';
+
+export { definitionHash };
 
 export function clone<T>(v: T): T {
   return structuredClone(v);
-}
-
-export function definitionHash(def: ComponentDefinition): string {
-  return stableHash(JSON.stringify(def));
 }
 
 /** Copy a catalogue component (and its dependency closure) into the project. Returns the definition ID. */

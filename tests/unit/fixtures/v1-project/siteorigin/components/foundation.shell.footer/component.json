@@ -1,0 +1,550 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.shell.footer",
+  "componentId": "shell.footer",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Footer",
+  "description": "Site identity, link groups and copyright.",
+  "category": "shell",
+  "tags": [
+    "footer",
+    "links",
+    "copyright",
+    "bottom"
+  ],
+  "icon": "panel-bottom",
+  "properties": {
+    "siteName": {
+      "type": "string",
+      "label": "Site name",
+      "default": "Studio"
+    },
+    "tagline": {
+      "type": "string",
+      "label": "Tagline",
+      "default": "Thoughtful design for homes and small workplaces.",
+      "multiline": true
+    },
+    "linksHeading": {
+      "type": "string",
+      "label": "Links heading",
+      "default": "Explore"
+    },
+    "links": {
+      "type": "list",
+      "label": "Links",
+      "itemLabel": "Link",
+      "fields": {
+        "label": {
+          "type": "string",
+          "label": "Label",
+          "default": "Page"
+        },
+        "link": {
+          "type": "link",
+          "label": "Destination",
+          "default": {
+            "type": "none",
+            "target": ""
+          }
+        }
+      },
+      "default": [],
+      "max": 12,
+      "titleField": "label"
+    },
+    "contactHeading": {
+      "type": "string",
+      "label": "Contact heading",
+      "default": "Contact"
+    },
+    "contact": {
+      "type": "list",
+      "label": "Contact links",
+      "itemLabel": "Contact link",
+      "fields": {
+        "label": {
+          "type": "string",
+          "label": "Label",
+          "default": "hello@example.com"
+        },
+        "link": {
+          "type": "link",
+          "label": "Destination",
+          "default": {
+            "type": "none",
+            "target": ""
+          }
+        }
+      },
+      "default": [
+        {
+          "id": "item-1",
+          "label": "hello@example.com",
+          "link": {
+            "type": "email",
+            "target": "hello@example.com"
+          }
+        },
+        {
+          "id": "item-2",
+          "label": "+1 555 0134",
+          "link": {
+            "type": "tel",
+            "target": "+15550134"
+          }
+        }
+      ],
+      "max": 8,
+      "titleField": "label"
+    },
+    "copyright": {
+      "type": "string",
+      "label": "Copyright",
+      "default": "© 2026 Studio. All rights reserved."
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Footer",
+      "styleControls": [
+        "paddingBlock",
+        "background",
+        "color"
+      ]
+    },
+    "brand": {
+      "nodeId": "brand-name",
+      "label": "Site name",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "copyright": {
+      "nodeId": "copyright",
+      "label": "Copyright",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Dark"
+    },
+    "light": {
+      "label": "Light",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "default",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "brand-name": {
+        "id": "brand-name",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "siteName"
+        },
+        "styles": {
+          "base": {
+            "fontFamily": {
+              "token": "font.display"
+            },
+            "fontSize": "1.5rem",
+            "fontWeight": "500",
+            "letterSpacing": "-0.02em"
+          }
+        },
+        "name": "Site name"
+      },
+      "tagline": {
+        "id": "tagline",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "tagline"
+        },
+        "styles": {
+          "base": {
+            "opacity": 0.7,
+            "textStyle": {
+              "token": "text.small"
+            }
+          }
+        },
+        "when": {
+          "$prop": "tagline"
+        },
+        "name": "Tagline"
+      },
+      "brand": {
+        "id": "brand",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "brand-name",
+          "tagline"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.sm"
+            },
+            "maxWidth": "340px"
+          },
+          "desktop": {
+            "marginBlockEnd": "0"
+          }
+        },
+        "name": "Brand"
+      },
+      "spacer": {
+        "id": "spacer",
+        "kind": "element",
+        "tag": "div",
+        "children": [],
+        "styles": {
+          "base": {
+            "hidden": true
+          },
+          "desktop": {
+            "hidden": false
+          }
+        },
+        "name": "Spacer"
+      },
+      "explore-heading": {
+        "id": "explore-heading",
+        "kind": "text",
+        "tag": "h2",
+        "text": {
+          "$prop": "linksHeading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.eyebrow"
+            },
+            "opacity": 0.7
+          }
+        },
+        "name": "Group heading"
+      },
+      "explore-link": {
+        "id": "explore-link",
+        "kind": "link",
+        "link": {
+          "$item": "link"
+        },
+        "label": {
+          "$item": "label"
+        },
+        "appearance": "plain",
+        "styles": {
+          "base": {
+            "color": "inherit",
+            "opacity": 0.85
+          }
+        },
+        "name": "Link"
+      },
+      "explore-item": {
+        "id": "explore-item",
+        "kind": "element",
+        "tag": "li",
+        "children": [
+          "explore-link"
+        ],
+        "name": "Link item"
+      },
+      "explore-items": {
+        "id": "explore-items",
+        "kind": "repeat",
+        "list": {
+          "$prop": "links"
+        },
+        "children": [
+          "explore-item"
+        ]
+      },
+      "explore-list": {
+        "id": "explore-list",
+        "kind": "element",
+        "tag": "ul",
+        "children": [
+          "explore-items"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.sm"
+            }
+          }
+        },
+        "name": "Links"
+      },
+      "explore-group": {
+        "id": "explore-group",
+        "kind": "element",
+        "tag": "nav",
+        "children": [
+          "explore-heading",
+          "explore-list"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.md"
+            }
+          }
+        },
+        "name": "Link group"
+      },
+      "contact-heading": {
+        "id": "contact-heading",
+        "kind": "text",
+        "tag": "h2",
+        "text": {
+          "$prop": "contactHeading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.eyebrow"
+            },
+            "opacity": 0.7
+          }
+        },
+        "name": "Group heading"
+      },
+      "contact-link": {
+        "id": "contact-link",
+        "kind": "link",
+        "link": {
+          "$item": "link"
+        },
+        "label": {
+          "$item": "label"
+        },
+        "appearance": "plain",
+        "styles": {
+          "base": {
+            "color": "inherit",
+            "opacity": 0.85
+          }
+        },
+        "name": "Link"
+      },
+      "contact-item": {
+        "id": "contact-item",
+        "kind": "element",
+        "tag": "li",
+        "children": [
+          "contact-link"
+        ],
+        "name": "Link item"
+      },
+      "contact-items": {
+        "id": "contact-items",
+        "kind": "repeat",
+        "list": {
+          "$prop": "contact"
+        },
+        "children": [
+          "contact-item"
+        ]
+      },
+      "contact-list": {
+        "id": "contact-list",
+        "kind": "element",
+        "tag": "ul",
+        "children": [
+          "contact-items"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.sm"
+            }
+          }
+        },
+        "name": "Links"
+      },
+      "contact-group": {
+        "id": "contact-group",
+        "kind": "element",
+        "tag": "nav",
+        "children": [
+          "contact-heading",
+          "contact-list"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.md"
+            }
+          }
+        },
+        "name": "Link group"
+      },
+      "top": {
+        "id": "top",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "brand",
+          "spacer",
+          "explore-group",
+          "contact-group"
+        ],
+        "styles": {
+          "base": {
+            "layout": "grid",
+            "columns": 1,
+            "gap": {
+              "token": "space.2xl"
+            }
+          },
+          "tablet": {
+            "columns": 3
+          },
+          "desktop": {
+            "columns": 4
+          }
+        },
+        "name": "Top row"
+      },
+      "copyright": {
+        "id": "copyright",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "copyright"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.small"
+            },
+            "opacity": 0.7
+          }
+        },
+        "name": "Copyright"
+      },
+      "bottom": {
+        "id": "bottom",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "copyright"
+        ],
+        "styles": {
+          "base": {
+            "layout": "row",
+            "wrap": true,
+            "justify": "space-between",
+            "gap": {
+              "token": "space.md"
+            },
+            "paddingBlock": "0",
+            "marginBlockStart": {
+              "token": "space.lg"
+            }
+          }
+        },
+        "name": "Bottom row"
+      },
+      "rule": {
+        "id": "rule",
+        "kind": "divider",
+        "styles": {
+          "base": {
+            "opacity": 0.18,
+            "marginBlockStart": {
+              "token": "space.2xl"
+            }
+          }
+        },
+        "name": "Divider"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "top",
+          "rule",
+          "bottom"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "footer",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.3xl"
+            },
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        },
+        "name": "Footer"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "shell.footer"
+  },
+  "license": "GPL-3.0-or-later"
+}

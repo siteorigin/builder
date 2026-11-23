@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { ChevronRight, CircleAlert, CircleCheck, Ellipsis, Lock, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
+import { ChevronRight, CircleAlert, CircleCheck, Ellipsis, Lock, RefreshCw, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
 import type { RuntimeState } from '@shared/api';
-import { api, confirmDialog, setState, toast, useStore } from '../store';
+import { api, applyOps, confirmDialog, setState, toast, useStore } from '../store';
 import { breadcrumb } from '../lib/model';
 import { Modal, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
@@ -137,6 +137,14 @@ export function HealthModal() {
       setBusy(null);
     }
   };
+  const updateTheme = async () => {
+    setBusy('theme');
+    try {
+      await applyOps([{ type: 'theme.refresh' }], 'Update theme components');
+    } finally {
+      setBusy(null);
+    }
+  };
   const unlock = async () => {
     const ok = await confirmDialog({
       title: 'Unlock this project?',
@@ -193,6 +201,21 @@ export function HealthModal() {
                   Unlock…
                 </button>
               )}
+            </div>
+          )}
+          {!!snap.themeUpdates?.available.length && (
+            <div className="scope-note info" style={{ marginBottom: 12, alignItems: 'center' }}>
+              <RefreshCw />
+              <span className="grow" title={snap.themeUpdates.available.map((u) => u.name).join(', ')}>
+                <strong>
+                  {snap.themeUpdates.available.length} theme component{snap.themeUpdates.available.length === 1 ? ' has' : 's have'} an update.
+                </strong>{' '}
+                Your content and changes stay. Components you forked are not touched, and you can undo this.
+                {!!snap.themeUpdates.kept.length && ` ${snap.themeUpdates.kept.length} more can’t be updated automatically.`}
+              </span>
+              <button className="btn btn-sm" disabled={!!busy || !!snap.conflicts.length} onClick={() => void updateTheme()}>
+                Update
+              </button>
             </div>
           )}
           {snap.diagnostics.length === 0 && snap.conflicts.length === 0 && !pageIssue && runtime.state !== 'error' && (

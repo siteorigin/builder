@@ -62,8 +62,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   request_clarification: 'Ask the user one short question when a request is genuinely ambiguous and a wrong guess would change shared content. Offer up to four concrete choices.'
 };
 
-/** Operations the assistant never sends: images are added only by the verified importer. */
-const NEVER_OFFERED = new Set<OperationType>(['asset.add']);
+/** Operations the assistant never sends: images are added only by the verified importer, theme updates by the user. */
+const NEVER_OFFERED = new Set<OperationType>(['asset.add', 'theme.refresh']);
 /** Operations that need Developer mode. */
 export const CODE_OPERATIONS = new Set<OperationType>(['component.createCode', 'component.updateSource', 'component.convertToCode']);
 const CODE_TOOLS = new Set<ToolName>(['read_source', 'apply_source_patch']);

@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "name": "Fixture Studio",
+  "language": "en",
+  "description": "Fixture Studio is an independent interior design studio creating calm, practical homes and small workplaces.",
+  "homePageId": "pg_04pktz26",
+  "pageOrder": [
+    "pg_04pktz26",
+    "pg_ux4t3w59",
+    "pg_sblgq4l1"
+  ],
+  "themeId": "foundation",
+  "shell": {
+    "header": {
+      "rootIds": [
+        "n_y8ygigjc"
+      ],
+      "nodes": {
+        "n_y8ygigjc": {
+          "id": "n_y8ygigjc",
+          "kind": "instance",
+          "definitionId": "foundation.shell.header",
+          "props": {
+            "siteName": "Fixture Studio",
+            "logo": {
+              "assetId": null,
+              "alt": ""
+            },
+            "showSiteName": true,
+            "links": [
+              {
+                "id": "i_ut6nhfcg",
+                "label": "Home",
+                "link": {
+                  "type": "page",
+                  "target": "pg_04pktz26"
+                }
+              },
+              {
+                "id": "i_x5j651jx",
+                "label": "About",
+                "link": {
+                  "type": "page",
+                  "target": "pg_ux4t3w59"
+                }
+              },
+              {
+                "id": "i_8u1et5ps",
+                "label": "Contact",
+                "link": {
+                  "type": "page",
+                  "target": "pg_sblgq4l1"
+                }
+              }
+            ],
+            "ctaLabel": "Book a call",
+            "ctaLink": {
+              "type": "page",
+              "target": "pg_sblgq4l1"
+            },
+            "ctaStyle": "primary",
+            "surface": "background",
+            "sticky": true
+          }
+        }
+      }
+    },
+    "footer": {
+      "rootIds": [
+        "n_wy4ml212"
+      ],
+      "nodes": {
+        "n_wy4ml212": {
+          "id": "n_wy4ml212",
+          "kind": "instance",
+          "definitionId": "foundation.shell.footer",
+          "props": {
+            "siteName": "Fixture Studio",
+            "tagline": "Calm, considered interiors for homes and small workplaces.",
+            "linksHeading": "Explore",
+            "links": [
+              {
+                "id": "i_d8m9mop0",
+                "label": "Home",
+                "link": {
+                  "type": "page",
+                  "target": "pg_04pktz26"
+                }
+              },
+              {
+                "id": "i_lycmy310",
+                "label": "About",
+                "link": {
+                  "type": "page",
+                  "target": "pg_ux4t3w59"
+                }
+              },
+              {
+                "id": "i_s5xn19ge",
+                "label": "Contact",
+                "link": {
+                  "type": "page",
+                  "target": "pg_sblgq4l1"
+                }
+              }
+            ],
+            "contactHeading": "Contact",
+            "contact": [
+              {
+                "id": "i_b4foxhmk",
+                "label": "hello@example.com",
+                "link": {
+                  "type": "email",
+                  "target": "hello@example.com"
+                }
+              },
+              {
+                "id": "i_chw8d8av",
+                "label": "+1 555 0134",
+                "link": {
+                  "type": "tel",
+                  "target": "+15550134"
+                }
+              }
+            ],
+            "copyright": "© 2026 Fixture Studio. All rights reserved."
+          }
+        }
+      }
+    }
+  }
+}

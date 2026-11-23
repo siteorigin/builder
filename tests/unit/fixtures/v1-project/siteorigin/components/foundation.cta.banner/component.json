@@ -1,0 +1,336 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.cta.banner",
+  "componentId": "cta.banner",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Call to action",
+  "description": "A prominent banner with a heading, short copy and one or two actions.",
+  "category": "conversion",
+  "tags": [
+    "cta",
+    "call to action",
+    "banner",
+    "contact",
+    "sign up",
+    "book",
+    "conversion"
+  ],
+  "icon": "megaphone",
+  "properties": {
+    "heading": {
+      "type": "string",
+      "label": "Heading",
+      "default": "Ready to start your project?"
+    },
+    "lead": {
+      "type": "string",
+      "label": "Supporting text",
+      "default": "Tell us a little about what you have in mind and we will be in touch within two working days.",
+      "multiline": true
+    },
+    "primaryLabel": {
+      "type": "string",
+      "label": "Primary button label",
+      "default": "Get in touch"
+    },
+    "primaryLink": {
+      "type": "link",
+      "label": "Primary button link",
+      "default": {
+        "type": "none",
+        "target": ""
+      }
+    },
+    "secondaryLabel": {
+      "type": "string",
+      "label": "Secondary button label",
+      "default": ""
+    },
+    "secondaryLink": {
+      "type": "link",
+      "label": "Secondary button link",
+      "default": {
+        "type": "none",
+        "target": ""
+      }
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Section",
+      "styleControls": [
+        "paddingBlock",
+        "background"
+      ]
+    },
+    "panel": {
+      "nodeId": "panel",
+      "label": "Panel",
+      "styleControls": [
+        "background",
+        "color",
+        "radius",
+        "paddingBlock",
+        "paddingInline"
+      ]
+    },
+    "heading": {
+      "nodeId": "heading",
+      "label": "Heading",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "lead": {
+      "nodeId": "lead",
+      "label": "Supporting text",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Brand panel"
+    },
+    "muted": {
+      "label": "Soft panel",
+      "styles": {
+        "panel": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "lead": {
+          "base": {
+            "color": {
+              "token": "color.muted"
+            },
+            "opacity": 1
+          }
+        },
+        "primary": {
+          "base": {
+            "background": {
+              "token": "color.brand"
+            },
+            "color": {
+              "token": "color.on-brand"
+            }
+          }
+        }
+      }
+    },
+    "inverse": {
+      "label": "Dark panel",
+      "styles": {
+        "panel": {
+          "base": {
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "default",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "tag": "h2",
+        "text": {
+          "$prop": "heading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.h2"
+            },
+            "maxWidth": "760px"
+          }
+        },
+        "name": "Heading"
+      },
+      "lead": {
+        "id": "lead",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "lead"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.lead"
+            },
+            "maxWidth": "620px",
+            "opacity": 0.85
+          }
+        },
+        "when": {
+          "$prop": "lead"
+        },
+        "name": "Supporting text"
+      },
+      "primary": {
+        "id": "primary",
+        "kind": "link",
+        "link": {
+          "$prop": "primaryLink"
+        },
+        "label": {
+          "$prop": "primaryLabel"
+        },
+        "appearance": "light",
+        "when": {
+          "$prop": "primaryLabel"
+        },
+        "name": "Primary button"
+      },
+      "secondary": {
+        "id": "secondary",
+        "kind": "link",
+        "link": {
+          "$prop": "secondaryLink"
+        },
+        "label": {
+          "$prop": "secondaryLabel"
+        },
+        "appearance": "secondary",
+        "when": {
+          "$prop": "secondaryLabel"
+        },
+        "name": "Secondary button"
+      },
+      "actions": {
+        "id": "actions",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "primary",
+          "secondary"
+        ],
+        "styles": {
+          "base": {
+            "layout": "row",
+            "wrap": true,
+            "justify": "center",
+            "gap": {
+              "token": "space.sm"
+            },
+            "marginBlockStart": {
+              "token": "space.xs"
+            }
+          }
+        },
+        "name": "Actions"
+      },
+      "panel": {
+        "id": "panel",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "heading",
+          "lead",
+          "actions"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "align": "center",
+            "textAlign": "center",
+            "gap": {
+              "token": "space.lg"
+            },
+            "paddingBlock": "clamp(3rem, 2rem + 4vw, 5.5rem)",
+            "paddingInline": {
+              "token": "space.xl"
+            },
+            "background": {
+              "token": "color.brand"
+            },
+            "color": {
+              "token": "color.on-brand"
+            },
+            "radius": {
+              "token": "radius.lg"
+            }
+          }
+        },
+        "name": "Panel"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "panel"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.2xl"
+            },
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "section",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.section"
+            },
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.background"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "name": "Section"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "cta.banner"
+  },
+  "license": "GPL-3.0-or-later"
+}

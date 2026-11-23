@@ -1,0 +1,446 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.hero.split",
+  "componentId": "hero.split",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Split hero",
+  "description": "Heading, supporting copy and actions beside a large image. The image side can be swapped.",
+  "category": "hero",
+  "tags": [
+    "hero",
+    "banner",
+    "image",
+    "media",
+    "split",
+    "intro",
+    "photo"
+  ],
+  "icon": "panel-right",
+  "properties": {
+    "eyebrow": {
+      "type": "string",
+      "label": "Eyebrow",
+      "default": "Independent studio"
+    },
+    "heading": {
+      "type": "string",
+      "label": "Heading",
+      "default": "Thoughtful work for people who care about the details"
+    },
+    "lead": {
+      "type": "string",
+      "label": "Supporting text",
+      "default": "We help small teams plan, design and deliver projects that feel considered from the first conversation to the final handover.",
+      "multiline": true
+    },
+    "primaryLabel": {
+      "type": "string",
+      "label": "Primary button label",
+      "default": "Start a project"
+    },
+    "primaryLink": {
+      "type": "link",
+      "label": "Primary button link",
+      "default": {
+        "type": "none",
+        "target": ""
+      }
+    },
+    "secondaryLabel": {
+      "type": "string",
+      "label": "Secondary button label",
+      "default": "See our work"
+    },
+    "secondaryLink": {
+      "type": "link",
+      "label": "Secondary button link",
+      "default": {
+        "type": "none",
+        "target": ""
+      }
+    },
+    "image": {
+      "type": "image",
+      "label": "Image",
+      "default": {
+        "assetId": null,
+        "alt": "A calm, light-filled studio workspace"
+      }
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Section",
+      "styleControls": [
+        "paddingBlock",
+        "background",
+        "color",
+        "minHeight"
+      ]
+    },
+    "container": {
+      "nodeId": "inner",
+      "label": "Container",
+      "styleControls": [
+        "maxWidth",
+        "gap",
+        "align"
+      ]
+    },
+    "eyebrow": {
+      "nodeId": "eyebrow",
+      "label": "Eyebrow",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "heading": {
+      "nodeId": "heading",
+      "label": "Heading",
+      "styleControls": [
+        "textStyle",
+        "color",
+        "maxWidth",
+        "textAlign"
+      ]
+    },
+    "lead": {
+      "nodeId": "lead",
+      "label": "Supporting text",
+      "styleControls": [
+        "textStyle",
+        "color",
+        "maxWidth"
+      ]
+    },
+    "actions": {
+      "nodeId": "actions",
+      "label": "Actions",
+      "styleControls": [
+        "gap",
+        "justify"
+      ]
+    },
+    "media": {
+      "nodeId": "media",
+      "label": "Image",
+      "styleControls": [
+        "aspectRatio",
+        "radius",
+        "shadow"
+      ]
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Default"
+    },
+    "muted": {
+      "label": "Soft background",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            }
+          }
+        }
+      }
+    },
+    "inverse": {
+      "label": "Dark",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        },
+        "eyebrow": {
+          "base": {
+            "color": {
+              "token": "color.accent"
+            }
+          }
+        },
+        "lead": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        }
+      }
+    },
+    "media-start": {
+      "label": "Image first",
+      "styles": {
+        "media-wrap": {
+          "desktop": {
+            "order": -1
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "default",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "eyebrow": {
+        "id": "eyebrow",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "eyebrow"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.eyebrow"
+            },
+            "color": {
+              "token": "color.brand"
+            }
+          }
+        },
+        "when": {
+          "$prop": "eyebrow"
+        },
+        "name": "Eyebrow"
+      },
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "tag": "h1",
+        "text": {
+          "$prop": "heading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.h1"
+            }
+          }
+        },
+        "name": "Heading"
+      },
+      "lead": {
+        "id": "lead",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "lead"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.lead"
+            },
+            "color": {
+              "token": "color.muted"
+            },
+            "maxWidth": "560px"
+          }
+        },
+        "when": {
+          "$prop": "lead"
+        },
+        "name": "Supporting text"
+      },
+      "primary": {
+        "id": "primary",
+        "kind": "link",
+        "link": {
+          "$prop": "primaryLink"
+        },
+        "label": {
+          "$prop": "primaryLabel"
+        },
+        "appearance": "primary",
+        "when": {
+          "$prop": "primaryLabel"
+        },
+        "name": "Primary button"
+      },
+      "secondary": {
+        "id": "secondary",
+        "kind": "link",
+        "link": {
+          "$prop": "secondaryLink"
+        },
+        "label": {
+          "$prop": "secondaryLabel"
+        },
+        "appearance": "secondary",
+        "when": {
+          "$prop": "secondaryLabel"
+        },
+        "name": "Secondary button"
+      },
+      "actions": {
+        "id": "actions",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "primary",
+          "secondary"
+        ],
+        "styles": {
+          "base": {
+            "layout": "row",
+            "wrap": true,
+            "gap": {
+              "token": "space.sm"
+            },
+            "justify": "start",
+            "marginBlockStart": {
+              "token": "space.sm"
+            }
+          }
+        },
+        "name": "Actions"
+      },
+      "content": {
+        "id": "content",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "eyebrow",
+          "heading",
+          "lead",
+          "actions"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.lg"
+            },
+            "align": "start"
+          }
+        },
+        "name": "Content"
+      },
+      "media": {
+        "id": "media",
+        "kind": "image",
+        "image": {
+          "$prop": "image"
+        },
+        "styles": {
+          "base": {
+            "aspectRatio": "4/5",
+            "radius": {
+              "token": "radius.lg"
+            },
+            "objectFit": "cover",
+            "shadow": {
+              "token": "shadow.md"
+            }
+          }
+        },
+        "name": "Image"
+      },
+      "media-wrap": {
+        "id": "media-wrap",
+        "kind": "element",
+        "tag": "figure",
+        "children": [
+          "media"
+        ],
+        "name": "Media"
+      },
+      "grid": {
+        "id": "grid",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "content",
+          "media-wrap"
+        ],
+        "styles": {
+          "base": {
+            "layout": "grid",
+            "columns": 1,
+            "gap": {
+              "token": "space.2xl"
+            },
+            "align": "center"
+          },
+          "desktop": {
+            "columns": 2,
+            "gap": {
+              "token": "space.3xl"
+            }
+          }
+        },
+        "name": "Layout"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "grid"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.2xl"
+            },
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "section",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.section"
+            },
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.background"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "name": "Section"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "hero.split"
+  },
+  "license": "GPL-3.0-or-later"
+}

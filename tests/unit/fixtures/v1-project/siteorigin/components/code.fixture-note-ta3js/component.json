@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "id": "code.fixture-note-ta3js",
+  "componentId": "project.fixture-note",
+  "contractVersion": 1,
+  "kind": "code",
+  "owner": "project",
+  "name": "Fixture Note",
+  "description": "Custom code component.",
+  "category": "custom",
+  "tags": [
+    "custom",
+    "code"
+  ],
+  "icon": "code",
+  "properties": {
+    "text": {
+      "type": "string",
+      "label": "Text",
+      "default": "Note"
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Root"
+    }
+  },
+  "sourcePath": "src/lib/siteorigin/custom/FixtureNote-ta3js.svelte",
+  "provenance": {
+    "createdBy": "user"
+  },
+  "license": "Project"
+}

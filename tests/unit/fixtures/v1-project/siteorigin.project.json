@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "projectId": "p_x8fy0k7uc8hp",
+  "name": "Fixture Studio",
+  "createdAt": "2026-11-23T17:17:39.434Z",
+  "template": {
+    "id": "sveltekit-brochure",
+    "version": "0.2.0"
+  },
+  "generator": "0.1.0",
+  "app": "0.1.0"
+}

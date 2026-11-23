@@ -4,6 +4,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { ProjectState } from '@shared/types';
+import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { applyOperations } from '@engine/apply';
@@ -12,7 +13,7 @@ import { validateState, type Diagnostic } from '@engine/validate';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
 import { checkSvelteSource } from '../codecheck';
 import { atomicWrite, readIfExists, readJson, removeEmptyDirs, safeJoin, sha, toJson } from './fsutil';
-import { isCanonicalPath, ProjectFormatError, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { isCanonicalPath, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 
 export const LOCAL_DIR = '.siteorigin';
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -53,6 +54,8 @@ export interface HistoryEntry {
 }
 
 interface HistoryFile {
+  /** The document format of the versions these entries restore. Absent in the first format. */
+  schemaVersion?: number;
   entries: HistoryEntry[];
   /** Number of entries currently applied (entries beyond this are redoable). */
   cursor: number;
@@ -105,7 +108,7 @@ export class ProjectSession extends EventEmitter {
   state!: ProjectState;
   revision = 0;
   private docs = new Map<string, string>();
-  private history: HistoryFile = { entries: [], cursor: 0 };
+  private history: HistoryFile = emptyHistory();
   private generated: GeneratedManifest = { generator: GENERATOR_VERSION, files: {} };
   conflicts: Conflict[] = [];
   /**
@@ -126,6 +129,8 @@ export class ProjectSession extends EventEmitter {
   activeRun: { id: string; before: Map<string, string>; beforeState: ProjectState; startRevision: number; written: Map<string, Set<string | null>> } | null = null;
   private writing: Promise<unknown> = Promise.resolve();
   private idempotency = new Map<string, { fingerprint: string; result: ApplyResult }>();
+  /** The documents were read in an older format and the update has not been stored yet. */
+  private migrationDue = false;
 
   constructor(public readonly dir: string) {
     super();
@@ -153,11 +158,13 @@ export class ProjectSession extends EventEmitter {
     const s = new ProjectSession(dir);
     // A project from a newer version is never written to, not even its local folders.
     await assertKnownFormat(dir);
-    await s.ensureLocalDirs();
-    // The lock comes first: recovery must never touch a project another window is editing.
+    // The lock comes first: recovery must never touch a project another window is editing, and a project
+    // that turns out to be locked is opened read-only with nothing written.
+    await fs.mkdir(s.local(), { recursive: true });
     const lockErr = await s.acquireLock(instanceId, opts.force);
     if (lockErr) throw lockErr;
     try {
+      await s.ensureLocalDirs();
       await s.openLocked();
     } catch (e) {
       await s.releaseLock();
@@ -175,7 +182,7 @@ export class ProjectSession extends EventEmitter {
     s.readOnly = info;
     s.state = await readState(dir, { allowNewer: true });
     s.docs = stateToDocs(s.state);
-    s.history = (await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)).catch(() => null)) ?? { entries: [], cursor: 0 };
+    s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)).catch(() => null));
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
     return s;
@@ -188,17 +195,57 @@ export class ProjectSession extends EventEmitter {
     // Both recoveries run before the documents are first read: a file a crash left broken may be one they restore.
     await s.recoverJournal();
     await s.recoverInterruptedRun();
-    s.state = await readState(dir, { overlay: s.pending });
+    const read = await readProject(dir, { overlay: s.pending });
+    s.state = read.state;
+    s.migrationDue = !!read.migration;
     s.docs = stateToDocs(s.state);
-    s.history = (await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null))) ?? { entries: [], cursor: 0 };
+    s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)));
     s.generated = (await readIfExists(join(dir, 'siteorigin', 'generated-manifest.json')).then((t) => (t ? JSON.parse(t) : null))) ?? s.generated;
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
     // Validate the final state (after any rollback) before generating anything from it.
     const fatal = validateState(s.state).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
     if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not opened to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
-    await s.publishGenerated(false);
+    // With a file in conflict the update waits: its stored version is the user's to choose first.
+    if (s.migrationDue && !s.pending.size) await s.publishMigration();
+    else await s.publishGenerated(false);
     await s.sweep();
+  }
+
+  /**
+   * Store a project read in an older format in the current one. A copy of the old documents goes to the recovery
+   * folder, then the update is published through the journal, so a crash leaves the old or new project, never a mix.
+   */
+  private async publishMigration() {
+    const read = await readProject(this.dir);
+    if (!read.migration) {
+      this.migrationDue = false;
+      return;
+    }
+    // The files may have changed since they were last validated.
+    const fatal = validateState(read.state).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
+    if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not updated to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
+    const { from, to } = read.migration;
+    const backup = `migration-v${from}-to-v${to}-${Date.now()}`;
+    // The journal must describe the exact bytes being replaced, however they are formatted.
+    const before = new Map<string, string>();
+    for (const path of stateToDocs(read.stored).keys()) {
+      const disk = await this.diskContent(path);
+      if (disk === null) continue;
+      before.set(path, disk);
+      await atomicWrite(this.local('recovery', backup, path), disk);
+    }
+    const held = this.docs;
+    this.docs = before;
+    try {
+      await this.persist(read.state, { label: 'Update project format', history: false, source: 'system' });
+    } catch (e) {
+      this.docs = held;
+      throw e;
+    }
+    this.migrationDue = false;
+    await atomicWrite(this.local('history', 'history.json'), toJson(this.history));
+    this.recoveryNotes.push(`Updated this project to the current format. A copy of the previous version is in .siteorigin/recovery/${backup}.`);
   }
 
   private async ensureLocalDirs() {
@@ -425,8 +472,11 @@ export class ProjectSession extends EventEmitter {
         const overlay = new Map(this.pending);
         overlay.delete(path);
         let next: ProjectState;
+        let migrated: boolean;
         try {
-          next = await readState(this.dir, { overlay });
+          const read = await readProject(this.dir, { overlay });
+          next = read.state;
+          migrated = !!read.migration;
         } catch (e) {
           return { ok: false, message: `The external version of ${path} could not be read, so it was not kept: ${(e as Error).message}` };
         }
@@ -441,9 +491,11 @@ export class ProjectSession extends EventEmitter {
         changed = await this.diffDocs(this.docs, stateToDocs(next));
         this.state = next;
         this.docs = stateToDocs(next);
+        this.migrationDue ||= migrated;
         this.releaseConflict(path);
       }
       await this.saveConflicts();
+      if (this.migrationDue && !this.pending.size) await this.publishMigration();
       const changedFiles = await this.publishGenerated(false);
       this.revision++;
       if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'Keep external change', source: 'system' });
@@ -493,6 +545,11 @@ export class ProjectSession extends EventEmitter {
     if (bad) return keepAside('An interrupted save referred to files it should not touch, so it was set aside.');
     let conflicts = 0;
     for (const w of journal.writes) {
+      // An earlier recovery of this journal already held this file for the user to choose.
+      if (this.loadedHolds.has(w.path)) {
+        conflicts++;
+        continue;
+      }
       const disk = await this.diskContent(w.path);
       const h = disk === null ? null : sha(disk);
       if (h === w.blob) continue; // already applied
@@ -506,6 +563,10 @@ export class ProjectSession extends EventEmitter {
       await atomicWrite(safeJoin(this.dir, w.path), contents.get(w.path)!);
     }
     for (const d of journal.deletes) {
+      if (this.loadedHolds.has(d.path)) {
+        conflicts++;
+        continue;
+      }
       const disk = await this.diskContent(d.path);
       if (disk === null) continue;
       if (sha(disk) !== d.before) {
@@ -610,7 +671,7 @@ export class ProjectSession extends EventEmitter {
     if (this.activeRun) await this.writeRunMarker(nextDocs);
     // Journal first, then replace files.
     if (writes.length || deletes.length) {
-      await atomicWrite(this.local('journal.json'), toJson({ writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes }));
+      await atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes }));
       for (const w of writes) await atomicWrite(safeJoin(this.dir, w.path), w.content);
       for (const d of deletes) await this.removeCanonical(d.path);
     }
@@ -719,6 +780,8 @@ export class ProjectSession extends EventEmitter {
     await this.stillOwner();
     if (this.readOnly) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: this.readOnly.reason, recoverable: false } };
     if (this.pending.size) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Resolve the file conflicts in Project health before making more changes.', recoverable: false } };
+    // A failed update may have left its journal: only reopening can finish it, and a new save would replace it.
+    if (this.migrationDue) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'This project could not be updated to the current format. Close and reopen it.', recoverable: false } };
     return null;
   }
 
@@ -1219,9 +1282,12 @@ export class ProjectSession extends EventEmitter {
       }
       if (settled) await this.saveConflicts();
       let next: ProjectState;
+      let migrated: boolean;
       try {
         // Files still in conflict are read as SiteOrigin Builder's version until the user chooses.
-        next = await readState(this.dir, { overlay: this.pending });
+        const read = await readProject(this.dir, { overlay: this.pending });
+        next = read.state;
+        migrated = !!read.migration;
       } catch (e) {
         if (settled) this.emit('history');
         return { ok: false, message: (e as Error).message };
@@ -1233,11 +1299,14 @@ export class ProjectSession extends EventEmitter {
         const bad = (await checkSvelteSource(def.source ?? '')).filter((p) => p.severity === 'error');
         if (bad.length) return { ok: false, message: `The edited code for "${def.name}" has problems, so it was not loaded: ${bad[0].message}` };
       }
+      this.migrationDue = migrated;
       const nextDocs = stateToDocs(next);
       let same = nextDocs.size === this.docs.size;
       if (same) for (const [p, c] of nextDocs) if (this.docs.get(p) !== c) same = false;
       const srcSame = JSON.stringify([...stateToAuthoredSources(next)]) === JSON.stringify([...stateToAuthoredSources(this.state)]);
       if (same && srcSame) {
+        // Only the stored format differs (a file put back from an older copy): store it in the current one.
+        if (this.migrationDue && !this.pending.size) await this.publishMigration();
         if (settled) this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: [], label: 'Conflict resolved', source: 'system' } satisfies SessionEvent);
         return { ok: true };
       }
@@ -1258,6 +1327,7 @@ export class ProjectSession extends EventEmitter {
       this.revision++;
       if (Object.keys(changed).length) await this.recordHistory(changed, { label: 'External change', source: 'system' });
       await this.saveLocalState();
+      if (this.migrationDue && !this.pending.size) await this.publishMigration();
       this.emit('changed', { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: 'External change', source: 'system' } satisfies SessionEvent);
       return { ok: true };
     });
@@ -1301,6 +1371,28 @@ async function assertKnownFormat(dir: string) {
     if (e instanceof ProjectFormatError && e.readOnly) throw e;
     // Anything else is reported by the normal open, after recovery has had its chance.
   }
+  // An interrupted save from a newer version is that version's to finish: replaying it here would write its format.
+  const journal = await readIfExists(join(dir, LOCAL_DIR, 'journal.json'));
+  let version: unknown;
+  try {
+    version = journal ? JSON.parse(journal).schemaVersion : undefined;
+  } catch {
+    return; // recovery sets an unreadable journal aside
+  }
+  if (typeof version === 'number' && version > SCHEMA_VERSION)
+    throw new ProjectFormatError(`This project has an unfinished save from a newer version of SiteOrigin Builder (format ${version}). Update the app to edit it.`, true);
+}
+
+function emptyHistory(): HistoryFile {
+  return { schemaVersion: SCHEMA_VERSION, entries: [], cursor: 0 };
+}
+
+/**
+ * Undo steps hold whole documents, so they are only usable in the format they were written in. History from an
+ * older format is dropped when it is read, which also covers a crash partway through updating the project.
+ */
+function usableHistory(file: HistoryFile | null): HistoryFile {
+  return file && file.schemaVersion === SCHEMA_VERSION ? file : emptyHistory();
 }
 
 /** Compare disk content with the expected document, ignoring JSON formatting and treating a missing authored source as empty. */

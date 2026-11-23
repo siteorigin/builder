@@ -232,6 +232,9 @@ export const OPERATION_SCHEMAS = {
   'component.removeSlot': z.object({ type: z.literal('component.removeSlot'), definitionId: z.string(), slot: z.string() }),
 
   'theme.apply': z.object({ type: z.literal('theme.apply'), themeId: z.string() }),
+  'theme.refresh': z
+    .object({ type: z.literal('theme.refresh'), definitionIds: z.array(z.string()).optional().describe('Only these definitions. Defaults to every one that can be updated.') })
+    .describe('Update installed theme components to the current theme version. Forked, project and hand-edited components are never changed.'),
 
   'asset.add': z.object({
     type: z.literal('asset.add'),

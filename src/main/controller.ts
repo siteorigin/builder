@@ -11,6 +11,7 @@ import type { ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
 import { assetUsages, sourceHash } from '@engine/apply';
+import { themeUpdates } from '@engine/theme-updates';
 import { basePath, generateManagedComponent, generatePage, defFile } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
@@ -84,6 +85,7 @@ export class Controller {
       assetUsage: safeUsages(s),
       conflicts: s.conflicts,
       readOnly: s.readOnly,
+      themeUpdates: s.readOnly ? undefined : themeUpdates(s.state),
       localState: this.localState
     };
   }

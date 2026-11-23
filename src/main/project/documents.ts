@@ -2,6 +2,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AssetsDoc, ComponentDefinition, PageDoc, ProjectManifest, ProjectState, SiteDoc, ThemeLock, TokensDoc } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
+import { migrateProject, newestDocumentVersion, type MigrationResult } from '@shared/migrations';
 import { readIfExists, safeJoin, toJson } from './fsutil';
 
 export const MANIFEST_FILE = 'siteorigin.project.json';
@@ -74,7 +75,36 @@ export interface ReadOptions {
   allowNewer?: boolean;
 }
 
+/** The project in the current format. Reading never writes: a session publishes a migration itself. */
 export async function readState(dir: string, opts: ReadOptions = {}): Promise<ProjectState> {
+  return (await readProject(dir, opts)).state;
+}
+
+export interface ReadProject {
+  state: ProjectState;
+  /** The documents as stored, before any migration. */
+  stored: ProjectState;
+  /** Set when the stored documents are in an older format than `state`. */
+  migration: MigrationResult | null;
+}
+
+export async function readProject(dir: string, opts: ReadOptions = {}): Promise<ReadProject> {
+  const stored = await readStoredState(dir, opts);
+  const newest = newestDocumentVersion(stored);
+  if (newest > SCHEMA_VERSION) {
+    if (!opts.allowNewer) throw new ProjectFormatError(`This project was created by a newer version of SiteOrigin Builder (format ${newest}). Update the app to edit it.`, true);
+    return { state: stored, stored, migration: null };
+  }
+  let migration: MigrationResult | null;
+  try {
+    migration = migrateProject(stored);
+  } catch (e) {
+    throw new ProjectFormatError(`This project could not be updated to the current format, so it was not changed: ${(e as Error).message}`);
+  }
+  return { state: migration?.state ?? stored, stored, migration };
+}
+
+async function readStoredState(dir: string, opts: ReadOptions): Promise<ProjectState> {
   const overlay = opts.overlay ?? new Map<string, string | null>();
   const text = async (rel: string): Promise<string | null> => (overlay.has(rel) ? overlay.get(rel)! : readIfExists(safeJoin(dir, rel)));
   const exists = (rel: string) => (overlay.has(rel) ? overlay.get(rel) !== null : existsSync(join(dir, rel)));

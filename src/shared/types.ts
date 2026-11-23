@@ -4,8 +4,10 @@
  * These are the authoritative, versioned authoring documents stored under `siteorigin/`.
  * Svelte routes, components and stylesheets are derived from them by the generator.
  */
+import { LATEST_SCHEMA_VERSION } from './migrations';
 
-export const SCHEMA_VERSION = 1;
+/** The current document format: one more than the number of migrations (see `./migrations`). */
+export const SCHEMA_VERSION = LATEST_SCHEMA_VERSION;
 export const GENERATOR_VERSION = '0.1.0';
 
 export type ResponsiveScope = 'base' | 'phone' | 'tablet' | 'desktop';

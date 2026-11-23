@@ -44,6 +44,7 @@ import {
   setSlot,
   setVariant
 } from './definitions';
+import { contractConflicts, themeRefresh } from './theme-updates';
 
 export type OpResult = Record<string, unknown>;
 
@@ -208,6 +209,8 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
       return removeSlot(state, op);
     case 'theme.apply':
       return themeApply(state, op.themeId);
+    case 'theme.refresh':
+      return themeRefresh(state, op);
     case 'asset.add': {
       if (state.assets.assets[op.asset.id]) fail(`Asset "${op.asset.id}" already exists.`);
       state.assets.assets[op.asset.id] = clone(op.asset);
@@ -1444,24 +1447,7 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
       conflicts.push(`${def.name}: not provided by ${theme.name}.`);
       continue;
     }
-    for (const [p, was] of Object.entries(def.properties)) {
-      const now = own(next.properties, p);
-      if (!now || now.type !== was.type) {
-        conflicts.push(`${def.name}: property "${p}" is not compatible.`);
-        continue;
-      }
-      if (was.type === 'list' && now.type === 'list') {
-        for (const [f, field] of Object.entries(was.fields)) {
-          const nf = own(now.fields, f);
-          if (!nf || nf.type !== field.type) conflicts.push(`${def.name}: "${p}" item field "${f}" is not compatible.`);
-          else if (nf.type === 'enum') for (const v of usedValues(state, def.id, p, f)) if (!nf.options.some((o) => o.value === v)) conflicts.push(`${def.name}: "${p}" item field "${f}" has no option "${String(v)}".`);
-        }
-      }
-      if (now.type === 'enum') for (const v of usedValues(state, def.id, p)) if (!now.options.some((o) => o.value === v)) conflicts.push(`${def.name}: property "${p}" has no option "${String(v)}".`);
-    }
-    for (const p of Object.keys(def.parts)) if (!own(next.parts, p)) conflicts.push(`${def.name}: part "${p}" is missing.`);
-    for (const v of Object.keys(def.variants ?? {})) if (!own(next.variants ?? {}, v)) conflicts.push(`${def.name}: variant "${v}" is missing.`);
-    for (const sl of Object.keys(def.slots ?? {})) if (!own(next.slots ?? {}, sl)) conflicts.push(`${def.name}: slot "${sl}" is missing.`);
+    conflicts.push(...contractConflicts(state, def, next));
     mapping.set(def.id, next);
   }
   if (conflicts.length) throw new EngineError('CONFLICT', `${theme.name} is not compatible with this project: ${conflicts.join(' ')}`, { conflicts });
@@ -1504,20 +1490,6 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
   return { rebound: mapping.size };
 }
 
-/** Values instances set explicitly for a property (or for one field of a list property's items). */
-function usedValues(state: ProjectState, defId: string, prop: string, field?: string): unknown[] {
-  const out = new Set<unknown>();
-  // Placements inside project components stay pinned to the old definition, so only pages and the shell count.
-  for (const { node, owner } of instancesOf(state, defId)) {
-    if (owner.kind === 'component') continue;
-    const v = node.props[prop];
-    if (v === undefined || isBinding(v)) continue;
-    if (field === undefined) out.add(v);
-    else if (Array.isArray(v)) for (const it of v as Array<Record<string, unknown>>) if (it?.[field] !== undefined && !isBinding(it[field])) out.add(it[field]);
-  }
-  return [...out];
-}
-
 export function applyOperations(state: ProjectState, ops: EditOperation[]): { state: ProjectState; results: OpResult[] } {
   const draft = clone(state);
   const results: OpResult[] = [];
@@ -1531,6 +1503,8 @@ export function applyOperations(state: ProjectState, ops: EditOperation[]): { st
       throw e;
     }
   }
+  // A theme update changes no project component, not even this derived field.
+  if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };
   // A managed project component's dependencies are the components its tree places: keep them current.
   for (const d of Object.values(draft.components)) {
     if (d.owner !== 'project' || d.kind !== 'managed' || !d.tree) continue;

@@ -1,0 +1,545 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.testimonials.grid",
+  "componentId": "testimonials.grid",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Testimonials",
+  "description": "Quotes from clients with attribution and an optional portrait.",
+  "category": "social-proof",
+  "tags": [
+    "testimonials",
+    "reviews",
+    "quotes",
+    "clients",
+    "feedback",
+    "social proof"
+  ],
+  "icon": "quote",
+  "properties": {
+    "eyebrow": {
+      "type": "string",
+      "label": "Eyebrow",
+      "default": "Kind words"
+    },
+    "heading": {
+      "type": "string",
+      "label": "Heading",
+      "default": "What our clients say"
+    },
+    "lead": {
+      "type": "string",
+      "label": "Supporting text",
+      "default": "",
+      "multiline": true
+    },
+    "items": {
+      "type": "list",
+      "label": "Testimonials",
+      "itemLabel": "Testimonial",
+      "fields": {
+        "quote": {
+          "type": "string",
+          "label": "Quote",
+          "default": "A short quote from a happy client.",
+          "multiline": true
+        },
+        "name": {
+          "type": "string",
+          "label": "Name",
+          "default": "Client name"
+        },
+        "role": {
+          "type": "string",
+          "label": "Role",
+          "default": ""
+        },
+        "portrait": {
+          "type": "image",
+          "label": "Portrait",
+          "default": {
+            "assetId": null,
+            "alt": ""
+          }
+        }
+      },
+      "default": [
+        {
+          "id": "item-1",
+          "quote": "They listened properly, explained every option and delivered exactly what was promised. The house finally works for us.",
+          "name": "Amelia Hart",
+          "role": "Homeowner, Ashford",
+          "portrait": {
+            "assetId": null,
+            "alt": ""
+          }
+        },
+        {
+          "id": "item-2",
+          "quote": "Calm, organised and genuinely good company. We would not hesitate to work with the team again.",
+          "name": "Daniel Okafor",
+          "role": "Owner, Copperline Café",
+          "portrait": {
+            "assetId": null,
+            "alt": ""
+          }
+        },
+        {
+          "id": "item-3",
+          "quote": "The attention to detail is remarkable. Every visitor asks who designed our new studio.",
+          "name": "Priya Raman",
+          "role": "Founder, Fernhill Yoga",
+          "portrait": {
+            "assetId": null,
+            "alt": ""
+          }
+        }
+      ],
+      "max": 12,
+      "titleField": "name"
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Section",
+      "styleControls": [
+        "paddingBlock",
+        "background"
+      ]
+    },
+    "heading": {
+      "nodeId": "heading",
+      "label": "Heading",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "grid": {
+      "nodeId": "grid",
+      "label": "Grid",
+      "styleControls": [
+        "columns",
+        "gap"
+      ]
+    },
+    "card": {
+      "nodeId": "card",
+      "label": "Card",
+      "styleControls": [
+        "background",
+        "border",
+        "radius",
+        "shadow"
+      ]
+    },
+    "quote": {
+      "nodeId": "quote",
+      "label": "Quote",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Default"
+    },
+    "muted": {
+      "label": "Soft background",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            }
+          }
+        }
+      }
+    },
+    "inverse": {
+      "label": "Dark",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        },
+        "eyebrow": {
+          "base": {
+            "color": {
+              "token": "color.accent"
+            }
+          }
+        },
+        "lead": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "muted",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "eyebrow": {
+        "id": "eyebrow",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "eyebrow"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.eyebrow"
+            },
+            "color": {
+              "token": "color.brand"
+            }
+          }
+        },
+        "when": {
+          "$prop": "eyebrow"
+        },
+        "name": "Eyebrow"
+      },
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "tag": "h2",
+        "text": {
+          "$prop": "heading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.h2"
+            }
+          }
+        },
+        "name": "Heading"
+      },
+      "lead": {
+        "id": "lead",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "lead"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.lead"
+            },
+            "color": {
+              "token": "color.muted"
+            }
+          }
+        },
+        "when": {
+          "$prop": "lead"
+        },
+        "name": "Lead"
+      },
+      "intro": {
+        "id": "intro",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "eyebrow",
+          "heading",
+          "lead"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.md"
+            },
+            "maxWidth": "760px",
+            "textAlign": "start"
+          }
+        },
+        "name": "Heading group"
+      },
+      "quote-mark": {
+        "id": "quote-mark",
+        "kind": "icon",
+        "icon": "quote",
+        "styles": {
+          "base": {
+            "color": {
+              "token": "color.accent"
+            },
+            "fontSize": "1.6rem"
+          }
+        },
+        "name": "Quote mark"
+      },
+      "quote": {
+        "id": "quote",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$item": "quote"
+        },
+        "styles": {
+          "base": {
+            "fontSize": "1.08rem",
+            "lineHeight": "1.6"
+          }
+        },
+        "name": "Quote"
+      },
+      "quote-block": {
+        "id": "quote-block",
+        "kind": "element",
+        "tag": "blockquote",
+        "children": [
+          "quote-mark",
+          "quote"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.md"
+            }
+          }
+        },
+        "name": "Quote block"
+      },
+      "portrait": {
+        "id": "portrait",
+        "kind": "image",
+        "image": {
+          "$item": "portrait"
+        },
+        "styles": {
+          "base": {
+            "width": "44px",
+            "minHeight": "0",
+            "aspectRatio": "1/1",
+            "radius": {
+              "token": "radius.pill"
+            },
+            "objectFit": "cover"
+          }
+        },
+        "when": {
+          "$item": "portrait"
+        },
+        "name": "Portrait"
+      },
+      "name": {
+        "id": "name",
+        "kind": "text",
+        "tag": "cite",
+        "text": {
+          "$item": "name"
+        },
+        "styles": {
+          "base": {
+            "fontWeight": "600",
+            "fontSize": "0.95rem"
+          }
+        },
+        "name": "Name"
+      },
+      "role": {
+        "id": "role",
+        "kind": "text",
+        "tag": "span",
+        "text": {
+          "$item": "role"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.small"
+            },
+            "color": {
+              "token": "color.muted"
+            }
+          }
+        },
+        "when": {
+          "$item": "role"
+        },
+        "name": "Role"
+      },
+      "person-text": {
+        "id": "person-text",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "name",
+          "role"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack"
+          }
+        },
+        "name": "Name and role"
+      },
+      "person": {
+        "id": "person",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "portrait",
+          "person-text"
+        ],
+        "styles": {
+          "base": {
+            "layout": "row",
+            "align": "center",
+            "gap": {
+              "token": "space.sm"
+            }
+          }
+        },
+        "name": "Attribution"
+      },
+      "card": {
+        "id": "card",
+        "kind": "element",
+        "tag": "li",
+        "children": [
+          "quote-block",
+          "person"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "justify": "space-between",
+            "gap": {
+              "token": "space.xl"
+            },
+            "paddingBlock": {
+              "token": "space.xl"
+            },
+            "paddingInline": {
+              "token": "space.xl"
+            },
+            "background": {
+              "token": "color.surface"
+            },
+            "color": {
+              "token": "color.text"
+            },
+            "radius": {
+              "token": "radius.lg"
+            },
+            "shadow": {
+              "token": "shadow.sm"
+            }
+          }
+        },
+        "name": "Card"
+      },
+      "quotes": {
+        "id": "quotes",
+        "kind": "repeat",
+        "list": {
+          "$prop": "items"
+        },
+        "children": [
+          "card"
+        ]
+      },
+      "grid": {
+        "id": "grid",
+        "kind": "element",
+        "tag": "ul",
+        "children": [
+          "quotes"
+        ],
+        "styles": {
+          "base": {
+            "layout": "grid",
+            "columns": 1,
+            "gap": {
+              "token": "space.lg"
+            }
+          },
+          "desktop": {
+            "columns": 3
+          }
+        },
+        "name": "Grid"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "intro",
+          "grid"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.2xl"
+            },
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "section",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.section"
+            },
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.background"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "name": "Section"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "testimonials.grid"
+  },
+  "license": "GPL-3.0-or-later"
+}

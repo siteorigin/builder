@@ -1,0 +1,372 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.content.media",
+  "componentId": "content.media",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Content with image",
+  "description": "Image beside a heading, rich text and an optional action. The image side can be swapped.",
+  "category": "content",
+  "tags": [
+    "image",
+    "text",
+    "about",
+    "story",
+    "media",
+    "split",
+    "feature"
+  ],
+  "icon": "panel-left",
+  "properties": {
+    "eyebrow": {
+      "type": "string",
+      "label": "Eyebrow",
+      "default": "Our approach"
+    },
+    "heading": {
+      "type": "string",
+      "label": "Heading",
+      "default": "Good projects start with listening"
+    },
+    "body": {
+      "type": "richtext",
+      "label": "Text",
+      "default": [
+        "Before we draw anything we spend time understanding how you live and work, what matters most and what you would happily leave behind.",
+        "That conversation shapes **every decision** that follows, from the first sketch to the final finishes."
+      ]
+    },
+    "image": {
+      "type": "image",
+      "label": "Image",
+      "default": {
+        "assetId": null,
+        "alt": "Two people reviewing plans at a table"
+      }
+    },
+    "actionLabel": {
+      "type": "string",
+      "label": "Action label",
+      "default": "More about us"
+    },
+    "actionLink": {
+      "type": "link",
+      "label": "Action link",
+      "default": {
+        "type": "none",
+        "target": ""
+      }
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Section",
+      "styleControls": [
+        "paddingBlock",
+        "background"
+      ]
+    },
+    "heading": {
+      "nodeId": "heading",
+      "label": "Heading",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "body": {
+      "nodeId": "body",
+      "label": "Text",
+      "styleControls": [
+        "textStyle",
+        "color"
+      ]
+    },
+    "media": {
+      "nodeId": "media",
+      "label": "Image",
+      "styleControls": [
+        "aspectRatio",
+        "radius",
+        "shadow"
+      ]
+    },
+    "action": {
+      "nodeId": "action",
+      "label": "Action"
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Default"
+    },
+    "muted": {
+      "label": "Soft background",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            }
+          }
+        }
+      }
+    },
+    "inverse": {
+      "label": "Dark",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        },
+        "eyebrow": {
+          "base": {
+            "color": {
+              "token": "color.accent"
+            }
+          }
+        },
+        "body": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        }
+      }
+    },
+    "media-end": {
+      "label": "Image last",
+      "styles": {
+        "media-wrap": {
+          "desktop": {
+            "order": 2
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "default",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "media": {
+        "id": "media",
+        "kind": "image",
+        "image": {
+          "$prop": "image"
+        },
+        "styles": {
+          "base": {
+            "aspectRatio": "4/3",
+            "radius": {
+              "token": "radius.lg"
+            },
+            "objectFit": "cover"
+          }
+        },
+        "name": "Image"
+      },
+      "media-wrap": {
+        "id": "media-wrap",
+        "kind": "element",
+        "tag": "figure",
+        "children": [
+          "media"
+        ],
+        "name": "Media"
+      },
+      "eyebrow": {
+        "id": "eyebrow",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "eyebrow"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.eyebrow"
+            },
+            "color": {
+              "token": "color.brand"
+            }
+          }
+        },
+        "when": {
+          "$prop": "eyebrow"
+        },
+        "name": "Eyebrow"
+      },
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "tag": "h2",
+        "text": {
+          "$prop": "heading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.h2"
+            }
+          }
+        },
+        "name": "Heading"
+      },
+      "body": {
+        "id": "body",
+        "kind": "text",
+        "tag": "div",
+        "text": {
+          "$prop": "body"
+        },
+        "rich": true,
+        "styles": {
+          "base": {
+            "color": {
+              "token": "color.muted"
+            },
+            "textStyle": {
+              "token": "text.body"
+            }
+          }
+        },
+        "name": "Text"
+      },
+      "action": {
+        "id": "action",
+        "kind": "link",
+        "link": {
+          "$prop": "actionLink"
+        },
+        "label": {
+          "$prop": "actionLabel"
+        },
+        "appearance": "secondary",
+        "styles": {
+          "base": {
+            "marginBlockStart": {
+              "token": "space.xs"
+            }
+          }
+        },
+        "when": {
+          "$prop": "actionLabel"
+        },
+        "name": "Action"
+      },
+      "content": {
+        "id": "content",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "eyebrow",
+          "heading",
+          "body",
+          "action"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.lg"
+            },
+            "align": "start"
+          }
+        },
+        "name": "Content"
+      },
+      "grid": {
+        "id": "grid",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "media-wrap",
+          "content"
+        ],
+        "styles": {
+          "base": {
+            "layout": "grid",
+            "columns": 1,
+            "gap": {
+              "token": "space.2xl"
+            },
+            "align": "center"
+          },
+          "desktop": {
+            "columns": 2,
+            "gap": {
+              "token": "space.3xl"
+            }
+          }
+        },
+        "name": "Layout"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "grid"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.2xl"
+            },
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "section",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.section"
+            },
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.background"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "name": "Section"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "content.media"
+  },
+  "license": "GPL-3.0-or-later"
+}

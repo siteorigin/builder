@@ -1,0 +1,353 @@
+{
+  "schemaVersion": 1,
+  "id": "foundation.logos.strip",
+  "componentId": "logos.strip",
+  "contractVersion": 1,
+  "kind": "managed",
+  "owner": "theme",
+  "name": "Logo strip",
+  "description": "A row of client or partner logos. Logos without an image show the name as a wordmark.",
+  "category": "social-proof",
+  "tags": [
+    "logos",
+    "clients",
+    "partners",
+    "brands",
+    "trusted by",
+    "press"
+  ],
+  "icon": "gallery-horizontal",
+  "properties": {
+    "heading": {
+      "type": "string",
+      "label": "Heading",
+      "default": "Trusted by local businesses and families"
+    },
+    "logos": {
+      "type": "list",
+      "label": "Logos",
+      "itemLabel": "Logo",
+      "fields": {
+        "name": {
+          "type": "string",
+          "label": "Name",
+          "default": "Company"
+        },
+        "logo": {
+          "type": "image",
+          "label": "Logo image",
+          "default": {
+            "assetId": null,
+            "alt": ""
+          }
+        }
+      },
+      "default": [
+        {
+          "id": "item-1",
+          "name": "Fernhill",
+          "logo": {
+            "assetId": null,
+            "alt": ""
+          }
+        },
+        {
+          "id": "item-2",
+          "name": "Copperline",
+          "logo": {
+            "assetId": null,
+            "alt": ""
+          }
+        },
+        {
+          "id": "item-3",
+          "name": "Marlow & Co",
+          "logo": {
+            "assetId": null,
+            "alt": ""
+          }
+        },
+        {
+          "id": "item-4",
+          "name": "Bright Harbour",
+          "logo": {
+            "assetId": null,
+            "alt": ""
+          }
+        },
+        {
+          "id": "item-5",
+          "name": "Oakhurst",
+          "logo": {
+            "assetId": null,
+            "alt": ""
+          }
+        }
+      ],
+      "max": 12,
+      "titleField": "name"
+    }
+  },
+  "parts": {
+    "root": {
+      "nodeId": "root",
+      "label": "Section",
+      "styleControls": [
+        "paddingBlock",
+        "background"
+      ]
+    },
+    "heading": {
+      "nodeId": "heading",
+      "label": "Heading",
+      "styleControls": [
+        "textStyle",
+        "color",
+        "textAlign"
+      ]
+    },
+    "row": {
+      "nodeId": "row",
+      "label": "Logo row",
+      "styleControls": [
+        "gap",
+        "justify"
+      ]
+    },
+    "wordmark": {
+      "nodeId": "wordmark",
+      "label": "Wordmark",
+      "styleControls": [
+        "textStyle",
+        "color",
+        "fontFamily"
+      ]
+    }
+  },
+  "variants": {
+    "default": {
+      "label": "Default"
+    },
+    "muted": {
+      "label": "Soft background",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.surface-alt"
+            }
+          }
+        }
+      }
+    },
+    "inverse": {
+      "label": "Dark",
+      "styles": {
+        "root": {
+          "base": {
+            "background": {
+              "token": "color.inverse"
+            },
+            "color": {
+              "token": "color.on-inverse"
+            }
+          }
+        },
+        "heading": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        },
+        "wordmark": {
+          "base": {
+            "color": {
+              "token": "color.on-inverse"
+            },
+            "opacity": 0.78
+          }
+        }
+      }
+    }
+  },
+  "defaultVariant": "default",
+  "tree": {
+    "rootIds": [
+      "root"
+    ],
+    "nodes": {
+      "heading": {
+        "id": "heading",
+        "kind": "text",
+        "tag": "p",
+        "text": {
+          "$prop": "heading"
+        },
+        "styles": {
+          "base": {
+            "textStyle": {
+              "token": "text.small"
+            },
+            "color": {
+              "token": "color.muted"
+            },
+            "textAlign": "center"
+          }
+        },
+        "when": {
+          "$prop": "heading"
+        },
+        "name": "Heading"
+      },
+      "logo-image": {
+        "id": "logo-image",
+        "kind": "image",
+        "image": {
+          "$item": "logo"
+        },
+        "styles": {
+          "base": {
+            "width": "auto",
+            "maxWidth": "140px",
+            "minHeight": "0",
+            "opacity": 0.75
+          }
+        },
+        "when": {
+          "$item": "logo"
+        },
+        "name": "Logo image"
+      },
+      "wordmark": {
+        "id": "wordmark",
+        "kind": "text",
+        "tag": "span",
+        "text": {
+          "$item": "name"
+        },
+        "styles": {
+          "base": {
+            "fontFamily": {
+              "token": "font.display"
+            },
+            "fontSize": "1.4rem",
+            "fontWeight": "500",
+            "letterSpacing": "-0.02em",
+            "color": {
+              "token": "color.muted"
+            }
+          }
+        },
+        "unless": {
+          "$item": "logo"
+        },
+        "name": "Wordmark"
+      },
+      "logo-item": {
+        "id": "logo-item",
+        "kind": "element",
+        "tag": "li",
+        "children": [
+          "logo-image",
+          "wordmark"
+        ],
+        "styles": {
+          "base": {
+            "layout": "row",
+            "align": "center"
+          }
+        },
+        "name": "Logo"
+      },
+      "logo-items": {
+        "id": "logo-items",
+        "kind": "repeat",
+        "list": {
+          "$prop": "logos"
+        },
+        "children": [
+          "logo-item"
+        ]
+      },
+      "row": {
+        "id": "row",
+        "kind": "element",
+        "tag": "ul",
+        "children": [
+          "logo-items"
+        ],
+        "styles": {
+          "base": {
+            "layout": "row",
+            "wrap": true,
+            "justify": "center",
+            "align": "center",
+            "gap": {
+              "token": "space.xl"
+            }
+          },
+          "desktop": {
+            "justify": "space-between"
+          }
+        },
+        "name": "Logo row"
+      },
+      "inner": {
+        "id": "inner",
+        "kind": "element",
+        "tag": "div",
+        "children": [
+          "heading",
+          "row"
+        ],
+        "styles": {
+          "base": {
+            "layout": "stack",
+            "gap": {
+              "token": "space.lg"
+            },
+            "width": "fill",
+            "maxWidth": {
+              "token": "container.content"
+            },
+            "marginInline": "auto"
+          }
+        },
+        "name": "Container"
+      },
+      "root": {
+        "id": "root",
+        "kind": "element",
+        "tag": "section",
+        "children": [
+          "inner"
+        ],
+        "styles": {
+          "base": {
+            "paddingBlock": {
+              "token": "space.2xl"
+            },
+            "paddingInline": {
+              "token": "container.gutter"
+            },
+            "background": {
+              "token": "color.background"
+            },
+            "color": {
+              "token": "color.text"
+            }
+          }
+        },
+        "name": "Section"
+      }
+    }
+  },
+  "provenance": {
+    "pack": "foundation",
+    "packVersion": "0.1.0",
+    "componentId": "logos.strip"
+  },
+  "license": "GPL-3.0-or-later"
+}

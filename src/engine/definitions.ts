@@ -38,15 +38,16 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
  * converted before conversions carried their own CSS. (Managed trees are covered by `instancesOf`.)
  */
 export function dependentsOf(state: ProjectState, defId: string): ComponentDefinition[] {
+  return Object.values(state.components).filter((d) => codeNeeds(state, d, defId));
+}
+
+/** Whether a code component's source needs `defId` (see `dependentsOf`). */
+export function codeNeeds(state: ProjectState, d: ComponentDefinition, defId: string): boolean {
+  if (d.id === defId || d.kind !== 'code') return false;
   const target = own(state.components, defId);
   const legacyClass = `so-${defKey(defId)}__`;
   const file = target ? `/${defFile(target).split('/').pop()}` : null;
-  return Object.values(state.components).filter(
-    (d) =>
-      d.id !== defId &&
-      d.kind === 'code' &&
-      ((d.dependencies ?? []).includes(defId) || (d.provenance?.forkedFrom === defId && !!d.source?.includes(legacyClass)) || (!!file && !!d.source?.includes(file)))
-  );
+  return (d.dependencies ?? []).includes(defId) || (d.provenance?.forkedFrom === defId && !!d.source?.includes(legacyClass)) || (!!file && !!d.source?.includes(file));
 }
 
 /** Overrides of a part that no longer exists style nothing; drop them from every placement. */
