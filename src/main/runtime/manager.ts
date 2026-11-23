@@ -6,6 +6,8 @@ import { existsSync, promises as fs } from 'node:fs';
 import { dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sha } from '../project/fsutil';
+import { statesFailure, type BuildErrorInfo } from '../../runtime/build-diagnostics';
+import { LineTail } from './line-tail';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -280,38 +282,89 @@ export class DevServer {
 }
 
 /** How long a build may take, and how long a build that reported an error may still finish on its own. */
-/** The last lines a build wrote to stderr, for a failure's details. */
-export function stderrTail(chunks: string[], max = 4000): string[] {
-  const text = chunks.join('').slice(-max).trim();
-  return text ? [text] : [];
-}
+export const BUILD_LIMITS = { timeoutMs: 10 * 60_000, errorGraceMs: 5_000, exitWaitMs: 3_000, streamWaitMs: 500 };
 
-export const BUILD_LIMITS = { timeoutMs: 10 * 60_000, errorGraceMs: 5_000, exitWaitMs: 3_000 };
+/** A production build's result. A failed one carries what the build threw and everything it printed. */
+export interface BuildOutcome {
+  ok: boolean;
+  error?: string;
+  /** What the build threw, with its causes, when the worker could report it. */
+  failure?: BuildErrorInfo;
+  /** On failure: the worker's own warnings, then the build's stdout and stderr. */
+  logs: string[];
+}
 
 /**
  * Run a production build of the project in a one-shot worker. It always settles: on the build's result, the
  * worker exiting, an error the worker reports without exiting, or a time limit. The worker never outlives it.
  */
-export function buildProject(dir: string): Promise<{ ok: boolean; error?: string; logs: string[] }> {
+export function buildProject(dir: string): Promise<BuildOutcome> {
   return new Promise((resolve) => {
     const proc = utilityProcess.fork(workerPath(), [], { cwd: dir, env: projectEnv({ NODE_ENV: 'production' }), serviceName: 'SiteOrigin project build', stdio: 'pipe' });
     let done = false;
     let exited = false;
     const onExit: Array<() => void> = [];
-    const errLines: string[] = [];
+    // SvelteKit prints what went wrong while prerendering straight to the process's streams, before the build throws a
+    // generic error, so both streams are kept for a failure to explain itself: their last lines, and the lines that
+    // state an error with the lines after them, which a long build's progress would otherwise push out.
+    const stdout = new LineTail(200, 2000, statesFailure);
+    const stderr = new LineTail(200, 2000, statesFailure);
     const timers: NodeJS.Timeout[] = [];
+    /** An error the worker reported without a result: it is the build's own account if the process then exits. */
+    let reported: { error: string; failure?: BuildErrorInfo } | null = null;
+    /** What the worker reported after its first error: the first is the cause, the rest is context for it. */
+    const later: string[] = [];
+    /** After the worker exits its pipes may still hold output: wait for them to end, but not for long. */
+    const drained = () =>
+      new Promise<void>((resume) => {
+        const open = [proc.stdout, proc.stderr].filter((s): s is NonNullable<typeof s> => !!s && (s as { readable?: boolean }).readable === true && !(s as { readableEnded?: boolean }).readableEnded);
+        if (!open.length) return resume();
+        let left = open.length;
+        const cleanups: Array<() => void> = [];
+        const stop = () => {
+          clearTimeout(limit);
+          for (const c of cleanups.splice(0)) c();
+          resume();
+        };
+        const limit = setTimeout(stop, BUILD_LIMITS.streamWaitMs);
+        for (const s of open) {
+          let ended = false;
+          const end = () => {
+            if (ended) return;
+            ended = true;
+            if (--left === 0) stop();
+          };
+          s.once('end', end);
+          s.once('close', end);
+          cleanups.push(() => {
+            s.off('end', end);
+            s.off('close', end);
+          });
+        }
+      });
     /** Settle once the worker is gone (or has not left after a few seconds), so callers can clean up its folder. */
-    const finish = (outcome: { ok: boolean; error?: string; logs: string[] }, withStderr = false) => {
+    const finish = (outcome: BuildOutcome) => {
       if (done) return;
       done = true;
       for (const t of timers) clearTimeout(t);
-      // stderr can still be arriving when the worker reports, so it is read only once the worker has gone.
-      const result = () => (withStderr ? { ...outcome, logs: [...outcome.logs, ...stderrTail(errLines)] } : outcome);
-      if (exited) return resolve(result());
-      const settle = setTimeout(() => resolve(result()), BUILD_LIMITS.exitWaitMs);
+      // The streams can still be delivering when the worker reports, so they are read only once the worker has gone.
+      const result = (): BuildOutcome => (outcome.ok ? outcome : { ...outcome, logs: [...outcome.logs, ...later, ...stdout.read(), ...stderr.read()] });
+      let settled = false;
+      const settle = (wait: boolean) => {
+        if (settled) return;
+        settled = true;
+        void (wait ? drained() : Promise.resolve()).then(() => {
+          resolve(result());
+          // Nothing reads what the pipes still carry once the result is out.
+          proc.stdout?.off('data', onOut);
+          proc.stderr?.off('data', onErr);
+        });
+      };
+      if (exited) return settle(true);
+      const stuck = setTimeout(() => settle(false), BUILD_LIMITS.exitWaitMs);
       onExit.push(() => {
-        clearTimeout(settle);
-        resolve(result());
+        clearTimeout(stuck);
+        settle(true);
       });
       try {
         proc.kill();
@@ -319,20 +372,33 @@ export function buildProject(dir: string): Promise<{ ok: boolean; error?: string
         /* already gone */
       }
     };
-    proc.stderr?.on('data', (d) => errLines.push(String(d)));
-    proc.on('message', (m: { type: string; ok?: boolean; error?: string; message?: string; logs?: string[] }) => {
-      // A failed build often explains itself only on stderr (the static build lists links to missing sections there).
-      if (m.type === 'built') finish({ ok: !!m.ok, error: m.error, logs: m.logs ?? [] }, !m.ok);
+    const onOut = (d: string | Uint8Array) => stdout.write(d);
+    const onErr = (d: string | Uint8Array) => stderr.write(d);
+    proc.stdout?.on('data', onOut);
+    proc.stderr?.on('data', onErr);
+    proc.on('message', (m: { type: string; ok?: boolean; error?: string; failure?: BuildErrorInfo; message?: string; logs?: string[] }) => {
+      if (done) return;
+      // A failed build often explains itself only on its streams (the static build lists links to missing sections there).
+      if (m.type === 'built') {
+        // An exception the worker reported earlier is the cause when the result only says the build failed.
+        const failure = !m.ok && reported?.failure ? (m.failure ? { ...m.failure, cause: m.failure.cause ?? reported.failure } : reported.failure) : m.failure;
+        finish({ ok: !!m.ok, error: m.error, failure, logs: m.logs ?? [] });
+      }
       else if (m.type === 'error') {
         // The worker hit an error it could not hand back as a result (an uncaught exception, a failed plugin).
         // Give the build a moment in case it still completes, then stop waiting for it.
         const detail = String(m.message ?? '').split('\n').slice(0, 6).join('\n');
-        timers.push(setTimeout(() => finish({ ok: false, error: `The build stopped with an error: ${detail}`, logs: [] }), BUILD_LIMITS.errorGraceMs));
+        if (reported) later.push(detail);
+        else {
+          reported = { error: `The build stopped with an error: ${detail}`, failure: m.failure };
+          timers.push(setTimeout(() => finish({ ok: false, ...reported!, logs: [] }), BUILD_LIMITS.errorGraceMs));
+        }
       }
     });
     proc.on('exit', (code) => {
       exited = true;
-      finish({ ok: false, error: `Build process exited (${code}). ${errLines.join('').slice(-800)}`, logs: [] });
+      // An error the worker reported just before it went is the cause; the exit code only adds to it.
+      finish(reported ? { ok: false, ...reported, logs: [`Build process exited (${code}).`] } : { ok: false, error: `Build process exited (${code}).`, logs: [] });
       for (const fn of onExit.splice(0)) fn();
     });
     timers.push(setTimeout(() => finish({ ok: false, error: 'The build took too long and was stopped.', logs: [] }), BUILD_LIMITS.timeoutMs));

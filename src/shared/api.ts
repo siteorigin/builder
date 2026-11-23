@@ -139,6 +139,8 @@ export interface ExportResult {
   path?: string;
   message: string;
   warnings: string[];
+  /** A failed website build: a report of everything it said, for the author to read and copy into a support request. */
+  details?: string;
   revision?: number;
   previewUrl?: string;
   /** The library image the export stopped for, so the author can open it in Assets. */

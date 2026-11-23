@@ -6,6 +6,7 @@
 import { createRequire } from 'node:module';
 import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { maskSecrets, serializeBuildError } from './build-diagnostics';
 import { devPlugin } from './dev-plugin';
 import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, previewFsPolicy } from './policy';
 
@@ -77,30 +78,65 @@ async function start(dir: string, wantedPort = 0, packaged = true) {
   post({ type: 'ready', url: `http://127.0.0.1:${bound}` });
 }
 
+/** How many of Vite's own progress lines a failed build keeps, so the lines just before the failure explain it. */
+const INFO_KEPT = 60;
+/** What a failed build keeps of its warnings and errors: each entry's start, and the last few hundred entries. */
+const LOG_ENTRY = 4000;
+const LOG_KEPT = 300;
+const LOG_ERRORS = 100;
+
+function keep(list: string[], message: string, max = LOG_KEPT) {
+  // Masked before it is cut, so a credential cannot be left half-hidden at the cut.
+  const text = maskSecrets(message);
+  list.push(text.length > LOG_ENTRY ? `${text.slice(0, LOG_ENTRY)}…` : text);
+  if (list.length > max) list.shift();
+}
+
+/** Let what the build wrote to its own streams leave the process before it reports and exits. */
+async function flushOutput() {
+  const flush = (stream: NodeJS.WriteStream) =>
+    new Promise<void>((done) => {
+      try {
+        stream.write('', () => done());
+      } catch {
+        done();
+      }
+    });
+  await Promise.race([Promise.all([flush(process.stdout), flush(process.stderr)]), new Promise((done) => setTimeout(done, 2000))]);
+}
+
 async function build(dir: string) {
-  const vite = await loadVite(dir);
   const logs: string[] = [];
+  // Errors keep their own room, so a flood of warnings cannot push one out.
+  const errors: string[] = [];
+  // Progress lines are only read when the build fails; a successful build reports warnings and errors alone.
+  const info: string[] = [];
   try {
+    // Finding the project and loading its Vite are part of the build: a failure there is a build failure.
+    const real = useRealProjectDir(dir);
+    const vite = await loadVite(real);
     // Multi-environment build, equivalent to the `vite build` command.
     const builder = await vite.createBuilder({
-      root: dir,
-      configFile: join(dir, 'vite.config.js'),
+      root: real,
+      configFile: join(real, 'vite.config.js'),
       logLevel: 'warn',
       clearScreen: false,
       customLogger: {
-        info: () => {},
-        warn: (m: string) => logs.push(m),
-        warnOnce: (m: string) => logs.push(m),
-        error: (m: string) => logs.push(m),
+        info: (m: string) => keep(info, m, INFO_KEPT),
+        warn: (m: string) => keep(logs, m),
+        warnOnce: (m: string) => keep(logs, m),
+        error: (m: string) => keep(errors, m, LOG_ERRORS),
         clearScreen: () => {},
         hasErrorLogged: () => false,
         hasWarned: false
       }
     } as never);
     await builder.buildApp();
-    post({ type: 'built', ok: true, logs });
+    post({ type: 'built', ok: true, logs: [...logs, ...errors] });
   } catch (e) {
-    post({ type: 'built', ok: false, error: (e as Error).message, logs });
+    const failure = serializeBuildError(e);
+    await flushOutput();
+    post({ type: 'built', ok: false, error: failure.message, failure, logs: [...info, ...logs, ...errors] });
   }
 }
 
@@ -110,7 +146,7 @@ port.on('message', async (ev) => {
     if (m.type === 'start') await start(useRealProjectDir(m.dir), m.port, m.packaged !== false);
     else if (m.type === 'revision') server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision } });
     else if (m.type === 'build') {
-      await build(useRealProjectDir(m.dir));
+      await build(m.dir);
       process.exit(0);
     } else if (m.type === 'stop') {
       await server?.close();
@@ -121,5 +157,10 @@ port.on('message', async (ev) => {
   }
 });
 
-process.on('uncaughtException', (e) => post({ type: 'error', message: e.stack ?? String(e) }));
-process.on('unhandledRejection', (e) => post({ type: 'error', message: String((e as Error)?.stack ?? e) }));
+/** An error nothing caught: reported as the serializer read it, since reading it again could throw. */
+function reportUncaught(e: unknown) {
+  const failure = serializeBuildError(e);
+  post({ type: 'error', message: failure.stack ?? failure.message, failure });
+}
+process.on('uncaughtException', reportUncaught);
+process.on('unhandledRejection', reportUncaught);
