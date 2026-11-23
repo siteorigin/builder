@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Check, ChevronRight, Folder, FolderOpen, LayoutTemplate, MousePointerClick, Plus, Settings, ShieldAlert, Upload, X } from 'lucide-react';
 import type { ProgressEvent, RecentProject } from '@shared/api';
-import { api, setState, toast, useStore } from './store';
+import { api, errorText, setState, toast, useStore } from './store';
 import { Field, Modal, openDialogs, Spinner, SwitchRow } from './components/ui';
 import { SettingsModal } from './panels/SettingsModal';
 import { AppMark } from './components/AppMark';
@@ -51,11 +51,17 @@ export function Welcome() {
 
   const open = async (dir?: string) => {
     setOpening(dir ?? 'dialog');
-    const r = await api.projects.open(dir);
-    setOpening(null);
-    if (r.needsTrust) setTrust(r.needsTrust);
-    else if (!r.ok && r.message) toast(r.message, 'error');
-    refresh();
+    try {
+      const r = await api.projects.open(dir);
+      if (r.needsTrust) setTrust(r.needsTrust);
+      else if (!r.ok && r.message) toast(r.message, 'error');
+    } catch (e) {
+      // Whatever went wrong, the author sees it and can choose another project straight away.
+      toast(`Could not open the project: ${errorText(e)}`, 'error');
+    } finally {
+      setOpening(null);
+      refresh();
+    }
   };
 
   return (
@@ -199,10 +205,15 @@ export function Welcome() {
                 onClick={async () => {
                   const t = trust;
                   setTrusting(true);
-                  const r = await api.projects.trustAndOpen(t.dir);
-                  setTrusting(false);
-                  setTrust(null);
-                  if (!r.ok && r.message) toast(r.message, 'error');
+                  try {
+                    const r = await api.projects.trustAndOpen(t.dir);
+                    if (!r.ok && r.message) toast(r.message, 'error');
+                  } catch (e) {
+                    toast(`Could not open the project: ${errorText(e)}`, 'error');
+                  } finally {
+                    setTrusting(false);
+                    setTrust(null);
+                  }
                 }}
               >
                 {trusting ? <Spinner decorative /> : null}

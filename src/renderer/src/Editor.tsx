@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { Check, Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs } from './components/ui';
-import { api, applyOps, getState, saveLocal, setState, toast, useStore } from './store';
+import { api, applyOps, errorText, getState, saveLocal, setState, toast, useStore } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas } from './panels/Canvas';
 import { HealthModal, StatusBar } from './panels/StatusBar';
@@ -273,7 +273,7 @@ export function Editor() {
             setState({ welcomeIntent: { kind: 'trust', ...r.needsTrust } });
             void api.projects.close();
           } else if (!r.ok && r.message) toast(r.message, 'error');
-        });
+        }).catch((e) => toast(`Could not open the project: ${errorText(e)}`, 'error'));
       if (cmd === 'new-project') {
         setState({ welcomeIntent: { kind: 'new' } });
         void api.projects.close();

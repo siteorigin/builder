@@ -130,6 +130,12 @@ export function persistChatState(s: State, prev: State) {
   if (out) void api.project.saveLocalState(out.patch, out.key);
 }
 
+/** The readable part of an error from the main process (Electron prefixes rejected IPC calls). */
+export function errorText(e: unknown): string {
+  const m = e instanceof Error ? e.message : String(e);
+  return m.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
+}
+
 let toastId = 0;
 export function toast(text: string, kind: Toast['kind'] = 'info', action?: Toast['action']) {
   const id = ++toastId;

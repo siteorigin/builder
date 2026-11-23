@@ -46,6 +46,30 @@ async function configHash(dir: string): Promise<string> {
   return sha(parts.map((p) => p ?? '').join('\n--\n'));
 }
 
+/**
+ * Read just enough of a project's manifest to name it. A missing, empty, truncated or otherwise unreadable
+ * manifest comes back as a message naming the file and folder; nothing is thrown and nothing is changed.
+ */
+export async function readManifestSummary(dir: string): Promise<{ ok: true; name: string } | { ok: false; message: string }> {
+  const where = `${MANIFEST_FILE} in "${dir}"`;
+  let text: string | null;
+  try {
+    text = await readIfExists(join(dir, MANIFEST_FILE));
+  } catch (e) {
+    return { ok: false, message: `Could not read ${where}: ${(e as Error).message}` };
+  }
+  if (text === null) return { ok: false, message: `That folder is not a SiteOrigin Builder project. Choose a folder that contains ${MANIFEST_FILE}.` };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, message: `${where} is incomplete or damaged, so the project was not opened. If it was copied or downloaded, replace it with a complete copy and try again, or choose another project. The folder was not changed.` };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, message: `${where} is not a valid project file, so the project was not opened. The folder was not changed.` };
+  const name = (parsed as { name?: unknown }).name;
+  return { ok: true, name: typeof name === 'string' && name.trim() ? name : basename(dir) };
+}
+
 export class Controller {
   session: ProjectSession | null = null;
   dev: DevServer | null = null;
@@ -181,6 +205,15 @@ export class Controller {
   }
 
   async open(dirArg?: string): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }> {
+    // Every exit is a structured result: a thrown error would reject the IPC call and leave the Welcome screen busy.
+    try {
+      return await this.openChosen(dirArg);
+    } catch (e) {
+      return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
+    }
+  }
+
+  private async openChosen(dirArg?: string): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }> {
     let dir = dirArg;
     if (!dir) {
       const win = this.getWindow();
@@ -193,17 +226,23 @@ export class Controller {
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
     dir = canonicalDir(dir);
-    if (!(await isTrusted(dir, await configHash(dir)))) {
-      const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_FILE))) ?? '{}');
-      return { ok: false, needsTrust: { dir, name: manifest.name ?? basename(dir) } };
-    }
+    // A manifest that cannot be read (a truncated copy, say) is reported before anything else, trusted or not.
+    const manifest = await readManifestSummary(dir);
+    if (!manifest.ok) return { ok: false, message: manifest.message };
+    if (!(await isTrusted(dir, await configHash(dir)))) return { ok: false, needsTrust: { dir, name: manifest.name } };
     return this.openTrusted(dir);
   }
 
-  async trustAndOpen(opened: string) {
-    const dir = canonicalDir(opened);
-    await trust(dir, await configHash(dir));
-    return this.openTrusted(dir);
+  async trustAndOpen(opened: string): Promise<{ ok: boolean; message?: string }> {
+    try {
+      const dir = canonicalDir(opened);
+      const manifest = await readManifestSummary(dir);
+      if (!manifest.ok) return { ok: false, message: manifest.message };
+      await trust(dir, await configHash(dir));
+      return await this.openTrusted(dir);
+    } catch (e) {
+      return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
+    }
   }
 
   private async openTrusted(dir: string, opts: { force?: boolean } = {}): Promise<{ ok: boolean; message?: string }> {
