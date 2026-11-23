@@ -868,7 +868,10 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           <DraftInput
             value={page.title}
             onCommit={(v) => {
-              if (!v.trim()) return setTitleError(`A page needs a title. Kept “${page.title}”.`);
+              if (!v.trim()) {
+                setTitleError(`A page needs a title. Kept “${page.title}”.`);
+                return false;
+              }
               setTitleError(null);
               upd({ title: v.trim() }, 'Rename page');
             }}

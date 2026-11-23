@@ -212,7 +212,7 @@ function SizeControl({ value, name, id, onCommit, cssToggle = true }: { value: s
           ariaLabel={`${name}, ${label.toLowerCase()}, in pixels`}
           onCommit={(s) => {
             const n = parseNum(s);
-            if (n === null) return;
+            if (n === null) return false;
             const next = [...parts];
             next[i] = fromPx(n, unitOf(parts[i]));
             onCommit(`clamp(${next.join(', ')})`);
@@ -233,11 +233,11 @@ function SizeControl({ value, name, id, onCommit, cssToggle = true }: { value: s
         </div>
       ) : simple ? (
         <span className="ss-num">
-          <DraftInput id={id} className="input sm" value={String(px)} ariaLabel={`${name}, in pixels`} onCommit={(s) => { const n = parseNum(s); if (n !== null) onCommit(fromPx(n, unitOf(value))); }} />
+          <DraftInput id={id} className="input sm" value={String(px)} ariaLabel={`${name}, in pixels`} onCommit={(s) => { const n = parseNum(s); if (n === null) return false; onCommit(fromPx(n, unitOf(value))); }} />
           <span className="ss-unit">px</span>
         </span>
       ) : (
-        <DraftInput id={id} className="input sm mono" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => v.trim() && onCommit(v.trim())} />
+        <DraftInput id={id} className="input sm mono" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => (v.trim() ? onCommit(v.trim()) : false)} />
       )}
       {(range || px !== null) && (cssToggle || range || asCss) && (
         <div className="ss-size-note">
@@ -257,7 +257,7 @@ function ShadowControl({ value, name, onCommit }: { value: string; name: string;
   const [open, setOpen] = useState(false);
   return (
     <div className="ss-size">
-      {open && <DraftInput multiline rows={2} className="textarea mono ss-css-area" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => v.trim() && onCommit(v.replace(/\s+/g, ' ').trim())} />}
+      {open && <DraftInput multiline rows={2} className="textarea mono ss-css-area" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => (v.trim() ? onCommit(v.replace(/\s+/g, ' ').trim()) : false)} />}
       <button className="link-btn ss-css-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
         {open ? 'Hide CSS' : 'Edit as CSS'}
         <span className="sr-only"> for {name}</span>
@@ -270,12 +270,12 @@ function ShadowControl({ value, name, onCommit }: { value: string; name: string;
 function BorderControl({ value, name, colors, onCommit }: { value: string; name: string; colors: TokenDef[]; onCommit: (v: string) => void }) {
   const m = /^(\d*\.?\d+)px\s+(solid|dashed|dotted|double)\s+var\((--so-[a-z0-9-]+)\)$/i.exec(value.trim());
   const color = m ? colors.find((c) => tokenVar(c.id) === m[3]) : undefined;
-  if (!m || !color) return <DraftInput className="input sm mono" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => v.trim() && onCommit(v.trim())} />;
+  if (!m || !color) return <DraftInput className="input sm mono" value={value} ariaLabel={`${name} as CSS`} onCommit={(v) => (v.trim() ? onCommit(v.trim()) : false)} />;
   const build = (w: string, s: string, c: string) => `${w}px ${s} var(${tokenVar(c)})`;
   return (
     <div className="ss-border">
       <label className="ss-num">
-        <DraftInput className="input sm" value={m[1]} ariaLabel={`${name} width, in pixels`} onCommit={(s) => { const n = parseNum(s); if (n !== null) onCommit(build(String(n), m[2], color.id)); }} />
+        <DraftInput className="input sm" value={m[1]} ariaLabel={`${name} width, in pixels`} onCommit={(s) => { const n = parseNum(s); if (n === null) return false; onCommit(build(String(n), m[2], color.id)); }} />
         <span className="ss-unit">px</span>
       </label>
       <select className="select sm" value={m[2].toLowerCase()} aria-label={`${name} line`} onChange={(e) => onCommit(build(m[1], e.target.value, color.id))}>
@@ -520,7 +520,7 @@ export function SiteStyles() {
             {value}
           </span>
         ) : (
-          <DraftInput className="input sm mono ss-hex" value={value} onCommit={(v) => v.trim() && set(t.id, v.trim())} ariaLabel={`${t.label} color value`} />
+          <DraftInput className="input sm mono ss-hex" value={value} onCommit={(v) => (v.trim() ? set(t.id, v.trim()) : false)} ariaLabel={`${t.label} color value`} />
         )}
         {!compact && (
           <div className="ss-detail" id={detailId} hidden={!open}>
@@ -710,8 +710,8 @@ export function SiteStyles() {
                 </select>
               ))}
               <div className="grid-2">
-                {metric('lineHeight', (id) => <DraftInput id={id} className="input sm" value={v.lineHeight} onCommit={(lineHeight) => lineHeight.trim() && set(t.id, { lineHeight: lineHeight.trim() })} />)}
-                {metric('tracking', (id) => <DraftInput id={id} className="input sm" value={v.tracking} onCommit={(tracking) => tracking.trim() && set(t.id, { tracking: tracking.trim() })} />)}
+                {metric('lineHeight', (id) => <DraftInput id={id} className="input sm" value={v.lineHeight} onCommit={(lineHeight) => (lineHeight.trim() ? set(t.id, { lineHeight: lineHeight.trim() }) : false)} />)}
+                {metric('tracking', (id) => <DraftInput id={id} className="input sm" value={v.tracking} onCommit={(tracking) => (tracking.trim() ? set(t.id, { tracking: tracking.trim() }) : false)} />)}
               </div>
               {textUse && (
                 <div className="ss-uses-block">
@@ -934,7 +934,7 @@ export function SiteStyles() {
 
       <Section title="Site details" id="site-settings" defaultOpen={false}>
         <Field label="Site name">
-          <DraftInput value={site.name} onCommit={(v) => v.trim() && updSite({ name: v.trim() })} />
+          <DraftInput value={site.name} onCommit={(v) => (v.trim() ? updSite({ name: v.trim() }) : false)} />
         </Field>
         <Field label="Default description" hint="Used by pages without their own description.">
           <DraftInput multiline value={site.description} onCommit={(v) => updSite({ description: v })} />

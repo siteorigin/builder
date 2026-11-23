@@ -5,8 +5,9 @@ import { api, saveLocal, setState, toast, useStore } from '../store';
 import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
-import { useTransitionAnnouncement } from '../lib/announce';
+import { saveStatusAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
 import { toolbarTier } from '../lib/layout';
+import { closeProject } from '../lib/leave';
 
 const ZOOMS = [0.5, 0.75, 1, 1.25];
 
@@ -24,22 +25,8 @@ export function Toolbar() {
   const dockOpen = useStore((s) => s.dockOpen);
   const hasConflict = useStore((s) => (s.snapshot?.conflicts.length ?? 0) > 0);
   const menu = useMenu();
-  // Screen readers hear settled changes only: a save completing, an AI check starting or finishing, a
-  // conflict appearing or clearing. Typing and the Unsaved/Saving flicker in between stay quiet.
-  const settled = hasConflict ? 'conflict' : runStatus ? 'ai' : drafting || pending ? 'busy' : 'saved';
-  const announce = useTransitionAnnouncement(settled, (prev, next) =>
-    next === 'conflict'
-      ? 'File conflict. A project file was changed outside SiteOrigin Builder.'
-      : next === 'ai'
-        ? 'AI is checking its changes'
-        : next === 'busy'
-          ? null
-          : prev === 'conflict'
-            ? 'File conflict resolved. All changes saved'
-            : prev === 'ai'
-              ? 'AI changes saved'
-              : 'All changes saved'
-  );
+  const settled: SaveStatus = hasConflict ? 'conflict' : runStatus ? 'ai' : drafting || pending ? 'busy' : 'saved';
+  const announce = useTransitionAnnouncement(settled, saveStatusAnnouncement);
   // The width field keeps a draft while typing, so intermediate values like "3" on the way to "390" are allowed.
   const [widthDraft, setWidthDraft] = useState(String(viewport));
   useEffect(() => setWidthDraft(String(viewport)), [viewport]);
@@ -167,7 +154,7 @@ export function Toolbar() {
                   { label: 'Duplicate project…', icon: <Copy />, onSelect: () => void api.projects.duplicate().then((r) => r.ok && toast(`Duplicated to ${r.dir}`)) },
                   { label: 'History…', icon: <History />, onSelect: () => setState({ modal: { kind: 'history' } }) },
                   { separator: true },
-                  { label: 'Close project', icon: <LogOut />, shortcut: keys('⇧⌘W'), onSelect: () => void api.projects.close() }
+                  { label: 'Close project', icon: <LogOut />, shortcut: keys('⇧⌘W'), onSelect: () => void closeProject() }
                 ],
                 state.site.name
               )

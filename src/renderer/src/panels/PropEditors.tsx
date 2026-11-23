@@ -4,6 +4,7 @@ import type { GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
+import { isSettling } from '../lib/pending';
 import { assetUrl } from '../lib/model';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import { pageIds, pageSections, planSectionPick, sharedPageIds } from '@generator/checks';
@@ -52,7 +53,8 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { s
       <span
         className="grow"
         style={{ display: 'flex', minWidth: 0 }}
-        onBlur={() => backToList(false)}
+        // While the project is being left, a refused ID stays in its field, for Keep editing to return to.
+        onBlur={() => !isSettling() && backToList(false)}
         onKeyDown={(e) => {
           if (e.key === 'Escape') (e.stopPropagation(), backToList(true));
         }}
@@ -65,7 +67,10 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { s
           autoFocus
           onCommit={(t) => {
             const a = t.trim().replace(/^#/, '');
-            if (a && !/^[A-Za-z][\w-]{0,60}$/.test(a)) return toast('Section IDs start with a letter and use letters, numbers, - and _.', 'error');
+            if (a && !/^[A-Za-z][\w-]{0,60}$/.test(a)) {
+              toast('Section IDs start with a letter and use letters, numbers, - and _.', 'error');
+              return false;
+            }
             backToList(true);
             if (a !== value) onPick(a);
           }}

@@ -229,13 +229,15 @@ export interface BuilderApi {
     cancelCreate(): Promise<void>;
     open(dir?: string): Promise<{ ok: boolean; message?: string; needsTrust?: { dir: string; name: string } }>;
     trustAndOpen(dir: string): Promise<{ ok: boolean; message?: string }>;
-    close(): Promise<void>;
+    /** ok is false when the author chose to keep editing a change that could not be saved. */
+    close(): Promise<{ ok: boolean }>;
     duplicate(): Promise<{ ok: boolean; message?: string; dir?: string }>;
     reveal(path?: string): Promise<void>;
   };
   project: {
     snapshot(): Promise<ProjectSnapshot | null>;
-    apply(batch: EditBatch, opts?: { label?: string; coalesceKey?: string }): Promise<ApplyResult>;
+    /** `opening` is the snapshot's workspaceKey of the project the change was made in: any other refuses it. */
+    apply(batch: EditBatch, opts?: { label?: string; coalesceKey?: string; opening?: string }): Promise<ApplyResult>;
     /** Copy page content as it is now, for a later `node.paste` with the returned clipboard ID. */
     copy(pageId: string, nodeId: string, expectedRevision: number): Promise<{ ok: boolean; clipboardId?: string; message?: string }>;
     undo(): Promise<ApplyResult>;
@@ -284,7 +286,11 @@ export interface BuilderApi {
   on(channel: 'appearance', cb: (dark: boolean) => void): () => void;
   on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number }) => void): () => void;
   on(channel: 'menu:command', cb: (cmd: string) => void): () => void;
+  /** The app is about to leave the project (close, switch, close the window, quit): settle edits, then answer with leaveResult. */
+  on(channel: 'lifecycle:request', cb: (req: { requestId: string }) => void): () => void;
   on(channel: 'input:key', cb: (k: { key: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
+  /** 'asking' while the author decides about a change that cannot be saved; then 'leave' or 'stay'. */
+  leaveResult(requestId: string, answer: 'leave' | 'stay' | 'asking'): void;
   pathForFile(file: File): string;
 }

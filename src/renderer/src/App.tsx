@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, useStore } from './store';
+import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, toast, useStore } from './store';
 import { cleanDrafts, moveDraft, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
@@ -8,6 +8,7 @@ import { runInspection } from './lib/inspect';
 import { restorePanelWidth } from './lib/layout';
 import { forgetCopy, handleShortcut } from './Editor';
 import { inlineEdit } from './panels/Canvas';
+import { endEditingHold, prepareToLeave, projectClosed } from './lib/leave';
 
 export function App() {
   const screen = useStore((s) => s.screen);
@@ -31,7 +32,20 @@ export function App() {
       api.on('project:closed', () => {
         forgetCopy();
         opened++;
+        projectClosed();
         setState({ screen: 'welcome', snapshot: null, selection: null, conversation: null, chatDrafts: {}, definitionMode: null });
+      }),
+      // Before the project is closed, switched or the app quits: save what is being typed, or ask the author.
+      api.on('lifecycle:request', ({ requestId }) => {
+        void prepareToLeave(() => api.leaveResult(requestId, 'asking')).then(
+          (leave) => api.leaveResult(requestId, leave ? 'leave' : 'stay'),
+          // Something went wrong while saving: never treat that as permission to drop what was typed.
+          (e: unknown) => {
+            endEditingHold();
+            toast(`Your changes could not be checked before leaving${e instanceof Error ? `: ${e.message}` : '.'} Try again.`, 'error');
+            api.leaveResult(requestId, 'stay');
+          }
+        );
       }),
       api.on('runtime:status', (runtime) => setState({ runtime })),
       api.on('ai:event', applyAiEvent),
@@ -40,7 +54,9 @@ export function App() {
       // While the preview frame has focus, the editor's own keydown handler cannot see keys; the main
       // process forwards the real key presses instead.
       api.on('input:key', (k) => {
-        if (getState().screen !== 'editor' || inlineEdit.active || document.activeElement?.tagName !== 'IFRAME') return;
+        if (getState().screen !== 'editor' || document.activeElement?.tagName !== 'IFRAME') return;
+        // While text is edited on the page, only Save acts: it hands that text back and saves it.
+        if (inlineEdit.active && !((k.meta || k.ctrl) && k.key.toLowerCase() === 's')) return;
         handleShortcut(k.key, k.meta || k.ctrl, k.shift);
       }),
       useStore.subscribe(persistChatState)

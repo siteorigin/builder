@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Box, Component, Copy, Ellipsis, Eye, GripVertical, Image, Link2, PanelRight, Pencil, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { applyOps } from '../store';
+import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
@@ -104,6 +105,11 @@ export function Canvas() {
   const frameH = Math.max(300, (size.h - 70) / zoom);
 
   const post = (type: string, payload: unknown = {}) => postToFrame(frameRef.current, origin, session, type, payload);
+  // Saving or leaving the project asks the preview to hand back an inline edit that is still open.
+  useEffect(() => {
+    setCanvasCommit(() => post('commitTextEdit'));
+    return () => setCanvasCommit(null);
+  });
 
   // Reset the frame whenever the preview server changes.
   useEffect(() => {
@@ -116,7 +122,7 @@ export function Canvas() {
     if (editId === undefined) pendingEdits.current.clear();
     else pendingEdits.current.delete(editId);
     inlineEdit.active = pendingEdits.current.size > 0;
-    markDraft('canvas-text', inlineEdit.active);
+    markDraft(CANVAS_DRAFT, inlineEdit.active);
   }
   // A new page load (another server, Try again) or closing the editor ends any edit the old page had open.
   useEffect(() => {
@@ -190,7 +196,7 @@ export function Canvas() {
             const editId = Math.random().toString(36).slice(2);
             pendingEdits.current.set(editId, { ref, desc: JSON.stringify([desc.ctx, desc.node, desc.items]) });
             inlineEdit.active = true;
-            markDraft('canvas-text', true);
+            markDraft(CANVAS_DRAFT, true);
             post('beginTextEdit', { desc, editId });
           } else if (ref) {
             setState({ selection: ref, rightTab: 'inspect' });
@@ -216,18 +222,32 @@ export function Canvas() {
           const dom = p.rich !== undefined ? richDom(p.rich) : null;
           const rich = dom ? blocksFromDom(dom, getState().snapshot?.state.pages ?? {}) : null;
           const value = rich ? rich.blocks : p.rich === undefined && typeof p.text === 'string' && p.text.length <= 20000 ? p.text : null;
-          if (rich?.droppedLinks) toast('A link pointed to something that is not a page, web address, email or phone number, so it was removed.', 'error');
+          if (rich?.droppedLinks) {
+            toast('A link pointed to something that is not a page, web address, email or phone number, so it was removed.', 'error');
+            reportRefused('A link pointed to something that is not a page, web address, email or phone number, so it was removed.');
+          }
           if (value === null || (Array.isArray(value) && value.length > 500)) {
             toast('That text change could not be saved. Try editing it in the inspector.', 'error');
+            reportRefused('That text change could not be saved. Try editing it in the inspector.');
             break;
           }
           void commitText(edit.ref, value);
           break;
         }
+        case 'linkDropped':
+          // Saving or leaving handed back the text without the link still being typed there.
+          if (pendingEdits.current.has(String(p.editId))) {
+            toast('The link you were typing on the page was not applied, so it was left out.', 'error');
+            reportRefused('The link you were typing on the page was not applied, so it was left out.');
+          }
+          break;
         case 'textCancel':
           if (!pendingEdits.current.has(String(p.editId))) break;
           endInlineEdit(String(p.editId));
-          if (p.reason === 'too-large') toast('That text is too long to edit on the page. Edit it in the inspector instead.', 'error');
+          if (p.reason === 'too-large') {
+            toast('That text is too long to edit on the page. Edit it in the inspector instead.', 'error');
+            reportRefused('That text is too long to edit on the page. Edit it in the inspector instead.');
+          }
           break;
         case 'key':
           // Ignored: shortcuts are taken from trusted keyboard input (see App), never from the page.

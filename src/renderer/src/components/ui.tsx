@@ -4,6 +4,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, X } from 'lucide-react';
 import { getConfirm, markDraft, onConfirmChange, useStore } from '../store';
+import { afterSettle, isSettling, reportRefused } from '../lib/pending';
 
 const setToasts = (toasts: ReturnType<typeof useStore.getState>['toasts']) => useStore.setState({ toasts });
 
@@ -574,7 +575,8 @@ export function SwitchRow({ checked, onChange, label, hint }: { checked: boolean
   );
 }
 
-/** Text input that commits on blur/Enter and keeps a local draft while focused. */
+/** Text input that commits on blur/Enter and keeps a local draft while focused. `onCommit` returns false when
+ *  it refuses the value (its own check, such as a page with no title), so leaving the project can say so. */
 export function DraftInput({
   value,
   onCommit,
@@ -593,7 +595,7 @@ export function DraftInput({
   'aria-describedby'?: string;
   'aria-invalid'?: boolean;
   value: string;
-  onCommit: (v: string) => void;
+  onCommit: (v: string) => unknown;
   onLive?: (v: string) => void;
   multiline?: boolean;
   className?: string;
@@ -615,9 +617,12 @@ export function DraftInput({
   useEffect(() => {
     if (!focused.current) setDraft(value);
   }, [value]);
-  const commit = () => {
-    if (draft !== value) onCommit(draft);
-  };
+  const commit = () => (draft !== value ? onCommit(draft) : undefined);
+  // Each focus or keystroke starts a new edit: putting the saved value back for an earlier one must not
+  // overwrite it. And text held back while the project was being left (Keep editing) is still a draft.
+  const edit = useRef(0);
+  const held = useRef(false);
+  const refusedLast = useRef(false);
   const common = {
     value: draft,
     placeholder,
@@ -626,17 +631,43 @@ export function DraftInput({
     'aria-invalid': invalid,
     id,
     autoFocus,
-    onFocus: () => (focused.current = true),
-    onBlur: () => {
+    onFocus: () => {
+      focused.current = true;
+      edit.current++;
+      // Back in a field whose text was refused, or held back while leaving (Keep editing): still a draft.
+      if ((held.current || refusedLast.current) && draft !== valueRef.current) mark(true);
+    },
+    onBlur: (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       focused.current = false;
-      mark(false);
-      if (cancelled.current) cancelled.current = false;
-      else {
-        commit();
-        setTimeout(() => !focused.current && setDraft(valueRef.current), 400);
+      if (cancelled.current) {
+        cancelled.current = false;
+        mark(false);
+        return;
       }
+      const refused = commit() === false;
+      refusedLast.current = refused;
+      // While the project is being left, refused text stays a draft until the author decides about it.
+      held.current = isSettling();
+      mark(refused && held.current);
+      if (refused) {
+        const label = e.currentTarget.labels?.[0];
+        const name = (label?.querySelector('.grow')?.textContent ?? label?.textContent ?? ariaLabel ?? '').trim();
+        reportRefused(name ? `What you typed in ${name} can’t be saved.` : 'Something you typed can’t be saved.', draftKey, e.currentTarget);
+      }
+      // The saved value comes back once the change has landed or been refused. While the project is being
+      // left, the typed text stays until the author decides, so Keep editing returns to it intact.
+      const at = edit.current;
+      afterSettle(() =>
+        setTimeout(() => {
+          if (focused.current || edit.current !== at) return;
+          held.current = false;
+          mark(false);
+          setDraft(valueRef.current);
+        }, 400)
+      );
     },
     onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      edit.current++;
       setDraft(e.target.value);
       mark(e.target.value !== value);
       onLive?.(e.target.value);
@@ -792,6 +823,7 @@ export function ConfirmHost() {
   if (!req) return null;
   return (
     <Modal
+      key={req.id}
       title={req.title}
       icon={req.danger ? <CircleAlert style={{ color: 'var(--red)' }} /> : <Info />}
       onClose={() => req.resolve(null)}

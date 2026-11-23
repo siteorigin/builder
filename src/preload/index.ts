@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { BuilderApi } from '@shared/api';
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
-const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'menu:command', 'input:key']);
+const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'menu:command', 'input:key', 'lifecycle:request']);
 
 const api: BuilderApi = {
   platform: process.platform,
@@ -62,6 +62,7 @@ const api: BuilderApi = {
     return () => ipcRenderer.removeListener(channel, listener);
   }) as BuilderApi['on'],
   inspectResult: (requestId, report) => ipcRenderer.send('inspect:result', requestId, report),
+  leaveResult: (requestId, answer) => ipcRenderer.send('lifecycle:result', requestId, answer),
   pathForFile: (file: File) => webUtils.getPathForFile(file)
 };
 

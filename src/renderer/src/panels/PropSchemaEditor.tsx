@@ -200,7 +200,8 @@ function RowEditor({ row, onChange, onRemove, readOnly }: { row: SchemaRow; onCh
                 try {
                   fields = JSON.parse(v);
                 } catch (e) {
-                  return setFieldsError(`Not valid JSON: ${(e as Error).message}`);
+                  setFieldsError(`Not valid JSON: ${(e as Error).message}`);
+                  return false;
                 }
                 setFieldsError(null);
                 if (JSON.stringify(fields) === JSON.stringify(s.fields ?? {})) return;
