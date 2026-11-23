@@ -35,7 +35,7 @@ import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { bindingSlots, enclosingList, normalizeProperties } from './schema';
-import { forEachTokenRef, tokenUsageCounts, declaredTokens, followToken, findTokenCycle, loopingTokens } from './tokens';
+import { declaredTokens, findTokenCycle, forEachTokenRef, tokenUsageCounts } from './tokens';
 import { settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import {

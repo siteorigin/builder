@@ -25,7 +25,7 @@ import type {
   TokenValue
 } from '@shared/types';
 import { ELEMENT_TAGS, GENERATOR_VERSION, TEXT_TAGS, isBinding, isComparison, type Condition } from '@shared/types';
-import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar, linkOf, textMetrics, textLinkLeadsToText, textStyleValue } from '@shared/styles';
+import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, linkOf, styleToCss, textLinkLeadsToText, textStyleValue, tokenVar } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
 import { DRAFTS_JS, IMAGE_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
