@@ -4,7 +4,7 @@ import { writingMenuTemplate, type WritingActions, type WritingTarget } from '..
 
 const flags = (over: Partial<EditFlags> = {}): EditFlags => ({ canUndo: false, canRedo: false, canCut: true, canCopy: true, canPaste: true, canDelete: true, canSelectAll: true, canEditRichly: false, ...over });
 const target = (over: Partial<WritingTarget> = {}): WritingTarget => ({ isEditable: true, misspelledWord: '', dictionarySuggestions: [], editFlags: flags(), ...over });
-const actions = (): WritingActions & { [K in keyof WritingActions]: ReturnType<typeof vi.fn> } => ({ replaceMisspelling: vi.fn(), cut: vi.fn(), copy: vi.fn(), paste: vi.fn(), selectAll: vi.fn() });
+const actions = () => ({ replaceMisspelling: vi.fn<(s: string) => void>(), cut: vi.fn<() => void>(), copy: vi.fn<() => void>(), paste: vi.fn<() => void>(), selectAll: vi.fn<() => void>() }) satisfies WritingActions;
 const labels = (t: ReturnType<typeof writingMenuTemplate>) => t?.map((i) => (i.type === 'separator' ? '—' : i.label));
 const item = (t: ReturnType<typeof writingMenuTemplate>, label: string) => {
   const found = t?.find((i) => i.label === label);
@@ -33,18 +33,22 @@ describe('writing menu', () => {
     expect(labels(writingMenuTemplate(target(), actions()))).toEqual(['Cut', 'Copy', 'Paste', '—', 'Select All']);
   });
 
-  it('enables each editing action only when the page can do it, and runs it on the page', () => {
+  it.each([
+    { canCut: true, canCopy: false, canPaste: true, canSelectAll: false },
+    { canCut: false, canCopy: true, canPaste: false, canSelectAll: true }
+  ])('enables each editing action only when the page can do it, and runs it on the page (%o)', (can) => {
     const a = actions();
-    const t = writingMenuTemplate(target({ editFlags: flags({ canCut: false, canCopy: false, canPaste: true, canSelectAll: true }) }), a);
-    expect(item(t, 'Cut').enabled).toBe(false);
-    expect(item(t, 'Copy').enabled).toBe(false);
-    expect(item(t, 'Paste').enabled).toBe(true);
-    expect(item(t, 'Select All').enabled).toBe(true);
-    choose(t, 'Paste');
-    choose(t, 'Select All');
-    expect(a.paste).toHaveBeenCalledTimes(1);
-    expect(a.selectAll).toHaveBeenCalledTimes(1);
-    expect(a.cut).not.toHaveBeenCalled();
+    const t = writingMenuTemplate(target({ editFlags: flags(can) }), a);
+    const each = [
+      ['Cut', can.canCut, a.cut],
+      ['Copy', can.canCopy, a.copy],
+      ['Paste', can.canPaste, a.paste],
+      ['Select All', can.canSelectAll, a.selectAll]
+    ] as const;
+    for (const [label, enabled] of each) expect(item(t, label).enabled, label).toBe(enabled);
+    for (const [label, enabled] of each) if (enabled) choose(t, label);
+    for (const [label, enabled, fn] of each) expect(fn, label).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(a.replaceMisspelling).not.toHaveBeenCalled();
   });
 
   it('shows nothing for text that does not take typing', () => {

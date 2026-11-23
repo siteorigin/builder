@@ -455,11 +455,12 @@ async function createWindow() {
     const contents = self.webContents;
     const live = () => !self.isDestroyed() && !contents.isDestroyed();
     const template = writingMenuTemplate(params, {
-      // The page replaces the misspelling in its focused frame: only while that is still the frame clicked in.
+      // The page replaces the misspelling in its focused frame: only while the frame clicked in is still there
+      // and nothing else has focus.
       replaceMisspelling: (s) => {
-        if (!live()) return;
+        if (!live() || !params.frame || params.frame.detached) return;
         const focused = contents.focusedFrame;
-        if (params.frame && focused && focused !== params.frame) return;
+        if (focused && focused !== params.frame) return;
         contents.replaceMisspelling(s);
       },
       cut: () => live() && contents.cut(),
@@ -471,7 +472,9 @@ async function createWindow() {
     const menu = Menu.buildFromTemplate(template);
     // Nothing pops up during automated runs: the menu goes to the test, which chooses from it.
     if (headless) return void app.emit('test:writing-menu', menu, params);
-    menu.popup({ window: self, frame: params.frame ?? undefined });
+    // From the keyboard (Shift+F10, the Menu key) it opens at the caret, not wherever the pointer was left.
+    const at = params.menuSourceType === 'keyboard' ? { x: params.x, y: params.y } : {};
+    menu.popup({ window: self, frame: params.frame ?? undefined, ...at });
   });
   self.on('unresponsive', () => leaveGate.editorUnresponsive());
   self.on('responsive', () => leaveGate.editorResponsive());

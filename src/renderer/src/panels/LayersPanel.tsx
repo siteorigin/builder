@@ -645,6 +645,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
             onFocus={(e) => e.currentTarget.select()}
             onClick={(e) => e.stopPropagation()}
             onDoubleClick={(e) => e.stopPropagation()}
+            // A right-click here is for the name being typed (spelling, cut, copy, paste), not the layer's actions.
+            onContextMenu={(e) => e.stopPropagation()}
             onBlur={(e) => {
               setRenaming(false);
               const value = e.target.value.trim();
