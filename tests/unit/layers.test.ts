@@ -181,11 +181,23 @@ describe('visibility at the previewed size', () => {
     expect(row(t, t.para, 'phone')).toMatchObject({ hiddenHere: false, note: 'hidden on tablet and desktop' });
   });
 
-  it('keeps a layer hidden at every size where a size arranges it its own way, as the generated CSS does', () => {
+  it('follows the generated CSS where a size arranges a layer its own way, and hides it there too when asked', () => {
     const t = nested();
     t.run([{ type: 'node.setStyle', owner: t.owner, nodeId: t.grid, scope: 'phone', property: 'layout', value: 'stack' }]);
     hide(t, t.grid, 'base');
-    expect(hiddenAt(t, t.grid)).toEqual(['phone', 'tablet', 'desktop']);
+    // The phone rule's own display beats the every-size hide, so the canvas shows it on phone.
+    expect(hiddenAt(t, t.grid)).toEqual(['tablet', 'desktop']);
+    expect(everySizeEdits(t.s, t.node(t.grid), true)).toEqual([{ scope: 'phone', value: true }]);
+    // Hiding on phone only where phone shows it as an exception: taking the exception away is not enough.
+    hide(t, t.grid, 'phone', false);
+    expect(hideHereEdits(t.s, t.node(t.grid), 'phone')).toEqual([{ scope: 'phone', value: true }]);
+  });
+
+  it('counts custom CSS that sets a display for a size', () => {
+    const t = nested();
+    t.run([{ type: 'node.setStyle', owner: t.owner, nodeId: t.grid, scope: 'phone', property: 'customCss', value: 'display: grid' }]);
+    hide(t, t.grid, 'base');
+    expect(hiddenAt(t, t.grid)).toEqual(['tablet', 'desktop']);
   });
 
   it('shows a layer again on one size only, leaving the other sizes as they were', () => {
@@ -246,7 +258,7 @@ describe('visibility at the previewed size', () => {
     hide(t, t.section, 'phone', true, 'root');
     const onPhone = row(t, t.para, 'phone');
     expect(onPhone.hiddenHere).toBe(false);
-    expect(onPhone.hiddenBy).toEqual({ id: t.grid, name: 'Grid', sizes: ['phone'] });
+    expect(onPhone.hiddenBy).toEqual({ id: t.grid, name: 'Grid', target: 'Grid', sizes: ['phone'] });
     expect(onPhone.note).toBe('hidden on phone because Grid is hidden on phone');
     expect(row(t, t.para, 'desktop')).toMatchObject({ hiddenHere: false, hiddenBy: null, note: '' });
   });
@@ -258,7 +270,7 @@ describe('visibility at the previewed size', () => {
     expect(row(t, t.para, 'phone')).toMatchObject({ hiddenHere: false, hiddenBy: null });
     hide(t, t.section, 'phone', true, 'container');
     const onPhone = row(t, t.para, 'phone');
-    expect(onPhone.hiddenBy).toEqual({ id: t.section, part: { id: 'container', nodeId: 'inner' }, name: 'Section › Container', sizes: ['phone'] });
+    expect(onPhone.hiddenBy).toEqual({ id: t.section, part: { id: 'container', nodeId: 'inner' }, name: 'Section › Container', target: 'Section › Container', sizes: ['phone'] });
     expect(row(t, t.grid, 'phone').hiddenBy?.part?.id).toBe('container');
     // The section itself still shows on phone: only what its Container holds is hidden.
     expect(hiddenAt(t, t.section)).toEqual([]);
@@ -278,8 +290,50 @@ describe('visibility at the previewed size', () => {
     hide(t, fg, 'phone', true, 'grid');
     const title = row(t, fg, 'phone', 'cardTitle');
     expect(title.hiddenHere).toBe(false);
-    expect(title.hiddenBy).toEqual({ id: fg, part: { id: 'grid', nodeId: 'grid' }, name: 'Services grid › Card grid', sizes: ['phone'] });
+    expect(title.hiddenBy).toEqual({ id: fg, part: { id: 'grid', nodeId: 'grid' }, name: 'Services grid › Card grid', target: 'Services grid › Card grid', sizes: ['phone'] });
     expect(row(t, fg, 'desktop', 'cardTitle').hiddenBy).toBeNull();
+  });
+
+  it('names a wrapper of the design that hides a part, and selects the placement for it', () => {
+    const t = nested();
+    const fg = t.insert('features.grid');
+    const def = t.s.components[(t.node(fg) as InstanceNode).definitionId];
+    def.tree!.nodes['card-icon-wrap'].styles = { ...def.tree!.nodes['card-icon-wrap'].styles, phone: { hidden: true } };
+    expect(row(t, fg, 'phone', 'cardIcon').hiddenBy).toEqual({ id: fg, name: 'Services grid › Icon badge', target: 'Services grid', sizes: ['phone'] });
+  });
+
+  it('shows a placement again when another part on the same element also hides it', () => {
+    const t = nested();
+    const made = applyOperations(t.s, [{ type: 'component.createFromNode', owner: t.owner, nodeId: t.para, name: 'Intro text' }]);
+    const placed = made.results[0].nodeId as string;
+    const def = made.state.components[made.results[0].definitionId as string];
+    // A part that is the root element itself, as a component made from one paragraph can declare.
+    const same = 'copy';
+    def.parts[same] = { nodeId: def.tree!.rootIds[0], label: 'Copy' };
+    let s = made.state;
+    for (const partId of ['root', same]) s = applyOperations(s, [{ type: 'node.setStyle', owner: t.owner, nodeId: placed, partId, scope: 'base', property: 'hidden', value: true }]).state;
+    const n = s.pages[t.pageId].nodes[placed];
+    const edits = everySizeEdits(s, n, false);
+    expect(edits).toEqual(expect.arrayContaining([{ partId: 'root', scope: 'base', value: null }, { partId: same, scope: 'base', value: null }]));
+    for (const e of edits) s = applyOperations(s, [{ type: 'node.setStyle', owner: t.owner, nodeId: placed, partId: e.partId, scope: e.scope, property: 'hidden', value: e.value }]).state;
+    expect(ownVisibility(s, s.pages[t.pageId].nodes[placed]).hiddenAt).toEqual([]);
+  });
+
+  it('lets a later option show what an earlier one hides on phone, as its own display rule does', () => {
+    const t = nested();
+    const fg = t.insert('features.grid');
+    const def = t.s.components[(t.node(fg) as InstanceNode).definitionId];
+    const axes = Object.keys(def.variantAxes!);
+    const [first, second] = axes;
+    const pick = (axis: string) => Object.keys(def.variantAxes![axis].options).find((o) => o !== def.variantAxes![axis].default)!;
+    def.variantAxes![first].options[pick(first)].styles = { grid: { phone: { hidden: true } } };
+    def.variantAxes![second].options[pick(second)].styles = { grid: { base: { hidden: false } } };
+    (t.node(fg) as InstanceNode).variants = { [first]: pick(first), [second]: pick(second) };
+    expect(hiddenAt(t, fg, 'grid')).toEqual([]);
+    // An option's "show" with nothing before it to undo writes nothing: a later option's hide stands.
+    def.variantAxes![first].options[pick(first)].styles = { grid: { phone: { hidden: false } } };
+    def.variantAxes![second].options[pick(second)].styles = { grid: { base: { hidden: true } } };
+    expect(hiddenAt(t, fg, 'grid')).toEqual(['phone', 'tablet', 'desktop']);
   });
 
   it('counts the option a placement chose: one can show a part its design hides on phone', () => {

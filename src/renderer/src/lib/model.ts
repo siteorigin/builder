@@ -215,14 +215,16 @@ export function breadcrumb(state: ProjectState, ref: ElementRef): Crumb[] {
   out.push({ label: ownerName, full: ownerName, ref: null });
   const crumb = (r: ElementRef): Crumb => {
     const res = resolveRef(state, r);
-    if (res.def && r.partId) {
-      const label = res.def.parts[r.partId]?.label ?? 'Part';
-      return { label, full: `${label}, part of ${res.def.name}`, ref: r };
-    }
-    if (!res.node) return { label: 'Element', full: 'Element', ref: r };
-    // A node of the component being edited everywhere is named within that component (its settings, say).
-    const l = layerLabel(state, res.node, res.def ?? (r.owner.kind === 'component' ? own(state.components, r.owner.id) : undefined));
-    const def = res.node.kind === 'instance' ? own(state.components, res.node.definitionId) : undefined;
+    // A part is named by its component; anything else as Layers names it (in the component being edited
+    // everywhere, within that component: the settings its text shows, say).
+    const part = res.def && r.partId ? res.def.parts[r.partId]?.label ?? 'Part' : undefined;
+    const l = part
+      ? { label: part, full: `${part}, part of ${res.def!.name}` }
+      : res.node
+        ? layerLabel(state, res.node, res.def ?? (r.owner.kind === 'component' ? own(state.components, r.owner.id) : undefined))
+        : { label: 'Element', full: 'Element' };
+    // A placed component (also one that is a part of another) is marked as one.
+    const def = res.node?.kind === 'instance' ? own(state.components, res.node.definitionId) : undefined;
     if (!def) return { label: l.label, full: l.full, ref: r };
     const custom = def.owner === 'project';
     return { label: l.label, full: `${l.full}, ${custom ? 'component made in this project' : 'component'}`, ref: r, component: custom ? 'custom' : 'theme' };

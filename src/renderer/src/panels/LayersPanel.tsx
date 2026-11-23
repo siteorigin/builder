@@ -236,7 +236,7 @@ export function LayersPanel() {
       const out: Array<{ label: string; icon: React.ReactNode; hint?: string; onSelect: () => void }> = [];
       if (vis.hiddenBy) {
         const by = vis.hiddenBy;
-        out.push({ label: `Select ${by.name}`, hint: `Hides this on ${size}`, icon: <CornerLeftUp />, onSelect: () => selectHider(ref.owner, by) });
+        out.push({ label: `Select ${by.target}`, hint: by.target === by.name ? `Hides this on ${size}` : `${by.name} hides this on ${size}`, icon: <CornerLeftUp />, onSelect: () => selectHider(ref.owner, by) });
       }
       if (editable && !ref.instancePath.length && hideable(st, node)) {
         const edit = (edits: VisibilityEdit[], label: string, menuLabel: string, icon: React.ReactNode) => {
@@ -694,8 +694,8 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
           <button
             className="icon-btn sm layer-flag layer-hider"
             tabIndex={-1}
-            aria-label={`Select ${vis.hiddenBy.name}, which hides this on ${size}`}
-            title={`${sentence(`hidden on ${size} because ${vis.hiddenBy.name} is hidden ${sizesText(vis.hiddenBy.sizes)}`)} Click to select it.`}
+            aria-label={vis.hiddenBy.target === vis.hiddenBy.name ? `Select ${vis.hiddenBy.name}, which hides this on ${size}` : `Select ${vis.hiddenBy.target}: ${vis.hiddenBy.name} hides this on ${size}`}
+            title={`${sentence(`hidden on ${size} because ${vis.hiddenBy.name} is hidden ${sizesText(vis.hiddenBy.sizes)}`)} Click to select ${vis.hiddenBy.target}.`}
             onClick={(e) => (e.stopPropagation(), selectHider(owner, vis.hiddenBy!))}
             onDoubleClick={(e) => e.stopPropagation()}
           >
