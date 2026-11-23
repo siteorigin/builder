@@ -4,7 +4,7 @@ import type { RuntimeState } from '@shared/api';
 import { api, applyOps, confirmDialog, setState, toast, useStore } from '../store';
 import { refKey } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
-import { openAsset } from '../lib/actions';
+import { openAsset, openOutline } from '../lib/actions';
 import { Modal, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 
@@ -260,8 +260,10 @@ export function HealthModal() {
               // An image whose files are missing keeps its uses: say how many, and open it where it can be fixed.
               const asset = d.code === 'ASSET_FILE_MISSING' && d.owner?.kind === 'asset' ? d.owner.id : null;
               const uses = asset ? (snap.assetUsage[asset] ?? 0) : 0;
+              // A page's heading outline is reviewed (and fixed) in its outline, beside the page.
+              const outlinePage = d.code.startsWith('HEADING_') && d.owner?.kind === 'page' ? d.owner.id : null;
               return (
-                <div key={i} className={`scope-note ${d.severity === 'error' ? 'danger' : 'site'}`} style={asset ? { alignItems: 'center' } : undefined}>
+                <div key={i} className={`scope-note ${d.severity === 'error' ? 'danger' : 'site'}`} style={asset || outlinePage ? { alignItems: 'center' } : undefined}>
                   {d.severity === 'error' ? <CircleAlert /> : <TriangleAlert />}
                   <span className="grow">
                     {d.message}
@@ -270,6 +272,11 @@ export function HealthModal() {
                   {asset && (
                     <button className="btn btn-sm" onClick={() => openAsset(asset)}>
                       Open in Assets
+                    </button>
+                  )}
+                  {outlinePage && (
+                    <button className="btn btn-sm" onClick={() => openOutline(outlinePage)}>
+                      Show headings
                     </button>
                   )}
                 </div>

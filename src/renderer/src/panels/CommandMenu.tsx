@@ -1,12 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, TextSearch, Undo2, Settings, Sparkles, Upload, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House } from 'lucide-react';
+import { Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, TextSearch, Undo2, Settings, Sparkles, Upload, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
 import { api, setState, toast, useStore } from '../store';
 import { pageShowing, partName } from '@shared/page-shell';
-import { insert, selectPage, askAiAbout, setMode, openSiteStyles } from '../lib/actions';
+import { insert, selectPage, askAiAbout, setMode, openSiteStyles, openOutline } from '../lib/actions';
 import { pageChoices, matchesWords, commandText, exactDetailFirst } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { LucideIcon } from './InsertPanel';
@@ -51,6 +51,7 @@ export function CommandMenu() {
       { id: 'settings', label: 'Settings', group: 'Project', icon: <Settings />, run: () => setState({ modal: { kind: 'settings' } }) },
       { id: 'history', label: 'History…', group: 'Project', icon: <History />, run: () => setState({ modal: { kind: 'history' } }) },
       { id: 'health', label: 'Project health', group: 'Project', icon: <Stethoscope />, run: () => setState({ modal: { kind: 'health' } }) },
+      { id: 'outline', label: 'Show the page’s headings outline', group: 'View', icon: <ListTree />, run: () => openOutline() },
       { id: 'dock', kbd: '⇧⌘\\', label: 'Show or hide the right panel', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },
       { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];

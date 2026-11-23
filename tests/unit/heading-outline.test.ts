@@ -13,6 +13,7 @@ import { themeUpdates } from '@engine/theme-updates';
 import { definitionHash } from '@shared/migrations';
 import { headingOutline, pageHeadings } from '@generator/checks';
 import { generateProject } from '@generator/index';
+import { headingLevelOps, headingTarget, pageOutline } from '../../src/renderer/src/lib/outline';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const pageAt = (s: ProjectState, route: string) => s.site.pageOrder.map((id) => s.pages[id]).find((p) => p.route === route)!;
@@ -199,5 +200,60 @@ describe('heading review in Project health', () => {
     expect(themeUpdates(s).available.map((u) => u.id)).toContain(hero.id);
     const next = applyOperations(s, [{ type: 'theme.refresh' }]).state;
     expect(own(next, pageId)[1]).toMatchObject({ level: 1, levelSource: { kind: 'prop', prop: 'headingLevel' } });
+  });
+});
+
+describe('page outline rows and fixes', () => {
+  it('names the page title, flags the second Heading 1, and fixes it in one edit that selects nothing new', () => {
+    const { s, pageId, heroId } = contactWithHero();
+    const { rows, review, titleFix } = pageOutline(s, pageId);
+    expect(review.extraTitles).toBe(true);
+    expect(titleFix).toBeUndefined();
+    expect(rows[0]).toMatchObject({ title: true, heading: { text: 'Let’s talk' } });
+    expect(rows[0].fix).toBeUndefined();
+    expect(rows[1]).toMatchObject({ extraTitle: true, fix: 2 });
+    // Selecting the row selects the heading part of the hero placed on the page.
+    expect(headingTarget(s, rows[1].heading)).toEqual({ owner: { kind: 'page', id: pageId }, instancePath: [heroId], nodeId: 'heading', partId: 'heading' });
+    const ops = headingLevelOps(rows[1].heading, rows[1].fix!)!;
+    expect(ops).toEqual([{ type: 'instance.setProp', owner: { kind: 'page', id: pageId }, nodeId: heroId, prop: 'headingLevel', value: 'h2' }]);
+    const after = applyOperations(s, ops).state;
+    const next = pageOutline(after, pageId);
+    expect(next.rows[1]).toMatchObject({ heading: { level: 2 } });
+    expect(next.rows[1].extraTitle).toBeUndefined();
+    expect(next.review.extraTitles).toBe(false);
+    expect(headingWarnings(after)).toEqual([]);
+  });
+
+  it('offers the first heading as the page title when there is none, and fixes a skipped level on a page’s own heading', () => {
+    const s = fresh();
+    const home = s.site.homePageId;
+    withHeadings(s, home, [
+      { id: 'n_a', tag: 'h2', text: 'Welcome' },
+      { id: 'n_b', tag: 'h4', text: 'Planning' }
+    ]);
+    const { rows, titleFix } = pageOutline(s, home);
+    expect(titleFix?.heading.nodeId).toBe('n_a');
+    expect(headingTarget(s, titleFix!.heading)).toEqual({ owner: { kind: 'page', id: home }, instancePath: [], nodeId: 'n_a' });
+    const own = rows.filter((r) => r.heading.owner.kind === 'page');
+    expect(own[1]).toMatchObject({ skip: { after: 2, suggest: 3 }, fix: 3 });
+    const fixed = applyOperations(s, [...headingLevelOps(titleFix!.heading, 1)!, ...headingLevelOps(own[1].heading, 3)!]).state;
+    expect(rows.length).toBe(pageOutline(fixed, home).rows.length);
+    // Now a Heading 1 then a Heading 3: the skip moved, and its fix follows on from the new title.
+    expect(pageOutline(fixed, home).rows.filter((r) => r.heading.owner.kind === 'page').map((r) => [r.heading.level, r.fix ?? null])).toEqual([
+      [1, null],
+      [3, 2]
+    ]);
+  });
+
+  it('offers no fix where the level is fixed: rich text, the contact form, an older design', () => {
+    const s = fresh();
+    const about = pageAt(s, '/about/');
+    const owner = { kind: 'page' as const, id: about.id };
+    withHeadings(s, about.id, [{ id: 'n_a', tag: 'h1', text: 'About' }]);
+    const r = applyOperations(s, [{ type: 'node.insert', owner, componentId: 'content.text', props: { heading: '', body: [{ type: 'h4', spans: [{ text: 'Deep' }] }] } }]).state;
+    const deep = pageOutline(r, about.id).rows.find((x) => x.heading.text === 'Deep')!;
+    expect(deep).toMatchObject({ skip: { after: 1, suggest: 2 } });
+    expect(deep.fix).toBeUndefined();
+    expect(headingLevelOps(deep.heading, 2)).toBeNull();
   });
 });

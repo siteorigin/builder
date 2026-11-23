@@ -1,0 +1,78 @@
+/**
+ * The page outline: the headings a page renders, in the order a screen reader's heading list reads them, with what
+ * each one asks its author to review (a second page title, a skipped level) and the edit that settles it.
+ */
+import type { ElementRef, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import { pageHeadings, type HeadingReview, type OutlineHeading } from '@generator/checks';
+import { partIdFor } from './model';
+
+/** One row of the outline. */
+export interface OutlineRow {
+  heading: OutlineHeading;
+  /** The page's one Heading 1. */
+  title?: boolean;
+  /** A Heading 1 after the page's first: a second title, unless it is meant to be one. */
+  extraTitle?: boolean;
+  /** Skips a level: the level before it, and the one that would follow on. */
+  skip?: { after: number; suggest: number };
+  /** The level that settles what this row is flagged for, when its level can be changed from here. */
+  fix?: number;
+}
+
+export interface PageOutline {
+  rows: OutlineRow[];
+  review: HeadingReview;
+  /** For a page with no Heading 1: its first heading, when it can be made one from here. */
+  titleFix?: OutlineRow;
+}
+
+/** Whether a heading's level can be set to this one from the outline. */
+export const canSetLevel = (h: OutlineHeading, level: number) => !!h.levelSource && !!h.levels?.includes(level) && h.level !== level;
+
+/** The current page's outline, each row marked with what it asks for. */
+export function pageOutline(state: ProjectState, pageId: string): PageOutline {
+  const { outline, review } = pageHeadings(state, pageId);
+  const rows: OutlineRow[] = outline.map((heading) => ({ heading }));
+  // The first Heading 1 is taken as the page's title, and each later one as a second title. A title shown more than
+  // once is its own second title, which no other level settles while it stays the page's only one.
+  review.titles.forEach((i, k) => {
+    if (k === 0 && !outline[i].repeated) rows[i].title = true;
+    else rows[i].extraTitle = true;
+    if (k > 0 && canSetLevel(outline[i], 2)) rows[i].fix = 2;
+  });
+  for (const s of review.skips) {
+    rows[s.index].skip = { after: s.after, suggest: s.suggest };
+    if (canSetLevel(outline[s.index], s.suggest)) rows[s.index].fix = s.suggest;
+  }
+  const firstOwn = rows.find((r) => r.heading.owner.kind === 'page');
+  const titleFix = review.missingTitle && firstOwn && canSetLevel(firstOwn.heading, 1) ? firstOwn : undefined;
+  return { rows, review, ...(titleFix ? { titleFix } : {}) };
+}
+
+/** What selecting a heading selects: its own element, or the part of the section placed on the page that shows it. */
+export function headingTarget(state: ProjectState, h: OutlineHeading): ElementRef {
+  const page: ElementRef = { owner: h.owner, instancePath: [], nodeId: h.nodeId };
+  if (!h.direct || !h.defNodeId) return page;
+  const tree = h.owner.kind === 'page' ? state.pages[h.owner.id] : h.owner.kind === 'shell' ? state.site.shell[h.owner.id as 'header' | 'footer'] : undefined;
+  const node = tree && Object.hasOwn(tree.nodes, h.nodeId) ? tree.nodes[h.nodeId] : undefined;
+  const def = node?.kind === 'instance' && Object.hasOwn(state.components, node.definitionId) ? state.components[node.definitionId] : undefined;
+  if (!def?.tree || !Object.hasOwn(def.tree.nodes, h.defNodeId)) return page;
+  const part: ElementRef = { owner: h.owner, instancePath: [h.nodeId], nodeId: h.defNodeId };
+  const partId = partIdFor(def, h.defNodeId);
+  if (partId) part.partId = partId;
+  if (h.itemPath?.length) part.itemPath = h.itemPath;
+  return part;
+}
+
+/** The edit that gives a heading another level, keeping its look: its own tag, or its placement's choice. */
+export function headingLevelOps(h: OutlineHeading, level: number): EditOperation[] | null {
+  if (!canSetLevel(h, level)) return null;
+  const s = h.levelSource!;
+  const value = `h${level}`;
+  if (s.kind === 'node') return [{ type: 'node.setContent', owner: h.owner, nodeId: h.nodeId, field: 'tag', value }];
+  return [{ type: 'instance.setProp', owner: h.owner, nodeId: h.nodeId, prop: s.prop, ...(s.itemId ? { itemId: s.itemId, field: s.field } : {}), value }];
+}
+
+/** A heading's words for a row or a label; an empty heading says so. */
+export const headingWords = (h: OutlineHeading) => h.text || 'Empty heading';

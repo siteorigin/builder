@@ -732,7 +732,8 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   const pushB = (v: unknown, kind: string) => {
     if (isBinding(v)) bindings.push('$prop' in v ? { prop: v.$prop, kind } : { item: v.$item, kind });
   };
-  if (node.kind === 'text') pushB(node.text, 'text');
+  // A heading's level, when its placement chooses it, sits beside its words: it changes the outline, never the look.
+  if (node.kind === 'text') (pushB(node.text, 'text'), pushB(node.tag, 'tag'));
   if (node.kind === 'image') pushB(node.image, 'image');
   if (node.kind === 'link') (pushB(node.label, 'label'), pushB(node.link, 'link'));
   if (node.kind === 'icon') pushB(node.icon, 'icon');
@@ -921,7 +922,7 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
             {!node.rich && !isBinding(node.tag) && (
               <Field label="Type">
                 <select className="select" value={node.tag} onChange={(e) => content('tag', e.target.value)}>
-                  {['h1', 'h2', 'h3', 'h4', 'p'].map((tg) => (
+                  {['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'].map((tg) => (
                     <option key={tg} value={tg}>
                       {tg === 'p' ? 'Paragraph' : `Heading ${tg.slice(1)}`}
                     </option>
