@@ -378,13 +378,61 @@ describe('SEO and performance', () => {
     return { s: r.state, section, grid };
   }
 
-  it('sizes images in a grid built on the page like the same grid in a preset (#170)', () => {
-    const { s } = manualGrid(fresh());
-    const page = generateProject(s).get('src/routes/+page.svelte')!;
-    const images = page.match(/<SoImage [^\n]*a_photo|<SoImage [^\n]*photo-1a2b3c4d[^\n]*/g) ?? [];
+  const gridSizes = (s: ProjectState) => {
+    const images = generateProject(s).get('src/routes/+page.svelte')!.match(/<SoImage [^\n]*photo-1a2b3c4d[^\n]*/g) ?? [];
     expect(images).toHaveLength(3);
+    return [...new Set(images.map((img) => img.match(/ sizes="([^"]*)"/)?.[1] ?? null))];
+  };
+  const style = (s: ProjectState, nodeId: string, property: string, value: unknown, extra: Record<string, unknown> = {}) =>
+    applyOperations(s, [{ type: 'node.setStyle', owner: { kind: 'page', id: s.site.homePageId }, nodeId, scope: 'base', property, value, ...extra } as never]).state;
+
+  it('sizes images in a grid built on the page like the same grid in a preset (#170)', () => {
     // The Section's 1200px container holds a grid of three columns on desktop and one below it.
-    for (const img of images) expect(img).toContain('sizes="(min-width: 1024px) 400px, (min-width: 768px) 100vw, 100vw"');
+    expect(gridSizes(manualGrid(fresh()).s)).toEqual(['(min-width: 1024px) 400px, (min-width: 768px) 100vw, 100vw']);
+  });
+
+  it('follows a placement that widens its container, so the grid is never undersized', () => {
+    const { s, section } = manualGrid(fresh());
+    expect(gridSizes(style(s, section, 'maxWidth', '1800px', { partId: 'container' }))).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 100vw, 100vw']);
+    // A container with no fixed width leaves only the viewport to go by.
+    expect(gridSizes(style(s, section, 'maxWidth', '100%', { partId: 'container' }))).toEqual(['(min-width: 1024px) 33.34vw, (min-width: 768px) 100vw, 100vw']);
+  });
+
+  it('gives an image that spans the whole grid the whole container', () => {
+    const { s, grid } = manualGrid(fresh());
+    const page = home(s);
+    const gridNode = page.nodes[grid] as GraphNode & { children: string[] };
+    // Wrap the first photo in a full-width row of the grid.
+    const wrap: GraphNode = { id: 'n_wrap', kind: 'element', tag: 'div', children: [gridNode.children[0]], styles: { base: { columnSpan: 'full' } } };
+    page.nodes[wrap.id] = wrap;
+    gridNode.children[0] = wrap.id;
+    expect(gridSizes(s).sort()).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw', '(min-width: 1024px) 400px, (min-width: 768px) 100vw, 100vw']);
+    // Two of three columns: two thirds of the container.
+    wrap.styles = { base: { columnSpan: '2' } };
+    expect(gridSizes(s)).toContain('(min-width: 1024px) 800px, (min-width: 768px) 100vw, 100vw');
+  });
+
+  it('sizes a grid outside any container by its share of the viewport, per range', () => {
+    const { s, grid } = manualGrid(fresh());
+    const page = home(s);
+    // The grid moves to the page itself, with two columns on tablets and phones.
+    for (const n of Object.values(page.nodes)) if (n.kind === 'instance' && n.slots?.content?.includes(grid)) n.slots.content = [];
+    page.rootIds.push(grid);
+    const g = page.nodes[grid];
+    g.styles = { ...g.styles, tablet: { columns: 2 }, phone: { columns: 2 } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 33.34vw, (min-width: 768px) 50vw, 50vw']);
+  });
+
+  it('reads columns a placement gives its container from tablet up, as the generated CSS does', () => {
+    const { s, section, grid } = manualGrid(fresh());
+    const page = home(s);
+    // The photos sit straight in the Section, whose container this placement turns into a two-column grid.
+    const photos = (page.nodes[grid] as GraphNode & { children: string[] }).children;
+    for (const n of Object.values(page.nodes)) if (n.kind === 'instance' && n.slots?.content?.includes(grid)) n.slots.content = [...photos];
+    delete page.nodes[grid];
+    let t = style(s, section, 'layout', 'grid', { partId: 'container' });
+    t = style(t, section, 'columns', 2, { partId: 'container' });
+    expect(gridSizes(t)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 50vw, 100vw']);
   });
 });
 

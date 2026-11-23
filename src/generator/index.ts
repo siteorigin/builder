@@ -833,40 +833,135 @@ function parentMap(tree: NodeTree): Map<string, string> {
   return out;
 }
 
+type SizeRange = 'phone' | 'tablet' | 'desktop';
+/** The widest viewport each range covers (see MEDIA_QUERIES). */
+const RANGE_MAX: Record<SizeRange, number> = { phone: 767, tablet: 1023, desktop: Infinity };
+
 /**
- * A realistic `sizes` hint for an image inside a definition: its own fixed width, or its share of the
- * nearest grid and content container at each breakpoint. Null keeps the runtime default (100vw).
+ * One rendered element between an image and the viewport, with the style layers that size it, weakest first:
+ * its own styles, then a placement's variant styles and overrides (`wide`: a multi-column base value from those
+ * applies from tablet up, as the generated CSS has it).
+ */
+type SizingBox = Array<{ styles: ResponsiveStyles; wide: boolean }>;
+
+/** The value a box takes for one style property in one range, as the cascade of its layers settles it. */
+function boxStyle(box: SizingBox, prop: string, range: SizeRange): unknown {
+  for (let i = box.length - 1; i >= 0; i--) {
+    const { styles, wide } = box[i];
+    const own = styles[range]?.[prop];
+    if (own !== undefined) return own;
+    const base = styles.base?.[prop];
+    if (base !== undefined && !(range === 'phone' && wideOnly(prop, base, { wideColumns: wide }))) return base;
+  }
+  return undefined;
+}
+
+/** Each node's parent in a tree, and the slot it fills when that parent is a component placement. */
+function slotParentMap(tree: NodeTree): Map<string, { id: string; slot?: string }> {
+  const out = new Map<string, { id: string; slot?: string }>();
+  for (const n of Object.values(tree.nodes)) {
+    if (n.kind === 'element' || n.kind === 'repeat') for (const c of n.children) out.set(c, { id: n.id });
+    else if (n.kind === 'instance') for (const [slot, ids] of Object.entries(n.slots ?? {})) for (const c of ids) out.set(c, { id: n.id, slot });
+  }
+  return out;
+}
+
+/**
+ * The rendered elements around a node, innermost first, up to its tree's root. Content placed in a slot continues
+ * through the elements the placement's definition wraps that slot in, with the placement's own variant styles and
+ * overrides, and then outside the placement. A code component's insides are unknown: only overrides on its root
+ * count. Repeats and slots render no element of their own.
+ */
+function sizingBoxes(state: ProjectState, tree: NodeTree, nodeId: string, placement: InstanceNode | null, out: SizingBox[], seen: Set<string>): void {
+  const def = placement ? state.components[placement.definitionId] : undefined;
+  const layers = (id: string, n: GraphNode): SizingBox => {
+    const box: SizingBox = [{ styles: n.styles ?? {}, wide: false }];
+    if (!placement || !def) return box;
+    for (const styles of selectedVariantStyles(def, placement.variants, id)) box.push({ styles, wide: true });
+    const rootId = def.tree?.rootIds[0];
+    for (const partId of Object.keys(placement.overrides ?? {}).sort()) {
+      const target = partId === 'root' ? rootId : def.parts[partId]?.nodeId;
+      if (target === id) box.push({ styles: placement.overrides![partId], wide: true });
+    }
+    return box;
+  };
+  const parents = slotParentMap(tree);
+  for (let at = parents.get(nodeId); at; at = parents.get(at.id)) {
+    // Node IDs repeat across definitions, so a definition's nodes are told apart by the placement walked through.
+    const key = `${placement?.id ?? ''}|${at.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const n = tree.nodes[at.id];
+    if (!n) return;
+    if (n.kind === 'element') out.push(layers(at.id, n));
+    if (n.kind !== 'instance' || at.slot === undefined) continue;
+    const inner = state.components[n.definitionId];
+    const slot = inner?.tree && Object.values(inner.tree.nodes).find((s) => s.kind === 'slot' && s.slot === at.slot);
+    if (inner?.kind === 'managed' && inner.tree && slot) {
+      sizingBoxes(state, inner.tree, slot.id, n, out, seen);
+      // The slot's own ancestors end at the definition's root element, which the walk above already counted.
+    } else {
+      out.push([{ styles: n.overrides?.root ?? {}, wide: true }]);
+    }
+  }
+}
+
+/**
+ * The fraction of a grid's content width one of its items takes in a range: an equal share for each column it
+ * spans, or for uneven columns the widest run it could sit in. Columns that fit as many as they can stay whole,
+ * since how many fit is unknown here. With both columns and column sizes set, the wider reading wins.
+ */
+function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRange): number {
+  const spanValue = item ? boxStyle(item, 'columnSpan', range) : undefined;
+  const span = (tracks: number[]): number => {
+    const total = tracks.reduce((a, b) => a + b, 0);
+    if (!(total > 0) || spanValue === 'full') return 1;
+    const k = Math.min(tracks.length, Math.max(1, Math.floor(Number(spanValue)) || 1));
+    let widest = 0;
+    for (let i = 0; i + k <= tracks.length; i++) widest = Math.max(widest, tracks.slice(i, i + k).reduce((a, b) => a + b, 0));
+    return widest / total;
+  };
+  const shares: number[] = [];
+  const columns = boxStyle(grid, 'columns', range);
+  if (typeof columns === 'number' && columns >= 1) shares.push(span(Array.from({ length: Math.floor(columns) }, () => 1)));
+  const template = boxStyle(grid, 'gridTemplate', range);
+  if (typeof template === 'string') shares.push(/^\d+(\.\d+)?fr( \d+(\.\d+)?fr)*$/.test(template) ? span(template.split(' ').map((t) => parseFloat(t))) : 1);
+  return shares.length ? Math.max(...shares) : 1;
+}
+
+/**
+ * A realistic `sizes` hint for an image: in each range, its share of the grids around it (through the
+ * placements whose slots hold it), capped by the narrowest fixed width or container among them. Each value is an
+ * upper estimate, so the browser never picks a copy smaller than the image shows; gaps and padding are left out.
+ * An image in a definition stops at the definition's root, whose placement is not known there. Null keeps the
+ * runtime default (100vw).
  */
 function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
-  const px = (v: unknown) => (typeof v === 'string' && /^\d+(\.\d+)?px$/.test(v) ? v : null);
-  const own = node.styles?.base ?? {};
-  const fixed = px(own.width) ?? px(own.maxWidth);
-  if (fixed) return fixed;
-  if (!ctx.def) return null;
-  const parents = parentMap(ctx.tree);
-  const tokenPx = (v: unknown): number | null => {
-    const raw = v && typeof v === 'object' && 'token' in v ? effectiveTokens(ctx.state).find((t) => t.id === (v as { token: string }).token)?.value : v;
+  const tokens = effectiveTokens(ctx.state);
+  const lengthPx = (v: unknown): number | null => {
+    const raw = v && typeof v === 'object' && 'token' in v ? tokens.find((t) => t.id === (v as { token: string }).token)?.value : v;
     const m = typeof raw === 'string' ? raw.match(/^(\d+(?:\.\d+)?)px$/) : null;
     return m ? Number(m[1]) : null;
   };
-  let cols: { base: number; phone?: number; tablet?: number; desktop?: number } | null = null;
-  let container: number | null = null;
-  const seen = new Set<string>();
-  for (let id = parents.get(node.id); id && !seen.has(id); id = parents.get(id)) {
-    seen.add(id);
-    const s = ctx.tree.nodes[id]?.styles ?? {};
-    if (!cols && (s.base?.layout === 'grid' || s.base?.columns !== undefined)) {
-      const n = (v: unknown) => (typeof v === 'number' && v > 0 ? v : undefined);
-      cols = { base: n(s.base?.columns) ?? 1, phone: n(s.phone?.columns), tablet: n(s.tablet?.columns), desktop: n(s.desktop?.columns) };
-    }
-    if (container === null && s.base?.maxWidth !== undefined) container = tokenPx(s.base.maxWidth);
-  }
-  if (!cols) return null;
-  // Each range is bounded (see MEDIA_QUERIES), so a range without its own value uses the base value.
-  const desktop = cols.desktop ?? cols.base;
-  const tablet = cols.tablet ?? cols.base;
-  const phone = cols.phone ?? cols.base;
-  return `(min-width: 1024px) ${Math.round((container ?? 1200) / desktop)}px, (min-width: 768px) ${Math.round(100 / tablet)}vw, ${Math.round(100 / phone)}vw`;
+  const boxes: SizingBox[] = [[{ styles: node.styles ?? {}, wide: false }]];
+  sizingBoxes(ctx.state, ctx.tree, node.id, null, boxes, new Set());
+  const at = (['desktop', 'tablet', 'phone'] as const).map((range) => {
+    let share = 1;
+    let cap = Infinity;
+    boxes.forEach((box, i) => {
+      if (i > 0 && boxStyle(box, 'layout', range) === 'grid') share *= trackShare(box, boxes[i - 1], range);
+      for (const prop of ['width', 'maxWidth']) {
+        const px = lengthPx(boxStyle(box, prop, range));
+        if (px !== null) cap = Math.min(cap, share * px);
+      }
+    });
+    // Both are upper estimates; a fixed cap is the closer one when it is narrower than the range's widest screen.
+    // Rounded up, never down, and past float noise (0.3 × 100 is not quite 30).
+    return cap < Infinity && cap <= share * RANGE_MAX[range] ? `${Math.ceil(cap - 1e-6)}px` : `${Math.ceil(share * 10000 - 1e-6) / 100}vw`;
+  });
+  const [desktop, tablet, phone] = at;
+  if (desktop === tablet && tablet === phone) return phone === '100vw' ? null : phone;
+  return `(min-width: 1024px) ${desktop}, (min-width: 768px) ${tablet}, ${phone}`;
 }
 
 function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
