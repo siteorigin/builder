@@ -95,8 +95,10 @@ const shown = (sel) =>
 const checkSmall = (list, where) => {
   assert.equal(list.length, PHOTOS, `${where} shows every picture`);
   for (const p of list) {
-    assert.match(p.src, /-480w\.(jpg|png)$/, `${where} loads the 480px copy (${p.src})`);
-    assert.equal(p.natural, 480, `${where} decoded the 480px copy`);
+    // The smallest copy that covers the tile: 160px or 480px, never the 2000px original.
+    const width = Number(p.src.match(/-(160|480)w\.(jpg|png)$/)?.[1]);
+    assert.ok(width, `${where} loads a small copy (${p.src})`);
+    assert.equal(p.natural, width, `${where} decoded the copy it named`);
     assert.ok(p.natural >= p.shown * p.dpr, `${where} has a pixel for every device pixel (${p.natural} for ${p.shown}px at ${p.dpr}x)`);
   }
 };
@@ -119,7 +121,7 @@ await eventually(async () => {
 await eventually(async () => {
   const thumb = await shown('.insp-image-thumb img');
   assert.equal(thumb.length, 1, 'the chosen image previews in the inspector');
-  assert.match(thumb[0].src, /-480w\.(jpg|png)$/, 'the inspector preview loads a small copy');
+  assert.match(thumb[0].src, /-(160|480)w\.(jpg|png)$/, 'the inspector preview loads a small copy');
 });
 
 step('undo the hero and its image, so every imported picture is unused again');
