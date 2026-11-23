@@ -182,22 +182,25 @@ describe('New project after Cancel', () => {
     expect(readdirSync(parent)).toEqual([]);
   });
 
-  it('leaves nothing behind when Cancel lands just as the website tools finish, the last moment it can stop', async () => {
-    const { c, parent } = setup();
-    const dir = join(parent, 'meadow-studio');
-    mkdirSync(dir);
-    // Everything creating a project writes before the preview starts is in the folder when this Cancel lands.
-    deps.run = async (d) => {
-      mkdirSync(join(d, 'node_modules', '.bin'), { recursive: true });
-      writeFileSync(join(d, 'node_modules', '.package-lock.json'), '{}');
-      mkdirSync(join(d, '.siteorigin', 'cache'), { recursive: true });
-      writeFileSync(join(d, '.siteorigin', 'cache', 'deps.json'), '{}');
-      c.cancelCreate();
-    };
-    expect(await c.create(opts(parent))).toEqual({ ok: false, message: 'Cancelled.' });
-    expect(readdirSync(dir)).toEqual([]);
-    expect(await c.create(opts(parent))).toEqual({ ok: true });
-  });
+  for (const starter of ['business', 'blank'] as const) {
+    it(`leaves nothing behind when Cancel lands just as the website tools finish, the last moment it can stop (${starter} starter)`, async () => {
+      const { c, parent } = setup();
+      const dir = join(parent, 'meadow-studio');
+      mkdirSync(dir);
+      const settings = { ...opts(parent), starter };
+      // Everything creating a project writes before the preview starts is in the folder when this Cancel lands.
+      deps.run = async (d) => {
+        mkdirSync(join(d, 'node_modules', '.bin'), { recursive: true });
+        writeFileSync(join(d, 'node_modules', '.package-lock.json'), '{}');
+        mkdirSync(join(d, '.siteorigin', 'cache'), { recursive: true });
+        writeFileSync(join(d, '.siteorigin', 'cache', 'deps.json'), '{}');
+        c.cancelCreate();
+      };
+      expect(await c.create(settings)).toEqual({ ok: false, message: 'Cancelled.' });
+      expect(readdirSync(dir)).toEqual([]);
+      expect(await c.create(settings)).toEqual({ ok: true });
+    });
+  }
 });
 
 describe('New project after a recoverable failure', () => {
