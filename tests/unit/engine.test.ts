@@ -543,6 +543,33 @@ describe('definition editing operations (§2.5)', () => {
     expect(errors(s)).toEqual([]);
   });
 
+  it('binds, checks, hoists and unbinds an image fallback alt like any other field', () => {
+    const f = fork(fresh(), 'logos.strip');
+    let s = f.state;
+    const own = { kind: 'component' as const, id: f.id };
+    expect(s.components[f.id].tree!.nodes['logo-image']).toMatchObject({ fallbackAlt: { $item: 'name' } });
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'logo-image', field: 'fallbackAlt', binding: { $item: 'logo' } }])).toThrow(/cannot be used as the fallbackAlt/);
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'wordmark', field: 'fallbackAlt', binding: { $item: 'name' } }])).toThrow(/has no "fallbackAlt" to bind/);
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: f.id, prop: 'logos', schema: { ...s.components[f.id].properties.logos, fields: { logo: { type: 'image', label: 'Logo', default: { assetId: null, alt: '' } } } } as never }])).toThrow(/"name"/);
+
+    // A logo item made into its own component takes the name as a property, for its wordmark and its fallback alt.
+    const styled = Object.entries(s.components[f.id].variantAxes!.tone.options).filter(([, v]) => v.styles?.wordmark);
+    const reset = applyOperations(s, styled.map(([vid]) => ({ type: 'node.resetStyles' as const, owner: own, nodeId: 'wordmark', variant: vid }))).state;
+    const r = applyOperations(reset, [{ type: 'component.createFromNode', owner: own, nodeId: 'logo-item', name: 'Logo' }]);
+    const logo = r.state.components[r.results[0].definitionId as string];
+    const image = Object.values(logo.tree!.nodes).find((n) => n.kind === 'image')!;
+    const wordmark = Object.values(logo.tree!.nodes).find((n) => n.kind === 'text')!;
+    expect(image).toMatchObject({ fallbackAlt: { $prop: expect.any(String) } });
+    expect((image as { fallbackAlt: unknown }).fallbackAlt).toEqual((wordmark as { text: unknown }).text);
+    expect(errors(r.state)).toEqual([]);
+
+    s = applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'logo-image', field: 'fallbackAlt', binding: null }]).state;
+    expect('fallbackAlt' in s.components[f.id].tree!.nodes['logo-image']).toBe(false);
+    expect(errors(s)).toEqual([]);
+    (s.components[f.id].tree!.nodes['logo-image'] as { fallbackAlt?: unknown }).fallbackAlt = { $prop: 'missing' };
+    expect(errors(s).map((d) => d.code)).toContain('BINDING_INVALID');
+  });
+
   it('inserts rich text, repeats and slots only where they make sense', async () => {
     const f = fork(fresh(), 'features.grid');
     let s = f.state;

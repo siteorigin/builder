@@ -210,21 +210,22 @@ describe('links and buttons', () => {
   });
 
   it('counts only images that render as placeholders', () => {
-    // Logo strip items without a logo show a wordmark, and testimonial portraits are optional: neither counts.
-    expect(placeholderImageCount(fresh())).toBe(9);
+    // Logo strip items without a logo show a wordmark, and testimonial and team portraits are optional: none count.
+    expect(placeholderImageCount(fresh())).toBe(6);
     const s = fresh();
     s.assets.assets['a1'] = { id: 'a1', name: 'Hero', file: 'static/assets/hero.jpg', mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' };
     instanceOf(s, 'hero.split').props.image = { assetId: 'a1', alt: 'Hero' };
-    expect(placeholderImageCount(s)).toBe(8);
+    expect(placeholderImageCount(s)).toBe(5);
   });
 
   it('labels footer navigation regions by their headings', () => {
     const files = generateProject(fresh());
     const footer = [...files.entries()].find(([p]) => p.endsWith('shell-footer.svelte'))![1];
     expect(footer).toContain('const uid = $props.id();');
-    expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{`\$\{uid\}-explore-heading`\}/);
+    // A cleared heading is not rendered, so the landmark falls back to the heading's default name.
+    expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{has\(linksHeading\) \? `\$\{uid\}-explore-heading` : undefined\} aria-label=\{has\(linksHeading\) \? undefined : "Explore"\}/);
     expect(footer).toMatch(/<h2 [^>]*id=\{`\$\{uid\}-explore-heading`\}/);
-    expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{`\$\{uid\}-contact-heading`\}/);
+    expect(footer).toMatch(/<nav [^>]*aria-labelledby=\{has\(contactHeading\) \? `\$\{uid\}-contact-heading` : undefined\} aria-label=\{has\(contactHeading\) \? undefined : "Contact"\}/);
   });
 });
 
@@ -751,6 +752,21 @@ describe('section links', () => {
     const ids = pageIds(s, s.site.homePageId);
     expect(ids.has('start')).toBe(true);
     expect(ids.has('banner')).toBe(false);
+  });
+
+  it('leaves out ids inside a collapsing wrapper whose children all stay hidden', () => {
+    const s = fresh();
+    const def = defOf(s, 'cta.banner');
+    def.tree!.nodes['actions'].anchor = 'cta-actions';
+    const banner = instanceOf(s, 'cta.banner');
+    expect(pageIds(s, s.site.homePageId).has('cta-actions')).toBe(true);
+    banner.props.primaryLabel = '';
+    banner.props.secondaryLabel = 'More';
+    expect(pageIds(s, s.site.homePageId).has('cta-actions')).toBe(true);
+    banner.props.secondaryLabel = '';
+    expect(pageIds(s, s.site.homePageId).has('cta-actions')).toBe(false);
+    const out = generateManagedComponent(s, def, {});
+    expect(out).toContain('{#if has(primaryLabel) || has(secondaryLabel)}');
   });
 
   it('walks a section placed inside another of the same kind', () => {
