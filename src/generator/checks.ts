@@ -7,6 +7,7 @@ import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { anchorCapable, anchorsInUse } from '@engine/tree';
+import { FORM_SERVICES } from '@catalogue/foundation/form';
 import { resolveLink, takesParagraphs } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 
@@ -70,11 +71,14 @@ interface Visit {
   /** An image node about to render. */
   image?: (n: GraphNode & { kind: 'image' }, scope: Scope, reportId: string) => void;
   /** A text node about to render. */
-  text?: (n: GraphNode & { kind: 'text' }, scope: Scope, reportId: string) => void;
+  text?: (n: GraphNode & { kind: 'text' }, scope: Scope, reportId: string, inDef: boolean) => void;
   /** An `id` attribute the generated markup will carry. */
   id?: (id: string, reportId: string) => void;
-  /** A code component placement about to render, with its effective property values. */
-  code?: (def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string) => void;
+  /**
+   * A code component placement about to render, with its effective property values; `n` is its instance node,
+   * `scope` where it is placed, and `inDef` when that is inside another component's design.
+   */
+  code?: (def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string, n: GraphNode & { kind: 'instance' }, scope: Scope, inDef: boolean) => void;
   /** A page-level node (page or shell tree) about to render, before anything inside it. */
   enter?: (n: GraphNode) => void;
   /** After everything inside a page-level node has been visited. */
@@ -166,7 +170,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         visit.image?.(n, frame.scope, reportId);
         break;
       case 'text':
-        visit.text?.(n, frame.scope, reportId);
+        visit.text?.(n, frame.scope, reportId, !!frame.def);
         break;
       case 'element':
         for (const c of n.children) walk(frame, c, inner);
@@ -220,7 +224,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           const child: Frame = { tree: def.tree, def, scope: { props, trail, ...where }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
-          visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`);
+          visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);
           // Code that places `so_id` as an id (a converted section does, on its root) carries the placement's id.
           if (ownId && SO_ID_ATTR.test(def.source ?? '')) visit.id?.(ownId, reportId);
           // Code places its slot content where its own markup says; count all of it as rendered, as often as it likes.
@@ -343,6 +347,116 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
 /** The unlinked buttons one node of a page or shell tree renders: the node itself, or those inside a placement. */
 export function unlinkedButtonsAt(state: ProjectState, tree: NodeTree, nodeId: string): UnlinkedButton[] {
   return tree.nodes[nodeId] ? unlinkedButtons(state, { ...tree, rootIds: [nodeId] }) : [];
+}
+
+/** Where a piece of shown content is stored: a field of the page or shell node itself, or a field of its placement. */
+export type ContentSource = { kind: 'node'; field: 'text' | 'label' | 'link' } | ({ kind: 'prop' } & PlacementField);
+
+/** Visible words or a link destination a page or shell tree renders, and the field that holds it. */
+export interface RenderedContent {
+  /** The page or shell node: the content's own node, or the outermost placement it is shown through. */
+  nodeId: string;
+  /** Words a visitor reads (text, a button's label, a field's text), or where a link goes. */
+  kind: 'text' | 'link';
+  /** The value as stored: text, rich text or a link. */
+  value: unknown;
+  /** Where to change it. Absent for content fixed in a component's design, which no placement can change. */
+  source?: ContentSource;
+  /** For content inside a component: the definition node showing it. */
+  defNodeId?: string;
+  /** Set when the placement places that definition directly, so its parts can be selected: the items, outermost first. */
+  itemPath?: string[];
+  /** Shown by a component placed directly at `nodeId` (not one inside its design or a code component). */
+  direct?: boolean;
+  /** Stored as rich text (blocks of spans), and whether the links inside it render as links. */
+  rich?: boolean;
+  richLinks?: boolean;
+}
+
+/**
+ * Settings a code component takes that visitors never read as words: the form service's endpoint, access key and
+ * form name, and the names its fields are sent under. Searching content leaves them alone.
+ */
+function codeSettings(def: ComponentDefinition): Set<string> {
+  if (def.componentId !== 'contact.form') return new Set();
+  return new Set([...Object.values(FORM_SERVICES).map((s) => s.prop), 'fields.name']);
+}
+
+/**
+ * Every piece of visible content a page or shell tree renders, once per field that holds it: text and rich text,
+ * button labels and destinations, and the content fields of the components placed there (a list item's fields
+ * included, with the item's own value or its field's default). Content a component's design fixes is listed
+ * without a source. Buttons the site leaves out (a styled button with no destination) are not listed.
+ */
+export function renderedContent(state: ProjectState, tree: NodeTree): RenderedContent[] {
+  const out: RenderedContent[] = [];
+  const seen = new Set<string>();
+  const keyOf = (c: RenderedContent) =>
+    JSON.stringify([c.kind, c.nodeId, c.source ? [c.source.kind, 'field' in c.source ? c.source.field : null, 'prop' in c.source ? c.source.prop : null, 'itemId' in c.source ? (c.source.itemId ?? null) : null] : [c.defNodeId ?? null, c.itemPath ?? null]]);
+  const push = (c: RenderedContent) => {
+    const k = keyOf(c);
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(c);
+  };
+  /** Where content a definition node reads is stored, and how to select it. */
+  const from = (b: unknown, field: 'text' | 'label' | 'link', scope: Scope, defNodeId: string, inDef: boolean): Pick<RenderedContent, 'source' | 'defNodeId' | 'itemPath' | 'direct'> => {
+    if (!inDef) return { source: { kind: 'node', field } };
+    const f = placementField(b, scope);
+    const direct = !!scope.placement;
+    return { ...(f ? { source: { kind: 'prop' as const, ...f } } : {}), defNodeId, direct, ...(direct && scope.path?.length ? { itemPath: scope.path } : {}) };
+  };
+  walkRendered(state, tree, {
+    text: (n, scope, reportId, inDef) => {
+      const value = evaluate(n.text, scope);
+      push({ nodeId: reportId, kind: 'text', value, ...from(n.text, 'text', scope, n.id, inDef), ...(n.rich ? { rich: true, richLinks: true } : {}) });
+    },
+    link: (n, scope, reportId, inDef) => {
+      const link = evaluate(n.link, scope) as LinkValue | undefined;
+      const label = evaluate(n.label, scope);
+      const goes = !!resolveLink(link, { state });
+      // A styled button with nowhere to go is left out of the site; a plain link still shows its words.
+      if (!goes && BUTTONS.has(String(evaluate(n.appearance, scope) ?? ''))) return;
+      push({ nodeId: reportId, kind: 'text', value: label, ...from(n.label, 'label', scope, n.id, inDef) });
+      if (isLinkValue(link) && link.type !== 'none') push({ nodeId: reportId, kind: 'link', value: link, ...from(n.link, 'link', scope, n.id, inDef) });
+    },
+    code: (def, props, reportId, _placement, n, scope, inDef) => {
+      const settings = codeSettings(def);
+      const rich = !takesParagraphs(def);
+      // The placement's own field each property is: directly, or through the binding a design hands it.
+      const fieldOf = (key: string): PlacementField | undefined => (inDef ? placementField(n.props[key], scope) : { prop: key });
+      const add = (kind: 'text' | 'link', value: unknown, source: PlacementField | undefined, schema: PropSchema) =>
+        push({ nodeId: reportId, kind, value, ...(source ? { source: { kind: 'prop', ...source } } : {}), ...(inDef ? { direct: false } : {}), ...(schema.type === 'richtext' ? { rich: true, richLinks: rich } : {}) });
+      const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, source: PlacementField | undefined) => {
+        const schema = schemas[key];
+        const v = Object.hasOwn(values, key) ? values[key] : (schema as { default?: unknown }).default;
+        if (schema.type === 'string' || schema.type === 'richtext') add('text', v, source, schema);
+        if (schema.type !== 'link' || !isLinkValue(v) || v.type === 'none') return;
+        // A link named by a label property shows only while that label has words, as the shipped header does.
+        const labelKey = labelKeyFor(key);
+        const named = Object.hasOwn(values, labelKey) ? values[labelKey] : (schemas[labelKey] as { default?: unknown } | undefined)?.default;
+        if (schemas[labelKey]?.type === 'string' && !String(named ?? '').trim()) return;
+        add('link', v, source, schema);
+      };
+      for (const [key, schema] of Object.entries(def.properties)) {
+        if (settings.has(key)) continue;
+        const field = fieldOf(key);
+        if (schema.type !== 'list') {
+          take(def.properties, props, key, field);
+          continue;
+        }
+        for (const item of Array.isArray(props[key]) ? (props[key] as Array<Record<string, unknown>>) : []) {
+          if (!item || typeof item !== 'object') continue;
+          const itemId = typeof item.id === 'string' && item.id ? item.id : undefined;
+          for (const f of Object.keys(schema.fields)) {
+            if (settings.has(`${key}.${f}`)) continue;
+            take(schema.fields, item, f, field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined);
+          }
+        }
+      }
+    }
+  });
+  return out;
 }
 
 /** How many images on the site's pages and shell render as placeholders because no image is chosen yet. */
