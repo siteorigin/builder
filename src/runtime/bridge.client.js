@@ -396,6 +396,8 @@ window.addEventListener('message', async (e) => {
       break;
     }
     case 'inspect':
+      // This frame is measured and never scrolled: a classic scrollbar would take its width from the viewport.
+      document.documentElement.style.scrollbarWidth = 'none';
       // Measure only once web fonts and images have settled: both change line wrapping and widths.
       await settled(4000);
       send('inspectResult', { requestId: m.payload.requestId, report: inspect() });
