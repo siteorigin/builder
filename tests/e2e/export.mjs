@@ -55,6 +55,22 @@ assert.equal(font.ok, true, `the bundled font is accepted: ${font.error?.message
 const unknownFont = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'token.set', tokenId: 'font.display', value: 'Montserrat' }] }, { label: 'Change font' }));
 assert.equal(unknownFont.ok, false, 'a font that is not installed is refused instead of silently falling back');
 
+step('#88: a page that links to a second new page, as a multi-page AI request builds them');
+const fieldNotes = await win.evaluate(() =>
+  window.builder.project.apply(
+    {
+      operations: [
+        { type: 'page.create', pageId: 'pg_readerrequests', title: 'Reader requests', route: '/reader-requests/' },
+        { type: 'node.insert', owner: { kind: 'page', id: 'pg_readerrequests' }, componentId: 'cta.banner', props: { heading: 'Ask us for a book' } },
+        { type: 'page.create', pageId: 'pg_staffpicks', title: 'Staff picks', route: '/staff-picks/' },
+        { type: 'node.insert', owner: { kind: 'page', id: 'pg_staffpicks' }, componentId: 'cta.banner', props: { heading: 'Staff picks', primaryLabel: 'Ask for a book', primaryLink: { type: 'page', target: 'pg_readerrequests' } } }
+      ]
+    },
+    { label: 'Add Staff picks and Reader requests' }
+  )
+);
+assert.equal(fieldNotes.ok, true, `the pages are added: ${fieldNotes.error?.message}`);
+
 step('export through the controller');
 // Folder exports ask for a parent folder and create a new folder inside it, so nothing is ever replaced.
 const exportsDir = join(WORK, 'exports');
@@ -266,6 +282,13 @@ assert.ok(!staticFiles.some((f) => /fraunces.*\.woff2$/i.test(f)), 'the font it 
 const css = staticFiles.filter((f) => f.endsWith('.css')).map((f) => readFileSync(join(staticOut, f), 'utf8')).join('\n');
 assert.match(css, /--so-font-display:\s*['"]Lora Variable['"]/, 'the display font token uses the family the font declares');
 assert.match(css, /@font-face\s*\{[^}]*font-family:\s*['"]?Lora Variable[^}]*url\([^)]*lora[^)]*\.woff2/i, 'the font has an @font-face rule pointing at its file');
+// Both destinations exist, and the link is in the page content (neither page is in the navigation).
+assert.ok(staticFiles.includes('staff-picks/index.html') && staticFiles.includes('reader-requests/index.html'), 'both new pages are prerendered');
+const staffMain = readFileSync(join(staticOut, 'staff-picks', 'index.html'), 'utf8').match(/<main[\s>][^]*<\/main>/)?.[0] ?? '';
+// The site links relatively (it works from any folder), so each href is read as the browser resolves it.
+const staffLinks = [...staffMain.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => new URL(m[1], 'https://example.test/staff-picks/').pathname);
+assert.ok(staffLinks.includes('/reader-requests/'), `the Staff picks content links to Reader requests: ${staffLinks.join(', ')}`);
+assert.match(readFileSync(join(staticOut, 'reader-requests', 'index.html'), 'utf8'), /Ask us for a book/, 'the link leads to the Reader requests page');
 const authoring = staticFiles.filter((f) => f === 'siteorigin.project.json' || f.startsWith('siteorigin/') || f.endsWith('.svelte'));
 assert.deepEqual(authoring, [], 'static export has no authoring metadata or sources');
 

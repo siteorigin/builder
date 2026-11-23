@@ -1,5 +1,5 @@
 /** Read-only helpers for the AI result card: the status of each check, and where a change's link goes. */
-import type { ChatChange, ChatMessage } from '@shared/api';
+import type { ChatChange, ChatContext, ChatMessage } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { resolveRef } from './model';
 
@@ -51,4 +51,37 @@ export function changeTarget(state: ProjectState, currentPageId: string | null, 
   }
   if (exists) return { pageId, selection: ref };
   return { pageId, selection: null, note: `That element is no longer on ${owner.kind === 'page' ? state.pages[pageId].title : `the shared ${owner.id}`}. Showing the page instead.` };
+}
+
+/**
+ * The result that offers Continue: the conversation's last message, when it is a request that ended unfinished.
+ * An older unfinished card does not, since a newer request has moved on from it.
+ */
+export function resumableId(messages: ChatMessage[]): string | undefined {
+  const last = messages.at(-1);
+  return last?.role === 'assistant' && last.result?.incomplete && (last.result.status === 'completed' || last.result.status === 'no-changes') ? last.id : undefined;
+}
+
+/**
+ * The context a Continue is sent with: that of the request it continues, checked against the project as it is
+ * now. When its page or selected element has gone, nothing is guessed (another page, or a selection dropped
+ * so the request reaches the whole site): the user chooses where to carry on and sends "Continue" themselves.
+ */
+export function continueContext(user: ChatMessage | undefined, state: ProjectState, viewport: number): { ctx: ChatContext } | { error: string } {
+  const choose = 'Choose what to change, then send "Continue".';
+  if (user?.role !== 'user') return { error: choose };
+  const ctx = user.context;
+  // Requests saved before messages carried a context were about the whole site.
+  if (!ctx) return { ctx: { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '', selection: null, selectionLabel: null, viewport } };
+  if (!ctx.pageId || !Object.hasOwn(state.pages, ctx.pageId)) return { error: `${ctx.pageTitle || 'That page'} is no longer in the site. ${choose}` };
+  if (ctx.selection) {
+    let found = false;
+    try {
+      found = !!resolveRef(state, ctx.selection).node;
+    } catch {
+      found = false;
+    }
+    if (!found) return { error: `${ctx.selectionLabel ?? 'The selected element'} is no longer in the site. ${choose}` };
+  }
+  return { ctx: structuredClone(ctx) };
 }

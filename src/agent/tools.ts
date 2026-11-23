@@ -3,6 +3,7 @@ import type { ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { EditOperationSchema, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
+import { normalizeRoute, slugify } from '@shared/routes';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
@@ -61,7 +62,7 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   read_component: 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.',
   search_assets: 'List imported images by name and description. You cannot see image contents.',
   apply_operations:
-    'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Call it at most once per turn.',
+    'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Operations refer to pages by ID: to fill a page you create, use the pageId this call returns in your next step. Call it at most once per step (one response of yours); the request carries on in your next step without the user replying.',
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
   inspect_layout: 'Measure a page in the live preview at a viewport width: horizontal overflow, elements outside the viewport, whether each image loaded (report.images: failed images are files that could not be loaded; unverified ones were still loading when the check ran out of time, which is not a problem with the site), missing alt text, heading structure and runtime errors. Structural evidence only; no screenshots.',
@@ -285,7 +286,14 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       // Page IDs are allocated by the app; only its own page tool may pass one through.
       if (ops.some((o) => o.type === 'page.create' && o.pageId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'page.create does not take a pageId.' } };
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId);
-      if (!res.ok) return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };
+      if (!res.ok) {
+        // A batch that creates a page and refers to it in the same call cannot work: the page has no ID yet.
+        const dependent = refersToNewPage(ops, res.error?.message ?? '');
+        const hint = dependent
+          ? 'Nothing in this batch was applied, including its page.create. A new page cannot be referred to in the batch that creates it: create the page alone, then fill it in your next step with the pageId and revision that call returns.'
+          : undefined;
+        return { ok: false, content: { ok: false, revision: res.revision, error: res.error, ...(hint ? { hint } : {}) } };
+      }
       return { ok: true, mutated: true, ops, results: res.results, content: { ok: true, revision: res.revision, results: res.results } };
     }
     case 'read_source': {
@@ -354,6 +362,14 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
 }
 
 /** Models often pass a route ("/about/") where a page ID is expected; both find the page. */
+/** Whether a rejected batch failed on a page it was creating itself, named by its route or title. */
+function refersToNewPage(ops: EditOperation[], message: string): boolean {
+  const ref = message.match(/\bpage "([^"]*)" does not exist/i)?.[1]?.trim();
+  if (!ref) return false;
+  const asRoute = normalizeRoute(ref);
+  return ops.some((o) => o.type === 'page.create' && (normalizeRoute(o.route ?? slugify(o.title)) === asRoute || o.title.trim().toLowerCase() === ref.toLowerCase()));
+}
+
 function pageIdFor(state: ProjectState, ref: string): string | null {
   if (Object.hasOwn(state.pages, ref)) return ref;
   const trimmed = ref.trim();

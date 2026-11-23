@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext, Conversation } from '@shared/api';
@@ -18,6 +18,8 @@ import { catalogueIndex } from '@agent/context';
 import { applyOperations } from '@engine/apply';
 import { styleToCss, validateStyleValue } from '@shared/styles';
 import { ICONS } from '@catalogue/foundation/icons';
+import { copyProjectSource } from '../../src/main/export';
+import { missingPages, pageCreatesIn, savedPage, type WantedPage } from '@agent/completeness';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -500,6 +502,8 @@ describe('run budget, parallel calls and validation', () => {
     expect(results.slice(0, 3).every((r) => !r.isError)).toBe(true);
     expect(results[3].isError).toBe(true);
     expect(results[3].content).toContain('ONE_CHANGE_PER_TURN');
+    // A step is not a turn of the conversation: the model is told to carry on, not to wait for the user.
+    expect(JSON.parse(results[3].content).message).toMatch(/next step.*needs no reply|needs no reply.*next step/);
     expect(result?.summary).toBe('Added two pages.');
   });
 
@@ -1002,3 +1006,284 @@ describe('values the assistant commonly gets wrong', () => {
     expect(index.find((c) => c.componentId === 'cta.banner')!.props.heading).toBe('string');
   });
 });
+
+describe('requests that create pages over several steps (#88)', () => {
+  const pageAt = (s: ProjectState, route: string) => Object.values(s.pages).find((p) => p.route === route);
+  const banner = (heading: string, link?: string) => ({ componentId: 'cta.banner', props: { heading, primaryLabel: 'Ask for a book', ...(link ? { primaryLink: link } : {}) } });
+  const lastTool = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const lastText = (req: CanonicalModelRequest) => (req.items.at(-1) as { text: string }).text;
+
+  it('carries on after a batch that creates and fills a page is rejected, using the ID the create returns', async () => {
+    let rejected: { error?: { message: string }; hint?: string } = {};
+    let nudge = '';
+    const { session, run, adapter } = await setup([
+      () => [call('a', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Staff picks', route: '/staff-picks/' }, { type: 'node.insert', owner: { kind: 'page', id: '/staff-picks/' }, componentId: 'cta.banner' }] })],
+      (req) => {
+        rejected = lastTool(req);
+        return finish('The page could not be added.');
+      },
+      (req) => {
+        nudge = lastText(req);
+        return [call('b', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Staff picks', route: '/staff-picks/' }] })];
+      },
+      (req) => {
+        const created = lastTool(req);
+        return [call('c', 'apply_operations', { expectedRevision: created.revision, operations: [{ type: 'node.insert', owner: { kind: 'page', id: created.results[0].pageId }, ...banner('Staff picks') }] })];
+      },
+      () => finish('Added a Staff picks page.')
+    ]);
+    const { result } = await run('Add a Staff picks page');
+    // The engine's own message is kept, and the model is told how to do it in two steps.
+    expect(rejected.error?.message).toContain('Page "/staff-picks/" does not exist');
+    expect(rejected.hint).toMatch(/create the page alone, then fill it in your next step/);
+    expect(nudge).toContain('Staff picks (/staff-picks/) has not been created');
+    expect(adapter.requests).toHaveLength(5);
+    expect(result).toMatchObject({ status: 'completed', summary: 'Added a Staff picks page.', canUndo: true });
+    expect(result?.incomplete).toBeUndefined();
+    expect(pageAt(session.state, '/staff-picks/')!.rootIds).toHaveLength(1);
+  });
+
+  it('never calls a request Completed while a page it skipped is missing, and finishes it, link and checks included, on Continue', async () => {
+    const inspected: Array<[string, number]> = [];
+    let skipped: { error?: string; message?: string } = {};
+    let nudge = '';
+    let carried = '';
+    const { session, run, adapter } = await setup(
+      [
+        // Staff picks is built; the change that creates Reader requests comes second in the same response.
+        () => [calls(['s', 'upsert_page_with_sections', { slug: 'staff-picks', title: 'Staff picks', sections: [banner('Staff picks')] }], ['r', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.create', title: 'Reader requests', route: 'reader-requests' }] }])],
+        (req) => {
+          skipped = lastTool(req);
+          return finish('Added Staff picks. The editor allows only one edit step per turn.');
+        },
+        (req) => {
+          nudge = lastText(req);
+          return finish('Both pages are ready.');
+        },
+        // Continue: a model that says it is done is reminded of the page the earlier request still owes.
+        () => finish('Done.'),
+        (req) => {
+          carried = lastText(req);
+          return [calls(['u1', 'upsert_page_with_sections', { slug: 'reader-requests', title: 'Reader requests', sections: [banner('Ask us for a book')] }], ['u2', 'upsert_page_with_sections', { slug: 'staff-picks', sections: [banner('Staff picks', '/reader-requests/')] }])];
+        },
+        () => [
+          calls(
+            ['i1', 'inspect_layout', { pageId: '/staff-picks/', viewport: 'phone' }],
+            ['i2', 'inspect_layout', { pageId: '/staff-picks/', viewport: 'desktop' }],
+            ['i3', 'inspect_layout', { pageId: '/reader-requests/', viewport: 'phone' }],
+            ['i4', 'inspect_layout', { pageId: '/reader-requests/', viewport: 'desktop' }]
+          )
+        ],
+        () => finish('Added Reader requests, linked Staff picks to it and checked both at phone and desktop widths.')
+      ],
+      { inspectLayout: async (pageId, width) => (inspected.push([pageId, width]), { issues: [] }) }
+    );
+    const first = await run('Add a Staff picks page and a Reader requests page, link the first to the second, and check both at phone and desktop widths.');
+    expect(skipped.error).toBe('ONE_CHANGE_PER_TURN');
+    expect(skipped.message).toContain('needs no reply from the user');
+    expect(nudge).toContain('Reader requests (/reader-requests/) has not been created');
+    expect(nudge).toContain('skipped');
+    expect(first.result).toMatchObject({ status: 'completed', incomplete: true, canUndo: true, unfinished: [{ title: 'Reader requests', route: '/reader-requests/' }] });
+    expect(first.result?.summary).toContain('not finished');
+    expect(first.result?.summary).toContain('Reader requests (/reader-requests/) was not created');
+    expect(first.result?.summary).not.toContain('Both pages are ready');
+    expect(first.result?.checks).toContainEqual({ status: 'issue', text: 'The page Reader requests (/reader-requests/) was not created.' });
+    expect(pageAt(session.state, '/reader-requests/')).toBeUndefined();
+
+    const second = await run('Continue');
+    expect(carried).toContain('Reader requests (/reader-requests/) from the earlier request has not been created');
+    expect(second.result).toMatchObject({ status: 'completed', canUndo: true });
+    expect(second.result?.incomplete).toBeUndefined();
+    expect(second.result?.unfinished).toBeUndefined();
+    expect(adapter.requests).toHaveLength(7);
+
+    // Both destinations, the link between them and the requested widths, read from the exported project.
+    const staff = pageAt(session.state, '/staff-picks/')!;
+    const reader = pageAt(session.state, '/reader-requests/')!;
+    expect(inspected.sort()).toEqual(
+      [
+        [staff.id, 390],
+        [staff.id, 1280],
+        [reader.id, 390],
+        [reader.id, 1280]
+      ].sort()
+    );
+    const out = mkdtempSync(join(tmpdir(), 'so-export-'));
+    dirs.push(out);
+    await copyProjectSource(session.dir, out);
+    expect(existsSync(join(out, 'src/routes/reader-requests/+page.svelte'))).toBe(true);
+    const staffSource = readFileSync(join(out, 'src/routes/staff-picks/+page.svelte'), 'utf8');
+    expect(staffSource).toContain('"href":"/reader-requests/"');
+  });
+
+  it('says a request is not finished when nothing landed, and keeps that out of the next, unrelated request', async () => {
+    const { run, adapter } = await setup([
+      () => [call('a', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Staff picks' }, { type: 'page.create', title: 'Reader requests', route: 'reader-requests' }, { type: 'node.insert', owner: { kind: 'page', id: '/staff-picks/' }, componentId: 'cta.banner' }] })],
+      () => finish('No changes were possible.'),
+      () => finish('I still could not do it.'),
+      () => finish('The headings are already as large as the theme allows.')
+    ]);
+    const { result } = await run('Add Staff picks and Reader requests pages');
+    expect(adapter.requests).toHaveLength(3);
+    expect(result).toMatchObject({ status: 'no-changes', incomplete: true, canUndo: false, unfinished: [{ title: 'Staff picks' }, { title: 'Reader requests', route: '/reader-requests/' }] });
+    expect(result?.summary).toContain('nothing was changed');
+    expect(result?.summary).toContain('The page Staff picks was not created.');
+    expect(result?.checks).toEqual([
+      { status: 'issue', text: 'The page Staff picks was not created.' },
+      { status: 'issue', text: 'The page Reader requests (/reader-requests/) was not created.' }
+    ]);
+    const next = await run('Make the headings bigger');
+    expect(adapter.requests).toHaveLength(4);
+    expect(next.result?.status).toBe('no-changes');
+    expect(next.result?.incomplete).toBeUndefined();
+  });
+
+  it('reads the pages a change meant to create, even beside a bad operation', () => {
+    expect(pageCreatesIn('{"operations": [')).toEqual([]);
+    expect(pageCreatesIn('null')).toEqual([]);
+    expect(pageCreatesIn('{"operations": null}')).toEqual([]);
+    expect(pageCreatesIn('{"operations": {"type": "page.create", "title": "Not a list"}}')).toEqual([]);
+    expect(pageCreatesIn(JSON.stringify({ operations: [{ type: 'page.create', title: ' Staff picks ', route: 'Staff-Picks' }, { type: 'node.insert' }, { type: 'page.create', title: 'Bad route', route: '/a/b/c/d/e/' }, { type: 'page.create', route: '/x/' }] }))).toEqual([
+      { title: 'Staff picks', route: '/staff-picks/' },
+      { title: 'Bad route' }
+    ]);
+  });
+
+  it('counts a wanted page as made only by a new page at its route, or by a new page with its title when the route was taken', () => {
+    const before = createStarterState('business', 'Test', false);
+    const about = pageAtRoute(before, '/about/')!;
+    const contact = pageAtRoute(before, '/contact/')!;
+    const { state: after } = applyOperations(before, [
+      { type: 'page.create', title: 'Schedule', route: '/spring/' },
+      { type: 'page.create', title: 'Reader requests', route: '/requests/' },
+      { type: 'page.create', title: 'Removed later', route: '/removed/' },
+      { type: 'page.update', pageId: contact.id, route: '/reader-requests/' }
+    ]);
+    const removed = pageAtRoute(after, '/removed/')!;
+    const { state: final } = applyOperations(after, [{ type: 'page.remove', pageId: removed.id }]);
+    const wanted: WantedPage[] = [
+      { title: 'Schedule', route: '/spring/', reason: 'rejected' },
+      // Two pages with one title at the routes the user gave: the spring page is not the autumn one.
+      { title: 'Schedule', route: '/autumn/', reason: 'skipped' },
+      { title: 'schedule', reason: 'rejected' },
+      // A page the site already had never stands in for a new one, by title or by being moved onto the route.
+      { title: 'About', reason: 'rejected' },
+      { title: 'Reader requests', route: '/reader-requests/', reason: 'rejected' },
+      // /about/ belonged to About before the request: a new page with the title meets it, About does not.
+      { title: 'Somewhere', route: '/about/', reason: 'rejected' },
+      { title: 'Reader requests', route: '/about/', reason: 'rejected' },
+      { title: 'Removed later', route: '/removed/', reason: 'skipped' }
+    ];
+    const missing = missingPages(wanted, before, final);
+    expect(missing).toEqual([
+      { title: 'Schedule', route: '/autumn/', reason: 'skipped' },
+      { title: 'About', reason: 'rejected' },
+      { title: 'Reader requests', route: '/reader-requests/', reason: 'rejected' },
+      { title: 'Somewhere', route: '/about/', reason: 'rejected', occupiedBy: 'About' },
+      { title: 'Removed later', route: '/removed/', reason: 'skipped' }
+    ]);
+    // Saved for a "continue" by route, or by title when the route was taken, with the pages already there.
+    expect(missing.map((w) => savedPage(w, final))).toEqual([
+      { title: 'Schedule', route: '/autumn/' },
+      { title: 'About', existing: [about.id] },
+      { title: 'Reader requests', route: '/reader-requests/', existing: [contact.id] },
+      { title: 'Somewhere', existing: [] },
+      { title: 'Removed later', route: '/removed/' }
+    ]);
+    // Carried into a "continue": any page that was not there when it was saved counts, one made by hand too,
+    // never the old page that had been moved onto the route.
+    const carried: WantedPage[] = [
+      { title: 'Reader requests', route: '/reader-requests/', existing: [contact.id], reason: 'carried' },
+      { title: 'Schedule', route: '/spring/', reason: 'carried' },
+      { title: 'About', existing: [about.id], reason: 'carried' },
+      { title: 'Schedule', existing: [], reason: 'carried' }
+    ];
+    expect(missingPages(carried, final, final).map((w) => w.title)).toEqual(['Reader requests', 'About']);
+  });
+
+  it('hints at a second step only when the batch failed on a page it was creating', async () => {
+    const hints: unknown[] = [];
+    const { run } = await setup([
+      () => [call('a', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Staff picks' }, { type: 'node.insert', owner: { kind: 'page', id: 'pg_gone1' }, componentId: 'cta.banner' }] })],
+      (req) => {
+        hints.push(lastTool(req).hint);
+        return [call('b', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Staff picks' }, { type: 'node.insert', owner: { kind: 'page', id: 'Staff picks' }, componentId: 'cta.banner' }] })];
+      },
+      (req) => {
+        hints.push(lastTool(req).hint);
+        return finish('Gave up.');
+      }
+    ]);
+    await run('Add a Staff picks page');
+    expect(hints[0]).toBeUndefined();
+    expect(hints[1]).toMatch(/create the page alone/);
+  });
+
+  it('names the pages still missing when a run fails', async () => {
+    const batch = { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Staff picks', route: '/staff-picks/' }, { type: 'node.insert', owner: { kind: 'page', id: '/staff-picks/' }, componentId: 'cta.banner' }] };
+    const { run } = await setup([() => [call('a', 'apply_operations', batch)], () => [call('b', 'apply_operations', batch)]]);
+    const { result } = await run('Add a Staff picks page');
+    expect(result).toMatchObject({ status: 'failed', checks: [{ status: 'issue', text: 'The page Staff picks (/staff-picks/) was not created.' }] });
+  });
+
+  it('connects a link that was waiting for the missing page when the request is continued', async () => {
+    const { session, run } = await setup([
+      () => [calls(['s', 'upsert_page_with_sections', { slug: 'staff-picks', title: 'Staff picks', sections: [banner('Staff picks', '/reader-requests/')] }], ['r', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.create', title: 'Reader requests', route: '/reader-requests/' }] }])],
+      () => finish('Added Staff picks.'),
+      () => finish('Done.'),
+      // Continue builds only the missing page; the link that was waiting for it connects on its own.
+      () => [call('u', 'upsert_page_with_sections', { slug: 'reader-requests', title: 'Reader requests', sections: [banner('Ask us for a book')] })],
+      () => finish('Added Reader requests.')
+    ]);
+    const first = await run('Add Staff picks with a link to a new Reader requests page');
+    expect(first.result?.pendingLinks).toHaveLength(1);
+    expect(first.result?.checks).toContainEqual({ status: 'issue', text: 'Links to /reader-requests/ do not go anywhere yet.' });
+    const { result } = await run('Continue');
+    expect(result?.status).toBe('completed');
+    expect(result?.incomplete).toBeUndefined();
+    const staff = pageAt(session.state, '/staff-picks/')!;
+    const cta = staff.nodes[staff.rootIds[0]] as unknown as { props: Record<string, unknown> };
+    expect(cta.props.primaryLink).toEqual({ type: 'page', target: pageAt(session.state, '/reader-requests/')!.id });
+  });
+
+  it('counts a page made by hand before Continue, and connects the link that was waiting for it without another edit', async () => {
+    const { session, run, adapter } = await setup([
+      () => [calls(['s', 'upsert_page_with_sections', { slug: 'staff-picks', title: 'Staff picks', sections: [banner('Staff picks', '/reader-requests/')] }], ['r', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'page.create', title: 'Reader requests', route: '/reader-requests/' }] }])],
+      () => finish('Added Staff picks.'),
+      () => finish('Done.'),
+      () => finish('Everything is in place.')
+    ]);
+    const first = await run('Add Staff picks with a link to a new Reader requests page');
+    expect(first.result).toMatchObject({ incomplete: true, unfinished: [{ title: 'Reader requests', route: '/reader-requests/' }] });
+    // The author makes the missing page themselves, then presses Continue.
+    const made = await session.apply({ operations: [{ type: 'page.create', title: 'Reader requests', route: '/reader-requests/' }] }, { label: 'Add page', source: 'user' });
+    expect(made.ok).toBe(true);
+    const { result } = await run('Continue');
+    expect(adapter.requests).toHaveLength(4);
+    expect(result).toMatchObject({ status: 'completed', summary: 'Everything is in place.' });
+    expect(result?.incomplete).toBeUndefined();
+    const staff = pageAt(session.state, '/staff-picks/')!;
+    const cta = staff.nodes[staff.rootIds[0]] as unknown as { props: Record<string, unknown> };
+    expect(cta.props.primaryLink).toEqual({ type: 'page', target: pageAt(session.state, '/reader-requests/')!.id });
+  });
+
+  it('keeps a blank page blank when the request is continued', async () => {
+    const { session, run, adapter } = await setup([
+      () => [call('a', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Notes' }, { type: 'node.insert', owner: { kind: 'page', id: '/notes/' }, componentId: 'cta.banner' }] })],
+      () => finish('Could not add it.'),
+      () => finish('Still could not add it.'),
+      () => [call('b', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Notes' }] })],
+      () => finish('Added a blank Notes page.')
+    ]);
+    const first = await run('Add a blank Notes page');
+    expect(first.result).toMatchObject({ status: 'no-changes', incomplete: true, unfinished: [{ title: 'Notes' }] });
+    const { result } = await run('Continue');
+    // The blank page was what the earlier request asked for, so it is not sent back as unfinished.
+    expect(adapter.requests).toHaveLength(5);
+    expect(result).toMatchObject({ status: 'completed', summary: 'Added a blank Notes page.' });
+    expect(result?.incomplete).toBeUndefined();
+    expect(pageAtRoute(session.state, '/notes/')!.rootIds).toEqual([]);
+  });
+});
+
+const pageAtRoute = (s: ProjectState, route: string) => Object.values(s.pages).find((p) => p.route === route);

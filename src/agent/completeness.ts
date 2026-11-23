@@ -3,6 +3,7 @@
  * as a stub? It costs no model call. The orchestrator acts on it at most once per run.
  */
 import type { PageDoc, ProjectState } from '@shared/types';
+import { normalizeRoute, validateRoute } from '@shared/routes';
 
 export interface StubPage {
   pageId: string;
@@ -50,9 +51,15 @@ export function findStubPages(before: ProjectState, after: ProjectState, request
   return out;
 }
 
-export function completenessNudge(stubs: StubPage[], missingRoutes: string[], macroTools: boolean, rejected: string[] = []): string {
+export function completenessNudge(stubs: StubPage[], missingRoutes: string[], macroTools: boolean, rejected: string[] = [], wanted: MissingPage[] = []): string {
   const lines = ['Before finishing, the app found work that looks unfinished:'];
   for (const r of rejected) lines.push(`- The page ${r} was rejected with errors and has not been built.`);
+  for (const w of wanted)
+    lines.push(
+      w.reason === 'carried'
+        ? `- The page ${describePage(w)} from the earlier request has not been created yet.`
+        : `- The page ${describePage(w)} has not been created: the change that would have created it was ${w.reason === 'skipped' ? 'skipped because it came second in one response' : 'rejected, so nothing in that batch was applied'}.${w.occupiedBy ? ` Give it a route of its own and leave ${w.occupiedBy} as it is.` : ''}`
+    );
   for (const s of stubs) lines.push(`- ${s.title} (${s.route}) has ${s.sections === 0 ? 'no sections' : 'only an opening section'}.`);
   for (const r of missingRoutes) lines.push(`- Links point to ${r}, but no page uses that route yet.`);
   lines.push(
@@ -63,3 +70,90 @@ export function completenessNudge(stubs: StubPage[], missingRoutes: string[], ma
   lines.push('If one of these is already what the user asked for, leave it and finish. You will not be asked again.');
   return lines.join('\n');
 }
+
+/**
+ * A page the request tried to create in a change that never landed: a batch that was rejected, or a second
+ * change in one model response that was skipped. Nothing in the project records it, so the run remembers it
+ * and checks the project for it before it may call itself finished.
+ */
+export interface WantedPage {
+  title: string;
+  /** Normalized; absent when the model let the app choose the route from the title. */
+  route?: string;
+  reason: 'rejected' | 'skipped' | 'carried';
+  /** Carried: pages that already had the route (or, without one, the title) when it was saved, which do not count. */
+  existing?: string[];
+}
+
+/** The page.create operations in a change's raw arguments. A bad sibling operation never hides a valid one. */
+export function pageCreatesIn(rawArgs: string): Array<Omit<WantedPage, 'reason'>> {
+  let args: unknown;
+  try {
+    args = JSON.parse(rawArgs || '{}');
+  } catch {
+    return [];
+  }
+  const ops = (args as { operations?: unknown } | null)?.operations;
+  if (!Array.isArray(ops)) return [];
+  const out: Array<Omit<WantedPage, 'reason'>> = [];
+  for (const op of ops) {
+    if (!op || typeof op !== 'object' || (op as { type?: unknown }).type !== 'page.create') continue;
+    const { title, route } = op as { title?: unknown; route?: unknown };
+    if (typeof title !== 'string' || !title.trim()) continue;
+    const r = typeof route === 'string' && route.trim() ? normalizeRoute(route) : undefined;
+    out.push({ title: title.trim().slice(0, 80), ...(r && r !== '/' && !validateRoute(r) ? { route: r } : {}) });
+  }
+  return out;
+}
+
+const sameTitle = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** A wanted page the project still lacks; `occupiedBy` names the page that already had its route. */
+export type MissingPage = WantedPage & { occupiedBy?: string };
+
+/**
+ * The wanted pages the project still lacks, read from the project as it is now, so a page created and then
+ * removed again is still missing. A route the model named must be met by a page this run created at that
+ * route, since the user may have asked for two pages with one title and an old page moved there is not new.
+ * Only a route that already belonged to another page when the request started cannot be: then a new page with
+ * the title, at any route, is what was wanted. A page carried over from an earlier request is met by any page
+ * at its route, or with its title, that was not there when it was saved (the user may have made it by hand).
+ */
+export function missingPages(wanted: WantedPage[], before: ProjectState, after: ProjectState): MissingPage[] {
+  const pages = Object.values(after.pages);
+  const created = pages.filter((p) => !Object.hasOwn(before.pages, p.id));
+  const out: MissingPage[] = [];
+  for (const w of wanted) {
+    let met: boolean;
+    let occupant: PageDoc | undefined;
+    if (w.reason === 'carried') met = pages.some((p) => (w.route ? p.route === w.route : sameTitle(p.title, w.title)) && !w.existing?.includes(p.id));
+    else {
+      occupant = w.route ? Object.values(before.pages).find((p) => p.route === w.route) : undefined;
+      const atRoute = created.some((p) => p.route === w.route);
+      const byTitle = created.some((p) => sameTitle(p.title, w.title));
+      met = !w.route ? byTitle : occupant ? byTitle || atRoute : atRoute;
+    }
+    if (!met && !out.some((o) => (o.route ?? '') === (w.route ?? '') && sameTitle(o.title, w.title))) out.push({ ...w, ...(occupant ? { occupiedBy: occupant.title } : {}) });
+  }
+  return out;
+}
+
+/**
+ * How a missing page is saved with an unfinished result, for a "continue" to check again, with the pages that
+ * already have its route or title and so are not it (an old page moved onto the route, for one). A route
+ * another page had before the request cannot be met there, so that page is saved by its title.
+ */
+export function savedPage(w: MissingPage, state: ProjectState): { title: string; route?: string; existing?: string[] } {
+  const route = w.route && !w.occupiedBy ? w.route : undefined;
+  const existing = Object.values(state.pages)
+    .filter((p) => (route ? p.route === route : sameTitle(p.title, w.title)))
+    .map((p) => p.id);
+  return { title: w.title, ...(route ? { route } : {}), ...(existing.length || !route ? { existing } : {}) };
+}
+
+/** Remember a page once, keeping the first reason it was seen for. */
+export function rememberPage(list: WantedPage[], page: WantedPage) {
+  if (!list.some((w) => (w.route && w.route === page.route) || (!w.route && !page.route && sameTitle(w.title, page.title)))) list.push(page);
+}
+
+export const describePage = (w: Pick<MissingPage, 'title' | 'route' | 'occupiedBy'>) => (w.route ? `${w.title} (${w.route}${w.occupiedBy ? `, which ${w.occupiedBy} already uses` : ''})` : w.title);
