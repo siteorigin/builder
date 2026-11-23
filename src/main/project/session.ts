@@ -795,8 +795,10 @@ export class ProjectSession extends EventEmitter {
       } catch {
         readable = false;
       }
-      // The step is evidence of the finish in any format this app reads: one saved just before an update counts.
-      const h = readableJournalHistory(journal.history) ? journal.history : null;
+      // The step is evidence of the finish in any format this app reads, so one saved just before an update counts;
+      // an older one only for a completion that changes no files itself, as every completion is written.
+      const older = readableJournalHistory(journal.history) && !journal.writes.length && !journal.deletes.length;
+      const h = usableJournalHistory(journal.history) || older ? journal.history : null;
       const at = h ? h.entries.findIndex((e) => e?.runId === journal.finishRun) : -1;
       const docs = at >= 0 ? h!.entries[at].docs : null;
       const blobs = docs && typeof docs === 'object' && Object.keys(docs).length ? Object.values(docs).flatMap((d) => (d && typeof d === 'object' ? [d.before, d.after] : [undefined])) : null;
@@ -879,7 +881,9 @@ export class ProjectSession extends EventEmitter {
       conflicts
         ? `Finished an interrupted save. ${conflicts} file(s) had been changed outside the app and were kept as they are; choose which version to keep in Project health.`
         : finished && !journal.writes.length && !journal.deletes.length
-          ? 'Finished saving an AI change that was interrupted. It can be undone in one step.'
+          ? usableJournalHistory(journal.history)
+            ? 'Finished saving an AI change that was interrupted. It can be undone in one step.'
+            : 'Finished saving an AI change that was interrupted. It was saved before the app was updated, so it cannot be undone.'
           : `Finished an interrupted save (${journal.writes.length + journal.deletes.length} file(s)).`
     );
   }
