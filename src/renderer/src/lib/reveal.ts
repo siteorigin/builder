@@ -28,18 +28,19 @@ export interface RevealedItem extends ListPlace {
 
 /**
  * What the preview bridge reveals: the item's elements under the placement's context (`ctx`), found by the stable
- * item id, never by label or position. `nodes` are what the list's repeats render for each item (outlined and scrolled
- * to); `depths` how many other repeats enclose those repeats (0 at the top of the design), which says where the item's
- * id sits among an element's item ids. `text` is typed text for the plain text nodes bound to the field being edited;
- * `restore` names the plain text nodes whose own text the page shows again at once (typing there was cancelled).
+ * item id, never by label or position. The item is the same one while `ctx`, `list` and `items` are; a change to the
+ * design only changes how it is found. `nodes` are what the list's repeats render for each item (outlined and
+ * scrolled to). `within` maps every node inside those repeats to how many other repeats enclose its repeat (0 at the
+ * top of the design), which says where the item's id sits among that node's item ids; only these nodes' elements are
+ * the item's (another list can reuse its id). `text` is typed text for the plain text nodes bound to the field being
+ * edited; `restore` names the plain text nodes whose own text the page shows again at once (typing was cancelled).
  */
 export interface RevealTarget {
   ctx: string;
+  list: string;
   items: string;
   nodes: string[];
-  depths: number[];
-  /** Every node inside those repeats: only their elements are the item's (another list can reuse its id). */
-  within: string[];
+  within: Record<string, number>;
   text?: { nodes: string[]; value: string };
   restore?: string[];
 }
@@ -65,9 +66,12 @@ export function revealTarget(state: ProjectState, item: RevealedItem, ctx: strin
     for (let p = findParent(tree, id)?.parentId, guard = 0; p && guard < 50; p = findParent(tree, p)?.parentId, guard++) if (tree.nodes[p]?.kind === 'repeat') n++;
     return n;
   };
-  const depths = [...new Set(repeats.map((r) => depthOf(r.id)))].sort((a, b) => a - b);
-  const within = [...new Set(repeats.flatMap((r) => subtreeIds(tree, r.id).filter((id) => id !== r.id)))];
-  const target: RevealTarget = { ctx, items: item.itemId, nodes, depths, within };
+  const within: Record<string, number> = {};
+  for (const r of repeats) {
+    const depth = depthOf(r.id);
+    for (const id of subtreeIds(tree, r.id)) if (id !== r.id) within[id] = depth;
+  }
+  const target: RevealTarget = { ctx, list: item.list, items: item.itemId, nodes, within };
   const fields = def.properties[item.list]?.type === 'list' ? (def.properties[item.list] as { fields: Record<string, { type: string }> }).fields : {};
   // Only plain text is shown as typed: rich text and links are rendered by components of their own.
   const textNodes = (field: string) =>

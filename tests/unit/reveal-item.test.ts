@@ -30,7 +30,7 @@ ${item('page:p|faq', 'c', 'Other question?', 'Answer C', true)}
 </section>
 <section data-so-ctx="page:p" data-so-node="faq2">${item('page:p|faq2', 'b', 'Same question?', 'Answer B, second placement')}</section>
 <section data-so-ctx="page:p" data-so-node="faq3">${item('page:p|faq3', 'o1,e', 'Nested?', 'Under the first row')}${item('page:p|faq3', 'o1,f', 'Other nested?', 'Not this one')}${item('page:p|faq3', 'o2,e', 'Nested?', 'Under the second row')}</section>
-<section data-so-ctx="page:p" data-so-node="faq4">${item('page:p|faq4', 'e', 'Plain id?', 'E')}${item('page:p|faq4', 'x,e', 'Comma id?', 'X, E')}<details data-so-ctx="page:p|faq4" data-so-node="links-item" data-so-items="e"><summary>Another list, same id</summary></details></section>
+<section data-so-ctx="page:p" data-so-node="faq4">${item('page:p|faq4', 'e', 'Plain id?', 'E')}${item('page:p|faq4', 'x,e', 'Comma id?', 'X, E')}<details data-so-ctx="page:p|faq4" data-so-node="links-item" data-so-items="e"><summary>Another list, same id</summary></details><details data-so-ctx="page:p|faq4" data-so-node="inner-item" data-so-items="x,e"><summary>A list inside another row, same id</summary></details></section>
 <section data-so-ctx="page:p" data-so-node="faq5"><details data-so-ctx="page:p|faq5" data-so-node="outer"><summary>More questions</summary><div data-so-ctx="page:p|faq5" data-so-node="row" data-so-items="w">${item('page:p|faq5', 'w', 'Wrapped?', 'Inside a row')}</div></details></section>
 <script type="module" src="/bridge.js"></script></body></html>`;
 
@@ -86,17 +86,17 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
   const inFrame = <T>(code: string) => page.evaluate<T>(`(() => { const doc = frames[0].document; ${code} })()`);
   /** Reveal an item, as the editor asks for it: what the FAQ's repeat renders for each item, and where the repeat sits. */
   const FAQ_NODES = ['item', 'summary', 'question', 'answer', 'item-divider'];
-  const reveal = (items: string | null, ctx = 'page:p|faq', opts: { text?: string; textNodes?: string[]; nodes?: string[]; within?: string[]; depths?: number[]; restore?: string[] } = {}) =>
+  const reveal = (items: string | null, ctx = 'page:p|faq', opts: { text?: string; textNodes?: string[]; nodes?: string[]; within?: string[]; depth?: number; also?: Record<string, number>; restore?: string[] } = {}) =>
     send('reveal', {
       target:
         items === null
           ? null
           : {
               ctx,
+              list: 'items',
               items,
               nodes: opts.nodes ?? ['item', 'item-divider'],
-              depths: opts.depths ?? [0],
-              within: opts.within ?? FAQ_NODES,
+              within: { ...Object.fromEntries((opts.within ?? FAQ_NODES).map((n) => [n, opts.depth ?? 0])), ...opts.also },
               ...(opts.text === undefined ? {} : { text: { nodes: opts.textNodes ?? ['answer'], value: opts.text } }),
               ...(opts.restore ? { restore: opts.restore } : {})
             }
@@ -174,15 +174,17 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
   });
 
   it('matches an item id exactly, even one that another id ends with after a comma, and only in its own list', async () => {
-    await reveal('e', 'page:p|faq4');
-    expect((await state()).other).toMatchObject({ 'faq4:e': true, 'faq4:x,e': false, 'faq4:links-item:e': false });
+    // The design also lists another list inside each row (at the same depth as the row) and this list once more
+    // inside another list's rows: neither makes another list's element the item's.
+    await reveal('e', 'page:p|faq4', { also: { 'inner-item': 0, 'nested-item': 1 } });
+    expect((await state()).other).toMatchObject({ 'faq4:e': true, 'faq4:x,e': false, 'faq4:links-item:e': false, 'faq4:inner-item:x,e': false });
     await reveal('x,e', 'page:p|faq4');
     expect((await state()).other).toMatchObject({ 'faq4:e': false, 'faq4:x,e': true });
     await reveal(null);
   });
 
   it('reveals every row an item shows in when its list is repeated inside another list', async () => {
-    await reveal('e', 'page:p|faq3', { depths: [1] });
+    await reveal('e', 'page:p|faq3', { depth: 1 });
     const s = await state();
     expect(s.other).toMatchObject({ 'faq3:o1,e': true, 'faq3:o1,f': false, 'faq3:o2,e': true });
     expect(s.revealed).toBe(2);
@@ -328,6 +330,11 @@ describe.skipIf(!browserInstalled)('revealing the list item being edited', () =>
     expect((await state()).open['faq:b']).toBe(false);
     await reveal('b');
     expect((await state()).open['faq:b']).toBe(false);
+    // A change to the design (a node added inside the repeat) is still the same item: it stays closed, unscrolled.
+    await inFrame(`frames[0].scrollTo(0, 0);`);
+    await reveal('b', 'page:p|faq', { within: [...FAQ_NODES, 'toggle-icon'] });
+    expect((await state()).open['faq:b']).toBe(false);
+    expect((await state()).scrollY).toBe(0);
     // Typing its answer again opens it, so what is typed can be seen.
     await reveal('b', 'page:p|faq', { text: 'Answer B, again' });
     expect((await state()).open['faq:b']).toBe(true);

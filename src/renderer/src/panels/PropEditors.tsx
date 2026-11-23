@@ -756,17 +756,18 @@ export function ContactMismatch({ text, link, onRepair }: { text: unknown; link:
   );
 }
 
-/** Who holds a revealed item between a part's inspector going and its section's list showing. */
-const HANDED_OVER = 'handed-over';
+/** Who holds a revealed item between a part's inspector going and its section's list showing: one per hand-over. */
+let handOvers = 0;
 
 /**
  * Reveals a list item on the page while it is open in the inspector (see lib/reveal): its disclosure opened and
  * outlined, and what is typed into its plain text fields shown there before it is saved. The item is claimed when it
  * opens and whenever its fields take focus, and only its own claimant clears or changes it, so a second list opened
  * later keeps the page. It is followed by its id through saves and moves. Spread `handlers` on the element holding
- * the item's fields; `typed(field)` is a plain text field's live-text callback.
+ * the item's fields; `typed(field)` is a plain text field's live-text callback. With `handOver`, going to the item's
+ * own section hands the item to the list there instead of ending the reveal.
  */
-export function useRevealedItem(place: ListPlace | undefined, item: ListItem | undefined) {
+export function useRevealedItem(place: ListPlace | undefined, item: ListItem | undefined, handOver = false) {
   const owner = useId();
   // Escape in a field cancels what was typed there: the page shows its own text again at once.
   const cancelling = useRef<string | null>(null);
@@ -782,12 +783,13 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
     return () => {
       const r = getState().revealedItem;
       if (r?.owner !== owner) return;
-      // On the way to the section the item belongs to, its list there takes the item over once it shows (see
-      // ListEditor), so the page keeps it open in between. Anything else ends the reveal now.
+      // A part's inspector on the way to the section its item belongs to: the list there takes the item over once it
+      // shows (see ListEditor), so the page keeps it open in between. Anything else ends the reveal now.
       const sel = getState().selection;
-      if (place && sel && refKey(sel) === refKey(place.ref)) {
-        setState({ revealedItem: { ...r, owner: HANDED_OVER, draft: null, cancelled: undefined } });
-        setTimeout(() => getState().revealedItem?.owner === HANDED_OVER && setState({ revealedItem: null }), 1000);
+      if (handOver && place && sel && refKey(sel) === refKey(place.ref)) {
+        const held = `handed-over-${++handOvers}`;
+        setState({ revealedItem: { ...r, owner: held, draft: null, cancelled: undefined } });
+        setTimeout(() => getState().revealedItem?.owner === held && setState({ revealedItem: null }), 1000);
       } else setState({ revealedItem: null });
     };
   }, [place && refKey(place.ref), place?.list, itemId]); // eslint-disable-line react-hooks/exhaustive-deps

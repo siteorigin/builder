@@ -677,7 +677,8 @@ export function Canvas() {
   const hovBoxes = mode === 'edit' ? rects.hovered.map(toBox) : [];
   // A part of a repeated item selected on the page, and outlined there, already marks its item: the item stays
   // revealed, without a second outline.
-  const revBoxes = mode === 'edit' && !(selection?.itemPath?.length && rects.selected.length) ? rects.revealed.map(toBox) : [];
+  const selShown = rects.selected.some((r) => r.y + r.height > 0 && r.y < frameH);
+  const revBoxes = mode === 'edit' && !(selection?.itemPath?.length && selShown) ? rects.revealed.map(toBox) : [];
   const selLabel = selection && state ? chromeLabel(state, selection) : '';
   const hovering = hover && !sameRef(hover, selection) && !reorder && !dragging && !menu.isOpen;
   const firstSel = selBoxes[0];

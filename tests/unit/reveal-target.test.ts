@@ -17,8 +17,13 @@ const open = (itemId: string, draft: RevealedItem['draft'] = null, list = 'items
 describe('revealing the list item open in the inspector', () => {
   it('finds the item by its placement and id, through what its repeat renders', () => {
     expect(ctx).toBe(`page:${contact.id}|${faq.id}`);
-    const target = revealTarget(s, open(items[1].id), ctx)!;
-    expect({ ...target, within: [...target.within].sort() }).toEqual({ ctx, items: items[1].id, nodes: ['item', 'item-divider'], depths: [0], within: ['answer', 'item', 'item-divider', 'question', 'summary', 'toggle-icon'] });
+    expect(revealTarget(s, open(items[1].id), ctx)).toEqual({
+      ctx,
+      list: 'items',
+      items: items[1].id,
+      nodes: ['item', 'item-divider'],
+      within: { item: 0, summary: 0, question: 0, 'toggle-icon': 0, answer: 0, 'item-divider': 0 }
+    });
   });
 
   it('names nodes the page really renders for each item, with the item id on them', () => {
@@ -35,7 +40,7 @@ describe('revealing the list item open in the inspector', () => {
     const parent = tree.nodes[parentId] as { children: string[] };
     parent.children = parent.children.map((c) => (c === 'questions' ? 'groups' : c));
     tree.nodes.groups = { id: 'groups', kind: 'repeat', name: 'Groups', list: { $prop: 'groups' }, children: ['questions'] } as (typeof tree.nodes)[string];
-    expect(revealTarget(nested, open(items[0].id), ctx)?.depths).toEqual([1]);
+    expect(Object.values(revealTarget(nested, open(items[0].id), ctx)!.within)).toEqual([1, 1, 1, 1, 1, 1]);
   });
 
   it('shows typed text in the plain text bound to the field being typed in', () => {
@@ -60,6 +65,8 @@ describe('revealing the list item open in the inspector', () => {
     expect(sameTarget(a, revealTarget(s, open(items[0].id, { field: 'answer', text: 'AB' }), ctx))).toBe(false);
     expect(sameTarget(a, revealTarget(s, open(items[1].id, { field: 'answer', text: 'A' }), ctx))).toBe(false);
     expect(sameTarget(null, revealTarget(s, open(items[0].id), ctx))).toBe(false);
+    const b = revealTarget(s, open(items[0].id), ctx)!;
+    expect(sameTarget(b, { ...b, within: { ...b.within, extra: 0 } })).toBe(false);
     expect(sameTarget(null, null)).toBe(true);
   });
 

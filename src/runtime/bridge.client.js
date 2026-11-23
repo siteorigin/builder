@@ -85,7 +85,7 @@ function sendRects() {
 // The list item open in the editor's inspector, revealed while it is edited
 // ---------------------------------------------------------------------------
 
-/** { ctx, items, nodes, depths, within, text?, restore } from the editor (see lib/reveal.ts), or null. */
+/** { ctx, list, items, nodes, within, text?, restore } from the editor (see lib/reveal.ts), or null. */
 let reveal = null;
 let revealKey = '';
 /**
@@ -113,15 +113,21 @@ let draftTimer = 0;
 function validReveal(t) {
   const str = (v) => typeof v === 'string' && v.length <= 2000;
   const strs = (v, max = 50) => Array.isArray(v) && v.length > 0 && v.length <= max && v.every(str);
-  const depths = (v) => Array.isArray(v) && v.length > 0 && v.length <= 50 && v.every((n) => Number.isInteger(n) && n >= 0 && n <= 50);
-  if (!t || typeof t !== 'object' || !str(t.ctx) || !t.items || !str(t.items) || !strs(t.nodes) || !depths(t.depths) || !strs(t.within, 2000)) return null;
+  const depths = (v) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+    const out = new Map(Object.entries(v));
+    return out.size > 0 && out.size <= 2000 && [...out.values()].every((n) => Number.isInteger(n) && n >= 0 && n <= 50) ? out : null;
+  };
+  const within = t && typeof t === 'object' ? depths(t.within) : null;
+  if (!within || !str(t.ctx) || !str(t.list) || !t.items || !str(t.items) || !strs(t.nodes)) return null;
   const text = t.text && strs(t.text.nodes) && typeof t.text.value === 'string' && t.text.value.length <= MAX_TEXT_CHARS ? { nodes: t.text.nodes, value: t.text.value } : null;
-  return { ctx: t.ctx, items: t.items, nodes: t.nodes, depths: t.depths, within: new Set(t.within), text, restore: strs(t.restore) ? t.restore : [] };
+  return { ctx: t.ctx, list: t.list, items: t.items, nodes: t.nodes, within, text, restore: strs(t.restore) ? t.restore : [] };
 }
 function setReveal(target) {
   const before = reveal;
   reveal = validReveal(target);
-  const key = reveal ? JSON.stringify([reveal.ctx, reveal.items, reveal.nodes, reveal.depths, [...reveal.within]]) : '';
+  // The same item while its placement, list and id are: a change to the design only changes how it is found.
+  const key = reveal ? JSON.stringify([reveal.ctx, reveal.list, reveal.items]) : '';
   if (key !== revealKey) {
     revealKey = key;
     revealScroll = !!reveal;
@@ -141,19 +147,20 @@ function disclosuresOf(el) {
   return out;
 }
 /**
- * The item's elements in the placement asked for. At the top of the design an element's item ids are the item's id
- * exactly; in a list repeated inside another list's rows they are the outer rows' ids, then the item's, and the item
- * shows once in each row.
+ * The item's elements in the placement asked for: those of the list's own nodes whose item ids put the item's id at
+ * the depth of that node's repeat. At the top of the design an element's item ids are the item's id exactly; in a list
+ * repeated inside another list's rows they are the outer rows' ids, then the item's, and the item shows in each row.
  */
 function itemElements() {
   if (!reveal || mode !== 'edit') return [];
-  const { items, depths, within } = reveal;
+  const { items, within } = reveal;
   return [...document.querySelectorAll(`[data-so-ctx="${cssEscape(reveal.ctx)}"][data-so-items]`)].filter((el) => {
-    if (!within.has(el.getAttribute('data-so-node'))) return false;
+    const depth = within.get(el.getAttribute('data-so-node'));
+    if (depth === undefined) return false;
     const path = el.getAttribute('data-so-items') || '';
-    if (path === items) return depths.includes(0);
+    if (depth === 0) return path === items;
     const parts = path.split(',');
-    return parts.length > 1 && parts[parts.length - 1] === items && depths.includes(parts.length - 1);
+    return parts.length === depth + 1 && parts[depth] === items;
   });
 }
 const ofNodes = (els, nodes) => els.filter((el) => nodes.includes(el.getAttribute('data-so-node')));
