@@ -25,8 +25,9 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 img, svg { display: block; max-width: 100%; }
 a { color: inherit; }
 address, cite { font-style: normal; }
-/* Jump links land below the sticky site header (72px tall) instead of under it. */
-[id] { scroll-margin-top: 5.5rem; }
+/* Jump links land 1rem below the sticky site header instead of under it. The header publishes the height it
+   occupies (0 when it does not stick); before it has, the default assumes one 72px row. */
+[id] { scroll-margin-top: calc(var(--so-header-offset, 4.5rem) + 1rem); }
 :focus-visible { outline: 2px solid var(--so-color-focus); outline-offset: 3px; border-radius: 4px; }
 ::selection { background: color-mix(in srgb, var(--so-color-brand) 22%, transparent); }
 
@@ -72,7 +73,6 @@ address, cite { font-style: normal; }
 /* A button with no destination is shown as a label: no pointer, no hover or press feedback. */
 .so-btn--static { cursor: default; box-shadow: none; }
 .so-btn--static.so-btn--text::after { content: none; }
-[id] { scroll-margin-top: 5.5rem; }
 
 .so-img { width: 100%; height: auto; object-fit: cover; }
 .so-img--placeholder {
