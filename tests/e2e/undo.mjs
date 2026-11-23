@@ -38,15 +38,32 @@ const chord = (key, shift = false) =>
 const undoKey = () => chord('z');
 const redoKey = () => (process.platform === 'win32' ? chord('y') : chord('z', true));
 
-/** Choose Edit → Undo or Edit → Redo, as a click on the menu item does (no window has focus while headless). */
-const menu = (id) =>
-  app.evaluate(({ Menu }, id) => {
-    const item = Menu.getApplicationMenu().getMenuItemById(id);
-    if (!item) throw new Error(`No ${id} menu item`);
-    item.click({}, undefined, undefined);
-  }, id);
+/**
+ * Choose Edit → Undo or Edit → Redo, as a click on the menu item does (no window has focus while headless).
+ * `viaKey`: as the item's key does when the page leaves the key alone, with the accelerator's modifier held. A
+ * real key press reaches the menu that way after the main process has forwarded it, which injected input never
+ * does on macOS, so the tests send that copy themselves.
+ */
+const menu = (id, viaKey = false) =>
+  app.evaluate(
+    ({ Menu }, { id, viaKey, mac }) => {
+      const item = Menu.getApplicationMenu()
+        .items.find((i) => i.label === 'Edit')
+        ?.submenu?.items.find((i) => i.id === id);
+      if (!item) throw new Error(`No ${id} item in the Edit menu`);
+      item.click({ triggeredByAccelerator: viaKey, metaKey: viaKey && mac, ctrlKey: viaKey && !mac }, undefined, undefined);
+    },
+    { id, viaKey, mac }
+  );
+/** A key press that the page leaves alone: forwarded by the main process, then also reaching the Edit menu. */
+const undoPress = async () => (await undoKey(), await menu('edit-undo', true));
+const redoPress = async () => (await redoKey(), await menu('edit-redo', true));
 
-/** Undo then Redo in a field that keeps its own history, from the keyboard and the Edit menu; the project never moves. */
+/**
+ * Undo then Redo in a field that keeps its own history, by key press and from the Edit menu; the project never
+ * moves. (On Windows and Linux the injected key may undo the field by itself; a second Undo of a one-step history
+ * changes nothing.)
+ */
 async function textHistory(what, read, typed, original) {
   const rev = await revision();
   const unchanged = async (when) => {
@@ -54,45 +71,55 @@ async function textHistory(what, read, typed, original) {
     assert.equal(await revision(), rev, `${what}: ${when} leaves the project unchanged`);
   };
   await undoKey();
-  if (mac) {
-    await unchanged('the Undo key');
-    assert.equal(await read(), typed, `${what}: the injected Undo key does nothing else on macOS`);
-  } else {
-    await eventually(async () => assert.equal(await read(), original, `${what}: the Undo key undoes the typing`));
-    await unchanged('the Undo key');
-    await redoKey();
-    await eventually(async () => assert.equal(await read(), typed, `${what}: the Redo key brings the typing back`));
-    await unchanged('the Redo key');
+  await unchanged('the forwarded Undo key');
+  if (mac) assert.equal(await read(), typed, `${what}: the forwarded Undo key leaves the field to the menu’s key`);
+  for (const [how, undo, redo] of [
+    ['the Undo and Redo keys', () => menu('edit-undo', true), redoPress],
+    ['Edit → Undo and Redo', () => menu('edit-undo'), () => menu('edit-redo')]
+  ]) {
+    await undo();
+    await eventually(async () => assert.equal(await read(), original, `${what}: ${how} undo the typing`));
+    await unchanged(how);
+    await redo();
+    await eventually(async () => assert.equal(await read(), typed, `${what}: ${how} bring the typing back`));
+    await unchanged(how);
   }
-  await menu('edit-undo');
-  await eventually(async () => assert.equal(await read(), original, `${what}: Edit → Undo undoes the typing`));
-  await unchanged('Edit → Undo');
-  await menu('edit-redo');
-  await eventually(async () => assert.equal(await read(), typed, `${what}: Edit → Redo brings the typing back`));
-  await unchanged('Edit → Redo');
 }
 
 /** Undo then Redo of the project, exactly one step each, through each of `ways`. */
 async function projectHistory(what, ways, undone, done) {
   let rev = await revision();
+  const once = async (when) => {
+    await settle();
+    assert.equal(await revision(), ++rev, `${what}: ${when} takes exactly one step`);
+    // A second Redo at the end of the history changes nothing but says so.
+    assert.equal(await win.locator('.toast.error').count(), 0, `${what}: ${when} reports no error`);
+  };
   for (const [how, undo, redo] of ways) {
     await undo();
     await eventually(async () => assert.ok(await undone(), `${what}: Undo from ${how} reverts the last edit`));
-    await settle();
-    assert.equal(await revision(), ++rev, `${what}: Undo from ${how} takes exactly one step back`);
+    await once(`Undo from ${how}`);
     await redo();
     await eventually(async () => assert.ok(await done(), `${what}: Redo from ${how} applies it again`));
-    await settle();
-    assert.equal(await revision(), ++rev, `${what}: Redo from ${how} takes exactly one step forward`);
+    await once(`Redo from ${how}`);
   }
 }
 const keyboard = ['the keyboard', undoKey, redoKey];
+const keyPress = ['a key press that also reaches the Edit menu', undoPress, redoPress];
 const editMenu = ['the Edit menu', () => menu('edit-undo'), () => menu('edit-redo')];
 
-step('the Edit menu keeps the standard keys');
+step('the Edit menu keeps Undo and Redo with the standard keys');
 assert.deepEqual(
-  await app.evaluate(({ Menu }) => ['edit-undo', 'edit-redo'].map((id) => Menu.getApplicationMenu().getMenuItemById(id)?.accelerator)),
-  ['CommandOrControl+Z', process.platform === 'win32' ? 'Control+Y' : 'Shift+CommandOrControl+Z']
+  await app.evaluate(({ Menu }) =>
+    Menu.getApplicationMenu()
+      .items.find((i) => i.label === 'Edit')
+      ?.submenu?.items.slice(0, 2)
+      .map((i) => [i.id, i.label, i.accelerator, i.enabled && i.visible])
+  ),
+  [
+    ['edit-undo', 'Undo', 'CommandOrControl+Z', true],
+    ['edit-redo', 'Redo', process.platform === 'win32' ? 'Control+Y' : 'Shift+CommandOrControl+Z', true]
+  ]
 );
 
 step('add a Contact form');
@@ -109,11 +136,28 @@ const formName = async () => {
 
 step('a visitor’s typing in Preview keeps its own history');
 await win.locator('button[title^="Preview:"]').click();
+await eventually(async () => assert.equal(await win.locator('button[title^="Preview:"]').getAttribute('aria-pressed'), 'true', 'Preview is on'));
 // The preview is scaled to fit, so focus the field directly rather than aiming a click at it.
 await nameField.focus();
 await eventually(async () => assert.equal(await focusedTag(), 'IFRAME', 'the preview frame has focus'));
 await nameField.pressSequentially('Demo');
 await textHistory('visitor’s Name field', formName, 'Demo', '');
+
+step('Undo in Preview never reaches the project, whatever on the page has focus');
+await nameField.blur();
+await frame.locator('body').evaluate(() => window.focus());
+await eventually(async () => assert.equal(await focusedTag(), 'IFRAME', 'the preview frame has focus'));
+const previewing = await revision();
+for (const [how, act] of [
+  ['the Undo key', undoKey],
+  ['an Undo key press that reaches the Edit menu', undoPress],
+  ['Edit → Undo', () => menu('edit-undo')]
+]) {
+  await act();
+  await settle();
+  assert.equal(await revision(), previewing, `${how} in Preview leaves the project unchanged`);
+  assert.equal(await form.count(), 1, `${how} in Preview leaves the Contact form on the page`);
+}
 await nameField.fill('');
 await win.locator('button[title^="Edit:"]').click();
 
@@ -152,12 +196,19 @@ await row.focus();
 // Exactly one step: the Contact form added before the heading stays.
 const headingUndone = async () => !(await pages()).includes('Committed heading') && (await h1.innerText()) === original && (await form.count()) === 1;
 const headingDone = async () => (await pages()).includes('Committed heading') && (await h1.innerText()) === 'Committed heading';
-await projectHistory('Layers row', [keyboard, editMenu], headingUndone, headingDone);
+await projectHistory('Layers row', [keyboard, keyPress, editMenu], headingUndone, headingDone);
 
 step('the canvas in Edit mode undoes the project from the keyboard and the Edit menu');
 await frame.locator('body').evaluate(() => window.focus());
 await eventually(async () => assert.equal(await focusedTag(), 'IFRAME', 'the canvas has focus'));
-await projectHistory('canvas', [keyboard, editMenu], headingUndone, headingDone);
+await projectHistory('canvas', [keyboard, keyPress, editMenu], headingUndone, headingDone);
+
+step('an inspector select, which has no text history, undoes the project');
+await win.locator('[role="tree"] .list-item', { hasText: 'Contact form' }).first().click();
+const tone = win.locator('#dock-panel-inspect .field', { hasText: /^Tone/ }).locator('select').first();
+await tone.focus();
+await eventually(async () => assert.equal(await focusedTag(), 'SELECT', 'the select has focus'));
+await projectHistory('inspector select', [keyboard, keyPress, editMenu], headingUndone, headingDone);
 
 step('an inspector field keeps its own history');
 // The canvas is scaled to fit beside Layers, so select the heading with a click on the element itself.

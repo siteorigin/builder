@@ -8,7 +8,7 @@ import { externalLink } from '@shared/links';
 import { checkLocalBaseURL } from '@shared/local';
 import { Controller, defaultProjectsFolder } from './controller';
 import { createLeaveGate, type LeaveAnswer } from './leave-gate';
-import { HistoryKeyPairing } from './history-keys';
+import { menuKeyCopy } from './history-keys';
 import { loadSettings, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
@@ -25,8 +25,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 if (process.env.SITEORIGIN_USER_DATA) app.setPath('userData', process.env.SITEORIGIN_USER_DATA);
 let win: BrowserWindow | null = null;
 const controller = new Controller(() => win);
-/** Tells Edit → Undo and Redo activations that are the menu's copy of a forwarded key press apart from the rest. */
-const historyKeys = new HistoryKeyPairing();
 
 // Never touch the macOS keychain (Chromium would otherwise use it for its own encrypted storage).
 app.commandLine.appendSwitch('use-mock-keychain');
@@ -383,8 +381,8 @@ async function createWindow() {
     if (input.type !== 'keyDown') return;
     const mod = input.meta || input.control;
     const k = input.key.toLowerCase();
-    const relevant = (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', '\\', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
-    historyKeys.keyDown(mod && (k === 'z' || k === 'y'));
+    // With Shift held, macOS reports the backslash key as "|".
+    const relevant = (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', '\\', '|', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
     if (relevant) controller.send('input:key', { key: input.key, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt });
   });
   nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));
@@ -421,9 +419,12 @@ function buildMenu() {
   // Undo and Redo belong to whatever has focus, which only the editor knows: a text field (a visitor's in
   // Preview, too) keeps its own history and authoring surfaces undo the project. So these are not the
   // stock roles (text history only); the editor routes them. Their keys arrive here only when the page left
-  // the key alone. The window argument is unset while the app runs headless, so it is not used.
-  const history = (action: 'undo' | 'redo') => (_item: MenuItem, _window: BaseWindow | undefined, event: KeyboardEvent) =>
-    controller.send('menu:history', { action, fromKey: historyKeys.menuActivated(!!event?.triggeredByAccelerator) });
+  // the key alone. They act on the editor window only while it has focus (never, say, while it is minimized);
+  // a headless window never has focus.
+  const history = (action: 'undo' | 'redo') => (_item: MenuItem, focused: BaseWindow | undefined, event: KeyboardEvent) => {
+    if (!headless && (!win || focused !== win)) return;
+    controller.send('menu:history', { action, fromKey: menuKeyCopy(event, process.platform === 'darwin') });
+  };
   // Electron's own Edit menu, with Undo and Redo routed through the editor.
   const editMenu: MenuItemConstructorOptions = {
     label: 'Edit',

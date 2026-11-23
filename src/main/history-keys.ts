@@ -1,27 +1,8 @@
-/** How long after an Undo or Redo key press the Edit menu's copy of it can still arrive. */
-const PAIRING_MS = 1000;
-
 /**
- * Pairs an Edit → Undo or Redo activation with the key press behind it. The main process forwards every Undo and
- * Redo key press to the editor (before-input-event), and the same press reaches the menu's accelerator too when
- * the page leaves it alone. The editor must know which menu activations are that second copy, so it can run each
- * press once. Electron's `triggeredByAccelerator` alone cannot say: it is also set when the menu itself is worked
- * with the keyboard (arrow keys, then Return), which nothing forwarded.
+ * Whether an Edit → Undo or Redo activation came from its key (Cmd/Ctrl+Z and so on) rather than from choosing
+ * the item. Electron reports any activation without a mouse button as `triggeredByAccelerator`, including Return
+ * in a menu worked with the keyboard; only a key press holds the accelerator's Command (macOS) or Ctrl key.
  */
-export class HistoryKeyPairing {
-  private pressedAt: number | null = null;
-
-  constructor(private readonly now: () => number = Date.now) {}
-
-  /** Every key press the window receives; `history` when it is an Undo or Redo chord that was forwarded. */
-  keyDown(history: boolean) {
-    this.pressedAt = history ? this.now() : null;
-  }
-
-  /** An Edit → Undo or Redo activation: true when it is the menu's copy of the Undo or Redo key just pressed. */
-  menuActivated(triggeredByAccelerator: boolean): boolean {
-    const paired = triggeredByAccelerator && this.pressedAt !== null && this.now() - this.pressedAt < PAIRING_MS;
-    this.pressedAt = null;
-    return paired;
-  }
+export function menuKeyCopy(event: { triggeredByAccelerator?: boolean; metaKey?: boolean; ctrlKey?: boolean } | undefined, mac: boolean): boolean {
+  return !!event?.triggeredByAccelerator && !!(mac ? event.metaKey : event.ctrlKey);
 }

@@ -20,6 +20,7 @@ import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/So
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal } from './panels/Dialogs';
 import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
 import { refLabel } from './lib/model';
+import { focusedSurface } from './lib/history';
 import { useTransitionAnnouncement } from './lib/announce';
 import { PANEL_LIMITS, fitPanels, panelMax, resizePanel, type PanelPrefs, type PanelSide } from './lib/layout';
 import { closeProject, endEditingHold, saveNow } from './lib/leave';
@@ -307,7 +308,9 @@ export function Editor() {
       // loading) must not run a second time, or in Preview at all.
       if (document.activeElement instanceof HTMLIFrameElement) return;
       if (openDialogs.length && !(mod && e.key.toLowerCase() === 'k' && getState().modal?.kind === 'cmdk')) return;
-      if (isTyping(e) && !(mod && ['k', 'e', 'j', 's'].includes(e.key.toLowerCase()))) return;
+      // Undo and Redo from a control without text history of its own (a select, a checkbox) undo the project.
+      const history = mod && ['z', 'y'].includes(e.key.toLowerCase()) && focusedSurface(e.target as HTMLElement) !== 'text';
+      if (isTyping(e) && !history && !(mod && ['k', 'e', 'j', 's'].includes(e.key.toLowerCase()))) return;
       // Delete removes the canvas selection only when the canvas or Layers has the focus, never from a
       // button or row in another panel (an Assets tile, a page row).
       if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {

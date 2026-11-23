@@ -164,21 +164,22 @@ document.addEventListener('keydown', (e) => {
   if (mode !== 'edit') return;
   // Forward editor shortcuts so they work while the preview has focus.
   if (e.metaKey || e.ctrlKey || e.key === 'Escape' || e.key === 'Delete' || e.key === 'Backspace') {
-    if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) {
+    if (!(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target instanceof HTMLElement && e.target.isContentEditable))) {
       e.preventDefault();
       send('key', { key: e.key, meta: e.metaKey, ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey });
     }
   }
 }, true);
 
-// Whether a form field that takes typing has focus: a visitor's in Preview, or one reached with Tab while
-// editing. The editor uses this only to leave Undo, Delete and paste to the field; it never runs a command
-// because of it. (Site copy being edited inline is tracked by the editor itself.)
+// Whether something on the page that takes typing has focus: a visitor's form field in Preview, or a field or
+// editable region reached with Tab while editing. The editor uses this only to leave Undo, Delete and paste to
+// it; it never runs a command because of it. Sent once the bridge is ready (a field can have focus already),
+// then on every change.
 const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'time', 'week']);
-let textFocused = false;
+const takesTyping = (el) => el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type)) || (el instanceof HTMLElement && el.isContentEditable);
+let textFocused = null;
 function reportTextFocus() {
-  const el = document.activeElement;
-  const on = el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type));
+  const on = takesTyping(document.activeElement);
   if (on === textFocused) return;
   textFocused = on;
   send('textFocus', { on });
@@ -362,6 +363,8 @@ function endEdit() {
   el.removeEventListener('drop', onEditDrop);
   editing = null;
   getSelection()?.removeAllRanges();
+  // The edited element no longer takes typing, but keeps focus without a focus event.
+  reportTextFocus();
 }
 function commitEdit() {
   if (!editing) return;
@@ -697,3 +700,4 @@ style.textContent = 'html[data-so-editing] a, html[data-so-editing] summary, htm
 document.head.appendChild(style);
 document.documentElement.toggleAttribute('data-so-editing', true);
 send('ready', { path: location.pathname, title: document.title });
+reportTextFocus();
