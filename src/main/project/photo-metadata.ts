@@ -38,12 +38,14 @@ export interface CleanedPhoto extends PhotoMetadata {
  * The raster type of an image going by its bytes, whatever its name or recorded type says. HEIF covers AVIF
  * and HEIC, which share one container.
  */
-export function sniffImageType(head: Buffer): 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' | 'image/heif' | null {
+export function sniffImageType(head: Buffer): 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' | 'image/heif' | 'image/tiff' | null {
   if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg';
   if (head.length >= 8 && head.subarray(0, 8).equals(PNG_SIGNATURE)) return 'image/png';
   if (head.length >= 6 && /^GIF8[79]a$/.test(head.toString('latin1', 0, 6))) return 'image/gif';
   if (head.length >= 12 && head.toString('latin1', 0, 4) === 'RIFF' && head.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
   if (head.length >= 12 && head.toString('latin1', 4, 8) === 'ftyp' && HEIF_BRANDS.test(head.toString('latin1', 8, Math.min(head.length, 64)))) return 'image/heif';
+  // TIFF carries EXIF and GPS natively and cannot be rewritten here: recognised so it is refused, not passed on.
+  if (head.length >= 4 && /^(II\*\0|MM\0\*)$/.test(head.toString('latin1', 0, 4))) return 'image/tiff';
   return null;
 }
 
@@ -427,6 +429,14 @@ const XMP_NS: Record<string, string> = {
   xmpRights: 'http://ns.adobe.com/xap/1.0/rights/',
   hdrgm: 'http://ns.adobe.com/hdr-gain-map/1.0/',
   apdi: 'http://ns.apple.com/pixeldatainfo/1.0/',
+  rdf: 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
+  xmpNote: 'http://ns.adobe.com/xmp/note/',
+  tiff: 'http://ns.adobe.com/tiff/1.0/',
+  exif: 'http://ns.adobe.com/exif/1.0/',
+  exifEX: 'http://cipa.jp/exif/1.0/',
+  aux: 'http://ns.adobe.com/exif/1.0/aux/',
+  Iptc4xmpCore: 'http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/',
+  Iptc4xmpExt: 'http://iptc.org/std/Iptc4xmpExt/2008-02-29/',
   HDRGainMap: 'http://ns.apple.com/HDRGainMap/1.0/',
   Container: 'http://ns.google.com/photos/1.0/container/',
   Item: 'http://ns.google.com/photos/1.0/container/item/'
@@ -476,12 +486,38 @@ function prefixesFor(xmp: string, ns: string): string[] {
   return bound.filter((p) => [...xmp.matchAll(new RegExp(`xmlns:${escapeRe(p)}\\s*=\\s*["']([^"']*)["']`, 'g'))].every((m) => m[1] === XMP_NS[ns]));
 }
 
+/** Fields that place the photo, or name the device that took it, by namespace and local name. */
+const XMP_PLACE_FIELDS: Array<[string, string[]]> = [
+  ['exif', ['GPSLatitude', 'GPSLongitude', 'GPSAltitude', 'GPSAreaInformation', 'GPSDestLatitude', 'GPSDestLongitude']],
+  ['photoshop', ['City', 'State', 'Country']],
+  ['Iptc4xmpCore', ['Location', 'CountryCode']],
+  ['Iptc4xmpExt', ['LocationCreated', 'LocationShown', 'City', 'Sublocation', 'ProvinceState', 'CountryName']]
+];
+const XMP_DEVICE_FIELDS: Array<[string, string[]]> = [
+  ['tiff', ['Make', 'Model']],
+  ['exifEX', ['BodySerialNumber', 'LensMake', 'LensModel', 'LensSerialNumber', 'CameraOwnerName']],
+  ['exif', ['BodySerialNumber', 'CameraOwnerName', 'LensModel']],
+  ['aux', ['SerialNumber', 'Lens', 'LensID', 'LensSerialNumber', 'OwnerName']]
+];
+
+/** Whether any of the fields appears, under its usual prefix or any prefix the packet binds its namespace to. */
+function mentions(xmp: string, fields: Array<[string, string[]]>, usual: RegExp): boolean {
+  if (usual.test(xmp)) return true;
+  return fields.some(([ns, names]) => {
+    const prefixes = [...xmp.matchAll(new RegExp(`xmlns:([\\w.-]+)\\s*=\\s*["']${escapeRe(XMP_NS[ns])}["']`, 'g'))].map((m) => escapeRe(m[1]));
+    return prefixes.length > 0 && new RegExp(`(?:^|[^\\w.-])(?:${prefixes.join('|')}):(?:${names.join('|')})\\b`).test(xmp);
+  });
+}
+
+/** Comments, processing instructions and CDATA: markup whose text is not a property, and never becomes one. */
+const XML_HIDDEN = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>/g;
+
 /** A property's values, written as an element (simple or an rdf array) or as an attribute. */
-function xmpValues(xmp: string, qname: string): Array<{ lang?: string; text: string }> {
+function xmpValues(xmp: string, qname: string, rdf = 'rdf'): Array<{ lang?: string; text: string }> {
   const element = xmp.match(new RegExp(`<${qname}(\\s[^>]*)?>([\\s\\S]*?)</${qname}>`));
   let items: Array<{ lang?: string; text: string }> = [];
   if (element) {
-    const lis = [...element[2].matchAll(/<rdf:li(\s[^>]*)?>([^<]*)<\/rdf:li>/g)];
+    const lis = [...element[2].matchAll(new RegExp(`<(?:${rdf}):li(\\s[^>]*)?>([^<]*)</(?:${rdf}):li>`, 'g'))];
     if (lis.length) items = lis.map((m) => ({ lang: m[1]?.match(/xml:lang\s*=\s*["']([^"']*)["']/)?.[1], text: m[2] }));
     else items = [{ text: element[2] }];
   } else {
@@ -493,16 +529,19 @@ function xmpValues(xmp: string, qname: string): Array<{ lang?: string; text: str
 
 /** A property's values under whichever prefix the packet binds its namespace to. */
 function nsValues(xmp: string, ns: string, name: string): Array<{ lang?: string; text: string }> {
+  // Array items are rdf:li under whatever prefix the packet gives RDF.
+  const rdf = [...new Set(['rdf', ...prefixesFor(xmp, 'rdf')])].map(escapeRe).join('|');
   for (const prefix of prefixesFor(xmp, ns)) {
-    const items = xmpValues(xmp, `${escapeRe(prefix)}:${name}`);
+    const items = xmpValues(xmp, `${escapeRe(prefix)}:${name}`, rdf);
     if (items.length) return items;
   }
   return [];
 }
 
 function packet(ns: Set<string>, attrs: string, body: string, compact = false): Buffer {
-  const decl = [...ns].map((p) => ` xmlns:${p}="${XMP_NS[p]}"`).join('');
-  const rdf = `<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about=""${decl}${attrs}>${body}</rdf:Description></rdf:RDF></x:xmpmeta>`;
+  const decl = [...ns].filter((p) => p !== 'rdf').map((p) => ` xmlns:${p}="${XMP_NS[p]}"`).join('');
+  const description = compact && !body ? `<rdf:Description rdf:about=""${decl}${attrs}/>` : `<rdf:Description rdf:about=""${decl}${attrs}>${body}</rdf:Description>`;
+  const rdf = `<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">${description}</rdf:RDF></x:xmpmeta>`;
   return Buffer.from(compact ? rdf : `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>${rdf}<?xpacket end="w"?>`, 'utf8');
 }
 
@@ -512,26 +551,29 @@ function packet(ns: Set<string>, attrs: string, body: string, compact = false): 
  */
 function filterXmp(bytes: Buffer, opts: XmpOptions = {}): XmpResult {
   const raw = bytes.toString('utf8');
-  const location = XMP_LOCATION.test(raw);
-  const device = XMP_DEVICE.test(raw);
-  const xmp = raw.replace(/<!--[\s\S]*?-->/g, '');
+  const location = mentions(raw, XMP_PLACE_FIELDS, XMP_LOCATION);
+  const device = mentions(raw, XMP_DEVICE_FIELDS, XMP_DEVICE);
+  const xmp = raw.replace(XML_HIDDEN, '');
+  const compact = !!opts.compact;
   const props: string[] = [];
+  // In a compact packet, single values are written as attributes, the shortest form RDF allows.
+  const propAttrs: string[] = [];
   const ns = new Set<string>();
   for (const p of XMP_CREDITS) {
     const items = nsValues(xmp, p.prefix, p.name);
     if (!items.length) continue;
     const qname = `${p.prefix}:${p.name}`;
     ns.add(p.prefix);
-    if (p.kind === 'text') props.push(`<${qname}>${items[0].text}</${qname}>`);
+    if (p.kind === 'text' && compact && !items[0].text.includes('"')) propAttrs.push(` ${qname}="${items[0].text}"`);
+    else if (p.kind === 'text') props.push(`<${qname}>${items[0].text}</${qname}>`);
     else {
       const li = items.map((i) => (p.kind === 'Alt' ? `<rdf:li xml:lang="${i.lang ?? 'x-default'}">${i.text}</rdf:li>` : `<rdf:li>${i.text}</rdf:li>`)).join('');
       props.push(`<${qname}><rdf:${p.kind}>${li}</rdf:${p.kind}></${qname}>`);
     }
   }
-  const compact = !!opts.compact;
-  const credits = props.length ? packet(ns, '', props.join(''), compact) : null;
+  const credits = props.length || propAttrs.length ? packet(ns, propAttrs.join(''), props.join(''), compact) : null;
   // Rendering parameters: numbers, flags and the version, never free text.
-  const attrs: string[] = [];
+  const attrs: string[] = [...propAttrs];
   const render: string[] = [];
   const renderNs = new Set(ns);
   if (opts.gainMap || opts.container?.length) {
@@ -547,6 +589,11 @@ function filterXmp(bytes: Buffer, opts: XmpOptions = {}): XmpResult {
   if (opts.gainMap) {
     const kind = nsValues(xmp, 'apdi', 'AuxiliaryImageType').find((v) => /^urn:com:apple:photo:\d{4}:aux:hdrgainmap$/.test(v.text));
     const version = nsValues(xmp, 'HDRGainMap', 'HDRGainMapVersion').find((v) => /^[\w.+-]+$/.test(v.text));
+    const headroom = nsValues(xmp, 'HDRGainMap', 'HDRGainMapHeadroom').find((v) => /^[\w.+-]+$/.test(v.text));
+    if (headroom) {
+      attrs.push(` HDRGainMap:HDRGainMapHeadroom="${headroom.text}"`);
+      renderNs.add('HDRGainMap');
+    }
     if (kind) {
       attrs.push(` apdi:AuxiliaryImageType="${kind.text}"`);
       renderNs.add('apdi');
@@ -570,7 +617,7 @@ function filterXmp(bytes: Buffer, opts: XmpOptions = {}): XmpResult {
       render.push(`<Container:Directory><rdf:Seq>${li.join('')}</rdf:Seq></Container:Directory>`);
     }
   }
-  const full = props.length || attrs.length || render.length ? packet(renderNs, attrs.join(''), props.join('') + render.join(''), compact) : null;
+  const full = attrs.length || props.length || render.length ? packet(renderNs, attrs.join(''), props.join('') + render.join(''), compact) : null;
   return { packet: full, credits, location, device };
 }
 
@@ -671,15 +718,94 @@ function clearIccHeader(p: Buffer) {
   for (const [a, b] of ICC_HEADER_IDENTITY) p.fill(0, a, b);
 }
 
+/** Descriptions that name a standard colour space, which say nothing about who or what made the picture. */
+const STANDARD_DESC = /^(sRGB( IEC61966-2[.-]1)?|sRGB built-in|Display P3|DCI-P3|DCI\(P3\) RGB|P3-D65|Adobe RGB \(1998\)|ProPhoto RGB|ROMM-RGB|Generic (RGB|Gray|CMYK) Profile|Generic Gray Gamma 2\.2 Profile|Gray Gamma 2\.2|Dot Gain \d{1,2}%|Linear (RGB|Gray|sRGB)|(ITU-R )?(BT\.|Rec\.? ?)(709|2020|2100)( [\w-]+)?|Apple RGB|ColorMatch RGB|eciRGB v2|scRGB|ACES( ?CG)?|uRGB|c2|Wide Gamut RGB|Coated FOGRA39 \(ISO 12647-2:2004\)|U\.S\. Web Coated \(SWOP\) v2|Japan Color 2001 Coated)$/i;
+
+/** Every text a profile description holds (one per language), or null when it cannot be read. */
+function iccDescTexts(d: Buffer): string[] | null {
+  const type = d.toString('latin1', 0, 4);
+  if (type === 'desc' && d.length >= 12) {
+    const n = d.readUInt32BE(8);
+    return 12 + n <= d.length ? [d.toString('latin1', 12, 12 + n).replace(/\0+$/, '')] : null;
+  }
+  if (type === 'mluc' && d.length >= 16) {
+    const count = d.readUInt32BE(8);
+    if (count < 1 || count > 64 || 16 + count * 12 > d.length) return null;
+    const out: string[] = [];
+    for (let k = 0; k < count; k++) {
+      const len = d.readUInt32BE(16 + k * 12 + 4);
+      const off = d.readUInt32BE(16 + k * 12 + 8);
+      if (len & 1 || off + len > d.length) return null;
+      out.push(Buffer.from(d.subarray(off, off + len)).swap16().toString('utf16le'));
+    }
+    return out;
+  }
+  return null;
+}
+
+/** A description reading only "ICC profile", in the type the original used. */
+function neutralDesc(type: string): Buffer {
+  const text = 'ICC profile';
+  if (type === 'mluc') {
+    const utf16 = Buffer.from(text, 'utf16le').swap16();
+    const head = Buffer.alloc(28);
+    head.write('mluc', 0, 'latin1');
+    head.writeUInt32BE(1, 8);
+    head.writeUInt32BE(12, 12);
+    head.write('enUS', 16, 'latin1');
+    head.writeUInt32BE(utf16.length, 20);
+    head.writeUInt32BE(28, 24);
+    return Buffer.concat([head, utf16]);
+  }
+  // The version 2 layout: ASCII, then empty Unicode and ScriptCode parts.
+  const ascii = Buffer.from(`${text}\0`, 'latin1');
+  const head = Buffer.alloc(12);
+  head.write('desc', 0, 'latin1');
+  head.writeUInt32BE(ascii.length, 8);
+  return Buffer.concat([head, ascii, Buffer.alloc(4 + 4 + 2 + 1 + 67)]);
+}
+
+/**
+ * Overwrite a description's text where it is, keeping every length: "ICC profile" when it fits, padded with what
+ * each form uses for nothing (NULs in ASCII, spaces in UTF-16). Standard names are left alone. False when the
+ * description cannot be read, so the profile cannot be trusted.
+ */
+function neutralDescInPlace(d: Buffer, found: PhotoMetadata): boolean {
+  const texts = iccDescTexts(d);
+  if (!texts) return false;
+  if (texts.every((t) => STANDARD_DESC.test(t.trim()))) return true;
+  found.device = true;
+  const text = 'ICC profile';
+  if (d.toString('latin1', 0, 4) === 'desc') {
+    const n = d.readUInt32BE(8);
+    d.fill(0, 12, 12 + n);
+    if (n > text.length) d.write(text, 12, 'latin1');
+    // The Unicode part after it can hold the same text: it is emptied, within its stated length.
+    const u = 12 + n;
+    if (u + 8 <= d.length) d.fill(0, u + 8, Math.min(d.length, u + 8 + d.readUInt32BE(u + 4) * 2));
+    return true;
+  }
+  for (let k = 0; k < d.readUInt32BE(8); k++) {
+    const len = d.readUInt32BE(16 + k * 12 + 4);
+    const off = d.readUInt32BE(16 + k * 12 + 8);
+    Buffer.from(text.padEnd(len / 2).slice(0, len / 2), 'utf16le').swap16().copy(d, off);
+  }
+  return true;
+}
+
 /**
  * The profile without identifying tags or header fields; the same buffer when it has none; null when it is not
- * a usable profile.
+ * a usable profile. A description other than a standard colour space's name (a monitor's model and calibration
+ * date, a camera's) is replaced with a neutral one; the description tag itself is required.
  */
 function cleanIcc(p: Buffer, found: PhotoMetadata): Buffer | null {
   const icc = parseIcc(p);
   if (!icc) return null;
   const { size, tags } = icc;
-  if (!tags.some((t) => ICC_PRIVATE.has(t.sig))) {
+  const desc = tags.find((t) => t.sig === 'desc');
+  const texts = desc ? iccDescTexts(p.subarray(desc.off, desc.off + desc.len)) : [];
+  const replaceDesc = !!desc && !(texts && texts.every((t) => STANDARD_DESC.test(t.trim())));
+  if (!tags.some((t) => ICC_PRIVATE.has(t.sig)) && !replaceDesc) {
     if (size === p.length && iccHeaderClear(p)) return p;
     const out = Buffer.from(p.subarray(0, size));
     clearIccHeader(out);
@@ -687,17 +813,21 @@ function cleanIcc(p: Buffer, found: PhotoMetadata): Buffer | null {
   }
   found.device = true;
   const keep = tags.filter((t) => !ICC_PRIVATE.has(t.sig));
+  const descData = replaceDesc ? neutralDesc(p.toString('latin1', desc!.off, desc!.off + 4)) : null;
+  const dataOf = (t: { sig: string; off: number; len: number }) => (t.sig === 'desc' && descData ? descData : p.subarray(t.off, t.off + t.len));
   // Tags may share data; each distinct block is written once, on a four-byte boundary.
   const blocks = new Map<string, number>();
+  const keyOf = (t: { sig: string; off: number; len: number }) => (t.sig === 'desc' && descData ? 'desc' : `${t.off}:${t.len}`);
   let at = 132 + keep.length * 12;
-  const layout: Array<{ src: number; len: number; dst: number }> = [];
+  const layout: Array<{ data: Buffer; dst: number }> = [];
   for (const t of keep) {
-    const key = `${t.off}:${t.len}`;
+    const key = keyOf(t);
     if (blocks.has(key)) continue;
     at = (at + 3) & ~3;
     blocks.set(key, at);
-    layout.push({ src: t.off, len: t.len, dst: at });
-    at += t.len;
+    const data = dataOf(t);
+    layout.push({ data, dst: at });
+    at += data.length;
   }
   const out = Buffer.alloc((at + 3) & ~3);
   p.copy(out, 0, 0, 128);
@@ -708,10 +838,10 @@ function cleanIcc(p: Buffer, found: PhotoMetadata): Buffer | null {
   keep.forEach((t, k) => {
     const e = 132 + k * 12;
     out.write(t.sig, e, 'latin1');
-    out.writeUInt32BE(blocks.get(`${t.off}:${t.len}`)!, e + 4);
-    out.writeUInt32BE(t.len, e + 8);
+    out.writeUInt32BE(blocks.get(keyOf(t))!, e + 4);
+    out.writeUInt32BE(dataOf(t).length, e + 8);
   });
-  for (const b of layout) p.copy(out, b.dst, b.src, b.src + b.len);
+  for (const b of layout) b.data.copy(out, b.dst);
   return out;
 }
 
@@ -887,7 +1017,9 @@ function cleanJpeg(buf: Buffer, secondary: boolean): Omit<CleanedPhoto, 'changed
  * GUID, the full length and this chunk's offset, then the data. Empty when it is absent or incomplete.
  */
 function extendedXmp(main: string, chunks: Buffer[]): Buffer {
-  const guid = main.replace(/<!--[\s\S]*?-->/g, '').match(/HasExtendedXMP\s*(?:=\s*["']|>)([0-9A-Fa-f]{32})/)?.[1];
+  const visible = main.replace(XML_HIDDEN, '');
+  const note = prefixesFor(visible, 'xmpNote').map(escapeRe).join('|');
+  const guid = note ? visible.match(new RegExp(`(?:${note}):HasExtendedXMP\\s*(?:=\\s*["']|>)([0-9A-Fa-f]{32})`))?.[1] : undefined;
   if (!guid) return Buffer.alloc(0);
   const parts = chunks.filter((c) => c.length >= 40 && c.toString('latin1', 0, 32) === guid);
   if (!parts.length) return Buffer.alloc(0);
@@ -1353,10 +1485,27 @@ function cleanHeif(buf: Buffer): Omit<CleanedPhoto, 'changed'> | null {
         if (kind !== 'prof' && kind !== 'rICC') continue;
         const icc = parseIcc(buf.subarray(prop.body + 4, prop.end));
         if (!icc || icc.tags.some((t) => ICC_PRIVATE.has(t.sig))) return null;
-        clearIccHeader(out.subarray(prop.body + 4, prop.end));
+        const profile = out.subarray(prop.body + 4, prop.end);
+        clearIccHeader(profile);
+        const desc = icc.tags.find((t) => t.sig === 'desc');
+        if (desc && !neutralDescInPlace(profile.subarray(desc.off, desc.off + desc.len), found)) return null;
       }
     }
   const ranges = [...locations.values()].flat();
+  // A JPEG-coded item is a whole JPEG, with room for its own EXIF: it must carry nothing the cleaner would remove.
+  for (const [id, loc] of locations) {
+    if (types.get(id) !== 'jpeg') continue;
+    if (loc.length !== 1) return null;
+    const bytes = buf.subarray(loc[0].start, loc[0].end);
+    const r = cleanJpeg(bytes, false);
+    if (!r || !r.data.equals(bytes)) return null;
+  }
+  // The handler's name is free text.
+  const hdlr = children.find((b) => b.type === 'hdlr');
+  if (hdlr && hdlr.body + 24 < hdlr.end) {
+    const nul = buf.indexOf(0, hdlr.body + 24);
+    out.fill(0, hdlr.body + 24, nul >= 0 && nul < hdlr.end ? nul : hdlr.end);
+  }
   // Where media data may be rewritten: inside an mdat or idat body, never across a box header.
   const bodies = [...top.filter((b) => b.type === 'mdat'), ...(idat ? [idat] : [])];
   for (const [id, loc] of locations) {
@@ -1380,8 +1529,10 @@ function cleanHeif(buf: Buffer): Omit<CleanedPhoto, 'changed'> | null {
       const f = filterXmp(payload);
       merge(found, f);
       if (f.credits) found.credits.xmp = f.credits;
-      // A compact packet, without the wrapper, when the full one does not fit where the old one was.
-      const packet = f.packet && f.packet.length > payload.length ? filterXmp(payload, { compact: true }).packet : f.packet;
+      // A compact packet, without the wrapper, when the full one does not fit where the old one was. An item too
+      // small even for that loses its credit rather than stopping the export: it holds nothing private.
+      let packet = f.packet && f.packet.length > payload.length ? filterXmp(payload, { compact: true }).packet : f.packet;
+      if (packet && packet.length > payload.length) packet = null;
       replacement = packet ?? Buffer.from(payload.length >= EMPTY_XMP.length ? EMPTY_XMP : '', 'utf8');
     }
     if (replacement.length > payload.length) return null;

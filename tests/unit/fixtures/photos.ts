@@ -145,7 +145,10 @@ export function photoshopSeg(): Buffer {
   return seg(0xed, Buffer.concat([Buffer.from('Photoshop 3.0\0', 'latin1'), res(0x040c, Buffer.from('THUMBNAIL')), res(0x0404, iptc)]));
 }
 
-/** A minimal ICC profile with the given tags, each holding its signature as data. */
+/**
+ * A minimal ICC profile with the given tags, each holding its signature as data, except "desc", which holds a
+ * real version 2 description ("desc:Text" sets its text; "Display P3" otherwise).
+ */
 export function icc(...sigs: string[]): Buffer {
   const header = Buffer.alloc(128);
   header.write('acsp', 36, 'latin1');
@@ -153,9 +156,20 @@ export function icc(...sigs: string[]): Buffer {
   header.write('APPLMDL9', 48, 'latin1');
   header.write('lcms', 80, 'latin1');
   header.fill(7, 84, 100);
-  const table = Buffer.concat([be32(sigs.length), ...sigs.map((s, k) => Buffer.concat([Buffer.from(s, 'latin1'), be32(132 + sigs.length * 12 + k * 12), be32(12)]))]);
-  const data = Buffer.concat(sigs.map((s) => Buffer.from(`${s}-DATA-${s}`.padEnd(12, '.').slice(0, 12), 'latin1')));
-  const profile = Buffer.concat([header, table, data]);
+  const tags = sigs.map((spec) => {
+    const [sig, text] = spec.split(':');
+    if (sig !== 'desc') return { sig, data: Buffer.from(`${sig}-DATA-${sig}`.padEnd(12, '.').slice(0, 12), 'latin1') };
+    const ascii = Buffer.from(`${text ?? 'Display P3'}\0`, 'latin1');
+    const data = Buffer.concat([Buffer.from('desc', 'latin1'), Buffer.alloc(4), be32(ascii.length), ascii, Buffer.alloc(78)]);
+    return { sig, data: Buffer.concat([data, Buffer.alloc((4 - (data.length % 4)) % 4)]) };
+  });
+  let at = 132 + tags.length * 12;
+  const table: Buffer[] = [be32(tags.length)];
+  for (const t of tags) {
+    table.push(Buffer.from(t.sig, 'latin1'), be32(at), be32(t.data.length));
+    at += t.data.length;
+  }
+  const profile = Buffer.concat([header, ...table, ...tags.map((t) => t.data)]);
   profile.writeUInt32BE(profile.length, 0);
   return profile;
 }

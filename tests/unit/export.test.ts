@@ -392,13 +392,28 @@ describe('website photo privacy', () => {
     const dataUrl = (b: Buffer) => `data:image/jpeg;base64,${b.toString('base64')}`;
     write(dir, '_app/immutable/chunks/inline.js', `const a = "${dataUrl(geotaggedJpeg())}";`);
     write(dir, '_app/immutable/assets/fine.css', `.x{background:url(${dataUrl(clean)})}`);
-    // A camera model only, percent-encoded; and one the parser cannot read.
+    // A camera model only, percent-encoded; one behind character references; clean base64 broken over lines;
+    // and one the parser cannot read.
     const modelOnly = Buffer.concat([SOI, exifSeg(tiff(true, { ifd0: [ascii(0x0110, 'Phone X')] })), JFIF, IMAGE_DATA, EOI]);
     write(dir, 'styles/device.css', `.y{background:url(data:image/jpeg;base64,${modelOnly.toString('base64').replace(/\//g, '%2F')})}`);
+    write(dir, 'entity.html', `<img src="data&#58;image&#x2F;jpeg;base64,${geotaggedJpeg().toString('base64')}">`);
+    const wrapped = (clean.toString('base64').match(/.{1,76}/g) ?? []).join('\n');
+    write(dir, 'styles/wrapped.css', `.z{background:url("data:image/jpeg;base64,${wrapped}")}`);
     write(dir, 'unreadable.html', `<img src="data:image/png;base64,${Buffer.from('not a png').toString('base64')}">`);
+    write(dir, 'static-photo.tiff', 'II*\0 a TIFF this cannot rewrite');
     write(dir, 'index.html', '<html></html>');
     const failed = await cleanBuiltSite(dir);
-    expect(failed.sort()).toEqual(['_app/immutable/chunks/inline.js', 'assets/broken.png', 'styles/device.css', 'unreadable.html']);
+    expect(failed.sort()).toEqual(['assets/broken.png', 'static-photo.tiff', 'unreadable.html']);
+    // Inline images are cleaned where they are, and written back as plain base64.
+    for (const f of ['_app/immutable/chunks/inline.js', 'styles/device.css', 'entity.html']) {
+      const text = readFileSync(join(dir, f), 'utf8');
+      const b64 = text.match(/data:image\/jpeg;base64,([A-Za-z0-9+/=]+)/)?.[1];
+      expect(b64, f).toBeDefined();
+      const bytes = Buffer.from(b64!, 'base64');
+      expect(bytes.toString('latin1'), f).not.toMatch(/GPS|SERIAL|Phone X|Acme/);
+      expect(cleanPhoto(bytes)!.changed, f).toBe(false);
+    }
+    expect(readFileSync(join(dir, 'styles/wrapped.css'), 'utf8')).toContain(wrapped);
     expect(readFileSync(join(dir, '_app/immutable/assets/pkg.abc123.jpg')).toString('latin1')).not.toContain('Main St');
     expect(readFileSync(join(dir, 'downloads/photo')).toString('latin1')).not.toMatch(/GPS|SERIAL/);
     expect(readFileSync(join(dir, 'assets/already-clean.jpg')).equals(clean)).toBe(true);

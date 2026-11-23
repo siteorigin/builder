@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { deflateSync } from 'node:zlib';
 import { addCredits, cleanPhoto, photoMetadata, sniffImageType } from '../../src/main/project/photo-metadata';
 import { imageInfo } from '../../src/main/project/media';
-import { CAMERA_XMP, EOI, IDAT, IEND, IHDR, IMAGE_DATA, JFIF, PNG_SIG, SOI, app, ascii, be16, be32, cameraExif, chunk, exifSeg, geotaggedJpeg, icc, iccTags, le32, photoshopSeg, pngChunks, rationals, readTiff, seg, segments, short, tiff, undef, xmpPacket, xmpSeg } from './fixtures/photos';
+import { CAMERA_XMP, EOI, IDAT, IEND, IHDR, IMAGE_DATA, JFIF, PNG_SIG, SOI, app, ascii, be16, be32, cameraExif, chunk, exifSeg, geotaggedJpeg, icc, iccSeg, iccTags, le32, photoshopSeg, pngChunks, rationals, readTiff, seg, segments, short, tiff, undef, xmpPacket, xmpSeg } from './fixtures/photos';
 
 // ---------------------------------------------------------------------------
 
@@ -38,7 +38,7 @@ describe('photo metadata in JPEG', () => {
 
     const profile = app(out, 0xe2, 'ICC_PROFILE\0')!.subarray(2);
     expect(iccTags(profile)).toEqual(['desc', 'rXYZ']);
-    expect(profile.toString('latin1')).toContain('desc-DATA');
+    expect(profile.toString('latin1')).toContain('Display P3');
     expect(profile.readUInt32BE(0)).toBe(profile.length);
     // The header no longer names the device, the software or the old digest; the colour data is untouched.
     expect(profile.subarray(48, 56).every((b) => b === 0)).toBe(true);
@@ -118,6 +118,38 @@ describe('photo metadata in JPEG', () => {
     expect(out.toString('latin1')).not.toContain('SERIAL');
   });
 
+  it('replaces a profile description that is not a standard colour space’s name', () => {
+    const jpeg = (p: Buffer) => Buffer.concat([SOI, iccSeg(p), IMAGE_DATA, EOI]);
+    const custom = cleanPhoto(jpeg(icc('desc:Cam A12345', 'rXYZ')))!;
+    expect(custom.device).toBe(true);
+    const profile = app(custom.data, 0xe2, 'ICC_PROFILE\0')!.subarray(2);
+    expect(profile.toString('latin1')).not.toContain('A12345');
+    expect(profile.toString('latin1')).toContain('ICC profile');
+    expect(iccTags(profile)).toEqual(['desc', 'rXYZ']);
+    expect(profile.readUInt32BE(0)).toBe(profile.length);
+    // A standard name stays as it is, and so does every other tag.
+    const standard = app(cleanPhoto(jpeg(icc('desc:sRGB IEC61966-2.1', 'rXYZ')))!.data, 0xe2, 'ICC_PROFILE\0')!.subarray(2);
+    expect(standard.toString('latin1')).toContain('sRGB IEC61966-2.1');
+  });
+
+  it('never revives text hidden in a processing instruction or CDATA, and finds fields under any prefix', () => {
+    const hidden = xmpPacket(`<?editor <dc:creator>SERIAL-123</dc:creator> ?><![CDATA[<dc:rights>SERIAL-456</dc:rights>]]>`);
+    expect(cleanPhoto(Buffer.concat([SOI, xmpSeg(hidden), IMAGE_DATA, EOI]))!.data.toString('latin1')).not.toMatch(/SERIAL|dc:creator|dc:rights/);
+    const odd =
+      `<x:xmpmeta xmlns:x="adobe:ns:meta/"><r:RDF xmlns:r="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><r:Description r:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:camera="http://ns.adobe.com/tiff/1.0/" camera:Model="Pixel 9">` +
+      `<dc:creator><r:Seq><r:li>Jane Doe</r:li></r:Seq></dc:creator></r:Description></r:RDF></x:xmpmeta>`;
+    const r = cleanPhoto(Buffer.concat([SOI, xmpSeg(odd), IMAGE_DATA, EOI]))!;
+    expect(r.device).toBe(true);
+    expect(app(r.data, 0xe1, 'http://ns.adobe.com/xap/1.0/\0')!.toString('utf8')).toContain('<rdf:li>Jane Doe</rdf:li>');
+    expect(r.data.toString('latin1')).not.toContain('Pixel 9');
+  });
+
+  it('refuses a TIFF, which it cannot rewrite', () => {
+    const t = tiff(true, { ifd0: [ascii(0x0110, 'Phone X')] });
+    expect(sniffImageType(t)).toBe('image/tiff');
+    expect(cleanPhoto(t)).toBeNull();
+  });
+
   it('trusts no prefix that is bound to another namespace elsewhere in the packet', () => {
     const x =
       `<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:u="http://ns.adobe.com/photoshop/1.0/"/>` +
@@ -162,7 +194,8 @@ describe('photo metadata in JPEG', () => {
     const half = Math.ceil(ext.length / 2);
     const chunk = (at: number, part: Buffer) => seg(0xe1, Buffer.concat([Buffer.from('http://ns.adobe.com/xmp/extension/\0', 'latin1'), Buffer.from(guid, 'latin1'), be32(ext.length), be32(at), part]));
     // A decoy reference in a comment comes first; only the real one counts.
-    const main = xmpPacket(`<!-- xmpNote:HasExtendedXMP="${'B'.repeat(32)}" -->`, ` xmlns:xmpNote="http://ns.adobe.com/xmp/note/" xmpNote:HasExtendedXMP="${guid}"`);
+    // Decoys come first: a reference in a comment, and one under a prefix that is not xmpNote's namespace.
+    const main = xmpPacket(`<!-- xmpNote:HasExtendedXMP="${'B'.repeat(32)}" -->`, ` xmlns:other="urn:other" other:HasExtendedXMP="${'C'.repeat(32)}" xmlns:xmpNote="http://ns.adobe.com/xmp/note/" xmpNote:HasExtendedXMP="${guid}"`);
     const r = cleanPhoto(Buffer.concat([SOI, xmpSeg(main), chunk(half, ext.subarray(half)), chunk(0, ext.subarray(0, half)), IMAGE_DATA, EOI]))!;
     expect(r.location).toBe(true);
     expect(app(r.data, 0xe1, 'http://ns.adobe.com/xap/1.0/\0')!.toString('utf8')).toContain('<rdf:li xml:lang="x-default">Licensed to Client Co</rdf:li>');
@@ -179,7 +212,7 @@ describe('HDR gain maps in JPEG', () => {
     const gainMap = Buffer.concat([
       SOI,
       exifSeg(tiff(true, { ifd0: [ascii(0x010f, 'Acme')], gps: [] })),
-      xmpSeg(xmpPacket('<hdrgm:GainMapMax><rdf:Seq><rdf:li>2.5</rdf:li><rdf:li>2.4</rdf:li><rdf:li>2.3</rdf:li></rdf:Seq></hdrgm:GainMapMax>', ' xmlns:apdi="http://ns.apple.com/pixeldatainfo/1.0/" apdi:AuxiliaryImageType="urn:com:apple:photo:2020:aux:hdrgainmap" hdrgm:Version="1.0" hdrgm:GainMapMin="0" hdrgm:HDRCapacityMax="2.3" exif:GPSLatitude="5,5N"')),
+      xmpSeg(xmpPacket('<hdrgm:GainMapMax><rdf:Seq><rdf:li>2.5</rdf:li><rdf:li>2.4</rdf:li><rdf:li>2.3</rdf:li></rdf:Seq></hdrgm:GainMapMax>', ' xmlns:apdi="http://ns.apple.com/pixeldatainfo/1.0/" apdi:AuxiliaryImageType="urn:com:apple:photo:2020:aux:hdrgainmap" xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/" HDRGainMap:HDRGainMapHeadroom="8" hdrgm:Version="1.0" hdrgm:GainMapMin="0" hdrgm:HDRCapacityMax="2.3" exif:GPSLatitude="5,5N"')),
       seg(0xe2, Buffer.concat([Buffer.from('urn:iso:std:iso:ts:21496:-1\0', 'latin1'), Buffer.from([0, 0, 0, 0])])),
       IMAGE_DATA,
       EOI
@@ -226,6 +259,7 @@ describe('HDR gain maps in JPEG', () => {
     expect(gainXmp).toContain('hdrgm:Version="1.0"');
     expect(gainXmp).toContain('hdrgm:HDRCapacityMax="2.3"');
     expect(gainXmp).toContain('apdi:AuxiliaryImageType="urn:com:apple:photo:2020:aux:hdrgainmap"');
+    expect(gainXmp).toContain('HDRGainMap:HDRGainMapHeadroom="8"');
     expect(gainXmp).toContain('<hdrgm:GainMapMax><rdf:Seq><rdf:li>2.5</rdf:li><rdf:li>2.4</rdf:li><rdf:li>2.3</rdf:li></rdf:Seq></hdrgm:GainMapMax>');
     expect(app(gainMap, 0xe2, 'urn:iso:std:iso:ts:21496:-1\0')).toBeDefined();
     const primaryXmp = app(primary, 0xe1, 'http://ns.adobe.com/xap/1.0/\0')!.toString('utf8');
@@ -399,14 +433,14 @@ describe('photo metadata in AVIF and HEIC', () => {
   const full = (type: string, ...body: Buffer[]) => box(type, Buffer.alloc(4), ...body);
 
   /** Image item 1, Exif item 2 and XMP item 3 in mdat, with a stale XMP copy no item points at. */
-  type HeifOpts = { overlap?: boolean; extra?: Buffer; prop?: Buffer; contentType?: string; xmp?: Buffer; openXmp?: boolean; method2?: boolean; colr?: Buffer; imageName?: string; xmpName?: string };
+  type HeifOpts = { overlap?: boolean; extra?: Buffer; prop?: Buffer; contentType?: string; xmp?: Buffer; openXmp?: boolean; method2?: boolean; colr?: Buffer; imageName?: string; xmpName?: string; image?: Buffer; imageType?: string; handlerName?: string };
   function heif(opts: HeifOpts = {}): { file: Buffer; image: Buffer } {
-    const image = Buffer.alloc(40, 0xab);
+    const image = opts.image ?? Buffer.alloc(40, 0xab);
     const exif = Buffer.concat([be32(6), Buffer.from('Exif\0\0', 'latin1'), cameraExif()]);
     const xmp = opts.xmp ?? Buffer.from(CAMERA_XMP);
     const stale = Buffer.from(xmpPacket('', ' exif:GPSLatitude="9,9N"'));
     const infe = (id: number, type: string, extra = Buffer.alloc(0)) => box('infe', Buffer.from([2, 0, 0, 0]), be16(id), be16(0), Buffer.from(type, 'latin1'), extra);
-    const iinf = full('iinf', be16(3), infe(1, 'av01', Buffer.from(`${opts.imageName ?? ''}\0`, 'utf8')), infe(2, 'Exif'), infe(3, 'mime', Buffer.from(`${opts.xmpName ?? ''}\0${opts.contentType ?? 'application/rdf+xml'}\0`, 'latin1')));
+    const iinf = full('iinf', be16(3), infe(1, opts.imageType ?? 'av01', Buffer.from(`${opts.imageName ?? ''}\0`, 'utf8')), infe(2, 'Exif'), infe(3, 'mime', Buffer.from(`${opts.xmpName ?? ''}\0${opts.contentType ?? 'application/rdf+xml'}\0`, 'latin1')));
     // Version 1 carries a construction method per item: item 1 can then claim to be built from other items.
     const v1 = !!opts.method2;
     const iloc = (base: number) => {
@@ -415,7 +449,7 @@ describe('photo metadata in AVIF and HEIC', () => {
     };
     const ftyp = box('ftyp', Buffer.from('avif\0\0\0\0avifmif1', 'latin1'));
     const props = [full('ispe', be32(4), be32(4)), ...(opts.colr ? [box('colr', Buffer.from('prof', 'latin1'), opts.colr)] : []), ...(opts.prop ? [opts.prop] : [])];
-    const meta = (base: number) => full('meta', full('hdlr', Buffer.alloc(4), Buffer.from('pict', 'latin1'), Buffer.alloc(13)), full('pitm', be16(1)), iloc(base), iinf, box('iprp', box('ipco', ...props)));
+    const meta = (base: number) => full('meta', full('hdlr', Buffer.alloc(4), Buffer.from('pict', 'latin1'), Buffer.alloc(12), Buffer.from(`${opts.handlerName ?? ''}\0`, 'latin1')), full('pitm', be16(1)), iloc(base), iinf, box('iprp', box('ipco', ...props)));
     const base = ftyp.length + meta(0).length + 8;
     const file = Buffer.concat([ftyp, meta(base), box('mdat', image, exif, xmp, ...(opts.openXmp ? [] : [stale])), ...(opts.openXmp ? [] : [box('free', Buffer.from('GPS old copy'))]), ...(opts.extra ? [opts.extra] : [])]);
     return { file, image };
@@ -441,12 +475,18 @@ describe('photo metadata in AVIF and HEIC', () => {
     expect(cleanPhoto(r.data)!.changed).toBe(false);
   });
 
-  it('clears a colour profile’s identifying header fields in place', () => {
+  it('clears a colour profile’s identifying header fields and description in place', () => {
     const { file } = heif({ colr: icc('desc', 'rXYZ') });
     const r = cleanPhoto(file)!;
     expect(r.data.length).toBe(file.length);
     expect(r.data.toString('latin1')).not.toMatch(/APPLMDL9|lcms/);
     expect(r.data.toString('latin1')).toContain('rXYZ-DATA');
+    expect(r.data.toString('latin1')).toContain('Display P3');
+    const custom = heif({ colr: icc('desc:Studio monitor SN 4471 calibrated', 'rXYZ') }).file;
+    const c = cleanPhoto(custom)!;
+    expect(c.data.length).toBe(custom.length);
+    expect(c.data.toString('latin1')).not.toContain('4471');
+    expect(c.data.toString('latin1')).toContain('ICC profile');
   });
 
   it('clears an item name that says more than what the item is, and refuses one on a document item', () => {
@@ -458,11 +498,29 @@ describe('photo metadata in AVIF and HEIC', () => {
     expect(cleanPhoto(heif({ xmpName: '12 Main St' }).file)).toBeNull();
   });
 
+  it('refuses a JPEG-coded item that carries metadata, and clears a free-text handler name', () => {
+    expect(cleanPhoto(heif({ imageType: 'jpeg', image: geotaggedJpeg() }).file)).toBeNull();
+    expect(cleanPhoto(heif({ imageType: 'jpeg', image: Buffer.concat([SOI, JFIF, IMAGE_DATA, EOI]) }).file)).not.toBeNull();
+    const { file } = heif({ handlerName: 'Shot at 51.5N 0.12W' });
+    const r = cleanPhoto(file)!;
+    expect(r.data.length).toBe(file.length);
+    expect(r.data.toString('latin1')).not.toContain('51.5N');
+  });
+
   it('fits credits into a small XMP item by leaving out the packet wrapper', () => {
     const tight = Buffer.from(`<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/" photoshop:Credit="Studio"/></rdf:RDF></x:xmpmeta>`.padEnd(330));
     const r = cleanPhoto(heif({ xmp: tight }).file)!;
-    expect(r.data.toString('latin1')).toContain('<photoshop:Credit>Studio</photoshop:Credit>');
+    expect(r.data.toString('latin1')).toContain('photoshop:Credit="Studio"/>');
     expect(r.data.toString('latin1')).not.toContain('xpacket');
+  });
+
+  it('cleans an XMP item too small for any rebuilt packet, losing only its credit', () => {
+    const tiny = Buffer.from(`<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:p="http://ns.adobe.com/photoshop/1.0/" p:Credit="Jane Doe"/></rdf:RDF></x:xmpmeta>`);
+    const { file } = heif({ xmp: tiny });
+    const r = cleanPhoto(file)!;
+    expect(r).not.toBeNull();
+    expect(r.data.length).toBe(file.length);
+    expect(r.data.toString('latin1')).toContain('<x:xmpmeta xmlns:x="adobe:ns:meta/"/>');
   });
 
   it('refuses what it cannot rewrite in place: descriptions, other documents, open-ended or derived extents', () => {

@@ -137,7 +137,7 @@ export function omittedAssetsWarning(omitted: AssetRecord[]): string | undefined
 // ---------------------------------------------------------------------------
 
 /** File names that promise a raster image, whatever their bytes turn out to be. */
-const RASTER_NAME = /\.(jpe?g|jfif|png|apng|webp|gif|avif|heic|heif)$/i;
+const RASTER_NAME = /\.(jpe?g|jfif|png|apng|webp|gif|avif|heic|heif|tiff?)$/i;
 
 /** Raster images under `dirs` of `root`, found by name or by their first bytes, as root-relative paths. */
 async function rasterFiles(root: string, dirs: string[]): Promise<Array<{ rel: string; named: boolean }>> {
@@ -149,11 +149,18 @@ async function rasterFiles(root: string, dirs: string[]): Promise<Array<{ rel: s
         out.push({ rel, named: true });
         continue;
       }
-      const handle = await fs.open(join(root, rel), 'r');
+      // A file that cannot even be opened is listed, so that reading it fails by name rather than here.
+      const handle = await fs.open(join(root, rel), 'r').catch(() => null);
+      if (!handle) {
+        out.push({ rel, named: false });
+        continue;
+      }
       try {
         const head = Buffer.alloc(64);
         const { bytesRead } = await handle.read(head, 0, 64, 0);
         if (sniffImageType(head.subarray(0, bytesRead))) out.push({ rel, named: false });
+      } catch {
+        out.push({ rel, named: false });
       } finally {
         await handle.close();
       }
@@ -226,9 +233,9 @@ export async function cleanWebsitePhotos(project: string, state: ProjectState, c
   const failed = new Set<string>();
   for (const { rel } of await rasterFiles(project, ['static', 'src'])) {
     const path = join(project, rel);
-    const buf = await fs.readFile(path);
+    const buf = await fs.readFile(path).catch(() => null);
     const owner = owners.get(rel);
-    const r = cleanPhoto(buf);
+    const r = buf && cleanPhoto(buf);
     if (!r) {
       failed.add(owner?.name ?? rel);
       continue;
@@ -244,20 +251,24 @@ export async function cleanWebsitePhotos(project: string, state: ProjectState, c
 
 /** Built files that can carry an image inline, as a data: URL. */
 const INLINE_HOST = /\.(html?|css|[cm]?js|json|svg|xml|webmanifest)$/i;
-const INLINE_IMAGE = /data:image\/(?:jpeg|jpg|png|webp|gif|avif|heic|heif)([^,"'()\s]*),([A-Za-z0-9+/=%._~!$&*:;@-]+)/gi;
+/**
+ * A raster data: URL, with its colon and slash also accepted as HTML character references, and base64 broken
+ * over lines as some tools write it.
+ */
+const INLINE_IMAGE = /data(?::|&#0*58;|&#x0*3a;|&colon;)image(?:\/|&#0*47;|&#x0*2f;|&sol;)(jpeg|jpg|png|webp|gif|avif|heic|heif|tiff?)([^,"'()\s]*),([A-Za-z0-9+/=%._~!$&*:;@-]+(?:[\r\n]+[A-Za-z0-9+/=%]+)*)/gi;
 
 /** The bytes of a data: URL's payload: percent-decoded, then base64-decoded when it says so. */
 function inlineBytes(params: string, payload: string): Buffer {
-  const raw = Buffer.from(payload.replace(/%([0-9a-f]{2})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16))), 'latin1');
+  const raw = Buffer.from(payload.replace(/[\r\n]/g, '').replace(/%([0-9a-f]{2})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16))), 'latin1');
   return /;base64$/i.test(params) ? Buffer.from(raw.toString('latin1'), 'base64') : raw;
 }
 
 /**
  * The last pass over a finished build, before anything is published. Every raster file is cleaned again in
  * place: those that came from the cleaned sources are left exactly as they are, and any the build brought in
- * from elsewhere (a package, generated code) is cleaned now. Images inlined as data: URLs cannot be rewritten
- * inside a bundle, so any that records a location or device, or cannot be read, is reported instead. Returns the
- * paths that could not be cleaned or checked; the export must stop if there are any.
+ * from elsewhere (a package, generated code) is cleaned now. Images inlined as data: URLs in HTML, CSS and
+ * scripts are cleaned the same way and written back as base64. Returns the paths holding an image that could
+ * not be read or cleaned; the export must stop if there are any.
  */
 export async function cleanBuiltSite(dir: string): Promise<string[]> {
   const failed: string[] = [];
@@ -275,14 +286,18 @@ export async function cleanBuiltSite(dir: string): Promise<string[]> {
       failed.push(rel);
       continue;
     }
-    if (!/data:image\//i.test(text)) continue;
-    for (const m of text.matchAll(INLINE_IMAGE)) {
-      const r = photoMetadata(inlineBytes(m[1], m[2]));
-      if (!r || r.location || r.device) {
-        failed.push(rel);
-        break;
+    if (!/data(?::|&#0*58;|&#x0*3a;|&colon;)image/i.test(text)) continue;
+    let bad = false;
+    const cleaned = text.replace(INLINE_IMAGE, (match, type: string, params: string, payload: string) => {
+      const r = cleanPhoto(inlineBytes(params, payload));
+      if (!r) {
+        bad = true;
+        return match;
       }
-    }
+      return r.changed ? `data:image/${type.toLowerCase()};base64,${r.data.toString('base64')}` : match;
+    });
+    if (bad) failed.push(rel);
+    else if (cleaned !== text) await atomicWrite(join(dir, rel), cleaned);
   }
   return failed;
 }
