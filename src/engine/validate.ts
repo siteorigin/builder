@@ -289,6 +289,9 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
     }
   }
   for (const [id, v] of [...Object.entries(state.tokens.overrides), ...state.tokens.custom.map((t) => [t.id, t.value] as const)]) {
+    // Editing refuses these; one written by hand or by an older version still exports, metric by metric.
+    if (groupOf.get(id) === 'text' && v && typeof v === 'object' && 'token' in v)
+      out.push({ severity: 'warning', code: 'TOKEN_TEXT_LINK', message: `The site style "${id}" follows another text style, which text styles cannot do. Give it its own font, size and spacing in Site styles.` });
     const isFamily = !!v && typeof v === 'object' && 'family' in v;
     const r = (isFamily ? (v as { family: unknown }).family : v) as unknown;
     if (!r || typeof r !== 'object' || !('token' in (r as object))) continue;

@@ -1312,3 +1312,70 @@ describe('inserting a node the same batch fills (#13)', () => {
     for (const bad of ['abc', 'n_', 'n_abc', `n_${'a'.repeat(33)}`, 'pg_abcdef', 'n_ABC123', '__proto__']) expect(validateOperation({ type: 'node.insert', newNodeId: bad, owner: o, primitive: 'image' }).ok, bad).toBe(false);
   });
 });
+
+describe('site style lengths and older text links (#201)', () => {
+  const css = (s: ProjectState) => generateProject(s).get('src/lib/siteorigin/styles/tokens.css')!;
+  const set = (s: ProjectState, tokenId: string, value: unknown) => applyOperations(s, [{ type: 'token.set', tokenId, value }]).state;
+
+  it('accepts math of lengths, and refuses names inside it, negative widths and corners, and lists', () => {
+    for (const good of ['max(1rem, 2vw)', 'calc(100% - clamp(1rem, 2vw, 3rem))', 'clamp(1.25rem, 0.8rem + 2.4vw, 2.5rem)', '0.5em'])
+      expect(set(fresh(), 'space.md', good).tokens.overrides['space.md'], good).toBe(good);
+    for (const bad of ['calc(red)', 'calc(1px + auto)', 'min()', 'clamp(1rem,, 2rem)', 'var(--so-space-md)', 'auto', '24', '1px 2px', 'calc(1px; x)'])
+      expect(() => set(fresh(), 'space.md', bad), bad).toThrow(/length/);
+    expect(set(fresh(), 'space.md', '-8px').tokens.overrides['space.md']).toBe('-8px');
+    expect(() => set(fresh(), 'radius.md', '-4px')).toThrow(/positive/);
+    expect(() => set(fresh(), 'container.content', '-10px')).toThrow(/positive/);
+    expect(set(fresh(), 'container.content', 'calc(100vw - 2rem)').tokens.overrides['container.content']).toBe('calc(100vw - 2rem)');
+  });
+
+  it('refuses creating a text style that follows another, even beside metrics', () => {
+    const metrics = { family: { token: 'font.body' }, size: '1rem', lineHeight: '1.5', weight: 400, tracking: '0' };
+    expect(() => applyOperations(fresh(), [{ type: 'token.create', group: 'text', label: 'Alias', value: { ...metrics, token: 'text.h2' } }])).toThrow(/cannot follow/);
+  });
+
+  it('writes every metric for a text style an older version left with a stray link, and mends it on the next edit', () => {
+    let s = fresh();
+    const h1 = effectiveTokens(s).find((t) => t.id === 'text.h1')!.value as Record<string, unknown>;
+    s.tokens.overrides['text.h1'] = { ...h1, size: '3.3rem', token: 'text.h2' } as never;
+    expect(validateState(s).some((d) => d.code === 'TOKEN_TEXT_LINK')).toBe(true);
+    const out = css(s);
+    expect(out).toContain('--so-text-h1-size: 3.3rem;');
+    expect(out).not.toMatch(/--so-text-h1: /);
+    s = set(s, 'text.h1', { weight: 600 });
+    expect(s.tokens.overrides['text.h1']).toEqual({ ...h1, size: '3.3rem', weight: 600 });
+    expect(validateState(s).some((d) => d.code === 'TOKEN_TEXT_LINK')).toBe(false);
+  });
+
+  it('writes a hand-made text link metric by metric, and starts the next edit from the style it follows', () => {
+    let s = fresh();
+    s.tokens.overrides['text.h1'] = { token: 'text.h2' } as never;
+    const out = css(s);
+    for (const k of ['family', 'size', 'line-height', 'weight', 'tracking', 'transform']) expect(out).toContain(`--so-text-h1-${k}: var(--so-text-h2-${k});`);
+    expect(out).not.toContain('[object Object]');
+    const h2 = effectiveTokens(s).find((t) => t.id === 'text.h2')!.value as Record<string, unknown>;
+    s = set(s, 'text.h1', { size: '3rem' });
+    expect(s.tokens.overrides['text.h1']).toEqual({ ...h2, size: '3rem' });
+  });
+
+  it('keeps links and the text family through font removal, replacement and rename', async () => {
+    const { tokenUsageCounts } = await import('@engine/tokens');
+    let s = fresh();
+    const a = applyOperations(s, [{ type: 'token.create', group: 'font', label: 'A', value: { token: 'font.display' } }]);
+    s = a.state;
+    const A = a.results[0].tokenId as string;
+    const b = applyOperations(s, [{ type: 'token.create', group: 'font', label: 'B', value: { token: A } }]);
+    s = b.state;
+    const B = b.results[0].tokenId as string;
+    s = set(s, 'text.h1', { family: { token: A } });
+    expect(tokenUsageCounts(s)[A]).toBe(2);
+    // Pointing B at itself through the replacement is refused, and nothing changes.
+    expect(() => applyOperations(s, [{ type: 'token.remove', tokenId: A, replacementTokenId: B }])).toThrow(/loop/);
+    const display = String(effectiveTokens(s).find((t) => t.id === 'font.display')!.value);
+    const detached = applyOperations(s, [{ type: 'token.remove', tokenId: A, detach: true }]).state;
+    expect(detached.tokens.custom.find((t) => t.id === B)?.value).toBe(display);
+    expect((detached.tokens.overrides['text.h1'] as unknown as { family: unknown }).family).toBe(display);
+    const out = css(detached);
+    for (const k of ['family', 'size', 'line-height', 'weight', 'tracking', 'transform']) expect(out).toContain(`--so-text-h1-${k}:`);
+    expect(errors(detached)).toEqual([]);
+  });
+});

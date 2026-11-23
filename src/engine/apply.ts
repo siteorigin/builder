@@ -12,13 +12,14 @@ import type {
   ResponsiveScope,
   StyleValue,
   TokenDef,
+  TokenGroup,
   TokenValue,
   RichText
 } from '@shared/types';
 import type { Binding } from '@shared/types';
 import { ICON_POSITIONS, SCHEMA_VERSION, isBinding, isComparison, type IconPosition, type TextTag } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
-import { STYLE_PROP_MAP, isSafeCssValue, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { findVariant, variantOptions } from '@shared/variants';
@@ -34,7 +35,7 @@ import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { bindingSlots, enclosingList, normalizeProperties } from './schema';
-import { forEachTokenRef, tokenUsageCounts } from './tokens';
+import { forEachTokenRef, tokenUsageCounts, declaredTokens, followToken } from './tokens';
 import { settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import {
@@ -1298,57 +1299,53 @@ function assertNoTokenCycles(state: ProjectState) {
   }
 }
 
+/** What each kind of site style is called in messages. */
+const TOKEN_KIND: Record<TokenGroup, string> = { color: 'color', font: 'font', text: 'text', space: 'spacing', container: 'page width', radius: 'corner', shadow: 'shadow', border: 'border' };
+
 function tokenSet(state: ProjectState, op: Op<'token.set'>): OpResult {
-  const v = op.value as Record<string, unknown> | null;
-  if (v && typeof v === 'object' && 'token' in v) {
-    // A reference is exactly { token } naming a style of the same kind.
-    const target = effectiveTokens(state).find((t) => t.id === v.token);
-    const self = effectiveTokens(state).find((t) => t.id === op.tokenId);
-    if (typeof v.token !== 'string' || Object.keys(v).length !== 1) fail('A site style reference must be { "token": "group.name" }.');
-    if (target && self && target.group !== self.group) fail(`"${self.label}" can only follow another ${self.group} style.`);
-  }
-  const r = tokenSetInner(state, op);
-  // A custom style has no theme default to return to: its value is its own, not an override.
+  const tdef = declaredTokens(state).find((t) => t.id === op.tokenId) ?? fail(`Token "${op.tokenId}" does not exist.`);
   const custom = state.tokens.custom.find((t) => t.id === op.tokenId);
+  if (op.value === null) {
+    // A custom style's value is its own: there is no theme default under it to go back to.
+    if (custom && !Object.hasOwn(state.tokens.overrides, op.tokenId)) fail(`"${custom.label}" is one of your own site styles, so it has no theme default to go back to. Give it a new value, or remove it.`);
+    delete state.tokens.overrides[op.tokenId];
+    return {};
+  }
+  const v = op.value as Record<string, unknown>;
+  if (v && typeof v === 'object' && !Array.isArray(v) && 'token' in v) {
+    // A reference is exactly { token } naming an existing style of the same kind.
+    if (typeof v.token !== 'string' || Object.keys(v).length !== 1) fail('A site style reference must be { "token": "group.name" }.');
+    // Text styles are written out metric by metric, so one cannot stand in for another as a whole.
+    if (tdef.group === 'text') fail(`"${tdef.label}" is a text style, and a text style cannot follow another text style. Change its font, size or spacing instead.`);
+    const target = effectiveTokens(state).find((t) => t.id === v.token) ?? fail(`Token "${v.token}" does not exist.`);
+    if (target.group !== tdef.group) fail(`"${tdef.label}" can only follow another ${TOKEN_KIND[tdef.group]} style, and "${target.label}" is a ${TOKEN_KIND[target.group]} style.`);
+    state.tokens.overrides[op.tokenId] = { token: target.id };
+  } else tokenSetLiteral(state, tdef, op.value);
+  // A custom style has no theme default to return to: its value is its own, not an override.
   if (custom && Object.hasOwn(state.tokens.overrides, op.tokenId)) {
     custom.value = state.tokens.overrides[op.tokenId];
     delete state.tokens.overrides[op.tokenId];
   }
   assertNoTokenCycles(state);
-  return r;
+  return {};
 }
 
-function tokenSetInner(state: ProjectState, op: Op<'token.set'>): OpResult {
-  const theme = getTheme(state.site.themeId);
-  const tdef = [...theme.tokens, ...state.tokens.custom].find((t) => t.id === op.tokenId) ?? fail(`Token "${op.tokenId}" does not exist.`);
-  if (op.value === null) {
-    delete state.tokens.overrides[op.tokenId];
-    return {};
-  }
-  const v = op.value;
+const TEXT_KEYS = ['family', 'size', 'lineHeight', 'weight', 'tracking', 'transform'] as const;
+
+/** Check a literal value for a style's kind and store it as the style's override. */
+function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
+  const id = tdef.id;
   if (tdef.group === 'color') {
-    if (typeof v === 'object' && v && 'token' in v) {
-      const target = String((v as { token: string }).token);
-      if (!target.startsWith('color.')) fail('Colors can only reference other color tokens.');
-      // Detect cycles
-      const seen = new Set([op.tokenId]);
-      let cur: string | undefined = target;
-      const lookup = (id: string) => state.tokens.overrides[id] ?? [...theme.tokens, ...state.tokens.custom].find((t) => t.id === id)?.value;
-      while (cur) {
-        if (seen.has(cur)) fail('That token reference would create a cycle.');
-        seen.add(cur);
-        const val = lookup(cur);
-        if (val === undefined) fail(`Token "${cur}" does not exist.`);
-        cur = val && typeof val === 'object' && 'token' in val ? (val as { token: string }).token : undefined;
-      }
-    } else {
-      const err = validateStyleValue('color', String(v));
-      if (err) fail(err);
-    }
+    const err = validateStyleValue('color', String(v));
+    if (err) fail(err);
+    state.tokens.overrides[id] = v as TokenValue;
   } else if (tdef.group === 'text') {
-    if (!v || typeof v !== 'object') fail('Text styles need { family, size, lineHeight, weight, tracking }.');
-    const cur = (state.tokens.overrides[op.tokenId] ?? tdef.value) as Record<string, unknown>;
-    const merged = { ...cur, ...(v as Record<string, unknown>) };
+    if (!v || typeof v !== 'object' || Array.isArray(v)) fail('Text styles need { family, size, lineHeight, weight, tracking }.');
+    // A text style saved as a link to another (hand-edited, or from an older version) starts from the one it follows.
+    const own = state.tokens.overrides[id] ?? tdef.value;
+    const cur = (linkOf(own) ? followToken(effectiveTokens(state), id) : own) as Record<string, unknown> | undefined;
+    // Only the text-style keys are kept, so nothing else can change how the style is written out.
+    const merged: Record<string, unknown> = Object.fromEntries(TEXT_KEYS.map((k) => [k, Object.hasOwn(v, k) ? (v as Record<string, unknown>)[k] : cur?.[k]]).filter(([, x]) => x !== undefined));
     for (const k of ['size', 'lineHeight', 'tracking'] as const) {
       const s = String(merged[k]);
       if (!/^[0-9a-z.,%+\-*/ ()]+$/i.test(s) || !isSafeCssValue(s)) fail(`Invalid ${k} "${s}".`);
@@ -1358,9 +1355,9 @@ function tokenSetInner(state: ProjectState, op: Op<'token.set'>): OpResult {
     merged.weight = w;
     const fam = merged.family as unknown;
     if (fam && typeof fam === 'object') {
-      const ref = String((fam as { token?: string }).token ?? '');
-      if (!ref.startsWith('font.') || !effectiveTokens(state).some((t) => t.id === ref)) fail('A text style font must reference an existing font token.');
-    } else if (Object.hasOwn(v as object, 'family')) {
+      const ref = (fam as { token?: unknown }).token;
+      if (typeof ref !== 'string' || !effectiveTokens(state).some((t) => t.id === ref && t.group === 'font')) fail('A text style font must reference an existing font token.');
+    } else if (Object.hasOwn(v, 'family')) {
       // Only a family being set now is checked, so an older value never blocks an unrelated change.
       if (!/^[\p{L}\p{N}_\s'",.-]{1,200}$/u.test(String(fam)) || !isSafeCssValue(String(fam))) fail('Font names may contain letters, numbers, spaces, quotes, commas and hyphens only.');
       const font = resolveFontStack(state, String(fam));
@@ -1368,21 +1365,24 @@ function tokenSetInner(state: ProjectState, op: Op<'token.set'>): OpResult {
       merged.family = font.stack;
     }
     if (merged.transform !== undefined && !['none', 'uppercase', 'lowercase', 'capitalize'].includes(String(merged.transform))) fail('Text transform must be none, uppercase, lowercase or capitalize.');
-    state.tokens.overrides[op.tokenId] = merged as unknown as TokenValue;
-    return {};
+    state.tokens.overrides[id] = merged as unknown as TokenValue;
   } else if (tdef.group === 'font') {
     const s = String(v);
     if (!/^[\p{L}\p{N}_\s'",.-]+$/u.test(s) || s.length > 200 || !isSafeCssValue(s)) fail('Font stacks may contain names, quotes, commas and hyphens only.');
     const font = resolveFontStack(state, s);
     if ('error' in font) fail(font.error);
-    state.tokens.overrides[op.tokenId] = font.stack;
-    return {};
+    state.tokens.overrides[id] = font.stack;
+  } else if (tdef.group === 'space' || tdef.group === 'container' || tdef.group === 'radius') {
+    const s = typeof v === 'string' || typeof v === 'number' ? String(v).trim() : '';
+    const negative = tdef.group === 'space';
+    if (!isTokenLength(s, { negative }) || s.length > 200 || !isSafeCssValue(s))
+      fail(`"${(s || String(v)).slice(0, 60)}" is not a valid length for ${tdef.label}. Use a ${negative ? '' : 'positive '}value such as 24px, 1.5rem, 50% or clamp(1rem, 2vw, 2rem).`);
+    state.tokens.overrides[id] = s;
   } else {
     const s = String(v);
     if (!/^[0-9a-z.,%+\-*/ ()#]+$/i.test(s) || s.length > 200 || !isSafeCssValue(s)) fail(`Invalid value "${s}".`);
+    state.tokens.overrides[id] = v as TokenValue;
   }
-  state.tokens.overrides[op.tokenId] = v as TokenValue;
-  return {};
 }
 
 function customToken(state: ProjectState, tokenId: string): TokenDef {
@@ -1397,6 +1397,7 @@ function tokenCreate(state: ProjectState, op: Op<'token.create'>): OpResult {
   if (op.value === null || op.value === undefined || op.value === '') fail('A new site style needs a value.');
   if (op.group === 'text') {
     const v = op.value as Record<string, unknown>;
+    if (v && typeof v === 'object' && 'token' in v) fail('A text style cannot follow another text style. Start it from one instead, and change its font, size or spacing.');
     const missing = ['family', 'size', 'lineHeight', 'weight', 'tracking'].filter((k) => !v || typeof v !== 'object' || v[k] === undefined || v[k] === '');
     if (missing.length) fail(`A text style needs ${missing.join(', ')}.`);
     // Only the text-style keys are kept, so nothing else can change how the style is generated.

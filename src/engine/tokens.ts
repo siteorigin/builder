@@ -1,6 +1,7 @@
 import { variantOptions } from '@shared/variants';
-import type { ProjectState, ResponsiveStyles, TokenDef } from '@shared/types';
+import type { ProjectState, ResponsiveStyles, TokenDef, TokenValue } from '@shared/types';
 import { getTheme } from '@catalogue/index';
+import { linkOf } from '@shared/styles';
 import { allTrees } from './tree';
 
 export interface TokenRefSite {
@@ -83,4 +84,21 @@ export function findTokenCycle(state: ProjectState): string | null {
     }
   }
   return null;
+}
+
+/**
+ * A style's value with its links to other styles followed to the end, for showing it or copying it out.
+ * Undefined when a link names a style that does not exist, or the links loop.
+ */
+export function followToken(tokens: TokenDef[], id: string): TokenValue | undefined {
+  const byId = new Map(tokens.map((t) => [t.id, t]));
+  const seen = new Set<string>();
+  for (let cur: string | null = id; cur && !seen.has(cur); ) {
+    seen.add(cur);
+    const v = byId.get(cur)?.value;
+    const next = linkOf(v);
+    if (!next) return v;
+    cur = next;
+  }
+  return undefined;
 }

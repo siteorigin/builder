@@ -172,6 +172,13 @@ export const STYLE_GROUP_LABELS: Record<StylePropDef['group'], string> = {
   custom: 'Custom CSS'
 };
 
+/** The site style a value links to when it is exactly `{ token }`, or null for a value of its own. */
+export function linkOf(v: unknown): string | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const token = (v as { token?: unknown }).token;
+  return typeof token === 'string' && Object.keys(v).length === 1 ? token : null;
+}
+
 export function tokenVar(tokenId: string): string {
   return `--so-${tokenId.replace(/[^a-zA-Z0-9]+/g, '-')}`;
 }
@@ -225,6 +232,25 @@ function wholeCall(value: string): boolean {
     else if (value[i] === ')' && --depth === 0) return i === value.length - 1;
   }
   return false;
+}
+
+const TOKEN_LENGTH_RE = /^(-?)(\d*\.?\d+)(px|rem|em|%|vw|vh|svh|dvh|ch|ex)$/i;
+const MATH_NUMBER_RE = /\d*\.?\d+(px|rem|em|%|vw|vh|svh|dvh|ch|ex)?/gi;
+
+/**
+ * A length a spacing, page-width or corner site style can hold: a number with a unit, 0, or a clamp(), min(),
+ * max() or calc() of numbers and lengths. A bare number other than 0, a keyword such as `auto` and a list of
+ * lengths are not one length. Widths and corners cannot be negative; spacing can, for pulling things closer.
+ */
+export function isTokenLength(value: string, { negative = true }: { negative?: boolean } = {}): boolean {
+  const s = value.trim();
+  if (s === '0') return true;
+  const m = TOKEN_LENGTH_RE.exec(s);
+  if (m) return negative || !m[1];
+  if (!/^(calc|min|max|clamp)\(/i.test(s) || !wholeCall(s) || !balanced(s)) return false;
+  // Inside, only numbers, lengths, the math functions themselves, operators and commas: no names or colors.
+  const rest = s.replace(/(calc|min|max|clamp)\(/gi, '(').replace(MATH_NUMBER_RE, '0');
+  return /^[0()+\-*/,\s]+$/.test(rest) && !/\(\s*\)|\(\s*,|,\s*\)|,\s*,/.test(rest);
 }
 
 /** Whether a literal CSS value is free of characters and constructs that could escape its declaration. */
