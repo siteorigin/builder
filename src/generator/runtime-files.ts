@@ -258,7 +258,8 @@ export const DRAFTS_JS = `/**
  * Keeps a message the visitor typed into a form and has not sent with its place in the tab's history, as the
  * browser keeps a form when JavaScript is off: Back brings it back, a new visit to the page starts empty, and a
  * message that was sent never comes back. A form takes part with data-keep-draft on the <form>, data-draft-field
- * naming each answer's control, aria-busy="true" while it sends, and a reset once it has sent.
+ * naming each answer's control, aria-busy="true" from the moment it submits (before anything in its submit handler
+ * waits) until the reply, and a reset once the message has been sent.
  *
  * SvelteKit's snapshot() holds the drafts, in memory and in the tab's session storage, never in the address or in
  * anything sent to a server. Besides them, the tab keeps only an opaque id for each message it has sent.
@@ -274,8 +275,8 @@ const SENT = 'siteorigin-drafts-sent';
 const settled = new WeakSet();
 // The message each form holds, as an opaque id. Sending retires the id, so no copy of that message comes back.
 const messages = new WeakMap();
-// Messages on their way. The form resets once one is sent; if it keeps its answers instead, the send failed and
-// the message is a draft again.
+// Messages on their way. The form resets once one is sent; if it keeps its answers instead, the send failed or was
+// refused, and the message is a draft again.
 const sending = new WeakMap();
 const sent = new Set();
 
@@ -304,6 +305,11 @@ function markSent(id, isSent) {
 		const ids = sentBefore().filter((other) => other !== id);
 		sessionStorage.setItem(SENT, JSON.stringify(isSent ? [...ids, id] : ids));
 	} catch {}
+}
+
+// The page a snapshot belongs to, the same however the address spells its trailing slash.
+function pagePath() {
+	return page.url.pathname.replace(/\\/+$/, '') || '/';
 }
 
 function answers(form) {
@@ -340,11 +346,11 @@ function capture() {
 		drafts.push({ key, n, message, values });
 	}
 	// The page the drafts were typed on: an entry SvelteKit reuses for another page never hands them over.
-	return drafts.length ? { path: page.url.pathname, drafts } : null;
+	return drafts.length ? { path: pagePath(), drafts } : null;
 }
 
 function restore(kept) {
-	if (!kept || kept.path !== page.url.pathname || !Array.isArray(kept.drafts)) return;
+	if (!kept || kept.path !== pagePath() || !Array.isArray(kept.drafts)) return;
 	for (const { form, key, n } of forms()) {
 		const draft = kept.drafts.find((d) => d?.key === key && d.n === n);
 		if (!draft || settled.has(form) || wasSent(draft.message)) continue;
@@ -379,19 +385,18 @@ export function keepDrafts() {
 			sending.set(form, message);
 			markSent(message, true);
 		};
+		// Heard once the form's own handlers have run, so a reset they cancel changes nothing.
 		const reset = (event) => {
-			const form = draftForm(event);
-			if (!form) return;
-			sending.delete(form);
-			messages.delete(form);
+			const form = event.defaultPrevented ? null : draftForm(event);
+			if (form) sending.delete(form);
 		};
 		document.addEventListener('input', typed, true);
 		document.addEventListener('submit', submitted, true);
-		document.addEventListener('reset', reset, true);
+		document.addEventListener('reset', reset);
 		return () => {
 			document.removeEventListener('input', typed, true);
 			document.removeEventListener('submit', submitted, true);
-			document.removeEventListener('reset', reset, true);
+			document.removeEventListener('reset', reset);
 		};
 	});
 }

@@ -457,7 +457,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         const typedIn = await leave();
         // The page, then the answers by field id: never the provider's hidden fields or the spam trap.
         expect(kept(typedIn)).toEqual({
-          path: '/contact/',
+          path: '/contact',
           drafts: [{ key: 'page f1 f2 f3', n: 0, message: expect.any(String), values: [['f1', 'Ada'], ['f2', 'ada@example.com'], ['f3', 'A question about materials']] }]
         });
         // Following a link back to the page is a new visit, which starts empty.
@@ -480,12 +480,20 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
 
     it('never hands one page’s draft to another page that reuses its history entry', async () => {
       await withForm(PROPS, async ({ field, values, leave, arrive, onPage }) => {
+        // A site published under a sub-path, on a host that also answers without the trailing slash.
+        await onPage('/studio/contact/');
         await fillEnquiry(field);
         const contact = await leave();
-        // SvelteKit reuses an abandoned entry's slot for an in-page link on another page, with the old snapshot in it.
-        await onPage('/');
+        await onPage('/studio/contact');
         await arrive([PROPS], contact);
-        expect(await values()).toEqual(EMPTY);
+        expect(await values()).toEqual(ENQUIRY);
+        // SvelteKit reuses an abandoned entry's slot for an in-page link on another page, with the old snapshot in it.
+        for (const other of ['/studio/', '/studio/about/', '/']) {
+          await leave();
+          await onPage(other);
+          await arrive([PROPS], contact);
+          expect(await values(), other).toEqual(EMPTY);
+        }
       });
     }, 20_000);
 
@@ -537,12 +545,15 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     }, 20_000);
 
     it('gives a message back after a failed send, older copies included, and keeps an unsent draft from another visit after a send', async () => {
-      await withForm(PROPS, async ({ field, button, status, alert, values, capture, leave, arrive, nextPost }) => {
+      await withForm(PROPS, async ({ page, field, button, status, alert, values, capture, leave, arrive, nextPost }) => {
         await fillEnquiry(field);
         const typedIn = await leave();
         await arrive([PROPS], typedIn);
         await button.click();
-        await (await nextPost()).respond(500);
+        const failing = await nextPost();
+        // A second submit while the first is on its way is refused by the form and changes nothing here.
+        await page.evaluate(`document.querySelector('main form').requestSubmit()`);
+        await failing.respond(500);
         await expect.poll(alert).toBe(FAILED);
         const failedIn = await leave();
         expect(kept(failedIn)?.drafts.map((d) => d.message)).toEqual(kept(typedIn)?.drafts.map((d) => d.message));
@@ -623,7 +634,7 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     }, 20_000);
 
     it('never puts an older draft over what the visitor has since typed, emptied or been given back, and fills only empty answers', async () => {
-      await withForm(PROPS, async ({ page, field, values, leave, arrive, restore }) => {
+      await withForm(PROPS, async ({ page, field, button, status, values, leave, arrive, restore, nextPost }) => {
         await fillEnquiry(field);
         const older = await leave();
         await arrive([PROPS]);
@@ -651,6 +662,13 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
         await page.evaluate(`document.querySelector('main [name="email"]').value = 'early@example.com'`);
         await restore(older);
         expect(await values()).toEqual(['Ada', 'early@example.com', 'A question about materials']);
+        // That form now holds the older message, so sending it retires every copy of it.
+        await button.click();
+        await (await nextPost()).respond(200);
+        await expect.poll(status).toBe(SENT);
+        await leave();
+        await arrive([PROPS], older);
+        expect(await values()).toEqual(EMPTY);
       });
     }, 20_000);
   });

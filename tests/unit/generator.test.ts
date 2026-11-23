@@ -75,10 +75,10 @@ describe('unsent form drafts (issue #274)', () => {
       const body = (parse(files.get('src/routes/+layout.svelte')!, { modern: true }).instance?.content.body ?? []) as unknown as Array<{
         type: string;
         source?: { value: string };
-        specifiers?: Array<{ local: { name: string } }>;
+        specifiers?: Array<{ imported?: { name: string }; local: { name: string } }>;
         expression?: { type: string; callee?: { type: string; name?: string }; arguments?: unknown[] };
       }>;
-      expect(body.filter((n) => n.type === 'ImportDeclaration' && n.source?.value === '../lib/siteorigin/runtime/drafts.js').map((n) => n.specifiers?.map((sp) => sp.local.name))).toEqual([['keepDrafts']]);
+      expect(body.filter((n) => n.type === 'ImportDeclaration' && n.source?.value === '../lib/siteorigin/runtime/drafts.js').map((n) => n.specifiers?.map((sp) => [sp.imported?.name, sp.local.name]))).toEqual([[['keepDrafts', 'keepDrafts']]]);
       const calls = body.filter((n) => n.type === 'ExpressionStatement' && n.expression?.type === 'CallExpression' && n.expression.callee?.type === 'Identifier' && n.expression.callee.name === 'keepDrafts');
       expect(calls.map((n) => n.expression?.arguments)).toEqual([[]]);
     }
