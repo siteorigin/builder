@@ -80,3 +80,15 @@ export function saveStatusAnnouncement(prev: SaveStatus, next: SaveStatus, endin
   if (fromAi) return ran ?? 'All changes saved';
   return 'All changes saved';
 }
+
+/**
+ * What the Site styles status region says as the unreadable colour pairs change. `key` is the names of the unreadable
+ * pairs joined by `|`, a newline, then `unknown` when some pair cannot be checked. Silent when only that last flag moved;
+ * "readable again" only after there were problems, and never while some pair cannot be checked (the region clears instead).
+ */
+export function sayContrast(prev: string, next: string): string | null {
+  const [failing, unknown] = next.split('\n');
+  if (failing === prev.split('\n')[0]) return null;
+  if (failing) return `Low contrast: ${failing.split('|').join(', ')}`;
+  return unknown ? '' : 'Colors are readable again';
+}

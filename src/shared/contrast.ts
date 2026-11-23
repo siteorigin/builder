@@ -70,8 +70,6 @@ export interface ContrastPair {
   group: string;
   /** False when the foreground is itself the colour the author is choosing (brand text on the page), so changing it is no fix. */
   fixable?: boolean;
-  /** The token a translucent background is painted over (the brand panel a light button sits on). The page background when absent. */
-  over?: string;
   /** Defaults to the text minimum. */
   min?: number;
 }
@@ -90,7 +88,7 @@ export type PairResult = (Measured & { status: 'pass' }) | FailingPair | { statu
 
 export const isFailing = (r: PairResult): r is FailingPair => r.status === 'fail';
 
-/** Where translucent colours land unless a pair says otherwise: the page background, itself painted over white. */
+/** Where translucent colours land: the page background, itself painted over white. */
 const BACKDROP = 'color.background';
 
 /** The token graph: ids to values, with `overrides` standing in for tokens being tried. */
@@ -128,12 +126,10 @@ export function evaluatePairs(tokens: TokenDef[], pairs: readonly ContrastPair[]
     return !c ? null : c.a >= 1 ? c : under ? compositeOver(c, under) : null;
   };
   return pairs.map((pair): PairResult => {
-    // What a translucent background lands on: the pair's own ground, else the page.
-    const under = pair.over ? solid(pair.over, page) : page;
     const colorOf = (c: PairColor): Rgba | null => {
-      if (typeof c === 'string') return solid(c, under);
-      const [a, pa, b] = [solid(c.mix[0], under), c.mix[1] / 100, solid(c.mix[2], under)];
-      // The two ends are opaque once painted over the same ground, so the mix is a plain weighted average.
+      if (typeof c === 'string') return solid(c, page);
+      const [a, pa, b] = [solid(c.mix[0], page), c.mix[1] / 100, solid(c.mix[2], page)];
+      // The two ends are opaque once painted over the page, so the mix is a plain weighted average.
       return a && b ? { r: a.r * pa + b.r * (1 - pa), g: a.g * pa + b.g * (1 - pa), b: a.b * pa + b.b * (1 - pa), a: 1 } : null;
     };
     const fg = graph.css(pair.fg);
@@ -157,7 +153,7 @@ export interface ForegroundSuggestion {
   after: PairResult[];
   /** True when every pair of the group is readable with it; false when a resting state is fixed at the cost of another (a hover colour). */
   everyState: boolean;
-  /** Pairs that read well now and would not with it, anywhere in the theme (a light button on the same colour), most to least. */
+  /** Pairs that read well now and would not with it, anywhere in the theme (a light button on the same colour), worst first. */
   breaks: FailingPair[];
 }
 
@@ -179,7 +175,7 @@ export function suggestForeground(tokens: TokenDef[], pairs: readonly ContrastPa
     const after = evaluatePairs(tokens, group, read, overrides);
     const breaks = evaluatePairs(tokens, pairs, read, overrides)
       .filter(isFailing)
-      .filter((r) => before.get(r.pair.id) !== 'fail')
+      .filter((r) => before.get(r.pair.id) === 'pass')
       .sort((a, b) => a.ratio - b.ratio);
     return { value, after, breaks, fixed: after.find((r) => r.pair.id === pair.id)?.status === 'pass', everyState: after.every((r) => r.status === 'pass') };
   });
@@ -203,6 +199,6 @@ export function pairsOf(pairs: readonly ContrastPair[], tokenId: string, tokens:
       if (ref && affects.has(ref) && !affects.has(t.id)) (affects.add(t.id), (grew = true));
     }
   }
-  const ends = (p: ContrastPair) => [p.fg, ...(typeof p.bg === 'string' ? [p.bg] : [p.bg.mix[0], p.bg.mix[2]]), ...(p.over ? [p.over] : [])];
+  const ends = (p: ContrastPair) => [p.fg, ...(typeof p.bg === 'string' ? [p.bg] : [p.bg.mix[0], p.bg.mix[2]])];
   return pairs.filter((p) => ends(p).some((id) => affects.has(id)));
 }

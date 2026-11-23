@@ -12,6 +12,7 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { STARTERS, createStarterState } from '@catalogue/starters';
 import { FOUNDATION_CONTRAST_PAIRS } from '@catalogue/foundation/contrast';
 import { derivedBrandTokens } from '@agent/brand';
+import { sayContrast } from '../../src/renderer/src/lib/announce';
 
 const PAIRS = FOUNDATION_CONTRAST_PAIRS;
 
@@ -171,6 +172,25 @@ describe('offers', () => {
     expect(suggestForeground(tokens, PAIRS, hover as never)).toBeNull();
   });
 
+  it('picks the choice that spoils nothing that reads now, and does not count a pair it makes readable', () => {
+    // Text on brand is 90% black and the page is unreadable. Text and Alternate background follow it, so both are unknown now.
+    // White fixes the button but turns the white cards' text white on white; black fixes it and breaks nothing that passes.
+    const tokens = business({
+      'color.background': 'currentcolor',
+      'color.brand': '#757575',
+      'color.brand-strong': '#757575',
+      'color.on-brand': 'rgb(0 0 0 / 90%)',
+      'color.surface': '#ffffff',
+      'color.muted': '#000000',
+      'color.text': { token: 'color.on-brand' },
+      'color.surface-alt': { token: 'color.on-brand' }
+    });
+    const results = evaluatePairs(tokens, PAIRS);
+    const failing = byId(results, 'button');
+    expect(failing.status).toBe('fail');
+    expect(suggestForeground(tokens, PAIRS, failing as never)).toMatchObject({ value: '#000000' });
+  });
+
   it('offers a choice for a brand linked to an independent color', () => {
     const tokens = business({ 'color.brand': { token: 'color.surface' } });
     const failing = byId(evaluatePairs(tokens, PAIRS), 'button');
@@ -244,21 +264,19 @@ describe('what a ratio says', () => {
     expect(ratioOf(byId(evaluatePairs(tokens, PAIRS), 'text-surface'))).toBeCloseTo(1, 6);
   });
 
-  it('leaves a translucent color unknown when the page color is, but still measures opaque ones', () => {
-    const tokens = business({ 'color.background': 'currentcolor', 'color.surface': 'rgb(0 0 0 / 50%)', 'color.surface-alt': '#ffffff', 'color.text': '#000000' });
+  it.each([['currentcolor'], [{ token: 'color.nope' }]])('leaves a translucent color unknown when the page color (%j) is, but still measures opaque ones', (page) => {
+    const tokens = business({ 'color.background': page, 'color.surface': 'rgb(0 0 0 / 50%)', 'color.surface-alt': '#ffffff', 'color.text': '#000000' });
     const results = evaluatePairs(tokens, PAIRS);
     expect(byId(results, 'text-surface').status).toBe('unknown');
     expect(byId(results, 'text-background').status).toBe('unknown');
     expect(ratioOf(byId(results, 'text-surface-alt'))).toBeCloseTo(21, 9);
   });
 
-  it('paints a light button over the brand panel it sits on, not over the page', () => {
-    // Text on brand color is clear, so the light button is the brand panel's colour: strong brand text on a black panel.
-    const tokens = business({ 'color.brand': '#000000', 'color.brand-strong': '#000000', 'color.on-brand': 'rgb(255 255 255 / 0%)' });
-    const results = evaluatePairs(tokens, PAIRS);
-    expect(byId(results, 'light-button')).toMatchObject({ status: 'fail', bg: '#000000' });
-    expect(ratioOf(byId(results, 'light-button'))).toBeCloseTo(1, 6);
-    expect(byId(results, 'light-button-hover')).toMatchObject({ status: 'fail', bg: '#000000' });
+  it('holds a pair to its own minimum', () => {
+    const pair: ContrastPair = { id: 'p', use: 'Sample', fg: 'color.text', bg: 'color.background', state: 'rest', group: 'p', min: 7 };
+    const grey = business({ 'color.text': '#666666', 'color.background': '#ffffff' });
+    expect(byId(evaluatePairs(grey, [pair]), 'p').status).toBe('fail');
+    expect(byId(evaluatePairs(grey, [{ ...pair, min: undefined }]), 'p').status).toBe('pass');
   });
 
   it('reads a light button on its hover mix of the two colors', () => {
@@ -276,8 +294,8 @@ describe('values that cannot be known', () => {
   const pair: ContrastPair = { id: 'p', use: 'Sample', fg: 'color.fg', bg: 'color.bg', state: 'rest', group: 'p' };
 
   it('follows a chain of references longer than any limit', () => {
-    const links: Array<[string, unknown]> = Array.from({ length: 40 }, (_, i) => [`color.l${i}`, { token: `color.l${i + 1}` }]);
-    const tokens = mini([...links, ['color.l40', '#000000'], ['color.fg', { token: 'color.l0' }], ['color.bg', '#ffffff']]);
+    const links: Array<[string, unknown]> = Array.from({ length: 100 }, (_, i) => [`color.l${i}`, { token: `color.l${i + 1}` }]);
+    const tokens = mini([...links, ['color.l100', '#000000'], ['color.fg', { token: 'color.l0' }], ['color.bg', '#ffffff']]);
     expect(ratioOf(evaluatePairs(tokens, [pair])[0])).toBeCloseTo(21, 9);
   });
 
@@ -295,9 +313,9 @@ describe('values that cannot be known', () => {
   });
 
   it('reads colors through the reader it is given, and keeps a bare keyword and padded values', () => {
-    const tokens = mini([['color.fg', 'color-mix(in srgb, #000 100%, #000)'], ['color.bg', ' white ']]);
+    const tokens = mini([['color.fg', 'color-mix(in srgb, #000 100%, #000)'], ['color.bg', 'color-mix(in srgb, #fff 100%, #fff)']]);
     expect(evaluatePairs(tokens, [pair])[0].status).toBe('unknown');
-    const reader = (css: string) => (css.startsWith('color-mix') ? { r: 0, g: 0, b: 0, a: 1 } : parseColor(css));
+    const reader = (css: string) => (css.includes('#000') ? { r: 0, g: 0, b: 0, a: 1 } : css.startsWith('color-mix') ? { r: 255, g: 255, b: 255, a: 1 } : parseColor(css));
     expect(ratioOf(evaluatePairs(tokens, [pair], reader)[0])).toBeCloseTo(21, 9);
     expect(ratioOf(evaluatePairs(mini([['color.fg', 'black'], ['color.bg', ' #ffffff ']]), [pair])[0])).toBeCloseTo(21, 9);
   });
@@ -339,9 +357,17 @@ describe('what ships', () => {
     }
   });
 
+  it('shows each pair as the site paints it: text on its ground, on each ground', () => {
+    const results = evaluatePairs(business({}), PAIRS);
+    expect(byId(results, 'button')).toMatchObject({ fg: '#ffffff', bg: '#1f5a4c' });
+    expect(byId(results, 'brand-text-surface')).toMatchObject({ fg: '#1f5a4c', bg: '#ffffff' });
+    expect(byId(results, 'brand-text-surface-alt')).toMatchObject({ fg: '#1f5a4c', bg: '#f2efe8' });
+    expect(PAIRS.map((p) => p.id).sort()).toEqual(['brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'button-hover', 'dark-accent', 'dark-text', 'light-button', 'light-button-hover', 'muted-background', 'muted-surface', 'muted-surface-alt', 'text-background', 'text-surface', 'text-surface-alt']);
+  });
+
   it('lists the pairs that involve a token as foreground or background, hover mixes included', () => {
     expect(pairsOf(PAIRS, 'color.on-brand').map((p) => p.id)).toEqual(expect.arrayContaining(['button', 'button-hover', 'light-button', 'light-button-hover']));
-    expect(pairsOf(PAIRS, 'color.brand').map((p) => p.id).sort()).toEqual(['brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'light-button', 'light-button-hover']);
+    expect(pairsOf(PAIRS, 'color.brand').map((p) => p.id).sort()).toEqual(['brand-text-background', 'brand-text-surface', 'brand-text-surface-alt', 'button', 'light-button-hover']);
     expect(pairsOf(PAIRS, 'color.border')).toEqual([]);
   });
 
@@ -349,8 +375,10 @@ describe('what ships', () => {
     const tokens = business({ 'color.brand': { token: 'color.accent' } });
     expect(pairsOf(PAIRS, 'color.accent').map((p) => p.id)).not.toContain('button');
     expect(pairsOf(PAIRS, 'color.accent', tokens).map((p) => p.id)).toEqual(expect.arrayContaining(['button', 'brand-text-background', 'dark-accent']));
-    const chained = business({ 'color.brand': { token: 'color.accent' }, 'color.accent': { token: 'color.border' } });
-    expect(pairsOf(PAIRS, 'color.border', chained).map((p) => p.id)).toContain('button');
+    // Four hops: brand follows a1, a1 follows a2, a2 follows a3, a3 follows border.
+    const chain = ['color.brand', 'color.a1', 'color.a2', 'color.a3'].map((id, i, all) => ({ id, label: id, group: 'color', value: { token: all[i + 1] ?? 'color.border' } }) as TokenDef);
+    const hops = [...chain, { id: 'color.border', label: 'Border', group: 'color', value: '#e3dfd5' } as TokenDef];
+    expect(pairsOf(PAIRS, 'color.border', hops).map((p) => p.id)).toContain('button');
   });
 
   it('agrees with the AI brand tool: the colors it derives for any brand keep the button readable at rest and on hover', () => {
@@ -368,6 +396,21 @@ describe('what ships', () => {
     expect(derivedBrandTokens('#1f5a4c', '#ffffff')['color.on-brand']).toBe('#ffffff');
     expect(derivedBrandTokens('#ffffff', '#ffffff')['color.on-brand']).toBe('#14181a');
     expect(derivedBrandTokens('#f5c518', '#ffffff')['color.on-brand']).toBe('#14181a');
+    expect(derivedBrandTokens('#767676', '#ffffff')['color.on-brand']).toBe('#ffffff');
     expect(derivedBrandTokens('#777777', '#ffffff')['color.on-brand']).toBe('#000000');
+  });
+});
+
+describe('what the status region says', () => {
+  const key = (failing: string[], unknown = false) => `${failing.join('|')}\n${unknown ? 'unknown' : ''}`;
+  it('names the unreadable pairs, and says readable again only after there were some', () => {
+    expect(sayContrast(key([]), key(['Button text', 'Text on the page']))).toBe('Low contrast: Button text, Text on the page');
+    expect(sayContrast(key(['Button text']), key([]))).toBe('Colors are readable again');
+    expect(sayContrast(key([], true), key([]))).toBeNull();
+  });
+  it('stays quiet when only the could-not-be-checked flag moved, and never claims readable while some cannot be checked', () => {
+    expect(sayContrast(key(['Button text']), key(['Button text'], true))).toBeNull();
+    expect(sayContrast(key(['Button text'], true), key(['Button text']))).toBeNull();
+    expect(sayContrast(key(['Button text']), key([], true))).toBe('');
   });
 });

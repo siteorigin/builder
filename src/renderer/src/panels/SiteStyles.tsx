@@ -393,7 +393,8 @@ export function SiteStyles() {
     const row = trigger.closest('[data-ss-row]');
     const panel = trigger.closest('.ss');
     void applyOps([{ type: 'token.set', tokenId: s.token, value: s.value }], `Use a readable ${label}`, undefined, snap.revision);
-    refocus(trigger, row, null, () => panel?.querySelector<HTMLElement>('.ss-color.compact input.ss-hex') ?? null);
+    // Brand's value is plain text while it follows another colour: then its "Use its own color" button is what can take focus.
+    refocus(trigger, row, null, () => panel?.querySelector<HTMLElement>('.ss-color.compact input.ss-hex, .ss-color.compact .ss-follows .link-btn') ?? null);
   };
   const site = st.site;
   const updSite = (patch: Record<string, unknown>) => void applyOps([{ type: 'site.update', ...patch }], 'Update site settings');

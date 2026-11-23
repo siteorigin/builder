@@ -16,8 +16,8 @@ const grounds: Array<[token: string, label: string]> = [
 export const FOUNDATION_CONTRAST_PAIRS: ContrastPair[] = [
   { id: 'button', use: 'Button text', fg: 'color.on-brand', bg: 'color.brand', state: 'rest', group: 'button' },
   { id: 'button-hover', use: 'Button text on hover', fg: 'color.on-brand', bg: 'color.brand-strong', state: 'hover', group: 'button' },
-  { id: 'light-button', use: 'Light button text', fg: 'color.brand-strong', bg: 'color.on-brand', state: 'rest', group: 'light-button', fixable: false, over: 'color.brand' },
-  { id: 'light-button-hover', use: 'Light button text on hover', fg: 'color.brand-strong', bg: { mix: ['color.on-brand', 88, 'color.brand'] }, state: 'hover', group: 'light-button', fixable: false, over: 'color.brand' },
+  { id: 'light-button', use: 'Light button text', fg: 'color.brand-strong', bg: 'color.on-brand', state: 'rest', group: 'light-button', fixable: false },
+  { id: 'light-button-hover', use: 'Light button text on hover', fg: 'color.brand-strong', bg: { mix: ['color.on-brand', 88, 'color.brand'] }, state: 'hover', group: 'light-button', fixable: false },
   ...grounds.map(([bg, label]): ContrastPair => ({ id: `brand-text-${bg.slice(6)}`, use: `Brand-colored links on ${label}`, fg: 'color.brand', bg, state: 'rest', group: 'brand-text', fixable: false })),
   ...grounds.map(([bg, label]): ContrastPair => ({ id: `text-${bg.slice(6)}`, use: `Text on ${label}`, fg: 'color.text', bg, state: 'rest', group: 'text' })),
   ...grounds.map(([bg, label]): ContrastPair => ({ id: `muted-${bg.slice(6)}`, use: `Muted text on ${label}`, fg: 'color.muted', bg, state: 'rest', group: 'muted' })),

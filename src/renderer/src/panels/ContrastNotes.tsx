@@ -3,7 +3,7 @@ import { CircleCheck, CircleHelp, TriangleAlert } from 'lucide-react';
 import { evaluatePairs, formatRatio, isFailing, pairsOf, suggestForeground, READABLE_TEXT_COLORS, type ContrastPair, type FailingPair, type ForegroundSuggestion, type PairResult } from '@shared/contrast';
 import type { TokenDef } from '@shared/types';
 import { resolveCssColor } from '../lib/color';
-import { useTransitionAnnouncement } from '../lib/announce';
+import { sayContrast, useTransitionAnnouncement } from '../lib/announce';
 
 /** The colour pairs a theme declares, read against the project's current colours, with what to offer for each that fails. */
 export interface ContrastModel {
@@ -41,13 +41,6 @@ export function failingFor(model: ContrastModel, tokenId: string): FailingPair[]
 
 /** The unreadable pairs by name, then whether any pair could not be checked: what the status region follows. */
 export const contrastKey = (model: ContrastModel) => `${model.results.filter(isFailing).map((r) => r.pair.use).join('|')}\n${model.results.some((r) => r.status === 'unknown') ? 'unknown' : ''}`;
-
-/** What a polite status region says when the unreadable pairs change; nothing is claimed readable while some cannot be checked. */
-export function sayContrast(_prev: string, next: string): string | null {
-  const [failing, unknown] = next.split('\n');
-  if (failing) return `Low contrast: ${failing.split('|').join(', ')}`;
-  return unknown ? '' : 'Colors are readable again';
-}
 
 /** The status text, announced once the colours have stopped changing, so a picker drag across a threshold does not chatter. */
 export function useContrastStatus(model: ContrastModel): string {
