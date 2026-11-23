@@ -1,4 +1,29 @@
 /** What the project's preview server may do. Kept apart from the worker so it can be tested. */
+import { realpathSync } from 'node:fs';
+import { sep } from 'node:path';
+
+/** A folder's real path, with every link resolved; the path as given when it does not exist yet. */
+export function canonicalDir(dir: string): string {
+  try {
+    return realpathSync.native(dir);
+  } catch {
+    return dir;
+  }
+}
+
+/**
+ * Is `file` really inside `root`, after resolving links? A link planted in the editor's cache must never make
+ * the preview serve a file from elsewhere on the computer.
+ */
+export function realFileInside(root: string, file: string): boolean {
+  try {
+    const r = realpathSync.native(root);
+    const f = realpathSync.native(file);
+    return f !== r && f.startsWith(r.endsWith(sep) ? r : r + sep);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Only the editor may frame the preview: app://editor in packaged builds, plus the loopback dev server the

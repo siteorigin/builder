@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { resolveConfig } from 'vite';
 import { atomicWrite } from '../../src/main/project/fsutil';
-import { frameAncestorsCsp, framePolicyPlugin, previewFsPolicy } from '../../src/runtime/policy';
+import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, previewFsPolicy, realFileInside } from '../../src/runtime/policy';
+import { projectSrcPath } from '../../src/runtime/paths';
 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
@@ -50,6 +51,45 @@ describe('preview server policy', () => {
       expect(denied(dir, `${dir}/${f}`), f).toBe(true);
     for (const f of ['src/routes/+page.svelte', 'static/assets/logo.png', 'siteorigin/site.json']) expect(denied(dir, `${dir}/${f}`), f).toBe(false);
     expect(previewFsPolicy(dir)).toMatchObject({ strict: true, allow: [dir] });
+  });
+
+  it.skipIf(process.platform === 'win32')('refuses a cache entry that links outside the cache', () => {
+    const root = tmp();
+    const cache = join(root, 'cache');
+    mkdirSync(join(cache, 'src'), { recursive: true });
+    writeFileSync(join(cache, 'src', 'real.svelte'), 'ok');
+    const secret = join(tmp(), 'secret.txt');
+    writeFileSync(secret, 'secret');
+    symlinkSync(secret, join(cache, 'src', 'link.svelte'));
+    symlinkSync(dirname(secret), join(cache, 'linked-dir'));
+    expect(realFileInside(cache, join(cache, 'src', 'real.svelte'))).toBe(true);
+    expect(realFileInside(cache, join(cache, 'src', 'link.svelte'))).toBe(false);
+    expect(realFileInside(cache, join(cache, 'linked-dir', 'secret.txt'))).toBe(false);
+    expect(realFileInside(cache, join(cache, 'src', 'missing.svelte'))).toBe(false);
+    expect(realFileInside(cache, cache)).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('works for a project behind a linked parent, and still refuses links out of its cache', () => {
+    const realParent = tmp();
+    const linkParent = join(tmp(), 'linked');
+    symlinkSync(realParent, linkParent);
+    const real = realpathSync(join(realParent));
+    mkdirSync(join(realParent, 'site', '.siteorigin', 'cache', 'dev', 'src'), { recursive: true });
+    const viaLink = join(linkParent, 'site');
+    const root = canonicalDir(viaLink);
+    expect(root).toBe(join(real, 'site'));
+    expect(canonicalDir(join(linkParent, 'not-there'))).toBe(join(linkParent, 'not-there'));
+    // Modules are named by the real path, which the dev-cache lookup now shares.
+    expect(projectSrcPath(root, `${root}/src/routes/+page.svelte?v=1`)).toBe('src/routes/+page.svelte');
+    const cache = join(viaLink, '.siteorigin', 'cache', 'dev');
+    writeFileSync(join(cache, 'src', 'page.svelte'), 'ok');
+    expect(realFileInside(cache, join(cache, 'src', 'page.svelte'))).toBe(true);
+    expect(realFileInside(viaLink, join(cache, 'src', 'page.svelte'))).toBe(true);
+    const secret = join(tmp(), 'secret.txt');
+    writeFileSync(secret, 'secret');
+    symlinkSync(secret, join(cache, 'src', 'planted.svelte'));
+    expect(realFileInside(cache, join(cache, 'src', 'planted.svelte'))).toBe(false);
+    expect(realFileInside(viaLink, join(cache, 'src', 'planted.svelte'))).toBe(false);
   });
 
   it('only lets the editor frame the preview', () => {

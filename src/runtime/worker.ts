@@ -9,7 +9,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import bridgeSource from './bridge.client.js?raw';
-import { frameAncestorsCsp, framePolicyPlugin, previewFsPolicy } from './policy';
+import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, previewFsPolicy, realFileInside } from './policy';
 import { projectSrcPath } from './paths';
 
 type Msg =
@@ -37,6 +37,8 @@ let manifest: { mtimeMs: number; files: Record<string, string> } | null = null;
 function generatedHashes(dir: string): Record<string, string> {
   const file = join(dir, '.siteorigin', 'cache', 'dev', '.clean-hashes.json');
   try {
+    const cache = join(dir, '.siteorigin', 'cache', 'dev');
+    if (!realFileInside(cache, file) || !realFileInside(dir, file)) return {};
     const mtimeMs = statSync(file).mtimeMs;
     if (manifest?.mtimeMs !== mtimeMs) manifest = { mtimeMs, files: JSON.parse(readFileSync(file, 'utf8')) ?? {} };
     return manifest.files;
@@ -80,11 +82,23 @@ function devPlugin(dir: string) {
       if (!rel) return null;
       const variant = join(devRoot, ...rel.split('/'));
       if (!existsSync(variant)) return null;
+      // Only a file really inside the cache (no link out of it) is ever served in place of the project's.
+      if (!realFileInside(devRoot, variant) || !realFileInside(dir, variant)) return null;
       // A generated file edited outside the app is shown as edited, not as the editor's instrumented copy.
       if (editedOutside(dir, rel)) return null;
       return readFileSync(variant, 'utf8');
     }
   };
+}
+
+/**
+ * Vite, SvelteKit and process.cwd() must all name the project the same way. They resolve links on their own, so a
+ * project reached through one (macOS: /var is /private/var) would otherwise fail with paths that do not match.
+ */
+function useRealProjectDir(dir: string): string {
+  const real = canonicalDir(dir);
+  process.chdir(real);
+  return real;
 }
 
 async function start(dir: string, wantedPort = 0, packaged = true) {
@@ -158,10 +172,10 @@ async function build(dir: string) {
 port.on('message', async (ev) => {
   const m = ev.data;
   try {
-    if (m.type === 'start') await start(m.dir, m.port, m.packaged !== false);
+    if (m.type === 'start') await start(useRealProjectDir(m.dir), m.port, m.packaged !== false);
     else if (m.type === 'revision') server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision } });
     else if (m.type === 'build') {
-      await build(m.dir);
+      await build(useRealProjectDir(m.dir));
       process.exit(0);
     } else if (m.type === 'stop') {
       await server?.close();

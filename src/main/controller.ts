@@ -20,6 +20,7 @@ import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies } from './runtime/manager';
+import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, trust } from './settings';
 import { newId } from '@shared/ids';
 
@@ -103,7 +104,7 @@ export class Controller {
   async create(opts: CreateProjectOptions): Promise<{ ok: boolean; message?: string }> {
     const name = opts.name.trim();
     if (!name) return { ok: false, message: 'Enter a project name.' };
-    const dir = join(opts.parentDir, slugify(name) || 'website');
+    let dir = join(opts.parentDir, slugify(name) || 'website');
     if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
     const createdDir = !existsSync(dir);
     this.createAbort = new AbortController();
@@ -112,6 +113,8 @@ export class Controller {
     try {
       this.progress({ step: 'files', message: 'Preparing project files…' });
       await fs.mkdir(dir, { recursive: true });
+      // One name for the folder from here on: the build tools resolve links and must agree with the session.
+      dir = canonicalDir(dir);
       await fs.cp(join(resourcesDir(), 'templates', 'sveltekit-brochure', 'files'), dir, { recursive: true });
       const pkgPath = join(dir, 'package.json');
       const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
@@ -178,14 +181,21 @@ export class Controller {
       if (basename(dir) === MANIFEST_FILE) dir = join(dir, '..');
     }
     if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' };
-    if (!(await isTrusted(dir, await configHash(dir)))) {
+    // A project reached through a link (macOS: /var is /private/var) is opened by its real path, and trust
+    // given under the linked name carries over while the build settings are unchanged.
+    const asOpened = dir;
+    dir = canonicalDir(dir);
+    const hash = await configHash(dir);
+    if (dir !== asOpened && (await isTrusted(asOpened, hash))) await trust(dir, hash);
+    if (!(await isTrusted(dir, hash))) {
       const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_FILE))) ?? '{}');
       return { ok: false, needsTrust: { dir, name: manifest.name ?? basename(dir) } };
     }
     return this.openTrusted(dir);
   }
 
-  async trustAndOpen(dir: string) {
+  async trustAndOpen(opened: string) {
+    const dir = canonicalDir(opened);
     await trust(dir, await configHash(dir));
     return this.openTrusted(dir);
   }
@@ -358,9 +368,9 @@ export class Controller {
     if (!s) return { ok: false };
     const r = await dialog.showSaveDialog(this.getWindow()!, { title: 'Duplicate project', defaultPath: `${s.dir}-copy`, buttonLabel: 'Duplicate' });
     if (r.canceled || !r.filePath) return { ok: false };
-    const dest = r.filePath;
-    if (existsSync(dest)) return { ok: false, message: 'Choose a new folder name; that location already exists.' };
-    await copyProjectSource(s.dir, dest);
+    if (existsSync(r.filePath)) return { ok: false, message: 'Choose a new folder name; that location already exists.' };
+    await copyProjectSource(s.dir, r.filePath);
+    const dest = canonicalDir(r.filePath);
     const manifestPath = join(dest, MANIFEST_FILE);
     const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
     manifest.projectId = newId('p', 12);
