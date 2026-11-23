@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { inflateRawSync, crc32 } from 'node:zlib';
 import { createStarterState } from '@catalogue/starters';
+import { assetUsages } from '@engine/apply';
+import { generateProject } from '@generator/index';
+import type { AssetRecord, ProjectState } from '@shared/types';
 import { zipDirectory } from '../../src/main/zip';
 import {
   copyProjectSource,
@@ -12,8 +15,10 @@ import {
   exportedAssetFilter,
   finishExportedSource,
   isGeneratedReadme,
+  omittedAssetsWarning,
   projectFingerprint,
   projectReadme,
+  pruneWebsiteAssets,
   publishFolder,
   uniqueChild
 } from '../../src/main/export';
@@ -111,8 +116,81 @@ describe('ZIP export', () => {
   });
 });
 
+describe('website export assets', () => {
+  const image = (id: string, file: string, variants: string[] = []): AssetRecord => ({ id, name: `${id}.svg`, file, mime: 'image/svg+xml', bytes: 1, width: 1000, height: 500, hash: 'x', kind: 'image', variants: variants.map((f, i) => ({ width: 480 * (i + 1), file: f })), createdAt: '' });
+  /** Put an asset into the first image slot of the home page. */
+  const place = (state: ProjectState, assetId: string) => {
+    const home = state.pages[state.site.homePageId];
+    const slot = JSON.stringify(home.nodes).includes('"assetId":null');
+    expect(slot, 'the starter has an empty image slot').toBe(true);
+    const walk = (v: unknown): boolean => {
+      if (!v || typeof v !== 'object') return false;
+      const o = v as Record<string, unknown>;
+      if ('assetId' in o && o.assetId === null) return ((o.assetId = assetId), true);
+      return Object.values(o).some(walk);
+    };
+    walk(home.nodes);
+  };
+
+  it('leaves library files no page uses out of the website, and says which', async () => {
+    const state = createStarterState('business', 'Test', false);
+    state.site.baseUrl = 'https://example.com';
+    const assets: AssetRecord[] = [
+      image('placed', 'static/assets/big-sketch-12345678.svg', ['static/assets/big-sketch-12345678-480w.svg']),
+      // Never placed: its name is part of the placed file's name, which must not count as a use.
+      image('draft', 'static/assets/sketch-12345678.svg', ['static/assets/sketch-12345678-480w.svg']),
+      image('favicon', 'static/assets/mark-aaaaaaaa.svg'),
+      image('social', 'static/assets/share-bbbbbbbb.svg'),
+      image('coded', 'static/assets/gallery-cccccccc.svg'),
+      image('manifest', 'static/assets/app-icon-dddddddd.svg'),
+      { id: 'font', name: 'Brand Sans', file: 'static/assets/brand-sans-eeeeeeee.woff2', mime: 'font/woff2', bytes: 1, hash: 'x', kind: 'font', createdAt: '', font: { family: 'Brand Sans', weight: '400', style: 'normal' } }
+    ];
+    for (const a of assets) state.assets.assets[a.id] = a;
+    place(state, 'placed');
+    state.site.favicon = 'favicon';
+    state.site.socialImage = 'social';
+    state.components['code.x'] = { ...Object.values(state.components)[0], id: 'code.x', kind: 'code', sourcePath: 'src/lib/siteorigin/custom/Gallery.svelte', source: '<img src="/assets/gallery-cccccccc.svg" alt="" /><img src="/assets/no-record-ffffffff.svg" alt="" />' };
+    expect(assetUsages(state).draft, 'the panel shows the draft as not used').toBeUndefined();
+
+    const dir = temp();
+    for (const [path, text] of generateProject(state)) write(dir, path, text);
+    for (const a of assets) for (const f of [a.file, ...(a.variants ?? []).map((v) => v.file)]) write(dir, f, '<svg/>');
+    for (const f of ['static/assets/no-record-ffffffff.svg', 'static/assets/deleted-99999999.svg', 'static/assets/my-own-file.pdf']) write(dir, f, 'x');
+    write(dir, 'static/site.webmanifest', JSON.stringify({ icons: [{ src: '/assets/app-icon-dddddddd.svg' }] }));
+    // The authoring documents list every asset; that is not a use.
+    write(dir, 'siteorigin/assets.json', JSON.stringify(state.assets));
+
+    const omitted = await pruneWebsiteAssets(dir, state);
+    const left = (f: string) => existsSync(join(dir, f));
+    expect(omitted.map((a) => a.id)).toEqual(['draft']);
+    expect(left('static/assets/sketch-12345678.svg')).toBe(false);
+    expect(left('static/assets/sketch-12345678-480w.svg')).toBe(false);
+    expect(left('static/assets/deleted-99999999.svg')).toBe(false);
+    for (const f of [
+      'static/assets/big-sketch-12345678.svg',
+      'static/assets/big-sketch-12345678-480w.svg',
+      'static/assets/mark-aaaaaaaa.svg',
+      'static/assets/share-bbbbbbbb.svg',
+      'static/assets/gallery-cccccccc.svg',
+      'static/assets/app-icon-dddddddd.svg',
+      'static/assets/brand-sans-eeeeeeee.woff2',
+      'static/assets/no-record-ffffffff.svg',
+      'static/assets/my-own-file.pdf',
+      'siteorigin/assets.json'
+    ])
+      expect(left(f), f).toBe(true);
+    expect(omittedAssetsWarning(omitted)).toBe("draft.svg is not used anywhere on the site, so it was left out of the website. It stays in the project's assets.");
+  });
+
+  it('names every asset it left out, and nothing when it left none out', () => {
+    expect(omittedAssetsWarning([])).toBeUndefined();
+    const many = ['g', 'b', 'f', 'a', 'e', 'c', 'd'].map((n) => image(n, `static/assets/${n}-aaaaaaaa.svg`));
+    expect(omittedAssetsWarning(many)).toBe("7 assets not used anywhere on the site were left out of the website: a.svg, b.svg, c.svg, d.svg, e.svg and 2 more. They stay in the project's assets.");
+  });
+});
+
 describe('source export helpers', () => {
-  it('copies only referenced images and never private files or links', async () => {
+  it('keeps every library image, used or not, but no deleted image, private file or link', async () => {
     const state = createStarterState('business', 'Test', false);
     state.assets.assets['a1'] = { id: 'a1', name: 'Kept', file: 'static/assets/kept-aaaaaaaa.jpg', mime: 'image/jpeg', bytes: 1, width: 1000, height: 500, hash: 'x', kind: 'image', variants: [{ width: 480, file: 'static/assets/kept-aaaaaaaa-480w.jpg' }], createdAt: '' };
     state.components['code.x'] = { ...Object.values(state.components)[0], id: 'code.x', kind: 'code', source: '<img src="/assets/used-by-code-cccccccc.png" alt="" />' };
