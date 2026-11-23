@@ -868,7 +868,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .ss-color { display: grid; grid-template-columns: 16px 28px minmax(0, 1fr) 74px; align-items: center; column-gap: 8px; min-height: 44px; padding: 4px 0; margin-left: -6px; }
 .ss-color.compact { grid-template-columns: 44px minmax(0, 1fr) 74px; column-gap: 10px; margin-left: 0; }
 .ss-color.compact .color-pick { width: 44px; height: 44px; }
-.ss-hex-linked { display: flex; align-items: center; height: 26px; padding: 0 8px; border-radius: var(--r-sm); border: 1px dashed var(--border-control); font-size: 12px; color: var(--text-2); outline-offset: 1px; }
+.ss-hex-linked { display: block; height: 26px; line-height: 24px; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: var(--r-sm); border: 1px dashed var(--border-control); font-size: 12px; color: var(--text-2); outline-offset: 1px; }
 .ss-detail[hidden], .ss-text-body[hidden], .ss-review[hidden] { display: none; }
 .ss-disclose { display: grid; place-items: center; width: 22px; height: 28px; margin-right: -6px; padding: 0; border: 0; border-radius: var(--r-xs); background: none; color: var(--text-3); }
 .ss-disclose:hover { background: var(--hover); color: var(--text); }

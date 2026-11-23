@@ -516,7 +516,7 @@ export function SiteStyles() {
           )}
         </div>
         {follows ? (
-          <span className="ss-hex ss-hex-linked mono" title={`Follows ${follows}. Choose "Use its own color" to set it separately.`}>
+          <span className="ss-hex ss-hex-linked mono" title={`${value}. Follows ${follows}. Choose "Use its own color" to set it separately.`}>
             {value}
           </span>
         ) : (
