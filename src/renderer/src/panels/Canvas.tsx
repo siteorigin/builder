@@ -18,6 +18,7 @@ import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateSelect
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
+import { runPhase } from '../lib/savestate';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
 export const inlineEdit = { active: false };
@@ -677,7 +678,7 @@ export function Canvas() {
               </button>
             </>
           ) : (
-            'The AI is editing this site. You can look around while it works.'
+            runPhase(runStatus) === 'checking' ? 'The AI is checking its changes. You can look around while it works.' : 'The AI is editing this site. You can look around while it works.'
           )}
           <button className="btn btn-sm" onClick={() => void api.ai.stop()}>
             Stop

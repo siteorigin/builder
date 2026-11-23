@@ -251,7 +251,8 @@ describe('toolbar save state', () => {
   it('says who has to act as the AI asks, resumes and checks', () => {
     expect(saveAnnouncement('saved', 'working', null)).toBe('AI is working');
     expect(saveAnnouncement('working', 'asking', null)).toBe('AI is waiting for your answer');
-    expect(saveAnnouncement('asking', 'working', null)).toBe('AI is working again');
+    // Resuming after an answer, or stopping while it waits: the toolbar says the same.
+    expect(saveAnnouncement('asking', 'working', null)).toBe('AI is working');
     expect(saveAnnouncement('working', 'checking', null)).toBe('AI is checking its changes');
     expect(saveAnnouncement('asking', 'checking', null)).toBe('AI is checking its changes');
     // A question that ends the request (Stop, or a failure) is announced as how it ended.

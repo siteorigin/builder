@@ -330,7 +330,7 @@ export function Chat() {
         ref={logRef}
         role="log"
         aria-label="AI conversation"
-        aria-busy={running}
+        aria-busy={(running && !waiting) || undefined}
         onScroll={(e) => {
           const el = e.currentTarget;
           nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -383,7 +383,7 @@ export function Chat() {
           m.role === 'user' ? (
             <UserMessage key={m.id} m={m} />
           ) : (
-            <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} undoable={m.id === undoableId} asking={asking} onContinue={m.id === resumable && !sending ? () => continueRequest(msgs[i - 1]) : undefined} />
+            <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} awaiting={waiting} undoable={m.id === undoableId} asking={asking} onContinue={m.id === resumable && !sending ? () => continueRequest(msgs[i - 1]) : undefined} />
           )
         )}
       </div>
@@ -621,10 +621,12 @@ function Steps({ items, waiting, stopped, recent }: { items: ChatActivity[]; wai
   );
 }
 
-function AssistantMessage({ m, live, undoable, asking, onContinue }: { m: ChatMessage; live: boolean; undoable: boolean; asking: WaitingQuestion | null; onContinue?: () => void }) {
+function AssistantMessage({ m, live, awaiting, undoable, asking, onContinue }: { m: ChatMessage; live: boolean; awaiting: boolean; undoable: boolean; asking: WaitingQuestion | null; onContinue?: () => void }) {
   const r = m.result;
   const activities = m.activities ?? [];
-  const waitingHere = asking?.messageId === m.id;
+  // A live turn of a run that waits for the author is paused: nothing in it spins, whichever message holds the
+  // question, because the status and the question message arrive separately.
+  const waitingHere = asking?.messageId === m.id || (live && awaiting);
   // Every question of the turn stays with it, in order, with its answer.
   const questions = shownQuestions(m, asking);
   return (

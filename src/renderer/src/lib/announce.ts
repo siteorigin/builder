@@ -65,7 +65,7 @@ export function saveStatusAnnouncement(prev: SaveStatus, next: SaveStatus, endin
   if (next === 'conflict') return 'File conflict. A project file was changed outside SiteOrigin Builder.';
   if (next === 'asking') return 'AI is waiting for your answer';
   if (next === 'checking') return 'AI is checking its changes';
-  if (next === 'working') return prev === 'asking' ? 'AI is working again' : 'AI is working';
+  if (next === 'working') return 'AI is working';
   if (next === 'busy') return '';
   const fromAi = prev === 'working' || prev === 'asking' || prev === 'checking';
   const ran = !fromAi ? undefined : ending === undefined ? 'AI changes saved' : ending?.run ? RUN_ENDED[ending.run] : undefined;
