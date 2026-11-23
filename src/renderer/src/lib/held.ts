@@ -273,7 +273,7 @@ export function whereOf(state: ProjectState, op: EditOperation): string {
 export type HeldAction = 'stop-apply' | 'apply' | 'replace' | 'copy' | 'retry' | 'discard';
 
 /** What a held edit's row says, and the actions it offers, in each phase. */
-export function heldPrompt(h: { phase: string; text: string | null; currentText?: string | null; note?: string; stopping?: boolean; writing?: boolean }, aiBusy: boolean): { message: string; actions: HeldAction[] } {
+export function heldPrompt(h: { phase: string; text: string | null; currentText?: string | null; note?: string; stopping?: boolean; writing?: boolean }, aiBusy: boolean, phase: 'working' | 'asking' | 'checking' | 'stopping' | null = null): { message: string; actions: HeldAction[] } {
   const quote = (t: string | null | undefined) => (t === '' ? 'nothing' : t ? `“${t}”` : null);
   switch (h.phase) {
     case 'applying':
@@ -292,6 +292,6 @@ export function heldPrompt(h: { phase: string; text: string | null; currentText?
     case 'failed':
       return { message: `Not applied: ${h.note ?? 'the change could not be made.'}`, actions: ['retry', 'discard'] };
   }
-  if (aiBusy) return { message: `Not saved yet: the AI is working.${h.note ? ` ${h.note}` : ''}`, actions: ['stop-apply', 'discard'] };
+  if (aiBusy) return { message: `Not saved yet: the AI is ${phase === 'asking' ? 'waiting for your answer' : phase === 'stopping' ? 'stopping' : 'working'}.${h.note ? ` ${h.note}` : ''}`, actions: ['stop-apply', 'discard'] };
   return { message: 'Not saved yet: the AI has finished. Your edit is checked against its changes before it is applied.', actions: ['apply', 'discard'] };
 }

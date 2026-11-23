@@ -9,7 +9,7 @@ import { refLabel, resolveRef } from '../lib/model';
 import { chatSuggestions } from '../lib/chatSuggestions';
 import { selectPage } from '../lib/actions';
 import { canOpen, changeTarget, changeText, checksOf, continueContext, resumableId } from '../lib/result';
-import { composerAction, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
+import { composerAction, isPaused, isStarting, shownQuestions, waitingQuestion, type WaitingQuestion } from '../lib/chatQuestions';
 import { isImeComposing } from '../lib/ime';
 import { Segmented, Spinner, useMenu } from '../components/ui';
 
@@ -156,7 +156,8 @@ export function Chat() {
       } else if (runStatus === 'preparing' && announcedRun.current !== `${activeRunId}:start`) {
         announcedRun.current = `${activeRunId}:start`;
         setAnnounce(`AI started working${target ? ` on ${target}` : ''}.`);
-      } else if (runStatus === 'running') setAnnounce('');
+      } else if (runStatus === 'stopping') setAnnounce('Stopping the AI. Its changes are being undone.');
+      else if (runStatus === 'running') setAnnounce('');
     }
     const run = trackedRun.current;
     const done = run && announcedRun.current !== `${run}:done` ? msgs.find((m) => m.role === 'assistant' && m.runId === run && m.result) : undefined;
@@ -316,7 +317,7 @@ export function Chat() {
         ref={logRef}
         role="log"
         aria-label="AI conversation"
-        aria-busy={running}
+        aria-busy={(running && !waiting) || undefined}
         onScroll={(e) => {
           const el = e.currentTarget;
           nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -370,7 +371,7 @@ export function Chat() {
           m.role === 'user' ? (
             <UserMessage key={m.id} m={m} />
           ) : (
-            <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} undoable={m.id === undoableId} asking={asking} onContinue={m.id === resumable && !sending ? () => continueRequest(msgs[i - 1]) : undefined} />
+            <AssistantMessage key={m.id} m={m} live={m.runId === activeRunId && running} awaiting={waiting} undoable={m.id === undoableId} asking={asking} onContinue={m.id === resumable && !sending ? () => continueRequest(msgs[i - 1]) : undefined} />
           )
         )}
       </div>
@@ -608,21 +609,23 @@ function Steps({ items, waiting, stopped, recent }: { items: ChatActivity[]; wai
   );
 }
 
-function AssistantMessage({ m, live, undoable, asking, onContinue }: { m: ChatMessage; live: boolean; undoable: boolean; asking: WaitingQuestion | null; onContinue?: () => void }) {
+function AssistantMessage({ m, live, awaiting, undoable, asking, onContinue }: { m: ChatMessage; live: boolean; awaiting: boolean; undoable: boolean; asking: WaitingQuestion | null; onContinue?: () => void }) {
   const r = m.result;
   const activities = m.activities ?? [];
-  const waitingHere = asking?.messageId === m.id;
+  // A live turn of a run that waits for the author is paused: nothing in it spins, whichever message holds the
+  // question, because the status and the question message arrive separately.
+  const waitingHere = isPaused(asking, m.id, live, awaiting);
   // Every question of the turn stays with it, in order, with its answer.
   const questions = shownQuestions(m, asking);
   return (
-    <div className="msg-ai" aria-busy={live || undefined}>
+    <div className="msg-ai" aria-busy={(live && !waitingHere) || undefined}>
       {!r && activities.length > 0 && <Steps items={activities} waiting={waitingHere} recent={4} />}
       {!r && m.text && (
         <div className="text">
           <Md text={m.text} />
         </div>
       )}
-      {live && !r && !m.text && !activities.length && (
+      {isStarting(m, live, waitingHere) && (
         <div className="activity-list chat-starting">
           <span className="activity running">
             <span className="activity-icon">

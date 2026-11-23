@@ -9,7 +9,7 @@ import { pageChoices } from '../lib/page-switch';
 import { saveStatusAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
 import { toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
-import { settledState } from '../lib/savestate';
+import { runPhase, settledState } from '../lib/savestate';
 
 const ZOOMS = [0.5, 0.75, 1, 1.25];
 
@@ -86,24 +86,27 @@ export function Toolbar() {
   // Shortcut hints name the keys of this platform.
   const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
   const conflicts = snap.conflicts.length > 0;
+  const phase = runPhase(runStatus);
   const spin = <LoaderCircle style={{ animation: 'spin 1s linear infinite' }} />;
   const save = conflicts
     ? { cls: 'error', icon: <CircleAlert />, text: 'File conflict', title: 'A project file was changed outside SiteOrigin Builder. Review it in Project health.' }
-    : runStatus === 'stopping' || stoppingForEdit
+    : phase === 'stopping' || stoppingForEdit
       ? { cls: 'pending', icon: spin, text: 'Stopping AI…', title: stoppingForEdit ? 'Your edit is applied once the AI’s changes are undone.' : 'Anything the AI changed in this request is undone.' }
-      : handoff
-        ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Checking and saving your edit' }
-        : runStatus === 'awaiting-input'
-          ? { cls: 'pending', icon: <MessageCircleQuestionMark />, text: 'AI is waiting for you', title: 'The AI asked a question. Answer it in the AI panel.' }
-          : runStatus
+      : phase === 'asking'
+        ? { cls: 'pending', icon: <MessageCircleQuestionMark />, text: 'AI is waiting for you', title: 'The AI asked a question. Answer it in the AI panel.' }
+        : handoff
+          ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Checking and saving your edit' }
+          : phase === 'checking'
             ? { cls: 'pending', icon: spin, text: 'AI is checking', title: 'The AI’s changes are saved once they pass checks.' }
-            : held
-              ? { cls: 'pending', icon: <Pencil />, text: 'Edit not saved', title: 'An edit you made while the AI was working is waiting for you.' }
-              : drafting
-                ? { cls: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
-                : pending
-                  ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
-                  : { cls: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
+            : phase
+              ? { cls: 'pending', icon: spin, text: 'AI is working', title: 'The AI is editing this site. Its changes are saved once they pass checks.' }
+              : held
+                ? { cls: 'pending', icon: <Pencil />, text: 'Edit not saved', title: 'An edit you made while the AI was working is waiting for you.' }
+                : drafting
+                  ? { cls: 'pending', icon: <Pencil />, text: 'Unsaved change', title: 'Press Enter or click away to save this change' }
+                  : pending
+                    ? { cls: 'pending', icon: spin, text: 'Saving…', title: 'Saving to this computer' }
+                    : { cls: 'saved', icon: <Check />, text: 'Saved', title: 'All changes are saved on this computer' };
   const siteName = state.site.name;
   const defName = definitionMode ? (state.components[definitionMode.definitionId]?.name ?? 'Component') : null;
   const placeName = defName ?? page?.title ?? '';
