@@ -329,7 +329,7 @@ export function Editor() {
         void api.projects.open().then(
           (r) => {
             if (r.needsTrust) closeFor({ kind: 'trust', ...r.needsTrust });
-            else if (!r.ok && r.message) toast(r.message, 'error');
+            else if (!r.ok) (endEditingHold(), r.message && toast(r.message, 'error'));
           },
           (e: unknown) => {
             endEditingHold();

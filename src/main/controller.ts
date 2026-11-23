@@ -612,7 +612,9 @@ export class Controller {
 
   /** Close the project. A close already under way is joined, so quitting waits for its preview copy to go too. */
   close(): Promise<void> {
-    this.closing ??= this.closeNow().finally(() => (this.closing = null));
+    const key = this.workspaceKey;
+    // A close that fails leaves the project open and editable under the same opening.
+    this.closing ??= this.closeNow().catch((e) => { if (this.session && !this.workspaceKey) this.workspaceKey = key; throw e; }).finally(() => (this.closing = null));
     return this.closing;
   }
 

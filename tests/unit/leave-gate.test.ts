@@ -201,6 +201,28 @@ describe('leave gate', () => {
     expect(await p).toBe(true);
   });
 
+  it('asks again when Close or Quit is chosen while the editor is still hung after Wait', async () => {
+    const choices: Array<'wait' | 'leave'> = ['wait', 'leave'];
+    let questions = 0;
+    const g = setup(true, async () => (questions++, choices.shift()!));
+    const p = g.gate.ask();
+    g.gate.reply(g.sent[0], 'asking');
+    g.gate.editorUnresponsive();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(questions).toBe(1);
+    expect((await settled(p)).done).toBe(false);
+    // Still hung: asking again brings the question back, and this time the person leaves.
+    const again = g.gate.ask();
+    expect(await again).toBe(true);
+    expect(questions).toBe(2);
+    // Recovered: asking again just waits for the editor.
+    g.gate.editorResponsive();
+    const later = g.gate.ask();
+    g.gate.reply(g.sent[1], 'stay');
+    expect(await later).toBe(false);
+    expect(questions).toBe(2);
+  });
+
   it('asks at once when the editor hangs before answering, and Wait goes back to the timer', async () => {
     const choices: Array<'wait' | 'leave'> = ['wait'];
     const g = setup(true, async () => choices.shift() ?? 'leave');

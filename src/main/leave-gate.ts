@@ -38,6 +38,7 @@ export function createLeaveGate(opts: LeaveGateOptions) {
     asking: boolean;
   };
   let current: Request | null = null;
+  let hung = false;
 
   const end = (leave: boolean) => {
     const c = current;
@@ -73,6 +74,7 @@ export function createLeaveGate(opts: LeaveGateOptions) {
     );
   };
   const arm = (c: Request) => {
+    if (c.timer !== null) clearTimer(c.timer);
     c.timer = setTimer(() => {
       c.timer = null;
       askPerson(c);
@@ -82,7 +84,11 @@ export function createLeaveGate(opts: LeaveGateOptions) {
   return {
     /** Resolves true when the project may be left, false when the author chose to keep editing. */
     ask(): Promise<boolean> {
-      if (current) return current.promise;
+      // Asked again while the editor is hung (Wait was chosen before): the person decides again.
+      if (current) {
+        if (hung) askPerson(current);
+        return current.promise;
+      }
       let resolve!: (leave: boolean) => void;
       const promise = new Promise<boolean>((r) => (resolve = r));
       const id = newId();
@@ -117,6 +123,7 @@ export function createLeaveGate(opts: LeaveGateOptions) {
     /** The editor page stopped responding (it hung, perhaps with the author's question open): ask the person
      *  now whether to keep waiting or leave anyway. */
     editorUnresponsive() {
+      hung = true;
       const c = current;
       if (!c) return;
       if (c.timer !== null) clearTimer(c.timer);
@@ -125,6 +132,7 @@ export function createLeaveGate(opts: LeaveGateOptions) {
     },
     /** The editor page responds again: it can answer for itself, so the person's question is withdrawn. */
     editorResponsive() {
+      hung = false;
       const c = current;
       if (!c?.question) return;
       c.question.abort();
