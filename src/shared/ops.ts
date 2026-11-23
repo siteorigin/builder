@@ -26,6 +26,7 @@ const FONT_FACE = z.object({
 });
 const styleValue = z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() })]);
 const binding = z.union([z.object({ $prop: z.string() }), z.object({ $item: z.string() })]);
+const conditionValue = z.union([z.string(), z.number(), z.boolean()]);
 const link = z.object({
   type: z.enum(['none', 'page', 'url', 'email', 'tel', 'anchor']),
   target: z.string().describe('Page ID for page links, https URL, email address, phone number or anchor ID.'),
@@ -150,16 +151,19 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('node.setContent'),
     owner,
     nodeId: z.string(),
-    field: z.enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'tag', 'anchor']),
+    field: z.enum(['text', 'image', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'anchor']),
     value: z.unknown().describe(RICH_TEXT_VALUE)
   }),
   'node.setBinding': z.object({
     type: z.literal('node.setBinding'),
     owner,
     nodeId: z.string(),
-    field: z.enum(['text', 'image', 'fallbackAlt', 'link', 'label', 'appearance', 'icon', 'when', 'unless', 'list', 'prop']),
+    field: z.enum(['text', 'image', 'fallbackAlt', 'link', 'label', 'appearance', 'icon', 'iconPosition', 'ariaLabel', 'tag', 'when', 'unless', 'list', 'prop', 'variant']),
     prop: z.string().optional().describe('For field "prop": the nested instance property to bind.'),
-    binding: binding.nullable().describe('{"$prop": name} or {"$item": field}; null unbinds, keeping the current default.')
+    axis: z.string().optional().describe('For field "variant": the nested instance variant axis to bind to an enum property.'),
+    binding: binding.nullable().describe('{"$prop": name} or {"$item": field}; null unbinds, keeping the current default.'),
+    eq: conditionValue.optional().describe('For "when"/"unless": render when the bound value equals this (or, for unless, when it does not).'),
+    ne: conditionValue.optional().describe('For "when"/"unless": render when the bound value differs from this (or, for unless, when it does not).')
   }),
   'instance.setProp': z.object({
     type: z.literal('instance.setProp'),

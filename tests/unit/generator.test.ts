@@ -235,12 +235,13 @@ describe('links and buttons', () => {
     const link = generateProject(fresh()).get(`${RUNTIME_DIR}/Link.svelte`)!;
     expect(link).not.toContain('so-btn--static');
     expect(link).not.toContain('data-so-unlinked');
-    expect(link.match(/className/g)!.length).toBe(4);
+    // The declaration, and one class list on each element it can render (link, button, text, card link, card).
+    expect(link.match(/className/g)!.length).toBe(6);
     expect(link).toContain("import { resolve } from '$app/paths'");
     expect(generateProject(fresh()).get(`${STYLES_DIR}/theme.css`)).not.toContain('so-btn--static');
     const dev = generateProject(fresh(), { instrument: true }).get(`${RUNTIME_DIR}/Link.svelte`)!;
     expect(dev).toContain('data-so-unlinked');
-    expect(dev.match(/className/g)!.length).toBe(5);
+    expect(dev.match(/className/g)!.length).toBe(7);
   });
 
   it('reports a labelled button without a link', () => {

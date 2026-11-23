@@ -45,6 +45,37 @@ export function isBinding(v: unknown): v is Binding {
   return !!v && typeof v === 'object' && ('$prop' in (v as object) || '$item' in (v as object));
 }
 
+/** A value a condition can compare a bound value with. */
+export type ConditionValue = string | number | boolean;
+/** A bound value compared with a literal: equal (`eq`) or not equal (`ne`). */
+export type Comparison = { ref: Binding; eq: ConditionValue } | { ref: Binding; ne: ConditionValue };
+/** What `when` and `unless` test: a bound value being present, or a bound value compared with a literal. */
+export type Condition = Binding | Comparison;
+
+export function isComparison(v: unknown): v is Comparison {
+  if (!v || typeof v !== 'object' || !isBinding((v as { ref?: unknown }).ref)) return false;
+  return Object.hasOwn(v, 'eq') !== Object.hasOwn(v, 'ne');
+}
+
+/** The binding a condition reads, or undefined for a value that is not a condition. */
+export function conditionRef(c: unknown): Binding | undefined {
+  if (isComparison(c)) return c.ref;
+  return isBinding(c) ? c : undefined;
+}
+
+/**
+ * Whether a condition holds for the value its binding resolves to. `present` judges a plain binding (the
+ * generated site's `has`); a comparison is strict equality, so `true` never equals `"true"`.
+ */
+export function conditionHolds(c: Condition, value: unknown, present: (v: unknown) => boolean): boolean {
+  if (!isComparison(c)) return present(value);
+  return 'eq' in c ? value === c.eq : value !== c.ne;
+}
+
+/** Where a link node shows its icon, relative to its label. */
+export type IconPosition = 'start' | 'end';
+export const ICON_POSITIONS: IconPosition[] = ['start', 'end'];
+
 // ---------------------------------------------------------------------------
 // Property schema
 // ---------------------------------------------------------------------------
@@ -147,17 +178,28 @@ interface NodeBase {
   /** Optional readable layer name. */
   name?: string;
   styles?: ResponsiveStyles;
-  /** Render only when the bound value is truthy (non-empty string, true, non-empty list, link with target). */
-  when?: Binding;
-  /** Render only when the bound value is empty. */
-  unless?: Binding;
+  /**
+   * Render only when the bound value is truthy (non-empty string, true, non-empty list, link with target), or,
+   * for a comparison, when the bound value equals (`eq`) or differs from (`ne`) the given literal.
+   */
+  when?: Condition;
+  /** Render only when the bound value is empty, or, for a comparison, when the comparison does not hold. */
+  unless?: Condition;
   /** Optional anchor ID for in-page links. */
   anchor?: string;
 }
 export interface ElementNode extends NodeBase {
   kind: 'element';
-  tag: ElementTag;
+  /** A literal tag, or an enum property whose options are all element tags. */
+  tag: Bindable<ElementTag>;
   children: string[];
+  /**
+   * Makes the whole container one link (a card). It renders as an `<a>` while the destination resolves and as
+   * its tag otherwise, so nothing inside it may be interactive (see `CARD_LINK_INTERACTIVE`).
+   */
+  link?: Bindable<LinkValue>;
+  /** Accessible name, for landmarks such as navigation regions. */
+  ariaLabel?: Bindable<string>;
   /**
    * Render only when at least one child renders, judged from the children's own conditions (a nested
    * collapsing element by its children, a repeat by its list). A child that always renders keeps this one.
@@ -166,7 +208,8 @@ export interface ElementNode extends NodeBase {
 }
 export interface TextNode extends NodeBase {
   kind: 'text';
-  tag: TextTag;
+  /** A literal tag, or (plain text only) an enum property whose options are all text tags. */
+  tag: Bindable<TextTag>;
   /** For rich text nodes the value is structured blocks. */
   text: Bindable<string | RichText>;
   rich?: boolean;
@@ -183,10 +226,18 @@ export interface LinkNode extends NodeBase {
   link: Bindable<LinkValue>;
   label: Bindable<string>;
   appearance: Bindable<ButtonAppearance | string>;
+  /** An icon shown beside the label; none when empty. */
+  icon?: Bindable<string>;
+  /** Which side of the label the icon is on. Defaults to `start`. */
+  iconPosition?: Bindable<IconPosition>;
+  /** Accessible name, when the label alone does not say where the link goes. */
+  ariaLabel?: Bindable<string>;
 }
 export interface IconNode extends NodeBase {
   kind: 'icon';
   icon: Bindable<string>;
+  /** Accessible name; an icon without one is decorative. */
+  ariaLabel?: Bindable<string>;
 }
 export interface DividerNode extends NodeBase {
   kind: 'divider';
@@ -204,8 +255,11 @@ export interface InstanceNode extends NodeBase {
   kind: 'instance';
   definitionId: string;
   props: Record<string, unknown>;
-  /** The option chosen on each of the definition's variant axes. An axis left out uses its default. */
-  variants?: Record<string, string>;
+  /**
+   * The option chosen on each of the definition's variant axes. An axis left out uses its default. Inside a
+   * definition an axis can be bound to an enum property whose options are all options of that axis.
+   */
+  variants?: Record<string, Bindable<string>>;
   /** Instance style overrides keyed by public part ID ("root" is the instance boundary). */
   overrides?: Record<string, ResponsiveStyles>;
   /** Content placed into the definition's declared slots. */

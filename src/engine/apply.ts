@@ -16,7 +16,7 @@ import type {
   RichText
 } from '@shared/types';
 import type { Binding } from '@shared/types';
-import { SCHEMA_VERSION, isBinding } from '@shared/types';
+import { ICON_POSITIONS, SCHEMA_VERSION, isBinding, isComparison, type IconPosition, type TextTag } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
@@ -26,13 +26,14 @@ import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily 
 import { getTheme, listThemes } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
+import { slotsInsideCards } from '@generator/card-links';
 import { pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, subtreeIds, allTrees } from './tree';
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
-import { enclosingList, normalizeProperties } from './schema';
+import { bindingSlots, enclosingList, normalizeProperties } from './schema';
 import { forEachTokenRef, tokenUsageCounts } from './tokens';
 import { settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
@@ -1082,9 +1083,12 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       return {};
     }
     case 'link': {
-      if (node.kind !== 'link') fail('Only buttons and links have a destination.');
+      if (node.kind !== 'link' && node.kind !== 'element') fail('Only buttons, links and containers have a destination.');
       const val = normalizeLink(v, state, label);
-      if (!setBound(node.link, () => val)) node.link = val;
+      if (setBound(node.link, () => val)) return {};
+      // A container with no destination is no longer a card.
+      if (node.kind === 'element' && val.type === 'none') delete node.link;
+      else node.link = val;
       return {};
     }
     case 'label': {
@@ -1099,15 +1103,35 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       return {};
     }
     case 'icon': {
-      if (node.kind !== 'icon') fail('Only icon nodes have an icon.');
-      if (!setBound(node.icon, () => String(v))) node.icon = String(v);
+      if (node.kind !== 'icon' && node.kind !== 'link') fail('Only icons, buttons and links have an icon.');
+      if (setBound(node.icon, () => String(v ?? ''))) return {};
+      // A button without an icon simply leaves it out.
+      if (node.kind === 'link' && !String(v ?? '').trim()) delete node.icon;
+      else node.icon = String(v ?? '');
+      return {};
+    }
+    case 'iconPosition': {
+      if (node.kind !== 'link') fail('Only buttons and links have an icon position.');
+      if (!(ICON_POSITIONS as string[]).includes(String(v))) fail(`Icon position must be ${ICON_POSITIONS.join(' or ')}.`);
+      if (!setBound(node.iconPosition, () => String(v))) node.iconPosition = String(v) as IconPosition;
+      return {};
+    }
+    case 'ariaLabel': {
+      if (node.kind !== 'element' && node.kind !== 'icon' && node.kind !== 'link') fail('Only containers, icons, buttons and links have an accessible name.');
+      const text = String(v ?? '').trim().slice(0, 200);
+      if (setBound(node.ariaLabel, () => text)) return {};
+      if (text) node.ariaLabel = text;
+      else delete node.ariaLabel;
       return {};
     }
     case 'tag': {
-      if (node.kind !== 'text') fail('Only text nodes have a tag.');
+      if (node.kind !== 'text' && node.kind !== 'element') fail('Only text and containers have a tag.');
+      if (node.kind === 'text' && node.rich) fail('Rich text keeps its paragraph structure.');
+      // A bound tag is the choice's default, which must stay one of the choice's options.
+      if (setBound(node.tag, () => String(v))) return {};
+      if (node.kind !== 'text') fail('A container’s tag is chosen when it is inserted.');
       if (!['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'].includes(String(v))) fail('Tag must be h1–h6 or p.');
-      if (node.rich) fail('Rich text keeps its paragraph structure.');
-      node.tag = String(v) as typeof node.tag;
+      node.tag = String(v) as TextTag;
       return {};
     }
     case 'anchor': {
@@ -1574,21 +1598,12 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
       if (!n) return;
       // List item fields inside a repeat that is part of the selection still belong to that repeat.
       const fix = <T,>(v: T): T => (isBinding(v) && !('$item' in v && innerRepeat) ? (hoist(v) as T) : v);
-      if (n.when) n.when = fix(n.when);
-      if (n.unless) n.unless = fix(n.unless);
-      if (n.kind === 'text') n.text = fix(n.text);
-      else if (n.kind === 'image') {
-        n.image = fix(n.image);
-        if (n.fallbackAlt !== undefined) n.fallbackAlt = fix(n.fallbackAlt);
+      // A compared condition keeps its comparison; only the value it reads moves to the new property.
+      for (const slot of bindingSlots(n)) {
+        if (isComparison(slot.value)) slot.set({ ...slot.value, ref: fix(slot.value.ref) });
+        else if (isBinding(slot.value)) slot.set(fix(slot.value));
       }
-      else if (n.kind === 'link') {
-        n.link = fix(n.link);
-        n.label = fix(n.label);
-        n.appearance = fix(n.appearance);
-      } else if (n.kind === 'icon') n.icon = fix(n.icon);
-      else if (n.kind === 'repeat') n.list = fix(n.list);
-      else if (n.kind === 'instance') for (const k of Object.keys(n.props)) n.props[k] = fix(n.props[k]);
-      else if (n.kind === 'slot') {
+      if (n.kind === 'slot') {
         const decl = own(ownerDef.slots ?? {}, n.slot);
         if (decl && !slots[n.slot]) {
           slots[n.slot] = clone(decl);
@@ -1605,7 +1620,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   for (const n of Object.values(defTree.nodes)) {
     const part = (name: string) => (parts[name] = { nodeId: n.id, label: titleCase(name), ...withControls(n) });
     if (n.kind === 'text' && !isBinding(n.text)) {
-      const isHeading = /^h\d$/.test(n.tag);
+      const isHeading = typeof n.tag === 'string' ? /^h\d$/.test(n.tag) : true;
       const name = propName(n.rich ? 'body' : isHeading ? 'heading' : 'text');
       properties[name] = n.rich
         ? { type: 'richtext', label: titleCase(name), default: clone(n.text as RichText) }
@@ -1708,6 +1723,9 @@ function titleCase(s: string): string {
 function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): OpResult {
   const { node, def } = instanceTarget(state, op.owner, op.nodeId);
   if (def.kind !== 'managed' || !def.tree) fail(`"${def.name}" is already a code component.`);
+  // Content placed in such a slot could no longer be checked for links inside the card's own link.
+  const carded = slotsInsideCards(state, def);
+  if (carded.length) fail(`"${def.name}" places its ${carded.map((s) => `“${def.slots?.[s]?.label ?? s}”`).join(', ')} content inside a card that links somewhere, which a code component cannot keep free of other links. Remove the card's link first.`);
   const name = op.name?.trim() || `${def.name} (code)`;
   const newId = projectDefId(name, 'code');
   const sourcePath = `${CUSTOM_DIR}/${pascal(name)}-${newId.slice(-5).replace(/[^A-Za-z0-9]/g, '')}.svelte`;

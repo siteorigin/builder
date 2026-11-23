@@ -2,7 +2,7 @@
  * Checks on what a page will actually show, evaluated with the same rules the generated components use.
  */
 import type { Binding, ComponentDefinition, GraphNode, ImageValue, LinkValue, NodeTree, PageDoc, ProjectState, PropSchema } from '@shared/types';
-import { isBinding } from '@shared/types';
+import { conditionHolds, conditionRef, isBinding, type Condition } from '@shared/types';
 import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
@@ -127,10 +127,15 @@ function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphN
  */
 const SO_ID_ATTR = /\bid=\{\s*so_id\b/;
 
+/** Whether a `when` or `unless` condition holds in a scope, as the generated `{#if}` decides it. */
+function holds(c: Condition, scope: Scope, state: ProjectState): boolean {
+  return conditionHolds(c, evaluate(conditionRef(c), scope), (v) => shown(v, state));
+}
+
 /** Mirrors the generator's render conditions inside a definition: a node's own conditions, a repeat's list, a collapsing element's children. */
 function nodeRenders(state: ProjectState, frame: Frame, n: GraphNode, seen: Set<string>): boolean {
-  if (n.when && !shown(evaluate(n.when, frame.scope), state)) return false;
-  if (n.unless && shown(evaluate(n.unless, frame.scope), state)) return false;
+  if (n.when && !holds(n.when, frame.scope, state)) return false;
+  if (n.unless && holds(n.unless, frame.scope, state)) return false;
   if (n.kind === 'repeat') return shown(evaluate(n.list, frame.scope), state);
   return n.kind !== 'element' || !n.collapseEmpty || childRenders(state, frame, n, seen);
 }
@@ -152,8 +157,8 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     const n = frame.tree.nodes[id];
     const key = `${frame.n}:${id}`;
     if (!n || path.has(key)) return;
-    if (frame.def && n.when && !shown(evaluate(n.when, frame.scope), state)) return;
-    if (frame.def && n.unless && shown(evaluate(n.unless, frame.scope), state)) return;
+    if (frame.def && n.when && !holds(n.when, frame.scope, state)) return;
+    if (frame.def && n.unless && holds(n.unless, frame.scope, state)) return;
     if (frame.def && n.kind === 'element' && n.collapseEmpty && !childRenders(state, frame, n, new Set())) return;
     const inner = new Set(path).add(key);
     const reportId = frame.reportId ?? n.id;
@@ -310,7 +315,9 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
     again: (slot) => void shownAgain.add(slot),
     node: (n, scope, reportId, inDef) => {
       if (!inDef) return;
-      const reads: unknown[] = [n.when, n.unless];
+      const reads: unknown[] = [conditionRef(n.when), conditionRef(n.unless)];
+      // An accessible name read from the same field would be cleared with it.
+      if (n.kind === 'element' || n.kind === 'icon' || n.kind === 'link') reads.push(n.ariaLabel);
       if (n.kind === 'text') reads.push(n.text);
       if (n.kind === 'link') reads.push(n.label);
       if (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') reads.push(...Object.values(n.props));
@@ -668,6 +675,12 @@ function renderedLinks(state: ProjectState, tree: NodeTree): RenderedLink[] {
     text: (n, scope, reportId) => {
       if (n.rich) richLinks(evaluate(n.text, scope)).forEach((sp, i) => out.push({ link: sp.link!, label: sp.text.trim(), reportId, key: `${at(n, scope)}:${i}`, inText: true }));
     },
+    // A card links the whole container.
+    node: (n, scope, reportId) => {
+      if (n.kind !== 'element' || n.link === undefined) return;
+      const link = evaluate(n.link, scope);
+      if (isLinkValue(link)) out.push({ link, label: n.name ?? '', reportId, key: at(n, scope), inText: false });
+    },
     code: (def, props, reportId, placement) => codeLinks(def, props, reportId, placement, out)
   });
   return out;
@@ -829,14 +842,14 @@ export function pageSections(state: ProjectState, pageId: string): PageSection[]
         if (parent) parent.children++;
         open.push({ node: n, label: '', children: 0, index: list.length });
         list.push({ nodeId: n.id, label: '', anchor: idOf(n), nested: false, keep: true, parent: parent?.index });
-      } else if (n.kind === 'text' && HEADING.test(n.tag) && !open.length) {
+      } else if (n.kind === 'text' && typeof n.tag === 'string' && HEADING.test(n.tag) && !open.length) {
         const label = headingText(n, { props: {} });
         if (label) list.push({ nodeId: n.id, label, anchor: idOf(n), nested: false, keep: true });
       }
     },
     text: (n, scope) => {
       const top = open[open.length - 1];
-      if (!top || top.label || !HEADING.test(n.tag)) return;
+      if (!top || top.label || !HEADING.test(String(evaluate(n.tag, scope) ?? ''))) return;
       // A heading inside a nested section names that section, not the one around it.
       if (top.children) return;
       top.label = headingText(n, scope);

@@ -3,12 +3,17 @@
  * The helpers only build plain static data; nothing here runs when a pack is loaded into a project.
  */
 import type {
+  Bindable,
   Binding,
   ButtonAppearance,
+  Comparison,
+  Condition,
+  ConditionValue,
   ComponentCategory,
   ComponentDefinition,
   ElementTag,
   GraphNode,
+  IconPosition,
   ImageValue,
   LinkValue,
   ListItem,
@@ -27,8 +32,14 @@ import { toRichText, type RichListType } from '@shared/richtext';
 export const prop = (name: string): Binding => ({ $prop: name });
 export const item = (name: string): Binding => ({ $item: name });
 export const tok = (token: string) => ({ token });
+/** A condition that holds when the bound value equals `value` (`when: eq(item('featured'), true)`). */
+export const eq = (ref: Binding, value: ConditionValue): Comparison => ({ ref, eq: value });
+/** A condition that holds when the bound value differs from `value`. */
+export const ne = (ref: Binding, value: ConditionValue): Comparison => ({ ref, ne: value });
 
-type NodeOpts = { styles?: ResponsiveStyles | StyleProps; when?: Binding; unless?: Binding; name?: string; anchor?: string };
+type NodeOpts = { styles?: ResponsiveStyles | StyleProps; when?: Condition; unless?: Condition; name?: string; anchor?: string };
+/** Options of nodes that take an accessible name. */
+type NamedOpts = NodeOpts & { ariaLabel?: Bindable<string> };
 
 function normStyles(s?: ResponsiveStyles | StyleProps): ResponsiveStyles | undefined {
   if (!s) return undefined;
@@ -53,10 +64,23 @@ export class TreeBuilder {
     return node.id;
   }
 
-  el(id: string, tag: ElementTag, opts: NodeOpts & { collapseEmpty?: boolean }, children: string[]): string {
-    return this.add({ id, kind: 'element', tag, children, ...(opts.collapseEmpty ? { collapseEmpty: true } : {}) }, opts);
+  /** A container. With `link` the whole container is one link (a card), so nothing inside it may be interactive. */
+  el(id: string, tag: Bindable<ElementTag>, opts: NamedOpts & { collapseEmpty?: boolean; link?: Bindable<LinkValue> }, children: string[]): string {
+    return this.add(
+      {
+        id,
+        kind: 'element',
+        tag,
+        children,
+        ...(opts.collapseEmpty ? { collapseEmpty: true } : {}),
+        ...(opts.link !== undefined ? { link: opts.link } : {}),
+        ...(opts.ariaLabel !== undefined ? { ariaLabel: opts.ariaLabel } : {})
+      },
+      opts
+    );
   }
-  text(id: string, tag: TextTag, text: string | Binding, opts: NodeOpts = {}): string {
+  /** Plain text. A bound tag takes an enum property whose options are all text tags, such as h1 and h2. */
+  text(id: string, tag: Bindable<TextTag>, text: string | Binding, opts: NodeOpts = {}): string {
     return this.add({ id, kind: 'text', tag, text }, opts);
   }
   rich(id: string, text: string[] | Binding, opts: NodeOpts = {}): string {
@@ -65,11 +89,31 @@ export class TreeBuilder {
   image(id: string, image: ImageValue | Binding, opts: NodeOpts & { fallbackAlt?: string | Binding } = {}): string {
     return this.add({ id, kind: 'image', image, ...(opts.fallbackAlt !== undefined ? { fallbackAlt: opts.fallbackAlt } : {}) }, opts);
   }
-  link(id: string, link: LinkValue | Binding, label: string | Binding, appearance: ButtonAppearance | Binding, opts: NodeOpts = {}): string {
-    return this.add({ id, kind: 'link', link, label, appearance }, opts);
+  /** A button or link, optionally with an icon beside its label (`iconPosition` start, the default, or end). */
+  link(
+    id: string,
+    link: LinkValue | Binding,
+    label: string | Binding,
+    appearance: ButtonAppearance | Binding,
+    opts: NamedOpts & { icon?: Bindable<string>; iconPosition?: Bindable<IconPosition> } = {}
+  ): string {
+    return this.add(
+      {
+        id,
+        kind: 'link',
+        link,
+        label,
+        appearance,
+        ...(opts.icon !== undefined ? { icon: opts.icon } : {}),
+        ...(opts.iconPosition !== undefined ? { iconPosition: opts.iconPosition } : {}),
+        ...(opts.ariaLabel !== undefined ? { ariaLabel: opts.ariaLabel } : {})
+      },
+      opts
+    );
   }
-  icon(id: string, icon: string | Binding, opts: NodeOpts = {}): string {
-    return this.add({ id, kind: 'icon', icon }, opts);
+  /** An icon; decorative unless it has an accessible name. */
+  icon(id: string, icon: string | Binding, opts: NamedOpts = {}): string {
+    return this.add({ id, kind: 'icon', icon, ...(opts.ariaLabel !== undefined ? { ariaLabel: opts.ariaLabel } : {}) }, opts);
   }
   divider(id: string, opts: NodeOpts = {}): string {
     return this.add({ id, kind: 'divider' }, opts);
