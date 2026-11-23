@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { watch, type FSWatcher } from 'node:fs';
 import { existsSync, lstatSync, mkdtempSync, promises as fs } from 'node:fs';
-import { basename, extname, isAbsolute, join, normalize, relative } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, normalize, relative } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { CreateProjectOptions, ExportFormat, ExportResult, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RuntimeState } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
@@ -181,13 +181,10 @@ export class Controller {
       if (basename(dir) === MANIFEST_FILE) dir = join(dir, '..');
     }
     if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' };
-    // A project reached through a link (macOS: /var is /private/var) is opened by its real path, and trust
-    // given under the linked name carries over while the build settings are unchanged.
-    const asOpened = dir;
+    // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
+    // carried over from the linked name: that link could since have been pointed at a different folder.
     dir = canonicalDir(dir);
-    const hash = await configHash(dir);
-    if (dir !== asOpened && (await isTrusted(asOpened, hash))) await trust(dir, hash);
-    if (!(await isTrusted(dir, hash))) {
+    if (!(await isTrusted(dir, await configHash(dir)))) {
       const manifest = JSON.parse((await readIfExists(join(dir, MANIFEST_FILE))) ?? '{}');
       return { ok: false, needsTrust: { dir, name: manifest.name ?? basename(dir) } };
     }
@@ -529,7 +526,8 @@ export class Controller {
   /** Why `dest` cannot receive an export, or null. */
   private badExportTarget(s: ProjectSession, dest: string, format: ExportFormat): string | null {
     if (format === 'folder' && existsSync(dest)) return 'Choose a new folder; the export never overwrites an existing location.';
-    const rel = relative(s.dir, dest);
+    // Compared by real path: a linked parent folder can lead back into the project. The destination may not exist yet.
+    const rel = relative(s.dir, join(canonicalDir(dirname(dest)), basename(dest)));
     if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return 'Choose a location outside the project folder.';
     return null;
   }

@@ -19,7 +19,7 @@ import type { EditOperation, Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
-import { fontAssetUsages, projectFontFamilies, renameFontFamily } from '@shared/fonts';
+import { fontAssetUsages, projectFontFamilies, renameFontFamily, sameFontFamily } from '@shared/fonts';
 import { getTheme, listThemes } from '@catalogue/index';
 import { resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
@@ -223,7 +223,7 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
         const from = a.font?.family;
         a.font = { ...op.font };
         // Once no file provides the old family name, styles that named it follow the rename.
-        if (from && from !== op.font.family && !projectFontFamilies(state).some((f) => f.family === from)) renameFontFamily(state, from, op.font.family);
+        if (from && from !== op.font.family && !projectFontFamilies(state).some((f) => f.family.toLowerCase() === from.toLowerCase())) renameFontFamily(state, from, op.font.family);
       }
       return {};
     }
@@ -231,7 +231,7 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
       const removing = own(state.assets.assets, op.assetId);
       if (!removing) fail(`Asset "${op.assetId}" does not exist.`);
       // One face of a family can go while another still provides the family its styles name.
-      const otherFace = removing!.kind === 'font' && Object.values(state.assets.assets).some((x) => x.id !== op.assetId && x.kind === 'font' && x.font?.family === removing!.font?.family);
+      const otherFace = removing!.kind === 'font' && Object.values(state.assets.assets).some((x) => x?.id !== op.assetId && sameFontFamily(x, removing!));
       const uses = otherFace ? 0 : (assetUsages(state)[op.assetId] ?? 0);
       if (uses) fail(`This ${state.assets.assets[op.assetId].kind === 'font' ? 'font' : 'image'} is used ${uses} time${uses === 1 ? '' : 's'}. Replace or remove those uses first.`);
       delete state.assets.assets[op.assetId];

@@ -51,10 +51,29 @@ const CSS_FUNCTIONS = new Set([
  * outright: CSS escapes can spell any function name ("u\72l(").
  */
 function safeFunctions(value: string): boolean {
-  if (value.includes('\\')) return false;
-  for (const m of value.matchAll(/([A-Za-z_-][\w-]*)?\s*\(/g)) if (!m[1] || !CSS_FUNCTIONS.has(m[1].toLowerCase())) return false;
-  for (const m of value.matchAll(/url\(\s*(['"]?)([^'")]*)/gi)) if (!/^#[A-Za-z][\w.-]*$/.test(m[2].trim())) return false;
+  if (value.length >= MAX_VALUE || value.includes('\\')) return false;
+  // One pass: from each "(", step back over the name in front of it.
+  for (let open = value.indexOf('('), floor = 0; open >= 0; floor = open + 1, open = value.indexOf('(', floor)) {
+    let end = open;
+    while (end > floor && CSS_SPACE.test(value[end - 1])) end--;
+    let start = end;
+    while (start > floor && /[\w-]/.test(value[start - 1])) start--;
+    const name = value.slice(start, end).toLowerCase();
+    if (!CSS_FUNCTIONS.has(name)) return false;
+    if (name === 'url' && !localFragment(value.slice(open + 1))) return false;
+  }
   return true;
+}
+
+const MAX_VALUE = 20000;
+/** CSS whitespace only: a non-breaking space is part of a URL, not padding around it. */
+const CSS_SPACE = /[ \t\r\n\f]/;
+const FRAGMENT = /^#[A-Za-z_][\w.:-]*$/;
+
+/** Does the text after "url(" hold only a reference to an element in this document? */
+function localFragment(rest: string): boolean {
+  const m = rest.match(/^[ \t\r\n\f]*(?:"([^"]*)"|'([^']*)'|([^'")\s]*))[ \t\r\n\f]*\)/);
+  return !!m && FRAGMENT.test(m[1] ?? m[2] ?? m[3] ?? '');
 }
 
 /** A CSS value is kept only when it cannot load, run or escape anything. */
@@ -86,10 +105,12 @@ export function sanitizeStylesheet(css: string): string {
   let i = 0;
   while (i < text.length) {
     const open = text.indexOf('{', i);
-    const semi = text.indexOf(';', i);
-    const atRule = text.slice(i, open < 0 ? undefined : open).trimStart().startsWith('@');
-    if (atRule && semi >= 0 && (open < 0 || semi < open)) {
-      i = semi + 1;
+    const prelude = text.slice(i, open < 0 ? undefined : open);
+    const atRule = prelude.trimStart().startsWith('@');
+    // Looked for only inside this rule's own prelude, so the whole pass stays linear.
+    const semi = atRule ? prelude.indexOf(';') : -1;
+    if (semi >= 0) {
+      i += semi + 1;
       continue;
     }
     if (open < 0) break;
@@ -152,10 +173,10 @@ const PLAIN_ATTRIBUTES = new Set(['id', 'class', 'data-name', 'xmlns', 'xmlns:xl
 
 function safeValue(name: string, value: string): boolean {
   if (/javascript:|data:(?!image\/(png|jpe?g|gif|webp);)|vbscript:|expression\s*\(/i.test(value)) return false;
-  if (name === 'href' || name === 'xlink:href') return /^#[A-Za-z][\w.-]*$/.test(value.trim());
+  if (name === 'href' || name === 'xlink:href') return FRAGMENT.test(value.replace(/^[ \t\r\n\f]+|[ \t\r\n\f]+$/g, ''));
   // Presentation attributes are CSS values too: url(...) must stay inside the document, and nothing else may load.
   if (!PLAIN_ATTRIBUTES.has(name) && !safeFunctions(value)) return false;
-  return value.length < 20000;
+  return value.length < MAX_VALUE;
 }
 
 function decodeEntities(s: string): string {

@@ -51,6 +51,22 @@ describe('image dimensions', () => {
     expect(imageInfo(brokenExif, 'image/jpeg')).toEqual({ width: 800, height: 600, orientation: 1 });
   });
 
+  it('trusts a header only behind its format’s signature', () => {
+    const fake = Buffer.alloc(32);
+    fake.writeUInt32BE(0x49484452, 12);
+    fake.writeUInt32BE(10, 16);
+    fake.writeUInt32BE(10, 20);
+    expect(imageInfo(fake, 'image/png')).toBeNull();
+    expect(imageInfo(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), fake.subarray(8)]), 'image/png')).toMatchObject({ width: 10, height: 10 });
+    expect(imageInfo(Buffer.from('NOTAGIF12345'), 'image/gif')).toBeNull();
+    expect(imageInfo(jpeg(10, 10).subarray(1), 'image/jpeg')).toBeNull();
+  });
+
+  it('refuses a truncated AVIF primary-item box', () => {
+    const cut = Buffer.concat([box('ftyp', Buffer.from('avifmif1', 'ascii')), full('meta', box('pitm', Buffer.alloc(4)), box('iprp', box('ipco', full('ispe', u32(9), u32(9))), full('ipma', u32(1), Buffer.concat([u16(0), Buffer.from([1, 1])]))))]);
+    expect(imageInfo(cut, 'image/avif')).toBeNull();
+  });
+
   it('never takes an AVIF size from another item or past a box end', () => {
     const noPrimaryAssoc = Buffer.concat([
       box('ftyp', Buffer.from('avifmif1', 'ascii')),

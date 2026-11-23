@@ -14,8 +14,8 @@ const FONT_FILE_RE = /^static\/assets\/[a-z0-9][a-z0-9-]*\.woff2?$/;
  * assets.json can also be edited outside the app.
  */
 export function isValidFontAsset(a: AssetRecord): boolean {
-  const f = a.font;
-  return a.kind === 'font' && !!f && typeof f.family === 'string' && FONT_FAMILY_RE.test(f.family) && typeof f.weight === 'string' && FONT_WEIGHT_RE.test(f.weight) && (f.style === 'normal' || f.style === 'italic') && typeof a.file === 'string' && FONT_FILE_RE.test(a.file);
+  const f = a?.font;
+  return !!a && a.kind === 'font' && !!f && typeof f.family === 'string' && FONT_FAMILY_RE.test(f.family) && typeof f.weight === 'string' && FONT_WEIGHT_RE.test(f.weight) && (f.style === 'normal' || f.style === 'italic') && typeof a.file === 'string' && FONT_FILE_RE.test(a.file);
 }
 
 export interface ProjectFontFamily {
@@ -28,12 +28,16 @@ const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** Families provided by the project's imported fonts, each with its files (faces), sorted by name. */
 export function projectFontFamilies(state: ProjectState): ProjectFontFamily[] {
-  const byFamily = new Map<string, AssetRecord[]>();
+  // CSS family names ignore case, so "Inter" and "inter" are one family, named as its first file names it.
+  const byFamily = new Map<string, ProjectFontFamily>();
   for (const a of Object.values(state.assets.assets)) {
     if (!isValidFontAsset(a)) continue;
-    byFamily.set(a.font!.family, [...(byFamily.get(a.font!.family) ?? []), a]);
+    const key = a.font!.family.toLowerCase();
+    const entry = byFamily.get(key);
+    if (entry) entry.faces.push(a);
+    else byFamily.set(key, { family: a.font!.family, faces: [a] });
   }
-  return [...byFamily].sort(([a], [b]) => byText(a, b)).map(([family, faces]) => ({ family, faces }));
+  return [...byFamily.values()].sort((a, b) => byText(a.family, b.family));
 }
 
 /** The font stack a token uses for an imported family, with a generic fallback while it loads. */
@@ -43,6 +47,8 @@ export function importedFontStack(family: string): string {
 
 const unquote = (s: string) => s.trim().replace(/^['"]|['"]$/g, '').trim();
 const sameFamily = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+/** Are these two records faces of one family? */
+export const sameFontFamily = (a: AssetRecord, b: AssetRecord) => isValidFontAsset(a) && isValidFontAsset(b) && sameFamily(a.font!.family, b.font!.family);
 
 /** Does a font stack name this family, anywhere in the stack? (CSS family names ignore case.) */
 export function stackUsesFamily(stack: string, family: string): boolean {

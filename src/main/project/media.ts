@@ -12,13 +12,16 @@ export interface ImageInfo {
   orientation: number;
 }
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 /** Read pixel dimensions from common raster headers without decoding the image. */
 export function imageInfo(buf: Buffer, mime: string): ImageInfo | null {
   try {
-    if (mime === 'image/png' && buf.readUInt32BE(12) === 0x49484452) return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), orientation: 1 };
-    if (mime === 'image/gif') return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8), orientation: 1 };
-    if (mime === 'image/jpeg') return jpegInfo(buf);
-    if (mime === 'image/webp' && buf.toString('ascii', 0, 4) === 'RIFF') {
+    // Each format is confirmed by its signature: the decoder goes by the bytes, whatever the file is named.
+    if (mime === 'image/png' && buf.subarray(0, 8).equals(PNG_SIGNATURE) && buf.readUInt32BE(12) === 0x49484452) return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), orientation: 1 };
+    if (mime === 'image/gif' && /^GIF8[79]a$/.test(buf.toString('latin1', 0, 6))) return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8), orientation: 1 };
+    if (mime === 'image/jpeg' && buf[0] === 0xff && buf[1] === 0xd8) return jpegInfo(buf);
+    if (mime === 'image/webp' && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') {
       const chunk = buf.toString('ascii', 12, 16);
       if (chunk === 'VP8X') return { width: 1 + buf.readUIntLE(24, 3), height: 1 + buf.readUIntLE(27, 3), orientation: 1 };
       if (chunk === 'VP8 ') return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff, orientation: 1 };
@@ -98,6 +101,7 @@ function* boxes(buf: Buffer, start: number, end: number): Generator<{ type: stri
     const type = buf.toString('ascii', p + 4, p + 8);
     let body = p + 8;
     if (size === 1) {
+      if (p + 16 > end) return;
       size = Number(buf.readBigUInt64BE(p + 8));
       body = p + 16;
     } else if (size === 0) size = end - p;
@@ -115,7 +119,11 @@ function avifInfo(buf: Buffer): ImageInfo | null {
   const props: Array<{ type: string; body: number; end: number }> = [];
   const assoc = new Map<number, number[]>();
   for (const b of boxes(buf, meta.body + 4, meta.end)) {
-    if (b.type === 'pitm') primary = buf[b.body] === 0 ? buf.readUInt16BE(b.body + 4) : buf.readUInt32BE(b.body + 4);
+    if (b.type === 'pitm') {
+      const wide = buf[b.body] !== 0;
+      if (b.body + (wide ? 8 : 6) > b.end) return null;
+      primary = wide ? buf.readUInt32BE(b.body + 4) : buf.readUInt16BE(b.body + 4);
+    }
     if (b.type !== 'iprp') continue;
     for (const c of boxes(buf, b.body, b.end)) {
       if (c.type === 'ipco')
@@ -125,6 +133,7 @@ function avifInfo(buf: Buffer): ImageInfo | null {
           props.push({ type: p.type, body: p.body, end: p.end });
         }
       if (c.type === 'ipma') {
+        if (c.body + 8 > c.end) return null;
         const version = buf[c.body];
         const flags = buf.readUIntBE(c.body + 1, 3);
         let p = c.body + 4;

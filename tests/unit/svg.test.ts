@@ -56,6 +56,23 @@ describe('SVG sanitizer', () => {
     expect(out).toContain('.ok,rect.st0&gt;.x{fill:#333}');
   });
 
+  it('keeps ordinary design-tool output and checks the real URL target', () => {
+    const out = sanitizeSvg(
+      svg(`<svg viewBox="0 0 9 9"><title>Logo (dark)</title><defs><clipPath id="_c"><rect width="1"/></clipPath><linearGradient id="_paint0"/></defs><g clip-path="url(#_c)" transform="translate(1 2) rotate(3)"><path fill="url(#_paint0)" d="M0 0"/><text font-family="'Inter', sans-serif">a</text></g><rect fill="url(' #x')" width="7"/></svg>`)
+    );
+    expect(out).toContain('<title>Logo (dark)</title>');
+    expect(out).toContain('clip-path="url(#_c)" transform="translate(1 2) rotate(3)"');
+    expect(out).toContain('fill="url(#_paint0)"');
+    expect(out).toContain(`font-family="'Inter', sans-serif"`);
+    expect(out).not.toContain(' ');
+  });
+
+  it('stays linear on long values and many at-rules', () => {
+    const started = Date.now();
+    sanitizeSvg(svg(`<svg><rect fill="${'a'.repeat(19_000)}"/><style>${'@a{}'.repeat(60_000)}</style></svg>`));
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it('refuses absurd nesting and stays fast on hostile stylesheets', () => {
     expect(() => sanitizeSvg(svg(`<svg>${'<g>'.repeat(1000)}</svg>`))).toThrow(/nested/);
     const started = Date.now();

@@ -3,6 +3,7 @@ import { existsSync, promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import type { AppSettings, SettingsPatch, ProviderId, ProviderStatus, RecentProject } from '@shared/api';
 import { atomicWrite } from './project/fsutil';
+import { canonicalDir } from '../runtime/policy';
 import { PROVIDER_MODELS } from '@agent/models';
 
 interface SettingsFile {
@@ -57,7 +58,9 @@ export async function updateSettings(patch: SettingsPatch): Promise<AppSettings>
 
 export async function addRecent(dir: string, name: string) {
   const s = await loadSettings();
-  s.recents = [{ dir, name, openedAt: new Date().toISOString() }, ...s.recents.filter((r) => r.dir !== dir)].slice(0, 20);
+  // An older entry may name the same folder through a link.
+  const real = canonicalDir(dir);
+  s.recents = [{ dir, name, openedAt: new Date().toISOString() }, ...s.recents.filter((r) => r.dir !== dir && canonicalDir(r.dir) !== real)].slice(0, 20);
   await saveSettings();
 }
 

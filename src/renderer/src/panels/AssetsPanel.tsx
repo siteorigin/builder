@@ -4,6 +4,7 @@ import { allTrees, displayName } from '@engine/tree';
 import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
 import { api, applyOps, getState, setState, toast, useStore } from '../store';
 import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
+import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { assetUrl } from '../lib/model';
 import { openSiteStyles, selectPage } from '../lib/actions';
 
@@ -60,7 +61,7 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
   /** A family is renamed as a whole, so its files stay together and the styles using it follow. */
   const renameFamily = (a: AssetRecord, family: string) =>
     void applyOps(
-      fonts.filter((x) => x.font?.family === a.font?.family).map((x) => ({ type: 'asset.update' as const, assetId: x.id, font: { ...faceOf(x), family } })),
+      fonts.filter((x) => sameFontFamily(x, a)).map((x) => ({ type: 'asset.update' as const, assetId: x.id, font: { ...faceOf(x), family } })),
       `Rename font family to ${family}`
     );
   const remove = async (a: AssetRecord) => {
@@ -82,7 +83,7 @@ function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string
           const used = usage[a.id] ?? 0;
           const variable = !!a.font?.weight.includes(' ');
           // Another file of the same family keeps the styles using it working, so this one can go.
-          const locked = !!used && fonts.filter((x) => x.font?.family === a.font?.family).length === 1;
+          const locked = !!used && fonts.filter((x) => sameFontFamily(x, a)).length === 1;
           return (
             <li key={a.id} className="font-face">
               <div className="font-face-head">
@@ -227,8 +228,8 @@ export function AssetsPanel() {
   const searchRef = useRef<HTMLInputElement>(null);
   const assetsDoc = snap?.state.assets.assets;
   // Images and fonts are listed apart: a font is never shown, picked or replaced as a picture.
-  const assets = useMemo(() => Object.values(assetsDoc ?? {}).filter((a) => a.kind === 'image').sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [assetsDoc]);
-  const fonts = useMemo(() => Object.values(assetsDoc ?? {}).filter((a) => a.kind === 'font').sort((a, b) => fontLabel(a).localeCompare(fontLabel(b))), [assetsDoc]);
+  const assets = useMemo(() => Object.values(assetsDoc ?? {}).filter((a) => a?.kind === 'image').sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [assetsDoc]);
+  const fonts = useMemo(() => Object.values(assetsDoc ?? {}).filter(isValidFontAsset).sort((a, b) => fontLabel(a).localeCompare(fontLabel(b))), [assetsDoc]);
   const sel = selected && assetsDoc ? (assetsDoc[selected] ?? null) : null;
   const places = useMemo(() => (snap && sel ? placesOf(snap.state, sel.id) : []), [snap, sel]);
   useEffect(() => {

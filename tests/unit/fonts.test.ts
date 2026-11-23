@@ -94,6 +94,20 @@ describe('imported fonts', () => {
     expect(generateProject(state).get('src/lib/siteorigin/styles/tokens.css')).not.toMatch(/evil|display: none|color: red/);
   });
 
+  it('survives malformed records and treats family names without regard to case', () => {
+    const state = createStarterState('business', 'Odd', false);
+    state.assets.assets = {
+      broken: null as unknown as AssetRecord,
+      numeric: { ...face('numeric', '400'), font: { family: 'Brand Sans', weight: 400 as unknown as string, style: 'normal' } },
+      a: face('a', '400', 'normal', 'Brand Sans'),
+      b: face('b', '700', 'normal', 'brand sans')
+    };
+    const families = projectFontFamilies(state);
+    expect(families).toHaveLength(1);
+    expect(families[0].faces.map((f) => f.id)).toEqual(['a', 'b']);
+    expect(fontFaceCss(state).match(/font-family: 'Brand Sans'/g)).toHaveLength(2);
+  });
+
   it('orders rules the same whatever the locale', () => {
     const state = createStarterState('business', 'Order', false);
     state.assets.assets = { a: face('a', '400', 'normal', 'Zebra'), b: face('b', '400', 'normal', 'Émile') };
