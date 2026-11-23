@@ -10,6 +10,7 @@ import { contactForm } from './foundation/form';
 import { PACK_VERSION } from './dsl';
 import { BUNDLED_FONTS } from './fonts';
 import { makeAltTheme } from './foundation-alt';
+import { FOUNDATION_EXAMPLES, type AiExample } from './foundation/ai-examples';
 
 export interface ThemePack {
   id: string;
@@ -21,7 +22,7 @@ export interface ThemePack {
   /** Font packages the website template installs. The generated layout imports the ones a site uses. */
   fontImports: string[];
   components: ComponentDefinition[];
-  aiProfile: { guidance: string[] };
+  aiProfile: { guidance: string[]; examples?: AiExample[] };
   /** Compatibility fixtures are only offered in development builds. */
   devOnly?: boolean;
 }
@@ -56,6 +57,7 @@ const FOUNDATION: ThemePack = {
     container
   ],
   aiProfile: {
+    examples: FOUNDATION_EXAMPLES,
     guidance: [
       'Foundation is calm and restrained: generous whitespace, a serif display face for headings and a sans-serif body.',
       'Alternate section tones (Default, Soft background, Dark) to create rhythm; avoid two Dark sections in a row.',

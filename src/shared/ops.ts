@@ -33,6 +33,7 @@ const link = z.object({
 export const OPERATION_SCHEMAS = {
   'page.create': z.object({
     type: z.literal('page.create'),
+    pageId: z.string().regex(/^pg_[a-z0-9]{4,32}$/).optional().describe('Internal: lets one batch create a page and fill it. Not offered to the model.'),
     title: z.string().min(1).max(80),
     route: z.string().optional().describe('Static route such as "/services/". Defaults to a slug of the title.'),
     afterPageId: z.string().optional(),

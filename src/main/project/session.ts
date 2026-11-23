@@ -8,6 +8,7 @@ import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { applyOperations } from '@engine/apply';
+import { listThemes } from '@catalogue/index';
 import { EngineError } from '@engine/tree';
 import { validateState, type Diagnostic } from '@engine/validate';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
@@ -870,6 +871,8 @@ export class ProjectSession extends EventEmitter {
       // Any authored code that is new or changed must pass the safety checks before it can be saved.
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
+        // Placing a theme's own component (the contact form, say) authors no code: it ships with the app.
+        if (def.owner === 'theme' && listThemes().some((t) => t.components.some((c) => c.id === def.id && c.source === def.source))) continue;
         // Code the AI writes is held to a stricter policy than code a developer writes.
         const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai' })).filter((p) => p.severity === 'error');
         if (errors.length)

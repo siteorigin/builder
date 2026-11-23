@@ -280,7 +280,7 @@ describe('run budget, parallel calls and validation', () => {
       () => finish('Added two pages.')
     ]);
     homeId = session.state.site.homePageId;
-    const { result } = await run('Add About us and Team pages');
+    const { result } = await run('Add blank About us and Team pages');
     expect(result?.status).toBe('completed');
     expect(teamAfterFirstTurn).toBe(false);
     const titles = Object.values(session.state.pages).map((p) => p.title);

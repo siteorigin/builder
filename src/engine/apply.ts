@@ -368,7 +368,8 @@ function pageCreate(state: ProjectState, op: Op<'page.create'>): OpResult {
     const slug = slugify(op.title) || 'page';
     route = uniqueRoute(state, `/${slug}/`);
   }
-  const id = newId('pg');
+  if (op.pageId && Object.hasOwn(state.pages, op.pageId)) fail(`Page "${op.pageId}" already exists.`);
+  const id = op.pageId ?? newId('pg');
   const page: PageDoc = { schemaVersion: SCHEMA_VERSION, id, title: op.title.trim(), route, seo: {}, shell: 'default', rootIds: [], nodes: {} };
   if (op.starter === 'intro') {
     const defId = installComponent(state, 'intro.page');

@@ -7,9 +7,13 @@ import { catalogueComponent, searchCatalogue } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
-import type { ToolDefinition } from './types';
+import type { ModelCapabilities, ToolDefinition } from './types';
 import { catalogueIndex, compactNode, componentDetail, pageDetail, projectSummary, tokensSummary } from './context';
 import { getTree, findParent, displayName } from '@engine/tree';
+import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
+import { BRAND_ARGS, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
+import { runSelectionTool, SELECTION_ARGS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
+import { examplesFor, exampleSection } from './examples';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component']), id: z.string() });
 
@@ -41,7 +45,10 @@ export const TOOL_ARGS = {
     question: z.string().max(300),
     choices: z.array(z.string().max(80)).max(4).optional(),
     widenScope: z.boolean().optional().describe('Set true to ask permission to change more than the selected element. The app shows yes/no choices; on yes, the run may change anything.')
-  })
+  }),
+  upsert_page_with_sections: UPSERT_ARGS,
+  update_site_brand: BRAND_ARGS,
+  ...SELECTION_ARGS
 } as const;
 
 export type ToolName = keyof typeof TOOL_ARGS;
@@ -59,7 +66,10 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
   inspect_layout: 'Measure a page in the live preview at a viewport width: horizontal overflow, elements outside the viewport, missing images/alt text, heading structure and runtime errors. Structural evidence only; no screenshots.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
-  request_clarification: 'Ask the user one short question when a request is genuinely ambiguous and a wrong guess would change shared content. Offer up to four concrete choices.'
+  request_clarification: 'Ask the user one short question when a request is genuinely ambiguous and a wrong guess would change shared content. Offer up to four concrete choices.',
+  upsert_page_with_sections: UPSERT_DESCRIPTION,
+  update_site_brand: BRAND_DESCRIPTION,
+  ...SELECTION_DESCRIPTIONS
 };
 
 /** Operations the assistant never sends: images are added only by the verified importer, theme updates by the user. */
@@ -84,7 +94,7 @@ const DEFINITION_OPERATIONS = new Set<OperationType>([
 function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
     .filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)))
-    .map((t) => OPERATION_SCHEMAS[t]);
+    .map((t) => (t === 'page.create' ? OPERATION_SCHEMAS[t].omit({ pageId: true }) : OPERATION_SCHEMAS[t]));
   return z.discriminatedUnion('type', schemas as unknown as [z.ZodObject<{ type: z.ZodLiteral<string> }>, ...z.ZodObject<{ type: z.ZodLiteral<string> }>[]]);
 }
 
@@ -96,7 +106,7 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
   const codeEnabled = opts.codeEnabled ?? true;
   const definitionOps = opts.definitionOps ?? codeEnabled;
   return (Object.keys(TOOL_ARGS) as ToolName[])
-    .filter((name) => codeEnabled || !CODE_TOOLS.has(name))
+    .filter((name) => !TASK_TOOLS.has(name) && (codeEnabled || !CODE_TOOLS.has(name)))
     .map((name) => {
       const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled, definitionOps)).min(1).max(30) }) : TOOL_ARGS[name];
       const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
@@ -105,7 +115,51 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
     });
 }
 
-export const MUTATING_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
+/** Tools that take a revision or hash the model read earlier: only one of these can run per turn. */
+export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
+const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand'];
+const SELECTION_TOOLS = Object.keys(SELECTION_ARGS) as ToolName[];
+/** Offered by task mode (see toolsForRun), never as part of the general set. */
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...SELECTION_TOOLS]);
+export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'style_selected_element']);
+
+/** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
+export const FOCUSED_WINDOW_TOKENS = 64_000;
+
+export type ToolMode = 'selection' | 'site' | 'general';
+
+export interface RunTools {
+  tools: ToolDefinition[];
+  /** selection: the selected element's tools. site: page and brand tools. general: a selection they cannot cover. */
+  mode: ToolMode;
+  /** Only the small tool set is offered. */
+  focused: boolean;
+}
+
+const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameters).includes('"assetId"');
+
+/**
+ * The tools for this step of a run, chosen by task. The small sets are the design target: every model gets
+ * them. A cloud model with room to spare also keeps the general tools for anything they cannot express, and a
+ * selection they cannot cover (a layout element, a component's own definition) always uses the general tools.
+ */
+export function toolsForRun(opts: { state: ProjectState; selection: SelectionTarget | null; capabilities: Pick<ModelCapabilities, 'toolCalling' | 'contextWindowTokens'>; codeEnabled: boolean; definitionOps: boolean }): RunTools {
+  const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
+  const general = toolDefinitions({ codeEnabled, definitionOps });
+  const focused = capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
+  if (selection) {
+    const micro = selectionTools(state, selection);
+    if (!micro) return { tools: general, mode: 'general', focused: false };
+    // An image can only be chosen by its asset ID, so a selection with one can also look them up.
+    const assets = usesImage(micro) ? general.filter((t) => t.name === 'search_assets') : [];
+    return { tools: focused ? [...micro, ...assets] : [...micro, ...general], mode: 'selection', focused };
+  }
+  const macros: ToolDefinition[] = [
+    { name: 'upsert_page_with_sections', description: DESCRIPTIONS.upsert_page_with_sections, parameters: upsertToolSchema(state) },
+    { name: 'update_site_brand', description: DESCRIPTIONS.update_site_brand, parameters: brandToolSchema(state) }
+  ];
+  return { tools: [...macros, ...(focused ? general.filter((t) => t.name !== 'apply_operations') : general)], mode: 'site', focused };
+}
 
 export interface ToolHost {
   state(): ProjectState;
@@ -115,6 +169,10 @@ export interface ToolHost {
   compileAll(): Promise<Diagnostic[]>;
   inspectLayout(pageId: string, width: number): Promise<unknown>;
   ask(question: string, choices: string[], widenScope?: boolean): Promise<string>;
+  /** What the macro tools remember during a run. */
+  macros?: MacroMemory;
+  /** The element a selection-scoped run is working on. */
+  selection?(): SelectionTarget | null;
 }
 
 export interface ToolOutcome {
@@ -207,7 +265,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const a = args as z.infer<(typeof TOOL_ARGS)['read_component']>;
       const def = a.definitionId ? state.components[a.definitionId] : a.componentId ? catalogueComponent(state.site.themeId, a.componentId) : undefined;
       if (!def) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Component not found. Use search_components.' } };
-      return { ok: true, content: componentDetail(def) };
+      const examples = examplesFor(state, def.componentId).map(exampleSection);
+      return { ok: true, content: { ...componentDetail(def), ...(examples.length ? { workedExamples: examples } : {}) } };
     }
     case 'search_assets': {
       const a = args as z.infer<(typeof TOOL_ARGS)['search_assets']>;
@@ -221,6 +280,8 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'apply_operations': {
       const a = args as z.infer<(typeof TOOL_ARGS)['apply_operations']>;
       const ops = a.operations as unknown as EditOperation[];
+      // Page IDs are allocated by the app; only its own page tool may pass one through.
+      if (ops.some((o) => o.type === 'page.create' && o.pageId !== undefined)) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'page.create does not take a pageId.' } };
       const res = await host.apply(ops, a.expectedRevision, labelForOps(ops, state), callId);
       if (!res.ok) return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };
       return { ok: true, mutated: true, ops, results: res.results, content: { ok: true, revision: res.revision, results: res.results } };
@@ -278,6 +339,15 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const answer = await host.ask(a.question, a.choices ?? [], a.widenScope);
       return { ok: true, content: { answer } };
     }
+    case 'upsert_page_with_sections':
+      return runUpsert(args as z.infer<typeof UPSERT_ARGS>, host, callId, (host.macros ??= newMacroMemory()));
+    case 'update_site_brand':
+      return runBrand(args as z.infer<typeof BRAND_ARGS>, host, callId);
+    case 'update_selected_props':
+    case 'edit_selected_list':
+    case 'style_selected_element':
+    case 'request_wider_scope':
+      return runSelectionTool(name as keyof typeof SELECTION_ARGS, args, host, callId);
   }
 }
 

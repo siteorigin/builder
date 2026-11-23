@@ -42,6 +42,15 @@ export function projectSummary(state: ProjectState, revision: number) {
   };
 }
 
+/** For a selection edit: what the run needs to know about the site, without the header and footer trees. */
+export function compactProjectSummary(state: ProjectState, revision: number) {
+  return {
+    revision,
+    site: { name: state.site.name },
+    pages: state.site.pageOrder.map((id) => ({ id, title: state.pages[id].title, route: state.pages[id].route }))
+  };
+}
+
 export function compactNode(state: ProjectState, tree: NodeTree, id: string, depth = 0): Record<string, unknown> {
   const n = tree.nodes[id];
   if (!n) return { id, missing: true };
@@ -162,13 +171,21 @@ export function tokensSummary(state: ProjectState) {
   return effectiveTokens(state).map((t) => ({ id: t.id, label: t.label, value: t.value, overridden: t.id in state.tokens.overrides }));
 }
 
+/** The selected element's own content, in full unless it is very large: this is what the edit works from. */
+function selectedProps(props: Record<string, unknown>): unknown {
+  return JSON.stringify(props).length <= 6000 ? props : summarizeValue(props);
+}
+
 export function describeSelection(state: ProjectState, ref: ElementRef | null): Record<string, unknown> | null {
   if (!ref) return null;
   const tree: NodeTree | undefined =
     ref.owner.kind === 'page' ? state.pages[ref.owner.id] : ref.owner.kind === 'shell' ? state.site.shell[ref.owner.id as 'header' | 'footer'] : state.components[ref.owner.id]?.tree;
   if (!tree) return null;
   if (!ref.instancePath.length) {
-    return { owner: ref.owner, nodeId: ref.nodeId, node: compactNode(state, tree, ref.nodeId) };
+    const node = compactNode(state, tree, ref.nodeId);
+    const selected = tree.nodes[ref.nodeId];
+    if (selected?.kind === 'instance') node.props = selectedProps(selected.props);
+    return { owner: ref.owner, nodeId: ref.nodeId, node };
   }
   const instId = ref.instancePath[0];
   const inst = tree.nodes[instId];
@@ -189,6 +206,7 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
     innerNodeId: ref.nodeId,
     itemId: ref.itemPath?.[ref.itemPath.length - 1] ?? null,
     boundTo: binding,
+    ...(inst?.kind === 'instance' ? { currentProps: selectedProps(inst.props) } : {}),
     note: 'Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId.'
   };
 }

@@ -1,0 +1,194 @@
+/**
+ * Worked examples for the assistant, one per component family (ai-profile, spec §9.4). A unit test runs every
+ * example through the real component contract and value normalizers, so a catalogue change cannot leave one stale.
+ */
+export interface AiExample {
+  id: string;
+  componentId: string;
+  /** Words in a request that make this example relevant. */
+  keywords: string[];
+  description: string;
+  variant?: string;
+  props: Record<string, unknown>;
+}
+
+const NO_IMAGE = { assetId: null, alt: '' };
+
+export const FOUNDATION_EXAMPLES: AiExample[] = [
+  {
+    id: 'hero-centered-trade',
+    componentId: 'hero.centered',
+    keywords: ['home', 'homepage', 'hero', 'landing', 'banner', 'headline', 'site', 'website'],
+    description: 'Home page opening for a local trade business',
+    props: { eyebrow: 'Family-run since 1998', heading: 'Plumbing you can set your watch by', lead: 'Same-day repairs and honest quotes across the Harbour district.', primaryLabel: 'Book a visit', primaryLink: '/contact/', secondaryLabel: 'See services', secondaryLink: '/services/' }
+  },
+  {
+    id: 'hero-split-studio',
+    componentId: 'hero.split',
+    keywords: ['hero', 'image', 'photo', 'studio', 'portfolio', 'landing'],
+    description: 'Opening section with an image beside the headline',
+    variant: 'muted',
+    props: { eyebrow: 'Interior design', heading: 'Rooms that work as well as they look', lead: 'We plan, source and install calm, durable interiors.', primaryLabel: 'Start a project', primaryLink: '/contact/', image: NO_IMAGE }
+  },
+  {
+    id: 'intro-page-services',
+    componentId: 'intro.page',
+    keywords: ['intro', 'about', 'services', 'pricing', 'inner', 'contact'],
+    description: 'Opening section for an inner page',
+    props: { eyebrow: 'Services', heading: 'Everything your garden needs, all year', lead: 'From a one-off tidy to full landscape design.' }
+  },
+  {
+    id: 'logos-clients',
+    componentId: 'logos.strip',
+    keywords: ['logos', 'clients', 'partners', 'trusted', 'brands'],
+    description: 'A row of client names',
+    props: { heading: 'Trusted by local businesses', logos: [{ name: 'Northwind' }, { name: 'Alder & Co' }, { name: 'Tidewater' }, { name: 'Fernhill' }] }
+  },
+  {
+    id: 'features-services',
+    componentId: 'features.grid',
+    keywords: ['services', 'features', 'benefits', 'offer', 'what', 'grid', 'cards', 'site', 'website'],
+    description: 'Three service cards with icons',
+    props: {
+      eyebrow: 'What we do',
+      heading: 'Three ways we can help',
+      lead: 'Pick one service or combine them into a yearly plan.',
+      items: [
+        { icon: 'leaf', title: 'Garden care', description: 'Weekly or monthly visits to keep beds, lawns and hedges in shape.' },
+        { icon: 'compass', title: 'Landscape design', description: 'A clear plan and planting scheme drawn for your site.' },
+        { icon: 'sparkles', title: 'Seasonal refresh', description: 'A one-day reset before spring or after a long winter.' }
+      ]
+    }
+  },
+  {
+    id: 'content-media-story',
+    componentId: 'content.media',
+    keywords: ['about', 'story', 'history', 'mission', 'image', 'photo', 'approach'],
+    description: 'A short story beside an image',
+    variant: 'media-end',
+    props: { eyebrow: 'Our story', heading: 'Started with one van and a good reputation', body: 'We began in 2009 fixing boilers for neighbours.\n\nToday a team of **twelve** looks after homes across the county.', image: NO_IMAGE, actionLabel: 'Meet the team', actionLink: '/about/' }
+  },
+  {
+    id: 'content-text-policy',
+    componentId: 'content.text',
+    keywords: ['text', 'article', 'policy', 'privacy', 'terms', 'legal', 'paragraphs'],
+    description: 'A heading with plain paragraphs',
+    props: { heading: 'How we handle your details', body: 'We only keep the details needed to answer your enquiry.\n\nAsk us at any time and we will delete them.' }
+  },
+  {
+    id: 'stats-results',
+    componentId: 'stats.row',
+    keywords: ['stats', 'numbers', 'results', 'figures', 'metrics', 'achievements'],
+    description: 'A row of proof points',
+    variant: 'inverse',
+    props: { heading: 'A track record you can check', items: [{ value: '1,200+', label: 'Homes served' }, { value: '25 yrs', label: 'In business' }, { value: '4.9/5', label: 'Average review' }] }
+  },
+  {
+    id: 'testimonials-clients',
+    componentId: 'testimonials.grid',
+    keywords: ['testimonials', 'reviews', 'quotes', 'customers', 'feedback', 'social'],
+    description: 'Client quotes',
+    props: {
+      eyebrow: 'Kind words',
+      heading: 'What our clients say',
+      lead: 'A few notes from recent projects.',
+      items: [
+        { quote: 'They arrived on time, explained everything and left the place spotless.', name: 'Priya Nair', role: 'Homeowner', portrait: NO_IMAGE },
+        { quote: 'The clearest quote we received, and the final bill matched it.', name: 'Tom Becker', role: 'Cafe owner', portrait: NO_IMAGE }
+      ]
+    }
+  },
+  {
+    id: 'team-people',
+    componentId: 'team.grid',
+    keywords: ['team', 'people', 'staff', 'about', 'founders', 'who'],
+    description: 'Team members',
+    props: {
+      eyebrow: 'The team',
+      heading: 'The people behind the work',
+      lead: 'Small on purpose, so you always know who you are talking to.',
+      people: [
+        { portrait: NO_IMAGE, name: 'Sara Lindqvist', role: 'Founder', bio: 'Twenty years in residential architecture.' },
+        { portrait: NO_IMAGE, name: 'Marcus Hale', role: 'Project lead', bio: 'Keeps every build on schedule.' }
+      ]
+    }
+  },
+  {
+    id: 'pricing-three-plans',
+    componentId: 'pricing.plans',
+    keywords: ['pricing', 'prices', 'plans', 'packages', 'cost', 'rates', 'fees', 'tiers'],
+    description: 'Three priced packages',
+    props: {
+      eyebrow: 'Pricing',
+      heading: 'Simple packages, fixed fees',
+      lead: 'Every package starts with a free consultation.',
+      plans: [
+        { name: 'Essential', price: '$490', period: 'per project', description: 'For a single room.', features: 'One design concept\nShopping list', actionLabel: 'Choose Essential', actionLink: '/contact/' },
+        { name: 'Complete', price: '$1,450', period: 'per project', description: 'For a whole floor.', badge: 'Most popular', features: 'Three design concepts\nSourcing and orders\nTwo site visits', actionLabel: 'Choose Complete', actionLink: '/contact/' },
+        { name: 'Managed', price: '$3,200', period: 'per project', description: 'We run the whole job.', features: 'Everything in Complete\nContractor management', actionLabel: 'Talk to us', actionLink: '/contact/' }
+      ]
+    }
+  },
+  {
+    id: 'faq-common',
+    componentId: 'faq.list',
+    keywords: ['faq', 'faqs', 'questions', 'answers', 'help'],
+    description: 'Frequently asked questions',
+    props: {
+      eyebrow: 'Questions',
+      heading: 'Good to know',
+      lead: 'Still unsure? Send us a message.',
+      items: [
+        { question: 'How soon can you start?', answer: 'Most jobs start within two weeks of your approval.' },
+        { question: 'Do you offer a guarantee?', answer: 'All work is guaranteed for twelve months.' }
+      ]
+    }
+  },
+  {
+    id: 'gallery-work',
+    componentId: 'media.gallery',
+    keywords: ['gallery', 'portfolio', 'work', 'photos', 'images', 'projects'],
+    description: 'A gallery of recent work',
+    props: { eyebrow: 'Recent work', heading: 'A few favourite projects', lead: 'Each one shaped around how the client lives.', images: [{ image: NO_IMAGE, caption: 'Kitchen, Millbrook' }, { image: NO_IMAGE, caption: 'Courtyard, Eastside' }] }
+  },
+  {
+    id: 'cta-contact',
+    componentId: 'cta.banner',
+    keywords: ['cta', 'action', 'call', 'banner', 'closing', 'site', 'website', 'services', 'pricing'],
+    description: 'A closing call to action',
+    props: { heading: 'Ready when you are', lead: 'Tell us what you need and we will reply within two working days.', primaryLabel: 'Get in touch', primaryLink: '/contact/' }
+  },
+  {
+    id: 'contact-details',
+    componentId: 'contact.details',
+    keywords: ['contact', 'phone', 'email', 'address', 'hours', 'location'],
+    description: 'Ways to get in touch',
+    props: {
+      eyebrow: 'Contact',
+      heading: 'Talk to a real person',
+      lead: 'We answer every message within two working days.',
+      items: [
+        { icon: 'mail', label: 'Email', value: 'hello@example.com', link: { type: 'email', target: 'hello@example.com' } },
+        { icon: 'phone', label: 'Phone', value: '+1 555 0134', link: { type: 'tel', target: '+15550134' } },
+        { icon: 'map-pin', label: 'Workshop', value: '12 Harbour Lane' }
+      ]
+    }
+  },
+  {
+    id: 'contact-form-enquiry',
+    componentId: 'contact.form',
+    keywords: ['form', 'enquiry', 'inquiry', 'message', 'contact', 'booking', 'quote'],
+    description: 'An enquiry form',
+    props: {
+      eyebrow: 'Enquiries',
+      heading: 'Tell us about your project',
+      lead: 'A few details help us give you a useful first answer.',
+      fields: [
+        { label: 'Name', name: 'name', type: 'text', required: true },
+        { label: 'Email', name: 'email', type: 'email', required: true },
+        { label: 'Message', name: 'message', type: 'textarea', required: true }
+      ],
+      submitLabel: 'Send enquiry'
+    }
+  }
+];
