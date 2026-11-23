@@ -55,6 +55,7 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
   return (
     <Modal
       title={`Delete “${page.title}”?`}
+      describedBy="delete-page-desc"
       icon={<Trash2 style={{ color: 'var(--red)' }} />}
       onClose={close}
       footer={
@@ -67,7 +68,11 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
             onClick={async () => {
               if (await applyOps([{ type: 'page.remove', pageId, replacementPageId: refs || pageId === st.site.homePageId ? replacement : undefined }], `Delete page ${page.title}`)) {
                 setState({ modal: null });
-                selectPage(replacement ?? st.site.homePageId);
+                // Only leave the current page when it is the one that went.
+                const current = getState().pageId;
+                if (current === pageId || !getState().snapshot?.state.pages[current ?? '']) selectPage(replacement ?? st.site.homePageId);
+                // The row that opened this is gone: keyboard focus goes to the current page's row.
+                setTimeout(() => document.querySelector<HTMLElement>('[role="listbox"][aria-label="Pages"] [role="option"][aria-selected="true"]')?.focus(), 0);
               }
             }}
           >
@@ -77,18 +82,31 @@ export function DeletePageModal({ pageId }: { pageId: string }) {
       }
     >
       <div className="col" style={{ gap: 12 }}>
-        <p style={{ margin: 0 }}>The page and its content are removed from your site. You can undo this.</p>
+        <p id="delete-page-desc" style={{ margin: 0 }}>
+          The page at <span className="delete-page-route">{page.route}</span> and its content are removed from your site. You can undo this.
+        </p>
         {(refs > 0 || pageId === st.site.homePageId) && (
           <Field
             label={pageId === st.site.homePageId ? 'New home page' : 'Point existing links to'}
-            hint={refs ? `${refs} link${refs === 1 ? '' : 's'} (including navigation) currently point to this page.` : 'Another page must become Home.'}
+            hint={
+              pageId === st.site.homePageId
+                ? refs
+                  ? `It becomes the home page, and the ${refs} link${refs === 1 ? '' : 's'} (including navigation) that point here will point to it.`
+                  : 'Another page must become the home page.'
+                : `${refs} link${refs === 1 ? '' : 's'} (including navigation) currently point${refs === 1 ? 's' : ''} to this page.`
+            }
           >
             <select className="select" value={replacement} onChange={(e) => setReplacement(e.target.value)}>
-              {others.map((id) => (
-                <option key={id} value={id}>
-                  {st.pages[id].title}
-                </option>
-              ))}
+              {others.map((id) => {
+                // Pages that share a title are told apart by their address.
+                const p = st.pages[id];
+                const shared = others.some((o) => o !== id && st.pages[o].title.trim().toLowerCase() === p.title.trim().toLowerCase());
+                return (
+                  <option key={id} value={id}>
+                    {shared ? `${p.title} (${p.route})` : p.title}
+                  </option>
+                );
+              })}
             </select>
           </Field>
         )}
