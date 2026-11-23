@@ -81,9 +81,10 @@ export interface ApplyContext {
   /**
    * The batch's asset use counts (assetUsages), shared by a run of removals so a bulk cleanup walks the site once.
    * Deleting an image record changes no count; any other edit may, so applyOperations forgets the counts before
-   * every operation that is not a removal, and a font removal forgets them after it. applyOperations fills it.
+   * every operation that is not a removal, and a font removal forgets them after it. The counts are kept only for
+   * the draft they were made from. applyOperations fills it.
    */
-  assetUses?: { counts?: Record<string, number> };
+  assetUses?: { state?: ProjectState; counts?: Record<string, number> };
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
@@ -384,8 +385,10 @@ export function assetUsages(state: ProjectState): Record<string, number> {
 
 /** assetUsages, kept for the rest of a run of removals when the batch holds the counts (ApplyContext.assetUses). */
 function batchAssetUsages(state: ProjectState, ctx: ApplyContext): Record<string, number> {
-  if (!ctx.assetUses) return assetUsages(state);
-  return (ctx.assetUses.counts ??= assetUsages(state));
+  const held = ctx.assetUses;
+  if (!held) return assetUsages(state);
+  if (!held.counts || held.state !== state) Object.assign(held, { state, counts: assetUsages(state) });
+  return held.counts!;
 }
 
 /** How many links from the rest of the site go to a page: the links deleting it would move to a replacement. */

@@ -3,19 +3,26 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
-import { applyOperations, assetUsages } from '@engine/apply';
+import { applyOperation, applyOperations, assetUsages } from '@engine/apply';
+import * as tree from '@engine/tree';
 import { EngineError } from '@engine/tree';
 import * as fonts from '@shared/fonts';
 import type { EditOperation } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
 
-// Every count of the site's asset uses reads its typography once: counting those reads counts the scans.
+// Every count of the site's asset uses reads its typography once (`scans`) and walks its pages' trees once
+// (`walks`, which other checks also make): counting those reads counts the scans.
 vi.mock('@shared/fonts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@shared/fonts')>();
   return { ...actual, fontAssetUsages: vi.fn(actual.fontAssetUsages) };
 });
+vi.mock('@engine/tree', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@engine/tree')>();
+  return { ...actual, allTrees: vi.fn(actual.allTrees) };
+});
 const scans = vi.mocked(fonts.fontAssetUsages);
+const walks = vi.mocked(tree.allTrees);
 
 const image = (id: string): AssetRecord => ({
   id,
@@ -81,19 +88,31 @@ function rejects(fn: () => unknown, msg: RegExp) {
   expect((err as Error).message).toMatch(msg);
 }
 
-beforeEach(() => {
+const clearCounts = () => {
   scans.mockClear();
-});
+  walks.mockClear();
+};
+beforeEach(clearCounts);
 
 describe('removing many assets in one batch', () => {
   it('removes every unused image of a multi-page site, counting the site’s uses once', () => {
     const { s } = site();
     expect(s.site.pageOrder.length).toBeGreaterThan(2);
     expect(Object.keys(assetUsages(s)).sort()).toEqual(USED);
-    scans.mockClear();
+    clearCounts();
     const r = applyOperations(s, UNUSED.map(remove));
     expect(Object.keys(r.state.assets.assets).sort()).toEqual(USED);
     expect(scans).toHaveBeenCalledTimes(1);
+    expect(walks).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps counts only for the project they were made from', () => {
+    // A caller that hands the same context to edits of two projects gets each one's own counts.
+    const { s } = site();
+    const ctx = { assetUses: {} };
+    applyOperation(structuredClone(s), remove('img10'), ctx);
+    const other = applyOperations(s, [{ type: 'site.update', favicon: 'img11' }]).state;
+    rejects(() => applyOperation(other, remove('img11'), ctx), /^This image is used 1 time\. /);
   });
 
   it('refuses the whole cleanup when it includes an image in use anywhere on the site', () => {
@@ -135,6 +154,9 @@ describe('removing many assets in one batch', () => {
     // A favicon or site social image set in the batch protects the image it names.
     rejects(() => applyOperations(s, [remove('img10'), { type: 'site.update', favicon: 'img11' }, remove('img11')]), /^Operation 3 \(asset\.remove\): This image is used 1 time\. /);
     rejects(() => applyOperations(s, [remove('img10'), { type: 'site.update', socialImage: 'img11' }, remove('img11')]), /^Operation 3 \(asset\.remove\): This image is used 1 time\. /);
+
+    // A duplicated page shows the image a second time.
+    rejects(() => applyOperations(s, [remove('img10'), { type: 'page.duplicate', pageId: aboutId }, remove('img01')]), /^Operation 3 \(asset\.remove\): This image is used 2 times\. /);
   });
 
   it('keeps a font family protected until its last face goes, whatever case the faces name it in', () => {
@@ -186,15 +208,18 @@ describe('a bulk cleanup in the editor', () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-cleanup-'));
     dirs.push(dir);
     const session = await ProjectSession.create(dir, site().s);
+    const original = structuredClone(session.state.assets);
     const steps = session.historyInfo().entries.length;
+    clearCounts();
     const r = await session.apply({ operations: UNUSED.map(remove) }, { label: `Remove ${UNUSED.length} unused images` });
     expect(r.ok).toBe(true);
+    expect(scans).toHaveBeenCalledTimes(1);
     expect(Object.keys(session.state.assets.assets).sort()).toEqual(USED);
     expect(session.historyInfo().entries).toHaveLength(steps + 1);
     expect(session.historyInfo().undoLabel).toBe('Remove 36 unused images');
 
     expect((await session.undo()).ok).toBe(true);
-    expect(Object.keys(session.state.assets.assets)).toHaveLength(40);
+    expect(session.state.assets).toEqual(original);
 
     // A cleanup that reaches a used image changes nothing at all.
     const before = { revision: session.revision, history: session.historyInfo(), assets: structuredClone(session.state.assets) };
