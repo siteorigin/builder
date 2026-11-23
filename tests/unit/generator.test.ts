@@ -305,6 +305,60 @@ describe('SEO and performance', () => {
   });
 });
 
+describe('first-screen image loading through code components', () => {
+  const home = (s: ProjectState) => ({ kind: 'page' as const, id: s.site.homePageId });
+  const sourceOf = (files: Map<string, string>, name: string) => [...files.entries()].find(([p]) => p.endsWith(name))![1];
+
+  it('keeps a converted first hero eager and lower sections lazy', () => {
+    let s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    s = applyOperations(s, [{ type: 'component.convertToCode', owner: home(s), nodeId: hero.id, name: 'Hero code' }]).state;
+    const files = generateProject(s);
+    const page = files.get('src/routes/+page.svelte')!;
+    // Only the first section is told to load eagerly, and it names the converted component.
+    expect(page.match(/so_eager=\{true\}/g)).toHaveLength(1);
+    const code = [...files.entries()].find(([p, src]) => p.startsWith('src/lib/') && src.includes('so_eager'))![1];
+    expect(code).toContain('eager={so_eager}');
+    expect(sourceOf(files, 'media-gallery.svelte')).not.toContain('eager');
+    expect(compileAll(files)).toEqual([]);
+  });
+
+  it('passes the flag on from a reusable component wrapping a converted hero', () => {
+    let s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const wrap = applyOperations(s, [{ type: 'component.createFromNode', owner: home(s), nodeId: hero.id, name: 'Wrapper' }]);
+    s = wrap.state;
+    const wrapId = wrap.results[0].definitionId as string;
+    const inner = Object.values(s.components[wrapId].tree!.nodes).find((n) => n.kind === 'instance')!;
+    s = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'component', id: wrapId }, nodeId: inner.id, name: 'Inner code' }]).state;
+    const files = generateProject(s);
+    const page = files.get('src/routes/+page.svelte')!;
+    expect(page.match(/so_eager=\{true\}/g)).toHaveLength(1);
+    const wrapper = files.get(defFile(s.components[wrapId]))!;
+    expect(wrapper).toContain('so_eager = false');
+    expect(wrapper).toContain('so_eager={so_eager}');
+    expect(compileAll(files)).toEqual([]);
+  });
+
+  it('does not make a wrapped hero eager lower on the page', () => {
+    let s = fresh();
+    const hero = instanceOf(s, 'hero.split');
+    const wrap = applyOperations(s, [{ type: 'component.createFromNode', owner: home(s), nodeId: hero.id, name: 'Wrapper' }]);
+    s = wrap.state;
+    const page = s.pages[s.site.homePageId];
+    // Move the wrapper below another section: it is no longer the first screen.
+    const wrapperId = wrap.results[0].nodeId as string;
+    page.rootIds = page.rootIds.filter((id) => id !== wrapperId);
+    page.rootIds.push(wrapperId);
+    const out = generateProject(s).get('src/routes/+page.svelte')!;
+    const at = out.indexOf('<C_proj_wrapper');
+    const wrapperTag = out.slice(at, out.indexOf('/>', at));
+    expect(at).toBeGreaterThan(-1);
+    expect(wrapperTag).not.toContain('so_eager');
+    expect(out).not.toContain('so_eager');
+  });
+});
+
 describe('icons', () => {
   it('ships social icons and only the icons a project uses', () => {
     const s = fresh();

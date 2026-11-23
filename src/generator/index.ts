@@ -811,7 +811,10 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   // A section's anchor lands on its component's root element.
   if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
   else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);
-  if (ctx.firstSection && !ctx.def && def.kind === 'managed' && hasEagerImages(def)) attrs.push('so_eager={true}');
+  // The first section's images load eagerly through every definition between the page and the image.
+  if (takesEager(ctx.state, def)) {
+    if (!ctx.items.length && (ctx.def || ctx.firstSection)) attrs.push(ctx.def ? 'so_eager={so_eager}' : 'so_eager={true}');
+  }
   // Instance overrides at page level are applied through generated override classes. Code components get the
   // same map, and their root override also through `class`, which every code component places on its root.
   if (!ctx.def && node.overrides && Object.keys(node.overrides).length) {
@@ -876,18 +879,31 @@ function propDefaultExpr(schema: PropSchema, ctx: ResolveContext): string {
   return js(resolveValue(schema, schema.default, ctx));
 }
 
-/** Whether a definition has images outside lists, which take the page's `so_eager` flag. */
-function hasEagerImages(def: ComponentDefinition): boolean {
-  if (!def.tree) return false;
+/** Whether a node sits inside a list, where items are repeated and never take the page's `so_eager` flag. */
+function insideRepeat(def: ComponentDefinition, parents: Map<string, string>, nodeId: string): boolean {
+  const seen = new Set<string>();
+  for (let id = parents.get(nodeId); id && !seen.has(id); id = parents.get(id)) {
+    seen.add(id);
+    if (def.tree!.nodes[id]?.kind === 'repeat') return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a definition takes the page's `so_eager` flag: managed ones with images (or with instances that take
+ * the flag themselves) outside lists, and code components whose source reads it, such as a converted copy.
+ */
+function takesEager(state: ProjectState, def: ComponentDefinition, seen: Set<string> = new Set()): boolean {
+  if (def.kind === 'code') return /\bso_eager\b/.test(def.source ?? '');
+  if (!def.tree || seen.has(def.id)) return false;
+  seen.add(def.id);
   const parents = parentMap(def.tree);
   return Object.values(def.tree.nodes).some((n) => {
-    if (n.kind !== 'image') return false;
-    const seen = new Set<string>();
-    for (let id = parents.get(n.id); id && !seen.has(id); id = parents.get(id)) {
-      seen.add(id);
-      if (def.tree!.nodes[id]?.kind === 'repeat') return false;
-    }
-    return true;
+    if (n.kind === 'instance') {
+      const child = state.components[n.definitionId];
+      if (!child || !takesEager(state, child, seen)) return false;
+    } else if (n.kind !== 'image') return false;
+    return !insideRepeat(def, parents, n.id);
   });
 }
 
@@ -928,7 +944,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   for (const slotName of Object.keys(def.slots ?? {}).sort()) propDecls.push(`\t\tslot_${safeIdent(slotName)} = undefined,`);
   propDecls.push(`\t\tso_o = undefined,`);
   propDecls.push(`\t\tso_id = undefined,`);
-  if (hasEagerImages(def)) propDecls.push(`\t\tso_eager = false,`);
+  if (takesEager(state, def)) propDecls.push(`\t\tso_eager = false,`);
   if (opts.instrument) propDecls.push(`\t\t__so = '',`);
   propDecls.push(`\t\tclass: className = ''`);
   const imports = renderImports(ctx.imports);
