@@ -343,7 +343,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const overrides = countStyles(node.overrides?.[styledPart]);
   const selectPart = (p: string) => selectAndFocus({ owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p });
   const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
-  const makeUnique = () => void applyOps([{ type: 'component.makeUnique', owner, nodeId: node.id }], 'Make unique');
+  const makeUnique = () => setState({ modal: { kind: 'make-unique', owner, nodeId: node.id, definitionId: def.id } });
   const viewSource = () => setState({ modal: { kind: 'source', definitionId: def.id } });
   // The copy's structure is now edited in source, so offer to open it straight away.
   const convertToCode = async () => {
@@ -353,7 +353,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   };
   const items: MenuItem[] = [
     ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
-    ...(canMakeUnique ? [{ label: 'Make unique', icon: <Split />, hint: 'Separate copy', onSelect: makeUnique }] : []),
+    ...(canMakeUnique ? [{ label: 'Make unique…', icon: <Split />, hint: 'Separate copy', onSelect: makeUnique }] : []),
     ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void convertToCode() }] : []),
     ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
     ...(partIds.length ? [{ separator: true }, { heading: 'Select a part' }, ...partIds.map((p) => ({ label: def.parts[p].label, onSelect: () => selectPart(p) }))] : []),
@@ -524,7 +524,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           )}
           {canMakeUnique && (
             <button className="btn btn-sm" onClick={makeUnique} title="Make a separate copy of this component for this placement, so its design can change on its own">
-              <Split /> Make unique
+              <Split /> Make unique…
             </button>
           )}
           {dev && def.kind === 'managed' && (

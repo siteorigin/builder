@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Component, History, House, Redo2, Sparkles, Trash2, Undo2, User } from 'lucide-react';
-import type { ElementRef } from '@shared/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Component, History, House, Pencil, Redo2, Sparkles, Split, Trash2, Undo2, User } from 'lucide-react';
+import type { ElementRef, OwnerRef } from '@shared/types';
 import { displayName, instancesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
+import { uniqueCopyName } from '@engine/definitions';
 import type { PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { applyOps, api, getState, setState, toast, useStore } from '../store';
 import { Field, Modal, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { resolveRef } from '../lib/model';
+import { resolveRef, treeFor } from '../lib/model';
 import { selectPage } from '../lib/actions';
 import { planPageRemoval, reviewPageRemoval } from '../lib/page-removal';
 import { sectionOptions } from '../lib/sections';
@@ -42,6 +43,120 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
         </p>
         <Field label="Component name">
           <input className="input" autoFocus value={name} placeholder="Feature highlight" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && name.trim() && void create()} />
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+/** A name field that opens with its text selected, so typing replaces the suggestion. */
+function useSelectedOnOpen() {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => ref.current?.select(), []);
+  return ref;
+}
+
+/**
+ * Make one placement a separate component, under a name the author chooses. The suggestion is one no component has
+ * yet, so repeated copies never stack "(unique)".
+ */
+export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerRef; nodeId: string; definitionId: string }) {
+  const st = useStore((s) => s.snapshot?.state);
+  const node = st ? treeFor(st, owner)?.nodes[nodeId] : undefined;
+  // The placement chosen, still showing the component it showed then: an Undo or the AI may have changed it.
+  const def = st && node?.kind === 'instance' && node.definitionId === definitionId ? st.components[definitionId] : undefined;
+  // Suggested once, as the dialog opens, so the field never changes under the author.
+  const [suggested] = useState(() => (st && def ? uniqueCopyName(st, def.name) : ''));
+  const [name, setName] = useState(suggested);
+  const input = useSelectedOnOpen();
+  const close = () => setState({ modal: null });
+  const ready = !!def && !!name.trim();
+  const make = async () => {
+    if (!ready) return;
+    const chosen = name.trim();
+    // An unchanged suggestion is left to the engine, which checks it against the project as it is by then.
+    const r = await applyOps([{ type: 'component.makeUnique', owner, nodeId, ...(chosen === suggested ? {} : { name: chosen }) }], 'Make unique');
+    if (r) close();
+  };
+  return (
+    <Modal
+      title="Make unique"
+      icon={<Split />}
+      onClose={close}
+      footer={
+        <>
+          <button className="btn" onClick={close}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={!ready} onClick={() => void make()}>
+            Make unique
+          </button>
+        </>
+      }
+    >
+      <div className="col" style={{ gap: 12 }}>
+        {def ? (
+          <p className="muted" style={{ margin: 0 }}>
+            This placement gets its own copy of {def.name}, so its design can change on its own. Every other {def.name} stays as it is.
+          </p>
+        ) : (
+          <p className="field-error" style={{ margin: 0 }}>
+            This section has changed since you chose Make unique. Close this and select it again.
+          </p>
+        )}
+        <Field label="Name for the copy" hint="Shown in Insert under Your components.">
+          <input ref={input} className="input" autoFocus maxLength={60} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void make()} />
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+/** Rename one of the project's components, and say what it is for. Every placement keeps showing it. */
+export function RenameComponentModal({ definitionId }: { definitionId: string }) {
+  const def = useStore((s) => (s.snapshot && Object.hasOwn(s.snapshot.state.components, definitionId) ? s.snapshot.state.components[definitionId] : undefined));
+  const [name, setName] = useState(def?.name ?? '');
+  const [description, setDescription] = useState(def?.description ?? '');
+  const input = useSelectedOnOpen();
+  const close = () => setState({ modal: null });
+  const ready = def?.owner === 'project' && !!name.trim();
+  const save = async () => {
+    if (!ready) return;
+    const n = name.trim();
+    const d = description.trim();
+    const describe = d !== (def.description ?? '').trim();
+    if (n === def.name && !describe) return close();
+    const r = await applyOps([{ type: 'component.rename', definitionId, name: n, ...(describe ? { description: d } : {}) }], `Rename component ${n}`);
+    if (r) close();
+  };
+  const onKey = (e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && !isImeComposing(e) && void save();
+  return (
+    <Modal
+      title="Rename component"
+      icon={<Pencil />}
+      onClose={close}
+      footer={
+        <>
+          <button className="btn" onClick={close}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={!ready} onClick={() => void save()}>
+            Rename
+          </button>
+        </>
+      }
+    >
+      <div className="col" style={{ gap: 12 }}>
+        {!def && (
+          <p className="field-error" style={{ margin: 0 }}>
+            This component has been deleted.
+          </p>
+        )}
+        <Field label="Component name">
+          <input ref={input} className="input" autoFocus maxLength={60} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={onKey} />
+        </Field>
+        <Field label="Description" hint="Optional. Shown when you point at it in Insert, and found by search.">
+          <input className="input" maxLength={300} value={description} placeholder="What this version is for" onChange={(e) => setDescription(e.target.value)} onKeyDown={onKey} />
         </Field>
       </div>
     </Modal>
