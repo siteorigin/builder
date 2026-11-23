@@ -140,6 +140,17 @@ function readLength(src: string, num: number): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
+/**
+ * A literal string's text, as Skia writes a text string such as /ActualText: PDFDocEncoding (read here as Latin-1),
+ * or UTF-16BE after a byte-order mark. `raw` is what is between the parentheses.
+ */
+function literalText(raw: string): string {
+  const escapes: Record<string, string> = { n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\' };
+  const bytes = raw.replace(/\\([0-7]{1,3}|[\s\S])/g, (_, e: string) => (/^[0-7]/.test(e) ? String.fromCharCode(parseInt(e, 8)) : e === '\n' || e === '\r' ? '' : (escapes[e] ?? e)));
+  if (!bytes.startsWith('\xfe\xff')) return bytes;
+  return utf16([...bytes.slice(2)].map((c) => c.charCodeAt(0).toString(16).padStart(2, '0')).join(''));
+}
+
 /** Decodes UTF-16BE hex (a CMap destination) to text. */
 function utf16(hex: string): string {
   const units: number[] = [];
@@ -253,7 +264,8 @@ export function pdfSheets(pdf: Buffer): PdfSheet[] {
           line += text;
         }
       };
-      const LITERAL = '\0literal';
+      // A literal string operand, kept with its text after this marker.
+      const LITERAL = '\0literal:';
       // Operands and operators in order: names, hex strings, arrays, literal strings, numbers, and operator words.
       const tokens = /\/([^\s/<>[\]()]+)|<([0-9a-fA-F\s]*)>|\[((?:[^\]\\]|\\.)*)\]|(\((?:[^)\\]|\\.)*\))|(-?[\d.]+)|([A-Za-z'"*]+)/g;
       const operands: string[] = [];
@@ -262,17 +274,18 @@ export function pdfSheets(pdf: Buffer): PdfSheet[] {
         if (name !== undefined) operands.push(name);
         else if (code !== undefined) operands.push(code.replace(/\s+/g, ''));
         else if (array !== undefined) operands.push(array.includes('(') ? LITERAL : array);
-        else if (literal !== undefined) operands.push(LITERAL);
+        else if (literal !== undefined) operands.push(LITERAL + literalText(literal.slice(1, -1)));
         else if (number !== undefined) numbers.push(Number(number));
         else if (op !== undefined) {
           const textOperand = () => {
             const last = operands[operands.length - 1] ?? '';
-            if (last === LITERAL) throw new Error(`PDF text shown as a literal string (${op}), which pdf-text does not read`);
+            if (last.startsWith(LITERAL)) throw new Error(`PDF text shown as a literal string (${op}), which pdf-text does not read`);
             return last;
           };
           if (op === 'q') saved.push([fill, space]);
           else if (op === 'Q') [fill, space] = saved.pop() ?? [fill, space];
-          else if (op === 'cs') space = operands[0] ?? space;
+          // Choosing a colour space also sets its initial colour: black, or no colour yet for a pattern.
+          else if (op === 'cs') [space, fill] = [operands[0] ?? space, operands[0] === 'Pattern' ? 'pattern' : '#000000'];
           else if (op === 'rg') [fill, space] = [colour(numbers.slice(-3)), 'DeviceRGB'];
           else if (op === 'g') [fill, space] = [colour(numbers.slice(-1)), 'DeviceGray'];
           else if (op === 'k') [fill, space] = [colour(numbers.slice(-4)), 'DeviceCMYK'];
@@ -282,9 +295,11 @@ export function pdfSheets(pdf: Buffer): PdfSheet[] {
           else if (op === 'BMC' || op === 'BDC') {
             // Right-to-left text marked this way is stored in visual order, which this reader would return reversed.
             if (operands[0] === 'ReversedChars') throw new Error('This PDF has right-to-left text, which pdf-text does not read');
+            // Skia writes the replacement as hex UTF-16BE, or as a literal string (a ligature such as "fi").
             const at = operands.indexOf('ActualText');
-            if (at >= 0 && (operands[at + 1] === undefined || operands[at + 1] === LITERAL)) throw new Error('This PDF has /ActualText that pdf-text does not read');
-            marked.push(at >= 0 ? utf16(operands[at + 1].replace(/^feff/i, '')) : undefined);
+            const actual = at >= 0 ? operands[at + 1] : undefined;
+            if (at >= 0 && actual === undefined) throw new Error('This PDF has /ActualText that pdf-text does not read');
+            marked.push(actual === undefined ? undefined : actual.startsWith(LITERAL) ? actual.slice(LITERAL.length) : utf16(actual.replace(/^feff/i, '')));
           } else if (op === 'EMC') {
             const actual = marked.pop();
             if (actual !== undefined && inText) line += actual;

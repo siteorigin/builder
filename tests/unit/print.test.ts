@@ -458,6 +458,7 @@ describe.each(ENGINES.filter(([name]) => name === 'webkit'))('printing a Foundat
       expect(await visible()).toEqual(expected([0]));
       await page.emulateMedia({ media: 'print' });
       expect(await visible()).toEqual(QUESTIONS.map(() => true));
+      expect(await openStates(page)).toEqual(expected([0]));
       await page.emulateMedia({ media: null });
       expect(await visible()).toEqual(expected([0]));
       expect(await openStates(page)).toEqual(expected([0]));
