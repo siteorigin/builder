@@ -16,7 +16,7 @@ import { zipDirectory } from './zip';
 import { StaticPreviews } from './static-preview';
 import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
-import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
+import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { photoMetadata } from './project/photo-metadata';
@@ -52,6 +52,34 @@ export function resourcesDir(): string {
 /** Licence notice for the Business starter's sample images. */
 function starterNotice(): string {
   return join(resourcesDir(), 'resources', 'starter-assets', 'NOTICE.md');
+}
+
+/** The files every new project starts from. */
+function templateFiles(): string {
+  return join(resourcesDir(), 'templates', 'sveltekit-brochure', 'files');
+}
+
+/**
+ * The top-level entries creating a project writes into its folder besides the template's own files: the readme and
+ * image notice, the canonical documents, generated source and copied images, local state, the website tools, and the
+ * preview's own output.
+ */
+const CREATED_ENTRIES = ['README.md', 'NOTICE.md', MANIFEST_FILE, DOC_DIR, LOCAL_DIR, 'src', 'static', 'node_modules', '.svelte-kit'];
+
+/**
+ * Undo a creation that stopped part way, so the same name and folder can be used again. Only entries a creation
+ * writes are removed, and only from a folder it claimed while it was empty: anything else that turned up there stays,
+ * and so does the folder itself unless the creation made it.
+ */
+async function removeCreatedProject(dir: string, claimed: boolean, madeFolder: boolean): Promise<void> {
+  if (claimed) {
+    const ours = new Set([...(await fs.readdir(templateFiles()).catch(() => [] as string[])), ...CREATED_ENTRIES]);
+    for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
+      if (ours.has(name)) await fs.rm(join(dir, name), { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+  // Never recursive: a folder that still holds something it did not write is left as it is.
+  if (madeFolder) await fs.rmdir(dir).catch(() => undefined);
 }
 
 async function configHash(dir: string): Promise<string> {
@@ -191,8 +219,11 @@ export class Controller {
     let dir = join(opts.parentDir, slugify(name) || 'website');
     if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
     if (!(await this.mayLeave())) return { ok: false };
-    // Set only once this attempt has created the folder itself: only then is it this attempt's to remove on failure.
+    // Set only once this attempt has created the folder itself: only then may it remove the folder on failure.
     let createdDir = false;
+    // Set once this attempt has claimed the empty folder: only then are the project files in it its own to remove.
+    let claimed = false;
+    let session: ProjectSession | null = null;
     this.createAbort = new AbortController();
     const signal = this.createAbort.signal;
     await this.close();
@@ -207,9 +238,18 @@ export class Controller {
         // Another app may have made it meanwhile: never write into a folder that is no longer empty.
         if ((await fs.readdir(dir)).length) throw new Error(`${dir} already exists and is not empty. Choose another name or folder.`);
       }
+      // Claim the folder before writing to it. Only one creation, in this app or another, can make its local folder,
+      // so two creating into the same empty folder never write over, or clean up, each other's files.
+      try {
+        await fs.mkdir(join(dir, LOCAL_DIR));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`${dir} already exists and is not empty. Choose another name or folder.`);
+        throw e;
+      }
+      claimed = true;
       // One name for the folder from here on: the build tools resolve links and must agree with the session.
       dir = canonicalDir(dir);
-      await fs.cp(join(resourcesDir(), 'templates', 'sveltekit-brochure', 'files'), dir, { recursive: true });
+      await fs.cp(templateFiles(), dir, { recursive: true });
       const pkgPath = join(dir, 'package.json');
       const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
       pkg.name = slugify(name) || 'website';
@@ -238,11 +278,11 @@ export class Controller {
         if (existsSync(notice)) await fs.copyFile(notice, join(dir, 'NOTICE.md'));
       }
       if (signal.aborted) throw new Error('Cancelled');
-      const session = await ProjectSession.create(dir, state);
+      session = await ProjectSession.create(dir, state);
       const lockErr = await session.acquireLock(INSTANCE_ID);
       if (lockErr) {
         // Another app opened the new project first: it is that app's now, so nothing here may remove it.
-        createdDir = false;
+        createdDir = claimed = false;
         throw lockErr;
       }
       await trust(dir, await configHash(dir));
@@ -251,14 +291,17 @@ export class Controller {
       if (signal.aborted) throw new Error('Cancelled');
       this.progress({ step: 'preview', message: 'Starting preview…' });
       await this.attach(session, {});
-      await addRecent(dir, name);
+      // The project is open and working: a recent-projects list that cannot be saved must not undo it.
+      await addRecent(dir, name).catch(() => undefined);
       this.progress({ step: 'done', message: 'Ready' });
       return { ok: true };
     } catch (e) {
       const msg = friendlyError((e as Error).message);
       await this.close();
-      // Remove only the folder this attempt created.
-      if (createdDir) await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      // A session that never reached the editor is not closed with the editor's project: its lock and heartbeat go
+      // here, before its files do. Closing one that was attached (and closed above) again does nothing.
+      await session?.close().catch(() => undefined);
+      await removeCreatedProject(dir, claimed, createdDir);
       this.progress({ step: 'error', message: msg === 'Cancelled' ? 'Project creation was cancelled.' : 'The project could not be created.', detail: msg });
       return { ok: false, message: msg };
     } finally {

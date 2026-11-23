@@ -3,7 +3,7 @@
  * the same name and folder works. A folder the author made stays (empty); a folder the app made goes; a folder that
  * already held something is never written to.
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, promises as fs, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -41,7 +41,7 @@ vi.mock('../../src/main/runtime/manager', () => ({
 }));
 
 const { Controller } = await import('../../src/main/controller');
-const { ProjectSession } = await import('../../src/main/project/session');
+const { ProjectLockedError, ProjectSession } = await import('../../src/main/project/session');
 
 type Step = 'files' | 'dependencies' | 'preview';
 
@@ -60,14 +60,12 @@ function setup() {
   const parent = realpathSync(mkdtempSync(join(tmpdir(), 'so-create-retry-')));
   dirs.push(parent);
   const hooks = { cancelAt: null as Step | null };
-  const steps: string[] = [];
   let c!: InstanceType<typeof Controller>;
   const win = {
     isDestroyed: () => false,
     webContents: {
       send: (channel: string, p: { step: string }) => {
         if (channel !== 'create:progress') return;
-        steps.push(p.step);
         if (p.step === hooks.cancelAt) {
           hooks.cancelAt = null;
           c.cancelCreate();
@@ -77,17 +75,20 @@ function setup() {
   };
   c = new Controller(() => win as never);
   controllers.push(c);
-  return { c, parent, hooks, steps };
+  return { c, parent, hooks };
 }
 
 const opts = (parent: string) => ({ name: 'Meadow Studio', parentDir: parent, starter: 'business' as const, sampleImages: true });
 
-/** Wait for Cancel, as npm does: it stops only once the abort arrives. */
-const untilCancelled = (_dir: string, signal?: AbortSignal) =>
-  new Promise<void>((_resolve, reject) => {
+/** Part of the tools are installed, then npm waits for Cancel: it stops only once the abort arrives. */
+const untilCancelled = (dir: string, signal?: AbortSignal) => {
+  mkdirSync(join(dir, 'node_modules', 'vite'), { recursive: true });
+  writeFileSync(join(dir, 'node_modules', 'vite', 'package.json'), '{}');
+  return new Promise<void>((_resolve, reject) => {
     if (signal?.aborted) return reject(new Error('Cancelled'));
     signal?.addEventListener('abort', () => reject(new Error('Cancelled')));
   });
+};
 
 describe('New project after Cancel', () => {
   for (const step of ['files', 'dependencies'] as const) {
@@ -134,6 +135,23 @@ describe('New project after Cancel', () => {
     expect(released).toHaveBeenCalledTimes(1);
     expect(readdirSync(dir)).toEqual([]);
   });
+
+  it('leaves nothing behind when Cancel lands just as the website tools finish, the last moment it can stop', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    // Everything creating a project writes before the preview starts is in the folder when this Cancel lands.
+    deps.run = async (d) => {
+      mkdirSync(join(d, 'node_modules', '.bin'), { recursive: true });
+      writeFileSync(join(d, 'node_modules', '.package-lock.json'), '{}');
+      mkdirSync(join(d, '.siteorigin', 'cache'), { recursive: true });
+      writeFileSync(join(d, '.siteorigin', 'cache', 'deps.json'), '{}');
+      c.cancelCreate();
+    };
+    expect(await c.create(opts(parent))).toEqual({ ok: false, message: 'Cancelled.' });
+    expect(readdirSync(dir)).toEqual([]);
+    expect(await c.create(opts(parent))).toEqual({ ok: true });
+  });
 });
 
 describe('New project after a recoverable failure', () => {
@@ -154,6 +172,56 @@ describe('New project after a recoverable failure', () => {
 });
 
 describe('protecting what was already there', () => {
+  for (const made of [false, true]) {
+    it(`keeps a file another app put in ${made ? 'the folder the app made' : 'the author’s folder'} during the attempt, and the folder with it`, async () => {
+      const { c, parent } = setup();
+      const dir = join(parent, 'meadow-studio');
+      if (!made) mkdirSync(dir);
+      deps.run = async (d) => {
+        writeFileSync(join(d, 'notes.txt'), 'not the project’s');
+        mkdirSync(join(d, 'Drafts'));
+        writeFileSync(join(d, 'Drafts', 'plan.md'), 'mine');
+        throw new Error('Installing dependencies failed (exit 1).');
+      };
+      expect((await c.create(opts(parent))).ok).toBe(false);
+      expect(readdirSync(dir).sort()).toEqual(['Drafts', 'notes.txt']);
+      expect(readFileSync(join(dir, 'Drafts', 'plan.md'), 'utf8')).toBe('mine');
+      // Still not empty, so still protected.
+      expect((await c.create(opts(parent))).message).toContain('already exists and is not empty');
+      expect(readdirSync(dir).sort()).toEqual(['Drafts', 'notes.txt']);
+    });
+  }
+
+  it('writes nothing when another creation claims the same empty folder first, and removes nothing of it', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    // The other app claims the folder just after this attempt has last found it empty.
+    const readdir = fs.readdir.bind(fs);
+    let looks = 0;
+    vi.spyOn(fs, 'readdir').mockImplementation((async (p: string, ...rest: unknown[]) => {
+      const seen = await (readdir as (...a: unknown[]) => Promise<string[]>)(p, ...rest);
+      if (p === dir && ++looks === 2) mkdirSync(join(dir, '.siteorigin', 'sessions'), { recursive: true });
+      return seen;
+    }) as never);
+    const r = await c.create(opts(parent));
+    expect(looks).toBe(2);
+    expect(r.ok).toBe(false);
+    expect(r.message).toContain('already exists and is not empty');
+    expect(readdirSync(dir)).toEqual(['.siteorigin']);
+    expect(readdirSync(join(dir, '.siteorigin'))).toEqual(['sessions']);
+  });
+
+  it('removes nothing once another app has opened the new project and holds its lock', async () => {
+    const { c, parent } = setup();
+    const dir = join(parent, 'meadow-studio');
+    mkdirSync(dir);
+    vi.spyOn(ProjectSession.prototype, 'acquireLock').mockResolvedValue(new ProjectLockedError('This project is already open in SiteOrigin Builder on another computer.', { host: 'another computer', token: 'x' } as never));
+    const r = await c.create(opts(parent));
+    expect(r.ok).toBe(false);
+    expect(readdirSync(dir)).toEqual(expect.arrayContaining(['siteorigin.project.json', '.siteorigin', 'package.json']));
+  });
+
   it('refuses a folder that already holds files and leaves them untouched', async () => {
     const { c, parent } = setup();
     const dir = join(parent, 'meadow-studio');
