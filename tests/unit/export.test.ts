@@ -112,7 +112,7 @@ describe('ZIP export', () => {
     const text = Buffer.from(randomBytes(6 * 1024 * 1024).toString('base64'));
     writeFileSync(join(src, 'data.json'), text);
     const started = performance.now();
-    deflateRawSync(text, { level: 9 });
+    deflateRawSync(text);
     const blocking = performance.now() - started;
     let last = performance.now();
     let longest = 0;
@@ -133,6 +133,19 @@ describe('ZIP export', () => {
     const methods = new Map<string, number>();
     expect(readZip(readFileSync(zip), methods).get('data.json')!.equals(text)).toBe(true);
     expect(methods.get('data.json')).toBe(8);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('keeps an existing ZIP intact when the export fails partway through', async () => {
+    const src = temp();
+    write(src, 'a.txt', 'first entry, written before the failure');
+    write(src, 'b.txt', 'unreadable');
+    chmodSync(join(src, 'b.txt'), 0);
+    const out = temp();
+    const zip = join(out, 'site.zip');
+    writeFileSync(zip, 'previous export');
+    await expect(zipDirectory(src, zip)).rejects.toThrow(/EACCES|permission/i);
+    expect(readFileSync(zip, 'utf8')).toBe('previous export');
+    expect(readdirSync(out)).toEqual(['site.zip']);
   });
 
   it('stores already-compressed media as it is and compresses everything else', async () => {

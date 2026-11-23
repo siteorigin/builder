@@ -70,7 +70,8 @@ export async function zipDirectory(dir: string, zipPath: string, folder = ''): P
       const [data, stat] = await Promise.all([fs.readFile(abs), fs.stat(abs)]);
       const name = Buffer.from((folder ? `${folder}/` : '') + rel.split(sep).join('/'), 'utf8');
       if (name.length > 0xffff) throw new Error('A file path is too long for a ZIP export.');
-      const deflated = PRECOMPRESSED.has(extname(rel).toLowerCase()) ? null : await deflate(data, { level: 9 });
+      // zlib's default level: level 9 keeps a pool thread busy for longer and saves almost nothing more.
+      const deflated = PRECOMPRESSED.has(extname(rel).toLowerCase()) ? null : await deflate(data);
       const store = !deflated || deflated.length >= data.length;
       const body = store ? data : deflated;
       // Everything still to be written must keep every offset and size within 32 bits.
