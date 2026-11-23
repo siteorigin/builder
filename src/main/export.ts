@@ -2,6 +2,7 @@
  * Export helpers: copying a clean snapshot of a project, checking it, and making the exported source ready
  * to hand over. Nothing here depends on Electron, so it is unit tested directly.
  */
+import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, promises as fs } from 'node:fs';
 import { basename, join, relative, sep } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
@@ -19,20 +20,30 @@ export async function copyProjectSource(src: string, dest: string, opts: { keepA
     recursive: true,
     verbatimSymlinks: true,
     filter: (p) => {
+      if (!inProjectSource(src, p)) return false;
       const rel = relative(src, p);
-      if (!rel) return true;
-      const top = rel.split(sep)[0];
-      if (EXCLUDE_TOP.has(top) || /\.tmp$/.test(p)) return false;
-      if (PRIVATE_FILE.test(basename(p))) return false;
+      if (!rel || !opts.keepAsset) return true;
       try {
-        if (lstatSync(p).isSymbolicLink()) return false;
-        if (opts.keepAsset && lstatSync(p).isFile() && !opts.keepAsset(rel.split(sep).join('/'))) return false;
+        return !lstatSync(p).isFile() || opts.keepAsset(rel.split(sep).join('/'));
       } catch {
         return false;
       }
-      return true;
     }
   });
+}
+
+/** Is `p` part of the project source in `root`: not tools, caches, builds, private files or links? */
+export function inProjectSource(root: string, p: string): boolean {
+  const rel = relative(root, p);
+  if (!rel) return true;
+  const top = rel.split(sep)[0];
+  if (EXCLUDE_TOP.has(top) || /\.tmp$/.test(p)) return false;
+  if (PRIVATE_FILE.test(basename(p))) return false;
+  try {
+    return !lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 /** Project files (static/assets/…) of every asset record in the library and its responsive variants, used or not. */
@@ -120,15 +131,44 @@ export function omittedAssetsWarning(omitted: AssetRecord[]): string | undefined
     : `Left out of the website because no page or code refers to them: ${names.join(', ')}. They stay in the project's assets.`;
 }
 
-/** Copy a finished export to `dest`, which must not exist yet. Only a folder created here is ever removed. */
-export async function publishFolder(from: string, dest: string) {
+/**
+ * Copy a finished export to `dest`, which must not exist yet. The name is claimed first, so the export never merges
+ * into a folder that appears meanwhile; the files go to a private folder beside it, which replaces the empty claimed
+ * folder only once `beforeCommit` allows. Anything someone else puts in `dest` is never removed.
+ */
+export async function publishFolder(from: string, dest: string, beforeCommit?: () => Promise<void>) {
   await fs.mkdir(dest);
+  const tmp = `${dest}.${randomUUID()}.tmp`;
   try {
-    await fs.cp(from, dest, { recursive: true });
+    await fs.cp(from, tmp, { recursive: true });
+    // The last chance to call the export off.
+    await beforeCommit?.();
+    await replaceEmptyFolder(tmp, dest);
   } catch (e) {
-    await fs.rm(dest, { recursive: true, force: true });
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    // Removed only while it is still the empty folder claimed above.
+    await fs.rmdir(dest).catch(() => undefined);
     throw e;
   }
+}
+
+/** Put `tmp` where the empty folder `dest` is. Something else there now is reported as an existing location. */
+async function replaceEmptyFolder(tmp: string, dest: string) {
+  const taken = () => Object.assign(new Error(`${dest} already exists.`), { code: 'EEXIST' });
+  const occupied = (e: unknown, codes: string[]) => {
+    if (codes.includes((e as NodeJS.ErrnoException).code ?? '')) throw taken();
+    throw e;
+  };
+  if (process.platform !== 'win32') {
+    // An empty folder is replaced in one step; a folder with files in it, or a file, is not.
+    await fs.rename(tmp, dest).catch((e) => occupied(e, ['ENOTEMPTY', 'EEXIST', 'ENOTDIR', 'EISDIR']));
+    return;
+  }
+  // Windows cannot rename over a folder: remove the empty one first (it may already be gone).
+  await fs.rmdir(dest).catch((e: NodeJS.ErrnoException) => {
+    if (e.code !== 'ENOENT') occupied(e, ['ENOTEMPTY', 'ENOTDIR', 'EEXIST']);
+  });
+  await fs.rename(tmp, dest).catch((e) => occupied(e, ['EEXIST', 'EPERM', 'ENOTEMPTY']));
 }
 
 const MANIFEST_PATH = 'siteorigin/generated-manifest.json';

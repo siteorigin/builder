@@ -451,3 +451,95 @@ describe('links to missing sections', () => {
   });
 });
 
+describe('an export called off just before it is put in place', () => {
+  it('leaves an existing ZIP file as it was, with no temporary file beside it', async () => {
+    const src = temp();
+    write(src, 'index.html', '<h1>New</h1>');
+    const out = temp();
+    const zip = join(out, 'site.zip');
+    writeFileSync(zip, 'the previous export');
+    // Asked once the archive is written in full, right before it would replace the previous one.
+    const check = async () => {
+      const [tmp] = readdirSync(out).filter((f) => f.endsWith('.tmp'));
+      // The archive is complete: it ends with its end-of-directory record.
+      const bytes = readFileSync(join(out, tmp));
+      expect(bytes.readUInt32LE(bytes.length - 22)).toBe(0x06054b50);
+      throw new Error('taken over');
+    };
+    await expect(zipDirectory(src, zip, '', check)).rejects.toThrow('taken over');
+    expect(readFileSync(zip, 'utf8')).toBe('the previous export');
+    expect(readdirSync(out)).toEqual(['site.zip']);
+  });
+
+  it('removes the folder it was copying into', async () => {
+    const from = temp();
+    write(from, 'index.html', '<h1>Site</h1>');
+    write(from, 'about/index.html', '<h1>About</h1>');
+    mkdirSync(join(from, 'empty'));
+    const parent = temp();
+    const check = async () => {
+      // Copied in full beside the folder, which stays empty until the export is allowed to finish.
+      const [tmp] = readdirSync(parent).filter((f) => f.endsWith('.tmp'));
+      expect(readFileSync(join(parent, tmp, 'about', 'index.html'), 'utf8')).toBe('<h1>About</h1>');
+      expect(readdirSync(join(parent, 'site'))).toEqual([]);
+      throw new Error('taken over');
+    };
+    await expect(publishFolder(from, join(parent, 'site'), check)).rejects.toThrow('taken over');
+    expect(readdirSync(parent)).toEqual([]);
+  });
+
+  it('puts the export in place once allowed', async () => {
+    const from = temp();
+    write(from, 'about/index.html', '<h1>About</h1>');
+    mkdirSync(join(from, 'empty'));
+    const parent = temp();
+    await publishFolder(from, join(parent, 'site'), async () => undefined);
+    expect(readdirSync(parent)).toEqual(['site']);
+    expect(readFileSync(join(parent, 'site', 'about', 'index.html'), 'utf8')).toBe('<h1>About</h1>');
+    expect(existsSync(join(parent, 'site', 'empty'))).toBe(true);
+  });
+
+  it('keeps anything else that was put in the folder meanwhile', async () => {
+    const from = temp();
+    write(from, 'index.html', '<h1>Site</h1>');
+    const parent = temp();
+    const dest = join(parent, 'site');
+    const check = async () => {
+      write(dest, 'notes.txt', 'mine');
+      write(dest, 'index.html', 'my own page');
+      throw new Error('taken over');
+    };
+    await expect(publishFolder(from, dest, check)).rejects.toThrow('taken over');
+    expect(readdirSync(dest).sort()).toEqual(['index.html', 'notes.txt']);
+    expect(readFileSync(join(dest, 'index.html'), 'utf8')).toBe('my own page');
+    expect(readdirSync(parent)).toEqual(['site']);
+  });
+
+  it('still clears the claimed folder, and reports the real reason, when its own copy cannot be removed', async () => {
+    const from = temp();
+    write(from, 'locked/index.html', '<h1>Site</h1>');
+    chmodSync(join(from, 'locked'), 0o555);
+    const parent = temp();
+    try {
+      await expect(publishFolder(from, join(parent, 'site'), async () => Promise.reject(new Error('taken over')))).rejects.toThrow('taken over');
+      expect(readdirSync(parent).filter((f) => !f.endsWith('.tmp'))).toEqual([]);
+    } finally {
+      chmodSync(join(from, 'locked'), 0o755);
+      for (const f of readdirSync(parent)) {
+        chmodSync(join(parent, f, 'locked'), 0o755);
+        rmSync(join(parent, f), { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('never replaces a folder someone put files in while the export ran', async () => {
+    const from = temp();
+    write(from, 'index.html', '<h1>Site</h1>');
+    const parent = temp();
+    const dest = join(parent, 'site');
+    await expect(publishFolder(from, dest, async () => write(dest, 'index.html', 'my own page'))).rejects.toMatchObject({ code: 'EEXIST' });
+    expect(readdirSync(dest)).toEqual(['index.html']);
+    expect(readFileSync(join(dest, 'index.html'), 'utf8')).toBe('my own page');
+    expect(readdirSync(parent)).toEqual(['site']);
+  });
+});

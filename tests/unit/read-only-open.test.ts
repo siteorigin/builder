@@ -11,6 +11,7 @@ import { createStarterState } from '@catalogue/starters';
 import { SCHEMA_VERSION } from '@shared/types';
 import { Orchestrator } from '@agent/orchestrator';
 import { ProjectLockedError, ProjectSession } from '../../src/main/project/session';
+import { newestStoredVersion, ProjectFormatError } from '../../src/main/project/documents';
 
 type Tree = Record<string, { kind: string; size: number; mtimeMs: number; hash?: string; link?: string }>;
 
@@ -132,6 +133,55 @@ describe('read-only opens leave the project byte-identical', () => {
       expect(existsSync(join(dir, CHAT))).toBe(chat);
     });
   }
+});
+
+describe('a newer format is found even behind a broken document', () => {
+  it('refuses a normal open before writing anything, and the read-only open fails too', async () => {
+    const dir = await makeProject(false);
+    rmSync(join(dir, '.siteorigin'), { recursive: true, force: true });
+    const pages = join(dir, 'siteorigin/pages');
+    const [first] = readdirSync(pages).sort();
+    const page = JSON.parse(readFileSync(join(pages, first), 'utf8'));
+    writeFileSync(join(pages, first), JSON.stringify({ ...page, schemaVersion: SCHEMA_VERSION + 1 }, null, 2));
+    // Read before the newer page: its parse error must not hide the newer format.
+    writeFileSync(join(pages, 'aaa-broken.json'), '{ not json');
+    const before = snapshotTree(dir);
+    const err = await ProjectSession.open(dir, 'me').catch((e) => e);
+    expect(err).toBeInstanceOf(ProjectFormatError);
+    expect(err.readOnly).toBe(true);
+    expect(err).not.toBeInstanceOf(ProjectLockedError);
+    // The controller then opens it for inspection, which cannot read the broken page either.
+    await expect(ProjectSession.openReadOnly(dir, { reason: err.message, canUnlock: false })).rejects.toThrow(/aaa-broken/);
+    expect(snapshotTree(dir)).toEqual(before);
+    expect(existsSync(join(dir, '.siteorigin'))).toBe(false);
+  });
+});
+
+describe('a newer document anywhere is found', () => {
+  it('in a component', async () => {
+    const dir = await makeProject(false);
+    const doc = join(dir, 'siteorigin/components/c_newer/component.json');
+    mkdirSync(join(doc, '..'), { recursive: true });
+    writeFileSync(doc, JSON.stringify({ id: 'c_newer', schemaVersion: SCHEMA_VERSION + 1 }));
+    writeFileSync(join(dir, 'siteorigin/pages/aaa-broken.json'), '{ not json');
+    expect(await newestStoredVersion(dir)).toBe(SCHEMA_VERSION + 1);
+    const before = snapshotTree(dir);
+    const err = await ProjectSession.open(dir, 'me').catch((e) => e);
+    expect(err.readOnly).toBe(true);
+    expect(snapshotTree(dir)).toEqual(before);
+  });
+
+  it('in a page whose id would hide it from the loaded project', async () => {
+    const dir = await makeProject(false);
+    const [first] = readdirSync(join(dir, 'siteorigin/pages')).sort();
+    const page = JSON.parse(readFileSync(join(dir, 'siteorigin/pages', first), 'utf8'));
+    writeFileSync(join(dir, 'siteorigin/pages/__proto__.json'), JSON.stringify({ ...page, id: '__proto__', schemaVersion: SCHEMA_VERSION + 1 }));
+    const before = snapshotTree(dir);
+    const err = await ProjectSession.open(dir, 'me').catch((e) => e);
+    expect(err).toBeInstanceOf(ProjectFormatError);
+    expect(err.readOnly).toBe(true);
+    expect(snapshotTree(dir)).toEqual(before);
+  });
 });
 
 describe('the deliberate exception: Unlock', () => {

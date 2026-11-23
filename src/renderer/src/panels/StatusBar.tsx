@@ -11,7 +11,7 @@ function runtimeInfo(runtime: RuntimeState, pageIssue: string | null, frameReady
   // "Ready" means the page itself has loaded, not only that the website tools are running.
   const opening = runtime.state === 'ready' && !frameReady && !broken;
   const dot = broken ? 'error' : opening ? 'busy' : runtime.state === 'ready' ? 'ready' : runtime.state === 'preparing' || runtime.state === 'starting' ? 'busy' : 'stopped';
-  const label = broken ? 'Preview problem' : opening ? 'Opening page' : runtime.state === 'ready' ? 'Preview ready' : runtime.state === 'preparing' ? 'Setting up website tools' : runtime.state === 'starting' ? 'Starting preview' : 'Preview paused';
+  const label = broken ? 'Preview problem' : opening ? 'Opening page' : runtime.state === 'ready' ? 'Preview ready' : runtime.state === 'preparing' ? 'Setting up website tools' : runtime.state === 'starting' ? 'Starting preview' : runtime.state === 'unavailable' ? 'Preview unavailable' : 'Preview paused';
   return { dot, label, broken };
 }
 
@@ -175,9 +175,11 @@ export function HealthModal() {
             <span className="grow">
               <strong>Website tools: {label.toLowerCase()}.</strong> They come with SiteOrigin Builder and are set up inside this project folder. Reinstall them if the preview will not start.
             </span>
-            <button className="btn btn-sm" disabled={runtime.state === 'preparing'} onClick={() => void api.project.repairDependencies()}>
-              Reinstall
-            </button>
+            {!snap.readOnly && (
+              <button className="btn btn-sm" disabled={runtime.state === 'preparing'} onClick={() => void api.project.repairDependencies()}>
+                Reinstall
+              </button>
+            )}
           </div>
           {pageIssue && runtime.state === 'ready' && (
             <div className="scope-note danger" style={{ marginBottom: 12 }}>

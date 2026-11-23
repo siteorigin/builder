@@ -61,6 +61,27 @@ export class ProjectFormatError extends Error {
   }
 }
 
+/**
+ * The newest format any canonical document on disk declares, skipping documents that cannot be read. Reading the
+ * project stops at its first broken document, so a newer one later in the folder needs this to be seen at all.
+ */
+export async function newestStoredVersion(dir: string): Promise<number> {
+  const paths = [MANIFEST_FILE, ...['site', 'tokens', 'assets', 'theme-lock'].map((d) => `${DOC_DIR}/${d}.json`)];
+  const names = async (rel: string) => (existsSync(join(dir, rel)) ? (await fs.readdir(join(dir, rel)).catch(() => [])).sort() : []);
+  for (const f of await names(`${DOC_DIR}/pages`)) if (f.endsWith('.json')) paths.push(`${DOC_DIR}/pages/${f}`);
+  for (const d of await names(`${DOC_DIR}/components`)) if (!d.startsWith('.')) paths.push(componentDocPath(d));
+  let newest = 0;
+  for (const rel of paths) {
+    try {
+      const v = (JSON.parse((await readIfExists(safeJoin(dir, rel))) ?? 'null') as { schemaVersion?: unknown } | null)?.schemaVersion;
+      if (Number.isInteger(v) && (v as number) > newest) newest = v as number;
+    } catch {
+      // Unreadable or not a document: the normal read reports it.
+    }
+  }
+  return newest;
+}
+
 export async function isBuilderProject(dir: string): Promise<boolean> {
   return existsSync(join(dir, MANIFEST_FILE));
 }

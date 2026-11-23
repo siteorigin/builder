@@ -550,6 +550,14 @@ export function Canvas() {
 
   const runtimeCard = (() => {
     if (runtime.state === 'ready') return null;
+    if (runtime.state === 'unavailable')
+      return (
+        <div className="canvas-card" role="status">
+          <AppMark size={40} />
+          <h3>Preview unavailable</h3>
+          <p style={{ maxWidth: 360 }}>{runtime.message}</p>
+        </div>
+      );
     if (runtime.state === 'error')
       return (
         <div className="canvas-card" role="alert">
