@@ -55,7 +55,10 @@ function exportedSite(sticky: boolean) {
   return { files, css };
 }
 
-/** Every case's layout and home page as one script that defines `window.mountCase(name)`. */
+/**
+ * Every case's layout and home page as one script that defines `window.mountCase(name)`. Mounting ends the way
+ * SvelteKit ends hydrating a page: components have mounted, then `afterNavigate` callbacks hear an `enter`.
+ */
 async function bundleSites(sites: Record<string, Map<string, string>>): Promise<string> {
   const src = new Map<string, string>();
   for (const [name, files] of Object.entries(sites)) {
@@ -64,10 +67,11 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
   }
   const names = Object.keys(sites);
   const entry = [
-    "import { mount } from 'svelte';",
+    "import { flushSync, mount } from 'svelte';",
+    "import { navigated } from '$app/navigation';",
     ...names.map((n, i) => `import E${i} from '\0site/${n}/Entry.svelte';`),
     `const all = { ${names.map((n, i) => `${JSON.stringify(n)}: E${i}`).join(', ')} };`,
-    "window.mountCase = (name) => mount(all[name], { target: document.getElementById('app') });"
+    "window.mountCase = (name, type = 'enter') => { mount(all[name], { target: document.getElementById('app') }); flushSync(); navigated(type); };"
   ].join('\n');
   const out = (await build({
     configFile: false,
@@ -77,7 +81,7 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
         name: 'exported-site',
         resolveId(id, importer) {
           if (id === '\0entry') return id;
-          if (id === '$app/paths' || id === '$app/state') return `\0${id}`;
+          if (id === '$app/paths' || id === '$app/state' || id === '$app/navigation') return `\0${id}`;
           // Stylesheets are inlined in the page; fonts fall back to the system stack.
           if (id.startsWith('@fontsource') || id.endsWith('.css')) return '\0empty';
           if (importer?.startsWith('\0site/') && id.startsWith('.')) {
@@ -91,6 +95,8 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
           if (id === '\0empty') return '';
           if (id === '\0$app/paths') return 'export const base = ""; export const resolve = (p) => p; export const asset = (p) => "/" + p;';
           if (id === '\0$app/state') return 'export const page = { route: { id: "/" }, url: new URL("https://site.test/") };';
+          if (id === '\0$app/navigation')
+            return "import { onMount } from 'svelte'; const callbacks = new Set(); export function afterNavigate(fn) { onMount(() => { callbacks.add(fn); return () => callbacks.delete(fn); }); } export function navigated(type) { for (const fn of callbacks) fn({ type }); }";
           const text = src.get(id);
           if (text === undefined) return null;
           return id.endsWith('.svelte') ? compile(text, { filename: id.slice(1), generate: 'client', css: 'injected' }).js.code : text;
@@ -171,7 +177,8 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
             window.beforeScript = id ? { top: document.getElementById(id).getBoundingClientRect().top, headerBottom: document.querySelector('header.so-header').getBoundingClientRect().bottom } : null;
             const s = document.createElement('script');
             s.src = '/site.js';
-            s.onload = () => { const app = document.getElementById('app'); app.textContent = ''; mountCase(${JSON.stringify(name)}); window.started = true; };
+            // ?arrive= names the navigation the header mounts in; a visit starts with \`enter\`.
+            s.onload = () => { const app = document.getElementById('app'); app.textContent = ''; mountCase(${JSON.stringify(name)}, new URLSearchParams(location.search).get('arrive') ?? undefined); window.started = true; };
             document.body.append(s);
           })));</script>`
         );
@@ -188,9 +195,9 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
   }
 
   /** Opens the page at an anchor in a new document, and where the browser had put the anchor before the script ran. */
-  const visit = async (page: Page, id: string) => {
+  const visit = async (page: Page, id: string, query = '') => {
     await page.goto('about:blank');
-    expect(await page.goto(`${ORIGIN}/#${id}`), 'a new document loads').not.toBeNull();
+    expect(await page.goto(`${ORIGIN}/${query}#${id}`), 'a new document loads').not.toBeNull();
     await page.waitForFunction('window.started === true');
     await page.evaluate(settled);
     const before = (await page.evaluate('window.beforeScript')) as { top: number; headerBottom: number };
@@ -244,6 +251,15 @@ describe.each(ENGINES)('anchors below the sticky header in %s', (_name, engine) 
       expect(Math.abs(((await page.evaluate('scrollY')) as number) - scrolled), 'the restored position stays').toBeLessThan(20);
       const kept = (await page.evaluate(landing(HEADING))) as Landing;
       expect(kept.top, describeLanding('after the reload', kept)).toBeLessThan(kept.headerBottom);
+    });
+  }, 60_000);
+
+  it('a header shown again later in a visit leaves the page where it is', async () => {
+    await withSite('sticky', 1024, async (page) => {
+      // The header mounts during a back navigation, as it does returning from a page without the site shell.
+      const { before, after } = await visit(page, HEADING, '?arrive=popstate');
+      expect(before.top, 'the heading starts under the header').toBeLessThan(before.headerBottom);
+      expect(after.top, describeLanding('after the header mounts', after)).toBe(before.top);
     });
   }, 60_000);
 

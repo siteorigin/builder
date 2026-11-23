@@ -9,6 +9,7 @@ const HEADER_SOURCE = `<script>
 	 * Foundation theme code component. Props are edited in SiteOrigin Builder.
 	 */
 	import { onMount } from 'svelte';
+	import { afterNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import SoImage from '../runtime/Image.svelte';
@@ -69,19 +70,23 @@ const HEADER_SOURCE = `<script>
 		};
 	});
 
-	// A visitor who opens a link to an anchor is scrolled there before the height above is published, so a tall
-	// header can cover the target. On a fresh visit, reveal it, and again once the fonts have loaded (they can make
-	// the header taller), until the visitor moves on. Reloads and history visits keep the position restored for them.
-	onMount(() => {
-		const el = header;
-		const doc = el?.ownerDocument;
-		const win = doc?.defaultView;
-		const hash = win?.location.hash ?? '';
-		if (hash.length < 2 || win.performance.getEntriesByType?.('navigation')[0]?.type !== 'navigate') return;
+	/**
+	 * A visitor who opens a link to an anchor is scrolled there before the height above is published, so a tall
+	 * header can cover the target. Reveals it, and again once the fonts have loaded (they can make the header
+	 * taller), until the visitor moves on. Returns a function that stops it.
+	 */
+	function revealBookmark(el) {
+		const doc = el.ownerDocument;
+		const win = doc.defaultView;
+		const hash = win.location.hash;
 		let done = false;
 		let frame = 0;
-		const stop = () => (done = true);
 		const moves = ['pointerdown', 'wheel', 'touchstart', 'keydown'];
+		const stop = () => {
+			done = true;
+			win.cancelAnimationFrame(frame);
+			for (const type of moves) win.removeEventListener(type, stop, { capture: true });
+		};
 		for (const type of moves) win.addEventListener(type, stop, { capture: true, passive: true });
 		const reveal = () => {
 			if (done || win.location.hash !== hash) return;
@@ -100,12 +105,22 @@ const HEADER_SOURCE = `<script>
 		doc.fonts?.ready.then(() => {
 			if (!done) frame = win.requestAnimationFrame(reveal);
 		});
-		return () => {
-			stop();
-			win.cancelAnimationFrame(frame);
-			for (const type of moves) win.removeEventListener(type, stop, { capture: true });
-		};
+		return stop;
+	}
+
+	// Only on arriving at the site with an anchor in a fresh visit: a reload, a history visit or a reopened tab
+	// (whose position SvelteKit has restored) keeps that position, and a header shown again later in the visit
+	// leaves the page where it is.
+	let stopReveal;
+	afterNavigate(({ type }) => {
+		stopReveal?.();
+		stopReveal = undefined;
+		const win = header?.ownerDocument.defaultView;
+		if (type !== 'enter' || !win || win.location.hash.length < 2) return;
+		if (win.performance.getEntriesByType?.('navigation')[0]?.type !== 'navigate' || win.history.scrollRestoration === 'manual') return;
+		stopReveal = revealBookmark(header);
 	});
+	onMount(() => () => stopReveal?.());
 
 	function onKeydown(event) {
 		if (event.key === 'Escape' && open) {

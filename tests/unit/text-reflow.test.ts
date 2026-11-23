@@ -71,7 +71,7 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
         name: 'exported-site',
         resolveId(id, importer) {
           if (id === '\0entry') return id;
-          if (id === '$app/paths' || id === '$app/state') return `\0${id}`;
+          if (id === '$app/paths' || id === '$app/state' || id === '$app/navigation') return `\0${id}`;
           // Stylesheets are inlined in the page; fonts fall back to the system stack.
           if (id.startsWith('@fontsource') || id.endsWith('.css')) return '\0empty';
           if (importer?.startsWith('\0site/') && id.startsWith('.')) {
@@ -85,6 +85,7 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
           if (id === '\0empty') return '';
           if (id === '\0$app/paths') return 'export const base = ""; export const resolve = (p) => p; export const asset = (p) => "/" + p;';
           if (id === '\0$app/state') return 'export const page = { route: { id: "/" }, url: new URL("https://site.test/") };';
+          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {};';
           const text = src.get(id);
           if (text === undefined) return null;
           return id.endsWith('.svelte') ? compile(text, { filename: id.slice(1), generate: 'client', css: 'injected' }).js.code : text;
