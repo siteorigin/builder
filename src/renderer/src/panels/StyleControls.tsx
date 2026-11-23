@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef } from '@shared/types';
 import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, type StylePropDef } from '@shared/styles';
-import { cascadedStyle, parseFocus, parseRatio } from '@shared/focus';
+import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
 import { FocusEditor, type FocusImage } from './FocusEditor';
 import { DraftInput } from '../components/ui';
@@ -337,15 +337,25 @@ export function StyleControls({
       const v = cascadedStyle(tiers, z, 'objectFit');
       return typeof v === 'string' ? v.trim() : v;
     };
-    const declaredAt = (z: Size) => parseRatio(cascadedStyle(tiers, z, 'aspectRatio'));
-    // Among the sizes it reaches, one whose ratio crops it, so the pad has a crop to show.
+    // The ratio the browser applies: a declaration it can't read is skipped, as it skips it; "auto" or a ratio
+    // with a zero in it keeps the picture's own shape.
+    const readable = (v: StyleValue) => /^(auto|\d+(\.\d+)?(\s*\/\s*\d+(\.\d+)?)?)$/.test(String(v).trim());
+    const declaredAt = (z: Size) => parseRatio(cascadedStyle(tiers, z, 'aspectRatio', readable));
+    const has = (z: Size, keys: string[]) => tiers.some((t) => t.some((l) => [z, 'base' as const].some((sc) => keys.some((k) => l?.[sc]?.[k] !== undefined))));
+    // Among the sizes it reaches, one its ratio crops, so the pad has a crop to show.
+    const sourceRatio = image?.width && image.height ? image.width / image.height : null;
+    const crops = (z: Size) => {
+      const r = declaredAt(z);
+      return r !== null && fitAt(z) !== 'contain' && (sourceRatio === null || cropAxis(sourceRatio, r) !== null);
+    };
     const reachable = (['desktop', 'tablet', 'phone'] as const).filter((z) => !keepsOwn(z));
-    const reached = scope !== 'base' ? scope : !keepsOwn(preview) ? preview : (reachable.find((z) => declaredAt(z) !== null && fitAt(z) !== 'contain') ?? reachable[0]);
+    const reached = scope !== 'base' ? scope : !keepsOwn(preview) ? preview : (reachable.find(crops) ?? reachable[0]);
     const size = reached ?? preview;
-    // The box's shape: a declared ratio; else, when a height (or custom CSS) can crop the picture, the box the
-    // canvas shows for this size. Otherwise the picture keeps its own shape.
-    const sized = tiers.some((t) => t.some((l) => [size, 'base' as const].some((sc) => ['height', 'maxHeight', 'minHeight', 'customCss'].some((k) => l?.[sc]?.[k] !== undefined))));
-    const measured = sized && size === preview && selectedBox && selectedBox.width > 0 && selectedBox.height > 0 ? selectedBox.width / selectedBox.height : null;
+    // The box's shape: a declared ratio; else, when a height can crop the picture, the box the canvas shows for
+    // this size, which is the picture's own box only without borders or custom CSS. Otherwise it is unknown.
+    const heightSet = has(size, ['height', 'maxHeight', 'minHeight', 'customCss']);
+    const plainBox = !has(size, ['border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd', 'customCss']);
+    const measured = heightSet && plainBox && size === preview && selectedBox && selectedBox.width > 0 && selectedBox.height > 0 ? selectedBox.width / selectedBox.height : null;
     const ratio = declaredAt(size) ?? measured;
     const fit = fitAt(size);
     // Custom CSS is written after these properties, so it can set the crop itself.
@@ -363,6 +373,7 @@ export function StyleControls({
         size={size}
         previewed={size === preview}
         unreached={scope === 'base' && !reached}
+        uncertain={ratio === null && heightSet}
         custom={custom}
         ratio={ratio}
         fit={fit}

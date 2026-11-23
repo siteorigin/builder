@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { cascadedStyle, coverCrop, cropAxis, describeFocus, focusFromPoint, formatFocus, parseFocus, parseRatio } from '@shared/focus';
+import { FocusCommits, cascadedStyle, coverCrop, cropAxis, describeFocus, focusFromPoint, formatFocus, parseFocus, parseRatio, type FocusState } from '@shared/focus';
 import { MEDIA_QUERIES, partStyleControls, styleToCss, validateStyleValue } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
@@ -147,6 +147,73 @@ describe('the crop a focal point gives', () => {
     expect(cropAxis(1.5, 1.5 * 1.01)).toBe('y');
     expect(cropAxis(1.5, 1.5 / 1.01)).toBe('x');
     expect(coverCrop(1.5, 1.5, { x: 10, y: 90 })).toEqual({ x: 0, y: 0, w: 1, h: 1 });
+  });
+});
+
+describe('sending focal point changes one after another', () => {
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it('builds a typed coordinate on what the project holds once a refused drag has answered', async () => {
+    // The project holds 20% 30% at revision 5. A drag to 80% 90% goes out while an Undo is ahead of it.
+    let project: FocusState = { point: { x: 20, y: 30 }, revision: 5 };
+    const commits = new FocusCommits(() => project);
+    const sent: Array<[string, number | undefined]> = [];
+    let answerDrag!: (r: unknown) => void;
+    const drag = commits.send(
+      () => '80% 90%',
+      (text, rev) => {
+        sent.push([text, rev]);
+        return new Promise((r) => (answerDrag = r));
+      },
+      5
+    );
+    // Down is typed before the drag has an answer.
+    const down = commits.send(
+      (base) => formatFocus({ ...base, y: 60 }),
+      (text, rev) => {
+        sent.push([text, rev]);
+        return { revision: 7 };
+      },
+      'base'
+    );
+    await settle();
+    expect(sent).toEqual([['80% 90%', 5]]);
+    // The Undo lands, and the project refuses the drag planned before it.
+    project = { point: { x: 20, y: 30 }, revision: 6 };
+    answerDrag(null);
+    expect(await drag).toEqual({ text: '80% 90%', made: undefined });
+    // Down keeps the saved Across, not the refused drag's, and applies only where it was built.
+    expect(await down).toEqual({ text: '20% 60%', made: 7 });
+    expect(sent[1]).toEqual(['20% 60%', 6]);
+  });
+
+  it('builds on an accepted change before its snapshot arrives, and applies at the revision it made', async () => {
+    const project: FocusState = { point: { x: 50, y: 50 }, revision: 3 };
+    const commits = new FocusCommits(() => project);
+    const sent: Array<[string, number | undefined]> = [];
+    const apply = (made: number) => (text: string, rev?: number) => (sent.push([text, rev]), { revision: made });
+    await commits.send((b) => formatFocus({ ...b, x: 20 }), apply(4), 'base');
+    // The snapshot is still at 3: Down builds on the accepted Across, at the revision Across made.
+    await commits.send((b) => formatFocus({ ...b, y: 75 }), apply(5), 'base');
+    expect(sent).toEqual([['20% 50%', 3], ['20% 75%', 4]]);
+    // An unrelated change landing first doesn't end it; the snapshot reaching it does.
+    project.revision = 4;
+    expect(commits.base()).toEqual({ point: { x: 20, y: 75 }, revision: 5 });
+    Object.assign(project, { point: { x: 20, y: 75 }, revision: 5 });
+    expect(commits.base()).toEqual(project);
+    // A drag goes at its own revision, and Center as it is.
+    await commits.send(() => '10% 10%', apply(6), 5);
+    await commits.send(() => formatFocus({ x: 50, y: 50 }), apply(7));
+    expect(sent.slice(2)).toEqual([['10% 10%', 5], ['50% 50%', undefined]]);
+  });
+
+  it('treats a failed send as refused, and carries on with the next', async () => {
+    const project: FocusState = { point: { x: 50, y: 50 }, revision: 1 };
+    const commits = new FocusCommits(() => project);
+    expect(await commits.send(() => '1% 1%', () => Promise.reject(new Error('closed')))).toEqual({ text: '1% 1%', made: undefined });
+    expect(commits.base()).toEqual(project);
+    expect(await commits.send(() => '30% 30%', () => ({ revision: 2 }))).toEqual({ text: '30% 30%', made: 2 });
+    expect(commits.base().point).toEqual({ x: 30, y: 30 });
   });
 });
 

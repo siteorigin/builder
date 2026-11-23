@@ -1081,16 +1081,25 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const bound = node.kind === 'image' && isBinding(node.image) ? node.image : undefined;
   const ownRef = selection?.owner.kind === 'component' && selection.owner.id === def.id && selection.nodeId === node.id ? selection : undefined;
   const placedImage = node.kind === 'image' && bound && placement && ownRef ? shownImage(state, throughPlacement(ownRef, placement), bound) : undefined;
+  // That placement (or the variants it picks) may set its own crop over the design's.
+  const placed = placement ? resolveRef(state, placement).node : undefined;
+  const cropKeys = ['aspectRatio', 'objectFit', 'objectPosition'];
+  const setsCrop = (rs: ResponsiveStyles | undefined) => Object.values(rs ?? {}).some((sc) => cropKeys.some((k) => sc?.[k] !== undefined));
+  const placementCrops =
+    placed?.kind === 'instance' && ((partId !== undefined && setsCrop(placed.overrides?.[partId])) || selectedVariantStyles(def, placed.variants, node.id).some(setsCrop));
   const defImage =
     node.kind === 'image'
-      ? focusImage(
-          state,
-          devUrl,
-          placedImage ?? (!bound ? node.image : '$prop' in bound && Object.hasOwn(def.properties, bound.$prop) ? def.properties[bound.$prop].default : undefined),
-          [],
-          'Each one shows its own picture. Select one on the page to see it here.',
-          node.styles ?? {}
-        )
+      ? {
+          ...focusImage(
+            state,
+            devUrl,
+            placedImage ?? (!bound ? node.image : '$prop' in bound && Object.hasOwn(def.properties, bound.$prop) ? def.properties[bound.$prop].default : undefined),
+            [],
+            'Each one shows its own picture. Select one on the page to see it here.',
+            node.styles ?? {}
+          ),
+          note: placementCrops ? 'The placement on this page sets its own crop, so the canvas may differ.' : undefined
+        }
       : undefined;
   const placedDef = node.kind === 'instance' ? state.components[node.definitionId] : undefined;
   const designLinks = node.kind === 'instance' && placedDef ? Object.entries(placedDef.properties).filter(([prop, schema]) => schema.type === 'link' && !isBinding(node.props[prop])) : [];

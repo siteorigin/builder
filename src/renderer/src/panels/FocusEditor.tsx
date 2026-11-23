@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Crosshair } from 'lucide-react';
 import type { ResponsiveScope, ResponsiveStyles, StyleValue } from '@shared/types';
-import { FOCUS_CENTER, coverCrop, cropAxis, describeFocus, focusFromPoint, formatFocus, parseFocus, sameFocus, type FocalPoint } from '@shared/focus';
+import { FOCUS_CENTER, FocusCommits, coverCrop, cropAxis, describeFocus, focusFromPoint, formatFocus, parseFocus, sameFocus, type FocalPoint } from '@shared/focus';
 import { DraftInput } from '../components/ui';
 import { useStore } from '../store';
 
@@ -19,6 +19,8 @@ export interface FocusImage {
   below: Array<Array<ResponsiveStyles | undefined>>;
   /** The element's complete styles, when the ones being edited list only its changes (Edit everywhere). */
   own?: ResponsiveStyles;
+  /** Said after the caption: why the canvas may show a different crop (a placement with its own). */
+  note?: string;
   /** Why there is no picture to show, when there is none. */
   missing?: string;
 }
@@ -46,6 +48,7 @@ export function FocusEditor({
   size,
   previewed,
   unreached,
+  uncertain,
   custom,
   ratio,
   fit,
@@ -64,6 +67,8 @@ export function FocusEditor({
   previewed: boolean;
   /** Under All sizes: every size keeps its own focus, so the all-sizes one shows nowhere. */
   unreached?: boolean;
+  /** A height may crop the picture, but how can't be worked out here. */
+  uncertain?: boolean;
   /** Custom CSS on these rules sets the crop too, so the site may not match the picture here. */
   custom?: boolean;
   /** The box's width over height at that size, or null when the picture keeps its own shape. */
@@ -104,18 +109,27 @@ export function FocusEditor({
     setDraft(null);
     stopEscape();
   };
+  const stored = parseFocus(value) ?? parseFocus(under) ?? FOCUS_CENTER;
+  // Changes go out one at a time, each built on what the project holds when its turn comes.
+  const storedRef = useRef(stored);
+  storedRef.current = stored;
+  const revisionRef = useRef(revision);
+  revisionRef.current = revision;
+  const newCommits = () => new FocusCommits(() => ({ point: storedRef.current, revision: revisionRef.current }));
+  const commits = useRef<FocusCommits | null>(null);
+  commits.current ??= newCommits();
   const target = `${scope}|${src ?? ''}|${label}`;
-  // Another size, picture or element ends a drag in progress without committing it.
+  // Another size, picture or element ends a drag in progress without committing it, and starts afresh.
   useEffect(() => {
     end();
     setPending(null);
+    commits.current = newCommits();
   }, [target]);
   useEffect(() => stopEscape, []);
   useEffect(() => {
     if (pending?.until !== undefined && revision >= pending.until) setPending(null);
   }, [pending, revision]);
 
-  const stored = parseFocus(value) ?? parseFocus(under) ?? FOCUS_CENTER;
   const committed = pending && (pending.until === undefined || revision < pending.until) ? parseFocus(pending.text) : null;
   const latest = committed ?? stored;
   const point = draft ?? latest;
@@ -128,14 +142,15 @@ export function FocusEditor({
     const fy = r.height > 0 ? Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) : 0.5;
     return focusFromPoint(fx, fy);
   };
-  /** Commit a value; while it is on its way it shows here, and a refusal puts the saved value back. */
-  const commit = (text: string, expectedRevision?: number) => {
-    const mine: { text: string; until?: number } = { text };
+  /**
+   * Commit a value built from the point it goes on top of (see FocusCommits for `guard`). While it is on its way
+   * it shows here; a refusal puts the saved value back.
+   */
+  const commit = (make: (base: FocalPoint) => string, guard?: 'base' | number) => {
+    const mine: { text: string; until?: number } = { text: make(latest) };
     setPending(mine);
-    void Promise.resolve(onSet(text, expectedRevision)).then((result) => {
-      const made = result && typeof result === 'object' && typeof (result as { revision?: unknown }).revision === 'number' ? (result as { revision: number }).revision : undefined;
-      // Refused, or no word of where it landed: the saved value shows again.
-      setPending((p) => (p !== mine ? p : made === undefined ? null : { ...mine, until: made }));
+    void commits.current!.send(make, onSet, guard).then(({ text, made }) => {
+      setPending((p) => (p !== mine ? p : made === undefined ? null : { text, until: made }));
     });
   };
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -172,7 +187,7 @@ export function FocusEditor({
     // The element, size or project changed under the drag (an Undo, say): the drag no longer applies.
     if (g.key !== target || g.revision !== revision) return;
     if (typeof value === 'string' && parseFocus(value) && sameFocus(parseFocus(value)!, next)) return;
-    commit(formatFocus(next), g.revision);
+    commit(() => formatFocus(next), g.revision);
   };
   const cancel = (e: React.PointerEvent<HTMLDivElement>) => {
     if (gesture.current?.pointer === e.pointerId) end();
@@ -182,10 +197,11 @@ export function FocusEditor({
     if (!text.trim()) return undefined;
     const n = readPercent(text);
     if (n === null) return false;
-    // Built on the last value committed here, so Across then Down typed quickly keeps both.
-    commit(formatFocus({ ...latest, [axis]: n }));
+    // Built on the value before it once that has answered, and applied only if the project still holds that
+    // value, so Across then Down typed quickly keeps both and never keeps a refused one.
+    commit((base) => formatFocus({ ...base, [axis]: n }), 'base');
   };
-  const isCenter = typeof value === 'string' && parseFocus(value) !== null && sameFocus(parseFocus(value)!, FOCUS_CENTER);
+  const isCenter = committed ? sameFocus(committed, FOCUS_CENTER) : typeof value === 'string' && parseFocus(value) !== null && sameFocus(parseFocus(value)!, FOCUS_CENTER);
   const setHere = value !== undefined;
   const sizeName = SIZE_NAME[size];
   const where = scope === 'base' && previewed ? `In the ${sizeName} preview` : `On ${sizeName}`;
@@ -198,11 +214,13 @@ export function FocusEditor({
   else if (sourceRatio === null) caption = '';
   else if (unreached) caption = `Phone, tablet and desktop each keep their own ${label.toLowerCase()}, so this one shows at no size.`;
   else if (fit === 'contain') caption = `${where}, Image fit shows the whole picture, so nothing is cropped.`;
+  else if (!cropped && uncertain) caption = `${where} its height is set, so the site may crop it. Choose an aspect ratio to see and control the crop.`;
   else if (!cropped) caption = `${where} the whole picture shows. Choose an aspect ratio to crop it.`;
   else caption = `${where} ${ratioPct}% of the picture’s ${cropped === 'y' ? 'height' : 'width'} shows. Drag to choose what stays in view.`;
   // Under All sizes, a previewed size that keeps its own focus is why another size's crop is shown.
   if (caption && scope === 'base' && !previewed && !unreached && !image?.missing) caption += ' The size in the preview keeps its own.';
   if (caption && custom) caption += ' Custom CSS also sets the crop, so the site may differ.';
+  if (caption && image?.note) caption += ` ${image.note}`;
 
   return (
     <div className="focus-editor">
@@ -263,7 +281,7 @@ export function FocusEditor({
           />
           <span aria-hidden="true">%</span>
         </label>
-        <button type="button" className="btn btn-sm focus-center" disabled={isCenter} onClick={() => commit(formatFocus(FOCUS_CENTER))} title={`Put the center of the picture in the middle${scope === 'base' ? '' : ` on ${sizeName}`}`}>
+        <button type="button" className="btn btn-sm focus-center" disabled={isCenter} onClick={() => commit(() => formatFocus(FOCUS_CENTER))} title={`Put the center of the picture in the middle${scope === 'base' ? '' : ` on ${sizeName}`}`}>
           <Crosshair aria-hidden="true" /> Center
         </button>
       </div>

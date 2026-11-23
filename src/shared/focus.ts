@@ -144,3 +144,49 @@ export function cascadedStyle(
   }
   return undefined;
 }
+
+/** What the project holds for a focal point now, as far as the editor has heard, and the revision that is at. */
+export interface FocusState {
+  point: FocalPoint;
+  revision: number;
+}
+
+/**
+ * Sends one editor's focal point changes one after another. Each is built when its turn comes, on what the project
+ * then holds: the change before it once that has answered (accepted, even before its snapshot arrives), else the
+ * project's own value. So typing Across and then Down never writes a value the project refused or never had.
+ * `guard: 'base'` applies a change only at the revision it was built on (a typed coordinate, which keeps the other
+ * one); a number applies it only at that revision (a drag, at the one it started on); none applies it as it is.
+ */
+export class FocusCommits {
+  private queue: Promise<void> = Promise.resolve();
+  private accepted: { text: string; until: number } | null = null;
+
+  constructor(private readonly read: () => FocusState) {}
+
+  /** The point a new change builds on, and the revision the project is at once it holds that point. */
+  base(): FocusState {
+    const now = this.read();
+    const a = this.accepted;
+    if (a && now.revision < a.until) return { point: parseFocus(a.text) ?? now.point, revision: a.until };
+    return now;
+  }
+
+  /**
+   * Queue a change: `make` builds the value from the point it builds on; `apply` sends it and resolves to the
+   * project's answer (an object with the `revision` the change made, or null when refused). Resolves to what was
+   * sent and the revision it made (undefined when refused).
+   */
+  send(make: (base: FocalPoint) => string, apply: (text: string, expectedRevision?: number) => unknown, guard?: 'base' | number): Promise<{ text: string; made?: number }> {
+    const run = this.queue.then(async () => {
+      const b = this.base();
+      const text = make(b.point);
+      const result = await Promise.resolve(apply(text, guard === 'base' ? b.revision : guard)).catch(() => null);
+      const made = result && typeof result === 'object' && typeof (result as { revision?: unknown }).revision === 'number' ? (result as { revision: number }).revision : undefined;
+      if (made !== undefined) this.accepted = { text, until: made };
+      return { text, made };
+    });
+    this.queue = run.then(() => undefined);
+    return run;
+  }
+}
