@@ -191,7 +191,26 @@ export interface ChatMessage {
     /** The run stopped at a budget with valid work kept; the user can ask it to continue. */
     incomplete?: boolean;
   };
-  question?: { text: string; choices: string[]; answered?: string };
+  /** Every question the assistant asked during this turn, in the order asked. */
+  questions?: ChatQuestion[];
+  /** The only question of a turn stored before `questions` existed; read through `turnQuestions`. */
+  question?: ChatQuestion;
+}
+
+/** One question the assistant asked, and the user's answer once given. */
+export interface ChatQuestion {
+  /** Names the question an answer is for. Questions stored before it existed have none. */
+  id?: string;
+  text: string;
+  choices: string[];
+  answered?: string;
+  /** Only its choices grant it: a scope-widening question. */
+  widen?: boolean;
+}
+
+/** A turn's questions in order, including one stored by an earlier version as `question`. */
+export function turnQuestions(m: Pick<ChatMessage, 'questions' | 'question'>): ChatQuestion[] {
+  return m.questions ?? (m.question ? [m.question] : []);
 }
 
 export interface Conversation {
@@ -288,7 +307,8 @@ export interface BuilderApi {
      *  rolled back; `stopped` is false when it had already ended (or another request is running). */
     stop(): Promise<void>;
     stop(runId: string): Promise<{ stopped: boolean; status?: RunStatus }>;
-    answer(runId: string, answer: string): Promise<void>;
+    /** Answer the run's waiting question; false when that question is no longer waiting or the answer is blank. */
+    answer(runId: string, questionId: string, answer: string): Promise<boolean>;
     undoTurn(runId: string): Promise<{ ok: boolean; message?: string }>;
     fixCode(source: string): Promise<{ ok: boolean; source?: string; explanation?: string; message?: string; cancelled?: boolean }>;
     /** Cancel an in-flight fixCode request. */

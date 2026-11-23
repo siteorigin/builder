@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AiEvent, ChatContext } from '@shared/api';
+import type { AiEvent, ChatContext, Conversation } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agent/types';
@@ -220,10 +220,10 @@ describe('scope authority', () => {
     const nodeId = env.session.state.pages[homeId].rootIds[0];
     const r = await orchRef.send('Use navy for this and everywhere', { pageId: homeId, pageTitle: 'Home', selection: { owner: { kind: 'page', id: homeId }, instancePath: [], nodeId }, selectionLabel: 'Split hero', viewport: 1280 });
     runId = r.runId!;
-    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.question); i++) await new Promise((res) => setTimeout(res, 10));
-    const q = env.events.find((e) => e.message?.question)!.message!.question!;
+    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.questions); i++) await new Promise((res) => setTimeout(res, 10));
+    const q = env.events.find((e) => e.message?.questions)!.message!.questions![0];
     expect(q.choices[0]).toMatch(/Yes, allow/);
-    orchRef.answer(runId, q.choices[0]);
+    expect(orchRef.answer(runId, q.id!, q.choices[0])).toBe(true);
     while (orchRef.busy) await new Promise((res) => setTimeout(res, 10));
     expect(env.session.state.tokens.overrides['color.brand']).toBe('#000080');
   });
@@ -237,8 +237,8 @@ describe('scope authority', () => {
     const homeId = env.session.state.site.homePageId;
     const nodeId = env.session.state.pages[homeId].rootIds[0];
     const r = await env.orch.send('Use navy everywhere', { pageId: homeId, pageTitle: 'Home', selection: { owner: { kind: 'page', id: homeId }, instancePath: [], nodeId }, selectionLabel: 'Split hero', viewport: 1280 });
-    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.question); i++) await new Promise((res) => setTimeout(res, 10));
-    env.orch.answer(r.runId!, 'Yes');
+    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.questions); i++) await new Promise((res) => setTimeout(res, 10));
+    env.orch.answer(r.runId!, env.events.find((e) => e.message?.questions)!.message!.questions![0].id!, 'Yes');
     while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
     expect(env.session.state.tokens.overrides['color.brand']).toBe('#000080');
   });
@@ -252,12 +252,177 @@ describe('scope authority', () => {
     const homeId = env.session.state.site.homePageId;
     const nodeId = env.session.state.pages[homeId].rootIds[0];
     const r = await env.orch.send('Use navy', { pageId: homeId, pageTitle: 'Home', selection: { owner: { kind: 'page', id: homeId }, instancePath: [], nodeId }, selectionLabel: 'Split hero', viewport: 1280 });
-    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.question); i++) await new Promise((res) => setTimeout(res, 10));
-    env.orch.answer(r.runId!, 'yes but only the hero');
+    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.questions); i++) await new Promise((res) => setTimeout(res, 10));
+    env.orch.answer(r.runId!, env.events.find((e) => e.message?.questions)!.message!.questions![0].id!, 'yes but only the hero');
     while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
     expect(env.session.state.tokens.overrides['color.brand']).toBeUndefined();
     expect(JSON.stringify(env.adapter.requests[1].items.at(-1))).toMatch(/Keep changes within the selection/);
     expect(JSON.stringify(env.adapter.requests[2].items.at(-1))).toContain('SCOPE_MISMATCH');
+  });
+});
+
+describe('clarification questions', () => {
+  /** Wait until the run is waiting on its `n`th question, and return that message's questions. */
+  const asked = async (env: Awaited<ReturnType<typeof setup>>, n: number) => {
+    const pending = () => [...env.events].reverse().find((e) => e.message?.questions?.length === n && !e.message.questions[n - 1].answered)?.message?.questions;
+    for (let i = 0; i < 300 && !pending(); i++) await new Promise((res) => setTimeout(res, 10));
+    expect(pending()).toBeDefined();
+    return pending()!;
+  };
+  const runIdOf = (env: Awaited<ReturnType<typeof setup>>) => env.events.find((e) => e.runId)!.runId;
+  const audience = { question: 'Who is the Contact page mainly for?', choices: ['New clients', 'Existing clients', 'Both equally'] };
+  const tone = { question: 'Which tone should it take?', choices: ['Warm and friendly', 'Calm and understated', 'Direct and brisk'] };
+  const extra = { question: 'Should the headline mention the studio name?', choices: ['Yes', 'No'] };
+
+  it('keeps every question and answer of a turn in order, saves them, and gives them to the next request (#22)', async () => {
+    const env = await setup([
+      () => [call('q1', 'request_clarification', audience)],
+      () => [call('q2', 'request_clarification', tone)],
+      () => finish('Headline idea: "Talk to us, whenever suits you."'),
+      () => finish('Here is a shorter one.')
+    ]);
+    const pending = env.run('Interview me about the Contact page, then suggest a headline in chat only');
+    const first = await asked(env, 1);
+    expect(env.orch.answer(runIdOf(env), first[0].id!, 'Both equally')).toBe(true);
+    const second = await asked(env, 2);
+    // The first exchange is still on the turn while the second question waits.
+    expect(second[0]).toMatchObject({ text: audience.question, choices: audience.choices, answered: 'Both equally' });
+    expect(second[1]).toMatchObject({ text: tone.question, choices: tone.choices });
+    expect(second[1].id).not.toBe(second[0].id);
+    // Typed answers are trimmed.
+    expect(env.orch.answer(runIdOf(env), second[1].id!, '  Calm and understated\n')).toBe(true);
+    const { result } = await pending;
+    // A consultation in chat changes nothing.
+    expect(result?.status).toBe('no-changes');
+    expect(result?.summary).toContain('Talk to us');
+    const turn = env.orch.conversation!.messages.find((m) => m.role === 'assistant')!;
+    expect(turn.questions?.map((q) => [q.text, q.answered])).toEqual([
+      [audience.question, 'Both equally'],
+      [tone.question, 'Calm and understated']
+    ]);
+    // Steps say what was asked rather than repeating "Waiting for your answer".
+    expect(turn.activities?.filter((a) => a.tool === 'request_clarification').map((a) => [a.status, a.label])).toEqual([
+      ['done', `Asked: ${audience.question}`],
+      ['done', `Asked: ${tone.question}`]
+    ]);
+
+    // Reopening the thread shows both exchanges: they are in the saved transcript.
+    const saved = JSON.parse(readFileSync(join(env.session.local('sessions', 'chat'), `${env.orch.conversation!.id}.json`), 'utf8')) as Conversation;
+    expect(saved.messages.find((m) => m.role === 'assistant')?.questions?.map((q) => q.answered)).toEqual(['Both equally', 'Calm and understated']);
+
+    // The next request in the thread hears each question and answer in the order they were said, then the reply.
+    const before = env.adapter.requests.length;
+    await env.run('Make it shorter');
+    const items = env.adapter.requests[before].items;
+    expect(items.slice(0, -1).map((i) => [i.kind, i.kind === 'tool_result' ? '' : i.text])).toEqual([
+      ['user', 'Interview me about the Contact page, then suggest a headline in chat only'],
+      ['assistant', `${audience.question}\nChoices: New clients | Existing clients | Both equally`],
+      ['user', 'Both equally'],
+      ['assistant', `${tone.question}\nChoices: Warm and friendly | Calm and understated | Direct and brisk`],
+      ['user', 'Calm and understated'],
+      ['assistant', 'Headline idea: "Talk to us, whenever suits you."']
+    ]);
+  });
+
+  it('keeps the answered exchanges when the request is stopped during a later question (#22)', async () => {
+    const env = await setup([
+      () => [call('q1', 'request_clarification', audience)],
+      () => [call('q2', 'request_clarification', tone)],
+      () => [call('q3', 'request_clarification', extra)],
+      () => finish('Unreachable.'),
+      () => finish('Noted.')
+    ]);
+    const pending = env.run('Interview me about the Contact page');
+    const q1 = (await asked(env, 1))[0];
+    env.orch.answer(runIdOf(env), q1.id!, 'New clients');
+    const q2 = (await asked(env, 2))[1];
+    env.orch.answer(runIdOf(env), q2.id!, 'Warm and friendly');
+    const third = (await asked(env, 3))[2];
+    env.orch.stop();
+    // Stop settles the question: the run is stopping, never back to working, and a late answer is refused.
+    expect(env.orch.answer(runIdOf(env), third.id!, 'Yes')).toBe(false);
+    const { result } = await pending;
+    expect(result?.status).toBe('cancelled');
+    const statuses = env.events.filter((e) => e.kind === 'status').map((e) => e.status);
+    expect(statuses.slice(statuses.indexOf('stopping'))).not.toContain('running');
+    const turn = env.orch.conversation!.messages.find((m) => m.role === 'assistant')!;
+    expect(turn.questions?.map((q) => q.text)).toEqual([audience.question, tone.question, extra.question]);
+    expect(turn.questions?.map((q) => q.answered)).toEqual(['New clients', 'Warm and friendly', undefined]);
+    expect(env.orch.answer(runIdOf(env), third.id!, 'Yes')).toBe(false);
+    expect(turn.questions?.[2].answered).toBeUndefined();
+
+    // The next request hears the two answers, and that the third question was never answered.
+    const before = env.adapter.requests.length;
+    await env.run('Never mind, just suggest a headline');
+    const history = env.adapter.requests[before].items.slice(0, -1);
+    expect(history.map((i) => i.kind)).toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
+    expect(history.at(-1)).toMatchObject({ kind: 'assistant', text: expect.stringContaining(`I asked "${extra.question}", but the request ended before it was answered.`) });
+  });
+
+  it('refuses an answer meant for an earlier question, or a blank one (#22)', async () => {
+    const env = await setup([
+      () => [call('q1', 'request_clarification', audience)],
+      () => [call('q2', 'request_clarification', tone)],
+      () => finish('Done.')
+    ]);
+    const pending = env.run('Interview me');
+    const first = (await asked(env, 1))[0];
+    expect(env.orch.answer(runIdOf(env), first.id!, '   ')).toBe(false);
+    expect(env.orch.answer('run_other', first.id!, 'New clients')).toBe(false);
+    expect(env.orch.answer(runIdOf(env), first.id!, 'New clients')).toBe(true);
+    // A second click on the first question's choice lands while the second question waits.
+    const second = (await asked(env, 2))[1];
+    expect(env.orch.answer(runIdOf(env), first.id!, 'Existing clients')).toBe(false);
+    expect(env.orch.conversation!.messages.find((m) => m.role === 'assistant')!.questions!.map((q) => q.answered)).toEqual(['New clients', undefined]);
+    expect(env.orch.answer(runIdOf(env), second.id!, 'Direct and brisk')).toBe(true);
+    expect((await pending).result?.status).toBe('no-changes');
+  });
+
+  it('asks before an edit and makes the change the answer points to (#22)', async () => {
+    const env = await setup([
+      () => [call('q1', 'request_clarification', { question: 'Which colour should the brand use?', choices: ['Navy', 'Forest green'] })],
+      (req) => {
+        const answer = JSON.stringify(req.items.at(-1));
+        return [call('e1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'token.set', tokenId: 'color.brand', value: answer.includes('Forest green') ? '#1f5130' : '#000080' }] })];
+      },
+      () => finish('Changed the brand colour to forest green.')
+    ]);
+    const pending = env.run('Ask me which colour to use for the brand, then change it');
+    const q = (await asked(env, 1))[0];
+    env.orch.answer(runIdOf(env), q.id!, 'Forest green');
+    const { result } = await pending;
+    expect(result?.status).toBe('completed');
+    expect(env.session.state.tokens.overrides['color.brand']).toBe('#1f5130');
+    const turn = env.orch.conversation!.messages.find((m) => m.role === 'assistant')!;
+    expect(turn.questions).toMatchObject([{ text: 'Which colour should the brand use?', answered: 'Forest green' }]);
+  });
+
+  it('reads a question stored by an earlier version into the next request (#22)', async () => {
+    const env = await setup([() => finish('Sure.')]);
+    const dir = env.session.local('sessions', 'chat');
+    mkdirSync(dir, { recursive: true });
+    const legacy: Conversation = {
+      id: 'c_legacy1',
+      title: 'Tone',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      messages: [
+        { id: 'm_u', role: 'user', text: 'Ask me about the tone', time: '2026-01-01T00:00:00.000Z' },
+        { id: 'm_a', role: 'assistant', text: 'Going calm.', time: '2026-01-01T00:00:01.000Z', runId: 'run_old', question: { text: 'Which tone?', choices: ['Calm', 'Bold'], answered: 'Calm' }, result: { status: 'no-changes', summary: 'Going calm.', changes: [], validation: [], canUndo: false } }
+      ]
+    };
+    writeFileSync(join(dir, 'c_legacy1.json'), JSON.stringify(legacy));
+    await env.orch.openConversation('c_legacy1');
+    await env.run('And the headline?');
+    expect(env.adapter.requests[0].items.slice(0, -1).map((i) => (i.kind === 'tool_result' ? '' : i.text))).toEqual(['Ask me about the tone', 'Which tone?\nChoices: Calm | Bold', 'Calm', 'Going calm.']);
+  });
+
+  it('tells the assistant to ask with choices when the user wants to be interviewed or to choose (#22)', async () => {
+    const env = await setup([() => finish('Done.')]);
+    await env.run('Interview me about the Contact page');
+    const { system, tools } = env.adapter.requests[0];
+    expect(system).toMatch(/interview them[^.]*request_clarification/);
+    expect(system).toContain('reply in chat and change nothing');
+    expect(tools.find((t) => t.name === 'request_clarification')?.description).toMatch(/interview/);
   });
 });
 

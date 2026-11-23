@@ -66,7 +66,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
   inspect_layout: 'Measure a page in the live preview at a viewport width: horizontal overflow, elements outside the viewport, whether each image loaded (report.images: failed images are files that could not be loaded; unverified ones were still loading when the check ran out of time, which is not a problem with the site), missing alt text, heading structure and runtime errors. Structural evidence only; no screenshots.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
-  request_clarification: 'Ask the user one short question when a request is genuinely ambiguous and a wrong guess would change shared content. Offer up to four concrete choices.',
+  request_clarification:
+    'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four short, concrete options in choices; the user can also type their own answer. One question per call: ask the next one after the answer comes back.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
   ...SELECTION_DESCRIPTIONS
