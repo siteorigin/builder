@@ -14,7 +14,7 @@ const defaults = {
 };
 const minimalPath = process.platform === 'win32' ? 'C:\\Windows\\System32;C:\\Windows' : '/usr/bin:/bin';
 const env = { PATH: minimalPath, SITEORIGIN_USER_DATA: join(WORK, 'u') };
-for (const k of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SystemRoot', 'DISPLAY', 'XDG_RUNTIME_DIR']) if (process.env[k]) env[k] = process.env[k];
+for (const k of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'SystemRoot', 'DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR']) if (process.env[k]) env[k] = process.env[k];
 const app = await electron.launch({
   executablePath: process.env.APP_BIN ?? defaults[process.platform],
   args: process.platform === 'linux' ? ['--no-sandbox'] : [],
