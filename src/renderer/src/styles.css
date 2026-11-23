@@ -22,6 +22,8 @@
   --accent-soft: rgb(61 90 254 / 0.1);
   --accent-text: #2c47d9;
   --on-accent: #ffffff;
+  --accent-fill: #3d5afe;
+  --accent-fill-hover: #2f4ae6;
   --green: #16a368;
   --green-soft: rgb(22 163 104 / 0.12);
   --amber: #c47a0c;
@@ -59,6 +61,8 @@
     --accent-soft: rgb(107 131 255 / 0.16);
     --accent-text: #9badff;
     --on-accent: #ffffff;
+    --accent-fill: #4c5ff0;
+    --accent-fill-hover: #5a6dff;
     --green: #3ccf8e;
     --green-soft: rgb(60 207 142 / 0.14);
     --amber: #f0b35a;
@@ -114,8 +118,8 @@ button { cursor: default; }
 .btn:hover:not(:disabled) { background: var(--panel-2); border-color: var(--border-strong); }
 .btn:disabled { opacity: 0.45; }
 .btn svg { width: 15px; height: 15px; flex: none; }
-.btn-primary { background: var(--accent); border-color: transparent; color: var(--on-accent); box-shadow: 0 1px 2px rgb(30 40 120 / 0.25), inset 0 1px 0 rgb(255 255 255 / 0.12); }
-.btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: transparent; }
+.btn-primary { background: var(--accent-fill); border-color: transparent; color: var(--on-accent); box-shadow: 0 1px 2px rgb(30 40 120 / 0.25), inset 0 1px 0 rgb(255 255 255 / 0.12); }
+.btn-primary:hover:not(:disabled) { background: var(--accent-fill-hover); border-color: transparent; }
 .btn-ghost { background: transparent; border-color: transparent; box-shadow: none; }
 .btn-ghost:hover:not(:disabled) { background: var(--hover); border-color: transparent; }
 .btn-danger { color: var(--red); }
@@ -161,7 +165,7 @@ button { cursor: default; }
 
 .switch { position: relative; width: 30px; height: 18px; border-radius: 99px; background: var(--border-strong); border: 0; transition: background 150ms; flex: none; }
 .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: white; box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); transition: transform 150ms; }
-.switch[aria-checked='true'] { background: var(--accent); }
+.switch[aria-checked='true'] { background: var(--accent-fill); }
 .switch[aria-checked='true']::after { transform: translateX(12px); }
 
 .badge { display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 6px; border-radius: 99px; font-size: 10.5px; font-weight: 600; background: var(--active); color: var(--text-2); white-space: nowrap; }
@@ -183,7 +187,7 @@ button { cursor: default; }
 /* ---------- Menus, popovers, modals, toasts ---------- */
 .menu { position: fixed; z-index: 1000; min-width: 190px; padding: 5px; border-radius: 10px; background: var(--raised); border: 1px solid var(--border); box-shadow: var(--shadow-lg); animation: pop-in 120ms ease-out; }
 .menu-item { display: flex; align-items: center; gap: 9px; width: 100%; height: 28px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; text-align: left; font-size: 13px; }
-.menu-item:hover:not(:disabled), .menu-item.focused { background: var(--accent); color: var(--on-accent); }
+.menu-item:hover:not(:disabled), .menu-item.focused { background: var(--accent-fill); color: var(--on-accent); }
 .menu-item:hover:not(:disabled) .kbd, .menu-item:hover:not(:disabled) svg { color: inherit; border-color: transparent; }
 .menu-item:disabled { opacity: 0.4; }
 .menu-item svg { width: 15px; height: 15px; color: var(--text-2); }
@@ -232,7 +236,10 @@ button { cursor: default; }
 .recent-card .remove { position: absolute; top: 8px; right: 8px; opacity: 0; background: var(--raised); }
 .recent-card:hover .remove { opacity: 1; }
 .empty-state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 70px 20px; text-align: center; color: var(--text-2); border: 1px dashed var(--border-strong); border-radius: 14px; margin-top: 22px; }
-.empty-state svg { width: 28px; height: 28px; color: var(--text-3); }
+.empty-state .empty-icon { width: 52px; height: 52px; border-radius: 14px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); margin-bottom: 4px; }
+.empty-state .empty-icon svg { width: 24px; height: 24px; }
+.empty-state strong { color: var(--text); font-size: 15px; }
+.empty-state .btn { margin-top: 8px; }
 
 .starter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .starter-card { display: flex; flex-direction: column; gap: 8px; padding: 0; border-radius: 11px; border: 1.5px solid var(--border); background: var(--raised); text-align: left; overflow: hidden; transition: border-color 120ms; }
@@ -446,7 +453,7 @@ button { cursor: default; }
 /* ---------- Chat ---------- */
 .chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .chat-log { flex: 1; min-height: 0; overflow: auto; padding: 14px 14px 6px; display: flex; flex-direction: column; gap: 14px; scrollbar-width: thin; user-select: text; }
-.msg-user { align-self: flex-end; max-width: 88%; padding: 9px 12px; border-radius: 14px 14px 4px 14px; background: var(--accent); color: var(--on-accent); white-space: pre-wrap; word-wrap: break-word; }
+.msg-user { align-self: flex-end; max-width: 88%; padding: 9px 12px; border-radius: 14px 14px 4px 14px; background: var(--accent-fill); color: var(--on-accent); white-space: pre-wrap; word-wrap: break-word; }
 .msg-user .ctx { display: block; margin-top: 4px; font-size: 11px; opacity: 0.75; }
 .msg-ai { display: flex; flex-direction: column; gap: 8px; }
 .msg-ai .text { white-space: pre-wrap; word-wrap: break-word; line-height: 1.55; }

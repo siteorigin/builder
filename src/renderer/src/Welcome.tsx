@@ -98,8 +98,10 @@ export function Welcome() {
         </p>
         {recents.length === 0 ? (
           <div className="empty-state">
-            <Globe />
-            <strong style={{ color: 'var(--text)' }}>No projects yet</strong>
+            <span className="empty-icon">
+              <Globe />
+            </span>
+            <strong>No projects yet</strong>
             <span>Create your first website from a starter. It takes about a minute.</span>
             <button className="btn btn-primary" onClick={() => setCreating(true)}>
               <Plus /> New project
