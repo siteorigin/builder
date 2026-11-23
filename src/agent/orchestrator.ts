@@ -62,6 +62,8 @@ export interface RunSession {
   dir: string;
   state: ProjectState;
   revision: number;
+  /** Set while the project is open for inspection only: chat is readable and nothing is stored. */
+  readOnly?: unknown;
   local(...parts: string[]): string;
   beginRun(runId: string): Promise<string | null>;
   completeRun(label: string): Promise<boolean>;
@@ -183,9 +185,13 @@ export class Orchestrator {
   async loadConversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }> {
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
-    await fs.mkdir(dir, { recursive: true });
     const list: Conversation[] = [];
-    for (const f of await fs.readdir(dir)) {
+    // Reading never creates the folder: a read-only project must stay untouched. The first save makes it.
+    const files = await fs.readdir(dir).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return [] as string[];
+      throw e;
+    });
+    for (const f of files) {
       const m = f.match(/^(c_[a-z0-9]+)\.json$/);
       if (!m) continue;
       try {
@@ -221,6 +227,7 @@ export class Orchestrator {
   }
 
   async clearHistory(): Promise<Conversation> {
+    if (this.deps.session()?.readOnly) return (await this.loadConversations()).active;
     const dir = this.chatDir();
     if (dir) await fs.rm(dir, { recursive: true, force: true });
     this.conversation = this.freshConversation();
@@ -228,6 +235,8 @@ export class Orchestrator {
   }
 
   private async saveConversation() {
+    // Also covers a run that ends after another app took the project over.
+    if (this.deps.session()?.readOnly) return;
     const dir = this.chatDir();
     const conv = this.conversation;
     if (!dir || !conv || !conv.messages.length || !/^c_[a-z0-9]+$/.test(conv.id)) return;
