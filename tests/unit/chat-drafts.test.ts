@@ -236,6 +236,17 @@ describe('conversations in the assistant', () => {
     await settle();
   });
 
+  it('clearing history right after a request finishes does not bring its transcript back', async () => {
+    const { orch, ctx, adapter, chatDir } = await setup();
+    await orch.send('Last request', ctx);
+    adapter.release();
+    // Idle, with the transcript write just started.
+    for (let i = 0; i < 200 && orch.busy; i++) await new Promise((r) => setTimeout(r, 1));
+    await orch.clearHistory();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(existsSync(chatDir)).toBe(false);
+  });
+
   it('no request starts while the history is being cleared', async () => {
     const { orch, ctx, settle, chatDir } = await setup();
     await orch.send('Earlier request', ctx);

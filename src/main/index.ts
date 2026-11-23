@@ -103,6 +103,17 @@ controller.onSessionOpened = async (s) => {
   // Another app took the project over: stop the assistant (the session already refuses its writes).
   s.on('lock-lost', () => orchestrator.stop());
 };
+/**
+ * Opening, creating and closing projects run one at a time: two opens in flight would each skip closing the other,
+ * leaving one project's session, conversation and drafts behind the other's.
+ */
+let lifecycle: Promise<unknown> = Promise.resolve();
+function oneAtATime<T>(step: () => Promise<T>): Promise<T> {
+  const run = lifecycle.then(step, step);
+  lifecycle = run.catch(() => undefined);
+  return run;
+}
+
 /** A read-only project (newer format, or another app is editing it) refuses anything that writes to it. */
 const readOnlyReason = () => controller.session?.readOnly?.reason ?? null;
 controller.onSessionClosing = async () => {
@@ -174,11 +185,12 @@ function registerIpc() {
   handle('dialogs:defaultProjectsFolder', () => defaultProjectsFolder());
   handle('projects:recents', () => recents());
   handle('projects:removeRecent', (dir: string) => removeRecent(dir));
-  handle('projects:create', (opts) => controller.create(opts));
+  handle('projects:create', (opts) => oneAtATime(() => controller.create(opts)));
+  // Not queued: cancelling must reach the creation it cancels.
   handle('projects:cancelCreate', () => controller.cancelCreate());
-  handle('projects:open', (dir?: string) => controller.open(dir));
-  handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
-  handle('projects:close', () => controller.close());
+  handle('projects:open', (dir?: string) => oneAtATime(() => controller.open(dir)));
+  handle('projects:trustAndOpen', (dir: string) => oneAtATime(() => controller.trustAndOpen(dir)));
+  handle('projects:close', () => oneAtATime(() => controller.close()));
   handle('projects:duplicate', () => controller.duplicate());
   handle('projects:reveal', (p?: string) => controller.revealInFinder(p));
   handle('project:snapshot', () => controller.snapshot());
@@ -200,7 +212,7 @@ function registerIpc() {
   handle('project:generatedSource', (kind: 'component' | 'page', id: string) => controller.generatedSource(kind, id));
   handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
   handle('project:resolveConflict', (p: string, choice: 'keep' | 'restore') => controller.resolveConflict(p, choice));
-  handle('project:unlock', () => controller.unlock());
+  handle('project:unlock', () => oneAtATime(() => controller.unlock()));
   handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
   handle('project:validateSource', async (source: string) => {
     const problems = await checkSvelteSource(String(source));
@@ -431,7 +443,7 @@ app.on('before-quit', (e) => {
   if (controller.session) {
     e.preventDefault();
     quitting = true;
-    void controller.close().finally(() => {
+    void oneAtATime(() => controller.close()).finally(() => {
       closedForQuit = true;
       app.quit();
     });

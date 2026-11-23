@@ -167,6 +167,8 @@ export class Orchestrator {
   private run: ActiveRun | null = null;
   /** Clear-history calls in progress. */
   private clearing = 0;
+  /** The last finished request's transcript write; reading or removing transcripts waits for it. */
+  private saving: Promise<void> = Promise.resolve();
   conversation: Conversation | null = null;
 
   constructor(private deps: OrchestratorDeps) {}
@@ -240,6 +242,7 @@ export class Orchestrator {
     if (!/^c_[a-z0-9]+$/.test(id)) throw new Error('Unknown conversation.');
     // The open conversation is newer than its file, which a finished request may still be writing.
     if (this.conversation?.id === id) return this.conversation;
+    await this.saving;
     const c = JSON.parse(await fs.readFile(join(dir, `${id}.json`), 'utf8')) as Conversation;
     if (c.id !== id) throw new Error('Unknown conversation.');
     this.sameSession(session);
@@ -257,6 +260,8 @@ export class Orchestrator {
     // No request may start while the files are going: it would add to a conversation that is being removed.
     this.clearing++;
     try {
+      // A finished request's transcript write would bring a cleared conversation back.
+      await this.saving;
       if (dir) await fs.rm(dir, { recursive: true, force: true });
     } finally {
       this.clearing--;
@@ -328,7 +333,8 @@ export class Orchestrator {
       this.run = null;
       this.deps.onBusyChange(false);
       // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
-      await this.saveConversation().catch(() => undefined);
+      this.saving = this.saveConversation().catch(() => undefined);
+      await this.saving;
     });
     return { ok: true, runId };
   }

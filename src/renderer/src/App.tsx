@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { api, applyAiEvent, getState, persistChatState, setState, useStore } from './store';
+import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, useStore } from './store';
 import { cleanDrafts, moveDraft, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
@@ -18,8 +18,9 @@ export function App() {
     const offs = [
       api.on('project:changed', (snap) => {
         const s = getState();
-        // Another opening (of another project, or of this one again) loads its own state, drafts included.
-        if (s.screen !== 'editor' || snap.workspaceKey !== s.snapshot?.workspaceKey) openSnapshot(snap);
+        // Another opening (of another project, or of this one again) loads its own state, drafts included. A project
+        // that is closing names no opening, and is not one.
+        if (s.screen !== 'editor' || (snap.workspaceKey && snap.workspaceKey !== s.snapshot?.workspaceKey)) openSnapshot(snap);
         else {
           // Keep the current page valid.
           const pageId = s.pageId && snap.state.pages[s.pageId] ? s.pageId : snap.state.site.homePageId;
@@ -98,6 +99,9 @@ async function restoreConversation(seq: number, remembered: string | undefined) 
     // conversation still lets the panel work.
     if (!current()) return;
     const fresh = await api.ai.newConversation().catch(() => null);
-    if (fresh && current()) setState({ conversation: fresh });
+    if (!fresh || !current()) return;
+    setState({ conversation: fresh });
+    // Still the one to restore next time, once the conversations can be read again.
+    if (remembered) saveLocal({ chatConversation: remembered });
   }
 }
