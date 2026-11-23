@@ -206,7 +206,8 @@ function classify(sourcePath: string, buf: Buffer, converter: boolean): Classifi
     if (type !== 'heic') {
       if (buf.length > MAX_BYTES) return { kind: 'refuse', reason: `${name} is larger than 25 MB.`, whole: true };
       const problem = imageProblem(buf, type.stored);
-      if (problem) return { kind: 'refuse', reason: unusableReason(problem, type.stored) };
+      // Its name never said what it holds, so a picture that can't be read is only called damaged.
+      if (problem) return { kind: 'refuse', reason: unusableReason(problem === 'unreadable' ? 'damaged' : problem, type.stored) };
       return { kind: 'stored', mime: type.stored, ext: type.ext, info: null, offer: false };
     }
     const problem = imageProblem(buf, 'image/heic');

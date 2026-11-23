@@ -1258,6 +1258,7 @@ function tiffCreditValues(tiff: Buffer): Map<number, Buffer> {
  */
 export function textCreditsAsTiff(text: Buffer[], tiff?: Buffer): Buffer | null {
   const values = tiff ? tiffCreditValues(tiff) : new Map<number, Buffer>();
+  const had = values.size;
   for (const c of text) {
     const type = c.toString('latin1', 0, 4);
     const data = c.subarray(4);
@@ -1274,6 +1275,8 @@ export function textCreditsAsTiff(text: Buffer[], tiff?: Buffer): Buffer | null 
     if (value) values.set(tag, Buffer.from(`${value.slice(0, 2000)}\0`, 'utf8'));
   }
   if (!values.size) return null;
+  // The text adds nothing the EXIF did not have: its own block is kept, byte for byte.
+  if (tiff && values.size === had) return tiff;
   // Big-endian TIFF: header, one directory (tags in ascending order), then the values it points to.
   const tags = [...values.keys()].sort((a, b) => a - b);
   const dir = Buffer.alloc(2 + tags.length * 12 + 4);
