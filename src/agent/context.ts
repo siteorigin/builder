@@ -18,6 +18,9 @@ function summarizeValue(v: unknown, pages: RichPages, depth = 0): unknown {
       // Never a shortened string that could be written back as the whole value.
       return text.length <= 1200 ? text : { truncated: true, chars: text.length, preview: clip(text, 400) };
     }
+    // A form field's choices are read whole, ids and all: a shortened set written back would drop the rest.
+    const choices = v.every((x) => !!x && typeof x === 'object' && typeof x.id === 'string' && typeof x.label === 'string' && typeof x.value === 'string');
+    if (choices) return v.map((x) => summarizeValue(x, pages, depth + 1));
     if (depth > 2) return `[${v.length} items]`;
     return v.slice(0, 12).map((x) => summarizeValue(x, pages, depth + 1));
   }

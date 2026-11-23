@@ -5,6 +5,7 @@
  */
 import type { ComponentDefinition, PropSchema, ScalarPropSchema } from '@shared/types';
 import { teaserFields } from '@shared/page-teasers';
+import { MAX_CHOICES } from '@engine/values';
 
 export type JsonSchema = Record<string, unknown>;
 
@@ -18,9 +19,21 @@ export const IMAGE_SCHEMA: JsonSchema = {
   additionalProperties: false
 };
 
+/** A set of choices: `{ label }` adds one, and a saved `{ id, label, value }` keeps it (renamed or not). */
+function choicesSchema(description?: string): JsonSchema {
+  return {
+    type: 'array',
+    maxItems: MAX_CHOICES,
+    ...(description ? { description } : {}),
+    items: { type: 'object', properties: { id: { type: 'string' }, label: { type: 'string', maxLength: 200 }, value: { type: 'string', maxLength: 200 } }, required: ['label'], additionalProperties: false }
+  };
+}
+
 /** Types only, for a schema that lists every component: labels there would cost more than the rest together. */
 function compactScalar(s: ScalarPropSchema): JsonSchema {
   switch (s.type) {
+    case 'choices':
+      return choicesSchema();
     case 'number':
       return { type: 'number', ...(s.min !== undefined ? { minimum: s.min } : {}), ...(s.max !== undefined ? { maximum: s.max } : {}) };
     case 'boolean':
@@ -54,6 +67,10 @@ function scalarSchema(s: ScalarPropSchema): JsonSchema {
       return { ...IMAGE_SCHEMA, description };
     case 'icon':
       return { type: 'string', maxLength: 40, description: `${description}. An icon name such as sparkles, compass, leaf, phone or mail.` };
+    case 'choices':
+      return choicesSchema(
+        `${description}, in the order shown. Add a choice as { label }. Keep a saved choice by sending its id, label and value as read: renaming it keeps its id and value, so earlier answers stay together. Leave a choice out to remove it.`
+      );
   }
 }
 

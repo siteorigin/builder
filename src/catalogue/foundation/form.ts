@@ -27,6 +27,8 @@ const FIELD_NAME_SOURCE = `	function fieldName(field, i) {
 	}`;
 /** The form refuses to send while two of its fields share a key; forms from before this check send both. */
 const AMBIGUOUS_SOURCE = `	const ambiguous = $derived(new Set(names).size < names.length);`;
+/** The form refuses to send while a single-choice question offers nothing to choose; older forms ask none. */
+const UNCHOOSABLE_SOURCE = `	const unchoosable = $derived((fields ?? []).some((field) => field?.type === 'choice' && !choicesOf(field).length));`;
 
 /**
  * How the form reads its service settings, and when they connect it. Every version of the theme's form so far has
@@ -45,7 +47,11 @@ const FORM_SOURCE = `<script>
 	 * Without JavaScript it is an ordinary form post. With JavaScript it sends in the background and reports
 	 * the result in place. A hidden honeypot field catches most spam bots. Until the form is connected to a
 	 * service it says so and cannot be sent: it never pretends to send. The same goes for two fields that share
-	 * a name, whose answers the service could not tell apart.
+	 * a name, whose answers the service could not tell apart, and for a single-choice question with nothing to
+	 * choose from.
+	 *
+	 * A single-choice field is a group of radio buttons, each sent as the value its choice was given when it was
+	 * first named. A checkbox is sent as "yes" when ticked and not at all otherwise; a required one must be ticked.
 	 *
 	 * data-keep-draft and data-draft-field let the site's layout keep a message the visitor has not sent with
 	 * its place in the tab's history (src/lib/siteorigin/runtime/drafts.js), so Back brings it back.
@@ -78,7 +84,9 @@ ${SERVICE_SOURCE}
 	// The key each answer is sent under. Two answers under one key reach the service as one field twice.
 	const names = $derived((fields ?? []).map((field, i) => fieldName(field, i)));
 ${AMBIGUOUS_SOURCE}
-	const ready = $derived(connected && !ambiguous);
+	// A required question with no choices could not be answered, and an optional one asks nothing.
+${UNCHOOSABLE_SOURCE}
+	const ready = $derived(connected && !ambiguous && !unchoosable);
 
 	function isEndpoint(value) {
 		try {
@@ -90,6 +98,21 @@ ${AMBIGUOUS_SOURCE}
 	}
 
 ${FIELD_NAME_SOURCE}
+
+	// The answers a single-choice field offers: each one's id, its label and the value it is sent as. The key keeps a
+	// ticked radio button with its choice when the choices are reordered.
+	function choicesOf(field) {
+		const keys = new Set();
+		return (Array.isArray(field?.options) ? field.options : [])
+			.filter((choice) => choice && String(choice.label ?? '').trim())
+			.map((choice, j) => {
+				const id = String(choice.id ?? '');
+				let key = id;
+				for (let n = j; !key || keys.has(key); n++) key = '#' + n;
+				keys.add(key);
+				return { id, key, label: String(choice.label), value: String(choice.value || choice.label) };
+			});
+	}
 
 	// The sent or error message describes the last attempt; once the visitor edits again it no longer does.
 	function clearFeedback() {
@@ -153,35 +176,74 @@ ${FIELD_NAME_SOURCE}
 			{#if provider === 'netlify'}<input type="hidden" name="form-name" value={netlifyName} />{/if}
 			{#if provider === 'web3forms'}<input type="hidden" name="access_key" value={key} />{/if}
 			{#each fields as field, i (field.id)}
-				<div class={['so-form__field', field.type === 'textarea' && 'so-form__field--wide']}>
-					<label for={uid + '-' + i}>
-						{field.label}{#if field.required}<span class="so-form__required" aria-hidden="true">*</span>{/if}
-					</label>
-					{#if field.type === 'textarea'}
-						<textarea
-							id={uid + '-' + i}
-							name={names[i]}
-							data-draft-field={field.id ?? i}
-							required={field.required}
-							readonly={status === 'sending'}
-							rows="5"
-							placeholder={field.placeholder || undefined}
-							oninput={clearFeedback}
-						></textarea>
-					{:else}
+				{#if field.type === 'choice'}
+					<!-- Disabled while a message sends, as the text fields are read-only: its answers were already taken. -->
+					<fieldset class="so-form__field so-form__field--wide so-form__choices" disabled={status === 'sending'}>
+						<legend>
+							{field.label}{#if field.required}<span class="so-form__required" aria-hidden="true">*</span>{/if}
+						</legend>
+						{#each choicesOf(field) as choice (choice.key)}
+							<label class="so-form__choice">
+								<input
+									type="radio"
+									name={names[i]}
+									value={choice.value}
+									data-draft-field={field.id ?? i}
+									data-draft-choice={choice.id || undefined}
+									required={field.required}
+									oninput={clearFeedback}
+								/>
+								{choice.label}
+							</label>
+						{/each}
+					</fieldset>
+				{:else if field.type === 'checkbox'}
+					<div class="so-form__field so-form__field--wide so-form__check">
 						<input
 							id={uid + '-' + i}
-							type={field.type === 'email' || field.type === 'tel' ? field.type : 'text'}
+							type="checkbox"
 							name={names[i]}
+							value="yes"
 							data-draft-field={field.id ?? i}
 							required={field.required}
-							readonly={status === 'sending'}
-							autocomplete={AUTOCOMPLETE[field.type] ?? (names[i] === 'name' ? 'name' : undefined)}
-							placeholder={field.placeholder || undefined}
+							disabled={status === 'sending'}
 							oninput={clearFeedback}
 						/>
-					{/if}
-				</div>
+						<label for={uid + '-' + i}>
+							{field.label}{#if field.required}<span class="so-form__required" aria-hidden="true">*</span>{/if}
+						</label>
+					</div>
+				{:else}
+					<div class={['so-form__field', field.type === 'textarea' && 'so-form__field--wide']}>
+						<label for={uid + '-' + i}>
+							{field.label}{#if field.required}<span class="so-form__required" aria-hidden="true">*</span>{/if}
+						</label>
+						{#if field.type === 'textarea'}
+							<textarea
+								id={uid + '-' + i}
+								name={names[i]}
+								data-draft-field={field.id ?? i}
+								required={field.required}
+								readonly={status === 'sending'}
+								rows="5"
+								placeholder={field.placeholder || undefined}
+								oninput={clearFeedback}
+							></textarea>
+						{:else}
+							<input
+								id={uid + '-' + i}
+								type={field.type === 'email' || field.type === 'tel' ? field.type : 'text'}
+								name={names[i]}
+								data-draft-field={field.id ?? i}
+								required={field.required}
+								readonly={status === 'sending'}
+								autocomplete={AUTOCOMPLETE[field.type] ?? (names[i] === 'name' ? 'name' : undefined)}
+								placeholder={field.placeholder || undefined}
+								oninput={clearFeedback}
+							/>
+						{/if}
+					</div>
+				{/if}
 			{/each}
 			<div class="so-form__trap" aria-hidden="true">
 				{#if provider === 'web3forms'}
@@ -200,7 +262,7 @@ ${FIELD_NAME_SOURCE}
 		<!-- Live regions stay in the page, outside the busy form, so their changes are announced. -->
 		<div class="so-form__messages">
 			<p class="so-form__status" role="status">
-				{#if !connected}This form is not connected to a form service yet, so it cannot be sent.{:else if ambiguous}Two fields of this form have the same name, so it cannot be sent.{:else if status === 'sending'}Sending your message…{:else if status === 'sent'}{successMessage}{/if}
+				{#if !connected}This form is not connected to a form service yet, so it cannot be sent.{:else if ambiguous}Two fields of this form have the same name, so it cannot be sent.{:else if unchoosable}A question in this form has no answers to choose from yet, so it cannot be sent.{:else if status === 'sending'}Sending your message…{:else if status === 'sent'}{successMessage}{/if}
 			</p>
 			<p class="so-form__status so-form__status--error" role="alert">
 				{#if status === 'error'}{errorMessage}{/if}
@@ -286,7 +348,7 @@ ${FIELD_NAME_SOURCE}
 	.so-form__required {
 		margin-inline-start: 0.2em;
 	}
-	.so-form__field input,
+	.so-form__field input:not([type='radio']):not([type='checkbox']),
 	.so-form__field textarea {
 		width: 100%;
 		min-height: 46px;
@@ -305,6 +367,48 @@ ${FIELD_NAME_SOURCE}
 	.so-form__field textarea:focus-visible {
 		outline: 2px solid var(--so-color-focus);
 		outline-offset: 1px;
+	}
+	.so-form__choices {
+		min-inline-size: 0;
+		margin: 0;
+		padding: 0;
+		border: 0;
+	}
+	.so-form__choices legend {
+		margin-bottom: var(--so-space-xs);
+		padding: 0;
+		font-size: 0.95rem;
+		font-weight: 550;
+	}
+	.so-form__field .so-form__choice {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.6em;
+		padding-block: 0.2em;
+		font-size: 1rem;
+		font-weight: 400;
+	}
+	.so-form__check {
+		flex-direction: row;
+		align-items: flex-start;
+		gap: 0.6em;
+	}
+	.so-form__choice input,
+	.so-form__check input {
+		flex: none;
+		width: 1.15em;
+		height: 1.15em;
+		margin: 0.2em 0 0;
+		accent-color: var(--so-color-brand);
+	}
+	.so-form__choice input:focus-visible,
+	.so-form__check input:focus-visible {
+		outline-offset: 2px;
+	}
+	/* Native radio buttons and checkboxes drawn for a dark background, so their outlines stay visible. */
+	.so-form--inverse .so-form__choice input,
+	.so-form--inverse .so-form__check input {
+		color-scheme: dark;
 	}
 	.so-form__trap {
 		position: absolute;
@@ -370,8 +474,13 @@ export const contactForm: ComponentDefinition = {
           ['text', 'Short text'],
           ['email', 'Email address'],
           ['tel', 'Telephone'],
-          ['textarea', 'Long text']
+          ['textarea', 'Long text'],
+          ['choice', 'Single choice'],
+          ['checkbox', 'Checkbox']
         ]),
+        options: P.choices('Choices', {
+          description: 'The answers a visitor picks one of. Each is sent as the label it was first given, so renaming it keeps its answers together.'
+        }),
         required: P.bool('Required', false),
         placeholder: P.str('Placeholder', '')
       },
@@ -511,6 +620,8 @@ export interface FormField {
   id?: unknown;
   name?: unknown;
   label?: unknown;
+  type?: unknown;
+  options?: unknown;
 }
 
 /** `String(value)`, or '' for a stored value that has no text form (a hand-edited document can hold anything). */
@@ -589,7 +700,8 @@ export function formFieldsAsSent(def: ComponentDefinition, value: unknown): Form
   const schema = def.properties.fields;
   if (schema?.type !== 'list') return [];
   const items = (Array.isArray(value) ? value : schema.default) as Array<Record<string, unknown> | null | undefined>;
-  return items.map((it) => ({ id: it?.id, name: it?.name ?? schema.fields.name?.default, label: it?.label ?? schema.fields.label?.default }));
+  const f = schema.fields;
+  return items.map((it) => ({ id: it?.id, name: it?.name ?? f.name?.default, label: it?.label ?? f.label?.default, type: it?.type ?? f.type?.default, options: it?.options ?? f.options?.default }));
 }
 
 /**
@@ -603,4 +715,32 @@ export function namesFormFields(def: ComponentDefinition | undefined): boolean {
 /** Whether the form refuses to send while two fields share a key. Older versions send both answers. */
 export function formRefusesClashes(def: ComponentDefinition): boolean {
   return !!def.source?.includes(AMBIGUOUS_SOURCE);
+}
+
+/**
+ * Whether a definition's fields can be single-choice questions and checkboxes, with a question's answers in its
+ * `options`. Older versions of the form have neither, and their editor offers neither.
+ */
+export function offersFormChoices(def: ComponentDefinition | undefined): boolean {
+  const fields = def?.properties.fields;
+  if (!namesFormFields(def) || fields?.type !== 'list') return false;
+  const type = fields.fields.type;
+  return fields.fields.options?.type === 'choices' && type?.type === 'enum' && type.options.some((o) => o.value === 'choice');
+}
+
+/** A field's settings that do nothing for its type. The editor hides them and keeps what they hold for a switch back. */
+export function formFieldSettingsHidden(field: FormField): string[] {
+  const type = text(field.type ?? 'text');
+  return type === 'choice' ? ['placeholder'] : type === 'checkbox' ? ['placeholder', 'options'] : ['options'];
+}
+
+/** The positions of a form's single-choice questions that offer nothing to choose: the component's `unchoosable`. */
+export function formUnchoosable(fields: readonly FormField[]): number[] {
+  const offered = (options: unknown) => Array.isArray(options) && options.some((o) => !!o && !!text((o as { label?: unknown }).label ?? '').trim());
+  return fields.flatMap((f, i) => (f?.type === 'choice' && !offered(f.options) ? [i] : []));
+}
+
+/** Whether the form refuses to send while a single-choice question has no choices. */
+export function formRefusesUnchoosable(def: ComponentDefinition): boolean {
+  return !!def.source?.includes(UNCHOOSABLE_SOURCE);
 }

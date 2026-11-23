@@ -173,7 +173,7 @@ export const OPERATION_SCHEMAS = {
     prop: z.string(),
     itemId: z.string().optional().describe('For list properties: the stable item ID to edit.'),
     field: z.string().optional().describe('For list properties: the item field to set.'),
-    value: z.unknown().describe(RICH_TEXT_VALUE)
+    value: z.unknown().describe(`${RICH_TEXT_VALUE} For choices: the whole set in order, { label } for a new choice and the saved { id, label, value } for one kept or renamed.`)
   }),
   'instance.listInsert': z.object({
     type: z.literal('instance.listInsert'),
@@ -237,7 +237,7 @@ export const OPERATION_SCHEMAS = {
     properties: z
       .record(z.string(), z.unknown())
       .optional()
-      .describe('Property schema: { propName: { type, label, default } }. Types: string, richtext, number, boolean, enum (options), link, image, icon, list (itemLabel, fields).')
+      .describe('Property schema: { propName: { type, label, default } }. Types: string, richtext, number, boolean, enum (options), link, image, icon, choices, list (itemLabel, fields).')
   }),
   'component.updateSource': z.object({
     type: z.literal('component.updateSource'),

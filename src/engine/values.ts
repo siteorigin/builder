@@ -1,4 +1,4 @@
-import type { ImageValue, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
+import type { ChoiceOption, ImageValue, LinkValue, ListItem, ProjectState, PropSchema, RichBlock, RichListType, RichSpan, RichText, ScalarPropSchema } from '@shared/types';
 import { cleanBlocks, isListBlock, isRichBlock, linkFromTarget, mergeLists, parseRichText, richTextToPlain } from '@shared/richtext';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
@@ -107,6 +107,90 @@ export function normalizeRichText(v: unknown, state: ProjectState, label: string
   return out;
 }
 
+/** The most answers one set of choices offers, and the longest label one of them has. */
+export const MAX_CHOICES = 24;
+const MAX_CHOICE_TEXT = 200;
+
+function isChoice(o: unknown): o is ChoiceOption {
+  const c = o as ChoiceOption;
+  return !!c && typeof c === 'object' && typeof c.id === 'string' && typeof c.label === 'string' && typeof c.value === 'string';
+}
+
+/** The first `length` UTF-16 units of `text`, never half of a character that takes two. */
+const cut = (text: string, length: number) => (/[\uD800-\uDBFF]/.test(text.charAt(length - 1)) ? text.slice(0, length - 1) : text.slice(0, length));
+
+/** Two labels or values a visitor (or whoever reads the answers) would take for the same one. */
+const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * A set of choices as stored: `{ id, label, value }` in the order shown. `stored` is the set saved before this edit.
+ * A choice keeps the value it is sent as for as long as it keeps its id, whatever its label becomes. A choice sent
+ * without a saved id is the saved one with that label, if there is one; otherwise it is new and is sent as its label,
+ * numbered past the values the set already sends. A plain string is a choice's label.
+ */
+export function normalizeChoices(v: unknown, label: string, stored?: unknown): ChoiceOption[] {
+  // A set saved under older rules stays while it is not being changed.
+  if (Array.isArray(v) && Array.isArray(stored) && JSON.stringify(v) === JSON.stringify(stored)) return v as ChoiceOption[];
+  if (!Array.isArray(v)) fail(`${label}: expected a list of choices, such as ["Kitchen", "Lighting"].`);
+  if (v.length > MAX_CHOICES) fail(`${label}: at most ${MAX_CHOICES} choices.`);
+  const saved = (Array.isArray(stored) ? stored : []).filter(isChoice);
+  const byId = new Map(saved.map((o) => [o.id, o]));
+  const rows = v.map((raw, i) => {
+    const o = (typeof raw === 'string' || typeof raw === 'number' ? { label: raw } : raw) as Record<string, unknown> | null;
+    if (!o || typeof o !== 'object' || Array.isArray(o)) fail(`${label}: choice ${i + 1} should be its label, or { id, label }.`);
+    const text = typeof o.label === 'string' || typeof o.label === 'number' ? String(o.label).replace(/\s+/g, ' ').trim() : '';
+    if (!text) fail(`${label}: choice ${i + 1} needs a label.`);
+    if (text.length > MAX_CHOICE_TEXT) fail(`${label}: “${text.slice(0, 40)}…” is longer than ${MAX_CHOICE_TEXT} characters.`);
+    const value = o.value === undefined || o.value === null ? undefined : typeof o.value === 'string' || typeof o.value === 'number' ? String(o.value).replace(/\s+/g, ' ').trim() : fail(`${label}: “${text}” has a value that is not text.`);
+    return { id: typeof o.id === 'string' && o.id ? o.id : undefined, label: text, value: value || undefined, was: undefined as ChoiceOption | undefined };
+  });
+  rows.forEach((r, i) => {
+    const twin = rows.findIndex((x, j) => j < i && same(x.label, r.label));
+    if (twin >= 0) fail(`${label}: “${r.label}” is offered twice. Give each choice its own label.`);
+    if (r.id && rows.some((x, j) => j < i && x.id === r.id)) fail(`${label}: two choices share the id "${r.id}".`);
+  });
+  // A saved id is that choice. Its value is what earlier answers to it were sent as, so it never changes.
+  for (const r of rows) {
+    const was = r.id ? byId.get(r.id) : undefined;
+    if (!was) continue;
+    if (r.value !== undefined && r.value !== was.value) fail(`${label}: “${was.label}” is sent as “${was.value}”, which cannot change. Add a new choice to send something else.`);
+    r.was = was;
+  }
+  const claimed = () => new Set(rows.flatMap((r) => (r.was ? [r.was.id] : [])));
+  // Otherwise a choice still offered under its label is that choice: rewriting a set as labels keeps every value.
+  for (const r of rows) {
+    if (r.was) continue;
+    const taken = claimed();
+    r.was = saved.find((o) => !taken.has(o.id) && same(o.label, r.label));
+    if (r.was && r.value !== undefined && r.value !== r.was.value) fail(`${label}: “${r.was.label}” is sent as “${r.was.value}”, which cannot change. Add a new choice to send something else.`);
+  }
+  const gone = saved.filter((o) => !claimed().has(o.id));
+  const added = rows.filter((r) => !r.was);
+  // A new label where a saved one went missing may be a rename, which only the choice's id can say.
+  if (gone.length && added.length)
+    fail(`${label}: “${added[0].label}” is new and “${gone[0].label}” is no longer offered. To rename a choice, send it with its id, so it keeps the value its answers are sent as. To replace it, remove it in one edit and add the new choice in another.`);
+  // So may a removal among choices known only by label: of "Starter" and "Basic", ["Basic"] may keep either one.
+  const byLabel = rows.find((r) => r.was && r.id !== r.was.id);
+  if (gone.length && byLabel)
+    fail(`${label}: “${gone[0].label}” is no longer offered and “${byLabel.label}” was sent without its id. To remove a choice, send the ones you keep with their ids, so each keeps the value its answers are sent as.`);
+  // A value given for a new choice is checked like a label; a saved one stays as it is.
+  for (const r of added) if (r.value !== undefined && r.value.length > MAX_CHOICE_TEXT) fail(`${label}: “${r.label}” has a value longer than ${MAX_CHOICE_TEXT} characters.`);
+  const used = rows.flatMap((r) => (r.was ? [r.was.value] : []));
+  const ids = new Set([...rows.flatMap((r) => (r.was ? [r.was.id] : [])), ...saved.map((o) => o.id)]);
+  return rows.map((r) => {
+    if (r.was) return { id: r.was.id, label: r.label, value: r.was.value };
+    const base = r.value ?? r.label;
+    let value = base;
+    // Numbered within the length a value may have, so the choice can always be sent back as it is.
+    for (let n = 2; used.some((u) => same(u, value)); n++) value = `${cut(base, MAX_CHOICE_TEXT - ` (${n})`.length).trimEnd()} (${n})`;
+    used.push(value);
+    // A new choice keeps an id it brings (a copied set), unless another choice already has it.
+    const id = r.id && /^[\w-]{1,64}$/.test(r.id) && !ids.has(r.id) ? r.id : newId('c');
+    ids.add(id);
+    return { id, label: r.label, value };
+  });
+}
+
 /**
  * `stored` is the value already saved for this field, if any. A value that was valid under older rules is
  * kept when it is not being changed, so editing one field never fails on another.
@@ -148,13 +232,16 @@ export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: Pro
       if (typeof v === 'string' && v === stored && /^[a-z0-9-]{1,40}$/.test(v)) return v;
       if (typeof v !== 'string' || !Object.hasOwn(ICONS, v)) fail(`${label}: ${typeof v === 'string' ? `"${v.slice(0, 40)}" is not an available icon` : 'expected an icon name'}. Use one of: ${Object.keys(ICONS).join(', ')}.`);
       return v;
+    case 'choices':
+      return normalizeChoices(v, label, stored);
   }
 }
 
 export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, item: Record<string, unknown> | undefined, state: ProjectState, label: string, base?: ListItem, stored?: Record<string, unknown>): ListItem {
   const out: ListItem = { id: base?.id ?? newId('i') };
   for (const [k, f] of Object.entries(schema.fields)) {
-    const raw = item && k in item ? item[k] : base && k in base ? base[k] : structuredClone(f.default);
+    // Choices left out of an edited item stay as saved: their values cannot be made again from their labels.
+    const raw = item && k in item ? item[k] : base && k in base ? base[k] : f.type === 'choices' && stored && Object.hasOwn(stored, k) ? stored[k] : structuredClone(f.default);
     out[k] = normalizeScalar(f, raw, state, `${label} → ${f.label}`, stored?.[k]);
   }
   return out;

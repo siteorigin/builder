@@ -221,6 +221,7 @@ export const P = {
   }),
   image: (label: string, alt = ''): ScalarPropSchema => ({ type: 'image', label, default: { assetId: null, alt } }),
   icon: (label: string, def: string): ScalarPropSchema => ({ type: 'icon', label, default: def }),
+  choices: (label: string, extra: Partial<ScalarPropSchema> = {}): ScalarPropSchema => ({ type: 'choices', label, default: [], ...extra }) as ScalarPropSchema,
   list: (
     label: string,
     itemLabel: string,

@@ -8,7 +8,7 @@ import { axesOf } from '@shared/variants';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
 
-const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'list'] as const;
+const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'choices', 'list'] as const;
 
 /** Names generated code already uses (props, helpers, repeat variables), or that cannot be a destructured identifier. */
 const RESERVED = new Set([
@@ -134,6 +134,9 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
       break;
     case 'icon':
       out.default = 'sparkles';
+      break;
+    case 'choices':
+      out.default = [];
       break;
     case 'list': {
       if (!r.fields || typeof r.fields !== 'object' || Array.isArray(r.fields)) fail(`${label}: a list needs fields.`);

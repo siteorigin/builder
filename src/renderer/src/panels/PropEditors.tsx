@@ -1,6 +1,6 @@
 import { createElement, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import type { GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import type { ChoiceOption, ChoicesProp, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, setState, toast, useStore, type PendingEdit } from '../store';
@@ -9,6 +9,8 @@ import type { ListPlace } from '../lib/reveal';
 import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
 import { isSettling } from '../lib/pending';
 import { announcementText } from '../lib/announce';
+import { MAX_CHOICES as MAX_CHOICE_ROWS } from '@engine/values';
+import { applyChoiceAction, choiceText, sameChoice, staleRename, type ChoiceAction } from '../lib/choices';
 
 const MOVE_PENDING_MS = 3000;
 import { addLimitNote, countLabel, countText, moveAnnouncement, moveFocusTarget, removeLimitNote, type MoveDirection } from '../lib/list-editor';
@@ -544,7 +546,7 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
  * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
  * its hint; without, it names itself with aria-label.
  */
-export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string }) {
+export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive, placeholder }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void; placeholder?: string }) {
   const name = id ? undefined : (label ?? schema.label);
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
@@ -582,7 +584,244 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
       return <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={label ?? schema.label} />;
     case 'icon':
       return <IconPicker id={id} describedBy={describedBy} value={String(value ?? schema.default)} onChange={onChange} label={label ?? schema.label} />;
+    case 'choices':
+      return <ChoicesEditor schema={schema} value={value} onChange={onChange} label={label} />;
   }
+}
+
+const isChoiceRow = (o: unknown): o is ChoiceOption => !!o && typeof o === 'object' && typeof (o as ChoiceOption).id === 'string' && typeof (o as ChoiceOption).label === 'string';
+const choiceRows = (value: unknown) => (Array.isArray(value) ? value : []).filter(isChoiceRow);
+
+/**
+ * A choice's label, edited as a draft: committed on Enter or on leaving it, put back on Escape or a refusal. A rename
+ * says the label it was typed over, so one the AI changed meanwhile is not overwritten.
+ */
+function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceOption; index: number; describedBy?: string; onRename: (label: string, from: string) => Promise<boolean> }) {
+  const [draft, setDraft] = useState(choice.label);
+  const saved = useRef(choice.label);
+  saved.current = choice.label;
+  // The label most recently committed here, until the project has it: typing again starts from it.
+  const sent = useRef<string | null>(null);
+  // The label the author started typing over, from the first keystroke until the commit.
+  const from = useRef<string | null>(null);
+  // Follows the project until the author types, so typing always starts from what the project holds.
+  useEffect(() => {
+    if (from.current === null) setDraft(choice.label);
+  }, [choice.label]);
+  const commit = () => {
+    const over = from.current;
+    if (over === null) return;
+    from.current = null;
+    const text = choiceText(draft);
+    // An emptied label puts the saved one back: a choice is removed with its own button.
+    if (!text || text === over) return setDraft(sent.current ?? saved.current);
+    sent.current = text;
+    void onRename(text, over).then((ok) => {
+      if (sent.current === text) sent.current = null;
+      if (!ok && from.current === null) setDraft(saved.current);
+    });
+  };
+  return (
+    <input
+      className="input"
+      value={draft}
+      aria-label={`Choice ${index + 1}`}
+      aria-describedby={describedBy}
+      data-choice-focus={`input-${choice.id}`}
+      onChange={(e) => {
+        from.current ??= sent.current ?? saved.current;
+        setDraft(e.target.value);
+      }}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commit();
+        } else if (e.key === 'Escape' && from.current !== null) {
+          e.preventDefault();
+          from.current = null;
+          setDraft(sent.current ?? saved.current);
+        }
+      }}
+    />
+  );
+}
+
+/**
+ * The answers to a single-choice question: each one's label, what it is sent as, its place and a way to remove it,
+ * then a box to add the next. Each change names its choice by id and waits for the one before it to land, then
+ * applies to the set as the project holds it at that moment (`read`), on that revision (lib/choices). So a change
+ * made right after another, such as a move just after a rename, never undoes it; one the project refuses never takes
+ * the next with it; one built before something else changed the project (Undo, the AI) is refused, not replayed over
+ * it; and changes still waiting when the question is closed are still made. While the AI is working every change is
+ * refused, as moving a list item is.
+ */
+function ChoicesEditor({ schema, value, onChange, read, label }: { schema: ChoicesProp; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; label?: string }) {
+  const choices = choiceRows(value);
+  const labelId = useId();
+  const hintId = useId();
+  const addId = useId();
+  const [draft, setDraft] = useState('');
+  const [problem, setProblem] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+  const shownRef = useRef(choices);
+  shownRef.current = choices;
+  const queue = useRef<Array<{ action: ChoiceAction; done: (ok: boolean) => void }>>([]);
+  const busy = useRef(false);
+  const refocus = useRef<{ target: string; fallback: string } | null>(null);
+  const pump = () => {
+    while (!busy.current && queue.current.length) {
+      const { action, done } = queue.current.shift()!;
+      // The project's new state reaches the store before its reply, so this is the set the last change made.
+      const now = read?.();
+      const saved = now ? choiceRows(now.value) : shownRef.current;
+      const stale = staleRename(saved, action);
+      if (stale && action.kind === 'rename') toast(`“${action.from}” became “${stale.label}” while you were typing, so it was not renamed to “${action.label}”.`, 'error');
+      const next = applyChoiceAction(saved, action);
+      if (!next) {
+        done(false);
+        continue;
+      }
+      busy.current = true;
+      void Promise.resolve(onChange(next, now ? { operations: [], expectedRevision: now.revision } : undefined))
+        .then(
+          (r) => r !== null,
+          () => false
+        )
+        .then((ok) => {
+          busy.current = false;
+          done(ok);
+          pump();
+        });
+    }
+  };
+  const act = (action: ChoiceAction) =>
+    new Promise<boolean>((done) => {
+      queue.current.push({ action, done });
+      pump();
+    });
+  const ids = choices.map((c) => c.id).join(',');
+  useEffect(() => {
+    const to = refocus.current;
+    if (!to) return;
+    refocus.current = null;
+    // Only where focus was lost with the change (a moved or removed row), never away from where the author went.
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    const find = (key: string) => rootRef.current?.querySelector<HTMLElement>(`[data-choice-focus="${CSS.escape(key)}"]`);
+    const target = find(to.target);
+    (target && !(target as HTMLButtonElement).disabled ? target : find(to.fallback))?.focus();
+  }, [ids]);
+  const shown = label ?? schema.label;
+  const full = choices.length >= MAX_CHOICE_ROWS;
+  const add = () => {
+    const text = choiceText(draft);
+    if (!text || full) return;
+    if (choices.some((c) => sameChoice(c.label, text))) return setProblem(`“${text}” is already a choice.`);
+    setProblem('');
+    setDraft('');
+    // A refused choice comes back to the box, unless something else has been typed there since.
+    void act({ kind: 'add', label: text }).then((ok) => {
+      if (!ok) setDraft((d) => d || text);
+    });
+  };
+  const move = (c: ChoiceOption, by: -1 | 1) => {
+    const direction = by < 0 ? 'up' : 'down';
+    refocus.current = { target: `${direction}-${c.id}`, fallback: `input-${c.id}` };
+    void act({ kind: 'move', id: c.id, by });
+  };
+  const remove = (c: ChoiceOption, i: number) => {
+    const after = choices[i + 1] ?? choices[i - 1];
+    refocus.current = { target: after ? `input-${after.id}` : 'add', fallback: 'add' };
+    void act({ kind: 'remove', id: c.id });
+  };
+  return (
+    <div className="field choices-editor" role="group" aria-labelledby={labelId} aria-describedby={schema.description ? hintId : undefined} ref={rootRef}>
+      <div className="field-label" id={labelId}>
+        <span className="grow">{shown}</span>
+        <span className="insp-count">{countText(choices.length, MAX_CHOICE_ROWS)}</span>
+      </div>
+      {choices.length > 0 ? (
+        <ol className="choices-list">
+          {choices.map((c, i) => {
+            const name = `“${c.label}”`;
+            return (
+              <li key={c.id} className="choices-row">
+                <div className="choices-row-controls">
+                  <ChoiceLabel choice={c} index={i} describedBy={c.value !== c.label ? `${hintId}-${i}` : undefined} onRename={(text, from) => act({ kind: 'rename', id: c.id, label: text, from })} />
+                  <button type="button" className="icon-btn sm" aria-label={`Move ${name} up`} data-choice-focus={`up-${c.id}`} disabled={i === 0} onClick={() => move(c, -1)}>
+                    <ArrowUp />
+                  </button>
+                  <button type="button" className="icon-btn sm" aria-label={`Move ${name} down`} data-choice-focus={`down-${c.id}`} disabled={i === choices.length - 1} onClick={() => move(c, 1)}>
+                    <ArrowDown />
+                  </button>
+                  <button type="button" className="icon-btn sm" aria-label={`Remove ${name}`} onClick={() => remove(c, i)}>
+                    <Trash2 />
+                  </button>
+                </div>
+                {/* Renaming keeps what the choice is sent as, so answers to it stay together. */}
+                {c.value !== c.label && (
+                  <div className="field-hint" id={`${hintId}-${i}`}>
+                    Sent as “{c.value}”
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <p className="field-hint insp-note">Add the answers a visitor picks one of.</p>
+      )}
+      <div className="choices-add">
+        <input
+          className="input"
+          id={addId}
+          data-choice-focus="add"
+          value={draft}
+          placeholder={full ? `At most ${MAX_CHOICE_ROWS} choices` : 'Add a choice'}
+          aria-label="New choice"
+          aria-invalid={problem ? true : undefined}
+          aria-describedby={problem ? `${addId}-problem` : undefined}
+          disabled={full}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setProblem('');
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter' || isImeComposing(e)) return;
+            e.preventDefault();
+            add();
+          }}
+        />
+        <button type="button" className="btn btn-sm" onClick={add} disabled={full || !draft.trim()}>
+          <Plus /> Add
+        </button>
+      </div>
+      {problem && (
+        <div className="field-error" id={`${addId}-problem`} role="alert">
+          {problem}
+        </div>
+      )}
+      {schema.description && (
+        <div className="field-hint" id={hintId}>
+          {schema.description}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A value as the project holds it now, and the revision it was read at. */
+export interface ReadValue {
+  value: unknown;
+  revision: number;
+}
+
+/** One field of one list item, from a list read as the project holds it now. */
+function readItemField(list: ReadValue | undefined, itemId: string, field: string): ReadValue | undefined {
+  const item = list && Array.isArray(list.value) ? (list.value as ListItem[]).find((x) => x?.id === itemId) : undefined;
+  return item && list ? { value: item[field], revision: list.revision } : undefined;
 }
 
 /** A one-click fix offered under a field's problem, such as hiding a button that has no link. */
@@ -596,10 +835,12 @@ export interface FieldAction {
  * titled card. `hint` replaces the schema's description and `error` replaces both, for text and link fields; a
  * link can also offer an `action` that fixes its problem.
  */
-export function ScalarField({ schema, value, onChange, state, label, hint, error, action, onLive, placeholder }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string }) {
+export function ScalarField({ schema, value, onChange, read, state, label, hint, error, action, onLive, placeholder }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string }) {
   const id = useId();
   const shown = label ?? schema.label;
   const note = hint ?? schema.description;
+  // A set of choices names itself and says what it is under its own rows.
+  if (schema.type === 'choices') return <ChoicesEditor schema={schema} value={value} onChange={onChange} read={read} label={shown} />;
   if (schema.type === 'boolean') return <SwitchRow checked={!!value} onChange={onChange} label={shown} hint={schema.description} />;
   if (schema.type === 'image')
     return hint ? (
@@ -667,12 +908,14 @@ export interface ListReveal {
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onList, state, focusItem, openItem, label, hint, annotate, linkPairs, error, action, place }: {
+export function PropField({ name, schema, value, onChange, onList, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place }: {
   name: string;
   schema: PropSchema;
   value: unknown;
-  onChange: (v: unknown, edit?: PendingEdit) => void;
-  onList: (op: ListOp) => void;
+  onChange: (v: unknown, edit?: PendingEdit) => unknown;
+  onList: (op: ListOp) => unknown;
+  /** The value as the project holds it now and its revision, for an edit built after earlier ones land. */
+  read?: () => ReadValue | undefined;
   state: ProjectState;
   focusItem?: string;
   /** For a list: open this item, once per request ("Open in inspector"); the author can close it again. */
@@ -683,6 +926,8 @@ export function PropField({ name, schema, value, onChange, onList, state, focusI
   hint?: ReactNode;
   /** For a list: what to say about each item, such as the key a form field is sent under. */
   annotate?: (item: ListItem, index: number) => ListItemNote | undefined;
+  /** For a list: the fields of an item that do nothing for it (a form field's choices while it asks for text). */
+  hiddenFields?: (item: ListItem) => readonly string[];
   linkPairs?: LinkPairs;
   /** For a single field: a problem to show under it, and a fix for it. */
   error?: string;
@@ -690,8 +935,8 @@ export function PropField({ name, schema, value, onChange, onList, state, focusI
   /** For a list: the placement it belongs to, so the item open here is revealed on the page (see lib/reveal). */
   place?: ListPlace;
 }) {
-  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} linkPairs={linkPairs} place={place} />;
-  return <ScalarField schema={schema} value={value} onChange={onChange} state={state} label={label} hint={hint} error={error} action={action} />;
+  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} />;
+  return <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} />;
   void name;
 }
 
@@ -821,7 +1066,7 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, state, focusItem, openItem, annotate, linkPairs, place }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => void; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; linkPairs?: LinkPairs; place?: ListPlace }) {
+function ListEditor({ name, schema, items, onList, read, state, focusItem, openItem, annotate, hiddenFields, linkPairs, place }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => unknown; read?: () => ReadValue | undefined; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; hiddenFields?: (item: ListItem) => readonly string[]; linkPairs?: LinkPairs; place?: ListPlace }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
@@ -901,6 +1146,11 @@ function ListEditor({ name, schema, items, onList, state, focusItem, openItem, a
   // A fixed-size list gives one reason for both actions.
   const removeNoteShared = removeNote !== null && removeNote === addNote;
   const fields = groupFields(Object.entries(schema.fields).map(([key, s]) => ({ key, schema: s, data: null })));
+  // Settings that do nothing for an item are left out of its editor; what they hold stays for a switch back.
+  const fieldsOf = (it: ListItem) => {
+    const hidden = hiddenFields?.(it);
+    return hidden?.length ? groupFields(Object.entries(schema.fields).filter(([key]) => !hidden.includes(key)).map(([key, s]) => ({ key, schema: s, data: null }))) : fields;
+  };
   return (
     <div className="field" role="group" aria-labelledby={labelId} data-list={name} ref={rootRef}>
       <div className="field-label" id={labelId}>
@@ -951,7 +1201,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, openItem, a
               {openId === it.id && (
                 <>
                   <FieldGroups
-                    groups={fields}
+                    groups={fieldsOf(it)}
                     render={({ key, schema: fs, label }) => {
                       const teaser = teaserFieldNote(state, schema, it, key);
                       return (
@@ -961,6 +1211,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, openItem, a
                           label={label}
                           value={Object.hasOwn(it, key) ? it[key] : (fs as { default?: unknown }).default}
                           onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })}
+                          read={read && (() => readItemField(read(), it.id, key))}
                           state={state}
                           hint={note?.field === key ? note.hint : teaser?.hint}
                           placeholder={teaser?.placeholder}

@@ -8,7 +8,7 @@ import { bindingProblem, bindingSlots, boundSchema } from './schema';
 import { cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle } from './tokens';
 import { missingSectionLinks, unlinkedButtons } from '@generator/checks';
-import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, namesFormFields } from '@catalogue/foundation/form';
+import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -187,6 +187,11 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
           const outcome = formRefusesClashes(def) ? 'so visitors cannot send the form' : 'so the form service cannot tell those answers apart';
           const all = clash.indexes.length === 2 ? 'both' : 'all';
           out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the contact form's ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id });
+        }
+        for (const i of offersFormChoices(def) ? formUnchoosable(fields) : []) {
+          const what = formFieldTitles(fields, [i], fields.map((_, j) => j));
+          const outcome = formRefusesUnchoosable(def) ? 'so visitors cannot send the form' : 'so visitors cannot answer it';
+          out.push({ severity: 'warning', code: 'FORM_NO_CHOICES', message: `${label}: the contact form's ${what} field has no choices to pick from, ${outcome}. Add its choices, or change its type.`, owner, nodeId: n.id });
         }
       }
     }

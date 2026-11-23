@@ -290,8 +290,9 @@ export const DRAFTS_JS = `/**
  * Keeps a message the visitor typed into a form and has not sent with its place in the tab's history, as the
  * browser keeps a form when JavaScript is off: Back brings it back, a new visit to the page starts empty, and a
  * message that was sent never comes back. A form takes part with data-keep-draft on the <form>, data-draft-field
- * naming each answer's control, aria-busy="true" from the moment it submits (before anything in its submit handler
- * waits) until the reply, and a reset once the message has been sent.
+ * naming each answer's control (every radio button of one question, or a checkbox, carries its question's name, and
+ * a radio button may name its choice with data-draft-choice), aria-busy="true" from the moment it submits (before
+ * anything in its submit handler waits) until the reply, and a reset once the message has been sent.
  *
  * SvelteKit's snapshot() holds the drafts, in memory and in the tab's session storage, never in the address or in
  * anything sent to a server. Besides them, the tab keeps only an opaque id for each message it has sent.
@@ -348,12 +349,36 @@ function answers(form) {
 	return [...call(form, 'querySelectorAll', '[data-draft-field]')];
 }
 
+// A radio button or checkbox holds its answer in whether it is ticked; its value is fixed by the page.
+function checkable(control) {
+	return control instanceof HTMLInputElement && (control.type === 'radio' || control.type === 'checkbox');
+}
+
+// What a ticked control stands for: its choice, which another choice given the same value later is not.
+function choiceOf(control) {
+	return control.dataset.draftChoice || control.value;
+}
+
+// Each answer once, in page order: its name, the kind of control that takes it ('' for text), and the answer, which
+// is the text typed in or the choice ticked ('' when none is).
+function answered(form) {
+	const out = new Map();
+	for (const control of answers(form)) {
+		const field = control.dataset.draftField;
+		if (!out.has(field)) out.set(field, { field, kind: checkable(control) ? control.type : '', value: '' });
+		if (!checkable(control)) out.get(field).value = control.value;
+		else if (control.checked) out.get(field).value = choiceOf(control);
+	}
+	return [...out.values()];
+}
+
 // Every form on the page, known by where it is (the page itself or the header and footer around it), its fields,
 // and its place among forms with the same fields there.
 function forms() {
 	const seen = new Map();
 	return [...call(document, 'querySelectorAll', FORMS)].map((form) => {
-		const key = (call(form, 'closest', 'main') ? 'page ' : 'shell ') + answers(form).map((a) => a.dataset.draftField).join(' ');
+		// A question that became a checkbox or radio buttons is another form: a typed answer never ticks anything.
+		const key = (call(form, 'closest', 'main') ? 'page ' : 'shell ') + answered(form).map((a) => (a.kind ? a.field + ':' + a.kind : a.field)).join(' ');
 		const n = seen.get(key) ?? 0;
 		seen.set(key, n + 1);
 		return { form, key, n };
@@ -371,7 +396,7 @@ function capture() {
 			markSent(pending, false);
 			messages.set(form, pending);
 		}
-		const values = answers(form).map((a) => [a.dataset.draftField, a.value]);
+		const values = answered(form).map((a) => [a.field, a.value]);
 		if (!values.some(([, value]) => value)) continue;
 		let message = messages.get(form);
 		if (!message) messages.set(form, (message = Date.now().toString(36) + Math.random().toString(36).slice(2)));
@@ -390,9 +415,15 @@ function restore(kept) {
 		messages.set(form, draft.message);
 		const controls = answers(form);
 		for (const [field, value] of Array.isArray(draft.values) ? draft.values : []) {
-			const control = controls.find((a) => a.dataset.draftField === field);
-			// An answer already there, filled in by the browser or typed before the page was ready, stays.
-			if (control && !control.value && typeof value === 'string') control.value = value;
+			if (typeof value !== 'string') continue;
+			const group = controls.filter((a) => a.dataset.draftField === field);
+			// An answer already there, filled in or ticked by the browser or before the page was ready, stays.
+			if (!group.length || !checkable(group[0])) {
+				if (group[0] && !group[0].value) group[0].value = value;
+			} else if (value && !group.some((a) => a.checked)) {
+				const choice = group.find((a) => choiceOf(a) === value);
+				if (choice) choice.checked = true;
+			}
 		}
 	}
 }
