@@ -383,12 +383,14 @@ describe('shell.header', () => {
     const sizes = (image: Record<string, unknown>) => brand(html('shell.header', { siteName: 'Test Studio', logo: image, showSiteName: false })).match(/<img\b[^>]*\bsizes="([^"]*)"/)?.[1];
     // 34px tall: a 3:2 photo shows 51px wide.
     expect(sizes(photo(1536, 1024))).toBe('51px');
-    // A long wordmark stops at the slot's 200px, and so does a logo whose dimensions are unknown.
-    expect(sizes(photo(2400, 200))).toBe('200px');
-    expect(sizes(photo())).toBe('200px');
+    // A long wordmark stops at the slot's 160px, and so does a logo whose dimensions are unknown; a tall one is narrow.
+    expect(sizes(photo(2400, 200))).toBe('160px');
+    expect(sizes(photo())).toBe('160px');
+    expect(sizes(photo(500, 1000))).toBe('17px');
     // The slot itself holds the logo to that width, letterboxed rather than cropped.
     const rule = bundle.defs['shell.header'].source!.match(/\.so-header__brand :global\(\.so-header__logo\)\s*\{([^}]*)\}/)![1];
-    expect(rule).toMatch(/max-width:\s*200px/);
+    expect(rule).toMatch(/max-width:\s*160px/);
+    expect(rule).toMatch(/height:\s*34px/);
     expect(rule).toMatch(/object-fit:\s*contain/);
   });
 

@@ -37,8 +37,8 @@ const HEADER_SOURCE = `<script>
 	const nameShown = $derived(!!name && (showSiteName || !logo?.src));
 	// A logo shown alone names the link by its own alternative text, which matches what it visibly says.
 	const logoAlt = $derived(logo?.src && !logo.decorative && typeof logo.alt === 'string' ? logo.alt.trim() : '');
-	// The logo shows 34px tall and at most 200px wide, so a small copy of the picture is all it needs.
-	const logoSizes = $derived(logo?.width > 0 && logo?.height > 0 ? \`\${Math.min(200, Math.ceil((34 * logo.width) / logo.height))}px\` : '200px');
+	// The logo shows 34px tall and at most 160px wide, so a small copy of the picture is all it needs.
+	const logoSizes = $derived(logo?.width > 0 && logo?.height > 0 ? \`\${Math.min(160, Math.ceil((34 * logo.width) / logo.height))}px\` : '160px');
 
 	/** Site-relative links go through resolve() so the site works under a sub-path. */
 	const href = (link) => (link?.href?.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link?.href);
@@ -296,7 +296,7 @@ const HEADER_SOURCE = `<script>
 	}
 	.so-header__brand :global(.so-header__logo) {
 		width: auto;
-		max-width: 200px;
+		max-width: 160px;
 		height: 34px;
 		object-fit: contain;
 	}
