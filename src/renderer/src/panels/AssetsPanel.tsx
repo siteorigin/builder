@@ -245,7 +245,6 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const [allPlaces, setAllPlaces] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const [fixing, setFixing] = useState(false);
-  const focus = useStore((s) => s.assetFocus);
   const assetsDoc = snap?.state.assets.assets;
   // Images whose files are not in the project folder: their uses stay, and the details offer to bring the files back.
   const missingAssets = snap?.missingAssets;
@@ -260,15 +259,6 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     setNameError(null);
     setAllPlaces(false);
   }, [selected]);
-  // Another panel asked for one image (Project health, an export): show its details.
-  useEffect(() => {
-    if (!focus) return;
-    setState({ assetFocus: null });
-    if (!assetsDoc?.[focus]) return;
-    replaceSession.current++;
-    setReplacing(false);
-    setSelected(focus);
-  }, [focus, assetsDoc]);
   // A pending "Import a replacement" never applies after the panel has gone.
   useEffect(() => () => void replaceSession.current++, []);
   // An image removed elsewhere (undo, the AI) closes its details rather than leaving them blank.
@@ -376,7 +366,9 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     if (!sel || withId === sel.id) return;
     const n = places.length || usage[sel.id] || 0;
     const target = getState().snapshot?.state.assets.assets[withId];
-    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], `Replace ${nameOf(sel)}`);
+    // An image whose file is gone has nothing left to offer once its uses show another: it leaves the library too.
+    const dead = missingOf.get(sel.id)?.original;
+    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }, ...(dead ? [{ type: 'asset.remove' as const, assetId: sel.id }] : [])], `Replace ${nameOf(sel)}`);
     if (r) {
       replaceSession.current++;
       setReplacing(false);
@@ -391,6 +383,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     try {
       const r = await run().catch((e: Error) => ({ ok: false, message: e.message }));
       if (r.message) toast(r.message, r.ok ? 'info' : 'error');
+      // The repair buttons go once the files are back: focus stays in the image's details.
+      if (r.ok) requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
     } finally {
       setFixing(false);
     }
@@ -468,7 +462,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             aria-label={gone ? `${name}, ${missingLabel}` : big ? `${name}, large file, ${formatBytes(a.bytes)}` : name}
             title={gone ? `${name}\n${missingLabel[0].toUpperCase()}${missingLabel.slice(1)}` : big ? `${name}\nLarge file: ${formatBytes(a.bytes)}` : name}
           >
-            <Thumb key={gone ? 'missing' : 'present'} a={a} devUrl={devUrl} />
+            <Thumb key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={a} devUrl={devUrl} />
             {gone && (
               <span className="asset-size asset-gone" aria-hidden="true">
                 <TriangleAlert />
@@ -599,7 +593,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
         </div>
         <div className="asset-preview">
           {devUrl ? (
-            <Picture key={gone ? 'missing' : 'present'} a={sel} devUrl={devUrl} />
+            <Picture key={gone ? `missing-${gone.original}-${gone.variants.length}` : 'present'} a={sel} devUrl={devUrl} />
           ) : (
             <span className="asset-preview-off">
               <ImageIcon aria-hidden="true" />

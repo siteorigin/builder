@@ -12,7 +12,7 @@ import { listThemes } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
 import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
-import { findMissingAssetFiles, missingFileDiagnostics } from './asset-files';
+import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
 import { checkSvelteSource, componentSources } from '../codecheck';
@@ -1226,13 +1226,10 @@ export class ProjectSession extends EventEmitter {
     return true;
   }
 
-  /**
-   * Document problems, and library images whose files are missing. File conflicts are reported separately
-   * (`conflicts`), with their actions, never twice.
-   */
+  /** Document problems. File conflicts are reported separately (`conflicts`), with their actions, never twice. */
   diagnostics(): Diagnostic[] {
     try {
-      return [...validateState(this.state), ...missingFileDiagnostics(this.state, this.missingAssets)];
+      return validateState(this.state);
     } catch (e) {
       // A project from a newer version may not follow this version's shapes; it is open read-only anyway.
       if (this.readOnly) return [];

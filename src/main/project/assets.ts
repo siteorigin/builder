@@ -119,11 +119,12 @@ async function storeFile(projectDir: string, p: PreparedFile, refuse: Refusal): 
   const base = slugify(basename(p.source, p.ext)) || (isFont ? 'font' : 'image');
   const stem = `static/assets/${base}-${p.hash.slice(0, 8)}`;
   const file = `${stem}${p.ext === '.jpeg' ? '.jpg' : p.ext}`;
-  await atomicWrite(join(projectDir, file), p.buf);
+  // Never through a link that leads out of the project folder.
+  await atomicWrite(safeJoin(projectDir, file), p.buf);
   const copies: Array<{ width: number; file: string }> = [];
   for (const v of variants) {
     const copy = `${stem}-${v.width}w.${p.mime === 'image/png' ? 'png' : 'jpg'}`;
-    await atomicWrite(join(projectDir, copy), v.data);
+    await atomicWrite(safeJoin(projectDir, copy), v.data);
     copies.push({ width: v.width, file: copy });
   }
   return { file, mime: p.mime, bytes: p.buf.length, hash: p.hash, ...(info ? { width: info.width, height: info.height } : {}), ...(copies.length ? { variants: copies } : {}) };

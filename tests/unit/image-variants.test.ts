@@ -108,8 +108,8 @@ describe('responsive copies', () => {
   });
 
   it('makes exactly the widths asked for, never wider than the picture', async () => {
-    const variants = await renderVariants(await halves(1000, 500, 'jpeg'), 'image/jpeg', 1000, [960, 1440]);
-    expect(variants.map((v) => v.width)).toEqual([960]);
+    const variants = await renderVariants(await halves(1000, 500, 'jpeg'), 'image/jpeg', 1000, [960, 1000, 1440]);
+    expect(variants.map((v) => v.width)).toEqual([960, 1000]);
     expect((await sharp(variants[0].data).metadata()).width).toBe(960);
   });
 

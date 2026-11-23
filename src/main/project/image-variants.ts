@@ -46,11 +46,13 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, w
  */
 export async function isReadable(buf: Buffer): Promise<boolean> {
   try {
-    await sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error' }).resize(16, 16, { fit: 'inside' }).raw().toBuffer();
+    // Every frame of an animation, so a damaged later frame is found too.
+    await sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', pages: -1 }).resize(16, 16, { fit: 'inside' }).raw().toBuffer();
     return true;
   } catch (e) {
-    // Too many pixels to decode here says nothing about the file.
-    return /pixel limit/i.test((e as Error).message);
+    // Too many pixels to decode here, or a kind of file this decoder does not know (an AVIF image sequence, say),
+    // says nothing about the file: browsers may well show it.
+    return /pixel limit|unsupported image format/i.test((e as Error).message);
   }
 }
 

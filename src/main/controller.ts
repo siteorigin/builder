@@ -14,11 +14,11 @@ import { basePath, generateManagedComponent, generatePage, defFile, liveRedirect
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
 import { StaticPreviews } from './static-preview';
-import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
+import { builtPhotosMessage, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind, locateAssetFile, restoreAssetFiles } from './project/assets';
-import { findMissingAssetFiles, missingParts } from './project/asset-files';
+import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { photoMetadata } from './project/photo-metadata';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies } from './runtime/manager';
@@ -183,7 +183,8 @@ export class Controller {
       state: s.state,
       revision: s.revision,
       history: s.historyInfo(),
-      diagnostics: s.diagnostics(),
+      // Missing image files are for the author, not the AI: it cannot bring them back, and its checks compare messages.
+      diagnostics: [...s.diagnostics(), ...missingFileDiagnostics(s.state, s.missingAssets)],
       runtime: this.runtimeStatus(),
       recoveryNotes: s.recoveryNotes,
       aiBusy: this.aiBusy(),
@@ -580,10 +581,11 @@ export class Controller {
     });
     session.on('history', () => this.broadcast());
     await this.onSessionOpened?.(session);
+    // Watching starts before the first look, so a file removed while it runs is seen too.
+    this.watchExternalChanges(session);
     // Project health lists missing image files from the first moment the project shows.
     await session.refreshAssetFiles().catch(() => false);
     this.broadcast();
-    this.watchExternalChanges(session);
     await this.startRuntime();
   }
 
@@ -779,7 +781,13 @@ export class Controller {
     // static/ rather than static/assets/, so the assets folder itself being removed or put back is seen too.
     try {
       const dir = join(session.dir, 'static');
-      if (existsSync(dir)) this.watchers.push(watch(dir, { recursive: true }, (_e, f) => !!f && /^assets([\\/]|$)/.test(String(f)) && onAssetChange()));
+      if (existsSync(dir)) {
+        // An event without a file name may be about anything in static/, so it is looked at too.
+        const w = watch(dir, { recursive: true }, (_e, f) => (!f || /^assets([\\/]|$)/.test(String(f))) && onAssetChange());
+        // The folder going away can end the watch with an error (Windows); unhandled, it would be thrown.
+        w.on('error', () => w.close());
+        this.watchers.push(w);
+      }
     } catch {
       /* watching is best-effort: the check still runs when the library changes and before every export */
     }
@@ -1107,15 +1115,21 @@ export class Controller {
       if (r.canceled || !r.filePaths[0]) return { ok: false };
       file = r.filePaths[0];
     }
-    if (this.session !== s) return { ok: false, message: 'The project was closed before the image could be located.' };
+    const closed = { ok: false, message: 'The project was closed, or another app took it over, before the image could be located.' };
+    if (this.session !== s) return closed;
     // A new file is written before the record names it, so the session holds off sweeping assets meanwhile.
     return s.withImport(async () => {
-      // The dialog gave the library time to change.
+      // The dialog gave the library time to change: a file chosen for what the image was then is not used for what it is now.
       const record = s.state.assets.assets[assetId];
       if (record?.kind !== 'image') return gone;
+      if (record.file !== before.file || record.hash !== before.hash) return { ok: false, message: `${record.name.trim() || 'The image'} changed while the file was being chosen. Look at it again in Assets.` };
       const name = record.name.trim() || 'The image';
       try {
-        const found = await locateAssetFile(s.dir, record, file);
+        // Files are written only while this app still owns the project, and never once it has closed.
+        const run: { found?: Awaited<ReturnType<typeof locateAssetFile>> } = {};
+        if (this.session !== s || !(await s.whileOwner(async () => void (run.found = await locateAssetFile(s.dir, record, file))))) return closed;
+        const found = run.found;
+        if (!found) return closed;
         if (found.same) {
           await this.checkAssetFiles(s);
           if (found.failed.length) return { ok: false, message: `${name} is back, but ${missingParts({ original: false, variants: found.failed })} could not be made again. Make the copies again in Assets.` };
@@ -1139,7 +1153,10 @@ export class Controller {
     if (record?.kind !== 'image') return { ok: false, message: 'That image is no longer in the library.' };
     const name = record.name.trim() || 'The image';
     try {
-      const r = await restoreAssetFiles(s.dir, record);
+      // Files are written only while this app still owns the project, and never once it has closed.
+      const run: { done?: Awaited<ReturnType<typeof restoreAssetFiles>> } = {};
+      if (this.session !== s || !(await s.whileOwner(async () => void (run.done = await restoreAssetFiles(s.dir, record)))) || !run.done) return { ok: false, message: 'The project was closed, or another app took it over, before the copies could be made.' };
+      const r = run.done;
       await this.checkAssetFiles(s);
       if (r.failed.length) return { ok: false, message: `${name} is still missing ${missingParts({ original: false, variants: r.failed })}, which could not be made again. Import the picture again, or choose another image.` };
       return { ok: true, message: r.written.length ? `Made ${missingParts({ original: false, variants: r.written })} of ${name} again.` : `${name} has all its copies.` };
@@ -1331,7 +1348,8 @@ export class Controller {
     const { revision, state } = snap;
     // An image file the site uses but the folder does not have fails the build without naming the picture: stop first,
     // naming it. The staged copy is checked, not what Project health last saw, so the answer is right for this export.
-    const missing = (await missingWebsiteAssets(project, state)).filter((m) => m.used);
+    const missingFiles = await missingWebsiteAssets(project, state);
+    const missing = missingFiles.filter((m) => m.used);
     if (missing.length) {
       void this.checkAssetFiles(s);
       return { ok: false, ...missingAssetsStop(missing), assetId: missing[0].asset.id };
@@ -1378,7 +1396,9 @@ export class Controller {
     const placeholders = placeholderImageCount(state);
     if (placeholders) warnings.push(placeholders === 1 ? 'One image has not been chosen yet and shows a placeholder.' : `${placeholders} images have not been chosen yet and show placeholders.`);
     warnings.push(...unlinkedButtonWarnings(state));
-    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a)) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+    const absent = new Set(missingFiles.filter((m) => m.missing.original).map((m) => m.asset.id));
+    for (const a of Object.values(state.assets.assets)) if (a.bytes > 1_500_000 && !omitted.includes(a) && !absent.has(a.id)) warnings.push(`${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB; consider a smaller image.`);
+    warnings.push(...missingUnusedWarnings(missingFiles));
     const left = omittedAssetsWarning(omitted);
     if (left) warnings.push(left);
     const located = locationRemovedNote(photos.located);

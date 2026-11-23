@@ -151,11 +151,27 @@ export async function missingWebsiteAssets(project: string, state: ProjectState)
   const missing = await findMissingAssetFiles(project, state.assets.assets);
   if (!missing.length) return [];
   const text = await websiteText(project, await websiteFiles(project, state));
+  // An image whose missing original is not named still matters when the site uses one of its copies: the copy's
+  // credits come from the original. So any of its files being named makes it used.
   return missing.map((m) => {
     const asset = state.assets.assets[m.assetId];
-    const absent = [...(m.original ? [asset.file] : []), ...m.variants];
-    return { asset, missing: m, used: absent.some((f) => namesFile(text, basename(f))) };
+    const files = [asset.file, ...(asset.variants ?? []).map((v) => v.file)];
+    return { asset, missing: m, used: files.some((f) => namesWholeFile(text, basename(f))) };
   });
+}
+
+/** Like namesFile, and the name also ends there: `a-1234abcd.jpg` is not found inside `a-1234abcd.jpg.webp`. */
+function namesWholeFile(text: string, file: string): boolean {
+  for (let i = text.indexOf(file); i >= 0; i = text.indexOf(file, i + 1)) {
+    const end = i + file.length;
+    if ((i === 0 || !/[\w.-]/.test(text[i - 1])) && (end === text.length || !/[\w-]/.test(text[end]) && !(text[end] === '.' && /[\w]/.test(text[end + 1] ?? '')))) return true;
+  }
+  return false;
+}
+
+/** The export notes for library images with missing files that nothing on the site names, so the export went ahead. */
+export function missingUnusedWarnings(missing: MissingInExport[]): string[] {
+  return missing.filter((m) => !m.used).map(({ asset, missing: m }) => `${asset.name.trim() || 'An image'} is missing ${missingParts(m)} in the project folder. No page or code names ${them(m)}, so the website was exported without ${them(m)}.`);
 }
 
 /** "it" for one missing file, "them" for more. */
