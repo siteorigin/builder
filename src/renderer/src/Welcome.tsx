@@ -42,6 +42,7 @@ export function Welcome() {
       const cmd = (e as CustomEvent).detail;
       if (cmd === 'new-project') setCreating(true);
       if (cmd === 'open-project') void open();
+      if (cmd === 'open-project-folder') void open(undefined, { folder: true });
     };
     window.addEventListener('builder-command', onCmd);
     // A File menu command chosen while there was no window (macOS) is sent now that Welcome can act on it.

@@ -1,12 +1,14 @@
 /**
  * Opening a ZIP file someone sent (#263): an editable project exported as a ZIP file (see zip.ts), or a project folder
  * zipped with the computer's own Compress command. The archive is untrusted, so nothing in it decides where a file
- * lands: every name is checked before anything is written, and only regular files are written (never links). Standard
- * ZIP files only (no ZIP64, no encryption), stored or deflated, which is what Builder and the systems' own tools write.
+ * lands: every name is checked before anything is written, and only regular files and folders are written (never
+ * links). Standard ZIP files only (no ZIP64, no encryption), stored or deflated, which is what Builder and the systems'
+ * own tools write.
  *
  * Nothing here depends on Electron, so it is unit tested directly.
  */
-import { createReadStream, createWriteStream, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
+import { createWriteStream } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -16,6 +18,8 @@ import { replaceEmptyFolder } from './export';
 const END_RECORD = 0x06054b50;
 const CENTRAL_HEADER = 0x02014b50;
 const LOCAL_HEADER = 0x04034b50;
+/** Info-ZIP's extra field holding a UTF-8 name beside a legacy one. */
+const UNICODE_PATH = 0x7075;
 
 /** At most this many entries, and this many bytes once extracted: a project is far smaller, a ZIP bomb is not. */
 export const MAX_ENTRIES = 20_000;
@@ -24,6 +28,11 @@ export const MAX_TOTAL_BYTES = 2 * 1024 ** 3;
 const MAX_MANIFEST_BYTES = 1024 ** 2;
 /** The archive's list of files is read whole, so it is held to what MAX_ENTRIES entries plausibly need. */
 const MAX_DIRECTORY_BYTES = 16 * 1024 ** 2;
+/** A path's length and depth, so checking every folder on the way to a file stays cheap. */
+const MAX_PATH_LENGTH = 1024;
+const MAX_DEPTH = 64;
+/** How many numbered folder names (cafe-2, cafe-3, …) are tried before giving up. */
+const MAX_NAMES = 1000;
 
 export const MANIFEST = 'siteorigin.project.json';
 
@@ -42,6 +51,8 @@ export interface ZipEntry {
   compressedSize: number;
   size: number;
   localOffset: number;
+  /** Where the next entry (or the list of entries) starts: this entry's data must end before it. */
+  dataLimit: number;
 }
 
 /** What an archive holds, as far as opening it goes. */
@@ -67,28 +78,30 @@ function isSystemClutter(path: string): boolean {
   return parts[0] === '__MACOSX' || name === '.DS_Store' || name.startsWith('._') || name === 'Thumbs.db' || name === 'desktop.ini';
 }
 
-/** Names Windows gives another meaning: devices, alternate streams, and names it would trim to another. */
-const WINDOWS_RESERVED = /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i;
+/** Names Windows gives another meaning: devices (COM¹ too), whatever their extension. */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\..*)?$/i;
 
 /**
- * A ZIP entry's name as a safe relative path, or a ZipError. Backslashes (written by some Windows tools) count as
- * folder separators; absolute paths, drive letters, `..`, control characters, empty names and names Windows would
- * read as something else are refused.
+ * A ZIP entry's name as a safe relative path, or a ZipError. In archives made on Windows (`dosSeparators`) a backslash
+ * is a folder separator; elsewhere it is part of a name, which a Windows computer could not keep, so it is refused.
+ * Absolute paths, drive letters, `..`, control characters, empty, overlong or deeply nested names, and names Windows
+ * would read as something else are refused too. The spelling is kept as it is (decomposed accents stay decomposed).
  */
-export function safeEntryPath(raw: string): string {
+export function safeEntryPath(raw: string, dosSeparators = false): string {
   const quoted = JSON.stringify(raw.slice(0, 120));
   const outside = () => new ZipError(`That ZIP file contains a file that would be saved outside its folder (${quoted}), so it was not opened.`);
   const unusable = () => new ZipError(`That ZIP file contains a file name that cannot be used safely on this computer (${quoted}), so it was not opened.`);
   // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(raw)) throw unusable();
+  if (/[\u0000-\u001f\u007f]/.test(raw) || raw.length > MAX_PATH_LENGTH) throw unusable();
+  if (raw.includes('\\') && !dosSeparators) throw unusable();
   const name = raw.replace(/\\/g, '/');
   if (name.startsWith('/') || /^[a-zA-Z]:/.test(name)) throw outside();
   // A directory entry ends with a slash, and a doubled slash or a `.` changes nothing: those parts are dropped.
   const kept = name.split('/').filter((p) => p !== '' && p !== '.');
   if (kept.some((p) => p === '..')) throw outside();
-  if (!kept.length) throw unusable();
+  if (!kept.length || kept.length > MAX_DEPTH) throw unusable();
   if (kept.some((p) => p.includes(':') || WINDOWS_RESERVED.test(p) || /[. ]$/.test(p))) throw unusable();
-  return kept.join('/').normalize('NFC');
+  return kept.join('/');
 }
 
 async function readAt(fh: fs.FileHandle, position: number, length: number): Promise<Buffer> {
@@ -100,12 +113,31 @@ async function readAt(fh: fs.FileHandle, position: number, length: number): Prom
 
 /** The upper half of code page 437, which a ZIP entry's name is in unless it says it is UTF-8. */
 const CP437 =
-  'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■\u00a0';
+  'ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■ ';
 
-/** Decode a name: UTF-8 when the entry says so (Builder, Finder, 7-Zip), otherwise code page 437 (older Windows tools). */
-export function decodeName(raw: Buffer, utf8: boolean): string {
+/**
+ * Decode a name: UTF-8 when the entry says so (Builder, Finder, 7-Zip) or carries a matching Info-ZIP Unicode name,
+ * otherwise code page 437 (older Windows tools).
+ */
+export function decodeName(raw: Buffer, utf8: boolean, extra: Buffer = Buffer.alloc(0)): string {
   if (utf8 || raw.every((b) => b < 0x80)) return raw.toString('utf8');
+  for (let i = 0; i + 4 <= extra.length; ) {
+    const id = extra.readUInt16LE(i);
+    const length = extra.readUInt16LE(i + 2);
+    if (i + 4 + length > extra.length) break;
+    // Version 1, then the CRC-32 of the legacy name it stands for, then the name in UTF-8.
+    if (id === UNICODE_PATH && length >= 5 && extra[i + 4] === 1 && extra.readUInt32LE(i + 5) === crc32(raw) >>> 0) return extra.toString('utf8', i + 9, i + 4 + length);
+    i += 4 + length;
+  }
   return Array.from(raw, (b) => (b < 0x80 ? String.fromCharCode(b) : CP437[b - 0x80])).join('');
+}
+
+/** Where the end record is: the last one whose comment runs exactly to the end of the file. */
+function findEndRecord(tail: Buffer): number {
+  for (let i = tail.length - 22; i >= 0; i--) {
+    if (tail.readUInt32LE(i) === END_RECORD && i + 22 + tail.readUInt16LE(i + 20) === tail.length) return i;
+  }
+  return -1;
 }
 
 /** List a ZIP file's entries from its central directory, checking every name and limit before anything is written. */
@@ -117,13 +149,7 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
     // The end record is the last 22 bytes, followed by a comment of at most 64 KB.
     const tailLength = Math.min(size, 22 + 0xffff);
     const tail = await readAt(fh, size - tailLength, tailLength);
-    let end = -1;
-    for (let i = tail.length - 22; i >= 0; i--) {
-      if (tail.readUInt32LE(i) === END_RECORD && i + 22 + tail.readUInt16LE(i + 20) <= tail.length) {
-        end = i;
-        break;
-      }
-    }
+    const end = findEndRecord(tail);
     if (end < 0) throw new ZipError(DAMAGED);
     const disk = tail.readUInt16LE(end + 4);
     const cdDisk = tail.readUInt16LE(end + 6);
@@ -132,9 +158,8 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
     const cdOffset = tail.readUInt32LE(end + 16);
     if (count === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) throw new ZipError(`That ZIP file is too large to open here. ${EXTRACT_ELSEWHERE}`);
     if (disk !== 0 || cdDisk !== 0) throw new ZipError(`That ZIP file is split into several parts. ${EXTRACT_ELSEWHERE}`);
-    if (count > MAX_ENTRIES) throw new ZipError(`That ZIP file holds more files than a project can (${count}), so it was not opened.`);
+    if (count > MAX_ENTRIES || cdSize > MAX_DIRECTORY_BYTES) throw new ZipError('That ZIP file holds more files than a project can, so it was not opened.');
     if (cdOffset + cdSize > size) throw new ZipError(DAMAGED);
-    if (cdSize > MAX_DIRECTORY_BYTES) throw new ZipError('That ZIP file holds more files than a project can, so it was not opened.');
     const cd = await readAt(fh, cdOffset, cdSize);
     const entries: ZipEntry[] = [];
     // Every path, folders included, as a folder on a case-insensitive disk would see it.
@@ -155,14 +180,17 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
       const external = cd.readUInt32LE(p + 38);
       const localOffset = cd.readUInt32LE(p + 42);
       if (p + 46 + nameLength + extraLength + commentLength > cd.length) throw new ZipError(DAMAGED);
-      const raw = decodeName(cd.subarray(p + 46, p + 46 + nameLength), (flags & 0x800) !== 0);
+      const rawName = cd.subarray(p + 46, p + 46 + nameLength);
+      const raw = decodeName(rawName, (flags & 0x800) !== 0, cd.subarray(p + 46 + nameLength, p + 46 + nameLength + extraLength));
       p += 46 + nameLength + extraLength + commentLength;
-      const path = safeEntryPath(raw);
+      // Unix (3) and macOS (19) archives keep file types in the top 16 bits of the external attributes; MS-DOS (0),
+      // NTFS (10) and VFAT (14) archives use backslashes as folder separators.
+      const unix = madeBy === 3 || madeBy === 19;
+      const path = safeEntryPath(raw, madeBy === 0 || madeBy === 10 || madeBy === 14);
       const directory = /[\\/]$/.test(raw);
-      // Unix file types live in the top 16 bits of the external attributes, for archives made on Unix or macOS.
-      const unixMode = madeBy === 3 ? external >>> 16 : 0;
+      const unixMode = unix ? external >>> 16 : 0;
       const type = unixMode & 0o170000;
-      const special = !directory && type !== 0 && type !== 0o100000;
+      const special = type !== 0 && type !== 0o100000 && !(directory && type === 0o040000);
       if (flags & 0x41) throw new ZipError(`That ZIP file is password-protected. ${EXTRACT_ELSEWHERE}`);
       if (!directory && !special && method !== 0 && method !== 8) throw new ZipError(`That ZIP file uses a kind of compression SiteOrigin Builder cannot read. ${EXTRACT_ELSEWHERE}`);
       if (compressedSize === 0xffffffff || entrySize === 0xffffffff || localOffset === 0xffffffff) throw new ZipError(`That ZIP file is too large to open here. ${EXTRACT_ELSEWHERE}`);
@@ -172,18 +200,23 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
         total += entrySize;
         if (total > MAX_TOTAL_BYTES) throw new ZipError(`That ZIP file would take more than ${MAX_TOTAL_BYTES / 1024 ** 3} GB once extracted, so it was not opened. ${EXTRACT_ELSEWHERE}`);
       }
-      // Two names one folder cannot tell apart (different case, or a file where a folder must go) would overwrite each other.
+      // Two names one folder cannot tell apart (different case or accents, a file where a folder must go) would
+      // overwrite each other.
       const parts = path.split('/');
       for (let i = 1; i <= parts.length; i++) {
         const sub = parts.slice(0, i).join('/');
+        const key = sub.normalize('NFC').toLowerCase();
         const kind = i < parts.length || directory ? 'dir' : 'file';
-        const before = seen.get(sub.toLowerCase());
-        if (before === 'file' && kind === 'dir') throw new ZipError(`That ZIP file contains ${JSON.stringify(sub.slice(0, 120))} both as a file and as a folder, so it was not opened.`);
-        if (before && kind === 'file') throw new ZipError(`That ZIP file contains two files named ${JSON.stringify(path.slice(0, 120))} (perhaps with different capital letters), so it was not opened.`);
-        if (!before) seen.set(sub.toLowerCase(), kind);
+        const before = seen.get(key);
+        if ((before === 'file' && kind === 'dir') || (before === 'dir' && kind === 'file' && i === parts.length)) throw new ZipError(`That ZIP file contains ${JSON.stringify(sub.slice(0, 120))} both as a file and as a folder, so it was not opened.`);
+        if (before === 'file') throw new ZipError(`That ZIP file contains two files named ${JSON.stringify(path.slice(0, 120))} (perhaps with different capital letters or accents), so it was not opened.`);
+        if (!before) seen.set(key, kind);
       }
-      entries.push({ path, directory, special, executable: (unixMode & 0o111) !== 0, method, crc, compressedSize, size: entrySize, localOffset });
+      entries.push({ path, directory, special, executable: (unixMode & 0o111) !== 0, method, crc, compressedSize, size: entrySize, localOffset, dataLimit: cdOffset });
     }
+    // Each entry's data must end before the next entry starts: entries that share their bytes are refused when read.
+    const byOffset = [...entries].sort((a, b) => a.localOffset - b.localOffset);
+    for (let i = 0; i + 1 < byOffset.length; i++) byOffset[i].dataLimit = byOffset[i + 1].localOffset;
     return entries;
   } finally {
     await fh.close();
@@ -196,16 +229,18 @@ export async function readZipEntries(file: string): Promise<ZipEntry[]> {
  * has index.html and SvelteKit's _app/ folder in the same place, and no manifest.
  */
 export function classifyZip(entries: ZipEntry[]): ZipContents {
-  const files = entries.filter((e) => !e.directory && !e.special && !isSystemClutter(e.path));
+  const kept = entries.filter((e) => !e.special && !isSystemClutter(e.path));
+  const files = kept.filter((e) => !e.directory);
   const has = (path: string) => files.some((e) => e.path === path);
-  const tops = new Set(entries.filter((e) => !isSystemClutter(e.path)).map((e) => e.path.split('/')[0]));
+  const tops = new Set(kept.map((e) => e.path.split('/')[0]));
   // The archive's one folder, if everything in it is in one folder.
   const wrapper = tops.size === 1 && !has([...tops][0]) ? `${[...tops][0]}/` : null;
-  for (const root of wrapper === null ? [''] : ['', wrapper]) {
-    if (has(`${root}${MANIFEST}`)) return { kind: 'project', root, entries: files.filter((e) => e.path.startsWith(root)) };
+  const roots = wrapper === null ? [''] : ['', wrapper];
+  for (const root of roots) {
+    if (has(`${root}${MANIFEST}`)) return { kind: 'project', root, entries: kept.filter((e) => e.path.startsWith(root)) };
   }
-  if (files.some((e) => e.path === MANIFEST || e.path.endsWith(`/${MANIFEST}`))) return { kind: 'other' };
-  for (const root of wrapper === null ? [''] : ['', wrapper]) {
+  if (files.some((e) => e.path.endsWith(`/${MANIFEST}`))) return { kind: 'other' };
+  for (const root of roots) {
     if (has(`${root}index.html`) && files.some((e) => e.path.startsWith(`${root}_app/`))) return { kind: 'website' };
   }
   return { kind: 'other' };
@@ -228,16 +263,22 @@ function checked(e: ZipEntry, name: string) {
   return { stream, verify };
 }
 
-/** Send one entry's contents, decompressed and checked, to `out`. */
-async function copyEntry(file: string, fh: fs.FileHandle, e: ZipEntry, name: string, out: Writable, signal?: AbortSignal) {
+/**
+ * Send one entry's contents, decompressed and checked, to the stream `open` makes. The stream is made only once the
+ * entry's header has been checked, and handed straight to the pipeline, so a file that cannot be made is an error
+ * the caller sees rather than one nobody hears.
+ */
+async function copyEntry(fh: fs.FileHandle, e: ZipEntry, name: string, open: () => Writable, signal?: AbortSignal) {
   const local = await readAt(fh, e.localOffset, 30);
   if (local.readUInt32LE(0) !== LOCAL_HEADER) throw new ZipError(DAMAGED);
   const start = e.localOffset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
-  const source = e.compressedSize ? createReadStream(file, { start, end: start + e.compressedSize - 1 }) : Readable.from([]);
+  if (start + e.compressedSize > e.dataLimit) throw new ZipError(DAMAGED);
+  signal?.throwIfAborted();
+  const source = e.compressedSize ? fh.createReadStream({ start, end: start + e.compressedSize - 1, autoClose: false }) : Readable.from([]);
   const check = checked(e, name);
   try {
-    if (e.method === 8) await pipeline(source, createInflateRaw(), check.stream, out, { signal });
-    else await pipeline(source, check.stream, out, { signal });
+    if (e.method === 8) await pipeline(source, createInflateRaw(), check.stream, open(), { signal });
+    else await pipeline(source, check.stream, open(), { signal });
   } catch (err) {
     if (/^Z_/.test((err as NodeJS.ErrnoException).code ?? '')) throw damagedFile(name);
     throw err;
@@ -251,13 +292,14 @@ export async function readEntryText(file: string, e: ZipEntry, limit = MAX_MANIF
   const fh = await fs.open(file, 'r');
   try {
     const chunks: Buffer[] = [];
-    const out = new Writable({
-      write(chunk: Buffer, _enc, done) {
-        chunks.push(chunk);
-        done();
-      }
-    });
-    await copyEntry(file, fh, e, e.path.split('/').pop()!, out);
+    const collect = () =>
+      new Writable({
+        write(chunk: Buffer, _enc, done) {
+          chunks.push(chunk);
+          done();
+        }
+      });
+    await copyEntry(fh, e, e.path.split('/').pop()!, collect);
     return Buffer.concat(chunks).toString('utf8');
   } finally {
     await fh.close();
@@ -265,9 +307,9 @@ export async function readEntryText(file: string, e: ZipEntry, limit = MAX_MANIF
 }
 
 /**
- * Write the files under `root` in the archive into the folder `dest` (which must exist and be empty), without `root`
- * itself. Links and the systems' clutter are left out. Every file's size and CRC-32 are checked; a file that fails,
- * or a signal that aborts, stops the extraction with what was written left for the caller to remove.
+ * Write the files and folders under `root` in the archive into the folder `dest` (which must exist and be empty),
+ * without `root` itself. Links and the systems' clutter are left out. Every file's size and CRC-32 are checked; a file
+ * that fails, or a signal that aborts, stops the extraction with what was written left for the caller to remove.
  */
 export async function extractEntries(file: string, entries: ZipEntry[], root: string, dest: string, signal?: AbortSignal): Promise<number> {
   const fh = await fs.open(file, 'r');
@@ -284,7 +326,7 @@ export async function extractEntries(file: string, entries: ZipEntry[], root: st
         continue;
       }
       await fs.mkdir(dirname(target), { recursive: true });
-      await copyEntry(file, fh, e, rel, createWriteStream(target, { flags: 'wx', mode: e.executable ? 0o755 : 0o644 }), signal);
+      await copyEntry(fh, e, rel, () => createWriteStream(target, { flags: 'wx', mode: e.executable ? 0o755 : 0o644 }), signal);
       written++;
     }
     signal?.throwIfAborted();
@@ -311,12 +353,20 @@ export async function readProjectZip(file: string): Promise<{ kind: 'project'; n
   return { ...contents, name: typeof name === 'string' && name.trim() ? name.trim() : '' };
 }
 
+/** Is something at `path` now (a folder, a file, a link)? */
+async function occupied(path: string): Promise<boolean> {
+  return fs.lstat(path).then(
+    () => true,
+    () => false
+  );
+}
+
 /**
- * Extract the project in `file` into a new folder in `parent`, named `base` (or `base-2`, `base-3`, … when that is
+ * Extract the project in `file` into a new folder in `parent`, named `name` (or `name-2`, `name-3`, … when that is
  * taken), and return its path. The files go to a private folder beside it first; the name is claimed only once every
  * file is written and checked, so a folder that is there already, or appears meanwhile, is never written into or
  * replaced. `beforePublish` runs once the empty folder is claimed, before the project appears in it. Aborting `signal`
- * before then removes everything written; the ZIP file itself is only read.
+ * any time before the final move removes everything written; the ZIP file itself is only read.
  */
 export async function unpackProject(
   file: string,
@@ -331,8 +381,7 @@ export async function unpackProject(
   const tmp = await fs.mkdtemp(join(parent, '.siteorigin-open-'));
   try {
     await extractEntries(file, project.entries, project.root, tmp, signal);
-    for (let i = 1; ; i++) {
-      // The last chance to call it off.
+    for (let i = 1; i <= MAX_NAMES; i++) {
       signal?.throwIfAborted();
       const dest = join(parent, i === 1 ? base : `${base}-${i}`);
       try {
@@ -343,18 +392,27 @@ export async function unpackProject(
       }
       try {
         await beforePublish?.(dest);
+        // The last chance to call it off: from the move on, the project is in place.
+        signal?.throwIfAborted();
         await replaceEmptyFolder(tmp, dest);
         return dest;
       } catch (e) {
-        // Someone else's files arrived in the claimed folder: they stay, and the next name is tried.
-        if ((e as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        // Someone else's files arrived in the claimed folder: they stay, and the next name is tried. A move that failed
+        // with the name still free (Windows reports a file held open in the private folder as EPERM) is no collision.
+        if ((e as NodeJS.ErrnoException).code === 'EEXIST' && (await occupied(dest))) continue;
         // Removed only while it is still the empty folder claimed above.
         await fs.rmdir(dest).catch(() => undefined);
         throw e;
       }
     }
+    throw new ZipError(`There is no free folder name for ${base} in ${parent}. Choose another folder.`);
   } catch (e) {
-    await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+    // A file a virus scanner holds for a moment (Windows) is tried again before the private folder is given up on.
+    const removed = await fs.rm(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).then(
+      () => true,
+      () => false
+    );
+    if (!removed) throw new ZipError(`Some unpacked files could not be removed. Delete the folder "${tmp}" yourself.`);
     throw e;
   }
 }

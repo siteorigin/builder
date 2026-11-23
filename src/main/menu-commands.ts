@@ -13,7 +13,8 @@
  * No electron import: the caller passes how to reach the window, so the router is tested on its own.
  */
 
-export type MenuCommand = 'new-project' | 'open-project' | 'export' | 'close-project';
+/** `open-project-folder` is Windows and Linux only, whose pickers take files or folders but not both. */
+export type MenuCommand = 'new-project' | 'open-project' | 'open-project-folder' | 'export' | 'close-project';
 
 export interface MenuCommandOptions<W> {
   /** The editor window, or null when there is none. */

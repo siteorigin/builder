@@ -221,7 +221,10 @@ function registerIpc() {
   handle('projects:create', (opts) => controller.create(opts));
   handle('projects:cancelCreate', () => controller.cancelCreate());
   handle('projects:websiteTools', () => controller.websiteTools());
-  handle('projects:open', (dir?: unknown, opts?: unknown) => controller.open(typeof dir === 'string' ? dir : undefined, { folder: !!(opts as { folder?: unknown } | undefined)?.folder }));
+  handle('projects:open', (dir?: unknown, opts?: unknown) => {
+    if (dir != null && typeof dir !== 'string') return { ok: false, message: 'Could not open the project: no folder or file was named.' };
+    return controller.open(dir ?? undefined, { folder: (opts as { folder?: unknown } | null | undefined)?.folder === true });
+  });
   handle('projects:cancelOpen', () => controller.cancelOpen());
   handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
   handle('projects:close', () => controller.closeProject());
@@ -486,14 +489,15 @@ async function createWindow() {
   self.on('unresponsive', () => leaveGate.editorUnresponsive());
   self.on('responsive', () => leaveGate.editorResponsive());
   self.webContents.on('did-start-navigation', (details) => {
-    if (details.isMainFrame && !details.isSameDocument) {
-      leaveGate.editorReplaced();
-      controller.cancelOpen();
-    }
+    if (details.isMainFrame && !details.isSameDocument) leaveGate.editorReplaced();
   });
   // A new page has replaced the editor (it committed): only it may say it is ready for menu commands from here on.
   // A navigation the editor refuses never commits, so it leaves the editor ready.
-  self.webContents.on('did-navigate', () => menuCommands.unready(self));
+  // A project ZIP file being opened for the replaced editor is called off too: its trust prompt has no one to answer it.
+  self.webContents.on('did-navigate', () => {
+    menuCommands.unready(self);
+    controller.cancelOpen();
+  });
   self.on('closed', () => {
     if (win === self) win = null;
     menuCommands.closed(self);
@@ -568,6 +572,8 @@ function buildMenu() {
         submenu: [
           { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: send('new-project') },
           { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: send('open-project') },
+          // Open Project's picker takes a file or ZIP file here; a project folder has its own.
+          ...(isMac ? [] : [{ label: 'Open Project Folder…', click: send('open-project-folder') }]),
           { type: 'separator' },
           { id: 'export', label: 'Export…', accelerator: 'CmdOrCtrl+E', enabled: projectOpen, click: send('export') },
           { type: 'separator' },

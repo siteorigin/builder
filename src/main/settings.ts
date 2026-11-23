@@ -97,10 +97,12 @@ export async function trust(dir: string, configHash: string) {
   await saveSettings();
 }
 
-/** Forget any trust given to `dir`: a new folder there (a project just unpacked) asks again before its tools run. */
+/**
+ * Forget any trust given to `dir`: a new folder there (a project just unpacked) asks again before its tools run. The
+ * settings are saved even when no record is held in memory, so a removal whose save failed earlier is saved now.
+ */
 export async function untrust(dir: string) {
   const s = await loadSettings();
-  if (!(dir in s.trusted)) return;
   delete s.trusted[dir];
   await saveSettings();
 }

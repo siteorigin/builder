@@ -164,8 +164,10 @@ export class Controller {
   quitting = false;
   /** New projects being made (or unpacked from a ZIP file), each until it is shown or has gone again. */
   private creations = new Map<Promise<unknown>, AbortController>();
-  /** The project ZIP file being unpacked now, so Cancel (or its window going) can call it off. */
-  private unpackAbort: AbortController | null = null;
+  /** Every open under way, so Cancel (or its window going) can call off a project ZIP file being opened. */
+  private openAborts = new Set<AbortController>();
+  /** Project ZIP files are opened one at a time, each after the last has finished or cleaned up. */
+  private zipOpens: Promise<unknown> = Promise.resolve();
   /** Previews of the open project's exported websites, one per export. */
   private previews = new StaticPreviews();
   /** What the open project exported since it was opened, newest first. */
@@ -499,15 +501,20 @@ export class Controller {
 
   /** Open a project folder, or a project ZIP file (#263). With no path, the author chooses one (`folder`: a folder). */
   async open(dirArg?: string, opts: { folder?: boolean } = {}): Promise<OpenResult> {
+    // Called off from the start, so a window that goes while its picker is up never gets a ZIP file unpacked for it.
+    const abort = new AbortController();
+    this.openAborts.add(abort);
     // Every exit is a structured result: a thrown error would reject the IPC call and leave the Welcome screen busy.
     try {
-      return await this.openChosen(dirArg, opts.folder === true);
+      return await this.openChosen(dirArg, opts.folder === true, abort);
     } catch (e) {
       return { ok: false, message: `Could not open the project: ${(e as Error).message}` };
+    } finally {
+      this.openAborts.delete(abort);
     }
   }
 
-  private async openChosen(dirArg: string | undefined, folder: boolean): Promise<OpenResult> {
+  private async openChosen(dirArg: string | undefined, folder: boolean, abort: AbortController): Promise<OpenResult> {
     let dir = dirArg;
     if (!dir) {
       const win = this.getWindow();
@@ -516,7 +523,7 @@ export class Controller {
       dir = r.filePaths[0];
       if (basename(dir) === MANIFEST_FILE) dir = join(dir, '..');
     }
-    if (await isZipFile(dir)) return this.openZip(dir);
+    if (await isZipFile(dir)) return this.openZip(dir, abort);
     if (!existsSync(join(dir, MANIFEST_FILE))) return { ok: false, message: 'That folder is not a SiteOrigin Builder project. Choose a folder that contains siteorigin.project.json.' };
     // A project reached through a link (macOS: /var is /private/var) is opened by its real path. Trust is never
     // carried over from the linked name: that link could since have been pointed at a different folder.
@@ -534,9 +541,17 @@ export class Controller {
    * Open a project ZIP file (#263). A website export, or any other ZIP file, is explained instead. For an editable
    * project the author chooses where the working copy goes; it is unpacked into a new folder there (never into one that
    * exists) and then asks for trust like any project from another computer. The ZIP file is only read, and calling
-   * off the folder picker or the unpacking leaves nothing behind.
+   * off the folder picker or the unpacking leaves nothing behind. One is opened at a time: another waits until it is
+   * done, so the unpacking dialog only ever describes one.
    */
-  private async openZip(file: string): Promise<OpenResult> {
+  private openZip(file: string, abort: AbortController): Promise<OpenResult> {
+    const run = this.zipOpens.then(() => this.openZipNow(file, abort));
+    this.zipOpens = run.catch(() => undefined);
+    return run;
+  }
+
+  private async openZipNow(file: string, abort: AbortController): Promise<OpenResult> {
+    if (abort.signal.aborted) return { ok: false };
     let project: Awaited<ReturnType<typeof readProjectZip>>;
     try {
       project = await readProjectZip(file);
@@ -554,11 +569,9 @@ export class Controller {
       buttonLabel: 'Save here',
       properties: ['openDirectory', 'createDirectory']
     });
-    if (r.canceled || !r.filePaths[0] || this.quitting) return { ok: false };
+    if (r.canceled || !r.filePaths[0] || this.quitting || abort.signal.aborted) return { ok: false };
     const parent = r.filePaths[0];
     if (this.session && isInside(this.session.dir, parent)) return { ok: false, message: 'Choose a location outside the open project’s folder.' };
-    const abort = new AbortController();
-    this.unpackAbort = abort;
     // A trust given to an earlier folder of the same name (since deleted) never carries over to this one.
     const run = unpackProject(file, project, parent, slugify(name) || 'website', { signal: abort.signal, beforePublish: (dir) => untrust(canonicalDir(dir)) });
     // Quitting calls it off and waits for it, as for a new project being made.
@@ -568,20 +581,20 @@ export class Controller {
     try {
       dir = await run;
     } catch (e) {
-      if (abort.signal.aborted) return { ok: false };
+      // A damaged file, or files a cancelled unpacking could not remove, are explained; a cancel alone is not.
       if (e instanceof ZipError) return { ok: false, message: e.message };
+      if (abort.signal.aborted) return { ok: false };
       return { ok: false, message: `Could not unpack ${name} into ${parent}: ${(e as Error).message}` };
     } finally {
       this.creations.delete(run);
-      if (this.unpackAbort === abort) this.unpackAbort = null;
       this.send('projects:unpacking', null);
     }
     return { ok: false, needsTrust: { dir: canonicalDir(dir), name } };
   }
 
-  /** Call off the project ZIP file being unpacked, if any: whatever it wrote is removed. */
+  /** Call off any project ZIP file being opened: before its copy is in place, whatever it wrote is removed. */
   cancelOpen() {
-    this.unpackAbort?.abort();
+    for (const abort of this.openAborts) abort.abort();
   }
 
   async trustAndOpen(opened: string): Promise<{ ok: boolean; message?: string }> {

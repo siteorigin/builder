@@ -128,6 +128,13 @@ describe('opening a project ZIP file (#263)', () => {
     await zipDirectory(src, zip, 'cafe-source');
     return zip;
   }
+  /** Every file under `dir` with its contents, to tell whether a copy was touched. */
+  const tree = (dir: string, base = ''): string[] =>
+    readdirSync(join(dir, base)).flatMap((n) => (statSync(join(dir, base, n)).isDirectory() ? tree(dir, join(base, n)) : [`${join(base, n)}:${hash(join(dir, base, n))}`]));
+  const eventuallyTrue = async (check: () => boolean) => {
+    for (let i = 0; i < 100 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(check()).toBe(true);
+  };
   const chooseFolder = (dir: string) => vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [dir] });
   const hash = (f: string) => createHash('sha256').update(readFileSync(f)).digest('hex');
 
@@ -163,11 +170,25 @@ describe('opening a project ZIP file (#263)', () => {
     expect((await c.open(zip)).needsTrust?.dir).toBe(join(parent, 'cafe'));
     // The first copy is edited meanwhile.
     writeFileSync(join(parent, 'cafe', 'siteorigin', 'pages', 'home.json'), '{"title":"Edited"}');
+    const first = tree(join(parent, 'cafe'));
     chooseFolder(parent);
     expect((await c.open(zip)).needsTrust?.dir).toBe(join(parent, 'cafe-2'));
-    expect(readFileSync(join(parent, 'cafe', 'siteorigin', 'pages', 'home.json'), 'utf8')).toBe('{"title":"Edited"}');
+    expect(tree(join(parent, 'cafe'))).toEqual(first);
     expect(readFileSync(join(parent, 'cafe-2', 'siteorigin', 'pages', 'home.json'), 'utf8')).toBe('{"title":"Home"}');
     expect(readdirSync(parent).sort()).toEqual(['cafe', 'cafe-2']);
+  });
+
+  it('opens two ZIP files asked for at once one after the other, the unpacking dialog describing one at a time', async () => {
+    const zip = await editableZip();
+    const parent = tmp('so-recipient-');
+    const events: unknown[] = [];
+    const win = { isDestroyed: () => false, webContents: { send: (channel: string, payload: unknown) => channel === 'projects:unpacking' && events.push(payload) } };
+    const c = new Controller(() => win as never);
+    chooseFolder(parent);
+    chooseFolder(parent);
+    const [a, b] = await Promise.all([c.open(zip), c.open(zip)]);
+    expect([a.needsTrust?.dir, b.needsTrust?.dir].sort()).toEqual([join(parent, 'cafe'), join(parent, 'cafe-2')]);
+    expect(events).toEqual([{ name: 'Cafe', dir: parent }, null, { name: 'Cafe', dir: parent }, null]);
   });
 
   it('takes a ZIP file chosen in the Open project picker, and the picker now offers ZIP files', async () => {
@@ -177,8 +198,18 @@ describe('opening a project ZIP file (#263)', () => {
     chooseFolder(parent);
     const r = await new Controller(() => null).open();
     expect(r.needsTrust?.dir).toBe(join(parent, 'cafe'));
-    const picker = vi.mocked(dialog.showOpenDialog).mock.calls[0][1] as { filters: Array<{ extensions: string[] }> };
+    const picker = (vi.mocked(dialog.showOpenDialog).mock.calls[0] as unknown[])[1] as { filters: Array<{ extensions: string[] }>; properties: string[] };
     expect(picker.filters[0].extensions).toEqual(['json', 'zip']);
+    // macOS takes a folder or a file in one picker; Windows and Linux pickers take one or the other.
+    expect(picker.properties).toEqual(process.platform === 'darwin' ? ['openDirectory', 'openFile'] : ['openFile']);
+  });
+
+  it('chooses a folder when asked to, on Windows and Linux too', async () => {
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: true, filePaths: [] });
+    expect(await new Controller(() => null).open(undefined, { folder: true })).toEqual({ ok: false });
+    const picker = (vi.mocked(dialog.showOpenDialog).mock.calls[0] as unknown[])[1] as { properties: string[] };
+    expect(picker.properties).toContain('openDirectory');
+    if (process.platform !== 'darwin') expect(picker.properties).not.toContain('openFile');
   });
 
   it('explains a website ZIP and any other ZIP file without asking where to save anything', async () => {
@@ -190,7 +221,9 @@ describe('opening a project ZIP file (#263)', () => {
     await zipDirectory(site, websiteZip);
     const c = new Controller(() => null);
     expect(await c.open(websiteZip)).toEqual({ ok: false, message: WEBSITE_ZIP });
+    // It says what to ask for, in the words of the sender's Export dialog.
     expect(WEBSITE_ZIP).toMatch(/editable version/);
+    expect(WEBSITE_ZIP).toMatch(/Export, then Editable project, saved as a ZIP file/);
     const other = tmp('so-other-');
     writeFileSync(join(other, 'notes.txt'), 'hello');
     const otherZip = join(tmp('so-zip-'), 'notes.zip');
@@ -199,9 +232,9 @@ describe('opening a project ZIP file (#263)', () => {
     expect(dialog.showOpenDialog).not.toHaveBeenCalled();
   });
 
-  it('refuses a project ZIP whose manifest is damaged, before asking where to save it', async () => {
+  it.each([['truncated', truncated], ['null', 'null'], ['an array', '[]'], ['a number', '42']])('refuses a project ZIP whose manifest is %s, before asking where to save it', async (_n, text) => {
     const src = tmp('so-zip-src-');
-    writeFileSync(join(src, 'siteorigin.project.json'), truncated);
+    writeFileSync(join(src, 'siteorigin.project.json'), text);
     const zip = join(tmp('so-zip-'), 'half.zip');
     await zipDirectory(src, zip, 'half-source');
     const r = await new Controller(() => null).open(zip);
@@ -219,8 +252,24 @@ describe('opening a project ZIP file (#263)', () => {
 
   it('leaves nothing behind when the recipient cancels choosing a folder', async () => {
     const zip = await editableZip();
+    const mkdtemp = vi.spyOn(fsp, 'mkdtemp');
     vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: true, filePaths: [] });
     expect(await new Controller(() => null).open(zip)).toEqual({ ok: false });
+    expect(dialog.showOpenDialog).toHaveBeenCalledTimes(1);
+    expect(mkdtemp).not.toHaveBeenCalled();
+  });
+
+  it('unpacks nothing when its window goes while the folder picker is up', async () => {
+    const zip = await editableZip();
+    const parent = tmp('so-recipient-');
+    const c = new Controller(() => null);
+    vi.mocked(dialog.showOpenDialog).mockImplementationOnce(async () => {
+      // The editor reloads (or its window closes) while the picker is open; then a folder is chosen anyway.
+      c.cancelOpen();
+      return { canceled: false, filePaths: [parent] };
+    });
+    expect(await c.open(zip)).toEqual({ ok: false });
+    expect(readdirSync(parent)).toEqual([]);
   });
 
   it('leaves nothing behind when the unpacking is cancelled part way', async () => {
@@ -268,5 +317,7 @@ describe('opening a project ZIP file (#263)', () => {
     expect(r.needsTrust?.dir).toBe(join(parent, 'cafe-2'));
     expect(readdirSync(join(parent, 'cafe'))).toEqual([]);
     expect((await loadSettings()).trusted[join(parent, 'cafe-2')]).toBeUndefined();
+    // Forgotten on disk too, so it stays forgotten after a restart.
+    await eventuallyTrue(() => !(join(parent, 'cafe-2') in JSON.parse(readFileSync(join(state.userData, 'settings.json'), 'utf8')).trusted));
   });
 });

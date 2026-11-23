@@ -66,6 +66,8 @@ assert.deepEqual(
 );
 assert.deepEqual(library(first, opened), sentLibrary, 'every image arrived, byte for byte');
 assert.equal(sha(zip), zipHash, 'the ZIP file is not changed');
+// The working copy's own website tools run: its preview shows the home page.
+await win.frameLocator('.frame-box iframe').locator('h1').first().waitFor({ timeout: 120000 });
 
 step('the working copy can be edited');
 const homeId = opened.state.site.homePageId;
@@ -89,6 +91,8 @@ await trust.waitFor({ state: 'detached' });
 assert.equal((await snapshot()).dir, first, 'the first copy is still the project open');
 assert.equal(readFileSync(homeFile, 'utf8'), firstHome, 'the first copy keeps its edit');
 assert.doesNotMatch(readFileSync(join(second, 'siteorigin', 'pages', `${homeId}.json`), 'utf8'), /Edited by the recipient/, 'the second copy is the project as sent');
+assert.deepEqual(Object.fromEntries(Object.keys(sentLibrary).map((f) => [f, sha(join(second, f))])), sentLibrary, 'the second copy has every image too');
+assert.deepEqual(library(first, opened), sentLibrary, 'the first copy keeps its images');
 
 step('cancelling while it unpacks leaves nothing behind');
 // Unpacking waits at its first folder until Cancel has been pressed, so the dialog is there to press.
@@ -108,6 +112,8 @@ await openProjectCommand();
 const unpacking = win.getByRole('dialog', { name: `Unpacking ${name}` });
 await unpacking.waitFor({ timeout: 30000 });
 await unpacking.getByRole('button', { name: 'Cancel' }).click();
+// Calls from the window reach the main process in order: once this one is answered, Cancel has arrived too.
+await win.evaluate(() => window.builder.projects.recents());
 await app.evaluate(() => globalThis.__unpackGate.release());
 await unpacking.waitFor({ state: 'detached', timeout: 30000 });
 await app.evaluate(() => globalThis.__unpackGate.restore());
@@ -127,7 +133,8 @@ if (zipTool.status === 0) {
   assert.equal(spawnSync('zip', ['-rq', siteZip, '.'], { cwd: site }).status, 0, 'the website ZIP is made');
   await answerPickers([siteZip]);
   await openProjectCommand();
-  await win.locator('.toast.error', { hasText: 'editable version' }).waitFor({ timeout: 30000 });
+  // It says to ask for the editable version, the way the sender's Export dialog names it.
+  await win.locator('.toast.error', { hasText: 'Editable project, saved as a ZIP file' }).waitFor({ timeout: 30000 });
   assert.deepEqual(readdirSync(recipient).sort(), ['harbour-lane-studio', 'harbour-lane-studio-2'], 'nothing is unpacked');
 } else console.log('(no zip command here: skipping the website ZIP)');
 
