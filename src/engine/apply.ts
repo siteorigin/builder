@@ -65,12 +65,11 @@ export interface Clipboard {
   components: Record<string, { name: string; contract: string }>;
   pages: Record<string, string>;
   assets: Record<string, string>;
-  tokens: string[];
 }
 
-/** State an operation can read that is not part of the project: what the editor last copied. */
+/** State an operation can read that is not part of the project: what the editor has recently copied. */
 export interface ApplyContext {
-  clipboard?: Clipboard | null;
+  clipboards?: readonly Clipboard[];
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */
@@ -123,7 +122,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'node.copy':
       return nodeCopy(state, op);
     case 'node.paste':
-      return nodePaste(state, op, ctx.clipboard);
+      return nodePaste(state, op, ctx.clipboards?.find((c) => c.id === op.clipboardId));
     case 'node.rename': {
       const n = getNode(editableTree(state, op.owner), op.nodeId);
       if (op.name.trim()) n.name = op.name.trim();
@@ -727,8 +726,7 @@ export function captureClipboard(state: ProjectState, pageId: string, nodeId: st
   const page = getTree(state, { kind: 'page', id: pageId });
   getNode(page, nodeId);
   if (!findParent(page, nodeId)) fail('Node is not attached.');
-  const clip: Clipboard = { id: newId('clip'), pageId, tree: { rootIds: [nodeId], nodes: {} }, components: {}, pages: {}, assets: {}, tokens: [] };
-  const tokens = new Set<string>();
+  const clip: Clipboard = { id: newId('clip'), pageId, tree: { rootIds: [nodeId], nodes: {} }, components: {}, pages: {}, assets: {} };
   for (const id of subtreeIds(page, nodeId)) {
     const n = clone(page.nodes[id]);
     for (const cl of childLists(n)) if (cl.ids.some((c) => !own(page.nodes, c))) fail('Part of this content is missing from the page, so it cannot be copied.');
@@ -737,10 +735,8 @@ export function captureClipboard(state: ProjectState, pageId: string, nodeId: st
       if (def.category === 'shell') fail('The shared header and footer cannot be copied.');
       clip.components[def.id] = { name: def.name, contract: contentContract(def) };
     }
-    styleTokens(n).forEach((t) => tokens.add(t));
     clip.tree.nodes[id] = n;
   }
-  clip.tokens = [...tokens];
   const walk = (v: unknown) => {
     if (Array.isArray(v)) return v.forEach(walk);
     if (!v || typeof v !== 'object') return;
@@ -757,8 +753,8 @@ export function captureClipboard(state: ProjectState, pageId: string, nodeId: st
  * Paste what was copied, as it was when copied: the original may since have been edited or removed. What it
  * refers to must still be in the project, and the components it places must still take the same content.
  */
-function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | null | undefined): OpResult {
-  if (!clip || clip.id !== op.clipboardId) fail('Nothing copied is available to paste. Copy it again.');
+function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | undefined): OpResult {
+  if (!clip) fail('Nothing copied is available to paste. Copy it again.');
   // The editor pastes onto pages only; content placed inside a definition follows other rules.
   if (op.toOwner.kind !== 'page') fail('Paste onto a page.');
   const gone = (what: string) => fail(`Nothing was pasted: the copy ${what}, which has been removed since it was copied.`);
@@ -769,24 +765,24 @@ function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | 
   }
   for (const [id, title] of Object.entries(clip.pages)) if (!own(state.pages, id)) gone(`links to the "${title}" page`);
   for (const [id, name] of Object.entries(clip.assets)) if (!own(state.assets.assets, id)) gone(`shows the image "${name}"`);
+  // Variant options and parts removed since copying are dropped, as they were from every live placement;
+  // only then is what remains checked for site styles.
+  const tree = clone(clip.tree);
   const tokens = new Set(effectiveTokens(state).map((t) => t.id));
-  for (const t of clip.tokens) if (!tokens.has(t)) gone(`uses the site style "${t}"`);
-  const result = placeCopy(state, clip.tree, clip.tree.rootIds[0], op);
-  // Variant options and parts removed since copying are dropped, as they were from every live placement.
-  const to = getTree(state, op.toOwner);
-  for (const id of subtreeIds(to, result.nodeId as string)) {
-    const n = to.nodes[id];
-    if (n.kind !== 'instance') continue;
-    const def = state.components[n.definitionId];
-    for (const [axis, v] of Object.entries(n.variants ?? {})) {
-      const a = def.variantAxes && own(def.variantAxes, axis);
-      if (!a || typeof v !== 'string' || !own(a.options, v)) delete n.variants![axis];
+  for (const n of Object.values(tree.nodes)) {
+    if (n.kind === 'instance') {
+      const def = state.components[n.definitionId];
+      for (const [axis, v] of Object.entries(n.variants ?? {})) {
+        const a = def.variantAxes && own(def.variantAxes, axis);
+        if (!a || typeof v !== 'string' || !own(a.options, v)) delete n.variants![axis];
+      }
+      if (n.variants && !Object.keys(n.variants).length) delete n.variants;
+      for (const part of Object.keys(n.overrides ?? {})) if (part !== 'root' && !own(def.parts, part)) delete n.overrides![part];
+      if (n.overrides && !Object.keys(n.overrides).length) delete n.overrides;
     }
-    if (n.variants && !Object.keys(n.variants).length) delete n.variants;
-    for (const part of Object.keys(n.overrides ?? {})) if (part !== 'root' && !own(def.parts, part)) delete n.overrides![part];
-    if (n.overrides && !Object.keys(n.overrides).length) delete n.overrides;
+    for (const t of styleTokens(n)) if (!tokens.has(t)) gone(`uses the site style "${t}"`);
   }
-  return result;
+  return placeCopy(state, tree, tree.rootIds[0], op);
 }
 
 /** Place a copy of `from`'s subtree at `op`'s destination, with new IDs; shared by copy and paste. */

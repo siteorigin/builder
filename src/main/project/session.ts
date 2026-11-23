@@ -67,6 +67,9 @@ interface GeneratedManifest {
   files: Record<string, string>;
 }
 
+/** How many recent copies a session keeps for Paste. */
+const CLIPBOARD_LIMIT = 5;
+
 export interface CommitOptions {
   label: string;
   source?: 'user' | 'ai' | 'system';
@@ -134,8 +137,9 @@ export class ProjectSession extends EventEmitter {
   private migrationDue = false;
   /** Publishing an update failed and may have left its journal, which only reopening the project can finish. */
   private migrationFailed = false;
-  /** What the editor last copied. Held only while this project is open; never saved. */
-  private clipboard: Clipboard | null = null;
+  /** What the editor copied most recently, newest last. Held only while this project is open; never saved. A
+   *  few are kept so a paste pressed before a later copy finished still finds the copy it followed. */
+  private clipboards: Clipboard[] = [];
 
   constructor(public readonly dir: string) {
     super();
@@ -845,8 +849,9 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(async () => {
       if (expectedRevision !== this.revision) return { ok: false, message: 'The project changed while copying. Copy it again.' };
       try {
-        this.clipboard = captureClipboard(this.state, pageId, nodeId);
-        return { ok: true, clipboardId: this.clipboard.id };
+        const clip = captureClipboard(this.state, pageId, nodeId);
+        this.clipboards = [...this.clipboards.slice(-(CLIPBOARD_LIMIT - 1)), clip];
+        return { ok: true, clipboardId: clip.id };
       } catch (e) {
         if (e instanceof EngineError) return { ok: false, message: e.message };
         throw e;
@@ -886,7 +891,7 @@ export class ProjectSession extends EventEmitter {
       let next: ProjectState;
       let results;
       try {
-        ({ state: next, results } = applyOperations(this.state, ops, { clipboard: this.clipboard }));
+        ({ state: next, results } = applyOperations(this.state, ops, { clipboards: this.clipboards }));
       } catch (e) {
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };

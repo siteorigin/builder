@@ -46,11 +46,12 @@ function isTyping(e: KeyboardEvent) {
 
 /** What Cmd+C last copied: a section or element on a page. The open project holds the content itself, taken
  *  when it was copied, so editing or deleting the original afterwards does not change what is pasted.
- *  `clipboardId` settles once the project has taken the copy, or to null when it could not. */
-type Copied = { dir: string; label: string; section: boolean; clipboardId: Promise<string | null> };
+ *  `clipboardId` settles once the project has taken the copy, or to null when it could not; `previous` is the
+ *  copy before it, which a paste falls back to while this one is failing (dropped once it succeeds). */
+type Copied = { dir: string; label: string; section: boolean; clipboardId: Promise<string | null>; previous: Copied | null };
 let copied: Copied | null = null;
 
-/** Each project holds its own copy, so a copy is forgotten when its project closes. */
+/** Each project holds its own copies, so they are forgotten when the project closes. */
 export function forgetCopy() {
   copied = null;
 }
@@ -71,22 +72,21 @@ function copySelection(): boolean {
   }
   const snap = s.snapshot;
   const label = refLabel(snap.state, t);
-  // A copy that fails leaves the project holding the one before it, so that one stays available to paste.
-  const previous = copied;
-  const current = () => copied === entry && getState().snapshot?.dir === snap.dir;
+  const sameProject = () => getState().snapshot?.dir === snap.dir;
   const failed = (message?: string) => {
-    if (current()) copied = previous;
-    toast(message ?? `${label} could not be copied.`, 'error');
+    if (sameProject()) toast(message ?? `${label} could not be copied.`, 'error');
     return null;
   };
   const entry: Copied = {
     dir: snap.dir,
     label,
     section: snap.state.pages[t.owner.id]?.rootIds.includes(t.nodeId) ?? false,
+    previous: copied,
     clipboardId: api.project.copy(t.owner.id, t.nodeId, snap.revision).then(
       (r) => {
         if (!r.ok || !r.clipboardId) return failed(r.message);
-        if (current()) toast(`Copied ${label}. Paste it on any page with ⌘V.`, 'info');
+        entry.previous = null;
+        if (copied === entry && sameProject()) toast(`Copied ${label}. Paste it on any page with ⌘V.`, 'info');
         return r.clipboardId;
       },
       () => failed()
@@ -96,14 +96,17 @@ function copySelection(): boolean {
   return true;
 }
 
-/** Paste a copy, as it was when copied, after the selection (or at the end of the page), with new IDs, and
- *  select it. The place is taken when ⌘V is pressed, even if the copy is still being taken. */
-async function pasteCopied(entry: Copied) {
-  const at = insertionPoint(entry.section ? 'section' : 'element');
+/** Paste the latest copy that worked, as it was when copied, after the selection (or at the end of the page),
+ *  with new IDs, and select it. The place is taken when ⌘V is pressed, even if the copy is still being taken. */
+async function pasteCopied(latest: Copied) {
+  const places = { section: insertionPoint('section'), element: insertionPoint('element') };
+  let entry: Copied | null = latest;
+  let clipboardId: string | null = null;
+  while (entry && !(clipboardId = await entry.clipboardId)) entry = entry.previous;
+  // A copy that failed has said so; a project closed in the meantime took its copies with it.
+  if (!entry || !clipboardId || getState().snapshot?.dir !== entry.dir) return;
+  const at = places[entry.section ? 'section' : 'element'];
   if (!at) return;
-  const clipboardId = await entry.clipboardId;
-  // A copy that failed has said so; a project closed in the meantime took its copy with it.
-  if (!clipboardId || getState().snapshot?.dir !== entry.dir) return;
   const r = await applyOps([{ type: 'node.paste', clipboardId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${entry.label}`);
   const id = r?.[0]?.nodeId as string | undefined;
   const here = getState();

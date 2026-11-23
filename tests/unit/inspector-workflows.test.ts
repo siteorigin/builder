@@ -179,7 +179,7 @@ describe('paste what was copied (#62)', () => {
   const to = (s: ProjectState) => ({ kind: 'page' as const, id: otherPage(s) });
   const items = (n: InstanceNode) => n.props.items as Array<{ id: string; title: string }>;
   const paste = (s: ProjectState, clip: ReturnType<typeof captureClipboard>, toOwner = to(s), extra: { parentId?: string | null; index?: number } = {}) =>
-    applyOperations(s, [{ type: 'node.paste', clipboardId: clip.id, toOwner, ...extra }], { clipboard: clip });
+    applyOperations(s, [{ type: 'node.paste', clipboardId: clip.id, toOwner, ...extra }], { clipboards: [clip] });
   const pasted = (r: ReturnType<typeof paste>, pageId: string) => r.state.pages[pageId].nodes[r.results[0].nodeId as string] as InstanceNode;
   /** A section holding a button and an image, to copy. */
   const sectionWith = (s: ProjectState, content: { link?: unknown; image?: unknown }) => {
@@ -285,9 +285,11 @@ describe('paste what was copied (#62)', () => {
     const option = Object.keys(a.options).find((o) => o !== a.default)!;
     const part = Object.keys(def.parts).find((p) => p !== 'root')!;
     const grid = firstInstance(f.state, 'features.grid');
-    let s = applyOperations(f.state, [
+    const teal = applyOperations(f.state, [{ type: 'token.create', group: 'color', label: 'Teal', value: '#008080' }]);
+    const tokenId = teal.results[0].tokenId as string;
+    let s = applyOperations(teal.state, [
       { type: 'instance.setVariant', owner: owner(f.state), nodeId: grid.id, variant: option, axis },
-      { type: 'node.setStyle', owner: owner(f.state), nodeId: grid.id, partId: part, scope: 'base', property: 'color', value: '#ff0000' },
+      { type: 'node.setStyle', owner: owner(f.state), nodeId: grid.id, partId: part, scope: 'base', property: 'color', value: { token: tokenId } },
       { type: 'node.setStyle', owner: owner(f.state), nodeId: grid.id, scope: 'base', property: 'paddingBlock', value: { token: 'space.lg' } }
     ]).state;
     const clip = captureClipboard(s, s.site.homePageId, grid.id);
@@ -297,7 +299,9 @@ describe('paste what was copied (#62)', () => {
     expect(kept.overrides?.[part]).toBeDefined();
     s = applyOperations(s, [
       { type: 'component.removeVariant', definitionId: defId, variant: option, axis },
-      { type: 'component.removePart', definitionId: defId, partId: part }
+      { type: 'component.removePart', definitionId: defId, partId: part },
+      // The site style only that part used goes too; the paste no longer needs it.
+      { type: 'token.remove', tokenId }
     ]).state;
     const copy = pasted(paste(s, clip), otherPage(s));
     expect(copy.variants?.[axis]).toBeUndefined();
@@ -369,7 +373,7 @@ describe('paste what was copied (#62)', () => {
     const grid = firstInstance(s, 'features.grid');
     const clip = captureClipboard(s, s.site.homePageId, grid.id);
     rejects(() => applyOperations(s, [{ type: 'node.paste', clipboardId: clip.id, toOwner: to(s) }]), /Copy it again/);
-    rejects(() => applyOperations(s, [{ type: 'node.paste', clipboardId: 'clip_other', toOwner: to(s) }], { clipboard: clip }), /Copy it again/);
+    rejects(() => applyOperations(s, [{ type: 'node.paste', clipboardId: 'clip_other', toOwner: to(s) }], { clipboards: [clip] }), /Copy it again/);
   });
 
   it('copies only attached page content, never the shared header', () => {

@@ -244,6 +244,20 @@ describe('copy and paste (#62)', () => {
     expect(again.ok).toBe(true);
   });
 
+  it('keeps a few recent copies, so a paste still finds the copy it followed', async () => {
+    const { s } = await make();
+    const home = s.state.pages[s.state.site.homePageId];
+    const to = { kind: 'page' as const, id: contact(s).id };
+    const first = await s.copy(home.id, grid(s).id, s.revision);
+    const later = await s.copy(home.id, home.rootIds[0], s.revision);
+    expect(later.clipboardId).not.toBe(first.clipboardId);
+    const r = await s.apply({ operations: [{ type: 'node.paste', clipboardId: first.clipboardId!, toOwner: to }] }, { label: 'Paste', source: 'user' });
+    expect((contact(s).nodes[r.results![0].nodeId as string] as InstanceNode).definitionId).toBe(grid(s).definitionId);
+    for (let i = 0; i < 5; i++) await s.copy(home.id, home.rootIds[0], s.revision);
+    const old = await s.apply({ operations: [{ type: 'node.paste', clipboardId: first.clipboardId!, toOwner: to }] }, { label: 'Paste', source: 'user' });
+    expect(old.error?.message).toMatch(/Copy it again/);
+  });
+
   it('refuses a paste from an AI run, and a copy of a revision the editor no longer shows', async () => {
     const { s } = await make();
     const home = s.state.site.homePageId;
