@@ -7,6 +7,7 @@ import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { anchorCapable, anchorsInUse } from '@engine/tree';
+import { namesFormFields } from '@catalogue/foundation/form';
 import { resolveLink, takesParagraphs } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 
@@ -70,11 +71,14 @@ interface Visit {
   /** An image node about to render. */
   image?: (n: GraphNode & { kind: 'image' }, scope: Scope, reportId: string) => void;
   /** A text node about to render. */
-  text?: (n: GraphNode & { kind: 'text' }, scope: Scope, reportId: string) => void;
+  text?: (n: GraphNode & { kind: 'text' }, scope: Scope, reportId: string, inDef: boolean) => void;
   /** An `id` attribute the generated markup will carry. */
   id?: (id: string, reportId: string) => void;
-  /** A code component placement about to render, with its effective property values. */
-  code?: (def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string) => void;
+  /**
+   * A code component placement about to render, with its effective property values; `n` is its instance node,
+   * `scope` where it is placed, and `inDef` when that is inside another component's design.
+   */
+  code?: (def: ComponentDefinition, props: Record<string, unknown>, reportId: string, placement: string, n: GraphNode & { kind: 'instance' }, scope: Scope, inDef: boolean) => void;
   /** A page-level node (page or shell tree) about to render, before anything inside it. */
   enter?: (n: GraphNode) => void;
   /** After everything inside a page-level node has been visited. */
@@ -166,7 +170,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         visit.image?.(n, frame.scope, reportId);
         break;
       case 'text':
-        visit.text?.(n, frame.scope, reportId);
+        visit.text?.(n, frame.scope, reportId, !!frame.def);
         break;
       case 'element':
         for (const c of n.children) walk(frame, c, inner);
@@ -220,7 +224,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           const child: Frame = { tree: def.tree, def, scope: { props, trail, ...where }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
-          visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`);
+          visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);
           // Code that places `so_id` as an id (a converted section does, on its root) carries the placement's id.
           if (ownId && SO_ID_ATTR.test(def.source ?? '')) visit.id?.(ownId, reportId);
           // Code places its slot content where its own markup says; count all of it as rendered, as often as it likes.
@@ -343,6 +347,169 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
 /** The unlinked buttons one node of a page or shell tree renders: the node itself, or those inside a placement. */
 export function unlinkedButtonsAt(state: ProjectState, tree: NodeTree, nodeId: string): UnlinkedButton[] {
   return tree.nodes[nodeId] ? unlinkedButtons(state, { ...tree, rootIds: [nodeId] }) : [];
+}
+
+/** Where a piece of shown content is stored: a field of the page or shell node itself, or a field of its placement. */
+export type ContentSource = { kind: 'node'; field: 'text' | 'label' | 'link' } | ({ kind: 'prop' } & PlacementField);
+
+/** Visible words or a link destination a page or shell tree renders, and the field that holds it. */
+export interface RenderedContent {
+  /** The page or shell node: the content's own node, or the outermost placement it is shown through. */
+  nodeId: string;
+  /** Words a visitor reads (text, a button's label, a field's text), or where a link goes. */
+  kind: 'text' | 'link';
+  /** The value as stored: text, rich text or a link. */
+  value: unknown;
+  /** Where to change it. Absent for content fixed in a component's design, which no placement can change. */
+  source?: ContentSource;
+  /** For content without a source: where it renders, which tells two such pieces apart. */
+  at?: string;
+  /** A custom code component's property: what its code shows is unknown, so it is listed but not changed from here. */
+  custom?: boolean;
+  /** For content inside a component: the definition node showing it. */
+  defNodeId?: string;
+  /** Set when the placement places that definition directly, so its parts can be selected: the items, outermost first. */
+  itemPath?: string[];
+  /** Shown by a component placed directly at `nodeId` (not one inside its design or a code component). */
+  direct?: boolean;
+  /** Stored as rich text (blocks of spans), and whether the links inside it render as links. */
+  rich?: boolean;
+  richLinks?: boolean;
+}
+
+/**
+ * The shipped code component a definition is, or a header copied from it (Make unique keeps its code and
+ * properties). A copied contact form is not: the project keeps its answers' submission keys only for the theme's own
+ * form (`namesFormFields`), so a copy's fields are left to the inspector.
+ */
+function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
+  if (def.owner === 'theme') return def.componentId === 'shell.header' || (def.componentId === 'contact.form' && namesFormFields(def)) ? def.componentId : undefined;
+  // Back through every copy (a copy of a copy) to where it started.
+  let from = def.provenance?.forkedFrom;
+  for (let guard = 0; from && guard < 20; guard++) {
+    const prev = state.components[from];
+    if (!prev) return from.replace(/^[^.]+\./, '') === 'shell.header' ? 'shell.header' : undefined;
+    if (prev.owner === 'theme') return prev.componentId === 'shell.header' ? 'shell.header' : undefined;
+    from = prev.provenance?.forkedFrom;
+  }
+  return undefined;
+}
+
+/**
+ * What a shipped code component shows visitors, as property names (and `list.field` for list items), read from its
+ * markup: the header's name only while it shows (not beside a logo set to show alone) and its action only with both
+ * a label and somewhere to go; the form's words, never its service settings or the names answers are sent under.
+ */
+function shippedCodeShows(state: ProjectState, which: string, props: Record<string, unknown>): Set<string> {
+  if (which === 'contact.form') return new Set(['eyebrow', 'heading', 'lead', 'fields.label', 'fields.placeholder', 'submitLabel', 'successMessage', 'errorMessage']);
+  // As the header's markup reads them: `!!name && (showSiteName || !logo?.src)`, and `ctaLabel && ctaLink?.href`.
+  const out = new Set(['links.label', 'links.link']);
+  if (props.siteName && (props.showSiteName !== false || !shown(props.logo, state))) out.add('siteName');
+  if (props.ctaLabel && resolveLink(props.ctaLink as LinkValue | undefined, { state })) (out.add('ctaLabel'), out.add('ctaLink'));
+  return out;
+}
+
+/**
+ * Every piece of visible content a page or shell tree renders, once per field that holds it: text and rich text,
+ * button labels and destinations, and the content fields of the components placed there (a list item's fields
+ * included, with the item's own value or its field's default). Content a component's design fixes is listed
+ * without a source. Buttons the site leaves out (a styled button with no destination) are not listed, and a link
+ * that goes nowhere lists only its words.
+ */
+export function renderedContent(state: ProjectState, tree: NodeTree): RenderedContent[] {
+  const out: RenderedContent[] = [];
+  const guarded = new Set<string>();
+  const keyOf = (c: RenderedContent) =>
+    JSON.stringify([c.kind, c.nodeId, c.source ? [c.source.kind, 'field' in c.source ? c.source.field : null, 'prop' in c.source ? c.source.prop : null, 'itemId' in c.source ? (c.source.itemId ?? null) : null] : [c.at ?? null]]);
+  const seen = new Map<string, RenderedContent>();
+  const push = (c: RenderedContent) => {
+    const k = keyOf(c);
+    const had = seen.get(k);
+    // One entry per field. A field that a custom code component also reads may be its setting: it stays custom.
+    if (had) return void (c.custom && (had.custom = true));
+    seen.set(k, c);
+    out.push(c);
+  };
+  /** Where content a definition node reads is stored, and how to select it. */
+  const from = (b: unknown, field: 'text' | 'label' | 'link', scope: Scope, defNodeId: string, inDef: boolean): Pick<RenderedContent, 'source' | 'at' | 'defNodeId' | 'itemPath' | 'direct'> => {
+    if (!inDef) return { source: { kind: 'node', field } };
+    const f = placementField(b, scope);
+    const direct = !!scope.placement;
+    const at = `${scope.trail ?? ''}|${defNodeId}|${(scope.path ?? []).join(',')}|${field}`;
+    return { ...(f ? { source: { kind: 'prop' as const, ...f } } : { at }), defNodeId, direct, ...(direct && scope.path?.length ? { itemPath: scope.path } : {}) };
+  };
+  walkRendered(state, tree, {
+    text: (n, scope, reportId, inDef) => {
+      const value = evaluate(n.text, scope);
+      push({ nodeId: reportId, kind: 'text', value, ...from(n.text, 'text', scope, n.id, inDef), ...(n.rich ? { rich: true, richLinks: true } : {}) });
+    },
+    link: (n, scope, reportId, inDef) => {
+      const link = evaluate(n.link, scope) as LinkValue | undefined;
+      const label = evaluate(n.label, scope);
+      const goes = !!resolveLink(link, { state });
+      // A styled button with nowhere to go is left out of the site; a plain link still shows its words.
+      if (!goes && BUTTONS.has(String(evaluate(n.appearance, scope) ?? ''))) return;
+      push({ nodeId: reportId, kind: 'text', value: label, ...from(n.label, 'label', scope, n.id, inDef) });
+      if (goes && isLinkValue(link)) push({ nodeId: reportId, kind: 'link', value: link, ...from(n.link, 'link', scope, n.id, inDef) });
+    },
+    code: (def, props, reportId, placement, n, scope, inDef) => {
+      const which = shippedCode(state, def);
+      const shows = which ? shippedCodeShows(state, which, props) : undefined;
+      const rich = !takesParagraphs(def);
+      // The placement's own field each property is: directly, or through the binding a design hands it.
+      const fieldOf = (key: string): PlacementField | undefined => (inDef ? placementField(n.props[key], scope) : { prop: key });
+      // A form's fields handed in by a design are edited on that design's list, where their submission keys are not kept.
+      const keyless = (key: string) => which === 'contact.form' && inDef && key === 'fields';
+      /** A field this code may read as a setting (or in ways its markup alone decides): never changed from here. */
+      const guard = (f: PlacementField | undefined) => f && guarded.add(JSON.stringify([reportId, f.prop, f.itemId ?? null, f.field ?? null]));
+      const add = (kind: 'text' | 'link', value: unknown, source: PlacementField | undefined, schema: PropSchema, at: string, custom: boolean) =>
+        push({
+          nodeId: reportId,
+          kind,
+          value,
+          ...(source ? { source: { kind: 'prop', ...source } } : { at }),
+          ...(custom ? { custom: true } : {}),
+          ...(inDef ? { direct: false } : {}),
+          ...(schema.type === 'richtext' ? { rich: true, richLinks: rich } : {})
+        });
+      const take = (schemas: Record<string, PropSchema>, values: Record<string, unknown>, key: string, source: PlacementField | undefined, at: string, custom: boolean) => {
+        const schema = schemas[key];
+        const v = Object.hasOwn(values, key) ? values[key] : (schema as { default?: unknown }).default;
+        if (custom) guard(source);
+        if (schema.type === 'string' || schema.type === 'richtext') add('text', v, source, schema, at, custom);
+        if (schema.type !== 'link' || !isLinkValue(v) || !resolveLink(v, { state })) return;
+        // A shipped component's own markup decides (above). Other code: a link named by a label property shows only
+        // while that label has words, as the shipped header does.
+        const labelKey = labelKeyFor(key);
+        const named = Object.hasOwn(values, labelKey) ? values[labelKey] : (schemas[labelKey] as { default?: unknown } | undefined)?.default;
+        if (!shows && schemas[labelKey]?.type === 'string' && !String(named ?? '').trim()) return;
+        add('link', v, source, schema, at, custom);
+      };
+      for (const [key, schema] of Object.entries(def.properties)) {
+        const field = fieldOf(key);
+        if (schema.type !== 'list') {
+          // A shipped component's setting is not listed, and whatever else shows its field may not change it.
+          if (shows && !shows.has(key)) guard(field);
+          else take(def.properties, props, key, field, `${placement}|${key}`, !shows);
+          continue;
+        }
+        for (const item of Array.isArray(props[key]) ? (props[key] as Array<Record<string, unknown>>) : []) {
+          if (!item || typeof item !== 'object') continue;
+          const itemId = typeof item.id === 'string' && item.id ? item.id : undefined;
+          for (const f of Object.keys(schema.fields)) {
+            const source = field && !field.itemId && itemId ? { prop: field.prop, itemId, field: f } : undefined;
+            if (shows && !shows.has(`${key}.${f}`)) guard(source);
+            else take(schema.fields, item, f, source, `${placement}|${key}|${String(item.id ?? '')}|${f}`, !shows || keyless(key));
+          }
+          // A whole list handed in from a design is that design's field too.
+          if (!shows || keyless(key)) guard(field);
+        }
+      }
+    }
+  });
+  // A field any custom code or setting reads stays out of reach, however else it is shown.
+  for (const c of out) if (c.source?.kind === 'prop' && guarded.has(JSON.stringify([c.nodeId, c.source.prop, c.source.itemId ?? null, c.source.field ?? null]))) c.custom = true;
+  return out;
 }
 
 /** How many images on the site's pages and shell render as placeholders because no image is chosen yet. */

@@ -436,7 +436,7 @@ async function createWindow() {
     const mod = input.meta || input.control;
     const k = input.key.toLowerCase();
     // With Shift held, macOS reports the backslash key as "|".
-    const relevant = (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', '\\', '|', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
+    const relevant = (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', 'f', '\\', '|', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
     if (relevant) controller.send('input:key', { key: input.key, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt });
   });
   // Closing the window first saves what is being typed. On macOS the project stays open without a window,

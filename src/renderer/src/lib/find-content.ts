@@ -1,0 +1,652 @@
+/**
+ * Find and replace across the site's content: the words visitors read and where links go, on every page and in the
+ * shared header and footer, each labelled by page, section and field. A replacement is one batch of ordinary edits,
+ * reviewed against a dry run first, so it undoes in one step and shows every text and destination it changes.
+ */
+import type { ElementRef, GraphNode, InstanceNode, LinkValue, ListItem, NodeTree, OwnerRef, ProjectState, RichListType, RichSpan, RichText } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import { cleanBlocks, cleanSpans, isListBlock, toRichText } from '@shared/richtext';
+import { renderedContent, type ContentSource, type RenderedContent } from '@generator/checks';
+import { applyOperations } from '@engine/apply';
+import { normalizeLink } from '@engine/values';
+import { childLists, displayName, itemLinkPairs } from '@engine/tree';
+import { partIdFor } from './model';
+
+/** One field of the site that shows content: a text, a button's label, a list item's field, or a destination. */
+export interface ContentField {
+  /** Names this field in any revision of the project: its document, node and where in that node it is stored. */
+  key: string;
+  owner: OwnerRef;
+  /** The page or shell node: the content's own node, or the placement that shows it. */
+  nodeId: string;
+  kind: 'text' | 'link';
+  value: unknown;
+  rich: boolean;
+  /** Rich text whose inline links render as links (and so are destinations to search). */
+  richLinks: boolean;
+  plainAs?: RichListType;
+  /** Where to change it. None: fixed in a component's design. */
+  source?: ContentSource;
+  /** A custom code component's property: found and opened, but changed in the inspector. */
+  custom?: boolean;
+  defNodeId?: string;
+  itemPath?: string[];
+  direct: boolean;
+  /** The page's title, or Header / Footer. */
+  where: string;
+  /** For the shared header and footer: how many pages show it. */
+  sharedPages?: number;
+  /** The section on the page (or the header or footer itself) it belongs to. */
+  section: string;
+  /** The field, as the inspector names it: "Heading", "Contact links › Email › Destination". */
+  label: string;
+}
+
+/** A searchable run of one field: its text, a block or list item of rich text, a destination. */
+interface Part {
+  path: string;
+  kind: 'text' | 'link';
+  text: string;
+  /** Characters shown before the stored value (the # of a section link). */
+  offset?: number;
+  /** Why matches in it cannot be replaced from here. */
+  blocked?: string;
+  /** Rich text: its block, list item and spans; for a link, the first span of the linked run. */
+  block?: number;
+  item?: number;
+  spans?: RichSpan[];
+  span?: number;
+  /** For a link in rich text: the span after its linked run. */
+  spanEnd?: number;
+}
+
+export interface ContentMatch {
+  /** Names this match: its field, the part of the field and where in it the match starts. */
+  id: string;
+  field: ContentField;
+  part: string;
+  kind: 'text' | 'link';
+  start: number;
+  end: number;
+  /** The words around the match, for the result list. */
+  before: string;
+  match: string;
+  after: string;
+  /** Why this match cannot be replaced here. It can still be opened. */
+  blocked?: string;
+}
+
+export interface FindOptions {
+  matchCase?: boolean;
+  /** Stop after this many matches. */
+  limit?: number;
+}
+
+const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
+const isLink = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && typeof (v as LinkValue).type === 'string' && typeof (v as LinkValue).target === 'string';
+const sameLink = (a: LinkValue | undefined, b: LinkValue | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+const oneLine = (t: string) => t.replace(/\s+/g, ' ');
+/** Text as a page shows it: the whitespace HTML collapses, collapsed (a non-breaking space is deliberate and stays). */
+const shownText = (t: string) => t.replace(/[ \t\r\n\f]+/g, ' ').replace(/^ | $/g, '');
+
+function sourceKey(c: RenderedContent): unknown[] {
+  const s = c.source;
+  if (!s) return ['design', c.at ?? null];
+  return s.kind === 'node' ? ['node', s.field] : ['prop', s.prop, s.itemId ?? null, s.field ?? null];
+}
+
+/** Each node's top-level ancestor in its tree, for the section it belongs to. */
+function sectionsOf(tree: NodeTree): (id: string) => string {
+  const parent = new Map<string, string>();
+  for (const n of Object.values(tree.nodes)) for (const cl of childLists(n)) for (const c of cl.ids) parent.set(c, n.id);
+  return (id) => {
+    let cur = id;
+    for (let guard = 0; parent.has(cur) && guard < 100; guard++) cur = parent.get(cur)!;
+    return cur;
+  };
+}
+
+/** The items a placement's list shows: its own, or the default ones it has not changed. */
+function listItems(inst: InstanceNode, prop: string, schemaDefault: unknown): ListItem[] {
+  const v = own(inst.props, prop);
+  return (Array.isArray(v) ? v : Array.isArray(schemaDefault) ? schemaDefault : []) as ListItem[];
+}
+
+/** The field's name as the inspector shows it, and the rich text kind its plain lines take. */
+function fieldLabel(state: ProjectState, tree: NodeTree, c: RenderedContent): { label: string; plainAs?: RichListType } {
+  const node = own(tree.nodes, c.nodeId);
+  const s = c.source;
+  if (!node) return { label: c.kind === 'link' ? 'Destination' : 'Text' };
+  if (!s) {
+    const def = node.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
+    return { label: `${c.kind === 'link' ? 'Link' : 'Text'} in the ${def?.name ?? 'component'} design` };
+  }
+  if (s.kind === 'node') {
+    const name = displayName(state, node);
+    if (node.kind === 'link') return { label: `${name} ${s.field === 'link' ? 'destination' : 'label'}` };
+    return { label: name };
+  }
+  const def = node.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
+  const schema = def ? own(def.properties, s.prop) : undefined;
+  if (!schema) return { label: s.prop };
+  if (!s.itemId || schema.type !== 'list' || node.kind !== 'instance') return { label: schema.label, plainAs: schema.type === 'richtext' ? schema.plainAs : undefined };
+  const items = listItems(node, s.prop, schema.default);
+  const i = items.findIndex((x) => x?.id === s.itemId);
+  const titled = i >= 0 ? items[i][schema.titleField ?? 'label'] : undefined;
+  const title = typeof titled === 'string' && titled.trim() ? oneLine(titled.trim()).slice(0, 40) : `${schema.itemLabel} ${i + 1}`;
+  const field = s.field ? own(schema.fields, s.field) : undefined;
+  return { label: `${schema.label} › ${title} › ${field?.label ?? s.field}`, plainAs: field?.type === 'richtext' ? field.plainAs : undefined };
+}
+
+/**
+ * Every field of the site that shows content, in reading order: the shared header, each page, the shared footer.
+ * The header and footer are left out when no page shows them.
+ */
+export function contentFields(state: ProjectState): ContentField[] {
+  const pages = state.site.pageOrder.filter((id) => own(state.pages, id));
+  const shellPages = pages.filter((id) => state.pages[id].shell !== 'none').length;
+  const trees: Array<{ owner: OwnerRef; tree: NodeTree; where: string; shared?: number }> = [];
+  if (shellPages) trees.push({ owner: { kind: 'shell', id: 'header' }, tree: state.site.shell.header, where: 'Header', shared: shellPages });
+  for (const id of pages) trees.push({ owner: { kind: 'page', id }, tree: state.pages[id], where: state.pages[id].title });
+  if (shellPages) trees.push({ owner: { kind: 'shell', id: 'footer' }, tree: state.site.shell.footer, where: 'Footer', shared: shellPages });
+  const out: ContentField[] = [];
+  for (const { owner, tree, where, shared } of trees) {
+    const sectionOf = sectionsOf(tree);
+    for (const c of renderedContent(state, tree)) {
+      const root = own(tree.nodes, sectionOf(c.nodeId));
+      const { label, plainAs } = fieldLabel(state, tree, c);
+      out.push({
+        key: JSON.stringify([owner.kind, owner.id, c.nodeId, c.kind, ...sourceKey(c)]),
+        owner,
+        nodeId: c.nodeId,
+        kind: c.kind,
+        value: c.value,
+        rich: !!c.rich,
+        richLinks: !!c.richLinks,
+        ...(plainAs ? { plainAs } : {}),
+        ...(c.source ? { source: c.source } : {}),
+        ...(c.custom ? { custom: true } : {}),
+        ...(c.defNodeId ? { defNodeId: c.defNodeId } : {}),
+        ...(c.itemPath ? { itemPath: c.itemPath } : {}),
+        direct: !!c.direct,
+        where,
+        ...(shared ? { sharedPages: shared } : {}),
+        section: root ? displayName(state, root) : where,
+        label
+      });
+    }
+  }
+  return out;
+}
+
+/** A destination as a visitor would read it, and as search finds it: an address, a number, a URL, a page's route. */
+function linkPart(state: ProjectState, link: LinkValue, path: string): Part | null {
+  switch (link.type) {
+    case 'email':
+    case 'tel':
+    case 'url':
+      return link.target ? { path, kind: 'link', text: link.target } : null;
+    case 'anchor':
+      return { path, kind: 'link', text: `#${link.target}`, offset: 1 };
+    case 'page': {
+      // A link to a page that is gone goes nowhere: the site shows only its words.
+      const page = own(state.pages, link.target);
+      if (!page) return null;
+      return { path, kind: 'link', text: page.route + (link.anchor ? `#${link.anchor}` : ''), blocked: 'This goes to a page of the site. Choose another page for it in the inspector.' };
+    }
+    default:
+      return null;
+  }
+}
+
+/** A destination in words, for the review. */
+export function describeLink(state: ProjectState, link: unknown): string {
+  if (!isLink(link) || link.type === 'none') return 'No link';
+  switch (link.type) {
+    case 'email':
+      return `Email ${link.target}`;
+    case 'tel':
+      return `Phone ${link.target}`;
+    case 'anchor':
+      return `#${link.target} on the same page`;
+    case 'page': {
+      const page = own(state.pages, link.target);
+      return `${page?.title ?? 'Missing page'} (${(page?.route ?? link.target) + (link.anchor ? `#${link.anchor}` : '')})`;
+    }
+    default:
+      return link.target;
+  }
+}
+
+function richOf(f: ContentField): RichText {
+  try {
+    return toRichText(f.value, f.plainAs);
+  } catch {
+    return [];
+  }
+}
+
+/** The runs of a field that search reads. */
+function partsOf(state: ProjectState, f: ContentField): Part[] {
+  if (f.kind === 'link') {
+    const p = isLink(f.value) ? linkPart(state, f.value, 'l') : null;
+    return p ? [p] : [];
+  }
+  if (!f.rich) return typeof f.value === 'string' ? [{ path: 't', kind: 'text', text: f.value }] : [];
+  const parts: Part[] = [];
+  richOf(f).forEach((b, block) => {
+    const runs = isListBlock(b) ? b.items.map((spans, item) => ({ spans, item })) : [{ spans: b.spans, item: undefined }];
+    for (const { spans, item } of runs) {
+      const path = item === undefined ? `b${block}` : `b${block}.${item}`;
+      parts.push({ path, kind: 'text', text: spans.map((s) => s.text).join(''), block, item, spans });
+      if (!f.richLinks) continue;
+      spans.forEach((sp, span) => {
+        if (!sp.link || (span > 0 && sameLink(spans[span - 1].link, sp.link))) return;
+        const p = linkPart(state, sp.link, `${path}@${span}`);
+        let spanEnd = span + 1;
+        while (spanEnd < spans.length && sameLink(spans[spanEnd].link, sp.link)) spanEnd++;
+        if (p) parts.push({ ...p, block, item, spans, span, spanEnd });
+      });
+    }
+  });
+  return parts;
+}
+
+/** The search as a pattern: the words in order, any spacing between them, literal characters only. */
+export function contentPattern(query: string, opts: FindOptions = {}): RegExp | null {
+  const words = query.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  return new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+'), opts.matchCase ? 'gu' : 'giu');
+}
+
+/** Whether a range of rich text runs across the edge of a link (part of it linked, part not, or two links). */
+function crossesLink(spans: RichSpan[], start: number, end: number): boolean {
+  let pos = 0;
+  let first: LinkValue | null | undefined;
+  for (const sp of spans) {
+    const a = pos;
+    pos += sp.text.length;
+    if (pos <= start || a >= end) continue;
+    if (first === undefined) first = sp.link ?? null;
+    else if (!sameLink(first ?? undefined, sp.link)) return true;
+  }
+  return false;
+}
+
+function blockedReason(f: ContentField, part: Part, start: number, end: number): string | undefined {
+  if (!f.source) return 'This is part of a component’s design. Open it to change it everywhere, or to make this placement its own.';
+  if (f.custom) return 'This belongs to a custom code component, which may use it as a setting. Change it in the inspector.';
+  if (part.blocked) return part.blocked;
+  if (part.offset && start < part.offset) return 'Change the # of a section link in the inspector.';
+  if (part.kind === 'text' && part.spans && crossesLink(part.spans, start, end)) return 'Part of this is a link and part is not. Change it in the inspector.';
+  return undefined;
+}
+
+/**
+ * Every match of `query` in the site's content: visible words and destinations, each with the words around it.
+ * Matches inside one field never overlap. `fields` lets a caller reuse one listing for several searches.
+ */
+export function findContent(state: ProjectState, query: string, opts: FindOptions = {}, fields: ContentField[] = contentFields(state)): ContentMatch[] {
+  const re = contentPattern(query, opts);
+  if (!re) return [];
+  const out: ContentMatch[] = [];
+  const limit = opts.limit ?? Infinity;
+  for (const f of fields) {
+    for (const part of partsOf(state, f)) {
+      for (const m of part.text.matchAll(re)) {
+        if (out.length >= limit) return out;
+        const start = m.index ?? 0;
+        const end = start + m[0].length;
+        const from = Math.max(0, start - 40);
+        const to = Math.min(part.text.length, end + 60);
+        const blocked = blockedReason(f, part, start, end);
+        out.push({
+          id: `${f.key}|${part.path}|${start}`,
+          field: f,
+          part: part.path,
+          kind: part.kind,
+          start,
+          end,
+          before: (from > 0 ? '…' : '') + oneLine(part.text.slice(from, start)),
+          match: oneLine(m[0]),
+          after: oneLine(part.text.slice(end, to)) + (to < part.text.length ? '…' : ''),
+          ...(blocked ? { blocked } : {})
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Replacing
+// ---------------------------------------------------------------------------
+
+export interface ContentChange {
+  field: ContentField;
+  kind: 'text' | 'link';
+  before: string;
+  after: string;
+  /** Not a chosen match: a change the edit makes along with them, listed so nothing changes unseen. */
+  knockOn?: boolean;
+}
+
+export interface ReplacePlan {
+  /** The edits, as one batch: one step to undo. Empty when nothing would change. */
+  operations: EditOperation[];
+  /** Every text and destination the edits change. */
+  changes: ContentChange[];
+  /** Why the edits cannot be made (the project refused them in a dry run, or one would remove a link). */
+  error?: string;
+  /** Chosen matches that cannot be replaced here. */
+  skipped: number;
+}
+
+/** Replaces the ranges (right to left, so earlier offsets hold) in a string. */
+function spliceText(text: string, ranges: Array<{ start: number; end: number }>, replacement: string): string {
+  let out = text;
+  for (const r of [...ranges].sort((a, b) => b.start - a.start)) out = out.slice(0, r.start) + replacement + out.slice(r.end);
+  return out;
+}
+
+/** Replaces a range of a run of spans: the new words take the formatting (and link) of the span the range starts in. */
+function spliceSpans(spans: RichSpan[], start: number, end: number, replacement: string) {
+  let pos = 0;
+  let placed = false;
+  for (const sp of spans) {
+    const a = pos;
+    const b = pos + sp.text.length;
+    pos = b;
+    if (b <= start || a >= end) continue;
+    const from = Math.max(a, start) - a;
+    const to = Math.min(b, end) - a;
+    sp.text = sp.text.slice(0, from) + (placed ? '' : replacement) + sp.text.slice(to);
+    placed = true;
+  }
+}
+
+/** A destination as the project will store it (an anchor without its #, say), or as given when it would refuse it. */
+function stored(state: ProjectState, link: LinkValue): LinkValue {
+  try {
+    return normalizeLink(link, state, 'Link');
+  } catch {
+    return link;
+  }
+}
+
+/** Each linked run of spans that has words: the spans it covers. Emptying every span of one removes that link. */
+function linkedRuns(spans: RichSpan[]): number[][] {
+  const runs: number[][] = [];
+  spans.forEach((sp, i) => {
+    if (!sp.link) return;
+    if (i > 0 && sameLink(spans[i - 1].link, sp.link)) runs[runs.length - 1].push(i);
+    else runs.push([i]);
+  });
+  return runs.filter((r) => r.some((i) => spans[i].text.trim()));
+}
+
+const spansText = (spans: RichSpan[]) => shownText(spans.map((s) => s.text).join(''));
+
+/** The field's next value with the chosen matches replaced, and what that changes in words. */
+function replaceIn(state: ProjectState, f: ContentField, matches: ContentMatch[], replacement: string): { value: unknown; changes: ContentChange[]; error?: string } | null {
+  const parts = new Map(partsOf(state, f).map((p) => [p.path, p]));
+  const byPart = new Map<string, ContentMatch[]>();
+  for (const m of matches) {
+    const part = parts.get(m.part);
+    // A match that already reads as the replacement changes nothing, and must not take another span's formatting.
+    if (!part || part.text.slice(m.start, m.end) === replacement) continue;
+    byPart.set(m.part, [...(byPart.get(m.part) ?? []), m]);
+  }
+  if (f.kind === 'link') {
+    const part = parts.get('l');
+    const ms = byPart.get('l');
+    if (!part || !ms || !isLink(f.value)) return null;
+    const text = spliceText(part.text, ms, replacement);
+    const next: LinkValue = { ...f.value, target: text.slice(part.offset ?? 0) };
+    if (sameLink(next, f.value)) return null;
+    return { value: next, changes: [{ field: f, kind: 'link', before: describeLink(state, f.value), after: describeLink(state, next) }] };
+  }
+  if (!f.rich) {
+    const ms = byPart.get('t');
+    if (typeof f.value !== 'string' || !ms) return null;
+    const next = spliceText(f.value, ms, replacement);
+    if (next === f.value) return null;
+    return { value: next, changes: [{ field: f, kind: 'text', before: shownText(f.value), after: shownText(next) }] };
+  }
+  const blocks = structuredClone(richOf(f));
+  const spansAt = (p: Part): RichSpan[] => {
+    const b = blocks[p.block!];
+    return isListBlock(b) ? b.items[p.item!] : b.spans;
+  };
+  const changes: ContentChange[] = [];
+  // Destinations first, each over the spans its run covered before any change: they keep every span's words, so
+  // the text ranges below still line up.
+  for (const [path, ms] of byPart) {
+    const part = parts.get(path);
+    if (!part || part.kind !== 'link' || part.span === undefined) continue;
+    const spans = spansAt(part);
+    const was = part.spans![part.span].link!;
+    const next: LinkValue = { ...was, target: spliceText(part.text, ms, replacement).slice(part.offset ?? 0) };
+    if (sameLink(next, was)) continue;
+    for (let i = part.span; i < (part.spanEnd ?? part.span + 1); i++) spans[i].link = { ...next };
+    changes.push({ field: f, kind: 'link', before: describeLink(state, was), after: describeLink(state, stored(state, next)) });
+  }
+  for (const [path, ms] of byPart) {
+    const part = parts.get(path);
+    if (!part || part.kind !== 'text') continue;
+    const spans = spansAt(part);
+    const was = structuredClone(spans);
+    // The links as they were, before any destination above changed: two links made the same are still two.
+    const runs = linkedRuns(part.spans!);
+    for (const m of [...ms].sort((a, b) => b.start - a.start)) spliceSpans(spans, m.start, m.end, replacement);
+    if (runs.some((r) => !r.some((i) => spans[i].text.trim()))) return { value: f.value, changes: [], error: `Replacing “${ms[0].match}” would remove a link from ${f.label} on ${f.where}. Leave that match out, or change it in the inspector.` };
+    // Compared as the project stores them: formatting and a non-breaking space are changes too.
+    if (JSON.stringify(cleanSpans(structuredClone(spans))) !== JSON.stringify(cleanSpans(was))) changes.push({ field: f, kind: 'text', before: spansText(was), after: spansText(spans) });
+  }
+  if (!changes.length) return null;
+  return { value: cleanBlocks(blocks), changes };
+}
+
+/** The value of one field of a list item, as the placement shows it. */
+function itemValue(state: ProjectState, owner: OwnerRef, nodeId: string, prop: string, itemId: string, field: string): unknown {
+  const tree = treeOf(state, owner);
+  const inst = tree && own(tree.nodes, nodeId);
+  if (inst?.kind !== 'instance') return undefined;
+  const schema = own(state.components, inst.definitionId)?.properties[prop];
+  if (schema?.type !== 'list') return undefined;
+  const item = listItems(inst, prop, schema.default).find((x) => x?.id === itemId);
+  if (!item) return undefined;
+  return Object.hasOwn(item, field) ? item[field] : (own(schema.fields, field) as { default?: unknown } | undefined)?.default;
+}
+
+function treeOf(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
+  if (owner.kind === 'page') return own(state.pages, owner.id);
+  if (owner.kind === 'shell') return owner.id === 'header' || owner.id === 'footer' ? state.site.shell[owner.id] : undefined;
+  return own(state.components, owner.id)?.tree;
+}
+
+/** The destinations and words each field shows, to find what an edit changes besides the chosen matches. */
+function shownBy(state: ProjectState, fields: ContentField[]): Map<string, { field: ContentField; text: string; links: string[] }> {
+  const out = new Map<string, { field: ContentField; text: string; links: string[] }>();
+  for (const f of fields) {
+    const parts = partsOf(state, f);
+    // One destination per linked run of each paragraph or list item, as search reads them.
+    const links = f.kind === 'link' ? [describeLink(state, f.value)] : parts.filter((p) => p.kind === 'link' && p.spans && p.span !== undefined).map((p) => describeLink(state, p.spans![p.span!].link));
+    out.set(f.key, { field: f, text: parts.filter((p) => p.kind === 'text').map((p) => shownText(p.text)).join(' / '), links: links.sort() });
+  }
+  return out;
+}
+
+/** The error a dry run raised, without the batch position the project adds for its own logs. */
+const plainError = (e: unknown) => (e instanceof Error ? e.message : String(e)).replace(/^Operation \d+ \([^)]*\): /, '');
+
+/**
+ * The edits that replace the chosen matches with `replacement`, as one batch, and what they change. Destinations
+ * change only where a destination match was chosen: an address shown as text and its link are two matches, and the
+ * link of a list item whose text changes is kept as it is unless its own match was chosen too. A link's label is
+ * never touched by a change to its destination. The batch is tried on a copy of the project first: its error is
+ * returned instead of being found on Replace, and anything else it would change is listed with the changes.
+ */
+export function planReplace(state: ProjectState, chosen: ContentMatch[], replacement: string): ReplacePlan {
+  const usable = chosen.filter((m) => !m.blocked);
+  const skipped = chosen.length - usable.length;
+  const groups = new Map<string, ContentMatch[]>();
+  for (const m of usable) groups.set(m.field.key, [...(groups.get(m.field.key) ?? []), m]);
+  const operations: EditOperation[] = [];
+  const changes: ContentChange[] = [];
+  const planned = new Set<string>();
+  // One patch per list item, so its fields (and a kept link) are set together.
+  const patches = new Map<string, { owner: OwnerRef; nodeId: string; prop: string; itemId: string; value: Record<string, unknown> }>();
+  for (const ms of groups.values()) {
+    const f = ms[0].field;
+    const s = f.source;
+    if (!s) continue;
+    const next = replaceIn(state, f, ms, replacement);
+    if (!next) continue;
+    if (next.error) return { operations: [], changes: [], error: next.error, skipped };
+    planned.add(f.key);
+    changes.push(...next.changes);
+    if (s.kind === 'node') operations.push({ type: 'node.setContent', owner: f.owner, nodeId: f.nodeId, field: s.field, value: next.value });
+    else if (!s.itemId || !s.field) operations.push({ type: 'instance.setProp', owner: f.owner, nodeId: f.nodeId, prop: s.prop, value: next.value });
+    else {
+      const k = JSON.stringify([f.owner.kind, f.owner.id, f.nodeId, s.prop, s.itemId]);
+      const patch = patches.get(k) ?? { owner: f.owner, nodeId: f.nodeId, prop: s.prop, itemId: s.itemId, value: {} };
+      patch.value[s.field] = next.value;
+      patches.set(k, patch);
+    }
+  }
+  for (const p of patches.values()) {
+    const inst = treeOf(state, p.owner)?.nodes[p.nodeId];
+    const def = inst?.kind === 'instance' ? own(state.components, inst.definitionId) : undefined;
+    // An address shown as text carries its link along when edited alone; here the link moves only if chosen.
+    for (const pair of def ? itemLinkPairs(def, p.prop) : []) {
+      if (Object.hasOwn(p.value, pair.text) && !Object.hasOwn(p.value, pair.link)) {
+        const link = itemValue(state, p.owner, p.nodeId, p.prop, p.itemId, pair.link);
+        if (link !== undefined) p.value[pair.link] = structuredClone(link);
+      }
+    }
+    operations.push({ type: 'instance.setProp', owner: p.owner, nodeId: p.nodeId, prop: p.prop, itemId: p.itemId, value: p.value });
+  }
+  if (!operations.length) return { operations, changes, skipped };
+  let after: ProjectState;
+  try {
+    after = applyOperations(state, operations).state;
+  } catch (e) {
+    return { operations: [], changes, error: plainError(e), skipped };
+  }
+  const was = shownBy(state, contentFields(state));
+  const now = shownBy(after, contentFields(after));
+  // The chosen changes as the project stores and shows them: a field the edit hides is no longer shown, and one the
+  // project reads back as it was (after tidying it) is not a change.
+  const reviewed = changes.flatMap((c): ContentChange[] => {
+    const b = now.get(c.field.key);
+    if (c.field.rich) return [b ? c : { ...c, after: c.kind === 'link' ? 'No link' : 'Not shown' }];
+    if (b && JSON.stringify(b.field.value) === JSON.stringify(c.field.value)) return [];
+    const after = c.kind === 'link' ? (b?.links[0] ?? 'No link') : b ? b.text : 'Not shown';
+    // Spaces a page collapses still change what is stored: say so rather than show two equal lines.
+    return [{ ...c, after: after === c.before ? `${after} (spacing changed)` : after }];
+  });
+  // Anything else the edits change: a field that shows or hides with them, or a link the project moves itself.
+  for (const key of new Set([...was.keys(), ...now.keys()])) {
+    if (planned.has(key)) continue;
+    const a = was.get(key);
+    const b = now.get(key);
+    const field = (b ?? a)!.field;
+    if ((a?.text ?? '') !== (b?.text ?? '')) reviewed.push({ field, kind: 'text', before: a ? a.text : 'Not shown', after: b ? b.text : 'Not shown', knockOn: true });
+    if (JSON.stringify(a?.links ?? []) !== JSON.stringify(b?.links ?? [])) reviewed.push({ field, kind: 'link', before: a?.links.join(', ') || 'No link', after: b?.links.join(', ') || 'No link', knockOn: true });
+  }
+  return { operations, changes: reviewed, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// Opening a match
+// ---------------------------------------------------------------------------
+
+export interface ContentTarget {
+  /** The page to show: the field's own, or for the header and footer one that shows them. */
+  pageId: string;
+  selection: ElementRef;
+  /** The inspector's Content section for that selection, opened so the field is there to focus. */
+  section: 'prim-content' | 'part-content' | 'content';
+  /** The field to focus there, by its anchor (`data-field`): a node's text, label or link, or a property. */
+  focus?: string;
+  /** A field of the selected placement's list to open in the inspector (the selection alone does not show it). */
+  reveal?: { prop: string; itemId?: string; field?: string };
+}
+
+/**
+ * Where a field opens in the inspector: its own element, the part of a section that shows it (for one list item),
+ * or the section with that field opened. Null when the field is no longer in the project.
+ */
+export function contentTarget(state: ProjectState, field: ContentField, currentPageId: string | null): ContentTarget | null {
+  const showsShell = (id: string | null | undefined) => !!id && !!own(state.pages, id) && state.pages[id].shell !== 'none';
+  const pageId = field.owner.kind === 'page' ? (own(state.pages, field.owner.id) ? field.owner.id : undefined) : showsShell(currentPageId) ? currentPageId! : state.site.pageOrder.find(showsShell);
+  const tree = treeOf(state, field.owner);
+  const node: GraphNode | undefined = tree && own(tree.nodes, field.nodeId);
+  if (!pageId || !node) return null;
+  const s = field.source;
+  const selection: ElementRef = { owner: field.owner, instancePath: [], nodeId: field.nodeId };
+  if (s?.kind === 'node' || node.kind !== 'instance') return { pageId, selection, section: 'prim-content', ...(s?.kind === 'node' ? { focus: s.field } : {}) };
+  // A part of a section placed here shows its own content in the inspector (for the one list item it was found in).
+  const def = own(state.components, node.definitionId);
+  if (field.direct && field.defNodeId && def?.tree && own(def.tree.nodes, field.defNodeId)) {
+    const part: ElementRef = { owner: field.owner, instancePath: [node.id], nodeId: field.defNodeId };
+    const partId = partIdFor(def, field.defNodeId);
+    if (partId) part.partId = partId;
+    if (field.itemPath?.length) part.itemPath = field.itemPath;
+    // The part shows a list item's field by the field's name, a property by its own.
+    const focus = s?.kind === 'prop' ? (s.itemId ? s.field : s.prop) : undefined;
+    return { pageId, selection: part, section: 'part-content', ...(focus ? { focus } : {}) };
+  }
+  if (!s) return { pageId, selection, section: 'content' };
+  if (!s.itemId) return { pageId, selection, section: 'content', focus: s.prop };
+  return { pageId, selection, section: 'content', reveal: { prop: s.prop, itemId: s.itemId, ...(s.field ? { field: s.field } : {}) } };
+}
+
+// ---------------------------------------------------------------------------
+// Sections already on the site
+// ---------------------------------------------------------------------------
+
+export interface PlacedSection {
+  label: string;
+  /** Words a search for it can use: its own name and its component's. */
+  terms: string;
+  pageId: string | null;
+  ref: ElementRef;
+}
+
+/**
+ * The sections already on the site, by page: each page's top-level sections and the components placed anywhere in
+ * it, then the shared header and footer. A search for a component's name finds where it is placed.
+ */
+export function placedSections(state: ProjectState): PlacedSection[] {
+  const out: PlacedSection[] = [];
+  const add = (owner: OwnerRef, tree: NodeTree, pageId: string | null, where: string) => {
+    const seen = new Set<string>();
+    const visit = (id: string, top: boolean) => {
+      const n = own(tree.nodes, id);
+      if (!n || seen.has(id)) return;
+      seen.add(id);
+      if (top || n.kind === 'instance') {
+        const def = n.kind === 'instance' ? own(state.components, n.definitionId) : undefined;
+        const name = displayName(state, n);
+        out.push({ label: `${name} · ${where}`, terms: [name, def?.name ?? '', where].join(' '), pageId, ref: { owner, instancePath: [], nodeId: id } });
+      }
+      for (const cl of childLists(n)) for (const c of cl.ids) visit(c, false);
+    };
+    for (const id of tree.rootIds) visit(id, true);
+  };
+  for (const id of state.site.pageOrder) if (own(state.pages, id)) add({ kind: 'page', id }, state.pages[id], id, state.pages[id].title);
+  if (state.site.pageOrder.some((id) => own(state.pages, id)?.shell !== 'none')) {
+    add({ kind: 'shell', id: 'header' }, state.site.shell.header, null, 'Header');
+    add({ kind: 'shell', id: 'footer' }, state.site.shell.footer, null, 'Footer');
+  }
+  return out;
+}
+
+/** Whether every word of a search appears in a section's terms. */
+export function sectionMatches(s: PlacedSection, query: string): boolean {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const terms = s.terms.toLowerCase();
+  return words.length > 0 && words.every((w) => terms.includes(w));
+}

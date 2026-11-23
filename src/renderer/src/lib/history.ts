@@ -63,7 +63,7 @@ export function menuHistoryOwner(c: HistoryContext, fromKey: boolean): HistoryOw
 }
 
 /** Shortcuts that still work from a visitor's page or a field on the page: they open editor panels or save, and never change the site or its text. */
-const PREVIEW_KEYS = new Set(['k', 's', 'e', 'j', '\\', '|']);
+const PREVIEW_KEYS = new Set(['k', 's', 'e', 'j', 'f', '\\', '|']);
 
 /**
  * Whether an editor shortcut forwarded by the main process (the preview frame had focus, so the editor's own

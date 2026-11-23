@@ -1,4 +1,4 @@
-import { createElement, Fragment, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { createElement, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
@@ -728,6 +728,15 @@ function shorten(label: string, group: string): string | undefined {
 }
 
 /** Renders grouped fields: a group gets a heading and a quiet frame, a lone field renders as itself. */
+/** Names the field it holds, so a search result can open the inspector at that field. Takes no space of its own. */
+function FieldSlot({ name, children }: { name: string; children: ReactNode }) {
+  return (
+    <div data-field={name} style={{ display: 'contents' }}>
+      {children}
+    </div>
+  );
+}
+
 export function FieldGroups<T>({ groups, render }: { groups: Array<PropGroup<T>>; render: (item: PropGroup<T>['items'][number]) => ReactNode }) {
   return (
     <>
@@ -736,11 +745,15 @@ export function FieldGroups<T>({ groups, render }: { groups: Array<PropGroup<T>>
           <fieldset key={gi} className="insp-group">
             <legend className="insp-group-title">{g.title}</legend>
             {g.items.map((it) => (
-              <Fragment key={it.key}>{render(it)}</Fragment>
+              <FieldSlot key={it.key} name={it.key}>
+                {render(it)}
+              </FieldSlot>
             ))}
           </fieldset>
         ) : (
-          <Fragment key={g.items[0].key}>{render(g.items[0])}</Fragment>
+          <FieldSlot key={g.items[0].key} name={g.items[0].key}>
+            {render(g.items[0])}
+          </FieldSlot>
         )
       )}
     </>
@@ -978,7 +991,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
                           key={key}
                           schema={fs as ScalarPropSchema}
                           label={label}
-                          value={it[key]}
+                          value={Object.hasOwn(it, key) ? it[key] : (fs as { default?: unknown }).default}
                           onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })}
                           state={state}
                           hint={note?.field === key ? note.hint : teaser?.hint}
