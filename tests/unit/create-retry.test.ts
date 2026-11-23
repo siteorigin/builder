@@ -294,7 +294,7 @@ describe('New project when the website tools cannot be downloaded', () => {
     expect(c.session).toBeNull();
   });
 
-  it('removes the project as before when another app took it over meanwhile', async () => {
+  it('does not open the project when its lock is no longer this app’s as the download fails', async () => {
     const { c, parent } = setup();
     const dir = join(parent, 'meadow-studio');
     mkdirSync(dir);
@@ -305,6 +305,17 @@ describe('New project when the website tools cannot be downloaded', () => {
     expect((await c.create(opts(parent))).ok).toBe(false);
     expect(c.session).toBeNull();
     expect(deps.starts).toBe(0);
+  });
+
+  it('does not open the project when its lock stopped being this app’s while the open project closed for it', async () => {
+    const { c, parent } = setup();
+    deps.run = offline;
+    // Still this app's when the download fails; another app's by the time the switch is made.
+    vi.spyOn(ProjectSession.prototype, 'stillOwner').mockResolvedValueOnce(true).mockResolvedValue(false);
+    const r = await c.create(opts(parent));
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/lock was taken or removed/);
+    expect(c.session).toBeNull();
   });
 });
 

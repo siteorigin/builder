@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const env = vi.hoisted(() => ({ packaged: false, userData: '' }));
 vi.mock('electron', () => ({
@@ -21,19 +21,34 @@ vi.mock('electron', () => ({
   utilityProcess: {}
 }));
 
-/** npm, as far as setup can tell: each run is recorded, and ends as the test says (exit 0 unless given). */
-const npm = vi.hoisted(() => ({ runs: [] as string[][], results: [] as Array<{ code: number; stderr?: string }> }));
+/**
+ * npm, as far as setup can tell. Each run is recorded in `trace` beside setup's own progress lines, and ends as the
+ * test says (exit 0 unless given). A run that succeeds puts the packages it was asked for into the project, except
+ * those in `skip` (npm leaves out an optional package it could not fetch, and still succeeds).
+ */
+const npm = vi.hoisted(() => ({
+  runs: [] as string[][],
+  trace: [] as string[],
+  results: [] as Array<{ code: number; stderr?: string }>,
+  skip: [] as string[],
+  install: null as null | ((dir: string) => void),
+  atSpawn: null as null | ((args: string[]) => void)
+}));
 vi.mock('node:child_process', async (importOriginal) => {
   const { EventEmitter } = await import('node:events');
   return {
     ...(await importOriginal<typeof import('node:child_process')>()),
-    spawn: (_cmd: string, args: string[]) => {
+    spawn: (_cmd: string, args: string[], opts: { cwd: string }) => {
       npm.runs.push(args);
+      npm.trace.push(`npm ${args.find((a) => a === '--offline' || a === '--prefer-offline')}`);
+      npm.atSpawn?.(args);
       const result = npm.results.shift() ?? { code: 0 };
       const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true });
       setTimeout(() => {
+        if (result.code === 0) npm.install?.(opts.cwd);
         if (result.stderr) child.stderr.emit('data', result.stderr);
         child.emit('exit', result.code);
+        child.emit('close', result.code);
       }, 0);
       return child;
     }
@@ -41,11 +56,20 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 const { prepareDependencies, starterTools } = await import('../../src/main/runtime/manager');
-const { ToolsDownloadError, contentPaths, lockedPackages } = await import('../../src/main/runtime/availability');
+const { ToolsDownloadError, lockedPackages } = await import('../../src/main/runtime/availability');
 
 const require = createRequire(import.meta.url);
 const npmDir = dirname(require.resolve('npm/package.json'));
+/** npm's own cache layout, so the fixtures do not lean on the code under test. */
+const cacachePath: (cache: string, integrity: string) => string = require(join(npmDir, 'node_modules', 'cacache', 'lib', 'content', 'path.js'));
 const starter = join(__dirname, '../../templates/sveltekit-brochure/files');
+/** The native build tool this computer needs: optional in the lock, and what a skipped fetch leaves out. */
+const binding = `node_modules/@rolldown/binding-${process.platform}-${process.arch}${process.platform === 'linux' ? '-gnu' : process.platform === 'win32' ? '-msvc' : ''}`;
+
+let needed: Array<{ location: string; integrity?: string }> = [];
+beforeAll(async () => {
+  needed = await lockedPackages(npmDir, starter);
+});
 
 let root = '';
 let project = '';
@@ -57,86 +81,127 @@ beforeEach(() => {
   project = join(root, 'meadow-studio');
   mkdirSync(project);
   for (const f of ['package.json', 'package-lock.json']) copyFileSync(join(starter, f), join(project, f));
+  npm.install = (dir) => {
+    for (const p of needed) if (!npm.skip.includes(p.location)) {
+      mkdirSync(join(dir, p.location), { recursive: true });
+      writeFileSync(join(dir, p.location, 'package.json'), '{}');
+    }
+  };
 });
 afterEach(() => {
   npm.runs.splice(0);
+  npm.trace.splice(0);
   npm.results.splice(0);
+  npm.skip.splice(0);
+  npm.atSpawn = null;
   rmSync(root, { recursive: true, force: true });
 });
 
 /** Every package this computer installs, put in the npm cache at `cache` (as `npm ci --cache` leaves it). */
-const fill = async (cache: string) => {
-  const paths = (await lockedPackages(npmDir, starter)).map((p) => contentPaths(cache, p.integrity!)[0]);
-  for (const p of paths) {
-    mkdirSync(dirname(p), { recursive: true });
-    writeFileSync(p, 'tarball');
-  }
-  return paths;
-};
+const fill = (cache: string) =>
+  needed.map((p) => {
+    const path = cacachePath(join(cache, '_cacache'), p.integrity!);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, 'tarball');
+    return path;
+  });
 const userCache = () => join(env.userData, 'npm-cache');
-const install = (signal?: AbortSignal) => {
-  const lines: string[] = [];
-  return { lines, done: prepareDependencies(project, (l) => lines.push(l), signal) };
-};
-const mode = (args: string[]) => args.find((a) => a === '--offline' || a === '--prefer-offline');
+const marker = () => join(project, '.siteorigin', 'cache', 'deps.json');
+const install = (signal?: AbortSignal) => prepareDependencies(project, (l) => npm.trace.push(l), signal);
+const modes = () => npm.runs.map((args) => args.filter((a) => a === '--offline' || a === '--prefer-offline'));
 
 describe('a development build, with no tools shipped', () => {
   it('says a download is needed before Create, and setup says so first and downloads once, without an offline attempt', async () => {
     expect(await starterTools(starter)).toBe('download');
-    const { lines, done } = install();
-    await done;
-    expect(npm.runs.map(mode)).toEqual(['--prefer-offline']);
-    expect(lines[0]).toMatch(/^Downloading the website tools/);
-    expect(existsSync(join(project, '.siteorigin', 'cache', 'deps.json'))).toBe(true);
+    await install();
+    expect(modes()).toEqual([['--prefer-offline']]);
+    expect(npm.trace[0]).toMatch(/^Downloading the website tools/);
+    expect(npm.trace[1]).toBe('npm --prefer-offline');
+    // The platform and packages npm installs are the ones the check counted, whatever the author's npm settings say.
+    expect(npm.runs[0]).toEqual(expect.arrayContaining(['ci', `--cache=${userCache()}`, `--os=${process.platform}`, `--cpu=${process.arch}`, '--include=dev', '--color=false', '--heading=npm']));
+    expect(existsSync(marker())).toBe(true);
   });
 
   it('installs offline, and says nothing was downloaded, once an earlier download left everything in the cache', async () => {
-    await fill(userCache());
+    fill(userCache());
     expect(await starterTools(starter)).toBe('local');
-    const { lines, done } = install();
-    await done;
-    expect(npm.runs.map(mode)).toEqual(['--offline']);
-    expect(lines.join('\n')).toMatch(/Nothing was downloaded/);
-    expect(lines.join('\n')).not.toMatch(/[Dd]ownloading/);
+    await install();
+    expect(modes()).toEqual([['--offline']]);
+    expect(npm.runs[0]).toContain(`--cache=${userCache()}`);
+    expect(npm.trace.at(-1)).toMatch(/Nothing was downloaded/);
+    expect(npm.trace.join('\n')).not.toMatch(/[Dd]ownload(ing|ed again)/);
   });
 
-  it('downloads a copy the cache could not supply once, saying why', async () => {
-    await fill(userCache());
-    npm.results.push({ code: 1, stderr: 'npm error code EINTEGRITY\nnpm error sha512 integrity checksum failed\n' });
-    const { lines, done } = install();
-    await done;
-    expect(npm.runs.map(mode)).toEqual(['--offline', '--prefer-offline']);
-    expect(lines.join('\n')).toMatch(/could not be used, so it is being downloaded again/);
+  for (const code of ['EINTEGRITY', 'ENOTCACHED']) {
+    it(`downloads once, saying why, a copy the cache could not supply (${code})`, async () => {
+      fill(userCache());
+      npm.results.push({ code: 1, stderr: `npm error code ${code}\nnpm error the cached copy could not be used\n` });
+      await install();
+      expect(modes()).toEqual([['--offline'], ['--prefer-offline']]);
+      expect(npm.trace.indexOf('A saved copy of the website tools could not be used, so it is being downloaded again…')).toBeLessThan(npm.trace.lastIndexOf('npm --prefer-offline'));
+      expect(existsSync(marker())).toBe(true);
+    });
+  }
+
+  it('downloads the native tool an offline install left out without failing', async () => {
+    expect(needed.map((p) => p.location)).toContain(binding);
+    fill(userCache());
+    npm.skip.push(binding);
+    npm.results.push({ code: 0 });
+    // The second run (the download) puts it in place.
+    npm.atSpawn = (args) => args.includes('--prefer-offline') && npm.skip.splice(0);
+    await install();
+    expect(modes()).toEqual([['--offline'], ['--prefer-offline']]);
+    expect(existsSync(join(project, binding, 'package.json'))).toBe(true);
   });
 
   it('does not go online for a failure a download cannot fix', async () => {
-    await fill(userCache());
+    fill(userCache());
     npm.results.push({ code: 1, stderr: 'npm error code ENOSPC\nnpm error nospc no space left on device\n' });
-    await expect(install().done).rejects.toThrow(/ENOSPC/);
-    expect(npm.runs.map(mode)).toEqual(['--offline']);
+    const error = await install().catch((e) => e);
+    expect(error).not.toBeInstanceOf(ToolsDownloadError);
+    expect(error.message).toMatch(/ENOSPC/);
+    expect(modes()).toEqual([['--offline']]);
   });
 
-  it('reports a registry it could not reach as a failed download', async () => {
-    npm.results.push({ code: 1, stderr: 'npm error code ENOTFOUND\nnpm error network request to https://registry.npmjs.org/x failed\n' });
-    const error = await install().done.catch((e) => e);
+  for (const code of ['ENOTFOUND', 'EIDLETIMEOUT']) {
+    it(`reports a registry it could not reach as a failed download (${code})`, async () => {
+      npm.results.push({ code: 1, stderr: `npm error code ${code}\nnpm error request to https://registry.npmjs.org/x failed\n` });
+      const error = await install().catch((e) => e);
+      expect(error).toBeInstanceOf(ToolsDownloadError);
+      expect(error.code).toBe(code);
+      expect(existsSync(marker())).toBe(false);
+    });
+  }
+
+  it('reports a native tool the download could not fetch as a failed download, so Try again installs it later', async () => {
+    npm.skip.push(binding);
+    const error = await install().catch((e) => e);
     expect(error).toBeInstanceOf(ToolsDownloadError);
-    expect(error.code).toBe('ENOTFOUND');
-    expect(existsSync(join(project, '.siteorigin', 'cache', 'deps.json'))).toBe(false);
+    expect(error.message).toContain(binding.replace('node_modules/', ''));
+    // No marker: the next preview start installs again.
+    expect(existsSync(marker())).toBe(false);
+  });
+
+  it('keeps a download that failed for another reason a plain failure', async () => {
+    npm.results.push({ code: 1, stderr: 'npm error code ENOSPC\nnpm error nospc no space left on device\n' });
+    const error = await install().catch((e) => e);
+    expect(error).not.toBeInstanceOf(ToolsDownloadError);
+    expect(error.message).toMatch(/ENOSPC/);
   });
 
   it('cannot promise anything without a lock, and says a download may happen', async () => {
     unlinkSync(join(project, 'package-lock.json'));
     expect(await starterTools(project)).toBe('unknown');
-    const { lines, done } = install();
-    await done;
-    expect(npm.runs).toHaveLength(1);
+    await install();
+    expect(modes()).toEqual([['--prefer-offline']]);
     expect(npm.runs[0]).toContain('install');
-    expect(lines[0]).toMatch(/may need to be downloaded/);
+    expect(npm.trace[0]).toMatch(/may need to be downloaded/);
   });
 
   it('runs nothing when cancelled while it checks', async () => {
     const abort = new AbortController();
-    const { done } = install(abort.signal);
+    const done = install(abort.signal);
     abort.abort();
     await expect(done).rejects.toThrow('Cancelled');
     expect(npm.runs).toEqual([]);
@@ -144,9 +209,10 @@ describe('a development build, with no tools shipped', () => {
 });
 
 describe('a packaged build, with a cache shipped for this platform', () => {
+  let resources = '';
   beforeEach(() => {
     env.packaged = true;
-    const resources = join(root, 'Resources');
+    resources = join(root, 'Resources');
     mkdirSync(resources);
     symlinkSync(npmDir, join(resources, 'npm'), 'dir');
     Object.defineProperty(process, 'resourcesPath', { value: resources, configurable: true });
@@ -155,24 +221,26 @@ describe('a packaged build, with a cache shipped for this platform', () => {
     Object.defineProperty(process, 'resourcesPath', { value: undefined, configurable: true });
   });
 
-  it('counts the shipped cache before Create, and installs offline from the user cache it seeds', async () => {
-    await fill(join(process.resourcesPath, 'npm-cache'));
+  it('counts the shipped cache before Create, and installs offline with the shipped npm from the user cache it seeds', async () => {
+    fill(join(resources, 'npm-cache'));
     expect(await starterTools(starter)).toBe('local');
-    const { lines, done } = install();
-    await done;
-    expect(npm.runs.map(mode)).toEqual(['--offline']);
+    await install();
+    expect(modes()).toEqual([['--offline']]);
+    expect(npm.runs[0][0]).toBe(join(resources, 'npm', 'bin', 'npm-cli.js'));
     expect(npm.runs[0]).toContain(`--cache=${userCache()}`);
-    expect(lines.join('\n')).toMatch(/Nothing was downloaded/);
+    expect(npm.trace.at(-1)).toMatch(/Nothing was downloaded/);
   });
 
   it('puts back a file the seeded user cache lost before installing offline', async () => {
-    await fill(join(process.resourcesPath, 'npm-cache'));
-    await install().done;
-    const lost = (await fill(join(root, 'scratch'))).map((p) => p.replace(join(root, 'scratch'), userCache()))[0];
+    fill(join(resources, 'npm-cache'));
+    await install();
+    const lost = cacachePath(join(userCache(), '_cacache'), needed[0].integrity!);
     unlinkSync(lost);
     expect(readFileSync(join(userCache(), '.siteorigin-seeded'), 'utf8')).toBe('1.0.0');
-    await install().done;
-    expect(existsSync(lost)).toBe(true);
-    expect(npm.runs.map(mode)).toEqual(['--offline', '--offline']);
+    const atRun: boolean[] = [];
+    npm.atSpawn = () => atRun.push(existsSync(lost));
+    await install();
+    expect(atRun).toEqual([true]);
+    expect(modes()).toEqual([['--offline'], ['--offline']]);
   });
 });

@@ -9,7 +9,7 @@ import type { WebsiteTools } from '@shared/api';
 import { sha } from '../project/fsutil';
 import { statesFailure, type BuildErrorInfo } from '../../runtime/build-diagnostics';
 import { LineTail } from './line-tail';
-import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, npmErrorCode, type ToolsAvailability } from './availability';
+import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, notInstalled, npmErrorCode, type LockedPackage, type ToolsAvailability } from './availability';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -81,13 +81,15 @@ const userCache = () => join(app.getPath('userData'), 'npm-cache');
 const bundledCache = () => (app.isPackaged ? join(process.resourcesPath, 'npm-cache') : null);
 
 /**
- * Whether installing the website tools into `dir` (a project, or the starter it is made from) downloads anything:
- * `null` when that cannot be told, such as without a lock. The caches are the ones npm will read.
+ * Whether installing the website tools into `dir` (a project, or the starter it is made from) downloads anything, and
+ * which packages it installs: `null` when that cannot be told, such as without a lock. The caches are the ones npm
+ * will read.
  */
-export async function toolsAvailability(dir: string, caches: string[]): Promise<ToolsAvailability | null> {
+async function checkTools(dir: string, caches: string[]): Promise<(ToolsAvailability & { packages: LockedPackage[] }) | null> {
   if (!existsSync(join(dir, 'package-lock.json'))) return null;
   try {
-    return cacheCoverage(await lockedPackages(npmDir(), dir), caches);
+    const packages = await lockedPackages(npmDir(), dir, {}, userCache());
+    return { ...cacheCoverage(packages, caches), packages };
   } catch {
     return null;
   }
@@ -99,7 +101,7 @@ export async function toolsAvailability(dir: string, caches: string[]): Promise<
  */
 export async function starterTools(dir: string): Promise<WebsiteTools> {
   const bundled = bundledCache();
-  const tools = await toolsAvailability(dir, bundled && existsSync(bundled) ? [userCache(), bundled] : [userCache()]);
+  const tools = await checkTools(dir, bundled && existsSync(bundled) ? [userCache(), bundled] : [userCache()]);
   return !tools ? 'unknown' : tools.offline ? 'local' : 'download';
 }
 
@@ -123,14 +125,31 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
   };
   const npmCli = join(npmDir(), 'bin', 'npm-cli.js');
   let cache = await seedCache();
-  let tools = await toolsAvailability(dir, [cache]);
+  let tools = await checkTools(dir, [cache]);
   // The shipped cache may have what the user cache lost since it was seeded (a cleared or damaged file): seed it again.
   const bundled = bundledCache();
   if (tools && !tools.offline && bundled && existsSync(bundled)) {
     cache = await seedCache(true);
-    tools = await toolsAvailability(dir, [cache]);
+    tools = await checkTools(dir, [cache]);
   }
-  const base = [npmCli, existsSync(join(dir, 'package-lock.json')) ? 'ci' : 'install', '--ignore-scripts', '--no-audit', '--no-fund', '--loglevel=error', `--cache=${cache}`];
+  const base = [
+    npmCli,
+    existsSync(join(dir, 'package-lock.json')) ? 'ci' : 'install',
+    '--ignore-scripts',
+    '--no-audit',
+    '--no-fund',
+    '--loglevel=error',
+    // Plain error lines, so the code npm reports can be read whatever the author's own npm settings say.
+    '--color=false',
+    '--heading=npm',
+    // The platform and the packages the check worked out, whatever those settings say.
+    `--os=${process.platform}`,
+    `--cpu=${process.arch}`,
+    '--include=dev',
+    `--cache=${cache}`
+  ];
+  // npm skips an optional package it could not fetch without failing, so what the check counted must be in place.
+  const left = () => (tools ? notInstalled(dir, tools.packages) : []);
   const download = async () => {
     try {
       await runNpm([...base, '--prefer-offline'], dir, onLine, signal);
@@ -139,20 +158,26 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
       if (!signal?.aborted && code && NETWORK_CODES.includes(code)) throw new ToolsDownloadError(`Downloading the website tools failed (${code}). ${(e as Error).message}`, code);
       throw e;
     }
+    const missing = left();
+    if (missing.length) throw new ToolsDownloadError(`Downloading the website tools failed: ${missing.map((p) => p.location.replace(/^.*node_modules\//, '')).join(', ')} could not be downloaded.`, 'EMISSING');
   };
   await stillMine();
   if (tools?.offline) {
     onLine('Setting up the website tools from copies on this computer…');
+    let unusable = false;
     try {
-      // Offline: npm cannot download anything, so the dialog's "nothing is downloaded" holds.
+      // Offline: npm cannot download anything, so the dialog's "nothing needs to be downloaded" holds.
       await runNpm([...base, '--offline'], dir, onLine, signal);
-      onLine('Installed the website tools from this computer. Nothing was downloaded.');
+      unusable = left().length > 0;
     } catch (e) {
       if (signal?.aborted || (e as Error).message === 'Cancelled' || !CACHE_PROBLEMS.has((e as NpmError).code ?? '')) throw e;
+      unusable = true;
+    }
+    if (unusable) {
       onLine('A saved copy of the website tools could not be used, so it is being downloaded again…');
       await stillMine();
       await download();
-    }
+    } else onLine('Installed the website tools from this computer. Nothing was downloaded.');
   } else {
     onLine(tools ? 'Downloading the website tools that are not included for this computer…' : 'Setting up the website tools. Some may need to be downloaded…');
     await download();
@@ -200,7 +225,8 @@ function runNpm(args: string[], dir: string, onLine: (line: string) => void, sig
       String(d).split('\n').filter(Boolean).forEach(onLine);
     });
     child.on('error', reject);
-    child.on('exit', (code) => {
+    // Once its output has all arrived, so the code npm reported is read in full.
+    child.on('close', (code) => {
       signal?.removeEventListener('abort', onAbort);
       if (signal?.aborted) reject(new Error('Cancelled'));
       else if (code === 0) resolve();

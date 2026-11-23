@@ -404,6 +404,9 @@ export class Controller {
       }
       committed = true;
       staged.off('lock-lost', stop);
+      // Opened without its preview, nothing reads its lock again before the editor has it: read it now, since another
+      // app may have taken it while the open project was closing, before the heartbeat noticed.
+      if (toolsMissing && !takenOver && !(await staged.stillOwner())) takenOver = true;
       // Its lock lost while the open project was closing for it: it is not shown, but rolled back. A Cancel or a quit
       // arriving now is too late to undo the switch, which finishes.
       if (takenOver) throw new Error('Cancelled');
@@ -1589,7 +1592,7 @@ function safeUsages(s: ProjectSession): Record<string, number> {
 
 /** Plain-language explanations for setup failures; the technical detail stays available in diagnostics. */
 export function friendlyError(msg: string): string {
-  if (/network|offline|ENOTCACHED/i.test(msg) || NETWORK_CODES.some((code) => msg.includes(code)))
+  if (/Downloading the website tools failed|network|offline|ENOTCACHED/i.test(msg) || NETWORK_CODES.some((code) => msg.includes(code)))
     return 'The website tools could not be downloaded. Check your internet connection and try again. A connection is only needed once.';
   if (/ENOSPC/i.test(msg)) return 'Your disk is full. Free up some space and try again.';
   if (/EACCES|EPERM/i.test(msg)) return 'SiteOrigin Builder does not have permission to write to that folder. Choose a folder in your Documents and try again.';

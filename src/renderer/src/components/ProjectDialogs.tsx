@@ -178,7 +178,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn-primary" disabled={!canCreate} onClick={() => void create()}>
+          <button className="btn btn-primary" disabled={!canCreate} aria-describedby="new-project-tools" onClick={() => void create()}>
             Create project
           </button>
         </>
@@ -265,20 +265,23 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
         {starter === 'business' && (
           <SwitchRow checked={images} onChange={setImages} label="Include sample images" hint="Placeholder photos you can replace any time." />
         )}
-        {tools === 'download' || tools === 'unknown' ? (
-          <div className="scope-note info" role="note">
-            <CloudDownload />
-            <span>
-              <strong>{tools === 'download' ? 'Setup downloads some website tools.' : 'Setup may download some website tools.'}</strong>{' '}
-              {tools === 'download' ? 'Some of the tools that build and preview your site are not included for this computer, so creating the project downloads them from the npm registry.' : 'Creating the project may download tools that build and preview your site from the npm registry.'}{' '}
-              Without an internet connection the project still opens for editing, and its preview starts when you are back online and choose Try again.
-            </span>
-          </div>
-        ) : null}
-        <p className="faint tools-note" data-tools={tools ?? 'checking'} style={{ margin: 0, fontSize: 12 }}>
-          {tools === 'local' ? 'Everything needed is already on this computer, so nothing needs to be downloaded. ' : tools === null ? 'Checking which website tools are on this computer… ' : ''}
-          Your website is saved as a normal folder that you own.
-        </p>
+        {/* Read out as it settles, and describes Create, so nobody creates a project without hearing it. */}
+        <div id="new-project-tools" className="col tools-note" data-tools={tools ?? 'checking'} role="status" style={{ gap: 8 }}>
+          {tools === 'download' || tools === 'unknown' ? (
+            <div className="scope-note info">
+              <CloudDownload aria-hidden="true" />
+              <span>
+                <strong>{tools === 'download' ? 'Setup downloads some website tools.' : 'Setup may download some website tools.'}</strong>{' '}
+                {tools === 'download' ? 'Some of the tools that build and preview your site are not included for this computer, so creating the project downloads them from the npm registry.' : 'Creating the project may download some of the tools that build and preview your site from the npm registry.'}{' '}
+                If the download cannot connect, the project still opens for editing: choose Try again in its preview once you are back online.
+              </span>
+            </div>
+          ) : null}
+          <p className="faint" style={{ margin: 0, fontSize: 12 }}>
+            {tools === 'local' ? 'The website tools are already on this computer, so setup works offline. A saved copy that turns out to be damaged is downloaded again. ' : tools === null ? 'Checking which website tools are on this computer… ' : ''}
+            Your website is saved as a normal folder that you own.
+          </p>
+        </div>
         {error && (
           <div className="scope-note danger" role="alert" ref={(el) => el?.scrollIntoView({ block: 'nearest' })}>
             <ShieldAlert />

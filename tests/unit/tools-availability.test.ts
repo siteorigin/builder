@@ -4,7 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -36,8 +36,12 @@ const macArm = { os: 'darwin', cpu: 'arm64' };
 
 describe('the website tools setup installs', () => {
   it('are the starter packages npm installs on this platform, without another platform’s native tools or what only they need', async () => {
-    const mac = (await lockedPackages(npmDir, starter, macArm)).map((p) => p.location);
+    const packages = await lockedPackages(npmDir, starter, macArm);
+    const mac = packages.map((p) => p.location);
+    expect(mac).not.toContain('');
     expect(mac).toContain('node_modules/@sveltejs/kit');
+    const lock = JSON.parse(readFileSync(join(starter, 'package-lock.json'), 'utf8'));
+    expect(packages.find((p) => p.location === 'node_modules/@sveltejs/kit')?.integrity).toBe(lock.packages['node_modules/@sveltejs/kit'].integrity);
     expect(mac).toContain('node_modules/@rolldown/binding-darwin-arm64');
     expect(mac).not.toContain('node_modules/@rolldown/binding-linux-x64-gnu');
     // The WebAssembly binding is optional and for another CPU; its own dependencies have no platform of their own but
@@ -63,6 +67,23 @@ describe('the website tools setup installs', () => {
     expect(await lockedPackages(npmDir, dir, macArm)).toEqual(await lockedPackages(npmDir, starter, macArm));
   });
 
+  it('never runs a project’s own npm extension, as npm ci never does', async () => {
+    const dir = tempDir();
+    for (const f of ['package.json', 'package-lock.json']) writeFileSync(join(dir, f), readFileSync(join(starter, f)));
+    const ran = join(dir, 'ran');
+    writeFileSync(join(dir, '.npm-extension.cjs'), `require('fs').writeFileSync(${JSON.stringify(ran)}, 'ran'); module.exports = { transformManifest: (p) => p };`);
+    expect((await lockedPackages(npmDir, dir, macArm)).length).toBeGreaterThan(40);
+    expect(existsSync(ran)).toBe(false);
+  });
+
+  it('never fetches a git dependency the lock does not settle, as npm’s own defaults never do', async () => {
+    const dir = tempDir();
+    const deps = { y: 'git+https://example.invalid/y.git' };
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: deps }));
+    writeFileSync(join(dir, 'package-lock.json'), JSON.stringify({ name: 'x', lockfileVersion: 3, requires: true, packages: { '': { name: 'x', dependencies: deps } } }));
+    await expect(lockedPackages(npmDir, dir, macArm, tempDir())).rejects.toMatchObject({ code: 'EALLOWGIT' });
+  });
+
   it('cannot be told from a project whose lock does not settle them, without asking the registry', async () => {
     const dir = tempDir();
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: { 'left-pad': '1.3.0' } }));
@@ -75,8 +96,13 @@ describe('website tools availability', () => {
   it('finds a package where npm’s own cache keeps it', () => {
     const integrity = sri('svelte');
     expect(contentPaths('/c', integrity)).toEqual([cacachePath('/c/_cacache', integrity)]);
-    // Several digests: npm reads the strongest algorithm only.
+    // Several digests: npm reads the strongest algorithm only, in whatever order they come.
     expect(contentPaths('/c', `${sri('svelte', 'sha1')} ${integrity}`)).toEqual([cacachePath('/c/_cacache', integrity)]);
+    expect(contentPaths('/c', `${integrity} ${sri('svelte', 'sha1')}`)).toEqual([cacachePath('/c/_cacache', integrity)]);
+    // Two of the strongest: npm takes either copy.
+    expect(contentPaths('/c', `${integrity} ${sri('kit')}`)).toEqual([cacachePath('/c/_cacache', integrity), cacachePath('/c/_cacache', sri('kit'))]);
+    // An algorithm this Node cannot compute is passed over, as npm passes it over.
+    expect(contentPaths('/c', `whirlpool-${Buffer.from('x').toString('base64')} ${sri('svelte', 'md5')}`)).toEqual([cacachePath('/c/_cacache', sri('svelte', 'md5'))]);
   });
 
   it('says nothing is downloaded when every package this computer needs is in the cache, and counts what is not', async () => {
@@ -108,5 +134,7 @@ describe('website tools availability', () => {
     expect(npmErrorCode('npm error code ENOTFOUND\nnpm error network request failed')).toBe('ENOTFOUND');
     expect(npmErrorCode('npm WARN x\nnpm ERR! code ENOTCACHED\n')).toBe('ENOTCACHED');
     expect(npmErrorCode('Segmentation fault')).toBeUndefined();
+    // Only npm's own error line counts, not a mention of one inside other output.
+    expect(npmErrorCode('a log line quoting "npm error code ENOTFOUND"')).toBeUndefined();
   });
 });
