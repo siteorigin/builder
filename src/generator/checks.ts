@@ -7,6 +7,7 @@ import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
 import { anchorCapable, anchorsInUse } from '@engine/tree';
+import { namesFormFields } from '@catalogue/foundation/form';
 import { resolveLink, takesParagraphs } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 
@@ -376,12 +377,15 @@ export interface RenderedContent {
   richLinks?: boolean;
 }
 
-/** The shipped code component a definition is, or was copied from (Make unique keeps its code and properties). */
+/**
+ * The shipped code component a definition is, or a header copied from it (Make unique keeps its code and
+ * properties). A copied contact form is not: the project keeps its answers' submission keys only for the theme's own
+ * form (`namesFormFields`), so a copy's fields are left to the inspector.
+ */
 function shippedCode(state: ProjectState, def: ComponentDefinition): string | undefined {
-  const known = (id: string | undefined) => (id === 'shell.header' || id === 'contact.form' ? id : undefined);
-  if (def.owner === 'theme') return known(def.componentId);
+  if (def.owner === 'theme') return def.componentId === 'shell.header' || (def.componentId === 'contact.form' && namesFormFields(def)) ? def.componentId : undefined;
   const from = def.provenance?.forkedFrom;
-  return from ? known(state.components[from]?.componentId ?? from.replace(/^[^.]+\./, '')) : undefined;
+  return from && (state.components[from]?.componentId ?? from.replace(/^[^.]+\./, '')) === 'shell.header' ? 'shell.header' : undefined;
 }
 
 /**
@@ -391,9 +395,10 @@ function shippedCode(state: ProjectState, def: ComponentDefinition): string | un
  */
 function shippedCodeShows(state: ProjectState, which: string, props: Record<string, unknown>): Set<string> {
   if (which === 'contact.form') return new Set(['eyebrow', 'heading', 'lead', 'fields.label', 'fields.placeholder', 'submitLabel', 'successMessage', 'errorMessage']);
+  // As the header's markup reads them: `!!name && (showSiteName || !logo?.src)`, and `ctaLabel && ctaLink?.href`.
   const out = new Set(['links.label', 'links.link']);
-  if (String(props.siteName ?? '').trim() && (props.showSiteName !== false || !shown(props.logo, state))) out.add('siteName');
-  if (String(props.ctaLabel ?? '').trim() && resolveLink(props.ctaLink as LinkValue | undefined, { state })) (out.add('ctaLabel'), out.add('ctaLink'));
+  if (props.siteName && (props.showSiteName !== false || !shown(props.logo, state))) out.add('siteName');
+  if (props.ctaLabel && resolveLink(props.ctaLink as LinkValue | undefined, { state })) (out.add('ctaLabel'), out.add('ctaLink'));
   return out;
 }
 
@@ -406,13 +411,15 @@ function shippedCodeShows(state: ProjectState, which: string, props: Record<stri
  */
 export function renderedContent(state: ProjectState, tree: NodeTree): RenderedContent[] {
   const out: RenderedContent[] = [];
-  const seen = new Set<string>();
   const keyOf = (c: RenderedContent) =>
     JSON.stringify([c.kind, c.nodeId, c.source ? [c.source.kind, 'field' in c.source ? c.source.field : null, 'prop' in c.source ? c.source.prop : null, 'itemId' in c.source ? (c.source.itemId ?? null) : null] : [c.at ?? null]]);
+  const seen = new Map<string, RenderedContent>();
   const push = (c: RenderedContent) => {
     const k = keyOf(c);
-    if (seen.has(k)) return;
-    seen.add(k);
+    const had = seen.get(k);
+    // One entry per field. A field that a custom code component also reads may be its setting: it stays custom.
+    if (had) return void (c.custom && (had.custom = true));
+    seen.set(k, c);
     out.push(c);
   };
   /** Where content a definition node reads is stored, and how to select it. */
@@ -458,10 +465,11 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
         const v = Object.hasOwn(values, key) ? values[key] : (schema as { default?: unknown }).default;
         if (schema.type === 'string' || schema.type === 'richtext') add('text', v, source, schema, at);
         if (schema.type !== 'link' || !isLinkValue(v) || !resolveLink(v, { state })) return;
-        // A link named by a label property shows only while that label has words, as the shipped header does.
+        // A shipped component's own markup decides (above). Other code: a link named by a label property shows only
+        // while that label has words, as the shipped header does.
         const labelKey = labelKeyFor(key);
         const named = Object.hasOwn(values, labelKey) ? values[labelKey] : (schemas[labelKey] as { default?: unknown } | undefined)?.default;
-        if (schemas[labelKey]?.type === 'string' && !String(named ?? '').trim()) return;
+        if (!shows && schemas[labelKey]?.type === 'string' && !String(named ?? '').trim()) return;
         add('link', v, source, schema, at);
       };
       for (const [key, schema] of Object.entries(def.properties)) {

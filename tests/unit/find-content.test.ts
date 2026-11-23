@@ -287,6 +287,25 @@ describe('what replacing keeps safe', () => {
     expect(nbsp.changes.map((c) => c.after)).toEqual(['Book club and book night, 10\u00a0kg']);
   });
 
+  it('refuses to remove a link whose destination the same edit makes equal to its neighbour’s', () => {
+    const { s } = withParagraph([{ type: 'p', spans: [{ text: 'Offers', link: { type: 'url', target: 'https://example.org/salecopy' } }, { text: 'copy', link: { type: 'url', target: 'https://example.org/sale' } }] }]);
+    const ms = findContent(s, 'copy').filter((m) => m.field.nodeId === 'n_rich_para');
+    expect(ms.map((m) => m.kind).sort()).toEqual(['link', 'text']);
+    expect(planReplace(s, ms, '').error).toMatch(/would remove a link/);
+  });
+
+  it('reviews words and destinations exactly as they will be stored', () => {
+    const { s, page } = withParagraph([{ type: 'p', spans: [{ text: 'Jump', link: { type: 'anchor', target: 'foo' } }] }]);
+    page.nodes.n_plain = { id: 'n_plain', kind: 'text', tag: 'p', text: 'Full price' } as GraphNode;
+    page.rootIds.push('n_plain');
+    // A leading non-breaking space is a change the page shows.
+    const plain = planReplace(s, findContent(s, 'Full price'), '\u00a0Full price');
+    expect(plain.changes.map((c) => [c.before, c.after])).toEqual([['Full price', '\u00a0Full price']]);
+    // A section link's # is not part of what is stored.
+    const anchor = planReplace(s, findContent(s, 'foo').filter((m) => m.kind === 'link'), '#bar');
+    expect(anchor.changes.map((c) => [c.kind, c.before, c.after])).toEqual([['link', '#foo on the same page', '#bar on the same page']]);
+  });
+
   it('reviews a destination whose button the edit removes as no link at all', () => {
     const s = fresh();
     const contact = pageAt(s, '/contact/');
@@ -303,7 +322,7 @@ describe('what replacing keeps safe', () => {
     ]);
   });
 
-  it('keeps a contact form’s settings out of search after Make unique, and lists a custom code component’s words without changing them', () => {
+  it('leaves a copied contact form and a custom code component to the inspector', () => {
     const s = fresh();
     const contact = pageAt(s, '/contact/');
     const owner = { kind: 'page' as const, id: contact.id };
@@ -311,8 +330,12 @@ describe('what replacing keeps safe', () => {
     const formId = added.results[0].nodeId as string;
     const unique = applyOperations(added.state, [{ type: 'component.makeUnique', owner, nodeId: formId, name: 'Booking form' }]).state;
     expect(unique.components[(unique.pages[contact.id].nodes[formId] as InstanceNode).definitionId].owner).toBe('project');
-    expect(findContent(unique, 'enquiries')).toEqual([]);
-    expect(findContent(unique, 'Send message').map((m) => [m.field.label, !!m.blocked])).toEqual([['Button label', false]]);
+    // The project keeps submission keys only for the theme's own form, so nothing in a copy changes from here.
+    expect(findContent(added.state, 'enquiries')).toEqual([]);
+    expect(findContent(unique, 'enquiries').map((m) => [m.field.label, !!m.blocked])).toEqual([['Netlify form name', true]]);
+    const send = findContent(unique, 'Send message');
+    expect(send.map((m) => [m.field.label, !!m.blocked])).toEqual([['Button label', true]]);
+    expect(planReplace(unique, send, 'Book')).toMatchObject({ operations: [], skipped: 1 });
 
     const custom = applyOperations(unique, [{ type: 'component.createCode', name: 'Booking widget', source: '<script>let { apiUrl = "" } = $props();</script><p>Book</p>', properties: { apiUrl: { type: 'string', label: 'API address', default: 'https://booking.example.org/api' } } }]);
     const defId = custom.results[0].definitionId as string;
@@ -335,6 +358,9 @@ describe('what replacing keeps safe', () => {
     expect(findContent(s, 'Book now').map((m) => m.field.label)).toEqual(['Action label']);
     expect(findContent(s, 'books@example.org').map((m) => m.field.label)).toEqual(['Action link']);
     expect(findContent(s, 'Test Studio').filter((m) => m.field.where === 'Header').map((m) => m.field.label)).toEqual(['Site name']);
+    // The header shows its action for any label at all, even a space: its destination is still there to find.
+    header.props.ctaLabel = ' ';
+    expect(findContent(s, 'books@example.org').map((m) => m.field.label)).toEqual(['Action link']);
   });
 
   it('keeps a form field’s submission key when its label changes and it has no name of its own', () => {

@@ -8,6 +8,7 @@ import type { EditOperation } from '@shared/ops';
 import { cleanBlocks, cleanSpans, isListBlock, toRichText } from '@shared/richtext';
 import { renderedContent, type ContentSource, type RenderedContent } from '@generator/checks';
 import { applyOperations } from '@engine/apply';
+import { normalizeLink } from '@engine/values';
 import { childLists, displayName, itemLinkPairs } from '@engine/tree';
 import { partIdFor } from './model';
 
@@ -86,7 +87,7 @@ const isLink = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && t
 const sameLink = (a: LinkValue | undefined, b: LinkValue | undefined) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const oneLine = (t: string) => t.replace(/\s+/g, ' ');
 /** Text as a page shows it: the whitespace HTML collapses, collapsed (a non-breaking space is deliberate and stays). */
-const shownText = (t: string) => t.replace(/[ \t\r\n\f]+/g, ' ').trim();
+const shownText = (t: string) => t.replace(/[ \t\r\n\f]+/g, ' ').replace(/^ | $/g, '');
 
 function sourceKey(c: RenderedContent): unknown[] {
   const s = c.source;
@@ -364,6 +365,15 @@ function spliceSpans(spans: RichSpan[], start: number, end: number, replacement:
   }
 }
 
+/** A destination as the project will store it (an anchor without its #, say), or as given when it would refuse it. */
+function stored(state: ProjectState, link: LinkValue): LinkValue {
+  try {
+    return normalizeLink(link, state, 'Link');
+  } catch {
+    return link;
+  }
+}
+
 /** Each linked run of spans that has words: the spans it covers. Emptying every span of one removes that link. */
 function linkedRuns(spans: RichSpan[]): number[][] {
   const runs: number[][] = [];
@@ -419,14 +429,15 @@ function replaceIn(state: ProjectState, f: ContentField, matches: ContentMatch[]
     const next: LinkValue = { ...was, target: spliceText(part.text, ms, replacement).slice(part.offset ?? 0) };
     if (sameLink(next, was)) continue;
     for (let i = part.span; i < (part.spanEnd ?? part.span + 1); i++) spans[i].link = { ...next };
-    changes.push({ field: f, kind: 'link', before: describeLink(state, was), after: describeLink(state, next) });
+    changes.push({ field: f, kind: 'link', before: describeLink(state, was), after: describeLink(state, stored(state, next)) });
   }
   for (const [path, ms] of byPart) {
     const part = parts.get(path);
     if (!part || part.kind !== 'text') continue;
     const spans = spansAt(part);
     const was = structuredClone(spans);
-    const runs = linkedRuns(spans);
+    // The links as they were, before any destination above changed: two links made the same are still two.
+    const runs = linkedRuns(part.spans!);
     for (const m of [...ms].sort((a, b) => b.start - a.start)) spliceSpans(spans, m.start, m.end, replacement);
     if (runs.some((r) => !r.some((i) => spans[i].text.trim()))) return { value: f.value, changes: [], error: `Replacing “${ms[0].match}” would remove a link from ${f.label} on ${f.where}. Leave that match out, or change it in the inspector.` };
     // Compared as the project stores them: formatting and a non-breaking space are changes too.

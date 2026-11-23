@@ -252,7 +252,7 @@ export function FindReplaceModal({ initial }: { initial?: string }) {
                           </span>
                           {m.blocked && <span className="faint find-note">{m.blocked}</span>}
                         </div>
-                        <button className="btn btn-sm" aria-describedby={rowId} onClick={() => openContentMatch(m.field)} title="Show it on the page and in the inspector">
+                        <button className="btn btn-sm" aria-label={`Open ${name}`} aria-describedby={rowId} onClick={() => openContentMatch(m.field)} title="Show it on the page and in the inspector">
                           <SquareArrowOutUpRight /> Open
                         </button>
                       </li>
