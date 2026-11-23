@@ -144,9 +144,12 @@ describe('importing a picture no browser can show', () => {
     // A closing tag inside a comment, or one that closes an inner SVG, does not finish the file.
     await expect(importFile('comment.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><!-- </svg> --><rect width="1"'))).rejects.toThrow(/incomplete/);
     await expect(importFile('inner.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><svg><rect/></svg><rect'))).rejects.toThrow(/incomplete/);
+    await expect(importFile('child.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1"/><svg viewBox="0 0 1 1"/><rect'))).rejects.toThrow(/incomplete/);
+    await expect(importFile('open-comment.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><rect/><!-- unfinished</svg>'))).rejects.toThrow(/incomplete/);
     // Many comments before a cut-short root are read in a moment.
     const started = Date.now();
     await expect(importFile('comments.svg', Buffer.from(`${'<!-- x -->'.repeat(5000)}<svg xmlns="http://www.w3.org/2000/svg"`))).rejects.toThrow();
+    await expect(importFile('openers.svg', Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg">${'<!--'.repeat(200_000)}`))).rejects.toThrow(/incomplete/);
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
@@ -347,6 +350,16 @@ describe('bringing missing files back', () => {
     expect(await restoreAssetFiles(dir, older)).toEqual({ written: [], failed: [] });
   });
 
+  it('makes no copies when another picture sits where the original belongs, even if the original is located', async () => {
+    const { dir, record, source } = await photoProject();
+    const other = await picture('jpeg', 1200, 800, { r: 0, g: 0, b: 0 });
+    writeFileSync(join(dir, record.file), other);
+    unlinkSync(join(dir, record.variants![0].file));
+    await expect(locateAssetFile(dir, record, source)).rejects.toThrow(/not the picture the library recorded/);
+    expect(readFileSync(join(dir, record.file)).equals(other)).toBe(true);
+    expect(existsSync(join(dir, record.variants![0].file))).toBe(false);
+  });
+
   it('makes no copies from an original that is no longer the recorded picture', async () => {
     const { dir, record } = await photoProject();
     writeFileSync(join(dir, record.file), await picture('jpeg', 1200, 800, { r: 0, g: 0, b: 0 }));
@@ -481,6 +494,21 @@ describe('a project whose picture was moved out of its folder', () => {
     expect(r2).toEqual({ ok: true, message: 'Reading nook is back in the project folder.' });
     expect(s.revision).toBe(revision);
     expect(c.snapshot()!.missingAssets).toEqual([]);
+  });
+
+  it('lets only one of two Locates for the same image change it', async () => {
+    const { c, dir } = await openProject();
+    const s = c.session!;
+    const nook = s.state.assets.assets.a_reading;
+    unlinkSync(join(dir, nook.file));
+    const first = sourceFile('first.png', await picture('png', 900, 600, { r: 200, g: 10, b: 10 }));
+    const second = sourceFile('second.png', await picture('png', 900, 600, { r: 10, g: 10, b: 200 }));
+    const [a, b] = await Promise.all([c.locateAsset('a_reading', first), c.locateAsset('a_reading', second)]);
+    expect([a.ok, b.ok].sort()).toEqual([false, true]);
+    const lost = a.ok ? b : a;
+    expect(lost.message).toMatch(/changed while|was left as it is/);
+    const won = a.ok ? first : second;
+    expect(s.state.assets.assets.a_reading.hash).toBe(sha(readFileSync(won)));
   });
 
   it('makes missing copies again, and refuses to work on a project open read-only', async () => {

@@ -205,15 +205,14 @@ export async function restoreAssetFiles(projectDir: string, record: AssetRecord,
   const at = safeJoin(projectDir, record.file);
   const files: PendingFile[] = [];
   const failed: string[] = [];
-  let buf = original;
-  if (buf) {
-    if (!(await isFile(at))) files.push({ rel: record.file, data: buf });
-  } else {
-    buf = await fs.readFile(at).catch(() => undefined);
-    if (!buf) throw new Error(`The original file of ${name} is missing. Locate it first.`);
-  }
-  // Copies of a different picture would show the wrong image at smaller sizes.
-  if (sha(buf) !== record.hash) throw new Error(`The original file of ${name} is not the picture the library recorded, so its copies were not made again. Locate the original, or choose another image.`);
+  // Copies of a different picture would show the wrong image at smaller sizes, whichever file they are made from.
+  const mismatch = () => new Error(`The original file of ${name} is not the picture the library recorded, so its copies were not made again. Locate the original, or choose another image.`);
+  const onDisk = (await isFile(at)) ? await fs.readFile(at).catch(() => undefined) : undefined;
+  if (onDisk && sha(onDisk) !== record.hash) throw mismatch();
+  const buf = onDisk ?? original;
+  if (!buf) throw new Error(`The original file of ${name} is missing. Locate it first.`);
+  if (sha(buf) !== record.hash) throw mismatch();
+  if (!onDisk) files.push({ rel: record.file, data: buf });
   const missing: Array<{ width: number; file: string }> = [];
   for (const v of record.variants ?? []) {
     if (!LIBRARY_FILE.test(v.file)) failed.push(v.file);

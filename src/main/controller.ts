@@ -1086,7 +1086,7 @@ export class Controller {
       for (const f of picked) {
         try {
           // Written only while the project is still open and this app's; the decoding is done before.
-          const { record, existing, font } = await importAsset(s.dir, f, known, (write) => (this.session === s ? s.whileOwner(write) : Promise.resolve(false)));
+          const { record, existing, font } = await importAsset(s.dir, f, known, this.writeFence(s));
           if (!ids.includes(record.id)) ids.push(record.id);
           if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
           if (!existing) {
@@ -1138,13 +1138,16 @@ export class Controller {
       if (record.file !== before.file || record.hash !== before.hash) return { ok: false, message: `${record.name.trim() || 'The image'} changed while the file was being chosen. Look at it again in Assets.` };
       const name = record.name.trim() || 'The image';
       try {
-        const found = await locateAssetFile(s.dir, record, file, this.assetFence(s, record));
+        const at = { revision: -1 };
+        const found = await locateAssetFile(s.dir, record, file, this.assetFence(s, record, at));
         if (found.same) {
           await this.checkAssetFiles(s);
           if (found.failed.length) return { ok: false, message: `${name} is back, but ${missingParts({ original: false, variants: found.failed })} could not be made again. Make the copies again in Assets.` };
           return { ok: true, message: `${name} is back in the project folder.` };
         }
-        const r = await s.apply({ operations: [{ type: 'asset.relink', assetId, ...found.stored }] }, { label: `Relink ${name}`, source: 'user' });
+        // Only on top of the project as it was when the files were written: a relink that landed meanwhile wins.
+        const r = await s.apply({ operations: [{ type: 'asset.relink', assetId, ...found.stored }], expectedRevision: at.revision }, { label: `Relink ${name}`, source: 'user' });
+        if (r.error?.code === 'STALE_REVISION') return { ok: false, message: `The project changed while ${basename(file)} was being stored, so ${name} was left as it is. Locate the file again.` };
         if (!r.ok) return { ok: false, message: r.error?.message ?? `${name} could not be given the new file.` };
         return { ok: true, message: `${basename(file)} now shows wherever ${name} is used.` };
       } catch (e) {
@@ -1158,15 +1161,32 @@ export class Controller {
    * Writes for one library image happen only while the project is still this one, open and owned by this app, and
    * the image still has the file they were made for; the slow part (decoding, resizing) is done before.
    */
-  private assetFence(s: ProjectSession, record: AssetRecord) {
-    return (write: () => Promise<void>) =>
-      this.session !== s
-        ? Promise.resolve(false)
-        : s.whileOwner(async () => {
-            const now = s.state.assets.assets[record.id];
-            if (now?.file !== record.file || now.hash !== record.hash) throw new AssetChanged();
-            await write();
-          });
+  private assetFence(s: ProjectSession, record: AssetRecord, at?: { revision: number }) {
+    return this.writeFence(s, () => {
+      const now = s.state.assets.assets[record.id];
+      if (now?.file !== record.file || now.hash !== record.hash) throw new AssetChanged();
+      // What the record change that follows the writes expects to build on: anything landing between is a conflict.
+      if (at) at.revision = s.revision;
+    });
+  }
+
+  /**
+   * Writes into the project run in its queue, only while it is still the open project, not closing, and owned by this
+   * app, all checked when the writes are about to happen. `check` may refuse by throwing.
+   */
+  private writeFence(s: ProjectSession, check?: () => void) {
+    return async (write: () => Promise<void>): Promise<boolean> => {
+      let wrote = false;
+      const open = () => this.session === s && !this.closing;
+      if (!open()) return false;
+      await s.whileOwner(async () => {
+        if (!open()) return;
+        check?.();
+        await write();
+        wrote = true;
+      });
+      return wrote;
+    };
   }
 
   /** Make again the smaller copies a library image lists that are missing from the project folder. */

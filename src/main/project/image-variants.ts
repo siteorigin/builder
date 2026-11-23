@@ -46,9 +46,9 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, w
  */
 export async function isReadable(buf: Buffer, mime?: string): Promise<boolean> {
   const decode = (pages?: number) => sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', ...(pages ? { pages } : {}) }).resize(16, 16, { fit: 'inside' }).raw().toBuffer();
-  // Too many pixels to decode here, or a kind of file this decoder does not know (an AVIF image sequence, say),
-  // says nothing about the file: browsers may well show it.
-  const unknown = (e: unknown) => /pixel limit|unsupported image format/i.test((e as Error).message);
+  // Too many pixels to decode here says nothing about the file. Nor does an AVIF image sequence, which browsers show
+  // and this decoder does not know; any other file it does not know is not the picture its structure claimed.
+  const unknown = (e: unknown) => /pixel limit/i.test((e as Error).message) || (/unsupported image format/i.test((e as Error).message) && mime === 'image/avif' && avifBrands(buf).includes('avis'));
   // Every frame of an animation, so a damaged later frame is found too. Frames that are too many pixels together
   // are checked by the first alone.
   if (mime === 'image/gif' || mime === 'image/webp') {
@@ -65,6 +65,15 @@ export async function isReadable(buf: Buffer, mime?: string): Promise<boolean> {
   } catch (e) {
     return unknown(e);
   }
+}
+
+/** The brands an AVIF's file-type box declares: its major brand and the compatible ones. */
+function avifBrands(buf: Buffer): string[] {
+  if (buf.length < 16 || buf.toString('latin1', 4, 8) !== 'ftyp') return [];
+  const end = Math.min(buf.readUInt32BE(0), buf.length);
+  const brands = [buf.toString('latin1', 8, 12)];
+  for (let p = 16; p + 4 <= end; p += 4) brands.push(buf.toString('latin1', p, p + 4));
+  return brands;
 }
 
 /** What the media worker does with one request; the worker process only carries messages to and from it. */

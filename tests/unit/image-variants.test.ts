@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { crc32 } from 'node:zlib';
 import sharp from 'sharp';
-import { renderVariants } from '../../src/main/project/image-variants';
+import { isReadable, renderVariants } from '../../src/main/project/image-variants';
 import { createVariantClient, type VariantReply, type VariantRequest, type WorkerHandle } from '../../src/main/project/media-client';
 
 const u32 = (n: number) => {
@@ -105,6 +105,20 @@ describe('responsive copies', () => {
     const still = await sharp(moving).png().toBuffer();
     expect(chunksOf(still).map((c) => c.type)).not.toContain('acTL');
     expect((await renderVariants(still, 'image/png', 1200)).map((v) => v.width)).toEqual([480, 960]);
+  });
+
+  it('leaves an AVIF image sequence to the browser, but not an AVIF whose brands nothing knows', async () => {
+    const avif = await sharp({ create: { width: 32, height: 16, channels: 3, background: { r: 9, g: 9, b: 9 } } }).avif().toBuffer();
+    expect(avif.toString('latin1', 4, 12)).toBe('ftypavif');
+    expect(await isReadable(avif, 'image/avif')).toBe(true);
+    const branded = (brand: string) => {
+      const b = Buffer.from(avif);
+      const end = b.readUInt32BE(0);
+      for (let p = 8; p + 4 <= end; p += 4) if (p !== 12) b.write(brand, p, 'latin1');
+      return b;
+    };
+    expect(await isReadable(branded('zzzz'), 'image/avif')).toBe(false);
+    expect(await isReadable(branded('avis'), 'image/avif')).toBe(true);
   });
 
   it('makes exactly the widths asked for, never wider than the picture', async () => {
