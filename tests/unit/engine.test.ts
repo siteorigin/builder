@@ -806,7 +806,7 @@ describe('duplicating a page', () => {
     const rich = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: sectionId, slot: 'content', primitive: 'richtext', text: 'See the hours' }]);
     s = structuredClone(rich.state);
     const richId = rich.results[0].nodeId as string;
-    const richNode = s.pages[contactId].nodes[richId] as { text: Array<{ spans: Array<Record<string, unknown>> }> };
+    const richNode = s.pages[contactId].nodes[richId] as unknown as { text: Array<{ spans: Array<Record<string, unknown>> }> };
     richNode.text[0].spans[0].link = { type: 'page', target: contactId, anchor: 'studio-hours' };
     return { s, homeId, aboutId, contactId, ids: { own, whole, other, local, richId } };
   };
