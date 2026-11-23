@@ -20,6 +20,9 @@ import { contactMismatch } from '@shared/contact-links';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { pagesToAdd, teaserFieldNote } from '../lib/page-teasers';
 import { effectiveItem } from '@shared/page-teasers';
+import { groupFields, listRowTitle, type PropGroup } from '@shared/fields';
+
+export { groupFields };
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
@@ -655,10 +658,16 @@ export type ListOp =
   | { kind: 'field'; itemId: string; field: string; value: unknown; edit?: PendingEdit }
   | { kind: 'repair'; itemId: string; field: string; value: unknown; label: string; revision?: number };
 
+/** A request to open one list item, named by `seq` so the same item can be opened again. */
+export interface ListReveal {
+  seq: number;
+  itemId: string;
+}
+
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, hint, annotate, linkPairs, error, action, place }: {
+export function PropField({ name, schema, value, onChange, onList, state, focusItem, openItem, label, hint, annotate, linkPairs, error, action, place }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -666,6 +675,8 @@ export function PropField({ name, schema, value, onChange, onList, state, focusI
   onList: (op: ListOp) => void;
   state: ProjectState;
   focusItem?: string;
+  /** For a list: open this item, once per request ("Open in inspector"); the author can close it again. */
+  openItem?: ListReveal;
   /** A shorter visible label, when a group heading already says what the field belongs to. */
   label?: string;
   /** For a scalar: what to say under it in place of the schema's description. */
@@ -679,52 +690,9 @@ export function PropField({ name, schema, value, onChange, onList, state, focusI
   /** For a list: the placement it belongs to, so the item open here is revealed on the page (see lib/reveal). */
   place?: ListPlace;
 }) {
-  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} annotate={annotate} linkPairs={linkPairs} place={place} />;
+  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} linkPairs={linkPairs} place={place} />;
   return <ScalarField schema={schema} value={value} onChange={onChange} state={state} label={label} hint={hint} error={error} action={action} />;
   void name;
-}
-
-export interface PropGroup<T> {
-  /** Heading for fields that belong together ("Primary button"), or none for a field that stands alone. */
-  title?: string;
-  items: Array<{ key: string; schema: PropSchema | ScalarPropSchema; label?: string; data: T }>;
-}
-
-/**
- * Group content fields the way they appear on the page. A schema's own `group` wins; otherwise a text field
- * named "X label" followed by a link named "X link" (or just "Link") is one thing on the page, a button or a
- * link, so it becomes a group "X" with fields "Label" and "Link". Everything else stays in schema order.
- */
-export function groupFields<T>(entries: Array<{ key: string; schema: PropSchema | ScalarPropSchema; data: T }>): Array<PropGroup<T>> {
-  const out: Array<PropGroup<T>> = [];
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    const g = e.schema.group;
-    if (g) {
-      const last = out[out.length - 1];
-      if (last?.title === g) last.items.push({ ...e, label: shorten(e.schema.label, g) });
-      else out.push({ title: g, items: [{ ...e, label: shorten(e.schema.label, g) }] });
-      continue;
-    }
-    const next = entries[i + 1];
-    const m = /^(.*) label$/i.exec(e.schema.label);
-    if (m && e.schema.type === 'string' && next && next.schema.type === 'link' && !next.schema.group) {
-      const prefix = m[1];
-      const nl = next.schema.label.toLowerCase();
-      if (nl === `${prefix} link`.toLowerCase() || nl === 'link') {
-        out.push({ title: prefix, items: [{ ...e, label: 'Label' }, { ...next, label: prefix.toLowerCase() === 'link' ? 'Destination' : 'Link' }] });
-        i++;
-        continue;
-      }
-    }
-    out.push({ items: [e] });
-  }
-  return out;
-}
-
-function shorten(label: string, group: string): string | undefined {
-  if (!label.toLowerCase().startsWith(group.toLowerCase() + ' ')) return undefined;
-  return sentence(label.slice(group.length + 1));
 }
 
 /** Renders grouped fields: a group gets a heading and a quiet frame, a lone field renders as itself. */
@@ -853,13 +821,17 @@ export function useRevealedItem(place: ListPlace | undefined, item: ListItem | u
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, state, focusItem, annotate, linkPairs, place }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => void; state: ProjectState; focusItem?: string; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; linkPairs?: LinkPairs; place?: ListPlace }) {
+function ListEditor({ name, schema, items, onList, state, focusItem, openItem, annotate, linkPairs, place }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => void; state: ProjectState; focusItem?: string; openItem?: ListReveal; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; linkPairs?: LinkPairs; place?: ListPlace }) {
   // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
   // now), so the page keeps that item open while the list takes it over.
   const [open, setOpen] = useState<string | null>(() => {
     const r = getState().revealedItem;
     return place && r && r.list === place.list && refKey(r.ref) === refKey(place.ref) && items.some((x) => x.id === r.itemId) ? r.itemId : null;
   });
+  // "Open in inspector" opens an item as local state, so it then opens and closes as if the author had opened it.
+  useEffect(() => {
+    if (openItem) setOpen(openItem.itemId);
+  }, [openItem?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
   const labelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const after = useRef<{ kind: 'added'; before: string[] } | { kind: 'removed'; focus: string | null } | { kind: 'moved'; id: string; direction: MoveDirection; index: number; from: number; title: string; at: number } | null>(null);
@@ -904,11 +876,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
   const openId = focusItem ?? open;
   const reveal = useRevealedItem(place, openId ? items.find((x) => x.id === openId) : undefined);
   // A page list names each card by the title it shows: the page's own while the card has none.
-  const titleOf = (raw: ListItem, i: number) => {
-    const it = effectiveItem(state, schema, raw);
-    const t = schema.titleField ? it[schema.titleField] : Object.values(it).find((v) => typeof v === 'string' && v && v !== it.id);
-    return (typeof t === 'string' && t.trim()) || `${schema.itemLabel} ${i + 1}`;
-  };
+  const titleOf = (raw: ListItem, i: number) => listRowTitle(schema, effectiveItem(state, schema, raw), i);
   const currentPageId = useStore((st) => st.pageId);
   // While a page is being added, Add waits until the list changes (or a moment passes, so a request that failed does not
   // block it for good): a second press adds neither a duplicate nor whichever page the picker moves on to.

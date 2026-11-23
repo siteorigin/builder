@@ -1,5 +1,5 @@
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
-import { useId, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
   ChevronDown,
@@ -38,7 +38,7 @@ import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, type FormServiceSetup } from '@catalogue/foundation/form';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
-import { applyOps, applyWith, setState, toast, useStore, type PendingEdit } from '../store';
+import { applyOps, applyWith, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
@@ -125,6 +125,72 @@ function openList(parent: ElementRef, listProp: string, rowId: string | undefine
       (head ?? list?.querySelector<HTMLElement>('.insp-add'))?.focus({ preventScroll: false });
     }, 250);
   }, 50);
+}
+
+/** How long an "Open in inspector" request waits for its component's Inspector, and then for the field to show. */
+const REVEAL_MS = 5000;
+const REVEAL_FIELD_MS = 1000;
+
+/** Bring a content field into view, put focus on its control and ring it briefly. Nothing is clicked or changed. */
+function revealField(slot: HTMLElement) {
+  const box = (slot.firstElementChild as HTMLElement | null) ?? slot;
+  const control = slot.querySelector<HTMLElement>('input:not([type="hidden"]), textarea, select, [contenteditable="true"], button');
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  box.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
+  control?.focus({ preventScroll: true });
+  box.classList.remove('field-located');
+  // Restarts the ring when the same field is opened again.
+  void box.offsetWidth;
+  box.classList.add('field-located');
+  setTimeout(() => box.classList.remove('field-located'), 2600);
+}
+
+/** The field a request names in the Inspector: one of the component's own, or one of a list item's (once open). */
+function findField(req: InspectorFocus): HTMLElement | null {
+  const panel = document.getElementById('dock-panel-inspect');
+  const own = [...(panel?.querySelectorAll<HTMLElement>(`[data-field="${CSS.escape(req.prop)}"]`) ?? [])].find((el) => !el.parentElement?.closest('.list-editor-body'));
+  if (!own || !req.itemId) return own ?? null;
+  const body = own.querySelector<HTMLElement>(`#list-item-${CSS.escape(req.itemId)}`);
+  if (!body || body.hidden) return null;
+  return body.querySelector<HTMLElement>(`[data-field="${CSS.escape(req.field ?? '')}"]`);
+}
+
+/**
+ * Take an "Open in inspector" request meant for this component: open Content (the list item opens through
+ * `reveal`), then reveal the field once it shows. The request is used once, found or not.
+ */
+function useFieldReveal(selection: ElementRef): InspectorFocus | null {
+  const req = useStore((s) => {
+    const f = s.inspectorFocus;
+    const here = f && f.owner.kind === selection.owner.kind && f.owner.id === selection.owner.id && f.nodeId === selection.nodeId;
+    return here && !selection.instancePath.length && !selection.partId && f.opening === s.snapshot?.workspaceKey ? f : null;
+  });
+  useEffect(() => {
+    if (!req) return;
+    const done = () => {
+      if (getState().inspectorFocus?.seq === req.seq) setState({ inspectorFocus: null });
+    };
+    // Too late: the author has moved on since asking for it.
+    if (Date.now() - req.at > REVEAL_MS) return done();
+    openSection('content', { scroll: false });
+    const until = Date.now() + REVEAL_FIELD_MS;
+    let frame = 0;
+    const step = () => {
+      const el = findField(req);
+      if (el) {
+        revealField(el);
+        done();
+      } else if (Date.now() < until) frame = requestAnimationFrame(step);
+      else {
+        // It was there when the button was pressed, and has gone since (or is not shown here): say so.
+        done();
+        toast(`${req.label} is no longer in the Inspector.`, 'info');
+      }
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
+  }, [req?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
+  return req;
 }
 
 /** Number of style values set across sizes. */
@@ -320,6 +386,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const dev = useStore((s) => !!s.settings?.developerMode);
   // Which declared part of a code component the Style section edits.
   const [codePart, setCodePart] = useState('root');
+  const reveal = useFieldReveal(selection);
   const def = state.components[node.definitionId];
   if (!def) return null;
   const title = node.name ?? def.name;
@@ -437,6 +504,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                 onChange={(v, edit) => set(key, v, edit)}
                 onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
                 state={state}
+                openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}
                 annotate={notes(key)}
                 linkPairs={schema.type === 'list' ? itemLinkPairs(def, key) : undefined}
                 error={found ? unlinkedNote({ hide: own?.hide }) : undefined}

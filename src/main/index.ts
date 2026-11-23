@@ -140,8 +140,10 @@ const orchestrator = new Orchestrator({
   onBusyChange: () => controller.broadcast(),
   codeEnabled: async () => (await loadSettings()).settings.developerMode
 });
-controller.aiBusy = () => orchestrator.busy;
-controller.aiRunId = () => orchestrator.runId;
+// Only a request that may change the site holds it: a read-only question leaves the author editing, exporting
+// and resolving conflicts as usual.
+controller.aiBusy = () => orchestrator.editing;
+controller.aiRunId = () => (orchestrator.editing ? orchestrator.runId : null);
 controller.onSessionOpened = async (s) => {
   orchestrator.reset();
   // Another app took the project over: stop the assistant (the session already refuses its writes).
@@ -309,7 +311,8 @@ function registerIpc() {
     if (key !== undefined && key !== controller.openingKey) throw new Error('The project changed, so its history was not cleared.');
     return readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory();
   });
-  handle('ai:send', (text: string, ctx, conversationId?: string) => (readOnlyReason() ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined)));
+  // A question may be asked of a project another app is editing; the orchestrator decides (it writes nothing).
+  handle('ai:send', (text: string, ctx, conversationId?: string) => (readOnlyReason() && !((ctx as { mode?: unknown } | null)?.mode === 'ask' && controller.session?.readOnly?.canUnlock) ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined)));
   // With a request ID, stop exactly that request and answer once it has ended and its changes are rolled back.
   handle('ai:stop', (runId?: unknown) => (typeof runId === 'string' ? orchestrator.stopRun(runId) : orchestrator.stop()));
   handle('ai:answer', (runId: string, questionId: string, answer: string | { assetId: string }) => orchestrator.answer(runId, questionId, answer));

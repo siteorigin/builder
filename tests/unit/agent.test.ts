@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AiEvent, ChatContext, Conversation } from '@shared/api';
+import type { AiEvent, ChatContext, ChatMessage, Conversation } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agent/types';
@@ -12,7 +12,7 @@ import { LIMITS } from '@agent/orchestrator';
 import { imageRef, libraryImage, toolDefinitions } from '@agent/tools';
 import { checkAuthority, OP_REACH, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
-import type { ProjectState } from '@shared/types';
+import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { subtreeIds } from '@engine/tree';
 import { catalogueIndex } from '@agent/context';
 import { applyOperations } from '@engine/apply';
@@ -82,8 +82,8 @@ async function setup(turns: Turn[], opts: SetupOptions = {}) {
     ...(opts.codeEnabled !== undefined ? { codeEnabled: async () => opts.codeEnabled! } : {})
   });
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
-  const run = async (text: string) => {
-    const r = await orch.send(text, ctx);
+  const run = async (text: string, extra: Partial<ChatContext> = {}) => {
+    const r = await orch.send(text, { ...ctx, ...extra });
     expect(r.ok).toBe(true);
     while (orch.busy || busy) await new Promise((res) => setTimeout(res, 10));
     const msg = [...events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message;
@@ -177,6 +177,210 @@ describe('agent orchestrator', () => {
     const { result } = await run('Rename a page');
     expect(result?.status).toBe('failed');
     expect(result?.summary).toMatch(/failed twice/);
+  });
+});
+
+describe('read-only questions (#203)', () => {
+  const contactOf = (session: ProjectSession) => {
+    const page = Object.values(session.state.pages).find((p) => p.title === 'Contact')!;
+    const nodeId = page.rootIds.find((id) => session.state.components[(page.nodes[id] as InstanceNode).definitionId]?.componentId === 'contact.details')!;
+    const hours = ((page.nodes[nodeId] as InstanceNode).props.items as ListItem[]).find((i) => i.label === 'Hours')!;
+    return { page, nodeId, hours, owner: { kind: 'page' as const, id: page.id } };
+  };
+  /** Counts the calls that take, keep, release or write through the project's write lock. */
+  const watchLock = (session: ProjectSession) => {
+    const calls: string[] = [];
+    for (const name of ['beginRun', 'completeRun', 'abortRun', 'apply'] as const) {
+      const original = session[name].bind(session) as (...a: unknown[]) => unknown;
+      (session as unknown as Record<string, unknown>)[name] = (...a: unknown[]) => {
+        calls.push(name);
+        return original(...a);
+      };
+    }
+    return calls;
+  };
+
+  it('answers with the Inspector path it located, offering only reads and never holding the project', async () => {
+    let target!: ReturnType<typeof contactOf>;
+    let editingMidRun: boolean | null = null;
+    let orchRef: Orchestrator | null = null;
+    let compiles = 0;
+    const { session, run, adapter, events, orch } = await setup(
+      [
+      () => [call('q1', 'read_page', { pageId: target.page.id })],
+      () => {
+        editingMidRun = orchRef!.editing;
+        return [call('q2', 'locate_field', { owner: target.owner, nodeId: target.nodeId, prop: 'items', itemId: target.hours.id, field: 'value' })];
+      },
+      () => finish('The hours read “Monday to Friday, 9am – 5pm”. Change them at Contact → Contact details → Content → Contact methods → Hours → Value.')
+      ],
+      {
+        compileAll: async () => {
+          compiles++;
+          return [];
+        }
+      }
+    );
+    orchRef = orch;
+    target = contactOf(session);
+    const lock = watchLock(session);
+    const { result } = await run('Tell me the studio hours and where I change them. Leave the site unchanged.', { mode: 'ask' });
+    expect(result).toMatchObject({ status: 'no-changes', ask: true, changes: [], canUndo: false });
+    const path = ['Contact', 'Contact details', 'Content', 'Contact methods', 'Hours', 'Value'];
+    expect(result?.locations).toEqual([{ owner: target.owner, nodeId: target.nodeId, prop: 'items', itemId: target.hours.id, field: 'value', path }]);
+    // The tool told the model the exact path and the value it found there.
+    const located = adapter.requests[2].items.at(-1) as { content: string };
+    expect(JSON.parse(located.content)).toMatchObject({ path: path.join(' → '), value: 'Monday to Friday, 9am – 5pm' });
+    expect(adapter.requests[0].tools.map((t) => t.name)).toEqual(['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'locate_field', 'request_clarification', 'read_source']);
+    expect(adapter.requests[0].system).toMatch(/read-only question/);
+    expect(lock).toEqual([]);
+    expect(compiles).toBe(0);
+    expect(editingMidRun).toBe(false);
+    expect(events.filter((e) => e.kind === 'status').map((e) => [e.status, e.mode])).toEqual([
+      ['running', 'ask'],
+      ['no-changes', 'ask']
+    ]);
+    expect(JSON.stringify(adapter.requests[0].items)).not.toContain('workedExamples');
+    // The question it may ask cannot be one that widens what may change.
+    const clarify = adapter.requests[0].tools.find((t) => t.name === 'request_clarification')!;
+    expect(Object.keys((clarify.parameters as { properties: object }).properties)).not.toContain('widenScope');
+    expect(session.historyInfo().entries).toHaveLength(0);
+  });
+
+  it('lets the author edit while it reads, and answers from the site as it was asked about', async () => {
+    let target!: ReturnType<typeof contactOf>;
+    let manual: Awaited<ReturnType<ProjectSession['apply']>> | null = null;
+    const { session, run, adapter } = await setup([
+      async () => {
+        manual = await session.apply({ operations: [{ type: 'instance.setProp', owner: target.owner, nodeId: target.nodeId, prop: 'items', itemId: target.hours.id, value: { value: 'Weekends only' } }] }, { label: 'Edit Value', source: 'user' });
+        return [call('q1', 'locate_field', { owner: target.owner, nodeId: target.nodeId, prop: 'items', itemId: target.hours.id, field: 'value' })];
+      },
+      () => finish('Monday to Friday, 9am – 5pm.')
+    ]);
+    target = contactOf(session);
+    const asked = session.revision;
+    const { result } = await run('What are the hours?', { mode: 'ask' });
+    expect(manual).toMatchObject({ ok: true });
+    expect(result?.status).toBe('no-changes');
+    expect(JSON.parse((adapter.requests[1].items.at(-1) as { content: string }).content)).toMatchObject({ value: 'Monday to Friday, 9am – 5pm', revision: asked });
+    expect(session.revision).toBe(asked + 1);
+    // The author's edit is theirs: saved, and one step of their own history.
+    expect(((contactOf(session).page.nodes[target.nodeId] as InstanceNode).props.items as ListItem[]).find((i) => i.id === target.hours.id)?.value).toBe('Weekends only');
+    expect(session.historyInfo().entries).toHaveLength(1);
+  });
+
+  it('refuses every way of changing the site, and a question cannot widen it', async () => {
+    let target!: ReturnType<typeof contactOf>;
+    let orchRef: Orchestrator | null = null;
+    let asked: ChatMessage['questions'];
+    const { session, run, adapter, events, orch } = await setup([
+      () => [call('w1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Sneaky' }] })],
+      () => [call('w2', 'upsert_page_with_sections', { title: 'Sneaky', sections: [] })],
+      () => [call('w3', 'update_selected_props', { props: { heading: 'Changed' } })],
+      () => {
+        setTimeout(() => {
+          const q = [...events].reverse().find((e) => e.kind === 'message' && e.message?.questions?.length)?.message?.questions?.at(-1);
+          asked = structuredClone([...events].reverse().find((e) => e.kind === 'message' && e.message?.questions?.length)?.message?.questions);
+          orchRef!.answer(orchRef!.runId!, q!.id!, 'yes');
+        }, 20);
+        return [call('w4', 'request_clarification', { question: 'May I change the heading?', widenScope: true })];
+      },
+      () => finish('I cannot change the site from a question.')
+    ]);
+    orchRef = orch;
+    target = contactOf(session);
+    const lock = watchLock(session);
+    const selection = { owner: target.owner, instancePath: [], nodeId: target.nodeId };
+    const { result } = await run('Change the heading', { mode: 'ask', selection, selectionLabel: 'Contact details' });
+    expect(result).toMatchObject({ status: 'no-changes', ask: true });
+    const results = adapter.requests.slice(1, 4).map((r) => JSON.stringify(r.items.at(-1)));
+    for (const r of results) expect(r).toContain('Unknown tool');
+    expect(asked?.[0]).toMatchObject({ text: 'May I change the heading?', choices: [] });
+    expect(asked?.[0].widen).toBeUndefined();
+    expect(lock).toEqual([]);
+    expect(Object.values(session.state.pages).some((p) => p.title === 'Sneaky')).toBe(false);
+    expect(session.historyInfo().entries).toHaveLength(0);
+  });
+
+  it('sends an answer that names an Inspector path it never located back once to locate it', async () => {
+    let target!: ReturnType<typeof contactOf>;
+    const { session, run, adapter } = await setup([
+      () => finish('Change them at Items → Hours → Value.'),
+      () => [call('l1', 'locate_field', { owner: target.owner, nodeId: target.nodeId, prop: 'items', itemId: target.hours.id, field: 'value' })],
+      () => finish('Change them at Contact → Contact details → Content → Contact methods → Hours → Value.')
+    ]);
+    target = contactOf(session);
+    const { result } = await run('Where do I change the hours?', { mode: 'ask' });
+    expect(JSON.stringify(adapter.requests[1].items.at(-1))).toContain('without having called locate_field');
+    expect(result).toMatchObject({ status: 'no-changes', summary: 'Change them at Contact → Contact details → Content → Contact methods → Hours → Value.' });
+    expect(result?.locations).toHaveLength(1);
+  });
+
+  it('nudges only once, and calls an empty answer a failure rather than an answer', async () => {
+    const once = await setup([() => finish('Try Items → Hours.'), () => finish('Try Items → Hours.')]);
+    expect((await once.run('Where?', { mode: 'ask' })).result).toMatchObject({ status: 'no-changes', summary: 'Try Items → Hours.' });
+    expect(once.adapter.requests).toHaveLength(2);
+    const empty = await setup([() => finish('')]);
+    expect((await empty.run('Anything?', { mode: 'ask' })).result).toMatchObject({ status: 'failed', ask: true });
+  });
+
+  it('can be stopped while it waits for an answer, still without touching the project', async () => {
+    let orchRef: Orchestrator | null = null;
+    const { session, run, orch, events } = await setup([
+      () => {
+        setTimeout(() => {
+          const asked = [...events].reverse().find((e) => e.kind === 'status' && e.status === 'awaiting-input');
+          expect(asked?.mode).toBe('ask');
+          orchRef!.stop();
+        }, 30);
+        return [call('c1', 'request_clarification', { question: 'Which page?' })];
+      }
+    ]);
+    orchRef = orch;
+    const lock = watchLock(session);
+    const { result } = await run('Where is the phone number?', { mode: 'ask' });
+    expect(result).toMatchObject({ status: 'cancelled', ask: true });
+    expect(lock).toEqual([]);
+  });
+
+  it('leaves a running question alone when an earlier turn is undone meanwhile', async () => {
+    let orchRef: Orchestrator | null = null;
+    let editRun = '';
+    let undone: { ok: boolean } | null = null;
+    const { session, run, orch, events } = await setup([
+      () => [call('e1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'site.update', name: 'Renamed' }] })],
+      () => finish('Renamed the site.'),
+      async () => {
+        undone = await orchRef!.undoTurn(editRun);
+        return finish('It is called Test.');
+      }
+    ]);
+    orchRef = orch;
+    editRun = (await run('Rename the site')).runId;
+    const from = events.length;
+    const { runId } = await run('What is the site called?', { mode: 'ask' });
+    expect(undone).toEqual({ ok: true });
+    expect(session.state.site.name).toBe('Test');
+    // The undone turn is updated in the transcript without claiming to be the request being worked on.
+    const update = events.slice(from).find((e) => e.kind === 'message' && e.message?.runId === editRun);
+    expect(update?.runId).toBe('');
+    expect(events.slice(from).filter((e) => e.kind === 'status').every((e) => e.runId === runId)).toBe(true);
+  });
+
+  it('stops without undoing anything, since a question changed nothing', async () => {
+    let orchRef: Orchestrator | null = null;
+    const { session, run, orch } = await setup([
+      async () => {
+        orchRef!.stop();
+        await new Promise((r) => setTimeout(r, 5));
+        return [call('s1', 'read_project', {})];
+      }
+    ]);
+    orchRef = orch;
+    const lock = watchLock(session);
+    const { result } = await run('What is on the Home page?', { mode: 'ask' });
+    expect(result).toMatchObject({ status: 'cancelled', ask: true });
+    expect(lock).toEqual([]);
   });
 });
 

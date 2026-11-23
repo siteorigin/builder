@@ -207,6 +207,10 @@ p { text-wrap: pretty; }
 .select.inherit { background-color: transparent; }
 input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .field { display: flex; flex-direction: column; gap: 5px; }
+/* A field just opened from a chat answer: a brief ring, then nothing. */
+.field-located { border-radius: var(--r-sm); animation: field-located 2.4s ease-out 1; }
+@keyframes field-located { 0%, 60% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 0 0 2px transparent; } }
+@media (prefers-reduced-motion: reduce) { .field-located { animation: none; box-shadow: 0 0 0 2px var(--accent); } }
 .field > label, .field-label { font-size: 12px; font-weight: 500; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
 .field-hint { font-size: 12px; color: var(--text-3); }
 .field-hint .field-warning { display: block; color: var(--amber); font-weight: 600; }
@@ -1049,6 +1053,9 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .result-steps .activity-list { padding: 0; border: 0; border-radius: 0; background: transparent; }
 .result-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; border-top: 1px solid var(--border); }
 .result-summary { white-space: pre-wrap; line-height: 1.5; color: var(--text); }
+.result-body .locations { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.result-body .locations li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.location-path { min-width: 0; font-weight: 550; overflow-wrap: anywhere; }
 .result-body ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
 .result-body .changes { gap: 0; }
 .result-body .changes li { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; min-height: 24px; color: var(--text); }
@@ -1120,6 +1127,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .composer:has(textarea:focus) { border-color: var(--accent); box-shadow: var(--ring); }
 .composer textarea { display: block; width: 100%; min-height: 40px; max-height: 200px; padding: 9px 12px 3px; border: 0; background: transparent; resize: none; outline: none; line-height: 1.5; user-select: text; }
 .composer-foot { display: flex; align-items: center; gap: 6px; padding: 4px 6px 6px 4px; }
+.composer-foot .segmented { flex: none; }
 .composer-model { min-width: 0; color: var(--text-2); font-weight: 500; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
 .chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 2px 0 8px; border-radius: var(--r-sm); background: var(--active); font-size: 12px; color: var(--text-2); max-width: 100%; }

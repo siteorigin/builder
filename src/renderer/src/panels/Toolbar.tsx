@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, History, House, LogOut, MessageCircleQuestionMark, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { VIEWPORT_PRESETS } from '@shared/styles';
-import { api, saveLocal, setState, toast, useStore } from '../store';
+import { api, editRunStatus, saveLocal, setState, toast, useStore } from '../store';
 import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
@@ -22,7 +22,8 @@ export function Toolbar() {
   const leftTab = useStore((s) => s.leftTab);
   const pending = useStore((s) => s.pendingSave);
   const drafting = useStore((s) => s.drafting > 0);
-  const runStatus = useStore((s) => s.runStatus);
+  // The save state is about the author's work and the AI's changes; a read-only question has none.
+  const runStatus = useStore(editRunStatus);
   const definitionMode = useStore((s) => s.definitionMode);
   const dockOpen = useStore((s) => s.dockOpen);
   const hasConflict = useStore((s) => (s.snapshot?.conflicts.length ?? 0) > 0);

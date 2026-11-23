@@ -1,6 +1,7 @@
 /** Read-only helpers for the AI result card: the status of each check, and where a change's link goes. */
-import type { ChatChange, ChatContext, ChatMessage } from '@shared/api';
+import type { ChatChange, ChatContext, ChatMessage, FieldLocation } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
+import { locateField } from '@engine/locate';
 import { resolveRef } from './model';
 
 /** Checks that need attention, read from the wording of results stored before checks carried a status. */
@@ -51,6 +52,17 @@ export function changeTarget(state: ProjectState, currentPageId: string | null, 
   }
   if (exists) return { pageId, selection: ref };
   return { pageId, selection: null, note: `That element is no longer on ${owner.kind === 'page' ? state.pages[pageId].title : `the shared ${owner.id}`}. Showing the page instead.` };
+}
+
+/**
+ * Where "Open in inspector" goes for a located field, worked out now: the component and list item are found by
+ * their IDs wherever they have moved, and the field by the same rules the answer named it with. A field that
+ * has gone, or is no longer shown in the Inspector, is never swapped for another one that looks like it.
+ */
+export function locationTarget(state: ProjectState, currentPageId: string | null, l: FieldLocation): { pageId: string; selection: ElementRef } | { error: string } {
+  const found = locateField(state, l, currentPageId);
+  if (!found.ok) return { error: `${l.path.at(-1) ?? 'That field'} can no longer be opened. ${found.message}` };
+  return { pageId: found.pageId, selection: { owner: found.owner, instancePath: [], nodeId: l.nodeId } };
 }
 
 /**

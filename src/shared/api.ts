@@ -114,6 +114,8 @@ export interface LocalWorkspaceState {
   chatImages?: Record<string, string[]>;
   /** The AI conversation that was open, shown again (with its draft) when the project reopens. */
   chatConversation?: string;
+  /** Whether the next AI message was set to be a read-only question, so an unsent question stays one. */
+  chatMode?: 'edit' | 'ask';
 }
 
 export interface CreateProjectOptions {
@@ -215,6 +217,9 @@ export interface RecentExport {
 
 export type RunStatus = 'preparing' | 'running' | 'awaiting-input' | 'validating' | 'repairing' | 'stopping' | 'completed' | 'no-changes' | 'cancelled' | 'failed' | 'conflicted';
 
+/** edit: the AI may change the site. ask: a read-only question; the AI reads the site and changes nothing. */
+export type ChatMode = 'edit' | 'ask';
+
 export interface ChatContext {
   pageId: string;
   pageTitle: string;
@@ -223,6 +228,21 @@ export interface ChatContext {
   viewport: number;
   /** Library images the author attached to the request, by asset ID. The AI is told their IDs and what the library says about them (name, size, description, alt text), never the pictures or their files. */
   assetIds?: string[];
+  /** Absent in messages sent before questions existed, which were all edits. */
+  mode?: ChatMode;
+}
+
+/** A content field the AI located while answering a question, opened from the answer with "Open in inspector". */
+export interface FieldLocation {
+  owner: OwnerRef;
+  /** The placed component the field belongs to. */
+  nodeId: string;
+  prop: string;
+  /** For a field of one list item: the item, and its field. */
+  itemId?: string;
+  field?: string;
+  /** The Inspector labels that led to it when it was located: page, component, Content, group or list, item, field. */
+  path: string[];
 }
 
 /** A library image named in a conversation, as it was then: its asset ID tells same-named images apart. */
@@ -289,6 +309,10 @@ export interface ChatMessage {
     unfinished?: Array<{ title: string; route?: string; existing?: string[] }>;
     /** Links still waiting for a page to take their route; a "continue" request connects them when it does. */
     pendingLinks?: Array<{ route: string; pageId: string; nodeId: string; prop: string; itemId?: string; field?: string }>;
+    /** The turn was a read-only question: it read the site and could not change it. */
+    ask?: boolean;
+    /** Fields the AI located for the answer, each offered as "Open in inspector". */
+    locations?: FieldLocation[];
   };
   /** Every question the assistant asked during this turn, in the order asked. */
   questions?: ChatQuestion[];
@@ -331,6 +355,8 @@ export interface AiEvent {
   conversationId: string;
   kind: 'status' | 'text' | 'activity' | 'result' | 'question' | 'message';
   status?: RunStatus;
+  /** With a status: what kind of request is running. A question never holds the project, so editing goes on. */
+  mode?: ChatMode;
   text?: string;
   activity?: ChatActivity;
   message?: ChatMessage;

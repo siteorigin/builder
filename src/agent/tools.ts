@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { AssetRecord, ProjectState } from '@shared/types';
-import type { ChatImageRef } from '@shared/api';
+import type { ChatImageRef, FieldLocation } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import { EditOperationSchema, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
@@ -16,6 +16,7 @@ import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_DESCRIPTION, upsertToolS
 import { BRAND_ARGS, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
 import { examplesFor, exampleSection } from './examples';
+import { locateField } from '@engine/locate';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component']), id: z.string() });
 
@@ -53,6 +54,13 @@ export const TOOL_ARGS = {
       .describe('Library images to offer as choices, by the assetId search_assets returns. The user sees each picture and its name; the answer names the chosen assetId.'),
     widenScope: z.boolean().optional().describe('Set true to ask permission to change more than the selected element. The app shows yes/no choices; on yes, the run may change anything.')
   }),
+  locate_field: z.object({
+    owner,
+    nodeId: z.string().describe('The placed component (an instance node ID from read_page).'),
+    prop: z.string().describe('Its property, as read_page shows it, for example "items".'),
+    itemId: z.string().optional().describe('For a list property: the id of one item.'),
+    field: z.string().optional().describe('For a list property: the field of that item, for example "value".')
+  }),
   upsert_page_with_sections: UPSERT_ARGS,
   update_site_brand: BRAND_ARGS,
   ...SELECTION_ARGS
@@ -75,6 +83,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
   request_clarification:
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four short, concrete options in choices; the user can also type their own answer. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
+  locate_field:
+    'Find where the author changes one content field in the editor. Returns its current value and the exact labels the Inspector shows on the way to it (page, component, Content, then the field or the list, its item and the field), and gives the author an "Open in inspector" button for it.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
   ...SELECTION_DESCRIPTIONS
@@ -129,17 +139,22 @@ export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'appl
 const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand'];
 const SELECTION_TOOLS = Object.keys(SELECTION_ARGS) as ToolName[];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...SELECTION_TOOLS]);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...SELECTION_TOOLS, 'locate_field']);
+/**
+ * Everything a read-only question may use: reads of the project, the catalogue and images, finding a field, and a
+ * plain question to the author. Nothing that changes the site, measures the live preview or builds the project.
+ */
+export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'locate_field', 'request_clarification'];
 export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'style_selected_element']);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export const FOCUSED_WINDOW_TOKENS = 64_000;
 
-export type ToolMode = 'selection' | 'site' | 'general';
+export type ToolMode = 'selection' | 'site' | 'general' | 'ask';
 
 export interface RunTools {
   tools: ToolDefinition[];
-  /** selection: the selected element's tools. site: page and brand tools. general: a selection they cannot cover. */
+  /** selection: the selected element's tools. site: page and brand tools. general: a selection they cannot cover. ask: reading only. */
   mode: ToolMode;
   /** Only the small tool set is offered. */
   focused: boolean;
@@ -147,15 +162,28 @@ export interface RunTools {
 
 const usesImage = (tools: ToolDefinition[]) => JSON.stringify(tools[0].parameters).includes('"assetId"');
 
+/** The tools of a read-only question: the same small set for every model, with or without a selection. */
+function askTools(codeEnabled: boolean): ToolDefinition[] {
+  const names: ToolName[] = [...ASK_TOOLS, ...(codeEnabled ? (['read_source'] as const) : [])];
+  return names.map((name) => {
+    // A question can never widen what may change: nothing may.
+    const args = name === 'request_clarification' ? TOOL_ARGS.request_clarification.omit({ widenScope: true }) : TOOL_ARGS[name];
+    const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+    delete schema.$schema;
+    return { name, description: DESCRIPTIONS[name], parameters: schema };
+  });
+}
+
 /**
  * The tools for this step of a run, chosen by task. The small sets are the design target: every model gets
  * them. A cloud model with room to spare also keeps the general tools for anything they cannot express, and a
  * selection they cannot cover (a layout element, a component's own definition) always uses the general tools.
  */
-export function toolsForRun(opts: { state: ProjectState; selection: SelectionTarget | null; capabilities: Pick<ModelCapabilities, 'toolCalling' | 'contextWindowTokens'>; codeEnabled: boolean; definitionOps: boolean; attachedImages?: boolean }): RunTools {
+export function toolsForRun(opts: { state: ProjectState; selection: SelectionTarget | null; capabilities: Pick<ModelCapabilities, 'toolCalling' | 'contextWindowTokens'>; codeEnabled: boolean; definitionOps: boolean; attachedImages?: boolean; ask?: boolean }): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
-  const general = toolDefinitions({ codeEnabled, definitionOps });
   const focused = capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
+  if (opts.ask) return { tools: askTools(codeEnabled), mode: 'ask', focused };
+  const general = toolDefinitions({ codeEnabled, definitionOps });
   if (selection) {
     const micro = selectionTools(state, selection);
     if (!micro) return { tools: general, mode: 'general', focused: false };
@@ -211,6 +239,8 @@ export interface ToolHost {
 export interface ToolOutcome {
   ok: boolean;
   content: unknown;
+  /** A field locate_field found, for the answer's "Open in inspector". */
+  location?: FieldLocation;
   mutated?: boolean;
   ops?: EditOperation[];
   results?: unknown[];
@@ -376,6 +406,25 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const a = args as z.infer<(typeof TOOL_ARGS)['validate_project']>;
       const diags = [...host.diagnostics(), ...(a.profile === 'component' ? await host.compileAll() : [])];
       return { ok: true, content: { revision: host.revision(), errors: diags.filter((d) => d.severity === 'error').map((d) => d.message), warnings: diags.filter((d) => d.severity === 'warning').slice(0, 20).map((d) => d.message) } };
+    }
+    case 'locate_field': {
+      const a = args as z.infer<(typeof TOOL_ARGS)['locate_field']>;
+      const target = { owner: a.owner, nodeId: a.nodeId, prop: a.prop, ...(a.itemId !== undefined ? { itemId: a.itemId } : {}), ...(a.field !== undefined ? { field: a.field } : {}) };
+      const found = locateField(state, target);
+      if (!found.ok) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: [found.message, found.hint].filter(Boolean).join(' ') } };
+      const path = found.path.join(' → ');
+      return {
+        ok: true,
+        location: { ...target, owner: found.owner, path: found.path },
+        content: {
+          revision: host.revision(),
+          path,
+          value: found.value,
+          // A choice is stored by its value; the Inspector shows its label.
+          ...(found.shown !== undefined ? { shownAs: found.shown } : {}),
+          note: `Give the author this path exactly as written. The chat shows an "Open in inspector" button for it.`
+        }
+      };
     }
     case 'request_clarification': {
       const a = args as z.infer<(typeof TOOL_ARGS)['request_clarification']>;

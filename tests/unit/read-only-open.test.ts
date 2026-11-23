@@ -95,7 +95,11 @@ async function exercise(session: ProjectSession, chat: boolean) {
   for (const c of loaded.list) await orchestrator.openConversation(c.id);
   await orchestrator.newConversation();
   await orchestrator.clearHistory();
-  await orchestrator.send('Change the title', { pageId: session.state.site.pageOrder[0] } as never);
+  // An edit is refused outright. A question is taken only while another app holds the project (#203): it writes
+  // nothing, so the project stays byte-identical either way. A newer format is not read here at all.
+  expect(await orchestrator.send('Change the title', { pageId: session.state.site.pageOrder[0] } as never)).toMatchObject({ ok: false });
+  const asked = await orchestrator.send('What is the title?', { pageId: session.state.site.pageOrder[0], mode: 'ask' } as never);
+  expect(asked.ok).toBe(!!session.readOnly?.canUnlock);
   for (let i = 0; i < 200 && orchestrator.busy; i++) await new Promise((r) => setTimeout(r, 10));
   expect(orchestrator.busy).toBe(false);
   expect(await session.reloadFromDisk()).toEqual({ ok: true });
