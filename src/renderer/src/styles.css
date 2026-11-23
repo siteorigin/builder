@@ -1000,6 +1000,9 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 10px 0; }
 .chip { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 2px 0 8px; border-radius: var(--r-sm); background: var(--active); font-size: 12px; color: var(--text-2); max-width: 100%; }
 .chip.sel { background: var(--accent-soft); color: var(--accent-text); }
+.chips .segmented { min-width: 0; max-width: 100%; }
+.chips .segmented button { min-width: 0; max-width: 220px; }
+.chips .segmented button svg { width: 12px; height: 12px; flex: none; }
 .chip svg { width: 11px; height: 11px; flex: none; }
 .chip button { width: 24px; height: 24px; display: grid; place-items: center; border: 0; border-radius: var(--r-xs); background: none; color: inherit; padding: 0; }
 .chip button:hover { background: var(--hover); }

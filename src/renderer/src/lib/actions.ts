@@ -185,7 +185,9 @@ export function selectPage(pageId: string) {
 }
 
 export function askAiAbout(ref: ElementRef | null) {
-  setState({ rightTab: 'chat', dockOpen: true, selection: ref ?? getState().selection, chatContextEnabled: { page: true, selection: true } });
+  // Asking about a specific element scopes the message to it; opening the chat generically keeps the
+  // scope the user chose.
+  setState({ rightTab: 'chat', dockOpen: true, selection: ref ?? getState().selection, ...(ref ? { chatContextEnabled: { page: true, selection: true } } : {}) });
   setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 50);
 }
 

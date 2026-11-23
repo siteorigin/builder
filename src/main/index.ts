@@ -74,7 +74,7 @@ const orchestrator = new Orchestrator({
       const timer = setTimeout(() => {
         pendingInspections.delete(requestId);
         reject(new Error('The preview did not respond in time.'));
-      }, 20000);
+      }, 50000); // The renderer may load the page twice (two 20s attempts plus a pause) before answering.
       pendingInspections.set(requestId, (r) => {
         clearTimeout(timer);
         resolve(r);

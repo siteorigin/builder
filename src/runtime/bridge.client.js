@@ -300,6 +300,16 @@ function cancelEdit() {
 // Layout inspection (no screenshots; structural and geometric evidence only)
 // ---------------------------------------------------------------------------
 
+/** Resolves when fonts are ready and images have loaded (or failed), or after `ms` at the latest. */
+function settled(ms) {
+  // The inspection frame is never scrolled, so lazy images would otherwise never start loading.
+  for (const img of document.images) if (img.loading === 'lazy') img.loading = 'eager';
+  const fonts = document.fonts ? document.fonts.ready.catch(() => {}) : Promise.resolve();
+  const images = Promise.all([...document.images].filter((i) => !i.complete).map((i) => new Promise((r) => { i.addEventListener('load', r, { once: true }); i.addEventListener('error', r, { once: true }); })));
+  const frames = new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  return Promise.race([Promise.all([fonts, images]).then(() => frames), new Promise((r) => setTimeout(r, ms))]);
+}
+
 function inspect() {
   const vw = document.documentElement.clientWidth;
   const issues = [];
@@ -325,7 +335,13 @@ function inspect() {
   const h1 = document.querySelectorAll('h1').length;
   if (h1 !== 1) issues.push({ kind: 'heading-structure', message: `The page has ${h1} h1 headings (expected 1).` });
   for (const a of document.querySelectorAll('a')) if (!a.textContent.trim() && !a.getAttribute('aria-label')) issues.push({ kind: 'empty-link', message: 'A link has no accessible name.' });
-  return { viewportWidth: vw, documentWidth: docWidth, documentHeight: document.documentElement.scrollHeight, issues: issues.slice(0, 40), runtimeErrors: errors.slice(-10) };
+  // Which top-level page sections rendered ("page:<id>|<node>"), so the editor can tell a stale page load.
+  const sections = new Set();
+  for (const el of document.querySelectorAll('[data-so-ctx^="page:"][data-so-node]')) {
+    const ctx = el.getAttribute('data-so-ctx');
+    sections.add(ctx.includes('|') ? ctx.split('|').slice(0, 2).join('|') : `${ctx}|${el.getAttribute('data-so-node')}`);
+  }
+  return { path: location.pathname, sections: [...sections].slice(0, 500), viewportWidth: vw, documentWidth: docWidth, documentHeight: document.documentElement.scrollHeight, issues: issues.slice(0, 40), runtimeErrors: errors.slice(-10) };
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +395,8 @@ window.addEventListener('message', async (e) => {
       break;
     }
     case 'inspect':
+      // Measure only once web fonts and images have settled: both change line wrapping and widths.
+      await settled(4000);
       send('inspectResult', { requestId: m.payload.requestId, report: inspect() });
       break;
     case 'revision':

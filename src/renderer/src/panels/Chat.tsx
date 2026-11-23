@@ -1,11 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUp, Check, ChevronDown, CircleAlert, CircleCheck, CircleHelp, CircleStop, FileText, History, Info, KeyRound, MousePointerClick, Plus, RotateCcw, Settings2, Sparkles, Square, Trash2, TriangleAlert, X } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, CircleAlert, CircleCheck, CircleDashed, CircleHelp, CircleStop, FileText, Globe, History, Info, KeyRound, MousePointerClick, Plus, RotateCcw, Settings2, Sparkles, Square, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChatActivity, ChatContext, ChatMessage } from '@shared/api';
+import { refKey } from '@shared/types';
 import { api, getState, setState, toast, useStore, confirmDialog } from '../store';
 import { refLabel, resolveRef } from '../lib/model';
 import { selectPage } from '../lib/actions';
-import { Spinner, useMenu } from '../components/ui';
+import { Segmented, Spinner, useMenu } from '../components/ui';
 
 /** Minimal, safe inline formatting for model text: **bold**, `code` and [links](…) shown as text. */
 function Md({ text }: { text: string }) {
@@ -31,6 +32,7 @@ const PHASE: Record<string, string> = {
 
 /** How a finished turn is headed: one icon and one word per outcome, never colour alone. */
 function outcome(r: NonNullable<ChatMessage['result']>) {
+  if (r.status === 'completed' && r.incomplete) return { icon: <CircleDashed />, label: 'Partly done' };
   switch (r.status) {
     case 'completed':
       return { icon: <CircleCheck />, label: 'Completed' };
@@ -93,6 +95,15 @@ export function Chat() {
   const shownConversation = useRef<string | null>(null);
   const history = useStore((s) => s.snapshot?.history);
   const rightTab = useStore((s) => s.rightTab);
+  // Choosing a different element scopes the next message to it again; otherwise the choice made with the
+  // scope toggle stays, message after message.
+  const selectionKey = selection ? refKey(selection) : null;
+  const lastSelection = useRef(selectionKey);
+  useEffect(() => {
+    if (selectionKey === lastSelection.current) return;
+    lastSelection.current = selectionKey;
+    if (selectionKey && !getState().chatContextEnabled.selection) setState({ chatContextEnabled: { ...getState().chatContextEnabled, selection: true } });
+  }, [selectionKey]);
 
   const provider = providers.find((p) => p.id === settings?.ai.provider);
   const configured = !!provider?.configured;
@@ -200,7 +211,7 @@ export function Chat() {
     if (!r.ok) toast(r.message ?? 'Could not start the request.', 'error');
     // Clear what was sent, but never text typed while the request was starting.
     else if (getState().chatDraft === text) {
-      setState({ chatDraft: '', chatContextEnabled: { page: true, selection: true } });
+      setState({ chatDraft: '' });
       if (taRef.current) taRef.current.style.height = '';
     }
   };
@@ -329,30 +340,33 @@ export function Chat() {
                   <FileText /> <span className="ellipsis">{page.title}</span>
                 </span>
               )}
-              {selLabel && !ctxOn.selection && (
-                <button
-                  className="chip add"
-                  aria-label={`Include ${selLabel}`}
-                  title="Include the selected element in your request"
-                  onClick={() => {
-                    setState({ chatContextEnabled: { ...ctxOn, selection: true } });
-                    requestAnimationFrame(() => document.querySelector<HTMLElement>('.composer .chip.sel button')?.focus());
-                  }}
-                >
-                  <Plus /> <span className="ellipsis">{selLabel}</span>
-                </button>
-              )}
-              {selLabel && ctxOn.selection && (
-                <span className="chip sel">
-                  <MousePointerClick /> <span className="ellipsis">{selLabel}</span>
-                  <button aria-label={`Don't include ${selLabel}`} title="Don't include the selection" onClick={() => {
-                      setState({ chatContextEnabled: { ...ctxOn, selection: false } });
-                      requestAnimationFrame(() => document.querySelector<HTMLElement>('.composer .chip.add')?.focus());
-                    }}
-                  >
-                    <X />
-                  </button>
-                </span>
+              {selLabel && (
+                // What the next message may change: the selected element only, or anything on the site.
+                <Segmented<'selection' | 'site'>
+                  label="What the AI may change"
+                  value={ctxOn.selection ? 'selection' : 'site'}
+                  onChange={(v) => setState({ chatContextEnabled: { ...ctxOn, selection: v === 'selection' } })}
+                  options={[
+                    {
+                      value: 'selection',
+                      title: `Only ${selLabel}`,
+                      label: (
+                        <>
+                          <MousePointerClick /> <span className="ellipsis">{selLabel}</span>
+                        </>
+                      )
+                    },
+                    {
+                      value: 'site',
+                      title: 'Whole site',
+                      label: (
+                        <>
+                          <Globe /> Whole site
+                        </>
+                      )
+                    }
+                  ]}
+                />
               )}
             </div>
           )}
@@ -524,7 +538,7 @@ function AssistantMessage({ m, live, undoable, onAnswered }: { m: ChatMessage; l
 }
 
 /** Checks that need attention, from the agent's plain-language check lines (and older stored wording). */
-const ISSUE = /wider than the screen|(?<!no )horizontal overflow detected|issues? remains?|could(?: not|n['’]t) (?:run|check)/i;
+const ISSUE = /wider than the screen|overflows its box|(?<!no )horizontal overflow detected|issues? remains?|could(?: not|n['’]t) (?:run|check)|^stopped at /i;
 
 function ResultCard({ m, undoable }: { m: ChatMessage; undoable: boolean }) {
   const r = m.result!;
