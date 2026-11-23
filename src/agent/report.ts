@@ -8,7 +8,6 @@ import { declaredTokens } from '@engine/tokens';
 import { displayName, getTree } from '@engine/tree';
 import type { HomeChange } from '@engine/apply';
 import { shellPageLinks } from '@generator/checks';
-import { pageLinkUses } from '@engine/page-links';
 
 // ---------------------------------------------------------------------------
 // Changes: what the run did, in words an author can act on
@@ -131,10 +130,11 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       case 'page.reorder':
         return plain(op, 'Reordered the pages');
       case 'page.remove': {
-        // Its cards in page lists went with it: name the pages those lists are on.
-        const cards = Object.hasOwn(before.pages, op.pageId) ? pageLinkUses(before, op.pageId).filter((u) => u.card) : [];
-        const on = [...new Set(cards.map((u) => quoted(u.where)))];
-        const also = on.length ? ` and its card${cards.length === 1 ? '' : 's'} on ${joinWords(on)}` : '';
+        // Its cards in page lists went with it: name the pages those lists are on, from the removal's own result.
+        const cards = ((results[i] ?? {}) as { removedCards?: unknown }).removedCards;
+        const where = Array.isArray(cards) ? cards.filter((w): w is string => typeof w === 'string') : [];
+        const on = [...new Set(where.map(quoted))];
+        const also = on.length ? ` and its card${where.length === 1 ? '' : 's'} on ${joinWords(on)}` : '';
         return plain(op, `Removed page ${quoted(before.pages[op.pageId]?.title ?? 'page')}${also}`);
       }
       case 'page.setHome': {

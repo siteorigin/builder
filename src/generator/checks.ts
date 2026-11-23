@@ -102,9 +102,16 @@ interface Frame {
 }
 
 /** Each property's effective value for a placement: its own (evaluated where it is placed) or the default. */
-function effectiveProps(def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope): Record<string, unknown> {
+function effectiveProps(state: ProjectState, def: ComponentDefinition, n: GraphNode & { kind: 'instance' }, scope: Scope): Record<string, unknown> {
   const props: Record<string, unknown> = {};
-  for (const [name, schema] of Object.entries(def.properties)) props[name] = Object.hasOwn(n.props, name) ? evaluate(n.props[name], scope) : schema.default;
+  for (const [name, schema] of Object.entries(def.properties)) {
+    const own = Object.hasOwn(n.props, name);
+    const value = own ? evaluate(n.props[name], scope) : schema.default;
+    // A page list's own (or default) items show the linked pages' values, which the generator fills in where the list
+    // is placed. A list bound from the design around this one arrives as that design was given it.
+    const filled = schema.type === 'list' && schema.pageTeaser && !(own && isBinding(n.props[name])) && Array.isArray(value);
+    props[name] = filled ? (value as unknown[]).map((it) => (it && typeof it === 'object' ? effectiveItem(state, schema, it as Record<string, unknown>) : it)) : value;
+  }
   return props;
 }
 
@@ -171,9 +178,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         const fields = schema?.type === 'list' ? schema.fields : undefined;
         const list = schema?.type === 'list' && isBinding(n.list) && '$prop' in n.list ? n.list.$prop : undefined;
         const repeats = (frame.scope.repeats ?? 0) + 1;
-        for (const raw of Array.isArray(items) ? (items as Array<Record<string, unknown>>) : []) {
-          // A page list's empty fields show the linked page's values, as the generated component is given them.
-          const item = schema?.type === 'list' ? effectiveItem(state, schema, raw) : raw;
+        for (const item of Array.isArray(items) ? (items as Array<Record<string, unknown>>) : []) {
           const occurrence = repeats === 1 && typeof item?.id === 'string' ? item.id : frame.scope.occurrence;
           const path = [...(frame.scope.path ?? []), String(item?.id ?? '')];
           for (const c of n.children) walk({ ...frame, scope: { ...frame.scope, item, fields, list, repeats, occurrence, path } }, c, inner);
@@ -201,7 +206,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
       case 'instance': {
         const def = state.components[n.definitionId];
         if (!def || frame.defs.has(def.id)) break;
-        const props = effectiveProps(def, n, frame.scope);
+        const props = effectiveProps(state, def, n, frame.scope);
         if (def.kind === 'managed' && def.tree) {
           const trail = `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`;
           // A component inside a design reads the placement's own fields only through the bindings it is given.
@@ -609,7 +614,7 @@ function renderedAnchor(state: ProjectState, n: GraphNode, depth = 0): string | 
 /** A name for a section without a visible heading: its `heading` property, its layer name or its component's. */
 function sectionName(state: ProjectState, n: GraphNode): string {
   const def = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
-  const heading = def && n.kind === 'instance' ? effectiveProps(def, n, { props: {} }).heading : undefined;
+  const heading = def && n.kind === 'instance' ? effectiveProps(state, def, n, { props: {} }).heading : undefined;
   if (typeof heading === 'string' && heading.trim()) return heading.replace(/\s+/g, ' ').trim();
   return n.name ?? def?.name ?? 'Section';
 }

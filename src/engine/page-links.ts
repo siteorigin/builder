@@ -36,6 +36,13 @@ export function pageLinkUses(state: ProjectState, pageId: string): PageLinkUse[]
     seen.add(link);
     out.push(card ? { link, owner, where, label, card } : { link, owner, where, label });
   };
+  /** Leave out every link to the page inside a value (a card that goes with the page). */
+  const skip = (x: unknown) => {
+    if (Array.isArray(x)) return x.forEach(skip);
+    if (!x || typeof x !== 'object') return;
+    if (isTarget(x)) seen.add(x);
+    Object.values(x).forEach(skip);
+  };
   /** Every link in a value; one inside rich text is named by its own text. */
   const collect = (v: unknown, owner: OwnerRef, where: string, label: string) => {
     const walk = (x: unknown, parent?: Record<string, unknown>) => {
@@ -63,7 +70,12 @@ export function pageLinkUses(state: ProjectState, pageId: string): PageLinkUse[]
         const shown = effectiveItem(state, schema, item);
         const title = text(shown[schema.titleField ?? 'label']) || schema.itemLabel || name;
         const teaser = schema.pageTeaser;
-        if (teaser && isTarget(item[teaser.link])) add(item[teaser.link] as LinkValue, owner, where, title, { items: value as unknown[], item });
+        if (teaser && isTarget(item[teaser.link])) {
+          add(item[teaser.link] as LinkValue, owner, where, title, { items: value as unknown[], item });
+          // Any other link to the page inside that card goes with the card: it needs nowhere else to point.
+          skip(item);
+          continue;
+        }
         // A field's own label ("Book a visit" for a card's link) names it before the item's title does.
         for (const f of Object.keys(schema.fields)) {
           const fieldLabel = labelKeyFor(f);

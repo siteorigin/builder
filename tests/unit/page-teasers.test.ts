@@ -19,8 +19,8 @@ import { effectiveItem, inheritedValue } from '@shared/page-teasers';
 import { propJsonSchema } from '@agent/propschema';
 import { withStoredFields } from '@agent/macros';
 import { describeOps, pagesTouched } from '@agent/report';
-import { readField } from '../../src/renderer/src/lib/held';
-import { shownValue } from '../../src/renderer/src/lib/model';
+import { readField, shownField } from '../../src/renderer/src/lib/held';
+import { followsPageAt, shownValue } from '../../src/renderer/src/lib/model';
 import { pagesToAdd, teaserFieldNote } from '../../src/renderer/src/lib/page-teasers';
 import { planPageRemoval, reviewPageRemoval } from '../../src/renderer/src/lib/page-removal';
 
@@ -106,6 +106,7 @@ describe('page list section', () => {
     const at = (text: string) => source.indexOf(text);
     for (const text of ['"title":"Kitchen renovations"', '"href":"/projects/kitchens/"', '"title":"Garden rooms"', '"href":"/work/gardens/"', '/assets/kitchen.jpg']) expect(at(text), text).toBeGreaterThan(-1);
     expect(at('"title":"Kitchen renovations"')).toBeLessThan(at('"title":"Garden rooms"'));
+    expect(at('"href":"/projects/kitchens/"')).toBeLessThan(at('"href":"/work/gardens/"'));
     expect(source).not.toContain('"title":"Kitchens"');
     expect(source).not.toContain('Garden design');
     // The project still stores page IDs and empty inherited fields.
@@ -115,15 +116,27 @@ describe('page list section', () => {
     ]);
   });
 
+  it('keeps an image chosen for a card over the page’s sharing image', () => {
+    const { s: base, nodeId } = portfolio();
+    base.assets.assets.a_own = { ...KITCHEN_IMAGE, id: 'a_own', name: 'own.jpg', file: 'static/assets/own.jpg', altSuggestion: undefined };
+    const itemId = itemsOf(base, instance(base, 'pg_projects', nodeId))[0].id;
+    const s = applyOperations(base, [{ type: 'instance.setProp', owner: page('pg_projects'), nodeId, prop: 'items', itemId, field: 'image', value: { assetId: 'a_own', alt: 'Our own photo' } }]).state;
+    expect(cards(s, nodeId)[0].image).toMatchObject({ src: '/assets/own.jpg', alt: 'Our own photo' });
+    // Removing it shows the page's image again.
+    const back = applyOperations(s, [{ type: 'instance.setProp', owner: page('pg_projects'), nodeId, prop: 'items', itemId, field: 'image', value: { assetId: null, alt: '' } }]).state;
+    expect(cards(back, nodeId)[0].image).toMatchObject({ src: '/assets/kitchen.jpg' });
+  });
+
   it('leaves out a card whose page has gone, and a card with nothing to show keeps no empty heading', () => {
     const { s, nodeId } = portfolio();
     const n = instance(s, 'pg_projects', nodeId);
     const broken = structuredClone(s);
     (itemsOf(broken, instance(broken, 'pg_projects', nodeId))[0].pageLink as LinkValue).target = 'pg_gone';
     expect(cards(broken, nodeId)[0]).toMatchObject({ pageLink: null, title: '' });
-    // Rendering conditions: the card itself is conditioned on its link.
-    const card = defOf(s, n).tree!.nodes.card;
-    expect(card.when).toEqual({ $item: 'pageLink' });
+    // Rendering conditions: the list item needs a link, and the card inside it a title.
+    const nodes = defOf(s, n).tree!.nodes;
+    expect(nodes['card-item']).toMatchObject({ when: { $item: 'pageLink' }, collapseEmpty: true });
+    expect(nodes.card.when).toEqual({ $item: 'title' });
   });
 
   it('warns about a page image shown without a description, and not once the library gives it one', () => {
@@ -133,11 +146,17 @@ describe('page list section', () => {
     const bare = structuredClone(s);
     delete bare.assets.assets.a_kitchen.altSuggestion;
     expect(alt(bare).map((d) => d.message)).toEqual([expect.stringContaining('the “Kitchens” card shows its page’s sharing image')]);
+    // A card's own image stored without alt text (hand-edited JSON) is the ordinary literal warning, not a crash.
+    const own = structuredClone(s);
+    const projects = own.pages.pg_projects;
+    const n = Object.values(projects.nodes).find((x) => x.kind === 'instance' && own.components[x.definitionId]?.componentId === 'content.pages') as InstanceNode;
+    (n.props.items as ListItem[])[0].image = { assetId: KITCHEN_IMAGE.id } as never;
+    expect(alt(own)).toHaveLength(1);
   });
 });
 
 describe('deleting a listed page', () => {
-  it('removes its card from the list instead of pointing it elsewhere, and undo brings it back', () => {
+  it('removes its card from the list instead of pointing it elsewhere, in one undoable step', () => {
     const { s, nodeId } = portfolio();
     expect(pageLinkReferences(s, 'pg_kitchens')).toBe(0);
     const review = reviewPageRemoval(s, 'pg_kitchens', undefined);
@@ -150,7 +169,7 @@ describe('deleting a listed page', () => {
     expect(validateState(r.state).filter((d) => d.code === 'LINK_BROKEN')).toEqual([]);
     expect(itemsOf(s, instance(s, 'pg_projects', nodeId))).toHaveLength(2);
     // The report names the cards that went with it.
-    expect(describeOps(plan.operations!, s, r.state, [{}]).map((c) => c.label)).toEqual(['Removed page “Kitchens” and its card on “Projects”']);
+    expect(describeOps(plan.operations!, s, r.state, r.results).map((c) => c.label)).toEqual(['Removed page “Kitchens” and its card on “Projects”']);
   });
 
   it('still points ordinary links at the replacement while the card goes, the custom card included', () => {
@@ -166,6 +185,32 @@ describe('deleting a listed page', () => {
     const after = applyOperations(s, planPageRemoval(s, 'pg_gardens', s.site.homePageId, new Map()).operations!).state;
     expect(((after.site.shell.header.nodes[headerId] as InstanceNode).props.ctaLink as LinkValue).target).toBe(after.site.homePageId);
     expect(itemsOf(after, instance(after, 'pg_projects', nodeId)).map((i) => (i.pageLink as LinkValue).target)).toEqual(['pg_kitchens']);
+  });
+
+  it('needs no replacement for another link to the page inside a card that goes with it', () => {
+    const s = createStarterState('business', 'Test Studio', false);
+    const def = managed({
+      componentId: 'test.cta-cards',
+      name: 'CTA cards',
+      description: '',
+      category: 'custom',
+      tags: [],
+      icon: 'square',
+      properties: { items: P.list('Cards', 'Card', { pageLink: P.link('Page'), title: P.str('Title', ''), cta: P.link('Button link') }, [], { titleField: 'title', pageTeaser: { link: 'pageLink', title: 'title' } }) },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) => b.el('root', 'ul', {}, [b.repeat('cards', 'items', [b.el('card', 'li', {}, [b.link('button', { $item: 'cta' }, { $item: 'title' }, 'primary')])])])
+    });
+    def.id = 'proj.cta-cards';
+    def.owner = 'project';
+    s.components[def.id] = def;
+    const r = applyOperations(s, [{ type: 'page.create', pageId: 'pg_solo', title: 'Solo', route: '/solo/' }]);
+    const home = r.state.pages[r.state.site.homePageId];
+    home.nodes.n_cta = { id: 'n_cta', kind: 'instance', definitionId: def.id, props: { items: [{ id: 'i_1', pageLink: { type: 'page', target: 'pg_solo' }, title: '', cta: { type: 'page', target: 'pg_solo' } }] } };
+    home.rootIds.push('n_cta');
+    expect(pageLinkReferences(r.state, 'pg_solo')).toBe(0);
+    expect(pageLinkUses(r.state, 'pg_solo').map((u) => !!u.card)).toEqual([true]);
+    const after = applyOperations(r.state, [{ type: 'page.remove', pageId: 'pg_solo' }]).state;
+    expect((after.pages[after.site.homePageId].nodes.n_cta as InstanceNode).props.items).toEqual([]);
   });
 
   it('removes a card from a component’s default list too', () => {
@@ -209,11 +254,19 @@ describe('page list schema', () => {
     const schema = def.properties.items as ListProp;
     const json = propJsonSchema(schema) as { items: { properties: Record<string, { description: string }> } };
     expect(json.items.properties.title.description).toMatch(/Leave empty \(""\) to show the linked page's title/);
-    expect(json.items.properties.image.description).toMatch(/sharing image/);
+    expect(json.items.properties.image.description).toMatch(/Leave assetId null to show the linked page's sharing image/);
     const stored = [{ id: 'i_a', pageLink: { type: 'page', target: 'pg_a' }, title: 'Featured', description: 'Built in oak' }];
     const merged = withStoredFields(schema, [{ pageLink: { type: 'page', target: 'pg_b' }, title: 'Featured' }], stored);
     expect(merged.ids).toEqual([undefined]);
     expect(merged.items[0]).not.toHaveProperty('description');
+    // Sent without its page or id, a card is the one with that title, and keeps its page.
+    const kept = withStoredFields(schema, [{ title: 'Featured', description: 'Updated copy' }], stored);
+    expect(kept.ids).toEqual(['i_a']);
+    expect(kept.items[0]).toMatchObject({ pageLink: { type: 'page', target: 'pg_a' }, description: 'Updated copy' });
+    // Sent for the same page without its id, it is that card too, whatever its title.
+    const same = withStoredFields(schema, [{ pageLink: { type: 'page', target: 'pg_a' }, description: 'Again' }], stored);
+    expect(same.ids).toEqual(['i_a']);
+    expect(same.items[0]).toMatchObject({ title: 'Featured', description: 'Again' });
   });
 });
 
@@ -241,6 +294,9 @@ describe('editing page list cards', () => {
     const ref = (itemId: string) => ({ owner: page('pg_projects'), instancePath: [nodeId], nodeId: 'card-title', itemPath: [itemId] });
     expect(shownValue(s, ref(kitchens.id), title.label)).toBe('Kitchens');
     expect(shownValue(s, ref(gardens.id), title.label)).toBe('Garden rooms');
+    // Erasing the page's title has nothing to clear: the canvas is told to put it back.
+    expect(followsPageAt(s, ref(kitchens.id), title.label)).toBe(true);
+    expect(followsPageAt(s, ref(gardens.id), title.label)).toBe(false);
   });
 
   it('adds a card for a chosen page that shows that page straight away', () => {
@@ -250,16 +306,22 @@ describe('editing page list cards', () => {
     expect(cards(r.state, nodeId)[2]).toMatchObject({ title: 'About', pageLink: { href: '/about/' } });
   });
 
+  const renamedTitle = (s: ProjectState) => applyOperations(s, [{ type: 'page.update', pageId: 'pg_kitchens', title: 'Kitchen renovations' }]).state;
+
   it('holds a card edit made while the AI runs against the page the card showed', () => {
     const { s, nodeId } = portfolio();
     const op = { type: 'instance.setProp' as const, owner: page('pg_projects'), nodeId, prop: 'items', itemId: itemsOf(s, instance(s, 'pg_projects', nodeId))[0].id, field: 'title', value: 'Roof gardens' };
     const was = readField(s, op);
     // The AI pointed the card at another page: the raw title is still empty, but the card read differently.
     const moved = structuredClone(s);
+    moved.pages.pg_gardens.title = 'Kitchens';
+    moved.pages.pg_gardens.seo.description = moved.pages.pg_kitchens.seo.description;
     (itemsOf(moved, instance(moved, 'pg_projects', nodeId))[0].pageLink as LinkValue).target = 'pg_gardens';
     expect(JSON.stringify(readField(moved, op))).not.toBe(JSON.stringify(was));
+    // The conflict prompt names the title the card showed, not its empty stored field.
+    expect(shownField(op, (readField(renamedTitle(s), op) as { value: unknown }).value)).toBe('Kitchen renovations');
     // A rename of the same page changes what the card showed, too.
-    const renamed = applyOperations(s, [{ type: 'page.update', pageId: 'pg_kitchens', title: 'Kitchen renovations' }]).state;
+    const renamed = renamedTitle(s);
     expect(JSON.stringify(readField(renamed, op))).not.toBe(JSON.stringify(was));
     expect(JSON.stringify(readField(structuredClone(s), op))).toBe(JSON.stringify(was));
   });
@@ -267,6 +329,7 @@ describe('editing page list cards', () => {
   it('marks AI inspections of every page stale when a page a list shows changes', () => {
     expect(pagesTouched([{ type: 'page.update', pageId: 'pg_a', title: 'New' }])).toBe('all');
     expect(pagesTouched([{ type: 'page.update', pageId: 'pg_a', socialImage: null }])).toBe('all');
+    expect(pagesTouched([{ type: 'page.update', pageId: 'pg_a', description: 'New words' }])).toBe('all');
     expect(pagesTouched([{ type: 'page.update', pageId: 'pg_a', noindex: true }])).toEqual(new Set(['pg_a']));
   });
 });
@@ -280,6 +343,7 @@ describe('checks read cards as they show', () => {
       description: '',
       category: 'custom',
       tags: [],
+      icon: 'square',
       properties: {
         items: P.list('Cards', 'Card', { page: P.link('Page'), title: P.str('Title', ''), cta: P.link('Button link') }, [], { titleField: 'title', pageTeaser: { link: 'page', title: 'title' } })
       },
@@ -304,6 +368,35 @@ describe('checks read cards as they show', () => {
     expect(found.map((b) => b.label)).toEqual(['About']);
     expect(found[0].hide).toBeUndefined();
     expect(found[0].link).toEqual({ prop: 'items', itemId: 'i_1', field: 'cta' });
+  });
+
+  it('reads a list forwarded from an outer design as that design gives it, not by the inner list’s own mapping', () => {
+    const { s, home } = buttonCards();
+    const inner = s.components['proj.cards'];
+    // An outer design whose own (unmapped) list is handed to the cards: nothing in it is filled from a page.
+    const outer = managed({
+      componentId: 'test.outer',
+      name: 'Outer',
+      description: '',
+      category: 'custom',
+      tags: [],
+      icon: 'square',
+      properties: { rows: P.list('Rows', 'Row', { page: P.link('Page'), title: P.str('Title', ''), cta: P.link('Button link') }, [], { titleField: 'title' }) },
+      parts: { root: { nodeId: 'root', label: 'Section' } },
+      build: (b) => b.el('root', 'div', {}, [])
+    });
+    outer.id = 'proj.outer';
+    outer.owner = 'project';
+    outer.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: inner.id, props: { items: { $prop: 'rows' } } };
+    (outer.tree!.nodes.root as { children: string[] }).children.push('inner');
+    s.components[outer.id] = outer;
+    const about = s.site.pageOrder.find((id) => s.pages[id].route === '/about/')!;
+    home.nodes.n_outer = { id: 'n_outer', kind: 'instance', definitionId: outer.id, props: { rows: [{ id: 'i_1', page: { type: 'page', target: about }, title: '', cta: { type: 'none', target: '' } }] } };
+    home.rootIds.push('n_outer');
+    // The generator hands the outer rows over as they are: the title stays empty, so no button renders.
+    const resolved = resolveInstanceProps(outer, home.nodes.n_outer as InstanceNode, { state: s }).rows as Array<{ title: string }>;
+    expect(resolved[0].title).toBe('');
+    expect(unlinkedButtons(s, home).filter((b) => b.nodeId === 'n_outer')).toEqual([]);
   });
 
   it('reads an item as it shows only while its link is to a page the site has', () => {

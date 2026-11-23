@@ -20,12 +20,18 @@ const clip = (s: string, n = 90) => {
 export function teaserFieldNote(state: ProjectState, schema: ListProp | undefined, item: Record<string, unknown> | undefined, field: string): TeaserFieldNote | undefined {
   const teaser = schema?.pageTeaser;
   if (!teaser || !item) return undefined;
-  if (field === teaser.link) return { hint: 'The card follows this page when it is renamed or moved, and leaves the list if the page is deleted.' };
+  const page = teaserPage(state, teaser, item);
+  if (field === teaser.link) {
+    if (page) return { hint: 'The card follows this page when it is renamed or moved, and leaves the list if the page is deleted.' };
+    const link = item[teaser.link] as { type?: unknown } | undefined;
+    if (link?.type === 'page') return { hint: 'That page no longer exists, so this card is left out. Choose another page.' };
+    if (!link || link.type === 'none') return { hint: 'Choose the page this card stands for. Without a link the card is left out.' };
+    return { hint: 'This card links outside the site’s pages, so it shows only what is entered below.' };
+  }
   const what = teaserFields(teaser).find(([f]) => f === field)?.[1];
   if (!what) return undefined;
-  const page = teaserPage(state, teaser, item);
   const noun = NOUN[what];
-  if (!page) return { hint: `Only a page of this site gives the card its ${noun}; anything else shows what is entered here.` };
+  if (!page) return { hint: what === 'title' ? 'Only a page of this site gives a card its title. Type one, or this card is left out.' : `Only a page of this site gives a card its ${noun}; this card shows what is entered here.` };
   const value = pageValue(state, page, what);
   const own = !followsPage(item[field]);
   if (what === 'image') {

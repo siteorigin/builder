@@ -360,22 +360,36 @@ export function withStoredFields(schema: Extract<PropSchema, { type: 'list' }>, 
     used.add(id);
     return byId.get(id);
   });
-  // A page list's cards are told apart by the page they stand for, not by a title that may be the page's own.
-  const field = schema.pageTeaser ? undefined : schema.titleField;
+  /** Match each item without an id to the one stored item with the same key, when only one sent item has that key. */
+  const matchBy = (keyOf: (it: unknown) => string | undefined, eligible: (it: Record<string, unknown>) => boolean = () => true) => {
+    const count = (list: unknown[], k: string) => list.filter((x) => keyOf(x) === k).length;
+    sent.forEach((it, i) => {
+      if (matched[i] || !isRow(it) || typeof it.id === 'string' || !eligible(it)) return;
+      const k = keyOf(it);
+      if (k === undefined || count(sent, k) !== 1 || count(all, k) !== 1) return;
+      const old = items.find((x) => keyOf(x) === k);
+      if (!old || used.has(old.id)) return;
+      used.add(old.id);
+      matched[i] = old;
+    });
+  };
+  const teaser = schema.pageTeaser;
+  // A page list's cards are told apart by the page they stand for: a card sent for another page is a new card, even
+  // under the same title. Only one sent without a page is matched by its title, so it keeps the page it had.
+  if (teaser) {
+    const pageOf = (it: unknown) => {
+      const l = isRow(it) ? (it[teaser.link] as Partial<LinkValue> | undefined) : undefined;
+      return l && typeof l === 'object' && l.type === 'page' && typeof l.target === 'string' && l.target ? l.target : undefined;
+    };
+    matchBy(pageOf);
+  }
+  const field = schema.titleField;
   if (field) {
     const titleOf = (it: unknown) => {
       const t = isRow(it) ? it[field] : undefined;
       return typeof t === 'string' && t.trim() ? t : undefined;
     };
-    const count = (list: unknown[], t: string) => list.filter((x) => titleOf(x) === t).length;
-    sent.forEach((it, i) => {
-      const t = titleOf(it);
-      if (matched[i] || !isRow(it) || typeof it.id === 'string' || t === undefined || count(sent, t) !== 1 || count(all, t) !== 1) return;
-      const old = items.find((x) => titleOf(x) === t);
-      if (!old || used.has(old.id)) return;
-      used.add(old.id);
-      matched[i] = old;
-    });
+    matchBy(titleOf, (it) => !teaser || it[teaser.link] === undefined);
   }
   return {
     items: sent.map((it, i) => {

@@ -607,7 +607,12 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   if (refs && !op.replacementPageId)
     throw new EngineError('VALIDATION_FAILED', `${refs} link${refs === 1 ? '' : 's'} point to "${page.title}". Choose a replacement page for them.`, { references: refs });
   if (op.sectionReplacements?.length && !op.replacementPageId) fail('Sections for links can only be chosen on a replacement page.');
-  // Sections are looked up before anything moves: the replacement page's IDs do not depend on the page going.
+  // The cards go first: a section on the replacement page that only they kept showing is gone for the links too.
+  for (const { card } of cards) {
+    const at = card!.items.indexOf(card!.item);
+    if (at >= 0) card!.items.splice(at, 1);
+  }
+  // Sections are looked up before anything else moves: the replacement page's IDs do not depend on the page going.
   const section = op.replacementPageId ? sectionsOnReplacement(state, page, op.replacementPageId, uses, op.sectionReplacements) : null;
   if (page.id === state.site.homePageId) {
     // The page replacing Home moves to "/". Its old address is not kept: this removes a page, it moves none.
@@ -622,10 +627,6 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
       if (anchor) link.anchor = anchor;
       else delete link.anchor;
     }
-  for (const { card } of cards) {
-    const at = card!.items.indexOf(card!.item);
-    if (at >= 0) card!.items.splice(at, 1);
-  }
   // Old addresses kept for the removed page follow its links to the replacement, or go with it.
   if (Array.isArray(state.site.redirects)) {
     state.site.redirects = state.site.redirects.flatMap((r) => (r.pageId !== page.id ? [r] : op.replacementPageId ? [{ ...r, pageId: op.replacementPageId }] : []));
@@ -633,7 +634,8 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   }
   delete state.pages[page.id];
   state.site.pageOrder = state.site.pageOrder.filter((id) => id !== page.id);
-  return {};
+  // Where each removed card was, for the change summary: what this removal did, not what the batch started with.
+  return cards.length ? { removedCards: cards.map((u) => u.where) } : {};
 }
 
 /** A page's address before and after an edit. */

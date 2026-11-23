@@ -601,6 +601,8 @@ function endEdit() {
   // The edited element no longer takes typing, but keeps focus without a focus event.
   reportTextFocus();
 }
+/** The last edit handed to the editor, so text the editor did not keep can be put back. */
+let committed = null;
 function commitEdit() {
   if (!editing) return;
   const { el, desc, editId, rich, original } = editing;
@@ -619,6 +621,7 @@ function commitEdit() {
     return send('textCancel', { desc, editId, reason: 'too-large' });
   }
   endEdit();
+  committed = { el, editId, original };
   send('textCommit', payload);
 }
 /** Text, element names, inline marks, list kinds and links of what an edit left, as plain data; null when too large. */
@@ -872,6 +875,11 @@ window.addEventListener('message', async (e) => {
     // The editor is saving, or leaving the project: hand back the text being edited, as leaving it would. A
     // link still being typed is left out, as moving focus away does (a link already there keeps its address),
     // and the editor is told so it can say.
+    // The editor kept nothing from that edit and nothing will rebuild: show the element as it was.
+    case 'restoreText':
+      if (committed && committed.editId === m.payload.editId && committed.el.isConnected && editing?.el !== committed.el) committed.el.innerHTML = committed.original;
+      committed = null;
+      break;
     case 'commitTextEdit':
       if (!editing) break;
       if (linkEditor) {

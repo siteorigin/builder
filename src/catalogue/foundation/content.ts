@@ -285,11 +285,14 @@ export const pageList = managed({
       // An empty list leaves no empty <ul> behind.
       b.el('grid', 'ul', { name: 'Card grid', collapseEmpty: true, styles: { base: { layout: 'grid', columns: 1, gap: tok('space.xl') }, tablet: { columns: 2 }, desktop: { columns: 3 } } }, [
         b.repeat('cards', 'items', [
-          // A card whose page has gone (or that links nowhere) is left out rather than shown without a destination.
-          b.el('card', 'li', { name: 'Card', when: { $item: 'pageLink' }, styles: { layout: 'stack', gap: tok('space.sm') } }, [
-            b.image('card-image', { $item: 'image' }, { name: 'Image', when: { $item: 'image' }, styles: { aspectRatio: '4/3', radius: tok('radius.md'), objectFit: 'cover', marginBlockEnd: tok('space.xs') } }),
-            b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title', when: { $item: 'title' }, styles: { textStyle: tok('text.h3') } }),
-            b.text('card-text', 'p', { $item: 'description' }, { name: 'Description', when: { $item: 'description' }, styles: mutedStyles })
+          // A card shows only with somewhere to go and a title to click: one whose page has gone, that links nowhere,
+          // or that links outside the site without a title of its own is left out, list item and all.
+          b.el('card-item', 'li', { name: 'Card item', when: { $item: 'pageLink' }, collapseEmpty: true }, [
+            b.el('card', 'div', { name: 'Card', when: { $item: 'title' }, styles: { layout: 'stack', gap: tok('space.sm') } }, [
+              b.image('card-image', { $item: 'image' }, { name: 'Image', when: { $item: 'image' }, styles: { aspectRatio: '4/3', radius: tok('radius.md'), objectFit: 'cover', marginBlockEnd: tok('space.xs') } }),
+              b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title', styles: { textStyle: tok('text.h3') } }),
+              b.text('card-text', 'p', { $item: 'description' }, { name: 'Description', when: { $item: 'description' }, styles: mutedStyles })
+            ])
           ])
         ])
       ])

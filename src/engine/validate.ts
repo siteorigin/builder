@@ -153,9 +153,11 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
           const items = Object.hasOwn(n.props, prop) ? n.props[prop] : schema.default;
           if (!field || schema.type !== 'list' || !Array.isArray(items)) continue;
           for (const item of items as Array<Record<string, unknown>>) {
-            const shown = item && typeof item === 'object' ? effectiveItem(state, schema, item) : item;
+            // Only an image the card takes from its page: one of its own is checked with the other literal images.
+            if (!item || typeof item !== 'object' || !followsPage(item[field])) continue;
+            const shown = effectiveItem(state, schema, item);
             const image = shown === item ? undefined : (shown[field] as ImageValue | undefined);
-            if (!image?.assetId || image.alt.trim() || !followsPage(item[field])) continue;
+            if (!image?.assetId || String(image.alt ?? '').trim()) continue;
             const title = String(shown[schema.pageTeaser!.title] ?? '').trim() || schema.itemLabel;
             out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: the “${title}” card shows its page’s sharing image, which has no description. Add one to the image in the library, or choose an image for the card.`, owner, nodeId: n.id });
           }

@@ -65,7 +65,11 @@ export function propJsonSchema(s: PropSchema): JsonSchema {
   for (const [k, f] of Object.entries(s.fields)) {
     const field = scalarSchema(f);
     const what = follows.get(k);
-    if (what) field.description = `${field.description}. Leave empty ("") to show the linked page's ${what === 'image' ? 'sharing image' : what}; set it only to override it on this card.`;
+    if (what)
+      field.description =
+        what === 'image'
+          ? `${field.description}. Leave assetId null to show the linked page's sharing image; choose one only to override it on this card.`
+          : `${field.description}. Leave empty ("") to show the linked page's ${what}; set it only to override it on this card.`;
     else if (k === s.pageTeaser?.link) field.description = `${field.description}. The page this card stands for, by its route.`;
     properties[k] = field;
   }

@@ -2,7 +2,7 @@ import type { EditOperation } from '@shared/ops';
 import type { GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { displayName } from '@engine/tree';
-import { inheritedValue } from '@shared/page-teasers';
+import { followsPage, inheritedValue } from '@shared/page-teasers';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -244,6 +244,8 @@ export function shownField(op: EditOperation, read: unknown): string | null {
   } else if (op.type === 'token.set') v = o.override ?? (o.custom as { value?: unknown } | undefined)?.value;
   else if (op.type === 'token.rename') v = (o.custom as { label?: unknown } | undefined)?.label;
   else if (op.type === 'instance.setProp' && !op.itemId) v = o.value ?? (o.schema as { default?: unknown } | undefined)?.default;
+  // A page list's empty card field shows its page's value, which is what the author sees there.
+  else if (op.type === 'instance.setProp' && followsPage(o.value) && typeof o.shows === 'string' && o.shows.trim()) v = o.shows;
   else if (op.type !== 'node.rename') v = o.value;
   return blank(v) ? '' : shownValue(v);
 }

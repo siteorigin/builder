@@ -891,7 +891,11 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
     return (typeof t === 'string' && t.trim()) || `${schema.itemLabel} ${i + 1}`;
   };
   const currentPageId = useStore((st) => st.pageId);
-  const addable = schema.pageTeaser ? pagesToAdd(state, schema, items, currentPageId) : [];
+  // A page just asked for stays out of the picker until the list changes (or the request is old, so one that failed
+  // does not hide the page for good): a second press adds no duplicate.
+  const [asked, setAsked] = useState<{ ids: string; pageId: string; at: number } | null>(null);
+  const pendingAdd = asked && asked.ids === ids && Date.now() - asked.at < MOVE_PENDING_MS ? asked.pageId : null;
+  const addable = schema.pageTeaser ? pagesToAdd(state, schema, items, currentPageId).filter((id) => id !== pendingAdd) : [];
   const [toAdd, setToAdd] = useState('');
   const adding = addable.includes(toAdd) ? toAdd : (addable[0] ?? '');
   const L = onList;
@@ -998,6 +1002,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
               <button className="btn btn-sm insp-add" aria-disabled={addNote ? true : undefined} aria-describedby={addNote ? addNoteId : undefined} title={addNote ?? undefined} onClick={() => {
                   if (addNote || !adding) return;
                   after.current = { kind: 'added', before: items.map((x) => x.id) };
+                  setAsked({ ids, pageId: adding, at: Date.now() });
                   L({ kind: 'insert', item: { [schema.pageTeaser!.link]: { type: 'page', target: adding } } });
                 }}>
                 <Plus /> Add {schema.itemLabel.toLowerCase()}

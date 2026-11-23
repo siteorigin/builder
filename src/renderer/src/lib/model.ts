@@ -2,7 +2,7 @@
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
-import { effectiveItem } from '@shared/page-teasers';
+import { effectiveItem, followsPage, inheritedValue } from '@shared/page-teasers';
 import { layerLabel } from './layers';
 
 export interface BridgeDesc {
@@ -349,6 +349,20 @@ export function placementsOn(state: ProjectState, definitionId: string, pageId: 
 export function listPropFor(def: ComponentDefinition, nodeId: string): string | undefined {
   const prop = enclosingRepeatProp(def, nodeId);
   return prop && own(def.properties, prop)?.type === 'list' ? prop : undefined;
+}
+
+/** Whether a reference's bound field is a page list card's empty field, showing its page's value instead. */
+export function followsPageAt(state: ProjectState, ref: ElementRef, bound: unknown): boolean {
+  if (!isBinding(bound) || !('$item' in bound)) return false;
+  const r = resolveRef(state, ref);
+  const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
+  const schema = list ? r.def!.properties[list] : undefined;
+  if (schema?.type !== 'list' || !schema.pageTeaser) return false;
+  const props = (r.instance?.props ?? {}) as Record<string, unknown>;
+  const items = Object.hasOwn(props, list!) ? props[list!] : schema.default;
+  const itemId = ref.itemPath?.[ref.itemPath.length - 1];
+  const item = Array.isArray(items) ? (items.find((it) => (it as { id?: unknown } | null)?.id === itemId) as Record<string, unknown> | undefined) : undefined;
+  return !!item && followsPage(item[bound.$item]) && inheritedValue(state, schema, item, bound.$item) !== undefined;
 }
 
 /** The value a reference's inline-editable field shows in `state`: a bound field shows its placement's value,
