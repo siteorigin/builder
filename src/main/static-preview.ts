@@ -102,8 +102,12 @@ export class StaticPreviews {
 
 const MOVED = '<!doctype html><meta charset="utf-8"><title>Export moved</title><p>This exported website is no longer in the folder it was saved to, so its preview has stopped. Open a current preview from the Export dialog in SiteOrigin Builder.</p>';
 
-/** Is the folder at `root` still the one that was exported there? */
-const sameFolder = (root: string, exported: BigIntStats) => fs.stat(root, { bigint: true }).then((now) => now.isDirectory() && now.dev === exported.dev && now.ino === exported.ino, () => false);
+/**
+ * Is the folder at `root` still the one that was exported there? By file ID alone: the device number changes when a
+ * drive or share is mounted again, and the same folder must keep its preview. A volume without file IDs reports 0 for
+ * every folder, which leaves only the check that a folder is still there.
+ */
+const sameFolder = (root: string, exported: BigIntStats) => fs.stat(root, { bigint: true }).then((now) => now.isDirectory() && now.ino === exported.ino, () => false);
 
 /** Close the listener and the connections a browser keeps open, so the port is released now. */
 function stop(server: Server) {
