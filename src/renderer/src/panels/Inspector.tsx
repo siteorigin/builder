@@ -38,6 +38,7 @@ import type { UnlinkedButton } from '@generator/checks';
 import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
+import type { TableEdit } from '@engine/table';
 import { applyOps, applyWith, getState, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
@@ -103,6 +104,15 @@ function readProp(owner: OwnerRef, nodeId: string, prop: string): { value: unkno
 function applyListOp(owner: OwnerRef, nodeId: string, prop: string, op: ListOp, label: string, coalesceKey?: string) {
   if (op.kind === 'repair') return applyOps([listOps(owner, nodeId, prop, op)], op.label, undefined, op.revision);
   return applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, nodeId, prop, op)], label, op.kind === 'field' ? coalesceKey : undefined);
+}
+
+/**
+ * Apply one table edit by row and column ID. Typing in one cell (or one column's name) joins that cell's last edit;
+ * adding, removing and moving rows or columns are each their own undo step.
+ */
+function applyTableEdit(owner: OwnerRef, nodeId: string, prop: string, edit: TableEdit, label: string) {
+  const coalesceKey = edit.action === 'setCell' ? `${nodeId}:${prop}:${edit.rowId}:${edit.columnId}` : edit.action === 'renameColumn' ? `${nodeId}:${prop}:column:${edit.columnId}` : undefined;
+  void applyOps([{ type: 'instance.editTable', owner, nodeId, prop, ...edit }], label, coalesceKey);
 }
 
 /** Default styles a definition gives a node (base + selected variant), used as inherited placeholders. */
@@ -516,6 +526,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                 onChange={(v, edit) => set(key, v, edit)}
                 onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
                 read={() => readProp(owner, node.id, key)}
+                onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label}`)}
                 state={state}
                 openItem={reveal?.prop === key && reveal.itemId ? { seq: reveal.seq, itemId: reveal.itemId } : undefined}
                 annotate={notes(key)}
@@ -761,6 +772,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
                   onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${instNodeId}:${b.prop}`)}
                   onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
                   read={() => readProp(instOwner, instNodeId, b.prop!)}
+                  onTable={(edit) => applyTableEdit(instOwner, instNodeId, b.prop!, edit, `Edit ${schema.label}`)}
                   linkPairs={schema.type === 'list' ? itemLinkPairs(def, b.prop!) : undefined}
                   {...flagged(b.kind)}
                   place={schema.type === 'list' ? { ref: parent, list: b.prop! } : undefined}

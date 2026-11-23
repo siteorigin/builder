@@ -3,6 +3,7 @@ import { cleanBlocks, isListBlock, isRichBlock, linkFromTarget, mergeLists, pars
 import { newId } from '@shared/ids';
 import { fail } from './tree';
 import { ICONS } from '@catalogue/foundation/icons';
+import { normalizeTable } from './table';
 
 export function normalizeLink(v: unknown, state: ProjectState, label: string): LinkValue {
   if (v === null || v === undefined || v === '') return { type: 'none', target: '' };
@@ -249,6 +250,7 @@ export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, ite
 
 /** `stored` is the property's current value, so unchanged legacy values inside it stay accepted. */
 export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
+  if (schema.type === 'table') return normalizeTable(v, label);
   if (schema.type === 'list') {
     if (!Array.isArray(v)) fail(`${label}: expected a list.`);
     if (schema.max !== undefined && v.length > schema.max) fail(`${label}: at most ${schema.max} items.`);

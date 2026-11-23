@@ -8,7 +8,7 @@ import { axesOf } from '@shared/variants';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
 
-const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'choices', 'list'] as const;
+const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'choices', 'list', 'table'] as const;
 
 /** Names generated code already uses (props, helpers, repeat variables), or that cannot be a destructured identifier. */
 const RESERVED = new Set([
@@ -75,7 +75,8 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(`Property "${name}" needs a schema object with a type.`);
   const r = raw as Record<string, unknown>;
   const type = String(r.type) as (typeof PROP_TYPES)[number];
-  const allowed = inList ? PROP_TYPES.filter((t) => t !== 'list') : PROP_TYPES;
+  // A list item's fields are single values: a list or a table inside one has no editor or tool shape.
+  const allowed = inList ? PROP_TYPES.filter((t) => t !== 'list' && t !== 'table') : PROP_TYPES;
   if (!(allowed as readonly string[]).includes(type)) fail(`Property "${name}" needs a type of ${allowed.join(', ')}.`);
   const out: Record<string, unknown> = { type, label: text(r.label, 80) ?? name };
   const description = text(r.description, 300);
@@ -137,6 +138,9 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
       break;
     case 'choices':
       out.default = [];
+      break;
+    case 'table':
+      out.default = { columns: [{ label: 'Column 1' }, { label: 'Column 2' }], rows: [] };
       break;
     case 'list': {
       if (!r.fields || typeof r.fields !== 'object' || Array.isArray(r.fields)) fail(`${label}: a list needs fields.`);

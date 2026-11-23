@@ -235,6 +235,29 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const what = (n: number) => (op.type === 'instance.listInsert' ? `Added ${items(n)} to the ${label}` : op.type === 'instance.listRemove' ? `Removed ${items(n)} from the ${label}` : `Reordered the ${label}`);
         return add(op, `${op.type}:${ownerKey(op.owner)}:${op.nodeId}:${op.prop}`, (_d, n) => `${what(n)} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
       }
+      case 'instance.editTable': {
+        const label = inSentence(propSchema(op.owner, op.nodeId, op.prop)?.label ?? op.prop);
+        // Typed text is a content edit like any other; a row or column added, removed or moved is counted.
+        if (op.action === 'setCell' || op.action === 'renameColumn') return contentEdit(op, op.action === 'setCell' ? `a cell in the ${label}` : `a column name in the ${label}`);
+        const count = (n: number, one: string) => (n === 1 ? `a ${one}` : `${n} ${one}s`);
+        const what = (n: number) => {
+          switch (op.action) {
+            case 'insertRow':
+              return `Added ${count(n, 'row')} to the ${label}`;
+            case 'insertColumn':
+              return `Added ${count(n, 'column')} to the ${label}`;
+            case 'removeRow':
+              return `Removed ${count(n, 'row')} from the ${label}`;
+            case 'removeColumn':
+              return `Removed ${count(n, 'column')} from the ${label}`;
+            case 'moveRow':
+              return `Reordered the rows of the ${label}`;
+            default:
+              return `Reordered the columns of the ${label}`;
+          }
+        };
+        return add(op, `${op.type}:${op.action}:${ownerKey(op.owner)}:${op.nodeId}:${op.prop}`, (_d, n) => `${what(n)} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
+      }
       case 'token.set':
         return plain(op, `${op.value === null ? 'Reset' : 'Changed'} the site style ${quoted(tokenLabel(op.tokenId))}`);
       case 'token.create':

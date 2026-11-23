@@ -1765,3 +1765,9 @@ button.asset-use:hover svg.go { color: var(--text); }
 .find-diff del { color: var(--red); }
 .find-diff ins { color: var(--green); text-decoration: none; font-weight: 500; }
 .find-foot-note { font-size: 12px; text-align: left; }
+/* Table property editor: columns as name fields with their buttons, rows as disclosures (see TableEditor.tsx). */
+.table-editor { gap: 10px; }
+.table-editor-part { display: flex; flex-direction: column; gap: 4px; }
+.table-editor-heading { font-size: 11px; font-weight: 600; color: var(--text-2); }
+.table-editor-col { display: flex; align-items: center; gap: 4px; }
+.table-editor-col > input { flex: 1; min-width: 0; }

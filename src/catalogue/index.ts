@@ -9,6 +9,7 @@ import { logoStrip, team, testimonials } from './foundation/people';
 import { contact, cta, faq, pricing } from './foundation/conversion';
 import { footer, header } from './foundation/shell';
 import { contactForm } from './foundation/form';
+import { dataTable } from './foundation/table';
 import { PACK_VERSION } from './dsl';
 import { BUNDLED_FONTS } from './fonts';
 import { makeAltTheme } from './foundation-alt';
@@ -54,6 +55,7 @@ const FOUNDATION: ThemePack = {
     testimonials,
     team,
     pricing,
+    dataTable,
     faq,
     pageList,
     gallery,
