@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "typecheck:changed": "npm run typecheck",
     "test": "vitest run",
-    "test:e2e": "node tests/e2e/smoke.mjs && node tests/e2e/flows.mjs && node tests/e2e/hot-update.mjs && node tests/e2e/code.mjs && node tests/e2e/tour.mjs && node tests/e2e/export.mjs",
+    "test:e2e": "node tests/e2e/smoke.mjs && node tests/e2e/flows.mjs && node tests/e2e/hot-update.mjs && node tests/e2e/code.mjs && node tests/e2e/tour.mjs && node tests/e2e/export.mjs && node tests/e2e/chat-drafts.mjs",
     "test:export-build": "node tests/e2e/export.mjs --build",
     "test:ai": "node tests/e2e/ai.mjs",
     "eval:agent": "tsx --tsconfig tsconfig.node.json scripts/eval-agent.ts",

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Plus, Eye, FolderOpen, History, House, LogOut, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { VIEWPORT_PRESETS } from '@shared/styles';
-import { api, setState, toast, useStore } from '../store';
+import { api, saveLocal, setState, toast, useStore } from '../store';
 import { useMenu, sendCommand } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
@@ -51,7 +51,7 @@ export function Toolbar() {
   const preset = viewport === VIEWPORT_PRESETS.desktop ? 'desktop' : viewport === VIEWPORT_PRESETS.tablet ? 'tablet' : viewport === VIEWPORT_PRESETS.phone ? 'phone' : null;
   const setViewport = (w: number) => {
     setState({ viewport: w });
-    void api.project.saveLocalState({ viewport: w });
+    saveLocal({ viewport: w });
   };
   const isMac = api.platform === 'darwin';
   // Shortcut hints name the keys of this platform.

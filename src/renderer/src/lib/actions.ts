@@ -3,7 +3,7 @@ import type { ElementRef, GraphNode, OwnerRef, RichText } from '@shared/types';
 import { sameRichText, toRichText } from '@shared/richtext';
 import { isBinding } from '@shared/types';
 import { findParent } from '@engine/tree';
-import { api, applyOps, getState, setState, toast } from '../store';
+import { api, applyOps, getState, saveLocal, setState, toast } from '../store';
 import { boundaryOf, listPropFor, refLabel, resolveRef, treeFor } from './model';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
@@ -187,7 +187,7 @@ export function canInlineEdit(ref: ElementRef): boolean {
 
 export function selectPage(pageId: string) {
   setState({ pageId, selection: null, definitionMode: null });
-  void api.project.saveLocalState({ pageId });
+  saveLocal({ pageId });
 }
 
 export function askAiAbout(ref: ElementRef | null) {

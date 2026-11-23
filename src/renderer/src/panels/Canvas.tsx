@@ -5,7 +5,7 @@ import { applyOps } from '../store';
 import { treeFor } from '../lib/model';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { api, confirmDialog, getState, markDraft, setState, toast, useStore, type Rect } from '../store';
+import { api, confirmDialog, getState, markDraft, saveLocal, setState, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
@@ -538,7 +538,7 @@ export function Canvas() {
     };
     const up = () => {
       setDragging(false);
-      void api.project.saveLocalState({ viewport: getState().viewport });
+      saveLocal({ viewport: getState().viewport });
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };

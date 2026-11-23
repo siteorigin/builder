@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, net, sessio
 import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
-import type { ProviderId, SettingsPatch } from '@shared/api';
+import type { LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
 import { externalLink } from '@shared/links';
 import { checkLocalBaseURL } from '@shared/local';
 import { Controller, defaultProjectsFolder } from './controller';
@@ -201,7 +201,7 @@ function registerIpc() {
   handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
   handle('project:resolveConflict', (p: string, choice: 'keep' | 'restore') => controller.resolveConflict(p, choice));
   handle('project:unlock', () => controller.unlock());
-  handle('project:saveLocalState', (s) => controller.saveLocalState(s));
+  handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
   handle('project:validateSource', async (source: string) => {
     const problems = await checkSvelteSource(String(source));
     const errors = problems.filter((p) => p.severity === 'error');
@@ -239,8 +239,12 @@ function registerIpc() {
   handle('ai:newConversation', () => orchestrator.newConversation());
   handle('ai:openConversation', (id: string) => orchestrator.openConversation(id));
   // Chat history belongs to the app editing the project; a read-only view never clears it.
-  handle('ai:clearHistory', async () => (readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory()));
-  handle('ai:send', (text: string, ctx) => (readOnlyReason() ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx)));
+  handle('ai:clearHistory', async (key?: string) => {
+    // Cleared only in the opening of the project the confirmation was given in.
+    if (key !== undefined && key !== controller.openingKey) throw new Error('The project changed, so its history was not cleared.');
+    return readOnlyReason() ? (await orchestrator.loadConversations()).active : orchestrator.clearHistory();
+  });
+  handle('ai:send', (text: string, ctx, conversationId?: string) => (readOnlyReason() ? { ok: false, message: readOnlyReason() } : orchestrator.send(text, ctx, typeof conversationId === 'string' ? conversationId : undefined)));
   handle('ai:stop', () => orchestrator.stop());
   handle('ai:answer', (runId: string, answer: string) => orchestrator.answer(runId, answer));
   handle('ai:undoTurn', (runId: string) => orchestrator.undoTurn(runId));
@@ -419,12 +423,18 @@ app.on('window-all-closed', () => {
 });
 
 let quitting = false;
+let closedForQuit = false;
 app.on('before-quit', (e) => {
-  if (quitting) return;
+  if (closedForQuit) return;
+  // A second Quit while the project is still closing waits for it too, so its unsaved state is written first.
+  if (quitting) return e.preventDefault();
   if (controller.session) {
     e.preventDefault();
     quitting = true;
-    void controller.close().finally(() => app.quit());
+    void controller.close().finally(() => {
+      closedForQuit = true;
+      app.quit();
+    });
   }
 });
 

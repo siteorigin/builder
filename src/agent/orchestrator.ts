@@ -165,6 +165,10 @@ ${theme.aiProfile.guidance.map((g) => `- ${g}`).join('\n')}${preferred}`;
 
 export class Orchestrator {
   private run: ActiveRun | null = null;
+  /** Clear-history calls in progress. */
+  private clearing = 0;
+  /** The last finished request's transcript write; reading or removing transcripts waits for it. */
+  private saving: Promise<void> = Promise.resolve();
   conversation: Conversation | null = null;
 
   constructor(private deps: OrchestratorDeps) {}
@@ -183,6 +187,7 @@ export class Orchestrator {
   }
 
   async loadConversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }> {
+    const session = this.deps.session();
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
     const list: Conversation[] = [];
@@ -202,9 +207,22 @@ export class Orchestrator {
         /* skip */
       }
     }
+    this.sameSession(session);
     list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    if (!this.conversation || !list.some((c) => c.id === this.conversation!.id)) this.conversation = list[0] ?? this.freshConversation();
+    // Listing never replaces the open conversation: a new one is not on disk until its first message, and one
+    // mid-run is saved only when the run ends. Swapping it would send the next message to another thread.
+    if (!this.conversation) this.conversation = list[0] ?? this.freshConversation();
     return { active: this.conversation, list: list.map((c) => ({ id: c.id, title: c.title, createdAt: c.createdAt })) };
+  }
+
+  /** A request adds to, and then saves, the open conversation: switching away mid-run would misfile its messages. */
+  private notRunning() {
+    if (this.run) throw new Error('Wait for the AI to finish before switching conversations.');
+  }
+
+  /** A read that finished after its project closed must not set the next project's conversation. */
+  private sameSession(session: ReturnType<OrchestratorDeps['session']>) {
+    if (this.deps.session() !== session) throw new Error('The project changed while its conversations were loading.');
   }
 
   private freshConversation(): Conversation {
@@ -212,24 +230,43 @@ export class Orchestrator {
   }
 
   async newConversation(): Promise<Conversation> {
+    this.notRunning();
     this.conversation = this.freshConversation();
     return this.conversation;
   }
 
   async openConversation(id: string): Promise<Conversation> {
+    const session = this.deps.session();
     const dir = this.chatDir();
     if (!dir) throw new Error('No project open');
     if (!/^c_[a-z0-9]+$/.test(id)) throw new Error('Unknown conversation.');
+    // The open conversation is newer than its file, which a finished request may still be writing.
+    if (this.conversation?.id === id) return this.conversation;
+    await this.saving;
     const c = JSON.parse(await fs.readFile(join(dir, `${id}.json`), 'utf8')) as Conversation;
     if (c.id !== id) throw new Error('Unknown conversation.');
+    this.sameSession(session);
+    // Checked after the read too: a request may have started while the file was loading.
+    this.notRunning();
     this.conversation = c;
     return c;
   }
 
   async clearHistory(): Promise<Conversation> {
     if (this.deps.session()?.readOnly) return (await this.loadConversations()).active;
+    this.notRunning();
+    const session = this.deps.session();
     const dir = this.chatDir();
-    if (dir) await fs.rm(dir, { recursive: true, force: true });
+    // No request may start while the files are going: it would add to a conversation that is being removed.
+    this.clearing++;
+    try {
+      // A finished request's transcript write would bring a cleared conversation back.
+      await this.saving;
+      if (dir) await fs.rm(dir, { recursive: true, force: true });
+    } finally {
+      this.clearing--;
+    }
+    this.sameSession(session);
     this.conversation = this.freshConversation();
     return this.conversation;
   }
@@ -251,6 +288,8 @@ export class Orchestrator {
 
   reset() {
     this.conversation = null;
+    // Another project never waits on this one's transcript write.
+    this.saving = Promise.resolve();
   }
 
   // -------------------------------------------------------------------------
@@ -267,12 +306,21 @@ export class Orchestrator {
     this.deps.emit({ runId: this.run.id, conversationId: this.conversation?.id ?? '', kind: 'status', status });
   }
 
-  async send(text: string, context: ChatContext): Promise<{ ok: boolean; runId?: string; message?: string }> {
+  /** `conversationId` is the conversation the message was written in; it is sent only if that one is still open. */
+  async send(text: string, context: ChatContext, conversationId?: string): Promise<{ ok: boolean; runId?: string; message?: string }> {
     if (this.run) return { ok: false, message: 'The AI is already working on a request.' };
+    const clearing = { ok: false, message: 'The conversation history is being cleared. Send your message again in a moment.' };
+    if (this.clearing) return clearing;
     const session = this.deps.session();
     if (!session) return { ok: false, message: 'Open a project first.' };
-    if (!this.conversation) await this.loadConversations();
+    if (!this.conversation) {
+      await this.loadConversations();
+      // Checked again: a request or a clear may have started while the list was loading.
+      if (this.run) return { ok: false, message: 'The AI is already working on a request.' };
+      if (this.clearing) return clearing;
+    }
     const conv = this.conversation!;
+    if (conversationId !== undefined && conv.id !== conversationId) return { ok: false, message: 'That conversation is no longer open, so your message was not sent. It is still in the message box.' };
     const runId = newId('run');
     const userMsg: ChatMessage = { id: newId('m'), role: 'user', text: text.trim(), time: new Date().toISOString(), context: structuredClone(context) };
     const assistant: ChatMessage = { id: newId('m'), role: 'assistant', text: '', time: new Date().toISOString(), runId, activities: [] };
@@ -287,7 +335,8 @@ export class Orchestrator {
       this.run = null;
       this.deps.onBusyChange(false);
       // The project may have closed meanwhile; a chat log that cannot be written is not worth an unhandled error.
-      await this.saveConversation().catch(() => undefined);
+      this.saving = this.saveConversation().catch(() => undefined);
+      await this.saving;
     });
     return { ok: true, runId };
   }

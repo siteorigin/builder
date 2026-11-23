@@ -80,6 +80,8 @@ export interface ProjectSnapshot {
   /** Installed theme components with a newer version in the theme. */
   themeUpdates?: ThemeUpdates;
   localState: LocalWorkspaceState;
+  /** Names this opening of the project; workspace saves carry it, so one meant for another opening is dropped. */
+  workspaceKey: string;
 }
 
 export interface LocalWorkspaceState {
@@ -88,7 +90,10 @@ export interface LocalWorkspaceState {
   zoom?: number | 'fit';
   leftTab?: string;
   rightTab?: string;
-  chatDraft?: string;
+  /** Unsent AI messages, keyed by the conversation they were written in. */
+  chatDrafts?: Record<string, string>;
+  /** The AI conversation that was open, shown again (with its draft) when the project reopens. */
+  chatConversation?: string;
 }
 
 export interface CreateProjectOptions {
@@ -225,7 +230,8 @@ export interface BuilderApi {
     restoreGenerated(path: string): Promise<void>;
     resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }>;
     unlock(): Promise<{ ok: boolean; message?: string }>;
-    saveLocalState(state: LocalWorkspaceState): Promise<void>;
+    /** `workspaceKey` is the opening of the project the state belongs to (from its snapshot); any other is dropped. */
+    saveLocalState(state: LocalWorkspaceState, workspaceKey: string): Promise<void>;
     validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
     flush(): Promise<void>;
   };
@@ -239,8 +245,10 @@ export interface BuilderApi {
     conversations(): Promise<{ active: Conversation; list: Array<{ id: string; title: string; createdAt: string }> }>;
     newConversation(): Promise<Conversation>;
     openConversation(id: string): Promise<Conversation>;
-    clearHistory(): Promise<Conversation>;
-    send(text: string, context: ChatContext): Promise<{ ok: boolean; runId?: string; message?: string }>;
+    /** `workspaceKey` is the opening of the project the user confirmed this in; main refuses any other. */
+    clearHistory(workspaceKey?: string): Promise<Conversation>;
+    /** `conversationId` is the conversation the message was written in; main refuses it if another one is open. */
+    send(text: string, context: ChatContext, conversationId?: string): Promise<{ ok: boolean; runId?: string; message?: string }>;
     stop(): Promise<void>;
     answer(runId: string, answer: string): Promise<void>;
     undoTurn(runId: string): Promise<{ ok: boolean; message?: string }>;
