@@ -237,6 +237,7 @@ describe('check results', () => {
     expect(pagesTouched([{ type: 'node.setStyle', owner: page(home), nodeId: node, scope: 'base', property: 'gap', value: '1rem' }])).toEqual(new Set([home]));
     // A copy changes only the page it lands on.
     expect(pagesTouched([{ type: 'node.copy', owner: page(home), nodeId: node, toOwner: page(about) }])).toEqual(new Set([about]));
+    expect(pagesTouched([{ type: 'node.paste', clipboardId: 'c', toOwner: page(home) }])).toEqual(new Set([home]));
     expect(pagesTouched([{ type: 'page.update', pageId: about, seoTitle: 'x' }, { type: 'page.setHome', pageId: home }])).toEqual(new Set([about, home]));
     expect(pagesTouched([{ type: 'page.remove', pageId: about }, { type: 'page.reorder', pageIds: [about, home] }])).toEqual(new Set([about]));
     expect(pagesTouched([{ type: 'page.create', title: 'New' }])).toEqual(new Set());

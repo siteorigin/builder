@@ -151,6 +151,10 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const from = op.owner.kind === op.toOwner.kind && op.owner.id === op.toOwner.id ? '' : ` from ${where(op.owner)}`;
         return plain(op, `Copied ${name(op.owner, op.nodeId)}${from} to ${where(op.toOwner)}`, linkTo(op.toOwner, res.nodeId));
       }
+      case 'node.paste': {
+        const pasted = nodeIn(after, op.toOwner, res.nodeId);
+        return plain(op, `Pasted ${pasted ? displayName(after, pasted) : 'an element'} into ${where(op.toOwner)}`, linkTo(op.toOwner, res.nodeId));
+      }
       case 'node.rename': {
         const was = nodeIn(before, op.owner, op.nodeId);
         const old = was ? displayName(before, was) : 'an element';
@@ -359,7 +363,7 @@ export function inspectionChecks(ok: boolean, content: unknown, onPage = ''): Ch
 export function pagesTouched(ops: EditOperation[]): Set<string> | 'all' {
   const pages = new Set<string>();
   for (const op of ops) {
-    if (op.type === 'node.copy') {
+    if (op.type === 'node.copy' || op.type === 'node.paste') {
       // The copy lands in toOwner; the original stays as it was.
       if (op.toOwner.kind !== 'page') return 'all';
       pages.add(op.toOwner.id);
