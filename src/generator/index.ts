@@ -889,22 +889,35 @@ function insideRepeat(def: ComponentDefinition, parents: Map<string, string>, no
   return false;
 }
 
+/** A code component's source without its comments, so a mention in one is not a use. */
+function codeWithoutComments(source: string): string {
+  return source.replace(/<!--[^]*?-->/g, '').replace(/\/\*[^]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+}
+
 /**
- * Whether a definition takes the page's `so_eager` flag: managed ones with images (or with instances that take
- * the flag themselves) outside lists, and code components whose source reads it, such as a converted copy.
+ * Whether a definition takes the page's `so_eager` flag: code components whose source reads it, such as a copy
+ * converted to code, and managed ones with images (or with instances that take the flag themselves) outside lists.
  */
-function takesEager(state: ProjectState, def: ComponentDefinition, seen: Set<string> = new Set()): boolean {
-  if (def.kind === 'code') return /\bso_eager\b/.test(def.source ?? '');
-  if (!def.tree || seen.has(def.id)) return false;
-  seen.add(def.id);
+function takesEager(state: ProjectState, def: ComponentDefinition): boolean {
+  if (def.kind === 'code') return /\bso_eager\b/.test(codeWithoutComments(def.source ?? ''));
+  return treeTakesEager(state, def, new Set());
+}
+
+/** Whether a definition's tree has an image, or an instance that takes the flag, outside every list. */
+function treeTakesEager(state: ProjectState, def: ComponentDefinition, path: Set<string>): boolean {
+  if (!def.tree || path.has(def.id)) return false;
+  // Only the definitions above this one are on the path, so a definition placed twice is judged each time.
+  path.add(def.id);
   const parents = parentMap(def.tree);
-  return Object.values(def.tree.nodes).some((n) => {
+  const found = Object.values(def.tree.nodes).some((n) => {
     if (n.kind === 'instance') {
       const child = state.components[n.definitionId];
-      if (!child || !takesEager(state, child, seen)) return false;
+      if (!child || !(child.kind === 'code' ? takesEager(state, child) : treeTakesEager(state, child, path))) return false;
     } else if (n.kind !== 'image') return false;
     return !insideRepeat(def, parents, n.id);
   });
+  path.delete(def.id);
+  return found;
 }
 
 export function generateManagedComponent(state: ProjectState, def: ComponentDefinition, opts: GenerateOptions): string {
@@ -944,7 +957,8 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   for (const slotName of Object.keys(def.slots ?? {}).sort()) propDecls.push(`\t\tslot_${safeIdent(slotName)} = undefined,`);
   propDecls.push(`\t\tso_o = undefined,`);
   propDecls.push(`\t\tso_id = undefined,`);
-  if (takesEager(state, def)) propDecls.push(`\t\tso_eager = false,`);
+  // A converted copy is generated before its source exists, so its markup decides, not the source.
+  if (treeTakesEager(state, def, new Set())) propDecls.push(`\t\tso_eager = false,`);
   if (opts.instrument) propDecls.push(`\t\t__so = '',`);
   propDecls.push(`\t\tclass: className = ''`);
   const imports = renderImports(ctx.imports);
