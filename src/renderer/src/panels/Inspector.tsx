@@ -28,17 +28,18 @@ import {
   Trash2,
   Users
 } from 'lucide-react';
-import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
+import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, ListItem, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
 import { isBinding } from '@shared/types';
 import { styleSetFor } from '@shared/styles';
 import { richTextToMarkdown, toRichText } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
+import { formFieldKey, formFieldTitles, formKeyClashes, namesFormFields, type FormField } from '@catalogue/foundation/form';
 import { codeTakesOverrides, enclosingRepeatProp, instancesOf } from '@engine/tree';
 import { applyOps, applyWith, setState, toast, useStore, type PendingEdit } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
-import { FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker } from './PropEditors';
+import { FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker, type ListItemNote } from './PropEditors';
 import { StyleControls } from './StyleControls';
 import { ownerLabel, pagesUsingShell, refLabel, resolveRef } from '../lib/model';
 import { askAiAbout, deleteSelection, duplicateSelection, structuralTarget } from '../lib/actions';
@@ -49,6 +50,23 @@ type Tone = 'local' | 'shared' | 'definition';
 
 /** Inspector sections are headings one level below the selection's name. */
 const LEVEL = 4;
+
+/** Under each contact form field's name: the key its answer is sent under, or the other fields sent under it too. */
+function formKeyNotes(value: unknown): ((item: ListItem, index: number) => ListItemNote | undefined) | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const fields = value as FormField[];
+  const clashes = formKeyClashes(fields);
+  return (_item, i) => {
+    const key = formFieldKey(fields[i] ?? {}, i);
+    const clash = clashes.find((c) => c.indexes.includes(i));
+    const others = clash?.indexes.filter((j) => j !== i) ?? [];
+    return {
+      field: 'name',
+      hint: `Sent as “${key}”. Changing the label keeps it; clear it to make a new one from the label.`,
+      error: others.length ? `${formFieldTitles(fields, others, clash!.indexes)} ${others.length === 1 ? 'is' : 'are'} also sent as “${key}”. Give each field its own name.` : undefined
+    };
+  };
+}
 
 function listOps(owner: OwnerRef, nodeId: string, prop: string, op: ListOp): EditOperation {
   switch (op.kind) {
@@ -375,6 +393,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               onChange={(v, edit) => set(key, v, edit)}
               onList={(op) => void applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, node.id, key, op)], `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
               state={state}
+              annotate={key === 'fields' && namesFormFields(def) ? formKeyNotes(node.props.fields ?? schema.default) : undefined}
             />
           )}
         />

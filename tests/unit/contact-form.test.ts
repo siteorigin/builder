@@ -3,7 +3,9 @@
  * the client, bundled with Svelte's browser runtime and mounted on a stand-in page. Its POSTs are intercepted
  * and held, so each reply can be delayed, failed or let through. No real enquiry is ever sent.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { chromium, type Browser, type Page, type Route } from 'playwright';
 import { compile } from 'svelte/compiler';
 import { build, type Rolldown } from 'vite';
@@ -11,6 +13,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { defFile, generateProject } from '@generator/index';
+import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import { ProjectSession } from '../../src/main/project/session';
 
 const browserInstalled = existsSync(chromium.executablePath());
 const ORIGIN = 'https://site.test';
@@ -241,26 +246,93 @@ describe.skipIf(!browserInstalled)('contact form with a slow form service', () =
     });
   }, 20_000);
 
-  it('never sends two answers under one key, even when two field names normalise to the same key', async () => {
-    // The stock form with "EMAIL" typed into Phone's field name, as in issue #198.
+  it('refuses to send two answers under one key, and says why (issue #198)', async () => {
+    // The stock form with "EMAIL" typed into Phone's field name, as in the issue.
     const fields = [
       { id: 'item-1', label: 'Name', name: 'name', type: 'text', required: true, placeholder: '' },
       { id: 'item-2', label: 'Email', name: 'email', type: 'email', required: true, placeholder: '' },
       { id: 'item-3', label: 'Phone', name: 'EMAIL', type: 'tel', required: false, placeholder: '' },
       { id: 'item-4', label: 'Message', name: 'message', type: 'textarea', required: true, placeholder: '' }
     ];
-    await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ field, button, nextPost }) => {
+    await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ page, field, button, status, posts, fetches }) => {
       await field('Name').fill('Ada');
       await field('Email').fill('ada@example.com');
       await field('Phone').fill('+44 20 7946 0000');
       await field('Message').fill('Hello');
-      await button.click();
-      const post = await nextPost();
-      const keys = post.entries.map(([k]) => k);
-      expect(new Set(keys).size).toBe(keys.length);
-      expect(post.entries.filter(([k]) => k === 'email')).toEqual([['email', 'ada@example.com']]);
-      expect(post.entries.filter(([, v]) => v === '+44 20 7946 0000')).toHaveLength(1);
-      await post.respond(200);
+      expect(await button.isDisabled()).toBe(true);
+      expect(await status()).toBe('Two fields of this form have the same name, so it cannot be sent.');
+      // Neither Enter nor a scripted submit sends it.
+      await field('Email').press('Enter');
+      await page.evaluate(`document.querySelector('form').requestSubmit()`);
+      await page.waitForTimeout(250);
+      expect(await fetches()).toBe(0);
+      expect(posts).toHaveLength(0);
     });
   }, 20_000);
+
+  it('sends each answer under its own key after fields are added, renamed, reordered, saved, reopened and exported', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'so-form-post-'));
+    try {
+      const start = createStarterState('business', 'Test Studio', false);
+      const defId = installComponent(start, 'contact.form');
+      const node = makeInstance(start.components[defId], { provider: 'netlify', formName: 'contact' });
+      const home = start.pages[start.site.homePageId];
+      home.nodes[node.id] = node;
+      home.rootIds.push(node.id);
+      const session = await ProjectSession.create(dir, start);
+      const fieldsIn = (s: ProjectState) => (s.pages[s.site.homePageId].nodes[node.id] as InstanceNode).props.fields as ListItem[];
+      const idOf = (label: string) => fieldsIn(session.state).find((f) => f.label === label)!.id;
+      const edit = async (op: Record<string, unknown>) => {
+        const r = await session.apply({ operations: [{ owner: { kind: 'page', id: start.site.homePageId }, nodeId: node.id, prop: 'fields', ...op } as EditOperation] }, { label: 'Edit fields' });
+        expect(r.ok).toBe(true);
+      };
+      await edit({ type: 'instance.listInsert', item: { label: 'Company' } });
+      await edit({ type: 'instance.setProp', itemId: idOf('Phone'), field: 'name', value: 'EMAIL' });
+      await edit({ type: 'instance.setProp', itemId: idOf('Phone'), field: 'name', value: '' });
+      await edit({ type: 'instance.setProp', itemId: idOf('Email'), field: 'label', value: 'Courriel' });
+      await edit({ type: 'instance.listMove', itemId: idOf('Company'), index: 0 });
+      await session.close();
+
+      const again = await ProjectSession.open(dir, 'test');
+      let fields: ListItem[];
+      try {
+        fields = fieldsIn(again.state);
+        expect(fields.map((f) => [f.label, f.name])).toEqual([
+          ['Company', 'company'],
+          ['Name', 'name'],
+          ['Courriel', 'email'],
+          ['Phone', 'phone'],
+          ['Message', 'message']
+        ]);
+        const files = generateProject(again.state);
+        // The export ships the component this suite runs, and these fields on the page.
+        expect(files.get(defFile(again.state.components[defId]))).toBe(exportedFormSource());
+        for (const f of fields) expect(files.get('src/routes/+page.svelte')).toContain(JSON.stringify(f.name));
+      } finally {
+        await again.close();
+      }
+
+      await withForm({ provider: 'netlify', formName: 'contact', fields }, async ({ field, button, nextPost }) => {
+        await field('Company').fill('Acme');
+        await field('Name').fill('Ada');
+        await field('Courriel').fill('ada@example.com');
+        await field('Phone').fill('+44 20 7946 0000');
+        await field('Message').fill('Hello');
+        await button.click();
+        const post = await nextPost();
+        expect(post.entries).toEqual([
+          ['form-name', 'contact'],
+          ['company', 'Acme'],
+          ['name', 'Ada'],
+          ['email', 'ada@example.com'],
+          ['phone', '+44 20 7946 0000'],
+          ['message', 'Hello'],
+          ['bot-field', '']
+        ]);
+        await post.respond(200);
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

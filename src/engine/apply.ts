@@ -3,6 +3,7 @@ import type {
   GraphNode,
   InstanceNode,
   LinkValue,
+  ListItem,
   NodeTree,
   OwnerRef,
   PageDoc,
@@ -30,6 +31,8 @@ import { clone, definitionHash, freshListIds, installComponent, makeInstance } f
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { enclosingList, normalizeProperties } from './schema';
 import { forEachTokenRef, tokenUsageCounts } from './tokens';
+import { settleFormKeys } from './form-keys';
+import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import {
   componentRemove,
   dependentsOf,
@@ -138,27 +141,29 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'node.setBinding':
       return nodeSetBinding(state, op);
     case 'instance.setProp':
-      return instanceSetProp(state, op);
+      return keepingFormKeys(state, op, () => instanceSetProp(state, op));
     case 'instance.listInsert':
-      return listInsert(state, op);
-    case 'instance.listRemove': {
-      const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
-      const list = (node.props[op.prop] as Array<{ id: string }>) ?? [];
-      if (!list.some((i) => i.id === op.itemId)) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
-      if (schema.min !== undefined && list.length <= schema.min) fail(`${schema.label} needs at least ${schema.min} items.`);
-      node.props[op.prop] = list.filter((i) => i.id !== op.itemId);
-      return {};
-    }
-    case 'instance.listMove': {
-      const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
-      const list = [...((node.props[op.prop] as Array<{ id: string }>) ?? [])];
-      const from = list.findIndex((i) => i.id === op.itemId);
-      if (from < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
-      const [it] = list.splice(from, 1);
-      list.splice(Math.min(op.index, list.length), 0, it);
-      node.props[op.prop] = list;
-      return {};
-    }
+      return keepingFormKeys(state, op, () => listInsert(state, op));
+    case 'instance.listRemove':
+      return keepingFormKeys(state, op, () => {
+        const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
+        const list = (node.props[op.prop] as Array<{ id: string }>) ?? [];
+        if (!list.some((i) => i.id === op.itemId)) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
+        if (schema.min !== undefined && list.length <= schema.min) fail(`${schema.label} needs at least ${schema.min} items.`);
+        node.props[op.prop] = list.filter((i) => i.id !== op.itemId);
+        return {};
+      });
+    case 'instance.listMove':
+      return keepingFormKeys(state, op, () => {
+        const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
+        const list = [...((node.props[op.prop] as Array<{ id: string }>) ?? [])];
+        const from = list.findIndex((i) => i.id === op.itemId);
+        if (from < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
+        const [it] = list.splice(from, 1);
+        list.splice(Math.min(op.index, list.length), 0, it);
+        node.props[op.prop] = list;
+        return {};
+      });
     case 'instance.setVariant': {
       const { node, def } = instanceTarget(state, op.owner, op.nodeId);
       const found = variantOption(def, op.variant, op.axis);
@@ -994,6 +999,25 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>): OpRes
   }
   node.props[op.prop] = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`, node.props[op.prop]);
   return {};
+}
+
+/**
+ * Runs an edit of an instance's property and, when it edits a contact form's fields, settles their submission
+ * keys so no answer moves to another key as a side effect (see form-keys.ts).
+ */
+function keepingFormKeys(state: ProjectState, op: Op<'instance.setProp' | 'instance.listInsert' | 'instance.listRemove' | 'instance.listMove'>, run: () => OpResult): OpResult {
+  const { node, def } = instanceTarget(state, op.owner, op.nodeId);
+  if (op.prop !== 'fields' || !namesFormFields(def)) return run();
+  const stored = node.props.fields;
+  // An instance without its own list shows the definition's; a list bound from outside has no keys to keep.
+  const before = clone(stored === undefined ? def.properties.fields.default : Array.isArray(stored) ? stored : []) as FormField[];
+  const result = run();
+  const after = node.props.fields;
+  if (Array.isArray(after)) {
+    const cleared = op.type === 'instance.setProp' && op.itemId && op.field === 'name' ? [op.itemId] : [];
+    node.props.fields = settleFormKeys(before, after as ListItem[], new Set(cleared));
+  }
+  return result;
 }
 
 function listInsert(state: ProjectState, op: Op<'instance.listInsert'>): OpResult {

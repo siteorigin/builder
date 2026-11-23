@@ -1306,6 +1306,8 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 @media (prefers-color-scheme: dark) { .select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); } }
 .chip:not(:has(button)) { padding-right: 8px; }
 .list-editor-head button.title { display: flex; align-items: center; gap: 6px; align-self: stretch; padding: 0 4px; }
+.list-editor-flag { display: inline-flex; flex: none; margin-left: auto; color: var(--amber); }
+.list-editor-flag svg { width: 13px; height: 13px; }
 
 /* Focus rings sit inside clipped rows so they are never cut off. */
 .list-editor-head :focus-visible, .status-bar :focus-visible, .crumbs :focus-visible { outline-offset: -2px; }

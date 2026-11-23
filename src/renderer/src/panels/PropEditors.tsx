@@ -538,10 +538,14 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
   }
 }
 
-/** One scalar field with its visible label wired to its control. Booleans sit on one line; images are their own titled card. */
-export function ScalarField({ schema, value, onChange, state, label }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string }) {
+/**
+ * One scalar field with its visible label wired to its control. Booleans sit on one line; images are their own
+ * titled card. `hint` replaces the schema's description and `error` replaces both, for text fields.
+ */
+export function ScalarField({ schema, value, onChange, state, label, hint, error }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; hint?: ReactNode; error?: string }) {
   const id = useId();
   const shown = label ?? schema.label;
+  const note = hint ?? schema.description;
   if (schema.type === 'boolean') return <SwitchRow checked={!!value} onChange={onChange} label={shown} hint={schema.description} />;
   if (schema.type === 'image') return <ImageEditor value={value as ImageValue} onChange={onChange} state={state} title={shown} />;
   // A link is two controls (kind and destination) that name themselves; the label names the pair.
@@ -556,13 +560,20 @@ export function ScalarField({ schema, value, onChange, state, label }: { schema:
       </div>
     );
   return (
-    <Field label={shown} hint={schema.description} controlId={id}>
-      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={schema.description ? `${id}-note` : undefined} />
+    <Field label={shown} hint={note} error={error} controlId={id}>
+      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} />
     </Field>
   );
 }
 
-export function PropField({ name, schema, value, onChange, onList, state, focusItem, label }: {
+/** What the editor says about one field of a list item: a note under it, or a problem that also marks the item. */
+export interface ListItemNote {
+  field: string;
+  hint?: ReactNode;
+  error?: string;
+}
+
+export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, annotate }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -572,8 +583,10 @@ export function PropField({ name, schema, value, onChange, onList, state, focusI
   focusItem?: string;
   /** A shorter visible label, when a group heading already says what the field belongs to. */
   label?: string;
+  /** For a list: what to say about each item, such as the key a form field is sent under. */
+  annotate?: (item: ListItem, index: number) => ListItemNote | undefined;
 }) {
-  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} />;
+  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} annotate={annotate} />;
   return <ScalarField schema={schema} value={value} onChange={onChange} state={state} label={label} />;
   void name;
 }
@@ -645,7 +658,7 @@ export function FieldGroups<T>({ groups, render }: { groups: Array<PropGroup<T>>
  * A repeatable list. Focus follows the edit: a new item opens with its row focused, and removing an item moves
  * focus to the row that takes its place (or to Add when the list is empty).
  */
-function ListEditor({ name, schema, items, onList, state, focusItem }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: never) => void; state: ProjectState; focusItem?: string }) {
+function ListEditor({ name, schema, items, onList, state, focusItem, annotate }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: never) => void; state: ProjectState; focusItem?: string; annotate?: (item: ListItem, index: number) => ListItemNote | undefined }) {
   const [open, setOpen] = useState<string | null>(null);
   const labelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -683,13 +696,22 @@ function ListEditor({ name, schema, items, onList, state, focusItem }: { name: s
         </span>
       </div>
       <div className="list-editor">
-        {items.map((it, i) => (
+        {items.map((it, i) => {
+          const note = annotate?.(it, i);
+          return (
           <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}`}>
             <div className="list-editor-head">
               {/* The chevron and title are one disclosure button, so the whole leading area opens the item. */}
               <button className="title" id={`list-head-${it.id}`} aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} onClick={() => setOpen(openId === it.id ? null : it.id)}>
                 <ChevronRight size={12} className="faint" style={{ transform: openId === it.id ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
                 <span className="ellipsis">{titleOf(it, i)}</span>
+                {/* A closed item still shows it needs attention. */}
+                {note?.error && (
+                  <span className="list-editor-flag" title={note.error}>
+                    <TriangleAlert aria-hidden="true" />
+                    <span className="sr-only">, needs attention</span>
+                  </span>
+                )}
               </button>
               <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} disabled={i === 0} onClick={() => L({ kind: 'move', itemId: it.id, index: i - 1 })}>
                 <ArrowUp />
@@ -709,12 +731,24 @@ function ListEditor({ name, schema, items, onList, state, focusItem }: { name: s
               {openId === it.id && (
                 <FieldGroups
                   groups={fields}
-                  render={({ key, schema: fs, label }) => <ScalarField key={key} schema={fs as ScalarPropSchema} label={label} value={it[key]} onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })} state={state} />}
+                  render={({ key, schema: fs, label }) => (
+                    <ScalarField
+                      key={key}
+                      schema={fs as ScalarPropSchema}
+                      label={label}
+                      value={it[key]}
+                      onChange={(v, edit) => L({ kind: 'field', itemId: it.id, field: key, value: v, edit })}
+                      state={state}
+                      hint={note?.field === key ? note.hint : undefined}
+                      error={note?.field === key ? note.error : undefined}
+                    />
+                  )}
                 />
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
         <button className="btn btn-sm insp-add" disabled={schema.max !== undefined && items.length >= schema.max} onClick={() => {
             after.current = { kind: 'added', before: items.map((x) => x.id) };
             L({ kind: 'insert' });

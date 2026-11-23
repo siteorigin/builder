@@ -6,7 +6,7 @@ import { allTrees, childLists, displayName, subtreeIds } from './tree';
 import { boundSchema } from './schema';
 import { declaredTokens, findTokenCycle } from './tokens';
 import { missingSectionLinks, unlinkedButtons } from '@generator/checks';
-import { formConnected } from '@catalogue/foundation/form';
+import { formConnected, formFieldTitles, formKeyClashes, formRefusesClashes, namesFormFields, type FormField } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -137,6 +137,14 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         const props = Object.fromEntries(Object.entries(def.properties).map(([k, sch]) => [k, k in n.props ? n.props[k] : sch.default]));
         if (!formConnected(props))
           out.push({ severity: 'warning', code: 'FORM_UNCONNECTED', message: `${label}: the contact form is not connected to a form service, so visitors cannot send it. Add an HTTPS form endpoint or a Web3Forms access key, or choose Netlify Forms.`, owner, nodeId: n.id });
+        if (namesFormFields(def) && Array.isArray(props.fields))
+          for (const clash of formKeyClashes(props.fields as FormField[])) {
+            const fields = props.fields as FormField[];
+            const what = formFieldTitles(fields, clash.indexes);
+            const outcome = formRefusesClashes(def) ? 'so visitors cannot send the form' : 'so the form service cannot tell those answers apart';
+            const all = clash.indexes.length === 2 ? 'both' : 'all';
+            out.push({ severity: 'warning', code: 'FORM_FIELD_KEYS', message: `${label}: the contact form's ${what} fields are ${all} sent as “${clash.key}”, ${outcome}. Give each field its own field name.`, owner, nodeId: n.id });
+          }
       }
   }
   for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {

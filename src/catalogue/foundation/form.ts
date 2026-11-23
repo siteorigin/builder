@@ -9,6 +9,25 @@ export const FORM_PROVIDERS: Array<[string, string]> = [
   ['netlify', 'Netlify Forms']
 ];
 
+/**
+ * How the contact form names each answer it sends: the reserved names, then the key for one field (its name, else
+ * its label, else its position). Every version of the theme's form so far carries these two snippets exactly, so the
+ * editor can tell a form that names its fields this way from custom code that may name them differently.
+ * `formFieldKey` below is the same rule for the editor; tests/unit/form-keys.test.ts runs both on the same fields.
+ */
+const RESERVED_SOURCE = `	// Names the services or the form itself use; a visible field never takes one of them.
+	const RESERVED = ['_gotcha', 'botcheck', 'bot-field', 'form-name', 'access_key', 'subject', 'from_name', 'redirect'];`;
+const FIELD_NAME_SOURCE = `	function fieldName(field, i) {
+		const slug = String(field.name || field.label || '')
+			.toLowerCase()
+			.replace(/[^a-z0-9_]+/g, '-')
+			.replace(/^-+|-+$/g, '');
+		const name = slug || 'field-' + (i + 1);
+		return RESERVED.includes(name) ? name + '-field' : name;
+	}`;
+/** The form refuses to send while two of its fields share a key; forms from before this check send both. */
+const AMBIGUOUS_SOURCE = `	const ambiguous = $derived(new Set(names).size < names.length);`;
+
 const FORM_SOURCE = `<script>
 	/**
 	 * Contact form that sends messages to an external form service: an HTTPS form endpoint (Formspree, Basin,
@@ -16,7 +35,8 @@ const FORM_SOURCE = `<script>
 	 *
 	 * Without JavaScript it is an ordinary form post. With JavaScript it sends in the background and reports
 	 * the result in place. A hidden honeypot field catches most spam bots. Until the form is connected to a
-	 * service it says so and cannot be sent: it never pretends to send.
+	 * service it says so and cannot be sent: it never pretends to send. The same goes for two fields that share
+	 * a name, whose answers the service could not tell apart.
 	 */
 	let {
 		eyebrow = '',
@@ -38,14 +58,17 @@ const FORM_SOURCE = `<script>
 	let status = $state('idle');
 
 	const HONEYPOT = { endpoint: '_gotcha', web3forms: 'botcheck', netlify: 'bot-field' };
-	// Names the services or the form itself use; a visible field never takes one of them.
-	const RESERVED = ['_gotcha', 'botcheck', 'bot-field', 'form-name', 'access_key', 'subject', 'from_name', 'redirect'];
+${RESERVED_SOURCE}
 	const AUTOCOMPLETE = { email: 'email', tel: 'tel' };
 	const honeypot = $derived(HONEYPOT[provider] ?? '_gotcha');
 	const key = $derived(String(accessKey ?? '').trim());
 	const netlifyName = $derived(String(formName ?? '').trim());
 	const action = $derived(provider === 'web3forms' ? 'https://api.web3forms.com/submit' : provider === 'endpoint' && isEndpoint(endpoint) ? endpoint.trim() : undefined);
-	const ready = $derived(provider === 'netlify' ? !!netlifyName : provider === 'web3forms' ? !!key : !!action);
+	const connected = $derived(provider === 'netlify' ? !!netlifyName : provider === 'web3forms' ? !!key : !!action);
+	// The key each answer is sent under. Two answers under one key reach the service as one field twice.
+	const names = $derived((fields ?? []).map((field, i) => fieldName(field, i)));
+${AMBIGUOUS_SOURCE}
+	const ready = $derived(connected && !ambiguous);
 
 	function isEndpoint(value) {
 		try {
@@ -56,14 +79,7 @@ const FORM_SOURCE = `<script>
 		}
 	}
 
-	function fieldName(field, i) {
-		const slug = String(field.name || field.label || '')
-			.toLowerCase()
-			.replace(/[^a-z0-9_]+/g, '-')
-			.replace(/^-+|-+$/g, '');
-		const name = slug || 'field-' + (i + 1);
-		return RESERVED.includes(name) ? name + '-field' : name;
-	}
+${FIELD_NAME_SOURCE}
 
 	// The sent or error message describes the last attempt; once the visitor edits again it no longer does.
 	function clearFeedback() {
@@ -133,7 +149,7 @@ const FORM_SOURCE = `<script>
 					{#if field.type === 'textarea'}
 						<textarea
 							id={uid + '-' + i}
-							name={fieldName(field, i)}
+							name={names[i]}
 							required={field.required}
 							readonly={status === 'sending'}
 							rows="5"
@@ -144,10 +160,10 @@ const FORM_SOURCE = `<script>
 						<input
 							id={uid + '-' + i}
 							type={field.type === 'email' || field.type === 'tel' ? field.type : 'text'}
-							name={fieldName(field, i)}
+							name={names[i]}
 							required={field.required}
 							readonly={status === 'sending'}
-							autocomplete={AUTOCOMPLETE[field.type] ?? (fieldName(field, i) === 'name' ? 'name' : undefined)}
+							autocomplete={AUTOCOMPLETE[field.type] ?? (names[i] === 'name' ? 'name' : undefined)}
 							placeholder={field.placeholder || undefined}
 							oninput={clearFeedback}
 						/>
@@ -171,7 +187,7 @@ const FORM_SOURCE = `<script>
 		<!-- Live regions stay in the page, outside the busy form, so their changes are announced. -->
 		<div class="so-form__messages">
 			<p class="so-form__status" role="status">
-				{#if !ready}This form is not connected to a form service yet, so it cannot be sent.{:else if status === 'sending'}Sending your message…{:else if status === 'sent'}{successMessage}{/if}
+				{#if !connected}This form is not connected to a form service yet, so it cannot be sent.{:else if ambiguous}Two fields of this form have the same name, so it cannot be sent.{:else if status === 'sending'}Sending your message…{:else if status === 'sent'}{successMessage}{/if}
 			</p>
 			<p class="so-form__status so-form__status--error" role="alert">
 				{#if status === 'error'}{errorMessage}{/if}
@@ -336,7 +352,7 @@ export const contactForm: ComponentDefinition = {
       'Field',
       {
         label: P.str('Label', 'Field'),
-        name: P.str('Field name', '', { description: 'Sent to the form service. Leave empty to use the label.' }),
+        name: P.str('Field name', '', { description: 'The name this answer is sent under. Changing the label keeps it; clear it to make a new one from the label.' }),
         type: P.choice('Type', 'text', [
           ['text', 'Short text'],
           ['email', 'Email address'],
@@ -367,7 +383,7 @@ export const contactForm: ComponentDefinition = {
   license: 'GPL-3.0-or-later'
 };
 
-/** Whether a contact form instance has what it needs to send. Mirrors the component's own `ready`. */
+/** Whether a contact form instance is connected to a form service. Mirrors the component's own `connected`. */
 export function formConnected(props: Record<string, unknown>): boolean {
   const provider = String(props.provider ?? 'endpoint');
   if (provider === 'netlify') return !!String(props.formName ?? '').trim();
@@ -379,4 +395,75 @@ export function formConnected(props: Record<string, unknown>): boolean {
   } catch {
     return false;
   }
+}
+
+/** Names a field may not be sent under: the component's `RESERVED`. */
+const RESERVED_KEYS = ['_gotcha', 'botcheck', 'bot-field', 'form-name', 'access_key', 'subject', 'from_name', 'redirect'];
+
+/** A contact form field as the component reads it. */
+export interface FormField {
+  id?: unknown;
+  name?: unknown;
+  label?: unknown;
+}
+
+function slug(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/** The key the component sends one field's answer under: its `fieldName`, exactly. */
+export function formFieldKey(field: FormField, index: number): string {
+  const name = slug(String(field.name || field.label || '')) || `field-${index + 1}`;
+  return RESERVED_KEYS.includes(name) ? `${name}-field` : name;
+}
+
+/** The key typed text makes on its own, or '' when nothing of it survives and the field's position would decide. */
+export function formKeyFrom(text: string): string {
+  const name = slug(text);
+  return !name ? '' : RESERVED_KEYS.includes(name) ? `${name}-field` : name;
+}
+
+/** Whether a field's own name decides its key, rather than its label or its position in the form. */
+export function formNameDecides(field: FormField): boolean {
+  return !!field.name && !!formKeyFrom(String(field.name));
+}
+
+/** Keys shared by more than one field of a form, each with the positions of the fields that share it, in order. */
+export function formKeyClashes(fields: readonly FormField[]): Array<{ key: string; indexes: number[] }> {
+  const by = new Map<string, number[]>();
+  fields.forEach((f, i) => {
+    const key = formFieldKey(f ?? {}, i);
+    by.set(key, [...(by.get(key) ?? []), i]);
+  });
+  return [...by].filter(([, indexes]) => indexes.length > 1).map(([key, indexes]) => ({ key, indexes }));
+}
+
+/**
+ * “Email” and “Phone”: the fields at `indexes`, by label, and by position too where a label is empty or another
+ * field in `among` has the same one.
+ */
+export function formFieldTitles(fields: readonly FormField[], indexes: readonly number[], among: readonly number[] = indexes): string {
+  const label = (i: number) => String(fields[i]?.label ?? '').trim();
+  const names = indexes.map((i) => {
+    const l = label(i);
+    if (!l) return `field ${i + 1}`;
+    return among.some((j) => j !== i && label(j).toLowerCase() === l.toLowerCase()) ? `“${l}” (field ${i + 1})` : `“${l}”`;
+  });
+  return names.length < 2 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/**
+ * Whether a definition names its form fields the way the theme's contact form does, in any version so far. Custom
+ * code may name them differently, so the editor shows and keeps keys only for a definition this says yes to.
+ */
+export function namesFormFields(def: ComponentDefinition | undefined): boolean {
+  return !!def && def.kind === 'code' && def.componentId === 'contact.form' && def.properties.fields?.type === 'list' && !!def.source?.includes(RESERVED_SOURCE) && def.source.includes(FIELD_NAME_SOURCE);
+}
+
+/** Whether the form refuses to send while two fields share a key. Older versions send both answers. */
+export function formRefusesClashes(def: ComponentDefinition): boolean {
+  return !!def.source?.includes(AMBIGUOUS_SOURCE);
 }
