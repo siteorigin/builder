@@ -78,7 +78,10 @@ describe('dev instrumentation plugin', () => {
     // Served the variant, the whole component source became the stylesheet, and its markup leaked into the page.
     expect(load(`${id}?svelte&type=style&lang.css`)).toBeNull();
     expect(load(`${id}?inline&svelte&type=style&lang.css`)).toBeNull();
-    for (const query of ['direct', 'raw', 'url', 'inline', 'v=1&raw', 'svelte&type=style&lang.css&v=1']) expect(load(`${id}?${query}`)).toBeNull();
+    // Anything else is left alone too, a version stamp mixed with another query or hiding one included.
+    for (const query of ['direct', 'raw', 'url', 'inline', 'svelte&type=script', 'worker_file&type=module', 'v=1&raw', 'v=1&url', 'v=?raw', 'svelte&type=style&lang.css&v=1']) {
+      expect(load(`${id}?${query}`), query).toBeNull();
+    }
   });
 });
 
