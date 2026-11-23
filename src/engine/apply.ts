@@ -859,15 +859,15 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>): OpRes
     if (op.field) {
       const f = schema.fields[op.field];
       if (!f) fail(`${schema.itemLabel} has no field "${op.field}". Fields: ${Object.keys(schema.fields).join(', ')}.`);
-      const next = normalizeItem(schema, { ...list[idx], [op.field]: op.value }, state, `${schema.itemLabel}`, { id: list[idx].id } as never);
+      const next = normalizeItem(schema, { ...list[idx], [op.field]: op.value }, state, `${schema.itemLabel}`, { id: list[idx].id } as never, list[idx]);
       list[idx] = next;
     } else {
-      list[idx] = normalizeItem(schema, op.value as Record<string, unknown>, state, schema.itemLabel, list[idx] as never);
+      list[idx] = normalizeItem(schema, op.value as Record<string, unknown>, state, schema.itemLabel, list[idx] as never, list[idx]);
     }
     node.props[op.prop] = [...list];
     return {};
   }
-  node.props[op.prop] = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`);
+  node.props[op.prop] = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`, node.props[op.prop]);
   return {};
 }
 

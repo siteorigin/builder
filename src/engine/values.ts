@@ -1,6 +1,7 @@
 import type { ImageValue, LinkValue, ListItem, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { newId } from '@shared/ids';
 import { fail } from './tree';
+import { ICONS } from '@catalogue/foundation/icons';
 
 export function normalizeLink(v: unknown, state: ProjectState, label: string): LinkValue {
   if (v === null || v === undefined || v === '') return { type: 'none', target: '' };
@@ -59,7 +60,11 @@ export function normalizeImage(v: unknown, state: ProjectState, label: string): 
   return out;
 }
 
-export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: ProjectState, label: string): unknown {
+/**
+ * `stored` is the value already saved for this field, if any. A value that was valid under older rules is
+ * kept when it is not being changed, so editing one field never fails on another.
+ */
+export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
   switch (schema.type) {
     case 'string': {
       if (typeof v !== 'string' && typeof v !== 'number') fail(`${label}: expected text.`);
@@ -92,32 +97,36 @@ export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: Pro
     case 'image':
       return normalizeImage(v, state, label);
     case 'icon':
-      if (typeof v !== 'string' || !/^[a-z0-9-]{1,40}$/.test(v)) fail(`${label}: expected an icon name.`);
+      // An unknown name would silently render a fallback icon, so a new one is refused with the valid names.
+      if (typeof v === 'string' && v === stored && /^[a-z0-9-]{1,40}$/.test(v)) return v;
+      if (typeof v !== 'string' || !Object.hasOwn(ICONS, v)) fail(`${label}: ${typeof v === 'string' ? `"${v.slice(0, 40)}" is not an available icon` : 'expected an icon name'}. Use one of: ${Object.keys(ICONS).join(', ')}.`);
       return v;
   }
 }
 
-export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, item: Record<string, unknown> | undefined, state: ProjectState, label: string, base?: ListItem): ListItem {
+export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, item: Record<string, unknown> | undefined, state: ProjectState, label: string, base?: ListItem, stored?: Record<string, unknown>): ListItem {
   const out: ListItem = { id: base?.id ?? newId('i') };
   for (const [k, f] of Object.entries(schema.fields)) {
     const raw = item && k in item ? item[k] : base && k in base ? base[k] : structuredClone(f.default);
-    out[k] = normalizeScalar(f, raw, state, `${label} → ${f.label}`);
+    out[k] = normalizeScalar(f, raw, state, `${label} → ${f.label}`, stored?.[k]);
   }
   return out;
 }
 
-export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectState, label: string): unknown {
+/** `stored` is the property's current value, so unchanged legacy values inside it stay accepted. */
+export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
   if (schema.type === 'list') {
     if (!Array.isArray(v)) fail(`${label}: expected a list.`);
     if (schema.max !== undefined && v.length > schema.max) fail(`${label}: at most ${schema.max} items.`);
     if (schema.min !== undefined && v.length < schema.min) fail(`${label}: at least ${schema.min} items.`);
     const seen = new Set<string>();
+    const before = new Map(Array.isArray(stored) ? (stored as ListItem[]).filter((x) => x && typeof x.id === 'string').map((x) => [x.id, x]) : []);
     return v.map((it) => {
       const base = it && typeof it === 'object' && typeof (it as ListItem).id === 'string' && !seen.has((it as ListItem).id) ? (it as ListItem) : undefined;
-      const n = normalizeItem(schema, it as Record<string, unknown>, state, label, base ? { id: base.id } as ListItem : undefined);
+      const n = normalizeItem(schema, it as Record<string, unknown>, state, label, base ? { id: base.id } as ListItem : undefined, base ? before.get(base.id) : undefined);
       seen.add(n.id);
       return n;
     });
   }
-  return normalizeScalar(schema, v, state, label);
+  return normalizeScalar(schema, v, state, label, stored);
 }

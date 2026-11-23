@@ -120,6 +120,7 @@ const LENGTH_RE = /^(-?\d*\.?\d+(px|rem|em|%|vw|vh|svh|dvh|ch|ex)?|auto|0)$/;
 const FN_RE = /^(clamp|min|max|calc)\([0-9a-z.,%+\-*/ ()]+\)$/i;
 const COLOR_RE = /^(#[0-9a-f]{3,8}|(rgb|rgba|hsl|hsla|oklch|oklab|lab|lch|color-mix)\([0-9a-z.,%+\-/ ()#]+\)|transparent|currentcolor|white|black)$/i;
 const SAFE_RE = /^[^;{}<>\\]*$/;
+const TEXT_TOKEN_RE = /^text\.[a-z0-9-]+$/;
 
 /** Validate a literal style value. Returns an error message or null. */
 export function validateStyleValue(propId: string, value: StyleValue): string | null {
@@ -155,6 +156,8 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       if (propId === 'lineHeight' && /^\d*\.?\d+$/.test(s)) return null;
       return LENGTH_RE.test(s) || FN_RE.test(s) ? null : `"${s}" is not a valid length. Use values such as 24px, 1.5rem or 50%.`;
     case 'textStyle':
+      // Text styles are token references. A bare token ID ("text.h2") is read as one; anything else is refused.
+      return TEXT_TOKEN_RE.test(s) ? null : `${def.label} must be a text token reference such as { "token": "text.h2" }, not "${s.slice(0, 40)}".`;
     case 'shadow':
     case 'border':
     case 'font':
@@ -212,8 +215,9 @@ export function styleToCss(propId: string, value: StyleValue): string[] {
     case 'objectFit':
       return [`object-fit: ${v}`];
     case 'textStyle': {
-      if (typeof value === 'object' && value !== null) {
-        const base = tokenVar(value.token);
+      const token = typeof value === 'object' && value !== null ? value.token : typeof value === 'string' && TEXT_TOKEN_RE.test(value.trim()) ? value.trim() : null;
+      if (token) {
+        const base = tokenVar(token);
         return [
           `font-family: var(${base}-family)`,
           `font-size: var(${base}-size)`,

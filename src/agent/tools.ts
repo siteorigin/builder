@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import type { ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { EditOperationSchema } from '@shared/ops';
+import { EditOperationSchema, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
+import { ICONS } from '@catalogue/foundation/icons';
 import { sourceHash } from '@engine/apply';
 import type { Diagnostic } from '@engine/validate';
 import type { ToolDefinition } from './types';
@@ -21,7 +22,10 @@ export const TOOL_ARGS = {
   search_assets: z.object({ query: z.string().optional(), limit: z.number().int().min(1).max(50).optional() }),
   apply_operations: z.object({
     expectedRevision: z.number().int().describe('The revision you last read. Mismatches are rejected; read again and retry.'),
-    scope: z.object({ kind: z.enum(['selection', 'page', 'component', 'site']), targetIds: z.array(z.string()) }).describe('What this batch is meant to change.'),
+    scope: z
+      .object({ kind: z.enum(['selection', 'page', 'component', 'site']), targetIds: z.array(z.string()).optional() })
+      .optional()
+      .describe('Optional note of what this batch is meant to change. The app decides what may change.'),
     operations: z.array(EditOperationSchema).min(1).max(30)
   }),
   read_source: z.object({ definitionId: z.string(), startLine: z.number().int().min(1).optional(), endLine: z.number().int().optional() }),
@@ -43,14 +47,14 @@ export const TOOL_ARGS = {
 export type ToolName = keyof typeof TOOL_ARGS;
 
 const DESCRIPTIONS: Record<ToolName, string> = {
-  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens or the theme catalogue.',
+  read_project: 'Project summary: revision, pages (IDs and routes), shared header/footer, project components. Optional sections add site tokens, or the theme catalogue: every component with its compact property signature, style parts and variants, plus the valid icon names.',
   read_page: 'Read a page: its sections and their component instances, props (with list item IDs), variants, style overrides and nested content.',
   inspect_element: 'Inspect one node: full props, the component property schema, public parts with allowed style controls, variants, slots and its position in the tree.',
   search_components: 'Search the theme catalogue by keywords. Returns componentIds you can insert with node.insert.',
   read_component: 'Read a component contract: property schema, parts, variants, slots and examples. Use before inserting or editing an unfamiliar component.',
   search_assets: 'List imported images by name and description. You cannot see image contents.',
   apply_operations:
-    'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem.',
+    'Apply a batch of typed edit operations atomically. This is the only way to change the website. Every operation is validated; on error nothing in the batch is applied and you get the exact problem. Call it at most once per turn.',
   read_source: 'Read the Svelte source of a component. Generated managed sources are read-only; project code components can be patched.',
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
   inspect_layout: 'Measure a page in the live preview at a viewport width: horizontal overflow, elements outside the viewport, missing images/alt text, heading structure and runtime errors. Structural evidence only; no screenshots.',
@@ -58,12 +62,29 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   request_clarification: 'Ask the user one short question when a request is genuinely ambiguous and a wrong guess would change shared content. Offer up to four concrete choices.'
 };
 
-export function toolDefinitions(): ToolDefinition[] {
-  return (Object.keys(TOOL_ARGS) as ToolName[]).map((name) => {
-    const schema = z.toJSONSchema(TOOL_ARGS[name], { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
-    delete schema.$schema;
-    return { name, description: DESCRIPTIONS[name], parameters: schema };
-  });
+/** Operations the assistant never sends: images are added only by the verified importer. */
+const NEVER_OFFERED = new Set<OperationType>(['asset.add']);
+/** Operations that need Developer mode. */
+export const CODE_OPERATIONS = new Set<OperationType>(['component.createCode', 'component.updateSource', 'component.convertToCode']);
+const CODE_TOOLS = new Set<ToolName>(['read_source', 'apply_source_patch']);
+
+/** The operation union the model is shown for a run; the app still checks every operation it receives. */
+function offeredOperations(codeEnabled: boolean) {
+  const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[]).filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t))).map((t) => OPERATION_SCHEMAS[t]);
+  return z.discriminatedUnion('type', schemas as unknown as [z.ZodObject<{ type: z.ZodLiteral<string> }>, ...z.ZodObject<{ type: z.ZodLiteral<string> }>[]]);
+}
+
+/** Tool definitions for one run. Without Developer mode, code tools and code operations are left out. */
+export function toolDefinitions(opts: { codeEnabled?: boolean } = {}): ToolDefinition[] {
+  const codeEnabled = opts.codeEnabled ?? true;
+  return (Object.keys(TOOL_ARGS) as ToolName[])
+    .filter((name) => codeEnabled || !CODE_TOOLS.has(name))
+    .map((name) => {
+      const args = name === 'apply_operations' ? TOOL_ARGS.apply_operations.extend({ operations: z.array(offeredOperations(codeEnabled)).min(1).max(30) }) : TOOL_ARGS[name];
+      const schema = z.toJSONSchema(args, { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+      delete schema.$schema;
+      return { name, description: DESCRIPTIONS[name], parameters: schema };
+    });
 }
 
 export const MUTATING_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
@@ -113,7 +134,10 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const a = args as z.infer<(typeof TOOL_ARGS)['read_project']>;
       const out: Record<string, unknown> = projectSummary(state, host.revision());
       if (a.sections?.includes('tokens')) out.tokens = tokensSummary(state);
-      if (a.sections?.includes('catalogue')) out.catalogue = catalogueIndex(state.site.themeId);
+      if (a.sections?.includes('catalogue')) {
+        out.catalogue = catalogueIndex(state.site.themeId);
+        out.icons = Object.keys(ICONS);
+      }
       if (a.sections?.includes('components'))
         out.installedComponents = Object.values(state.components).map((d) => ({ definitionId: d.id, componentId: d.componentId, name: d.name, owner: d.owner, kind: d.kind }));
       out.styleProperties = STYLE_PROPS.map((p) => `${p.id}${p.tokenGroup ? ` (token: ${p.tokenGroup})` : ''}${p.options ? ` [${p.options.map((o) => o.value).join('|')}]` : ''}`);
@@ -213,10 +237,13 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       const a = args as z.infer<(typeof TOOL_ARGS)['inspect_layout']>;
       if (!state.pages[a.pageId]) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Unknown page.' } };
       try {
-        const report = await host.inspectLayout(a.pageId, WIDTHS[a.viewport]);
+        const report = (await host.inspectLayout(a.pageId, WIDTHS[a.viewport])) as { error?: unknown } | null;
+        // A preview that is not running or did not load is a failed check, never a clean result.
+        if (!report || typeof report !== 'object' || report.error)
+          return { ok: false, content: { error: 'VALIDATION_FAILED', viewport: a.viewport, message: `Layout could not be inspected: ${String(report?.error ?? 'no report')}` } };
         return { ok: true, content: { viewport: a.viewport, width: WIDTHS[a.viewport], report } };
       } catch (e) {
-        return { ok: false, content: { error: 'VALIDATION_FAILED', message: `Layout could not be inspected: ${(e as Error).message}` } };
+        return { ok: false, content: { error: 'VALIDATION_FAILED', viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
       }
     }
     case 'validate_project': {

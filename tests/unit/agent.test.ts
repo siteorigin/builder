@@ -7,6 +7,13 @@ import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agent/types';
 import { ProjectSession } from '../../src/main/project/session';
+import { compileProject } from '../../src/main/compile';
+import { LIMITS } from '@agent/orchestrator';
+import { toolDefinitions } from '@agent/tools';
+import { catalogueIndex } from '@agent/context';
+import { applyOperations } from '@engine/apply';
+import { styleToCss, validateStyleValue } from '@shared/styles';
+import { ICONS } from '@catalogue/foundation/icons';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>;
 
@@ -15,7 +22,7 @@ class FakeAdapter implements AgentModelAdapter {
   requests: CanonicalModelRequest[] = [];
   constructor(private turns: Turn[]) {}
   capabilities() {
-    return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: false, contextWindowTokens: 100000, maxOutputTokens: 4000 };
+    return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000 };
   }
   async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
     this.requests.push(structuredClone(req));
@@ -43,7 +50,16 @@ const finish = (text: string): ModelEvent[] => [{ type: 'text', delta: text }, {
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-async function setup(turns: Turn[]) {
+/** Several calls in one model turn, as a provider with parallel tool calls returns them. */
+const calls = (...list: Array<[string, string, unknown]>): ModelEvent => ({ type: 'done', stopReason: 'tool_use', text: '', toolCalls: list.map(([id, name, args]) => ({ id, name, arguments: JSON.stringify(args) })) });
+
+interface SetupOptions {
+  compileAll?: (session: ProjectSession) => ReturnType<typeof compileProject>;
+  inspectLayout?: (pageId: string, width: number) => Promise<unknown>;
+  codeEnabled?: boolean;
+}
+
+async function setup(turns: Turn[], opts: SetupOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'so-agent-'));
   dirs.push(dir);
   const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
@@ -54,9 +70,10 @@ async function setup(turns: Turn[]) {
     session: () => session,
     adapter: async () => ({ adapter, model: 'fake', provider: 'openai' }),
     emit: (e) => events.push(e),
-    compileAll: async () => [],
-    inspectLayout: async () => ({ issues: [] }),
-    onBusyChange: (b) => (busy = b)
+    compileAll: opts.compileAll ? () => opts.compileAll!(session) : async () => [],
+    inspectLayout: opts.inspectLayout ?? (async () => ({ issues: [] })),
+    onBusyChange: (b) => (busy = b),
+    ...(opts.codeEnabled !== undefined ? { codeEnabled: async () => opts.codeEnabled! } : {})
   });
   const ctx: ChatContext = { pageId: session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280 };
   const run = async (text: string) => {
@@ -205,5 +222,350 @@ describe('scope authority', () => {
     orchRef.answer(runId, q.choices[0]);
     while (orchRef.busy) await new Promise((res) => setTimeout(res, 10));
     expect(env.session.state.tokens.overrides['color.brand']).toBe('#000080');
+  });
+
+  it('accepts a typed yes when widening the scope', async () => {
+    const env = await setup([
+      () => [call('w1', 'request_clarification', { question: 'Change the brand colour site-wide?', widenScope: true })],
+      () => [call('w2', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#000080' }] })],
+      () => finish('Changed the brand colour.')
+    ]);
+    const homeId = env.session.state.site.homePageId;
+    const nodeId = env.session.state.pages[homeId].rootIds[0];
+    const r = await env.orch.send('Use navy everywhere', { pageId: homeId, pageTitle: 'Home', selection: { owner: { kind: 'page', id: homeId }, instancePath: [], nodeId }, selectionLabel: 'Split hero', viewport: 1280 });
+    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.question); i++) await new Promise((res) => setTimeout(res, 10));
+    env.orch.answer(r.runId!, 'Yes');
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect(env.session.state.tokens.overrides['color.brand']).toBe('#000080');
+  });
+
+  it('keeps the selection limit when the typed answer is not a plain yes', async () => {
+    const env = await setup([
+      () => [call('w1', 'request_clarification', { question: 'Change the brand colour site-wide?', widenScope: true })],
+      () => [call('w2', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#000080' }] })],
+      () => finish('Kept it to the hero.')
+    ]);
+    const homeId = env.session.state.site.homePageId;
+    const nodeId = env.session.state.pages[homeId].rootIds[0];
+    const r = await env.orch.send('Use navy', { pageId: homeId, pageTitle: 'Home', selection: { owner: { kind: 'page', id: homeId }, instancePath: [], nodeId }, selectionLabel: 'Split hero', viewport: 1280 });
+    for (let i = 0; i < 200 && !env.events.some((e) => e.message?.question); i++) await new Promise((res) => setTimeout(res, 10));
+    env.orch.answer(r.runId!, 'yes but only the hero');
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect(env.session.state.tokens.overrides['color.brand']).toBeUndefined();
+    expect(JSON.stringify(env.adapter.requests[1].items.at(-1))).toMatch(/Keep changes within the selection/);
+    expect(JSON.stringify(env.adapter.requests[2].items.at(-1))).toContain('SCOPE_MISMATCH');
+  });
+});
+
+describe('run budget, parallel calls and validation', () => {
+  const create = (title: string, rev: number) => ({ expectedRevision: rev, operations: [{ type: 'page.create', title }] });
+  const readTurns = (n: number): Turn[] => Array.from({ length: n }, (_, i) => () => [call(`r${i}`, 'read_project', { sections: i % 2 ? ['tokens'] : ['pages'] })]);
+
+  it('runs parallel read calls but only one mutation per model turn', async () => {
+    let homeId = '';
+    let teamAfterFirstTurn: boolean | null = null;
+    const { session, run, adapter } = await setup([
+      // m2 carries the revision m1 produces, so it would succeed if it were (wrongly) executed.
+      () => [calls(['r1', 'read_project', {}], ['r2', 'read_page', { pageId: homeId }], ['m1', 'apply_operations', create('About us', 0)], ['m2', 'apply_operations', create('Team', 1)])],
+      () => {
+        teamAfterFirstTurn = Object.values(session.state.pages).some((p) => p.title === 'Team');
+        // Deferred again, then sent alone: a deferral is never counted as a failure.
+        return [calls(['m3', 'apply_operations', create('Team', 1)], ['m4', 'apply_operations', create('Team', 1)])];
+      },
+      () => [call('m5', 'apply_operations', create('Team', 2))],
+      () => finish('Added two pages.')
+    ]);
+    homeId = session.state.site.homePageId;
+    const { result } = await run('Add About us and Team pages');
+    expect(result?.status).toBe('completed');
+    expect(teamAfterFirstTurn).toBe(false);
+    const titles = Object.values(session.state.pages).map((p) => p.title);
+    expect(titles.filter((t) => t === 'About us')).toHaveLength(1);
+    expect(titles.filter((t) => t === 'Team')).toHaveLength(2);
+    const results = adapter.requests[1].items.filter((i) => i.kind === 'tool_result') as Array<{ callId: string; content: string; isError?: boolean }>;
+    expect(results.map((r) => r.callId)).toEqual(['r1', 'r2', 'm1', 'm2']);
+    expect(results.slice(0, 3).every((r) => !r.isError)).toBe(true);
+    expect(results[3].isError).toBe(true);
+    expect(results[3].content).toContain('ONE_CHANGE_PER_TURN');
+    expect(result?.summary).toBe('Added two pages.');
+  });
+
+  it('keeps valid work as an undoable group when the turn budget runs out', async () => {
+    const { session, run } = await setup([() => [call('p1', 'apply_operations', create('Pricing', 0))], ...readTurns(LIMITS.modelTurns)]);
+    const before = session.historyInfo().entries.length;
+    const { runId, result } = await run('Build a big site');
+    expect(result?.status).toBe('completed');
+    expect(result?.incomplete).toBe(true);
+    expect(result?.error).toBe('turn limit');
+    expect(result?.summary).toMatch(/continue/i);
+    expect(result?.canUndo).toBe(true);
+    expect(Object.values(session.state.pages).some((p) => p.title === 'Pricing')).toBe(true);
+    expect(session.historyInfo().entries.length).toBe(before + 1);
+    expect((await session.undoGroup(runId)).ok).toBe(true);
+    expect(Object.values(session.state.pages).some((p) => p.title === 'Pricing')).toBe(false);
+  });
+
+  it('reverts at the budget when the work so far does not build', async () => {
+    const { session, run } = await setup([() => [call('p1', 'apply_operations', create('Pricing', 0))], ...readTurns(LIMITS.modelTurns)], {
+      compileAll: async (s) => (Object.values(s.state.pages).some((p) => p.title === 'Pricing') ? [{ severity: 'error', code: 'COMPILE', message: 'Pricing page: broken' }] : [])
+    });
+    const { result } = await run('Build a big site');
+    expect(result?.status).toBe('failed');
+    expect(result?.error).toBe('turn limit');
+    expect(result?.summary).toMatch(/changes so far had errors/);
+    expect(result?.incomplete).toBeFalsy();
+    expect(Object.values(session.state.pages).some((p) => p.title === 'Pricing')).toBe(false);
+  });
+
+  it('uses the adapter output budget and retries a cut-off turn with a request for smaller steps', async () => {
+    const { session, run, adapter } = await setup([
+      () => [{ type: 'done', stopReason: 'max_tokens', text: '', toolCalls: [] }],
+      () => [call('p1', 'apply_operations', create('Gallery', 0))],
+      () => finish('Added a gallery page.')
+    ]);
+    const { result } = await run('Add a gallery page');
+    expect(result?.status).toBe('completed');
+    expect(Object.values(session.state.pages).some((p) => p.title === 'Gallery')).toBe(true);
+    expect(JSON.stringify(adapter.requests[1].items.at(-1))).toMatch(/smaller/);
+    // The cut-off turn is not replayed.
+    expect(adapter.requests[1].items.filter((i) => i.kind === 'assistant')).toHaveLength(0);
+    expect(adapter.requests[0].maxOutputTokens).toBe(32000);
+  });
+
+  it('gives up after repeated cut-off turns, but a normal turn resets the count', async () => {
+    const cut = (): ModelEvent[] => [{ type: 'done', stopReason: 'max_tokens', text: '', toolCalls: [] }];
+    const ok = await setup([cut, cut, () => [call('r1', 'read_project', {})], cut, cut, () => finish('Nothing to change.')]);
+    expect((await ok.run('Look around')).result?.status).toBe('no-changes');
+    const bad = await setup([cut, cut, cut, () => finish('Unreachable.')]);
+    const { result } = await bad.run('Look around');
+    expect(result?.status).toBe('failed');
+    expect(result?.error).toBe('truncated');
+    expect(bad.adapter.requests).toHaveLength(3);
+  });
+
+  it('keeps valid work when the tool-call budget runs out mid-turn', async () => {
+    const reads = Array.from({ length: LIMITS.toolCalls + 5 }, (_, i): [string, string, unknown] => [`r${i}`, 'read_project', {}]);
+    const { session, run } = await setup([() => [call('p1', 'apply_operations', create('Pricing', 0))], () => [calls(...reads)]]);
+    const { result } = await run('Build a big site');
+    expect(result).toMatchObject({ status: 'completed', incomplete: true, error: 'tool limit', canUndo: true });
+    expect(Object.values(session.state.pages).some((p) => p.title === 'Pricing')).toBe(true);
+  });
+
+  it('stops promptly when stopped during a rate-limit backoff', async () => {
+    const env = await setup([() => [{ type: 'error', code: 'rate_limit', message: 'The provider is rate limiting requests.', retryAfterMs: 15000 }], () => finish('Done.')]);
+    const { run, orch } = env;
+    const { events } = env;
+    const started = Date.now();
+    const pending = run('Do something');
+    // Stop once the backoff has started.
+    for (let i = 0; i < 200 && !events.some((e) => e.message?.activities?.some((a) => a.tool === 'provider')); i++) await new Promise((r) => setTimeout(r, 10));
+    orch.stop();
+    const { result } = await pending;
+    expect(result?.status).toBe('cancelled');
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  /**
+   * The real component compiler, plus one project rule the engine does not enforce on its own (a page must
+   * have content), so a run can leave the project valid-but-failing and the repair loop has work to do.
+   */
+  const checkProject = async (s: ProjectSession) => [
+    ...(await compileProject(s.state)),
+    ...Object.values(s.state.pages)
+      .filter((p) => p.rootIds.length === 0)
+      .map((p) => ({ severity: 'error' as const, code: 'EMPTY_PAGE', message: `${p.title} has no sections.` }))
+  ];
+  const pricingPage = (s: ProjectSession) => Object.values(s.state.pages).find((p) => p.title === 'Pricing');
+
+  it('repairs a change that fails validation before finishing (Validating → Repairing)', async () => {
+    let session: ProjectSession;
+    const env = await setup(
+      [
+        () => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Pricing', starter: 'empty' }] })],
+        () => finish('Added a pricing page.'),
+        () => [call('c2', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'node.insert', owner: { kind: 'page', id: pricingPage(session)!.id }, componentId: 'pricing.plans' }] })],
+        () => finish('Added a pricing page with plans.')
+      ],
+      { compileAll: checkProject }
+    );
+    session = env.session;
+    const { result } = await env.run('Add a pricing page');
+    expect(result?.status).toBe('completed');
+    expect(result?.summary).toBe('Added a pricing page with plans.');
+    expect(pricingPage(session)!.rootIds).toHaveLength(1);
+    const repairPrompt = env.adapter.requests[2].items.at(-1) as { kind: string; text: string };
+    expect(repairPrompt.kind).toBe('user');
+    expect(repairPrompt.text).toMatch(/Validation found new errors[\s\S]*Pricing has no sections/);
+    expect(env.events.some((e) => e.kind === 'status' && e.status === 'repairing')).toBe(true);
+    expect(result?.validation.join(' ')).toMatch(/build without errors/);
+    expect(result?.canUndo).toBe(true);
+  });
+
+  it('reverts when repairs run out (Validating → Repairing → failed)', async () => {
+    const { session, run } = await setup(
+      [
+        () => [call('c1', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'page.create', title: 'Pricing', starter: 'empty' }] })],
+        () => finish('Done.'),
+        () => finish('Done again.'),
+        () => finish('Really done.')
+      ],
+      { compileAll: checkProject }
+    );
+    const { result } = await run('Add a pricing page');
+    expect(result?.status).toBe('failed');
+    expect(result?.summary).toMatch(/could not be repaired/);
+    expect(pricingPage(session)).toBeUndefined();
+  });
+
+  it('reports overflow found by inspect_layout and never claims a check that could not run', async () => {
+    let homeId = '';
+    let n = 0;
+    const env = await setup(
+      [
+        () => [call('p1', 'apply_operations', create('Wide', 0))],
+        () => [calls(['i1', 'inspect_layout', { pageId: homeId, viewport: 'phone' }], ['i2', 'inspect_layout', { pageId: homeId, viewport: 'tablet' }])],
+        () => finish('Added the page.')
+      ],
+      { inspectLayout: async () => (++n === 1 ? { viewportWidth: 390, issues: [{ kind: 'text-overflow', message: 'Text is wider than its box.' }] } : { error: 'The preview is not running.' }) }
+    );
+    homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Add a wide page');
+    expect(result?.status).toBe('completed');
+    const v = result!.validation.join(' | ');
+    expect(v).toMatch(/overflow.*phone/i);
+    expect(v).toMatch(/Couldn.t check the layout at tablet/);
+    expect(v).not.toMatch(/Fits the screen/);
+    const second = env.adapter.requests[2].items.filter((i) => i.kind === 'tool_result') as Array<{ callId: string; isError?: boolean }>;
+    expect(second.find((r) => r.callId === 'i2')?.isError).toBe(true);
+  });
+
+  it('reports element overflow, clean pages and an inspection that threw', async () => {
+    let homeId = '';
+    const reports: Array<() => Promise<unknown>> = [
+      async () => ({ issues: [{ kind: 'element-overflow', message: 'Extends beyond the viewport.' }] }),
+      async () => ({ issues: [{ kind: 'missing-alt', message: 'No alt.' }] }),
+      async () => {
+        throw new Error('The preview did not respond in time.');
+      },
+      async () => {
+        throw new Error('The preview did not respond in time.');
+      }
+    ];
+    const env = await setup(
+      [
+        () => [call('p1', 'apply_operations', create('Wide', 0))],
+        () => [calls(['i1', 'inspect_layout', { pageId: homeId, viewport: 'phone' }], ['i2', 'inspect_layout', { pageId: homeId, viewport: 'desktop' }], ['i3', 'inspect_layout', { pageId: homeId, viewport: 'tablet' }])],
+        // The same failing check again does not end the run or throw the work away.
+        () => [call('i4', 'inspect_layout', { pageId: homeId, viewport: 'tablet' })],
+        () => finish('Added the page.')
+      ],
+      { inspectLayout: () => reports.shift()!() }
+    );
+    homeId = env.session.state.site.homePageId;
+    const { result } = await env.run('Add a wide page');
+    expect(result?.status).toBe('completed');
+    const v = result!.validation;
+    expect(v).toContain('Content is wider than the screen at phone width.');
+    expect(v).toContain('Fits the screen at desktop width.');
+    expect(v).toContain("Couldn't check the layout at tablet width.");
+    expect(Object.values(env.session.state.pages).some((p) => p.title === 'Wide')).toBe(true);
+  });
+});
+
+describe('tool definitions', () => {
+  type Variant = { properties: { type: { const: string } } };
+  const applySchema = (defs: ReturnType<typeof toolDefinitions>) => {
+    const apply = defs.find((d) => d.name === 'apply_operations')!.parameters as { properties: { operations: { items: { oneOf?: Variant[]; anyOf?: Variant[] } } }; required: string[] };
+    const variants = apply.properties.operations.items.oneOf ?? apply.properties.operations.items.anyOf ?? [];
+    return { types: variants.map((v) => v.properties.type.const), required: apply.required };
+  };
+
+  it('offers no asset.add, makes scope optional, and hides code operations without Developer mode', () => {
+    const withCode = applySchema(toolDefinitions({ codeEnabled: true }));
+    expect(withCode.types).toContain('page.create');
+    expect(withCode.types).toContain('component.createCode');
+    expect(withCode.types).not.toContain('asset.add');
+    expect(withCode.required).not.toContain('scope');
+    const noCode = applySchema(toolDefinitions({ codeEnabled: false }));
+    for (const t of ['component.createCode', 'component.updateSource', 'component.convertToCode']) expect(noCode.types).not.toContain(t);
+    expect(noCode.types).toContain('page.create');
+    const names = (codeEnabled: boolean) => toolDefinitions({ codeEnabled }).map((d) => d.name);
+    expect(names(false)).not.toContain('apply_source_patch');
+    expect(names(false)).not.toContain('read_source');
+    expect(names(true)).toContain('apply_source_patch');
+    expect(names(true)).toContain('read_source');
+  });
+
+  it('offers a run only the tools its Developer mode allows', async () => {
+    const env = await setup([() => [call('s1', 'read_source', { definitionId: 'x' })], () => finish('Could not read it.')], { codeEnabled: false });
+    await env.run('Show me the source');
+    expect(env.adapter.requests[0].tools.map((t) => t.name)).not.toContain('read_source');
+    expect(JSON.stringify(env.adapter.requests[1].items.at(-1))).toContain('Unknown tool');
+  });
+});
+
+describe('values the assistant commonly gets wrong', () => {
+  const featureCards = (state: ReturnType<typeof createStarterState>) => {
+    for (const p of Object.values(state.pages))
+      for (const n of Object.values(p.nodes)) if (n.kind === 'instance' && state.components[n.definitionId]?.componentId === 'features.grid') return { pageId: p.id, node: n as { id: string; props: Record<string, unknown> } };
+    throw new Error('No feature grid in the starter');
+  };
+
+  it('refuses an unknown icon name and lists the valid ones', () => {
+    const state = createStarterState('business', 'Test', false);
+    const { pageId, node } = featureCards(state);
+    const item = (node.props.items as Array<{ id: string }>)[0];
+    const op = (icon: string) => ({ type: 'instance.setProp' as const, owner: { kind: 'page' as const, id: pageId }, nodeId: node.id, prop: 'items', itemId: item.id, field: 'icon', value: icon });
+    expect(() => applyOperations(state, [op('flux-capacitor')])).toThrow(/not an available icon.*Use one of: .*sparkles/);
+    expect(() => applyOperations(state, [op('leaf')])).not.toThrow();
+  });
+
+  it('keeps an icon saved under older rules when another field is edited', () => {
+    const state = createStarterState('business', 'Test', false);
+    const { pageId, node } = featureCards(state);
+    const items = node.props.items as Array<Record<string, unknown> & { id: string }>;
+    items[0].icon = 'flux-capacitor';
+    const owner = { kind: 'page' as const, id: pageId };
+    const { state: next } = applyOperations(state, [
+      { type: 'instance.setProp', owner, nodeId: node.id, prop: 'items', itemId: items[0].id, field: 'title', value: 'Renamed' },
+      { type: 'instance.listInsert', owner, nodeId: node.id, prop: 'items' }
+    ]);
+    expect(featureCards(next).node.props.items).toEqual(expect.arrayContaining([expect.objectContaining({ title: 'Renamed', icon: 'flux-capacitor' })]));
+    // A whole-list update that leaves it alone is fine too; changing it to another unknown name is not.
+    const list = featureCards(next).node.props.items as Array<Record<string, unknown>>;
+    expect(() => applyOperations(next, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: 'items', value: list }])).not.toThrow();
+    expect(() => applyOperations(next, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: 'items', value: list.map((x, i) => (i === 0 ? { ...x, icon: 'warp-drive' } : x)) }])).toThrow(/not an available icon/);
+  });
+
+  it('only uses available icons in the catalogue and starters', () => {
+    const state = createStarterState('business', 'Test', true);
+    const used: string[] = [];
+    const walk = (v: unknown, schema: unknown) => {
+      const s = schema as { type: string; fields?: Record<string, unknown> };
+      if (s.type === 'icon' && typeof v === 'string') used.push(v);
+      if (s.type === 'list' && Array.isArray(v)) for (const item of v) for (const [f, fs] of Object.entries(s.fields ?? {})) walk((item as Record<string, unknown>)[f], fs);
+    };
+    for (const def of Object.values(state.components)) for (const s of Object.values(def.properties)) walk((s as { default?: unknown }).default, s);
+    for (const tree of [...Object.values(state.pages), state.site.shell.header, state.site.shell.footer])
+      for (const n of Object.values(tree.nodes)) if (n.kind === 'instance') for (const [k, v] of Object.entries(n.props)) if (state.components[n.definitionId]?.properties[k]) walk(v, state.components[n.definitionId].properties[k]);
+    expect(used.length).toBeGreaterThan(0);
+    expect(used.filter((i) => !(i in ICONS))).toEqual([]);
+  });
+
+  it('reads a bare text token ID as a token and refuses other text style strings', () => {
+    expect(validateStyleValue('textStyle', { token: 'text.h2' })).toBeNull();
+    expect(validateStyleValue('textStyle', 'text.h2')).toBeNull();
+    expect(styleToCss('textStyle', 'text.h2')).toEqual(styleToCss('textStyle', { token: 'text.h2' }));
+    expect(styleToCss('textStyle', 'text.h2').length).toBeGreaterThan(0);
+    expect(validateStyleValue('textStyle', 'bold 24px serif')).toMatch(/token reference/);
+  });
+
+  it('describes catalogue components with compact property signatures', () => {
+    const index = catalogueIndex('foundation');
+    const grid = index.find((c) => c.componentId === 'features.grid')!;
+    expect(grid.props.items).toMatch(/^list<.*icon:icon.*title:string/);
+    expect(grid.parts.length).toBeGreaterThan(0);
+    expect(index.some((c) => c.slots?.length)).toBe(true);
+    expect(index.find((c) => c.componentId === 'cta.banner')!.props.heading).toBe('string');
   });
 });

@@ -131,8 +131,31 @@ export function componentDetail(def: ComponentDefinition) {
   };
 }
 
+/** One property as a short type signature: "string", "link", "enum(a|b)", "list<title:string, icon:icon>". */
+function propSignature(s: PropSchema): string {
+  if (s.type === 'enum') return `enum(${s.options.map((o) => o.value).join('|')})`;
+  if (s.type === 'list') return `list<${Object.entries(s.fields).map(([f, fs]) => `${f}:${propSignature(fs)}`).join(', ')}>${s.max ? ` max ${s.max}` : ''}`;
+  return s.type;
+}
+
+/**
+ * The theme catalogue with compact property signatures, style parts and variants, so the model can plan a
+ * whole page from one read instead of calling read_component for every component.
+ */
 export function catalogueIndex(themeId: string) {
-  return catalogueEntries(themeId).map((e) => ({ componentId: e.componentId, name: e.name, category: e.category, variants: e.variants.map((v) => v.id) }));
+  const defs = new Map(getTheme(themeId).components.map((c) => [c.componentId, c]));
+  return catalogueEntries(themeId).map((e) => {
+    const def = defs.get(e.componentId);
+    return {
+      componentId: e.componentId,
+      name: e.name,
+      category: e.category,
+      variants: e.variants.map((v) => v.id),
+      props: def ? Object.fromEntries(Object.entries(def.properties).map(([k, s]) => [k, propSignature(s)])) : {},
+      parts: def ? Object.keys(def.parts) : [],
+      ...(def?.slots && Object.keys(def.slots).length ? { slots: Object.keys(def.slots) } : {})
+    };
+  });
 }
 
 export function tokensSummary(state: ProjectState) {
