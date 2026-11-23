@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Copy, FileText, House, MoreHorizontal, Pencil, Plus, Settings2, Trash2, ArrowUp, ArrowDown, Code } from 'lucide-react';
+import { Copy, FileText, House, Menu, MoreHorizontal, Pencil, Plus, Settings2, Trash2, ArrowUp, ArrowDown, Code } from 'lucide-react';
 import { slugify, validateRoute } from '@shared/routes';
 import type { ProjectState } from '@shared/types';
-import { applyOps, markDraft, setState, useStore } from '../store';
-import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
+import { applyOps, markDraft, setState, toast, useStore } from '../store';
+import { openSection, rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { selectPage } from '../lib/actions';
+import { headerMenu as findHeaderMenu } from '@engine/tree';
 
 /**
  * The address a new page with this title gets: its slug (made valid when it is a reserved name), with a
@@ -46,6 +47,7 @@ export function PagesPanel() {
   const [adding, setAdding] = useState(false);
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('');
+  const [addToNav, setAddToNav] = useState(true);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameBox, setRenameBox] = useState<{ top: number; left: number; width: number } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -120,15 +122,33 @@ export function PagesPanel() {
     refocus('.pages-head-add');
   };
   const { route: newRoute, base: newBase, reserved: newReserved } = newPageRoute(st, title);
+  // The shared header's menu: its instance, when it has a navigation list a page link can join.
+  const menuOf = findHeaderMenu(st);
+  const headerMenu = menuOf ? { id: menuOf.node.id } : null;
+  /** Select the shared header and land on its navigation list, ready to edit. */
+  const editMenu = () => {
+    if (!headerMenu) return;
+    setState({ selection: { owner: { kind: 'shell', id: 'header' }, instancePath: [], nodeId: headerMenu.id }, rightTab: 'inspect', dockOpen: true, definitionMode: null });
+    setTimeout(() => {
+      openSection('content');
+      setTimeout(() => {
+        const list = document.querySelector<HTMLElement>('#dock-panel-inspect [data-list="links"]');
+        list?.scrollIntoView({ block: 'nearest' });
+        (list?.querySelector<HTMLElement>('.list-editor-head .title') ?? list?.querySelector<HTMLElement>('.insp-add'))?.focus();
+      }, 250);
+    }, 50);
+  };
   const add = async () => {
     const t = title.trim();
     if (!t || creating) return;
     setCreating(true);
     // New pages go where the form was: at the end of the list. The draft stays until the page exists.
-    const r = await applyOps([{ type: 'page.create', title: t, route: newRoute, starter: 'intro' }], `Add page ${t}`);
+    const nav = addToNav && !!headerMenu;
+    const r = await applyOps([{ type: 'page.create', title: t, route: newRoute, starter: 'intro', addToNavigation: nav || undefined }], `Add page ${t}`);
     setCreating(false);
     const id = r?.[0]?.pageId as string | undefined;
     if (!id) return addInput.current?.focus();
+    if (nav && r?.[0]?.addedToNavigation === false) toast(`Added ${t}. The header menu is full, so it isn’t in the menu yet.`, 'info', { label: 'Edit menu', run: editMenu });
     closeForm();
     selectPage(id);
     setTimeout(() => {
@@ -206,6 +226,11 @@ export function PagesPanel() {
     <>
       <div className="panel-head">
         <h3>Pages</h3>
+        {headerMenu && (
+          <button className="btn btn-sm btn-ghost pages-head-menu" onClick={editMenu} title="Edit the shared header’s menu links">
+            <Menu /> Edit menu
+          </button>
+        )}
         <button
           className="btn btn-sm btn-ghost pages-head-add"
           aria-expanded={adding}
@@ -379,6 +404,12 @@ export function PagesPanel() {
               {title.trim() && newRoute !== newBase && <span className="note"> · {newBase} is taken</span>}
               {title.trim() && newReserved && <span className="note"> · {newReserved} is reserved</span>}
             </div>
+            {headerMenu && (
+              <label className="pages-add-nav">
+                <input type="checkbox" checked={addToNav} disabled={creating} onChange={(e) => setAddToNav(e.target.checked)} />
+                Add to header menu
+              </label>
+            )}
             <div className="pages-add-actions">
               <button className="btn btn-sm btn-primary" disabled={!title.trim() || creating} onMouseDown={(e) => e.preventDefault()} onClick={() => void add()}>
                 {creating ? 'Adding page…' : 'Add page'}

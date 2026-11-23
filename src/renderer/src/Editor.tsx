@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { Check, Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs } from './components/ui';
-import { api, getState, setState, toast, useStore } from './store';
+import { api, applyOps, getState, setState, toast, useStore } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas } from './panels/Canvas';
 import { HealthModal, StatusBar } from './panels/StatusBar';
@@ -18,7 +18,9 @@ import { ExportModal } from './panels/ExportModal';
 import { CommandMenu } from './panels/CommandMenu';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal } from './panels/Dialogs';
-import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles } from './lib/actions';
+import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
+import { refLabel } from './lib/model';
+import type { OwnerRef } from '@shared/types';
 import { useTransitionAnnouncement } from './lib/announce';
 
 const LEFT_TABS = [
@@ -41,6 +43,47 @@ function leaveDefinitionMode() {
 function isTyping(e: KeyboardEvent) {
   const t = e.target as HTMLElement | null;
   return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+}
+
+/** What Cmd+C last copied: a section or element on a page, pasted by reference to the page it lives on. */
+let copied: { owner: OwnerRef; nodeId: string; label: string; section: boolean } | null = null;
+
+const textSelected = () => {
+  const sel = window.getSelection();
+  return !!sel && !sel.isCollapsed;
+};
+
+/** Copy the selected section or element (the whole section when a part of one is selected). */
+function copySelection(): boolean {
+  const s = getState();
+  const t = structuralTarget(s.selection);
+  if (!t || !s.snapshot) return false;
+  if (t.owner.kind !== 'page') {
+    toast(t.owner.kind === 'shell' ? 'The shared header and footer are on every page already, so they aren’t copied.' : 'Copy sections from a page. Inside a component, use Duplicate.', 'error');
+    return true;
+  }
+  const page = s.snapshot.state.pages[t.owner.id];
+  const label = refLabel(s.snapshot.state, t);
+  copied = { owner: t.owner, nodeId: t.nodeId, label, section: page?.rootIds.includes(t.nodeId) ?? false };
+  toast(`Copied ${label}. Paste it on any page with ⌘V.`, 'info');
+  return true;
+}
+
+/** Paste the copy after the selection (or at the end of the page), with new IDs, and select it. */
+async function pasteCopied() {
+  const s = getState();
+  if (!copied || !s.snapshot) return;
+  const src = s.snapshot.state.pages[copied.owner.id];
+  if (!src?.nodes[copied.nodeId]) {
+    toast(`${copied.label} no longer exists, so there is nothing to paste.`, 'error');
+    copied = null;
+    return;
+  }
+  const at = insertionPoint(copied.section ? 'section' : 'element');
+  if (!at) return;
+  const r = await applyOps([{ type: 'node.copy', owner: copied.owner, nodeId: copied.nodeId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${copied.label}`);
+  const id = r?.[0]?.nodeId as string | undefined;
+  if (id) setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
 }
 
 /** Global editor shortcuts. Also called for keys forwarded from the preview frame. */
@@ -68,6 +111,15 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   }
   if (mod && key.toLowerCase() === 'd') {
     void duplicateSelection();
+    return true;
+  }
+  // Copy and paste sections and elements, also between pages. Selected text keeps the ordinary copy.
+  // Only while editing a page, with no dialog or menu open: a key forwarded from the preview frame skips the
+  // editor's own focus checks, and Preview mode keeps the site's own copy and paste.
+  if (mod && !shift && (key.toLowerCase() === 'c' || key.toLowerCase() === 'v') && !textSelected() && s.mode === 'edit' && !s.definitionMode && !s.modal && !openDialogs.length && !openMenus.count) {
+    if (key.toLowerCase() === 'c') return copySelection();
+    if (!copied) return false;
+    void pasteCopied();
     return true;
   }
   if (mod && key.toLowerCase() === 'j') {
@@ -168,6 +220,12 @@ export function Editor() {
       if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
         const t = e.target as HTMLElement;
         if (t !== document.body && !t.closest('[role="tree"], .canvas, .ov-chip')) return;
+      }
+      // Copy and paste act on the canvas selection from the canvas, Layers, the Pages list (pick a page, then
+      // paste) and the selection's own Inspector heading, never from an unrelated control.
+      if (mod && ['c', 'v'].includes(e.key.toLowerCase())) {
+        const t = e.target as HTMLElement;
+        if (t !== document.body && !t.closest('[role="tree"], .canvas, .ov-chip, .pages-list, .insp-head')) return;
       }
       // Save from inside a field: commit the field first so the flush includes it.
       if (mod && e.key.toLowerCase() === 's' && isTyping(e)) (e.target as HTMLElement).blur();

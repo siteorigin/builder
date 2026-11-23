@@ -1,8 +1,8 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Box, ChevronRight, Columns3, Component, Copy, CornerDownRight, Ellipsis, EyeOff, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
+import { ArrowDown, ArrowUp, Box, ChevronRight, Columns3, Component, Copy, CornerDownRight, Ellipsis, Eye, EyeOff, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { childLists, displayName, findParent, subtreeIds } from '@engine/tree';
+import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
 import { applyOps, markDraft, setState, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { askAiAbout, deleteSelection, duplicateSelection, moveSelection } from '../lib/actions';
@@ -56,6 +56,20 @@ let dragging: { owner: OwnerRef; nodeId: string } | null = null;
 
 function isHidden(n: GraphNode) {
   return !!n.styles?.base?.hidden || (n.kind === 'instance' && !!n.overrides?.root?.base?.hidden);
+}
+
+/** Whether hiding a layer can work: not a repeat or slot, and not a code component that ignores the classes it is given. */
+function hideable(state: ProjectState, n: GraphNode) {
+  if (n.kind === 'repeat' || n.kind === 'slot') return false;
+  if (n.kind !== 'instance') return true;
+  const def = state.components[n.definitionId];
+  return !!def && codeTakesOverrides(def);
+}
+
+/** Hide a layer at every size, or show it again. Sizes with their own visibility keep it. */
+function toggleHidden(owner: OwnerRef, n: GraphNode, name: string) {
+  const hide = !isHidden(n);
+  void applyOps([{ type: 'node.setStyle', owner, nodeId: n.id, ...(n.kind === 'instance' ? { partId: 'root' } : {}), scope: 'base', property: 'hidden', value: hide ? true : null }], hide ? `Hide ${name}` : `Show ${name}`);
 }
 
 /** The visible rows, in order (a row inside a closed branch is not rendered at all). */
@@ -203,6 +217,9 @@ export function LayersPanel() {
             { label: 'Move down', icon: <ArrowDown />, shortcut: '⇧⌘↓', disabled: here.index >= here.list.length - 1, onSelect: () => void moveSelection(1) },
             ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : [])
           ]
+        : []),
+      ...(editable && node && !ref.instancePath.length && hideable(st, node)
+        ? [{ label: isHidden(node) ? 'Show on the page' : 'Hide on the page', icon: isHidden(node) ? <Eye /> : <EyeOff />, onSelect: () => toggleHidden(ref.owner, node, name) }]
         : []),
       ...(editable
         ? [
@@ -381,6 +398,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   const groupId = `layers-group-${owner.kind}-${id}`;
   const title = [name, path.length ? `In ${path.join(' › ')}` : '', custom ? 'Made in this project' : '', hidden ? 'Hidden on the page' : ''].filter(Boolean).join('\n');
   const draggable = owner.kind !== 'shell' && !isDefRoot;
+  const canToggleHidden = owner.kind !== 'shell' && !isDefRoot && hideable(state, n);
   const startRename = () => {
     cancelRename.current = false;
     setRenaming(true);
@@ -585,10 +603,25 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
             {name}
           </span>
         )}
-        {hidden && !renaming && (
+        {hidden && !renaming && !canToggleHidden && (
           <span className="layer-flag" title="Hidden on the page">
             <EyeOff aria-hidden="true" />
           </span>
+        )}
+        {/* The eye shows (and switches) visibility at every size; a hidden layer always shows it. Like the row's
+            other actions it is for the pointer: the row's menu (Shift+F10) has Hide and Show for the keyboard. */}
+        {canToggleHidden && !renaming && (
+          <button
+            className={`icon-btn sm layer-eye${hidden ? ' on' : ''}`}
+            tabIndex={-1}
+            aria-label={hidden ? `Show ${name}` : `Hide ${name}`}
+            aria-pressed={hidden}
+            title={hidden ? 'Hidden on the page. Click to show it.' : 'Hide on the page'}
+            onClick={(e) => (e.stopPropagation(), toggleHidden(owner, n, name))}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            {hidden ? <EyeOff /> : <Eye />}
+          </button>
         )}
         {custom && !renaming && (
           <span className="badge layer-badge" title="A component made in this project">

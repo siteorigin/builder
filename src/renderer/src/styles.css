@@ -763,6 +763,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .style-more-body[hidden] { display: none; }
 .style-footer { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 12px; border-top: 1px solid var(--border); }
 .style-footer-hint { font-size: 12px; color: var(--text-3); }
+.style-footer-every { margin-top: 4px; font-size: 12px; min-height: 24px; }
 .token-chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 8px 0 6px; border-radius: var(--r-sm); border: 1px solid var(--border-control); background: var(--raised); font-size: 12px; min-width: 0; flex: 1; text-align: left; }
 .token-chip .swatch { width: 14px; height: 14px; border-radius: var(--r-xs); box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.15), 0 0 0 1px rgb(255 255 255 / 0.12); flex: none; }
 .token-chip .link { color: var(--accent-text); width: 12px; height: 12px; flex: none; }
@@ -1324,6 +1325,10 @@ body.dialog-open .toast .btn { visibility: hidden; }
 .pages-add-route .value { color: var(--text); font-weight: 500; }
 .pages-add-route .value.empty { color: var(--text-3); font-weight: 400; }
 .pages-add-actions { display: flex; gap: 6px; }
+.pages-add-nav { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); padding: 0 2px; }
+.pages-add-nav input { margin: 0; accent-color: var(--accent); }
+.pages-head-menu { margin-left: auto; color: var(--text-2); }
+.pages-head-menu:hover { color: var(--text); }
 .delete-page-route { font-weight: 500; overflow-wrap: anywhere; }
 /* Assets: one image's details replace the grid. Flat on the panel (no card inside a panel), in three
    bands split by straight dividers: what it is and where it is used, what it says, what you can do. */
@@ -1393,6 +1398,11 @@ button.asset-use:hover svg.go { color: var(--text); }
 .layers-tree .layer-flag { display: inline-flex; flex: none; color: var(--text-3); }
 .layers-tree .layer-flag svg { width: 14px; height: 14px; }
 .layers-tree .layer-row.selected .layer-flag { color: inherit; }
+/* The eye: always shown on a hidden layer, otherwise on the row being pointed at, selected or focused. */
+.layers-tree .layer-eye { flex: none; color: var(--text-3); visibility: hidden; }
+.layers-tree .layer-eye.on, .layers-tree .layer-row:is(:hover, .selected, :focus-within) .layer-eye { visibility: visible; }
+.layers-tree .layer-row.selected .layer-eye { color: inherit; }
+.layers-tree .layer-row.drop-inside .layer-eye { display: none; }
 .layers-tree .layer-badge { flex: none; height: 18px; padding: 0 6px; font-weight: 500; }
 .layers-tree .layer-row.selected .layer-badge { background: var(--raised); color: inherit; }
 .layers-children { position: relative; display: flex; flex-direction: column; gap: 1px; }
@@ -1480,6 +1490,7 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-group-title { float: left; width: 100%; margin: 0; padding: 0; font-size: 12px; font-weight: 600; color: var(--text); }
 .insp-link-row { display: flex; align-items: center; gap: 6px; }
 .insp-link-type { width: 112px; flex: none; }
+.insp-link-sub { font-size: 12px; padding-left: 2px; }
 .insp-image { display: flex; flex-direction: column; gap: 8px; padding: 8px 10px 10px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel-2); }
 .insp-group .insp-image { padding: 0; border: 0; background: none; }
 .insp-image-top { display: flex; align-items: center; gap: 10px; }
@@ -1489,6 +1500,22 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-image-name { font-size: 12px; font-weight: 500; color: var(--text); }
 .insp-image-name.none { font-weight: 400; color: var(--text-2); }
 .textarea.insp-alt { min-height: 52px; }
+.insp-image.drop-over { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.insp-pick { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--panel); }
+.insp-pick-tools { display: flex; align-items: center; gap: 6px; }
+.insp-pick-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; max-height: 260px; overflow: auto; padding: 2px; }
+.insp-pick-tile { display: flex; flex-direction: column; gap: 3px; padding: 3px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text-2); font-size: 11px; text-align: left; cursor: pointer; min-width: 0; }
+.insp-pick-tile img, .insp-pick-tile > svg { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 4px; background: var(--canvas); box-shadow: inset 0 0 0 1px var(--border); }
+.insp-pick-tile > svg { padding: 18%; color: var(--text-3); }
+.insp-pick-tile:hover { background: var(--hover); }
+.insp-pick-tile.current { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 2px var(--accent); }
+.insp-icon-picker { display: flex; flex-direction: column; gap: 6px; }
+.insp-icon-btn { display: flex; align-items: center; gap: 8px; padding-right: 8px; text-align: left; background-image: none; cursor: pointer; }
+.insp-icon-btn > svg:last-child { width: 14px; height: 14px; }
+.insp-icon-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; max-height: 220px; overflow: auto; padding: 2px; }
+.insp-icon-tile { display: grid; place-items: center; aspect-ratio: 1; border: 0; border-radius: var(--r-sm); background: none; color: var(--text); cursor: pointer; }
+.insp-icon-tile:hover { background: var(--hover); }
+.insp-icon-tile.current { background: var(--active); box-shadow: inset 0 0 0 2px var(--accent); }
 .list-editor-body[hidden] { display: none; }
 .insp-count { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 99px; background: var(--active); font-size: 11px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .insp-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 24px; text-align: center; color: var(--text-2); }

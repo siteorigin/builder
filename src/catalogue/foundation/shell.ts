@@ -17,7 +17,10 @@ const HEADER_SOURCE = `<script>
 		links = [],
 		ctaLabel = '',
 		ctaLink = null,
+		ctaStyle = 'primary',
 		sticky = true,
+		surface = 'background',
+		showSiteName = true,
 		class: className = ''
 	} = $props();
 
@@ -36,13 +39,16 @@ const HEADER_SOURCE = `<script>
 
 <svelte:window onkeydown={onKeydown} />
 
-<header class={['so-header', sticky && 'so-header--sticky', open && 'so-header--open', className]}>
+<header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', open && 'so-header--open', className]}>
 	<div class="so-header__inner">
-		<a class="so-header__brand" href="/">
+		<!-- Without the visible name, the link is still named for screen readers. -->
+		<a class="so-header__brand" href="/" aria-label={logo?.src && !showSiteName ? siteName?.trim() || logo?.alt || 'Home' : undefined}>
 			{#if logo?.src}
 				<SoImage image={logo} class="so-header__logo" eager />
 			{/if}
-			<span>{siteName}</span>
+			{#if showSiteName || !logo?.src}
+				<span>{siteName}</span>
+			{/if}
 		</a>
 
 		<button
@@ -76,7 +82,7 @@ const HEADER_SOURCE = `<script>
 				{/each}
 			</ul>
 			{#if ctaLabel && ctaLink?.href}
-				<a class="so-btn so-btn--primary so-header__cta" href={ctaLink.href}>{ctaLabel}</a>
+				<a class={['so-btn', ctaStyle === 'secondary' ? 'so-btn--secondary' : 'so-btn--primary', 'so-header__cta']} href={ctaLink.href}>{ctaLabel}</a>
 			{/if}
 		</nav>
 	</div>
@@ -87,11 +93,27 @@ const HEADER_SOURCE = `<script>
 		position: relative;
 		z-index: 50;
 		background: var(--so-color-background);
+		/* Everything inside takes its colour from here, so one colour change reaches the whole header. */
+		color: var(--so-color-text);
 		border-bottom: 1px solid color-mix(in srgb, var(--so-color-border) 70%, transparent);
 	}
 	.so-header--sticky {
 		position: sticky;
 		top: 0;
+	}
+	.so-header--surface,
+	.so-header--surface .so-header__nav {
+		background: var(--so-color-surface);
+	}
+	.so-header--subtle,
+	.so-header--subtle .so-header__nav {
+		background: var(--so-color-surface-alt);
+	}
+	.so-header--inverse,
+	.so-header--inverse .so-header__nav {
+		background: var(--so-color-inverse);
+		border-color: transparent;
+		color: var(--so-color-on-inverse);
 	}
 	.so-header__inner {
 		display: flex;
@@ -107,7 +129,7 @@ const HEADER_SOURCE = `<script>
 		display: inline-flex;
 		align-items: center;
 		gap: 10px;
-		color: var(--so-color-text);
+		color: inherit;
 		font-family: var(--so-font-display);
 		font-size: 1.35rem;
 		font-weight: 520;
@@ -128,7 +150,7 @@ const HEADER_SOURCE = `<script>
 		border: 0;
 		border-radius: var(--so-radius-md);
 		background: transparent;
-		color: var(--so-color-text);
+		color: inherit;
 		cursor: pointer;
 	}
 	.so-header__toggle svg {
@@ -147,7 +169,7 @@ const HEADER_SOURCE = `<script>
 	}
 	.so-header__nav ul a {
 		position: relative;
-		color: var(--so-color-muted);
+		color: color-mix(in srgb, currentColor 72%, transparent);
 		font-size: 0.95rem;
 		font-weight: 500;
 		text-decoration: none;
@@ -155,7 +177,7 @@ const HEADER_SOURCE = `<script>
 	}
 	.so-header__nav ul a:hover,
 	.so-header__nav ul a[aria-current='page'] {
-		color: var(--so-color-text);
+		color: inherit;
 	}
 	.so-header__nav ul a[aria-current='page']::after {
 		content: '';
@@ -227,12 +249,23 @@ export const header: ComponentDefinition = {
   properties: {
     siteName: P.str('Site name', 'Studio'),
     logo: P.image('Logo'),
+    showSiteName: { ...P.bool('Show site name', true), description: 'With a logo, turn this off to show the logo alone.' },
     links: P.list('Navigation', 'Link', { label: P.str('Label', 'Page'), link: P.link('Destination') }, [], { titleField: 'label', max: 10 }),
     ctaLabel: P.str('Action label', ''),
     ctaLink: P.link('Action link'),
+    ctaStyle: { group: 'Action', ...P.choice('Action style', 'primary', [
+      ['primary', 'Filled button'],
+      ['secondary', 'Outlined button']
+    ]) },
+    surface: P.choice('Background', 'background', [
+      ['background', 'Page background'],
+      ['surface', 'Cards and panels'],
+      ['subtle', 'Alternate background'],
+      ['inverse', 'Dark']
+    ]),
     sticky: P.bool('Stick to top while scrolling', true)
   },
-  parts: { root: { nodeId: 'root', label: 'Header' } },
+  parts: { root: { nodeId: 'root', label: 'Header', styleControls: ['paddingBlock', 'background', 'color', 'border', 'shadow', 'hidden'] } },
   source: HEADER_SOURCE,
   provenance: { pack: PACK_ID, packVersion: PACK_VERSION, componentId: 'shell.header' },
   license: 'GPL-3.0-or-later'

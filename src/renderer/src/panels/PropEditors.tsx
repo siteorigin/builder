@@ -1,9 +1,9 @@
-import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, ChevronRight, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import type { ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import { createElement, Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import type { GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
-import { api, useStore } from '../store';
-import { DraftInput, Field, Switch, useMenu, SwitchRow } from '../components/ui';
+import { api, toast, useStore } from '../store';
+import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
 import { assetUrl } from '../lib/model';
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
@@ -12,44 +12,168 @@ const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
  * Link editor: what kind of destination, then the destination itself. `label` names the field it belongs to
  * ("Primary button"), so each control has a name that still makes sense out of context.
  */
+/** Anchor IDs a page offers as jump targets, in page order, plus the shared header and footer's. */
+function anchorsOn(state: ProjectState, pageId: string | null | undefined): string[] {
+  const out: string[] = [];
+  const walk = (tree: { rootIds: string[]; nodes: Record<string, GraphNode> }) => {
+    const visit = (id: string) => {
+      const n = tree.nodes[id];
+      if (!n) return;
+      if (n.anchor && !out.includes(n.anchor)) out.push(n.anchor);
+      if (n.kind === 'element' || n.kind === 'repeat') n.children.forEach(visit);
+      if (n.kind === 'instance') Object.values(n.slots ?? {}).forEach((ids) => ids.forEach(visit));
+    };
+    tree.rootIds.forEach(visit);
+  };
+  const page = pageId ? state.pages[pageId] : undefined;
+  if (page) walk(page);
+  walk(state.site.shell.header);
+  walk(state.site.shell.footer);
+  return out;
+}
+
+const OTHER_ANCHOR = '\u0000other';
+
+/**
+ * Which section of a page a link jumps to: the anchors the page has, or any ID typed in. `top` offers the top of
+ * the page (no anchor); without it an empty value asks for a choice.
+ */
+function AnchorPicker({ anchors, value, onPick, label, top }: { anchors: string[]; value: string; onPick: (a: string) => void; label: string; top?: boolean }) {
+  const [typing, setTyping] = useState(false);
+  const picker = useRef<HTMLSelectElement>(null);
+  const options = value && !anchors.includes(value) ? [...anchors, value] : anchors;
+  // Leaving the typed ID (a commit, Escape or a plain blur) goes back to the list when there is one.
+  const backToList = (refocus: boolean) => {
+    setTyping(false);
+    if (refocus) requestAnimationFrame(() => picker.current?.focus());
+  };
+  if (typing || !options.length)
+    return (
+      <span
+        className="grow"
+        style={{ display: 'flex', minWidth: 0 }}
+        onBlur={() => typing && backToList(false)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && typing) (e.stopPropagation(), backToList(true));
+        }}
+      >
+        <DraftInput
+          className="input sm grow"
+          value={value}
+          ariaLabel={label}
+          placeholder={top ? 'Top of page, or a section ID' : 'section-id'}
+          autoFocus={typing}
+          onCommit={(t) => {
+            const a = t.trim().replace(/^#/, '');
+            if (a && !/^[A-Za-z][\w-]{0,60}$/.test(a)) return toast('Section IDs start with a letter and use letters, numbers, - and _.', 'error');
+            backToList(true);
+            if (a !== value) onPick(a);
+          }}
+        />
+      </span>
+    );
+  return (
+    <select
+      ref={picker}
+      className="select sm grow"
+      value={value}
+      aria-label={label}
+      onChange={(e) => {
+        if (e.target.value === OTHER_ANCHOR) setTyping(true);
+        else onPick(e.target.value);
+      }}
+    >
+      {top ? <option value="">Top of page</option> : !value && <option value="" disabled>Choose a section…</option>}
+      {options.map((a) => (
+        <option key={a} value={a}>
+          #{a}
+        </option>
+      ))}
+      <option value={OTHER_ANCHOR}>Another section ID…</option>
+    </select>
+  );
+}
+
 export function LinkEditor({ value, onChange, state, label }: { value: LinkValue; onChange: (v: LinkValue) => void; state: ProjectState; label?: string }) {
   const v = value ?? { type: 'none', target: '' };
+  const currentPageId = useStore((s) => s.pageId);
+  // A type that needs a destination before it is a valid link (an address, a number) waits here until one
+  // is entered; a new value (an undo, another selection) ends the wait.
+  const [pending, setPending] = useState<LinkValue['type'] | null>(null);
+  const valueKey = JSON.stringify(value ?? null);
+  useEffect(() => setPending(null), [valueKey]);
+  const type = pending ?? v.type;
+  const target = pending ? '' : v.target;
   const base = label?.replace(/ link$/i, '');
   const named = (what: string) => (base && base.toLowerCase() !== 'link' ? `${base} ${what.toLowerCase()}` : what);
+  // The section a link jumps to survives a change of link type: a page link's #section becomes the anchor
+  // link's target and back again.
+  const anchor = v.type === 'anchor' ? v.target : v.anchor;
+  const withAnchor = (l: LinkValue, a: string | undefined): LinkValue => {
+    const out: LinkValue = { ...l };
+    if (a) out.anchor = a;
+    else delete out.anchor;
+    return out;
+  };
+  // The page a link last pointed at, so a trip through another link type comes back to it.
+  const lastPage = useRef<string | null>(null);
+  if (v.type === 'page' && state.pages[v.target]) lastPage.current = v.target;
+  const pickType = (t: LinkValue['type']) => {
+    if (t === v.type) return setPending(null);
+    if (t === 'none') onChange({ type: 'none', target: '' });
+    else if (t === 'page') {
+      // Back to the page it pointed at before; else the page being edited, where a carried section lives; else Home.
+      const page = lastPage.current && state.pages[lastPage.current] ? lastPage.current : anchor && currentPageId && state.pages[currentPageId] ? currentPageId : state.site.homePageId;
+      onChange(withAnchor({ type: t, target: page, newTab: v.newTab }, anchor));
+    }
+    // A section carries over only when it is on this page; otherwise one is chosen first.
+    else if (t === 'anchor' && anchor && anchorsOn(state, currentPageId).includes(anchor)) onChange({ type: t, target: anchor });
+    else setPending(t);
+  };
   return (
     <div className="col" style={{ gap: 6 }}>
       <div className="insp-link-row">
-        <select className={`select sm${v.type === 'none' ? ' grow' : ' insp-link-type'}`} value={v.type} aria-label={named('Link type')} onChange={(e) => {
-          const type = e.target.value as LinkValue['type'];
-          onChange({ type, target: type === 'page' ? state.site.homePageId : '', newTab: v.newTab });
-        }}>
+        <select className={`select sm${type === 'none' ? ' grow' : ' insp-link-type'}`} value={type} aria-label={named('Link type')} onChange={(e) => pickType(e.target.value as LinkValue['type'])}>
           <option value="none">No link</option>
           <option value="page">Page</option>
           <option value="url">Web address</option>
           <option value="email">Email</option>
           <option value="tel">Phone</option>
-          <option value="anchor">Section anchor</option>
+          <option value="anchor">On this page</option>
         </select>
-        {v.type === 'page' ? (
-          <select className="select sm grow" value={v.target} aria-label={named('Page')} onChange={(e) => onChange({ ...v, target: e.target.value })}>
+        {type === 'page' ? (
+          <select className="select sm grow" value={v.target} aria-label={named('Page')} onChange={(e) => onChange(withAnchor({ ...v, target: e.target.value }, e.target.value === v.target ? v.anchor : undefined))}>
             {state.site.pageOrder.map((id) => (
               <option key={id} value={id}>
                 {state.pages[id].title} ({state.pages[id].route})
               </option>
             ))}
           </select>
-        ) : v.type !== 'none' ? (
+        ) : type === 'anchor' ? (
+          <AnchorPicker anchors={anchorsOn(state, currentPageId)} value={target} label={named('Section')} onPick={(a) => a && onChange({ type: 'anchor', target: a })} />
+        ) : type !== 'none' ? (
           <DraftInput
+            key={type}
             className="input sm grow"
-            value={v.target}
-            ariaLabel={named(v.type === 'url' ? 'Web address' : v.type === 'email' ? 'Email address' : v.type === 'tel' ? 'Phone number' : 'Anchor')}
-            placeholder={v.type === 'url' ? 'https://example.com' : v.type === 'email' ? 'hello@example.com' : v.type === 'tel' ? '+1 555 0100' : 'section-id'}
-            onCommit={(t) => onChange({ ...v, target: t.trim() })}
+            value={target}
+            autoFocus={!!pending}
+            ariaLabel={named(type === 'url' ? 'Web address' : type === 'email' ? 'Email address' : 'Phone number')}
+            placeholder={type === 'url' ? 'https://example.com' : type === 'email' ? 'hello@example.com' : '+1 555 0100'}
+            onCommit={(t) => {
+              if (!t.trim()) return;
+              onChange({ type, target: t.trim(), newTab: type === 'url' ? v.newTab : undefined });
+            }}
           />
         ) : null}
       </div>
+      {type === 'page' && (
+        <div className="insp-link-row">
+          <span className="insp-link-type faint insp-link-sub">Section</span>
+          <AnchorPicker anchors={anchorsOn(state, v.target)} value={v.anchor ?? ''} label={named('Section on the page')} top onPick={(a) => onChange(withAnchor(v, a || undefined))} />
+        </div>
+      )}
       {/* A new tab only means something for pages and web addresses; mail and phone links open their own apps. */}
-      {(v.type === 'page' || v.type === 'url') && <SwitchRow checked={!!v.newTab} onChange={(n) => onChange({ ...v, newTab: n })} label="Open in a new tab" />}
+      {!pending && (v.type === 'page' || v.type === 'url') && <SwitchRow checked={!!v.newTab} onChange={(n) => onChange({ ...v, newTab: n })} label="Open in a new tab" />}
     </div>
   );
 }
@@ -60,7 +184,6 @@ export function LinkEditor({ value, onChange, state, label }: { value: LinkValue
  */
 export function ImageEditor({ value, onChange, state, title }: { value: ImageValue; onChange: (v: ImageValue) => void; state: ProjectState; title?: string }) {
   const runtime = useStore((s) => s.runtime);
-  const menu = useMenu();
   const altId = useId();
   const titleId = useId();
   // A description carried over from the previous image may no longer be true; say so until it is edited.
@@ -68,33 +191,101 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
   const v = value ?? { assetId: null, alt: '' };
   const asset = v.assetId ? state.assets.assets[v.assetId] : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
+  // The value as it is now, for work that finishes later (an import).
+  const latest = useRef(v);
+  latest.current = v;
   const pick = (id: string, suggestion?: string) => {
-    if (id === v.assetId) return;
-    const keep = !suggestion && !!v.alt && !!v.assetId;
+    const cur = latest.current;
+    if (id === cur.assetId) return;
+    const keep = !suggestion && !!cur.alt && !!cur.assetId;
     setCarried(keep);
-    onChange({ assetId: id, alt: suggestion || v.alt || '', decorative: v.decorative });
+    onChange({ assetId: id, alt: suggestion || cur.alt || '', decorative: cur.decorative });
   };
-  const choose = (el: HTMLElement) =>
-    menu.openAt(el, [
-      { label: 'Import new image…', icon: <ImagePlus />, onSelect: async () => {
-        const r = await api.project.importAssets();
-        const id = r.assetIds[0];
-        if (id) pick(id, useStore.getState().snapshot?.state.assets.assets[id]?.altSuggestion);
-      } },
-      ...(Object.values(state.assets.assets).length ? [{ separator: true }] : []),
-      ...(Object.values(state.assets.assets).length ? [{ heading: 'Your images' }] : []),
-      ...Object.values(state.assets.assets).map((a) => ({
-        label: a.name,
-        checked: a.id === v.assetId,
-        icon: devUrl ? <img className="menu-thumb" src={assetUrl(devUrl, a.file)!} alt="" /> : undefined,
-        onSelect: () => pick(a.id, a.altSuggestion)
-      })),
-      ...(v.assetId ? [{ separator: true }, { label: 'Remove image', icon: <ImageOff />, onSelect: () => onChange({ assetId: null, alt: v.alt, decorative: v.decorative }) }] : [])
-    ], title ? `${title} options` : 'Image options');
+  const [browsing, setBrowsing] = useState(false);
+  const [q, setQ] = useState('');
+  const [over, setOver] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const browseId = useId();
+  const chooseBtn = useRef<HTMLButtonElement>(null);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const images = Object.values(state.assets.assets).filter((a) => a.kind === 'image');
+  const needle = q.trim().toLowerCase();
+  const shown = needle ? images.filter((a) => `${a.name} ${a.description ?? ''} ${a.altSuggestion ?? ''}`.toLowerCase().includes(needle)) : images;
+  const closeBrowser = (focus = true) => {
+    setBrowsing(false);
+    setQ('');
+    if (focus) requestAnimationFrame(() => chooseBtn.current?.focus());
+  };
+  /** Import through the file picker (no paths) or dropped files, then use the first image that arrived. */
+  const importAndPick = async (paths?: string[]) => {
+    if (importing) return;
+    setImporting(true);
+    const before = JSON.stringify(latest.current);
+    try {
+      const r = await api.project.importAssets(paths).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
+      if (r.message) toast(r.message, r.assetIds.length ? 'info' : 'error');
+      // Fonts can arrive in the same drop; only an image can fill an image field.
+      const all = useStore.getState().snapshot?.state.assets.assets ?? {};
+      const id = r.assetIds.find((x) => all[x]?.kind === 'image');
+      // A change made while the import ran (another image, a description, closing the inspector) wins.
+      if (!id || !alive.current || JSON.stringify(latest.current) !== before) return;
+      pick(id, all[id]?.altSuggestion);
+      // Focus returns to the chooser unless it has moved somewhere else on purpose.
+      const at = document.activeElement;
+      closeBrowser(!at || at === document.body || !!chooseBtn.current?.closest('.insp-image')?.contains(at));
+    } finally {
+      if (alive.current) setImporting(false);
+    }
+  };
+  const isFileDrag = (e: React.DragEvent) => [...e.dataTransfer.types].includes('Files');
+  const dropProps = {
+    onDragOver: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      if (!over) setOver(true);
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(false);
+    },
+    onDrop: (e: React.DragEvent) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      setOver(false);
+      const paths = [...e.dataTransfer.files].map((f) => api.pathForFile(f)).filter(Boolean);
+      if (paths.length) void importAndPick(paths);
+    }
+  };
+  // Arrow keys move between thumbnails; the grid is one tab stop.
+  const gridKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('.insp-pick-tile')];
+    const i = tiles.indexOf(document.activeElement as HTMLElement);
+    if (i < 0) return;
+    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 3, ArrowUp: -3 }[e.key];
+    const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step !== undefined ? Math.max(0, Math.min(tiles.length - 1, i + step)) : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    tiles.forEach((t, k) => (t.tabIndex = k === to ? 0 : -1));
+    tiles[to].focus();
+  };
   // Until there is an image (or something already set about it), the chooser is the only thing to do.
   const details = !!asset || !!v.alt || !!v.decorative;
   return (
-    <div className="insp-image" role={title ? 'group' : undefined} aria-labelledby={title ? titleId : undefined}>
+    <div
+      className={`insp-image${over ? ' drop-over' : ''}`}
+      role={title ? 'group' : undefined}
+      aria-labelledby={title ? titleId : undefined}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && browsing) (e.stopPropagation(), closeBrowser());
+      }}
+      {...dropProps}
+    >
       {title && (
         <div className="insp-group-title" id={titleId}>
           {title}
@@ -103,13 +294,59 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
       <div className="insp-image-top">
         <div className={`insp-image-thumb${asset ? '' : ' empty'}`}>{asset && devUrl ? <img src={assetUrl(devUrl, asset.file)!} alt="" /> : <ImageOff aria-hidden="true" />}</div>
         <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
-          <span className={`ellipsis insp-image-name${asset ? '' : ' none'}`} title={asset?.name}>{asset ? asset.name : 'No image chosen'}</span>
-          <button className="btn btn-sm" aria-haspopup="menu" style={{ alignSelf: 'flex-start' }} onClick={(e) => choose(e.currentTarget)}>
-            <ImagePlus />
-            {asset ? 'Change…' : 'Choose image…'}
-          </button>
+          <span className={`ellipsis insp-image-name${asset ? '' : ' none'}`} title={asset?.name}>{asset ? asset.name : over ? 'Drop to use this image' : 'No image chosen'}</span>
+          <span className="row" style={{ gap: 4 }}>
+            <button ref={chooseBtn} className="btn btn-sm" aria-expanded={browsing} aria-controls={browsing ? browseId : undefined} onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))} disabled={importing}>
+              <ImagePlus />
+              {importing ? 'Adding…' : asset ? 'Change…' : 'Choose image…'}
+            </button>
+            {asset && (
+              <button className="icon-btn sm" aria-label={`Remove ${title ? title.toLowerCase() : 'image'}`} title="Remove image" onClick={() => onChange({ assetId: null, alt: v.alt, decorative: v.decorative })}>
+                <ImageOff />
+              </button>
+            )}
+          </span>
         </div>
       </div>
+      {browsing && (
+        <div
+          className="insp-pick"
+          id={browseId}
+          role="group"
+          aria-label={title ? `Choose ${title.toLowerCase()}` : 'Choose an image'}
+        >
+          <div className="insp-pick-tools">
+            {images.length > 6 && <input type="search" className="input sm grow" placeholder="Search images" aria-label="Search images" value={q} autoFocus onChange={(e) => setQ(e.target.value)} />}
+            <button className="btn btn-sm" onClick={() => void importAndPick()} disabled={importing} autoFocus={images.length <= 6}>
+              <Plus /> Import…
+            </button>
+          </div>
+          {shown.length > 0 ? (
+            <div className="insp-pick-grid" role="listbox" aria-label="Your images" onKeyDown={gridKeys}>
+              {shown.map((a, i) => (
+                <button
+                  key={a.id}
+                  role="option"
+                  aria-selected={a.id === v.assetId}
+                  tabIndex={a.id === v.assetId || (i === 0 && !shown.some((x) => x.id === v.assetId)) ? 0 : -1}
+                  className={`insp-pick-tile${a.id === v.assetId ? ' current' : ''}`}
+                  title={a.name}
+                  onClick={() => {
+                    pick(a.id, a.altSuggestion);
+                    closeBrowser();
+                  }}
+                >
+                  {devUrl ? <img src={assetUrl(devUrl, a.file)!} alt="" loading="lazy" /> : <ImageOff aria-hidden="true" />}
+                  <span className="ellipsis">{a.name}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="faint insp-note">{images.length ? `No images match “${q.trim()}”.` : 'No images yet. Import one, or drop an image file here.'}</p>
+          )}
+          {images.length > 0 && <p className="faint insp-note">You can also drop an image file on this card.</p>}
+        </div>
+      )}
       {details && !v.decorative && (
         <div className="field">
           <label htmlFor={altId}>Image description</label>
@@ -130,20 +367,113 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
         </div>
       )}
       {details && <SwitchRow checked={!!v.decorative} onChange={(d) => onChange({ ...v, decorative: d })} label="Decorative image" hint={v.decorative ? 'Screen readers skip it, so it needs no description.' : undefined} />}
-      {menu.node}
     </div>
   );
 }
 
-export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }: { value: string; onChange: (v: string) => void; label?: string; id?: string; describedBy?: string }) {
+/** One of the site's icons, drawn from the same data the generated site uses. */
+export function IconGlyph({ name, size = 18 }: { name: string; size?: number }) {
+  const nodes = Object.hasOwn(ICONS, name) ? ICONS[name] : ICONS.sparkles;
   return (
-    <select className="select" id={id} aria-describedby={describedBy} value={value} onChange={(e) => onChange(e.target.value)} aria-label={id ? undefined : label}>
-      {Object.keys(ICONS).map((k) => (
-        <option key={k} value={k}>
-          {sentence(k.replace(/-/g, ' '))}
-        </option>
-      ))}
-    </select>
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {nodes.map(([tag, attrs], i) => createElement(tag, { key: i, ...attrs }))}
+    </svg>
+  );
+}
+
+const iconName = (k: string) => sentence(k.replace(/-/g, ' '));
+
+/**
+ * The icon control: a button showing the current icon, which opens a searchable grid of every icon drawn as
+ * it will look. The grid is one tab stop; arrow keys move, Enter or a click chooses, Escape closes.
+ */
+export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }: { value: string; onChange: (v: string) => void; label?: string; id?: string; describedBy?: string }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const gridId = useId();
+  const btn = useRef<HTMLButtonElement>(null);
+  const grid = useRef<HTMLDivElement>(null);
+  const names = Object.keys(ICONS);
+  const needle = q.trim().toLowerCase();
+  const shown = needle ? names.filter((k) => k.includes(needle.replace(/\s+/g, '-')) || iconName(k).toLowerCase().includes(needle)) : names;
+  const COLS = 6;
+  const close = (focus = true) => {
+    setOpen(false);
+    setQ('');
+    if (focus) requestAnimationFrame(() => btn.current?.focus());
+  };
+  useEffect(() => {
+    if (open) requestAnimationFrame(() => grid.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }));
+  }, [open]);
+  const keys = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]')];
+    const i = tiles.indexOf(document.activeElement as HTMLElement);
+    if (i < 0) return;
+    const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: COLS, ArrowUp: -COLS }[e.key];
+    const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step !== undefined ? Math.max(0, Math.min(tiles.length - 1, i + step)) : -1;
+    if (to < 0) return;
+    e.preventDefault();
+    tiles.forEach((t, k) => (t.tabIndex = k === to ? 0 : -1));
+    tiles[to].focus();
+  };
+  const current = shown.includes(value) ? value : shown[0];
+  return (
+    <div
+      className="insp-icon-picker"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && open) (e.stopPropagation(), close());
+      }}
+    >
+      <button
+        ref={btn}
+        type="button"
+        className="select insp-icon-btn"
+        id={id}
+        aria-describedby={[describedBy, id ? `${gridId}-cur` : undefined].filter(Boolean).join(' ') || undefined}
+        aria-label={id ? undefined : `${label}: ${iconName(value)}`}
+        aria-expanded={open}
+        aria-controls={open ? gridId : undefined}
+        onClick={() => (open ? close(false) : setOpen(true))}
+      >
+        <IconGlyph name={value} />
+        <span className="grow ellipsis" id={`${gridId}-cur`}>
+          {iconName(value)}
+        </span>
+        <ChevronDown aria-hidden="true" className="faint" />
+      </button>
+      {open && (
+        <div
+          className="insp-pick"
+          id={gridId}
+        >
+          <input type="search" className="input sm" placeholder="Search icons" aria-label="Search icons" value={q} autoFocus onChange={(e) => setQ(e.target.value)} />
+          {shown.length ? (
+            <div ref={grid} className="insp-icon-grid" role="listbox" aria-label={label} onKeyDown={keys}>
+              {shown.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  role="option"
+                  aria-selected={k === value}
+                  aria-label={iconName(k)}
+                  title={iconName(k)}
+                  tabIndex={k === current ? 0 : -1}
+                  className={`insp-icon-tile${k === value ? ' current' : ''}`}
+                  onClick={() => {
+                    if (k !== value) onChange(k);
+                    close();
+                  }}
+                >
+                  <IconGlyph name={k} size={20} />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="faint insp-note">No icons match “{q.trim()}”.</p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -93,6 +93,31 @@ export function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): s
   return undefined;
 }
 
+/**
+ * Whether a code component places the override classes it is given (so style changes, hiding included, show).
+ * A theme's declares the controls its root takes; a project's own shows it in its script by taking `class`
+ * from its props, or by using the `so_o` part classes.
+ */
+export function codeTakesOverrides(def: ComponentDefinition): boolean {
+  if (def.kind !== 'code') return true;
+  if (def.owner === 'theme') return !!def.parts.root?.styleControls;
+  const src = def.source ?? '';
+  const script = [...src.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]).join('\n');
+  return /\bclass\s*:/.test(script) || /\bso_o\b/.test(src) || /\bprops\.class\b/.test(src);
+}
+
+/** The shared header instance whose `links` list (label + link items) is the site's menu, if there is one. */
+export function headerMenu(state: ProjectState): { node: InstanceNode; schema: Extract<ComponentDefinition['properties'][string], { type: 'list' }> } | null {
+  const header = state.site.shell.header;
+  for (const id of header.rootIds) {
+    const n = header.nodes[id];
+    if (n?.kind !== 'instance') continue;
+    const schema = state.components[n.definitionId]?.properties.links;
+    if (schema?.type === 'list' && schema.fields.label?.type === 'string' && schema.fields.link?.type === 'link') return { node: n, schema };
+  }
+  return null;
+}
+
 export function allTrees(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree; label: string }> {
   const out: Array<{ owner: OwnerRef; tree: NodeTree; label: string }> = [
     { owner: { kind: 'shell', id: 'header' }, tree: state.site.shell.header, label: 'Header' },

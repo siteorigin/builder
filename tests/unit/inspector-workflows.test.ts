@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { EngineError, enclosingRepeatProp } from '@engine/tree';
+import { EngineError, codeTakesOverrides, enclosingRepeatProp } from '@engine/tree';
 import { validateState } from '@engine/validate';
 import { defFile, generateProject, overrideClass } from '@generator/index';
 
@@ -169,6 +169,49 @@ describe('copy and paste', () => {
     const heroRoot = s.components[heroOwn].tree!.rootIds[0];
     rejects(() => applyOperations(s, [{ type: 'node.copy', owner: owner(s), nodeId: codeInst.id, toOwner: { kind: 'component', id: heroOwn }, parentId: heroRoot }]), /contain itself/);
     rejects(() => applyOperations(s, [{ type: 'node.copy', owner: owner(s), nodeId: grid.id, toOwner: { kind: 'component', id: heroOwn } }]), /inside the component/);
+  });
+});
+
+describe('adding pages to the menu', () => {
+  it('adds a new page to the header navigation in the same step', () => {
+    const s = fresh();
+    const before = (headerInst(s).props.links as unknown[]).length;
+    const r = applyOperations(s, [{ type: 'page.create', title: 'Pricing', addToNavigation: true }]);
+    const id = r.results[0].pageId as string;
+    expect(r.results[0].addedToNavigation).toBe(true);
+    const links = headerInst(r.state).props.links as Array<{ id: string; label: string; link: { type: string; target: string } }>;
+    expect(links).toHaveLength(before + 1);
+    expect(links[links.length - 1]).toMatchObject({ label: 'Pricing', link: { type: 'page', target: id } });
+    expect(links[links.length - 1].id).toBeTruthy();
+    // Without the option the menu is left alone.
+    const plain = applyOperations(s, [{ type: 'page.create', title: 'Quiet' }]);
+    expect((headerInst(plain.state).props.links as unknown[]).length).toBe(before);
+  });
+
+  it('reports a full menu instead of failing the new page', () => {
+    let s = fresh();
+    const h = headerInst(s);
+    h.props.links = Array.from({ length: 10 }, (_, i) => ({ id: `l${i}`, label: `L${i}`, link: { type: 'none', target: '' } }));
+    const full = structuredClone(h.props.links);
+    const r = applyOperations(s, [{ type: 'page.create', title: 'Eleventh', addToNavigation: true }]);
+    s = r.state;
+    expect(r.results[0].addedToNavigation).toBe(false);
+    expect(s.pages[r.results[0].pageId as string]).toBeTruthy();
+    expect(headerInst(s).props.links).toEqual(full);
+  });
+});
+
+describe('which code components take style changes', () => {
+  const code = (source: string, owner: 'project' | 'theme' = 'project') => ({ kind: 'code', owner, parts: { root: { nodeId: 'root', label: 'Root' } }, source }) as unknown as Parameters<typeof codeTakesOverrides>[0];
+  it('reads the props a project component takes, not class: directives in its markup', () => {
+    expect(codeTakesOverrides(code("<script>\n\tlet { heading, class: cls = '' } = $props();\n</script>\n<section class={cls}>{heading}</section>"))).toBe(true);
+    expect(codeTakesOverrides(code("<script>\n\tlet { on } = $props();\n</script>\n<section class:active={on}>Hi</section>"))).toBe(false);
+    expect(codeTakesOverrides(code('<script>\n\tlet { so_o } = $props();\n</script>\n<p class={so_o?.root}>x</p>'))).toBe(true);
+  });
+  it('trusts a theme component only when its root declares style controls', () => {
+    const s = fresh();
+    expect(codeTakesOverrides(s.components[headerInst(s).definitionId])).toBe(true);
+    expect(codeTakesOverrides(code('<header class={className}></header>', 'theme'))).toBe(false);
   });
 });
 

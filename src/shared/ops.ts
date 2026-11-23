@@ -28,7 +28,8 @@ export const OPERATION_SCHEMAS = {
     title: z.string().min(1).max(80),
     route: z.string().optional().describe('Static route such as "/services/". Defaults to a slug of the title.'),
     afterPageId: z.string().optional(),
-    starter: z.enum(['empty', 'intro']).optional().describe('"intro" adds a page introduction section.')
+    starter: z.enum(['empty', 'intro']).optional().describe('"intro" adds a page introduction section.'),
+    addToNavigation: z.boolean().optional().describe('Also add a link to the new page at the end of the shared header navigation.')
   }),
   'page.update': z.object({
     type: z.literal('page.update'),

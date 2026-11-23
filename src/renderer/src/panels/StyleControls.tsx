@@ -113,9 +113,9 @@ export function ScopePicker({ styles }: { styles?: ResponsiveStyles }) {
       </div>
       <div ref={group} className="style-scope-picker" role="radiogroup" aria-labelledby={labelId} aria-describedby={mismatch ? `${noteId} ${previewId}` : noteId} onKeyDown={onKeyDown}>
         {order.map((v) => {
-          const marked = v !== 'base' && sized.includes(v as Size);
+          const marked = v === 'base' ? has(styles, 'base') : sized.includes(v as Size);
           return (
-            <button key={v} type="button" role="radio" aria-checked={scope === v} tabIndex={scope === v ? 0 : -1} onClick={() => choose(v)} title={marked ? `${SCOPE_LABEL[v]} has its own changes` : undefined}>
+            <button key={v} type="button" role="radio" aria-checked={scope === v} tabIndex={scope === v ? 0 : -1} onClick={() => choose(v)} title={marked ? (v === 'base' ? 'Has changes for all sizes' : `${SCOPE_LABEL[v]} has its own changes`) : undefined}>
               {SCOPE_LABEL[v]}
               {marked && (
                 <>
@@ -319,13 +319,16 @@ export function StyleControls({
   const moreGroups = entries.filter(([g, l]) => !isPrimary(g) && l.some((p) => relevant(p.id) && !setAnywhere(p.id))).map(([g]) => STYLE_GROUP_LABELS[g]);
   const size = sizeName(scope);
   const subject = target ? ` to ${target}` : '';
-  const resetText = scope === 'base' ? (resetLabel ?? `Reset all ${total} change${total === 1 ? '' : 's'}`) : `Reset ${here === 1 ? 'the' : here} ${size} change${here === 1 ? '' : 's'}`;
+  // The reset clears the size being edited and nothing else; clearing every size is a separate, named choice.
+  const others = total - here;
+  const resetText = scope === 'base' ? (resetLabel && !others ? resetLabel : `Reset ${here === 1 ? 'the' : here} all-sizes change${here === 1 ? '' : 's'}`) : `Reset ${here === 1 ? 'the' : here} ${size} change${here === 1 ? '' : 's'}`;
   const resetHint =
     scope === 'base'
-      ? total > here
-        ? `Clears changes${subject} at every size, including the ones made for a single size.`
-        : `Clears ${total === 1 ? 'the style change' : 'every style change'}${subject || ' made here'}.`
+      ? others
+        ? `Clears ${here === 1 ? 'the change' : 'the changes'} made for all sizes${subject}. Changes made for one size stay.`
+        : `Clears ${here === 1 ? 'the style change' : 'every style change'}${subject || ' made here'}.`
       : `Clears only ${here === 1 ? `this ${size} change` : `the ${size} changes`}${subject}. All sizes and the other sizes stay as they are.`;
+  const everyText = resetLabel ?? `Reset all ${total} changes at every size`;
   return (
     <div className="style-controls" ref={root}>
       <ScopePicker styles={styles} />
@@ -342,22 +345,39 @@ export function StyleControls({
       <div id={moreId} className="style-more-body" hidden={!showAll}>
         {after.map(([g, list]) => group(g, list))}
       </div>
-      {onReset && (scope === 'base' ? total > 0 : here > 0) && (
+      {onReset && (here > 0 || (scope === 'base' && others > 0)) && (
         <div className="style-footer">
-          <button
-            type="button"
-            className="btn btn-sm"
-            aria-describedby={resetHintId}
-            onClick={() => {
-              focusNext('[role="radio"][aria-checked="true"]');
-              onReset(scope === 'base' ? undefined : scope);
-            }}
-          >
-            <RotateCcw /> {resetText}
-          </button>
-          <span className="style-footer-hint" id={resetHintId}>
-            {resetHint}
-          </span>
+          {here > 0 && (
+            <>
+              <button
+                type="button"
+                className="btn btn-sm"
+                aria-describedby={resetHintId}
+                onClick={() => {
+                  focusNext('.style-footer .btn', '[role="radio"][aria-checked="true"]');
+                  onReset(scope);
+                }}
+              >
+                <RotateCcw /> {resetText}
+              </button>
+              <span className="style-footer-hint" id={resetHintId}>
+                {resetHint}
+              </span>
+            </>
+          )}
+          {/* Under All sizes, the changes made for single sizes can go too, in one step. */}
+          {scope === 'base' && others > 0 && (
+            <button
+              type="button"
+              className={here > 0 ? 'link-btn style-footer-every' : 'btn btn-sm'}
+              onClick={() => {
+                focusNext('[role="radio"][aria-checked="true"]');
+                onReset(undefined);
+              }}
+            >
+              {here > 0 ? everyText : <><RotateCcw /> {everyText}</>}
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -272,7 +272,7 @@ async function createWindow() {
     if (input.type !== 'keyDown') return;
     const mod = input.meta || input.control;
     const k = input.key.toLowerCase();
-    const relevant = (mod && ['z', 'y', 'k', 'd', 'j', 's', 'e', '\\', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
+    const relevant = (mod && ['z', 'y', 'k', 'd', 'c', 'v', 'j', 's', 'e', '\\', 'arrowup', 'arrowdown'].includes(k)) || (!mod && ['delete', 'backspace', 'escape'].includes(k));
     if (relevant) controller.send('input:key', { key: input.key, meta: input.meta, ctrl: input.control, shift: input.shift, alt: input.alt });
   });
   nativeTheme.on('updated', () => controller.send('appearance', nativeTheme.shouldUseDarkColors));

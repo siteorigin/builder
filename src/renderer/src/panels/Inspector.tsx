@@ -32,7 +32,7 @@ import { isBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
-import { enclosingRepeatProp, instancesOf } from '@engine/tree';
+import { codeTakesOverrides, enclosingRepeatProp, instancesOf } from '@engine/tree';
 import { applyOps, setState, useStore } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker } from './PropEditors';
@@ -285,6 +285,8 @@ function SelectionActions({ title, selection, items }: { title: string; selectio
 function InstanceInspector({ state, owner, node, tokens, selection }: { state: ProjectState; owner: OwnerRef; node: InstanceNode; tokens: Tokens; selection: ElementRef }) {
   const scope = useStore((s) => s.styleScope);
   const dev = useStore((s) => !!s.settings?.developerMode);
+  // Which declared part of a code component the Style section edits.
+  const [codePart, setCodePart] = useState('root');
   const def = state.components[node.definitionId];
   if (!def) return null;
   const title = node.name ?? def.name;
@@ -293,18 +295,25 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
   const uses = instancesOf(state, def.id).length;
   const partIds = def.kind === 'managed' ? Object.keys(def.parts).filter((p) => p !== 'root') : [];
   const rootPart = def.parts.root;
+  // A code component takes style changes only when it places the classes it is given.
+  const codeStyled = def.kind === 'code' && codeTakesOverrides(def);
+  const styledPart = def.kind === 'code' && def.parts[codePart] ? codePart : 'root';
+  // Hiding a section at some sizes is always offered, whatever else its design lets change.
+  const withHidden = (controls: string[] | undefined) => (controls ? [...new Set([...controls, 'hidden'])] : codeStyled ? ['paddingBlock', 'background', 'color', 'border', 'radius', 'shadow', 'opacity', 'hidden'] : undefined);
+  // Making a code component unique copies its source into the project, which is only editable in developer mode.
+  const canMakeUnique = def.kind === 'managed' || dev;
   const origin = def.owner === 'project' ? (def.kind === 'code' ? 'Code component' : 'Your component') : 'From the theme';
   const set = (prop: string, value: unknown) => void applyOps([{ type: 'instance.setProp', owner, nodeId: node.id, prop, value }], `Edit ${def.properties[prop]?.label ?? prop}`, `${node.id}:${prop}`);
   const onStyle = (partId: string) => (property: string, value: StyleValue | null) =>
     void applyOps([{ type: 'node.setStyle', owner, nodeId: node.id, partId, scope, property, value }], `Style ${def.parts[partId]?.label ?? partId}`, `${node.id}:${partId}:${scope}:${property}`);
-  const overrides = countStyles(node.overrides?.root);
+  const overrides = countStyles(node.overrides?.[styledPart]);
   const selectPart = (p: string) => selectAndFocus({ owner, instancePath: [node.id], nodeId: def.parts[p].nodeId, partId: p });
   const editEverywhere = () => setState({ modal: { kind: 'edit-definition', ref: selection } });
   const makeUnique = () => void applyOps([{ type: 'component.makeUnique', owner, nodeId: node.id }], 'Make unique');
   const viewSource = () => setState({ modal: { kind: 'source', definitionId: def.id } });
   const items: MenuItem[] = [
     ...(def.kind === 'managed' ? [{ label: 'Edit everywhere…', icon: <Pencil />, onSelect: editEverywhere }] : []),
-    { label: 'Make unique', icon: <Split />, hint: 'Separate copy', onSelect: makeUnique },
+    ...(canMakeUnique ? [{ label: 'Make unique', icon: <Split />, hint: 'Separate copy', onSelect: makeUnique }] : []),
     ...(dev && def.kind === 'managed' ? [{ label: 'Convert to code', icon: <Code />, onSelect: () => void applyOps([{ type: 'component.convertToCode', owner, nodeId: node.id }], 'Convert to code') }] : []),
     ...(dev ? [{ label: def.kind === 'code' && def.owner === 'project' ? 'Edit code' : 'View source', icon: <FileCode2 />, onSelect: viewSource }] : []),
     ...(partIds.length ? [{ separator: true }, { heading: 'Select a part' }, ...partIds.map((p) => ({ label: def.parts[p].label, onSelect: () => selectPart(p) }))] : []),
@@ -389,11 +398,36 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           <StyleControls
             styles={node.overrides?.root}
             inherited={inheritedStyles(def, rootPart?.nodeId ?? def.tree!.rootIds[0], node.variant)}
-            allowed={rootPart?.styleControls}
+            allowed={withHidden(rootPart?.styleControls)}
             tokens={tokens}
             onSet={onStyle('root')}
             onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: 'root', scope: sc }], 'Reset overrides')}
             target={`the ${def.name.toLowerCase()} itself`}
+          />
+        </Section>
+      )}
+      {codeStyled && (
+        <Section title="Style" id="style" defaultOpen={false} level={LEVEL} scope={overrides ? `${def.parts[styledPart]?.label ?? 'Whole section'} · ${changes(overrides)}` : undefined}>
+          {Object.keys(def.parts).length > 1 && (
+            <Field label="Part">
+              <select className="select" value={styledPart} onChange={(e) => setCodePart(e.target.value)}>
+                {Object.entries(def.parts).map(([id, p]) => (
+                  <option key={id} value={id}>
+                    {id === 'root' ? `Whole ${def.name.toLowerCase()}` : p.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          <StyleControls
+            key={styledPart}
+            styles={node.overrides?.[styledPart]}
+            inherited={undefined}
+            allowed={withHidden(def.parts[styledPart]?.styleControls)}
+            tokens={tokens}
+            onSet={onStyle(styledPart)}
+            onReset={(sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, partId: styledPart, scope: sc }], 'Reset overrides')}
+            target={styledPart === 'root' ? `the ${def.name.toLowerCase()} itself` : `the ${def.parts[styledPart].label.toLowerCase()}`}
           />
         </Section>
       )}
@@ -408,9 +442,11 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
               <Pencil /> Edit everywhere…
             </button>
           )}
-          <button className="btn btn-sm" onClick={makeUnique} title="Make a separate copy of this component for this placement, so its design can change on its own">
-            <Split /> Make unique
-          </button>
+          {canMakeUnique && (
+            <button className="btn btn-sm" onClick={makeUnique} title="Make a separate copy of this component for this placement, so its design can change on its own">
+              <Split /> Make unique
+            </button>
+          )}
           {dev && def.kind === 'managed' && (
             <button className="btn btn-sm" onClick={() => void applyOps([{ type: 'component.convertToCode', owner, nodeId: node.id }], 'Convert to code')} title="Create an editable Svelte copy">
               <Code /> Convert to code
@@ -423,10 +459,15 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
           )}
         </div>
       </Section>
-      <Section title="Advanced" id="advanced" defaultOpen={false} level={LEVEL}>
+      <Section title="Advanced" id="advanced" defaultOpen={false} level={LEVEL} scope={node.anchor ? `#${node.anchor}` : undefined}>
         <Field label="Layer name" hint="Shown in Layers. Not visible on the site.">
           <DraftInput value={node.name ?? ''} placeholder={def.name} onCommit={(v) => void applyOps([{ type: 'node.rename', owner, nodeId: node.id, name: v }], 'Rename layer')} />
         </Field>
+        {def.kind === 'managed' && (
+          <Field label="Anchor ID" hint={`Lets links jump straight to this ${shell ? 'part of every page' : 'section'}, as #${node.anchor || 'pricing'}. Choose it in a link’s Section.`}>
+            <DraftInput value={node.anchor ?? ''} placeholder="e.g. pricing" onCommit={(v) => void applyOps([{ type: 'node.setContent', owner, nodeId: node.id, field: 'anchor', value: v.trim() }], 'Set anchor')} />
+          </Field>
+        )}
         {dev && (
           <p className="mono faint insp-note" style={{ userSelect: 'text' }}>
             {node.id} · {def.id}

@@ -19,7 +19,7 @@ import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { getTheme, listThemes } from '@catalogue/index';
 import { effectiveTokens, generateManagedComponent, CUSTOM_DIR } from '@generator/index';
-import { EngineError, fail, findParent, getNode, getTree, instancesOf, subtreeIds, allTrees } from './tree';
+import { EngineError, fail, findParent, getNode, getTree, headerMenu, instancesOf, subtreeIds, allTrees } from './tree';
 import { clone, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp } from './values';
 
@@ -301,7 +301,22 @@ function pageCreate(state: ProjectState, op: Op<'page.create'>): OpResult {
   const after = op.afterPageId ? state.site.pageOrder.indexOf(op.afterPageId) : -1;
   if (after >= 0) state.site.pageOrder.splice(after + 1, 0, id);
   else state.site.pageOrder.push(id);
-  return { pageId: id, route };
+  const nav = op.addToNavigation ? { addedToNavigation: addToHeaderNavigation(state, page) } : {};
+  return { pageId: id, route, ...nav };
+}
+
+/**
+ * Append a link to a page to the shared header's navigation list: its `links` list whose items are a label and
+ * a link. Returns false (and changes nothing) when there is no such list or it is full.
+ */
+function addToHeaderNavigation(state: ProjectState, page: PageDoc): boolean {
+  const menu = headerMenu(state);
+  if (!menu) return false;
+  const { node, schema } = menu;
+  const list = (node.props.links ?? structuredClone(schema.default)) as Array<Record<string, unknown>>;
+  if (schema.max !== undefined && list.length >= schema.max) return false;
+  node.props.links = [...list, normalizeItem(schema, { label: page.navLabel || page.title, link: { type: 'page', target: page.id } }, state, schema.label)];
+  return true;
 }
 
 function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
