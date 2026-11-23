@@ -69,6 +69,18 @@ describe('canonical conflicts (spec 18.5)', () => {
     expect((await s.apply({ operations: [{ type: 'site.update', name: 'After' }] }, { label: 'x' })).ok).toBe(true);
   });
 
+  it('treats an external save of exactly what an AI change would write as a conflict, so cancelling cannot erase it', async () => {
+    const { dir, s } = await make();
+    await s.beginRun('run_e');
+    const site = read(dir, SITE);
+    site.name = 'Same name';
+    write(dir, SITE, site);
+    const r = await s.apply({ operations: [{ type: 'site.update', name: 'Same name' }] }, { label: 'AI', source: 'ai', runId: 'run_e', history: false });
+    expect(r.error?.code).toBe('CONFLICT');
+    await s.abortRun();
+    expect(read(dir, SITE).name).toBe('Same name');
+  });
+
   it('keeps the external version when the project stays valid, as an undoable change', async () => {
     const { dir, s } = await runWithExternalEdit();
     await s.abortRun();

@@ -723,6 +723,8 @@ export class Controller {
       this.localWrites = this.localWrites
         .then(async () => {
           if (await s.stillOwner()) await atomicWrite(file, bytes, { durable: false });
+          // Not confirmed but not taken over either: kept for the next try.
+          else if (this.session === s && !s.readOnly) this.localDirty = true;
         })
         .catch(() => {
           if (this.session === s) this.localDirty = true;

@@ -905,7 +905,9 @@ export class ProjectSession extends EventEmitter {
     // outside the app, say) is not overwritten by it.
     for (const path of Object.keys(changed)) {
       const disk = await this.diskContent(path);
-      if (!sameContent(path, disk, this.docs.get(path) ?? null) && !settledOnDisk(path, disk, nextDocs.get(path) ?? null)) throw new DiskConflictError(path);
+      const target = nextDocs.get(path);
+      const already = !this.activeRun && target !== undefined && disk !== null && sameContent(path, disk, target);
+      if (!sameContent(path, disk, this.docs.get(path) ?? null) && !already) throw new DiskConflictError(path);
     }
     if (this.activeRun) await this.writeRunMarker(nextDocs);
     // The undo position is part of the change: planned now, journaled with the documents, installed with them.
