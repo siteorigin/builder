@@ -12,7 +12,7 @@ import { listThemes } from '@catalogue/index';
 import { EngineError } from '@engine/tree';
 import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
-import { checkSvelteSource } from '../codecheck';
+import { checkSvelteSource, componentSources } from '../codecheck';
 import { atomicWrite, readIfExists, readJson, removeEmptyDirs, safeJoin, sha, toJson } from './fsutil';
 import { isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 
@@ -896,13 +896,15 @@ export class ProjectSession extends EventEmitter {
         if (e instanceof EngineError) return { ok: false, revision: this.revision, error: { code: e.code, message: e.message, recoverable: true, details: e.details } };
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: (e as Error).message, recoverable: true } };
       }
-      // Any authored code that is new or changed must pass the safety checks before it can be saved.
+      // Any authored code that is new or changed must pass the safety checks before it can be saved. Imports
+      // are followed into the components as they will be once this batch is saved, whichever order it made them in.
+      const resolve = componentSources(next.components);
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
         // Placing a theme's own component (the contact form, say) authors no code: it ships with the app.
         if (def.owner === 'theme' && listThemes().some((t) => t.components.some((c) => c.id === def.id && c.source === def.source))) continue;
         // Code the AI writes is held to a stricter policy than code a developer writes.
-        const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai' })).filter((p) => p.severity === 'error');
+        const errors = (await checkSvelteSource(def.source, { strict: opts.source === 'ai', filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }

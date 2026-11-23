@@ -12,7 +12,7 @@ import { OpenAIAdapter, testOpenAI } from '@agent/openai';
 import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
 import { LocalAdapter, listLocalModels, testLocal } from '@agent/local';
 import { compileProject } from './compile';
-import { checkSvelteSource } from './codecheck';
+import { checkSvelteSource, componentSources } from './codecheck';
 import { stopMediaWorker } from './project/assets';
 import { fixComponentSource } from '@agent/fixer';
 import type { Diagnostic } from '@engine/validate';
@@ -258,8 +258,10 @@ function registerIpc() {
       const ad = await orchestratorAdapter();
       if (abort.signal.aborted) return { ok: false, cancelled: true, message: 'Cancelled' };
       if ('error' in ad) return { ok: false, message: ad.error };
-      // The repaired code is written by the assistant, so it must pass the assistant's stricter policy.
-      return await fixComponentSource(ad.adapter, ad.model, String(source), (src) => checkSvelteSource(src, { strict: true }), abort.signal);
+      // The repaired code is written by the assistant, so it must pass the assistant's stricter policy, and so
+      // must the project components it imports.
+      const check = (src: string) => checkSvelteSource(src, { strict: true, resolve: controller.session ? componentSources(controller.session.state.components) : undefined });
+      return await fixComponentSource(ad.adapter, ad.model, String(source), check, abort.signal);
     } finally {
       if (fixAbort === abort) fixAbort = null;
     }

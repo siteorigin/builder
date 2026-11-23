@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkSvelteSource } from '../../src/main/codecheck';
+import { checkSvelteSource, type CheckOptions } from '../../src/main/codecheck';
 import { fixComponentSource } from '@agent/fixer';
 import type { AgentModelAdapter, ModelEvent } from '@agent/types';
 
@@ -168,3 +168,72 @@ describe('syntax-tree code checks', () => {
     expect(await errors(`<script>\n\tconst m = import('./Card.svelte');\n</script>\n<p>x</p>`)).toEqual([]);
   });
 });
+
+describe('strict policy follows values and imports', () => {
+  const strictErrors = async (src: string, opts: CheckOptions = {}) => (await checkSvelteSource(src, { strict: true, ...opts })).filter((p) => p.severity === 'error');
+  const script = (body: string, markup: string) => `<script>\n\timport { onMount } from 'svelte';\n${body}\n</script>\n${markup}\n`;
+
+  it('refuses remote URLs held in variables, props, arrays and objects', async () => {
+    const remote = async (body: string, markup: string) => (await strictErrors(script(body, markup))).some((p) => /remote/.test(p.message));
+    expect(await remote(`\tconst u = 'https://cdn.example/x.png';`, `<img src={u} alt="" />`)).toBe(true);
+    expect(await remote(`\tlet { image = 'https://cdn.example/a.png' } = $props();`, `<img src={image} alt="" />`)).toBe(true);
+    expect(await remote(`\tconst pics = [{ src: 'https://cdn.example/a.png', alt: '' }];`, `{#each pics as p}<img src={p.src} alt={p.alt} />{/each}`)).toBe(true);
+    expect(await remote(`\tconst pics = [{ src: 'https://cdn.example/a.png' }];`, `{#each pics as { src }}<img {src} alt="" />{/each}`)).toBe(true);
+    expect(await remote(`\tconst host = 'https://cdn.example';`, `<img src={host + '/a.png'} alt="" /><img src={\`\${host}/b.png\`} alt="" />`)).toBe(true);
+    expect(await remote(`\tlet wide = $state(false);`, `<img src={wide ? 'https://cdn.example/a.png' : '/assets/a.png'} alt="" />`)).toBe(true);
+    expect(await remote(`\tconst u = $derived('https://cdn.example/x.png');`, `<video poster={u}></video>`)).toBe(true);
+    expect(await remote(`\tconst pick = () => 'https://cdn.example/x.png';`, `<img src={pick()} alt="" />`)).toBe(true);
+    expect(await remote(`\tconst urls = ['a.png', 'b.png'].map((f) => 'https://cdn.example/' + f);`, `{#each urls as u}<img src={u} alt="" />{/each}`)).toBe(true);
+    expect(await remote(`\tconst big = 'https://cdn.example/b.png';`, `<img srcset="/assets/a.png 1x, {big} 2x" alt="" />`)).toBe(true);
+  });
+
+  it('refuses remote URLs reached through style values and elements bound in code', async () => {
+    const refused = async (body: string, markup: string) => (await strictErrors(script(body, markup))).length > 0;
+    expect(await refused(`\tconst bg = 'https://cdn.example/bg.png';`, `<section style="background-image: url({bg})">x</section>`)).toBe(true);
+    expect(await refused(`\tconst bg = 'https://cdn.example/bg.png';`, `<section style:background-image={\`url(\${bg})\`}>x</section>`)).toBe(true);
+    expect(await refused(`\tconst u = 'https://tracker.example/p.gif';\n\tlet img;\n\tonMount(() => { img.src = u; });`, `<img bind:this={img} alt="" />`)).toBe(true);
+    expect(await refused(`\tconst u = 'https://tracker.example/p.gif';\n\tlet img;\n\tonMount(() => img.setAttribute('src', u));`, `<img bind:this={img} alt="" />`)).toBe(true);
+    expect(await refused(`\tconst bg = 'url(https://cdn.example/bg.png)';\n\tlet el;\n\tonMount(() => { el.style.backgroundImage = bg; });`, `<div bind:this={el}>x</div>`)).toBe(true);
+    // A script URL is refused wherever it comes from, links included.
+    expect(await refused(`\tconst go = 'javascript:alert(1)';`, `<a href={go}>x</a>`)).toBe(true);
+  });
+
+  it('accepts prose, local assets, props it cannot see and links held in variables', async () => {
+    const ok = async (body: string, markup: string) => strictErrors(script(body, markup));
+    expect(await ok(`\tconst note = 'https://example.com is where we started.';`, `<p>Visit https://example.com or //cdn.example for more. {note}</p>`)).toEqual([]);
+    expect(await ok(`\tconst logo = '/assets/logo.png';\n\tconst pics = [{ src: '/assets/a.png' }, { src: '/assets/b.png' }];`, `<img src={logo} alt="Logo" />{#each pics as p}<img src={p.src} alt="" />{/each}`)).toEqual([]);
+    expect(await ok(`\tlet { image, background } = $props();`, `<img src={image} alt="" /><section style="background-image: url({background})">x</section>`)).toEqual([]);
+    expect(
+      await ok(
+        `\tconst site = 'https://example.com';\n\tconst links = [{ href: 'https://social.example/me', label: 'Social', icon: '/assets/social.svg' }];`,
+        `<a href={site}>Home</a>{#each links as l}<a href={l.href}><img src={l.icon} alt="" />{l.label}</a>{/each}`
+      )
+    ).toEqual([]);
+  });
+
+  const FETCHES = `<script>\n\timport { onMount } from 'svelte';\n\tonMount(() => { fetch('/api'); });\n</script>\n<p>map</p>\n`;
+  const CLEAN = `<p>card</p>\n`;
+  const DIR = 'src/lib/siteorigin/custom';
+  const project = (files: Record<string, string>) => (path: string) => files[path];
+  const importing = (spec: string) => `<script>\n\timport C from '${spec}';\n</script>\n<C />\n`;
+
+  it('refuses importing a project component that breaks the policy, however far away', async () => {
+    const direct = await strictErrors(importing('./Map.svelte'), { resolve: project({ [`${DIR}/Map.svelte`]: FETCHES }) });
+    expect(direct.map((p) => p.message)).toEqual(['Code written by the assistant may not import "./Map.svelte", which uses network requests (line 3).']);
+    // Through another component, and through $lib.
+    const files = { [`${DIR}/Card.svelte`]: importing('./Map.svelte'), [`${DIR}/Map.svelte`]: FETCHES };
+    expect((await strictErrors(importing('$lib/siteorigin/custom/Card.svelte'), { resolve: project(files) })).length).toBe(1);
+    // A component that does not exist, or any project component when nothing can be checked.
+    expect((await strictErrors(importing('./Gone.svelte'), { resolve: project({}) }))[0].message).toMatch(/not a component in this project/);
+    expect((await strictErrors(importing('./Card.svelte')))[0].message).toMatch(/cannot be checked/);
+  });
+
+  it('accepts clean project components, import cycles included, and leaves developer code alone', async () => {
+    expect(await strictErrors(importing('./Card.svelte'), { resolve: project({ [`${DIR}/Card.svelte`]: CLEAN }) })).toEqual([]);
+    const cycle = { [`${DIR}/A.svelte`]: importing('./B.svelte'), [`${DIR}/B.svelte`]: importing('./A.svelte') };
+    expect(await strictErrors(importing('./A.svelte'), { filename: `${DIR}/Top.svelte`, resolve: project(cycle) })).toEqual([]);
+    expect(await strictErrors(importing('./A.svelte'), { filename: `${DIR}/A.svelte`, resolve: project(cycle) })).toEqual([]);
+    expect((await checkSvelteSource(importing('./Map.svelte'))).filter((p) => p.severity === 'error')).toEqual([]);
+  });
+});
+
