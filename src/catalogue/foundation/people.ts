@@ -1,5 +1,5 @@
 import { P, managed, tok } from '../dsl';
-import { headingBlock, mutedStyles, sectionShell, toneAxis } from './common';
+import { headingBlock, headingLevel, mutedStyles, sectionShell, toneAxis } from './common';
 
 const img = { assetId: null, alt: '' };
 
@@ -62,6 +62,7 @@ export const testimonials = managed({
   properties: {
     eyebrow: P.str('Eyebrow', 'Kind words'),
     heading: P.str('Heading', 'What our clients say'),
+    headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', ''),
     items: P.list(
       'Testimonials',
@@ -116,6 +117,7 @@ export const team = managed({
   properties: {
     eyebrow: P.str('Eyebrow', 'The team'),
     heading: P.str('Heading', 'The people you will work with'),
+    headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', 'A small, experienced team who care about getting the details right.'),
     people: P.list(
       'People',

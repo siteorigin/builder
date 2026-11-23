@@ -1,5 +1,5 @@
 import { P, managed, tok } from '../dsl';
-import { headingBlock, mutedStyles, sectionShell, toneAxis } from './common';
+import { headingBlock, headingLevel, mutedStyles, sectionShell, toneAxis } from './common';
 
 export const pricing = managed({
   componentId: 'pricing.plans',
@@ -11,6 +11,7 @@ export const pricing = managed({
   properties: {
     eyebrow: P.str('Eyebrow', 'Packages'),
     heading: P.str('Heading', 'Clear packages, no surprises'),
+    headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', 'Every project starts with a free consultation. Fixed fees are agreed before work begins.'),
     plans: P.list(
       'Plans',
@@ -77,6 +78,7 @@ export const faq = managed({
   properties: {
     eyebrow: P.str('Eyebrow', 'Questions'),
     heading: P.str('Heading', 'Frequently asked questions'),
+    headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', 'Cannot find what you are looking for? Get in touch and we will be happy to help.'),
     items: P.list(
       'Questions',
@@ -132,6 +134,7 @@ export const cta = managed({
   icon: 'megaphone',
   properties: {
     heading: P.str('Heading', 'Ready to start your project?'),
+    headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', 'Tell us a little about what you have in mind and we will be in touch within two working days.'),
     primaryLabel: P.str('Primary button label', 'Get in touch'),
     primaryLink: P.link('Primary button link'),
@@ -158,7 +161,7 @@ export const cta = managed({
   build: (b) =>
     sectionShell(b, [
       b.el('panel', 'div', { name: 'Panel', styles: { base: { layout: 'stack', align: 'center', textAlign: 'center', gap: tok('space.lg'), paddingBlock: 'clamp(3rem, 2rem + 4vw, 5.5rem)', paddingInline: tok('space.xl'), background: tok('color.brand'), color: tok('color.on-brand'), radius: tok('radius.lg') } } }, [
-        b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2'), maxWidth: '760px' } }),
+        b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2'), maxWidth: '760px' } }),
         b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), maxWidth: '620px', opacity: 0.85 } }),
         b.el('actions', 'div', { name: 'Actions', collapseEmpty: true, styles: { layout: 'row', wrap: true, justify: 'center', gap: tok('space.sm'), marginBlockStart: tok('space.xs') } }, [
           b.link('primary', { $prop: 'primaryLink' }, { $prop: 'primaryLabel' }, 'light', { name: 'Primary button', when: { $prop: 'primaryLabel' } }),
@@ -178,6 +181,7 @@ export const contact = managed({
   properties: {
     eyebrow: P.str('Eyebrow', 'Contact'),
     heading: P.str('Heading', 'Let’s talk about your project'),
+    headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', 'The quickest way to reach us is by email or phone. We reply to every enquiry within two working days.'),
     items: P.list(
       'Contact methods',

@@ -8,7 +8,7 @@ import { normalizeTable } from './table';
 import { bindingProblem, bindingSlots, boundSchema } from './schema';
 import { cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle } from './tokens';
-import { missingSectionLinks, unlinkedButtons } from '@generator/checks';
+import { missingSectionLinks, pageHeadings, unlinkedButtons } from '@generator/checks';
 import { formConnectionProblem, formFieldTitles, formFieldsAsSent, formKeyClashes, formRefusesClashes, formRefusesUnchoosable, formUnchoosable, namesFormFields, offersFormChoices } from '@catalogue/foundation/form';
 
 export interface Diagnostic {
@@ -36,8 +36,9 @@ const sortedJson = (v: unknown): string =>
   JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
 
 /**
- * Schema and reference validation: IDs, references, nesting and routes, and links to sections that do not exist.
- * Save gates pass `sectionLinks: false`: those findings never block a save, so they need not be worked out.
+ * Schema and reference validation: IDs, references, nesting and routes, links to sections that do not exist, and
+ * each page's heading outline. Save gates pass `sectionLinks: false`: section links and headings never block a save,
+ * so they need not be worked out.
  */
 export function validateState(state: ProjectState, opts: { sectionLinks?: boolean } = {}): Diagnostic[] {
   const out: Diagnostic[] = [];
@@ -231,9 +232,53 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       : `${where}: ${what} goes to #${i.fragment}, but ${listed((i.pages ?? []).map((id) => state.pages[id].title))} ${(i.pages ?? []).length > 1 ? 'have' : 'has'} no section with that ID. ${fix}`;
     out.push({ severity: 'error', code: 'LINK_SECTION_MISSING', message, owner: i.owner, nodeId: i.nodeId });
   }
+  if (opts.sectionLinks !== false) out.push(...headingDiagnostics(state));
   out.push(...structureDiagnostics(state));
   for (const a of Object.values(state.assets.assets)) {
     if (a.bytes > 1_500_000) out.push({ severity: 'warning', code: 'ASSET_LARGE', message: `${a.name} is ${(a.bytes / 1e6).toFixed(1)} MB. Consider a smaller image for faster pages.` });
+  }
+  return out;
+}
+
+/** A heading's words, quoted, for a message. */
+const quoted = (text: string) => (text ? `“${text.length > 60 ? `${text.slice(0, 57).trimEnd()}…` : text}”` : 'an empty heading');
+
+/**
+ * Each page's heading outline, as warnings to review: they never block a save or an export, since a second Heading 1
+ * can be deliberate. Each names the heading to change, and the page it is on.
+ */
+export function headingDiagnostics(state: ProjectState): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  for (const id of state.site.pageOrder) {
+    const page = Object.hasOwn(state.pages, id) ? state.pages[id] : undefined;
+    if (!page) continue;
+    const owner = { kind: 'page', id };
+    const { outline, review } = pageHeadings(state, id);
+    if (review.missingTitle)
+      out.push({ severity: 'warning', code: 'HEADING_MISSING_H1', message: `${page.title}: no heading is a Heading 1, so the page has no title for screen readers to announce. Make the page’s main heading Heading 1.`, owner });
+    if (review.extraTitles) {
+      const titles = review.titles.map((i) => outline[i]);
+      const names = listed([...new Set(titles.map((h) => quoted(h.text)))]);
+      const lead = titles.length === 1 ? `the Heading 1 ${names} is shown more than once` : `${titles.length} headings are Heading 1s (${names})`;
+      const second = titles[1] ?? titles[0];
+      out.push({
+        severity: 'warning',
+        code: 'HEADING_MULTIPLE_H1',
+        message: `${page.title}: ${lead}, so screen readers announce more than one page title. Keep the page’s title as Heading 1 and make the others Heading 2, unless they are meant to be titles.`,
+        owner,
+        nodeId: second.nodeId
+      });
+    }
+    for (const skip of review.skips) {
+      const h = outline[skip.index];
+      out.push({
+        severity: 'warning',
+        code: 'HEADING_LEVEL_SKIP',
+        message: `${page.title}: ${quoted(h.text)} is a Heading ${h.level} right after a Heading ${skip.after}, so the outline skips a level. Make it Heading ${skip.suggest}.`,
+        owner,
+        nodeId: h.nodeId
+      });
+    }
   }
   return out;
 }

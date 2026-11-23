@@ -1,5 +1,5 @@
-import type { ResponsiveStyles, VariantAxis, VariantDef } from '@shared/types';
-import { TreeBuilder, tok } from '../dsl';
+import type { ResponsiveStyles, ScalarPropSchema, VariantAxis, VariantDef } from '@shared/types';
+import { P, TreeBuilder, tok } from '../dsl';
 
 /** Standard section shell: full-bleed root with vertical rhythm, centered content container. */
 export function sectionShell(
@@ -81,14 +81,32 @@ export function layoutAxis(options: Record<string, VariantDef>): VariantAxis {
 export const eyebrowStyles = { textStyle: tok('text.eyebrow'), color: tok('color.brand') };
 export const mutedStyles = { color: tok('color.muted') };
 
-/** Heading block: eyebrow, heading and lead stacked. */
+/**
+ * A section heading's place in the page outline, chosen per placement: Heading 1 is the page's title, and a section
+ * below it uses Heading 2. It changes the heading's tag only; the heading looks the same at every level.
+ */
+export function headingLevel(level: 'h1' | 'h2'): ScalarPropSchema {
+  return {
+    ...P.choice('Heading level', level, [
+      ['h1', 'Heading 1 (page title)'],
+      ['h2', 'Heading 2'],
+      ['h3', 'Heading 3'],
+      ['h4', 'Heading 4'],
+      ['h5', 'Heading 5'],
+      ['h6', 'Heading 6']
+    ]),
+    description: 'Where this heading sits in the page outline that screen readers navigate. Use Heading 1 for the page title only. It does not change how the heading looks.'
+  };
+}
+
+/** Heading block: eyebrow, heading and lead stacked. The component declares `headingLevel` beside `heading`. */
 export function headingBlock(
   b: TreeBuilder,
-  opts: { level?: 'h1' | 'h2'; style?: string; align?: 'start' | 'center'; eyebrow?: boolean; lead?: boolean; maxWidth?: string } = {}
+  opts: { style?: string; align?: 'start' | 'center'; eyebrow?: boolean; lead?: boolean; maxWidth?: string } = {}
 ): string {
   const kids: string[] = [];
   if (opts.eyebrow !== false) kids.push(b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }));
-  kids.push(b.text('heading', opts.level ?? 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok(opts.style ?? 'text.h2') } }));
+  kids.push(b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok(opts.style ?? 'text.h2') } }));
   if (opts.lead !== false)
     kids.push(b.text('lead', 'p', { $prop: 'lead' }, { name: 'Lead', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles } }));
   return b.el(

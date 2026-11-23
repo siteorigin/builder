@@ -1,5 +1,5 @@
 import { P, managed, tok } from '../dsl';
-import { eyebrowStyles, mutedStyles, layoutAxis, sectionShell, toneAxis } from './common';
+import { eyebrowStyles, headingLevel, layoutAxis, mutedStyles, sectionShell, toneAxis } from './common';
 
 const actions = (b: import('../dsl').TreeBuilder, align: 'start' | 'center') =>
   b.el('actions', 'div', { name: 'Actions', collapseEmpty: true, styles: { base: { layout: 'row', wrap: true, gap: tok('space.sm'), justify: align, marginBlockStart: tok('space.sm') } } }, [
@@ -10,6 +10,7 @@ const actions = (b: import('../dsl').TreeBuilder, align: 'start' | 'center') =>
 const heroProps = {
   eyebrow: P.str('Eyebrow', 'Independent studio'),
   heading: P.str('Heading', 'Thoughtful work for people who care about the details'),
+  headingLevel: headingLevel('h1'),
   lead: P.text('Supporting text', 'We help small teams plan, design and deliver projects that feel considered from the first conversation to the final handover.'),
   primaryLabel: P.str('Primary button label', 'Start a project'),
   primaryLink: P.link('Primary button link'),
@@ -44,7 +45,7 @@ export const heroCentered = managed({
       [
         b.el('content', 'div', { name: 'Content', collapseEmpty: true, styles: { base: { layout: 'stack', gap: tok('space.lg'), align: 'center', textAlign: 'center', maxWidth: '880px', marginInline: 'auto' } } }, [
           b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
-          b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.display') } }),
+          b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.display') } }),
           b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles, maxWidth: '640px' } }),
           actions(b, 'center')
         ])
@@ -88,7 +89,7 @@ export const heroSplit = managed({
         [
           b.el('content', 'div', { name: 'Content', collapseEmpty: true, styles: { base: { layout: 'stack', gap: tok('space.lg'), align: 'start' } } }, [
             b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
-            b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h1') } }),
+            b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h1') } }),
             b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles, maxWidth: '560px' } }),
             actions(b, 'start')
           ]),
@@ -110,6 +111,7 @@ export const pageIntro = managed({
   properties: {
     eyebrow: P.str('Eyebrow', 'About us'),
     heading: P.str('Heading', 'A small team with a long view'),
+    headingLevel: headingLevel('h1'),
     lead: P.text('Description', 'Learn how we work, what we value and the people behind every project.')
   },
   parts: {
@@ -125,7 +127,7 @@ export const pageIntro = managed({
       [
         b.el('content', 'div', { name: 'Content', styles: { base: { layout: 'stack', gap: tok('space.md'), maxWidth: '780px' } } }, [
           b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
-          b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h1') } }),
+          b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h1') } }),
           b.text('lead', 'p', { $prop: 'lead' }, { name: 'Description', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles } })
         ])
       ],

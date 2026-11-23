@@ -71,7 +71,8 @@ const FOUNDATION: ThemePack = {
       'Alternate the tone axis (default, muted, inverse) to create rhythm; avoid two Dark sections in a row.',
       'Begin the home page with a hero, inner pages with a Page introduction, and end most pages with a Call to action.',
       'Prefer site tokens (color.*, space.*, text.*) over literal values so that brand changes stay consistent.',
-      'Keep headings short (under ten words) and supporting text to one or two sentences.'
+      'Keep headings short (under ten words) and supporting text to one or two sentences.',
+      'A page has one Heading 1, its title. A hero or Page introduction placed below another section heading takes headingLevel "h2"; headingLevel changes the outline, never the look.'
     ]
   }
 };

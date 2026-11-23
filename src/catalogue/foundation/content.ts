@@ -1,5 +1,5 @@
 import { P, managed, tok } from '../dsl';
-import { eyebrowStyles, headingBlock, mutedStyles, layoutAxis, sectionShell, toneAxis } from './common';
+import { eyebrowStyles, headingBlock, headingLevel, layoutAxis, mutedStyles, sectionShell, toneAxis } from './common';
 
 const card = { layout: 'stack', gap: tok('space.md'), paddingBlock: tok('space.xl'), paddingInline: tok('space.xl'), background: tok('color.surface'), color: tok('color.text'), border: tok('border.default'), radius: tok('radius.lg') } as const;
 
@@ -13,6 +13,7 @@ export const featuresGrid = managed({
   properties: {
     eyebrow: P.str('Eyebrow', 'What we do'),
     heading: P.str('Heading', 'Services shaped around your project'),
+    headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', 'Every engagement is different. These are the ways we most often help.'),
     items: P.list(
       'Cards',
@@ -76,6 +77,7 @@ export const mediaSplit = managed({
   properties: {
     eyebrow: P.str('Eyebrow', 'Our approach'),
     heading: P.str('Heading', 'Good projects start with listening'),
+    headingLevel: headingLevel('h2'),
     body: P.rich('Text', [
       'Before we draw anything we spend time understanding how you live and work, what matters most and what you would happily leave behind.',
       'That conversation shapes **every decision** that follows, from the first sketch to the final finishes.'
@@ -106,7 +108,7 @@ export const mediaSplit = managed({
         ]),
         b.el('content', 'div', { name: 'Content', styles: { layout: 'stack', gap: tok('space.lg'), align: 'start' } }, [
           b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
-          b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
+          b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
           b.rich('body', { $prop: 'body' }, { name: 'Text', styles: { ...mutedStyles, textStyle: tok('text.body') } }),
           b.link('action', { $prop: 'actionLink' }, { $prop: 'actionLabel' }, 'secondary', { name: 'Action', when: { $prop: 'actionLabel' }, styles: { marginBlockStart: tok('space.xs') } })
         ])
@@ -123,6 +125,7 @@ export const textSection = managed({
   icon: 'type',
   properties: {
     heading: P.str('Heading', 'How we work'),
+    headingLevel: headingLevel('h2'),
     body: P.rich('Text', [
       'We keep our team deliberately small so that the people you meet at the start are the people who see your project through.',
       'Each project follows the same simple rhythm: listen, plan, design, deliver. Along the way you will always know what is happening next and why.'
@@ -138,7 +141,7 @@ export const textSection = managed({
     sectionShell(
       b,
       [
-        b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
+        b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
         b.rich('body', { $prop: 'body' }, { name: 'Text', styles: { textStyle: tok('text.lead'), ...mutedStyles } })
       ],
       { width: 'reading', inner: { base: { gap: tok('space.lg') } } }
@@ -154,6 +157,7 @@ export const stats = managed({
   icon: 'chart-line',
   properties: {
     heading: P.str('Heading', ''),
+    headingLevel: headingLevel('h2'),
     items: P.list(
       'Figures',
       'Figure',
@@ -176,7 +180,7 @@ export const stats = managed({
   variantAxes: { tone: toneAxis(['label']) },
   build: (b) =>
     sectionShell(b, [
-      b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
+      b.text('heading', { $prop: 'headingLevel' }, { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
       b.el('grid', 'dl', { name: 'Grid', styles: { base: { layout: 'grid', columns: 2, gap: tok('space.xl') }, desktop: { columns: 4 } } }, [
         b.repeat('figures', 'items', [
           b.el('figure', 'div', { name: 'Figure', styles: { layout: 'stack', gap: tok('space.xs'), paddingInline: '0', border: '0', marginBlockStart: '0' } }, [
@@ -199,6 +203,7 @@ export const gallery = managed({
   properties: {
     eyebrow: P.str('Eyebrow', 'Selected work'),
     heading: P.str('Heading', 'Recent projects'),
+    headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', ''),
     images: P.list(
       'Images',
@@ -254,6 +259,7 @@ export const pageList = managed({
   properties: {
     eyebrow: P.str('Eyebrow', ''),
     heading: P.str('Heading', 'Selected work'),
+    headingLevel: headingLevel('h2'),
     lead: P.text('Supporting text', ''),
     items: P.list(
       'Pages',
