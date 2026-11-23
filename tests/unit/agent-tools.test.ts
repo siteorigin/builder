@@ -1132,3 +1132,19 @@ describe('ai-profile examples', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
+
+describe('read_component and installed theme components', () => {
+  it('describes a theme component as the project has it installed, so an older copy offers no heading level', async () => {
+    const { executeTool } = await import('@agent/tools');
+    const s = createStarterState('business', 'Test Studio', false);
+    const host = { state: () => s, revision: () => 1 } as unknown as Parameters<typeof executeTool>[2];
+    const read = async () => JSON.stringify((await executeTool('read_component', JSON.stringify({ componentId: 'hero.centered' }), host, 'c1')).content);
+    // Not installed yet: the theme's own definition, which a placement would install.
+    expect(await read()).toContain('headingLevel');
+    const old = structuredClone(catalogueComponent('foundation', 'hero.centered')!);
+    delete old.properties.headingLevel;
+    old.tree!.nodes.heading = { ...old.tree!.nodes.heading, tag: 'h1' } as never;
+    s.components[old.id] = old;
+    expect(await read()).not.toContain('headingLevel');
+  });
+});

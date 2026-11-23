@@ -126,7 +126,7 @@ describe('locateField', () => {
     const { state, contact, details, hours } = business();
     const owner = { kind: 'page' as const, id: contact.id };
     expect(locateField(state, { owner, nodeId: details.id, prop: 'items' })).toMatchObject({ ok: false, hint: expect.stringContaining(`${hours.id} (Hours)`) });
-    expect(locateField(state, { owner, nodeId: details.id, prop: 'colour' })).toMatchObject({ ok: false, hint: expect.stringContaining('eyebrow, heading, lead, items') });
+    expect(locateField(state, { owner, nodeId: details.id, prop: 'colour' })).toMatchObject({ ok: false, hint: expect.stringContaining('eyebrow, heading, headingLevel, lead, items') });
     expect(locateField(state, { owner, nodeId: details.id, prop: 'heading', itemId: hours.id, field: 'value' })).toMatchObject({ ok: false });
     expect(locateField(state, { owner, nodeId: details.id, prop: 'items', itemId: hours.id, field: 'colour' })).toMatchObject({ ok: false });
     expect(locateField(state, { owner: { kind: 'component', id: details.definitionId }, nodeId: 'root', prop: 'heading' })).toMatchObject({ ok: false });
