@@ -63,9 +63,12 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
           ? 'the shared header'
           : 'the shared footer'
         : `the ${quoted(componentName(o.id))} component`;
+  /** The element's name as the Layers panel shows it, from after the run or, for a removed one, before it. */
   const name = (o: OwnerRef, id: string) => {
-    const n = nodeIn(after, o, id) ?? nodeIn(before, o, id);
-    return n ? displayName(n === nodeIn(after, o, id) ? after : before, n) : 'an element';
+    const now = nodeIn(after, o, id);
+    if (now) return displayName(after, now);
+    const was = nodeIn(before, o, id);
+    return was ? displayName(before, was) : 'an element';
   };
   /** Where the card's link goes: the element when it still exists, otherwise its page. */
   const linkTo = (o: OwnerRef, id?: string): Draft['link'] => {
@@ -156,7 +159,7 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       case 'instance.setVariant': {
         const n = nodeIn(after, op.owner, op.nodeId);
         const def = n?.kind === 'instance' ? after.components[n.definitionId] : undefined;
-        const axis = op.axis ?? Object.entries(def?.variantAxes ?? {}).find(([, a]) => op.variant in a.options)?.[0];
+        const axis = op.axis ?? Object.entries(def?.variantAxes ?? {}).find(([, a]) => Object.hasOwn(a.options, op.variant))?.[0];
         return styleEdit(op, inSentence((axis && def?.variantAxes?.[axis]?.label) || 'style option'));
       }
       case 'node.setContent': {
@@ -243,7 +246,7 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
       case 'component.setVariant':
       case 'component.removeVariant': {
         const axes = before.components[op.definitionId]?.variantAxes ?? {};
-        const had = Object.values(axes).find((a) => op.variant in a.options)?.options[op.variant];
+        const had = Object.values(axes).find((a) => Object.hasOwn(a.options, op.variant))?.options[op.variant];
         const label = op.type === 'component.setVariant' ? op.label : (had?.label ?? op.variant);
         const how = op.type === 'component.removeVariant' ? 'Removed' : had ? 'Changed' : 'Added';
         return plain(op, `${how} the option ${quoted(label)} ${how === 'Removed' ? 'from' : 'of'} the ${quoted(componentName(op.definitionId))} component`);
