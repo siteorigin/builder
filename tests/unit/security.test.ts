@@ -102,7 +102,7 @@ describe('preview server policy', () => {
     mkdirSync(join(root, 'public'));
     writeFileSync(join(root, 'public', 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
     writeFileSync(join(root, 'index.html'), '<!doctype html><title>x</title>');
-    type Res = { setHeader(k: string, v: string): void; writeHead(s: number, h?: Record<string, string>): void; end(b: string): void };
+    type Res = { setHeader(k: string, v: string): void; removeHeader(k: string): void; writeHead(s: number, h?: Record<string, string>): void; end(b: string): void };
     // Like SvelteKit's asset server: registered first, answers static files itself and never calls next().
     // And pages that set a content policy of their own, the two ways a response can.
     const project = {
@@ -117,6 +117,11 @@ describe('preview server policy', () => {
           if (req.url === '/own-head') {
             res.writeHead(200, { 'Content-Security-Policy': "img-src 'self'" });
             return res.end('own');
+          }
+          if (req.url === '/removed') {
+            res.setHeader('content-security-policy', "script-src 'self'");
+            res.removeHeader('Content-Security-Policy');
+            return res.end('removed');
           }
           next();
         });
@@ -138,6 +143,8 @@ describe('preview server policy', () => {
       // A project's own policy is sent alongside the frame policy, never instead of it.
       expect((await get('/own-set')).csp).toBe("frame-ancestors app://editor, script-src 'self'");
       expect((await get('/own-head')).csp).toBe("frame-ancestors app://editor, img-src 'self'");
+      // Removing the project's policy leaves the frame policy.
+      expect((await get('/removed')).csp).toBe('frame-ancestors app://editor');
     } finally {
       await server.close();
     }

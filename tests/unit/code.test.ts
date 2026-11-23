@@ -233,6 +233,24 @@ describe('strict policy follows values and imports', () => {
     expect(await refused(`\tconst urls = [{ url: 'https://cdn.example/x.png' }].map((p) => p.url);`, `{#each urls as u}<img src={u} alt="" />{/each}`)).toBe(true);
     const chain = Array.from({ length: 30 }, (_, i) => `\tconst a${i + 1} = a${i};`).join('\n');
     expect(await refused(`\tconst a0 = 'https://cdn.example/hero.png';\n${chain}`, `<img src={a30} alt="" /><img src={a0} alt="" />`)).toBe(true);
+    // A list reached through a long chain first is still read in full when it is read directly.
+    const listChain = Array.from({ length: 22 }, (_, i) => `\tconst a${i + 1} = a${i};`).join('\n');
+    expect(await refused(`\tconst a0 = [{ src: 'https://cdn.example/a.png' }];\n${listChain}`, `<img src={a22[0].src} alt="" /><img src={a0[0].src} alt="" />`)).toBe(true);
+    // Array methods move positions; every object counts, however long the list.
+    expect(await refused(`\tconst pics = ['/assets/a.png', 'https://cdn.example/b.png'];`, `<img src={pics.slice(1)[0]} alt="" />`)).toBe(true);
+    const objects = [...Array.from({ length: 70 }, (_, i) => `{ src: '/assets/${i}.png' }`), `{ src: 'https://cdn.example/last.png' }`].join(', ');
+    expect(await refused(`\tconst pics = [${objects}];`, `{#each pics as p}<img src={p.src} alt="" />{/each}`)).toBe(true);
+    // An SVG image's href set through its baseVal.
+    expect(await refused(`\tconst u = 'https://cdn.example/x.png';\n\tlet pic;\n\tonMount(() => { pic.href.baseVal = u; });`, `<svg><image bind:this={pic} /></svg>`)).toBe(true);
+  });
+
+  it('reads a function in the scope it was written in, and keeps its parameters to itself', async () => {
+    const errorsOf = (body: string, markup: string) => strictErrors(script(body, markup));
+    // Two helpers with a parameter of the same name: only show() loads its argument.
+    const helpers = `\tlet img;\n\tfunction show(url) { img.src = url; }\n\tfunction caption(url) { return url; }\n\tonMount(() => show('/assets/a.png'));`;
+    expect(await errorsOf(helpers, `<img bind:this={img} alt="" /><p>{caption('https://example.com is where we started')}</p>`)).toEqual([]);
+    // A helper written in the script returns the script's url, not the each block's.
+    expect((await errorsOf(`\tconst url = 'https://cdn.example/x.png';\n\tconst pick = () => url;\n\tconst photos = ['/assets/a.png'];`, `{#each photos as url}<img src={pick()} alt={url} />{/each}`)).length).toBe(1);
   });
 
   it('keeps the names each block gives its items apart, and accepts image-map links', async () => {
@@ -272,7 +290,9 @@ describe('strict policy follows values and imports', () => {
       [`${DIR}/Card.svelte`]: `<script>\n\tlet { photo, title } = $props();\n</script>\n<img src={photo} alt={title} />\n`,
       [`${DIR}/Frame.svelte`]: `<script>\n\timport Card from './Card.svelte';\n\tlet { picture } = $props();\n</script>\n<Card photo={picture} title="x" />\n`,
       [`${DIR}/Banner.svelte`]: `<script>\n\tlet props = $props();\n</script>\n<section style="background-image: url({props.bg})">x</section>\n`,
-      [`${DIR}/Go.svelte`]: `<script>\n\tlet { href, label } = $props();\n</script>\n<a {href}>{label}</a>\n`
+      [`${DIR}/Go.svelte`]: `<script>\n\tlet { href, label } = $props();\n</script>\n<a {href}>{label}</a>\n`,
+      [`${DIR}/Pics.svelte`]: `<script>\n\tlet { images } = $props();\n</script>\n<img srcset={images} alt="" />\n`,
+      [`${DIR}/Plain.svelte`]: `<p>plain</p>\n`
     };
     const use = (spec: string, name: string, attrs: string) => strictErrors(`<script>\n\timport ${name} from '${spec}';\n\tconst remote = 'https://cdn.example/x.png';\n</script>\n<${name} ${attrs} />\n`, { resolve: project(files) });
     expect((await use('./Card.svelte', 'Card', 'photo="https://cdn.example/x.png" title="x"')).length).toBe(1);
@@ -281,6 +301,9 @@ describe('strict policy follows values and imports', () => {
     // Through a component that passes it on, and into CSS.
     expect((await use('./Frame.svelte', 'Frame', 'picture={remote}')).length).toBe(1);
     expect((await use('./Banner.svelte', 'Banner', 'bg="https://cdn.example/bg.png"')).length).toBe(1);
+    // A srcset list given to a component; a prop named like a loading attribute, whatever the component does.
+    expect((await use('./Pics.svelte', 'Pics', 'images="/assets/a.png 1x, https://cdn.example/b.png 2x"')).length).toBe(1);
+    expect((await use('./Plain.svelte', 'Plain', 'src="https://cdn.example/x.png"')).length).toBe(1);
     // A link component may be given any link, but not a script URL.
     expect(await use('./Go.svelte', 'Go', 'href="https://example.com" label="Site"')).toEqual([]);
     expect((await use('./Go.svelte', 'Go', 'href="javascript:alert(1)" label="x"')).length).toBe(1);

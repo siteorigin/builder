@@ -33,9 +33,10 @@ describe('responsive copies', () => {
     // A copy is made only when it is under 90% of the picture's width: 1440 is not, at 1600.
     expect((await renderVariants(await halves(1600, 800, 'jpeg'), 'image/jpeg', 1600)).map((v) => v.width)).toEqual([480, 960]);
     expect((await renderVariants(await halves(1602, 800, 'jpeg'), 'image/jpeg', 1602)).map((v) => v.width)).toEqual([480, 960, 1440]);
-    // A header that overstates the width never makes a copy larger than the picture.
+    // A header that overstates the width gets copies for the picture's real width, each labelled as it is.
     const small = await renderVariants(await halves(600, 300, 'jpeg'), 'image/jpeg', 2000);
-    expect((await Promise.all(small.map(async (v) => (await sharp(v.data).metadata()).width))).every((w) => w! <= 600)).toBe(true);
+    expect(small.map((v) => v.width)).toEqual([480]);
+    expect((await sharp(small[0].data).metadata()).width).toBe(480);
   });
 
   it('turns a copy the way its EXIF orientation says, sized by its displayed width', async () => {

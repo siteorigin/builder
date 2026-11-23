@@ -42,7 +42,7 @@ export function previewFsPolicy(dir: string) {
 }
 
 type HeaderValue = string | number | readonly string[];
-type Res = { setHeader(k: string, v: HeaderValue): unknown };
+type Res = { setHeader(k: string, v: HeaderValue): unknown; removeHeader(k: string): void };
 
 /**
  * Give a response the frame policy, and keep it when the project sets a policy of its own: that one is sent
@@ -50,11 +50,18 @@ type Res = { setHeader(k: string, v: HeaderValue): unknown };
  */
 export function enforceFramePolicy(res: Res, csp: string) {
   const set = res.setHeader;
+  const remove = res.removeHeader;
+  const isPolicy = (name: string) => String(name).toLowerCase() === 'content-security-policy';
   set.call(res, 'Content-Security-Policy', csp);
   res.setHeader = function (this: Res, name: string, value: HeaderValue) {
-    if (name.toLowerCase() !== 'content-security-policy') return set.call(this, name, value);
+    if (!isPolicy(name)) return set.call(this, name, value);
     const theirs = (Array.isArray(value) ? value : [value]).map(String).filter((v) => v !== csp);
     return set.call(this, name, [csp, ...theirs]);
+  };
+  // Removing the project's policy leaves the frame policy in place.
+  res.removeHeader = function (this: Res, name: string) {
+    if (isPolicy(name)) set.call(this, 'Content-Security-Policy', csp);
+    else remove.call(this, name);
   };
 }
 

@@ -64,6 +64,8 @@ const BROWSER_ONLY = new Set(['window', 'document', 'localStorage', 'sessionStor
 const EMBEDS = new Set(['iframe', 'frame', 'frameset', 'object', 'embed', 'portal', 'script', 'base', 'link', 'meta']);
 /** Attributes that load or submit to a URL. A link's href only navigates, so it may point anywhere safe. */
 const URL_ATTRS = new Set(['src', 'srcset', 'href', 'xlink:href', 'action', 'formaction', 'poster', 'data', 'background', 'ping', 'cite']);
+/** Attributes whose URL only opens a page (on a link). */
+const OPENING_ATTRS = new Set(['href', 'xlink:href', 'cite']);
 /** Element properties that load, submit to or open a URL when assigned. */
 const DOM_URL_PROPS = new Set(['src', 'srcset', 'poster', 'action', 'formAction', 'href']);
 const SCRIPT_URL = /^\s*(javascript|vbscript|data:text\/html)/i;
@@ -266,7 +268,7 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
   /**
    * Visit every node. `deferred` counts enclosing functions and browser-only guards (code that does not
    * run while the page renders on the server); `key` is the property of `parent` holding this node; `scope`
-   * lists the each blocks it is inside, whose item names it can see.
+   * lists the functions and each blocks it is inside, whose names it can see.
    */
   const visit = (node: unknown, deferred: number, parent: Node | null, key: string, scope: Node[]) => {
     if (!node || typeof node !== 'object') return;
@@ -326,7 +328,11 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
         const left = n.left as Node;
         if (!strict || left.type !== 'MemberExpression') break;
         const prop = nameOf(left.property as Node, left.computed);
-        if (prop && DOM_URL_PROPS.has(prop)) checkUrls(expression(n.right as Node, scope), opensOnly(left.object as Node, prop.toLowerCase()), prop === 'srcset', n);
+        // An SVG element's href is an object: image.href.baseVal = url sets it.
+        const target = left.object as Node;
+        const svgHref = prop === 'baseVal' && target.type === 'MemberExpression' && nameOf(target.property as Node, target.computed) === 'href';
+        if (svgHref) checkUrls(expression(n.right as Node, scope), opensOnly(target.object as Node, 'href'), false, n);
+        else if (prop && DOM_URL_PROPS.has(prop)) checkUrls(expression(n.right as Node, scope), opensOnly(left.object as Node, prop.toLowerCase()), prop === 'srcset', n);
         else if (prop === 'cssText' || isStyleObject(left.object as Node)) checkCss(expression(n.right as Node, scope), n);
         break;
       }
@@ -414,8 +420,10 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
         } else {
           const prop = String(n.name);
           const any = (set: Set<string>) => set.has(prop) || set.has('*');
-          // The component may wrap a bare URL in url(…) itself, so one headed into its CSS loads too.
-          if (any(child.load) || any(child.css)) checkUrls(full, false, false, n);
+          // The component may wrap a bare URL in url(…) itself, so one headed into its CSS loads too. A prop
+          // named like a loading attribute counts as one whatever the component does with it, and any of them
+          // may be a srcset list.
+          if (any(child.load) || any(child.css) || (URL_ATTRS.has(attr) && !OPENING_ATTRS.has(attr))) checkUrls(full, false, true, n);
           if (any(child.css)) checkCss(full, n);
           if (any(child.nav)) checkUrls(full, true, false, n);
         }
@@ -424,7 +432,7 @@ async function check(source: string, opts: CheckOptions, reach: Reach): Promise<
     }
     for (const k of Object.keys(n)) {
       if (SKIP_KEYS.has(k)) continue;
-      visit(n[k], childDeferred + (guarded.has(k) ? 1 : 0), n, k, n.type === 'EachBlock' && (k === 'body' || k === 'key') ? [...scope, n] : scope);
+      visit(n[k], childDeferred + (guarded.has(k) ? 1 : 0), n, k, isScope(n, k) ? [...scope, n] : scope);
     }
   };
   visit(ast.instance, 0, null, 'instance', []);
@@ -452,23 +460,24 @@ function isStyleObject(n: Node | undefined): boolean {
 /**
  * A value as far as the code shows it: a string, an array or object written out in the code, or unknown
  * (a function's result, a prop). Unknown values are allowed: the check judges only what the code spells out.
+ * Arrays and objects are read lazily, at the depth of whoever reads them.
  */
 type Val =
   | { kind: 'str'; s: string }
-  | { kind: 'arr'; items: () => Val[]; at: (i: number) => Val[] }
-  | { kind: 'obj'; get: (key: string | null) => Val[] }
+  | { kind: 'arr'; items: (depth: number) => Val[]; at: (i: number, depth: number) => Val[] }
+  | { kind: 'obj'; get: (key: string | null, depth: number) => Val[] }
   | { kind: 'unknown' };
 /**
- * Where a name's value comes from: an expression (read in the each blocks around it), a function, a property
- * or an element of another source.
+ * Where a name's value comes from: an expression (read in the scopes around it), a function (declared in the
+ * scopes given), a property or an element of another source.
  */
-type Src = { expr: Node; scope: Node[] } | { fn: Node } | { member: Src; key: string | null } | { element: Src; index?: number } | 'unknown';
+type Src = { expr: Node; scope: Node[] } | { fn: Node; scope: Node[] } | { member: Src; key: string | null } | { element: Src; index?: number } | 'unknown';
 
 interface Bindings {
-  /** Names given values in the script or template, by name: scopes other than each blocks are merged. */
+  /** Names given values outside every function and each block. */
   names: Map<string, Src[]>;
-  /** Names an each block gives its items, seen only inside that block. */
-  each: Map<Node, Map<string, Src[]>>;
+  /** Names a function (its parameters and locals) or an each block (its items) gives values, seen only inside it. */
+  scopes: Map<Node, Map<string, Src[]>>;
   /** Variables holding an element through bind:this, with the element's tag. */
   elements: Map<string, string>;
 }
@@ -478,44 +487,74 @@ const UNKNOWN: Val = { kind: 'unknown' };
 const HIDDEN = '\u0001';
 /** Values followed per expression; enough for any real component, and a bound on contrived ones. */
 const MAX_VALUES = 64;
-const MAX_DEPTH = 24;
+const MAX_DEPTH = 32;
 /** Steps one value read may take before the rest of it counts as unknown. */
 const MAX_STEPS = 20_000;
-/** Values worth keeping past the cap: they may be the remote URL the cap would otherwise hide. */
+/** Values worth keeping past the cap: they may be, or hold, the remote URL the cap would otherwise hide. */
 const SUSPICIOUS = /\/\/|script:|url\(|@import/i;
 const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 const SKIP_KEYS = new Set(['type', 'loc', 'metadata', 'parent', 'start', 'end']);
 /** Array methods whose callback's first parameter is an element of the array. */
 const ELEMENT_CALLBACKS = new Set(['map', 'flatMap', 'forEach', 'filter', 'find', 'findLast', 'findIndex', 'some', 'every', 'reduce']);
-/** Methods that return (part of) the same array, or one of its elements. */
-const SAME_ARRAY = new Set(['filter', 'slice', 'toSorted', 'toReversed', 'reverse', 'sort', 'toSpliced', 'flat']);
+/** Methods that return some of the same array's elements, in an order the check does not follow. */
+const SAME_ARRAY = new Set(['filter', 'slice', 'toSorted', 'toReversed', 'reverse', 'sort', 'toSpliced', 'flat', 'concat']);
 const ONE_ELEMENT = new Set(['find', 'findLast', 'at', 'pop', 'shift', 'join']);
 /** Calls that return their argument, or a string much like it. */
 const PASS_THROUGH = new Set(['$state', '$derived', 'String', 'encodeURI', 'decodeURI', 'structuredClone']);
 const STRING_METHODS = new Set(['trim', 'trimStart', 'trimEnd', 'toString', 'toLowerCase', 'toUpperCase', 'valueOf', 'normalize', 'concat']);
 
 const strings = (vals: Val[]): string[] => vals.map((v) => (v.kind === 'str' ? v.s : HIDDEN));
-const keep = <T>(all: T[], suspicious: (v: T) => boolean): T[] => (all.length <= MAX_VALUES ? all : [...all.slice(0, MAX_VALUES), ...all.slice(MAX_VALUES).filter(suspicious).slice(0, MAX_VALUES)]);
-const capped = (vals: Val[]) => keep(vals, (v) => v.kind === 'str' && SUSPICIOUS.test(v.s));
+const keep = <T>(all: T[], suspicious: (v: T) => boolean): T[] => (all.length <= MAX_VALUES ? all : [...all.slice(0, MAX_VALUES), ...all.slice(MAX_VALUES).filter(suspicious).slice(0, MAX_VALUES * 4)]);
+const capped = (vals: Val[]) => keep(vals, (v) => v.kind === 'arr' || v.kind === 'obj' || (v.kind === 'str' && SUSPICIOUS.test(v.s)));
 function joinStrings(a: string[], b: string[]): string[] {
   const out: string[] = [];
   for (const x of a) for (const y of b) out.push(x + y);
   return keep(out, (v) => SUSPICIOUS.test(v));
 }
-const functionNode = (s: Src): Node | null => (s === 'unknown' ? null : 'fn' in s ? s.fn : 'expr' in s && FUNCTION_TYPES.has(s.expr.type) ? s.expr : null);
+/** Scopes inside `scope` are those of functions and each blocks; a function's own scope covers its parameters and body. */
+const isScope = (n: Node, key: string) => (FUNCTION_TYPES.has(n.type) && (key === 'params' || key === 'body')) || (n.type === 'EachBlock' && (key === 'body' || key === 'key'));
+
+function lookupIn(b: Bindings, name: string, scope: Node[]): Src[] | undefined {
+  for (let i = scope.length - 1; i >= 0; i--) {
+    const own = b.scopes.get(scope[i])?.get(name);
+    if (own) return own;
+  }
+  return b.names.get(name);
+}
+/** The function a binding holds, with the scopes it was written in. */
+function functionOf(s: Src): { fn: Node; scope: Node[] } | null {
+  if (s === 'unknown') return null;
+  if ('fn' in s) return s;
+  return 'expr' in s && FUNCTION_TYPES.has(s.expr.type) ? { fn: s.expr, scope: s.scope } : null;
+}
 
 function collectBindings(roots: unknown[]): Bindings {
-  const b: Bindings = { names: new Map(), each: new Map(), elements: new Map() };
-  const calls: Array<{ call: Node; scope: Node[] }> = [];
+  const b: Bindings = { names: new Map(), scopes: new Map(), elements: new Map() };
+  const later: Array<{ n: Node; scope: Node[] }> = [];
+  const own = (owner: Node | undefined) => {
+    if (!owner) return b.names;
+    let m = b.scopes.get(owner);
+    if (!m) b.scopes.set(owner, (m = new Map()));
+    return m;
+  };
   const add = (into: Map<string, Src[]>, name: string, src: Src) => {
     const list = into.get(name);
     if (!list) into.set(name, [src]);
     else if (list.length < MAX_VALUES) list.push(src);
   };
-  const bind = (into: Map<string, Src[]>, pattern: Node | null | undefined, src: Src, scope: Node[]) => {
+  /** Bind the names in a pattern into `into`, or (into null) into wherever each name is declared. */
+  const bind = (into: Map<string, Src[]> | null, pattern: Node | null | undefined, src: Src, scope: Node[]) => {
     if (!pattern) return;
-    if (pattern.type === 'Identifier') add(into, pattern.name as string, src);
-    else if (pattern.type === 'ObjectPattern')
+    if (pattern.type === 'Identifier') {
+      const name = pattern.name as string;
+      if (into) add(into, name, src);
+      else {
+        const declared = lookupIn(b, name, scope);
+        if (declared) {
+          if (declared.length < MAX_VALUES) declared.push(src);
+        } else add(b.names, name, src);
+      }
+    } else if (pattern.type === 'ObjectPattern')
       for (const p of pattern.properties as Node[]) bind(into, p.type === 'RestElement' ? (p.argument as Node) : (p.value as Node), p.type === 'RestElement' ? src : { member: src, key: nameOf(p.key as Node, p.computed) }, scope);
     else if (pattern.type === 'ArrayPattern')
       (pattern.elements as Array<Node | null>).forEach((el, index) => bind(into, el?.type === 'RestElement' ? (el.argument as Node) : el, el?.type === 'RestElement' ? src : { element: src, index }, scope));
@@ -524,6 +563,9 @@ function collectBindings(roots: unknown[]): Bindings {
       bind(into, pattern.left as Node, { expr: pattern.right as Node, scope }, scope);
     } else if (pattern.type === 'RestElement') bind(into, pattern.argument as Node, src, scope);
   };
+  /** The innermost function around a point: where its var, let and const declarations live. */
+  const fnOwner = (scope: Node[]) => [...scope].reverse().find((s) => FUNCTION_TYPES.has(s.type));
+  // First every declaration, so assignments and calls can find the binding they change.
   const go = (node: unknown, scope: Node[]) => {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) {
@@ -532,35 +574,35 @@ function collectBindings(roots: unknown[]): Bindings {
     }
     const n = node as Node;
     if (typeof n.type !== 'string') return;
-    if (n.type === 'VariableDeclarator') bind(b.names, n.id as Node, n.init ? { expr: n.init as Node, scope } : 'unknown', scope);
-    else if (n.type === 'AssignmentExpression' && ['=', '+=', '||=', '??='].includes(String(n.operator))) bind(b.names, n.left as Node, { expr: n.right as Node, scope }, scope);
-    else if (n.type === 'FunctionDeclaration' && n.id) add(b.names, String((n.id as Node).name), { fn: n });
-    else if (n.type === 'EachBlock') {
-      const own = new Map<string, Src[]>();
-      b.each.set(n, own);
-      bind(own, n.context as Node, { element: { expr: n.expression as Node, scope } }, scope);
-    } else if (n.type === 'CallExpression') {
-      calls.push({ call: n, scope });
-      // items.map((item) => …): the callback's first parameter is an element of the array (reduce's second).
-      const callee = n.callee as Node;
-      const method = callee.type === 'MemberExpression' ? nameOf(callee.property as Node, callee.computed) : null;
-      const fn = (n.arguments as Node[])[0];
-      if (method && ELEMENT_CALLBACKS.has(method) && fn && FUNCTION_TYPES.has(fn.type)) bind(b.names, (fn.params as Node[])[method === 'reduce' ? 1 : 0], { element: { expr: callee.object as Node, scope } }, scope);
-    } else if (n.type === 'RegularElement' || n.type === 'SvelteElement') {
+    if (n.type === 'VariableDeclarator') bind(own(fnOwner(scope)), n.id as Node, n.init ? { expr: n.init as Node, scope } : 'unknown', scope);
+    else if (n.type === 'FunctionDeclaration' && n.id) add(own(fnOwner(scope)), String((n.id as Node).name), { fn: n, scope });
+    else if (FUNCTION_TYPES.has(n.type)) for (const p of n.params as Node[]) bind(own(n), p, 'unknown', [...scope, n]);
+    else if (n.type === 'EachBlock') bind(own(n), n.context as Node, { element: { expr: n.expression as Node, scope } }, scope);
+    else if (n.type === 'AssignmentExpression' || n.type === 'CallExpression') later.push({ n, scope });
+    else if (n.type === 'RegularElement' || n.type === 'SvelteElement') {
       const tag = n.type === 'RegularElement' ? String(n.name) : typeof n.tag === 'string' ? n.tag : String((n.tag as Node)?.value ?? '');
       for (const a of n.attributes as Node[]) if (a.type === 'BindDirective' && a.name === 'this' && (a.expression as Node)?.type === 'Identifier') b.elements.set(String((a.expression as Node).name), tag.toLowerCase());
     }
-    for (const k of Object.keys(n)) if (!SKIP_KEYS.has(k)) go(n[k], n.type === 'EachBlock' && (k === 'body' || k === 'key') ? [...scope, n] : scope);
+    for (const k of Object.keys(n)) if (!SKIP_KEYS.has(k)) go(n[k], isScope(n, k) ? [...scope, n] : scope);
   };
   go(roots, []);
-  // What a local function is called with is what its parameters hold.
-  for (const { call, scope } of calls) {
-    const callee = call.callee as Node;
-    if (callee.type !== 'Identifier') continue;
-    for (const fn of (b.names.get(callee.name as string) ?? []).map(functionNode)) {
-      if (!fn) continue;
-      (call.arguments as Node[]).forEach((arg, i) => {
-        if (arg.type !== 'SpreadElement') bind(b.names, (fn.params as Node[])[i], { expr: arg, scope }, scope);
+  for (const { n, scope } of later) {
+    if (n.type === 'AssignmentExpression') {
+      if (['=', '+=', '||=', '??='].includes(String(n.operator))) bind(null, n.left as Node, { expr: n.right as Node, scope }, scope);
+      continue;
+    }
+    const callee = n.callee as Node;
+    const args = n.arguments as Node[];
+    // items.map((item) => …): the callback's first parameter is an element of the array (reduce's second).
+    const method = callee.type === 'MemberExpression' ? nameOf(callee.property as Node, callee.computed) : null;
+    if (method && ELEMENT_CALLBACKS.has(method) && args[0] && FUNCTION_TYPES.has(args[0].type))
+      bind(own(args[0]), (args[0].params as Node[])[method === 'reduce' ? 1 : 0], { element: { expr: callee.object as Node, scope } }, [...scope, args[0]]);
+    // What a local function is called with is what its parameters hold.
+    const targets = callee.type === 'Identifier' ? (lookupIn(b, callee.name as string, scope) ?? []).map(functionOf) : FUNCTION_TYPES.has(callee.type) ? [{ fn: callee, scope }] : [];
+    for (const t of targets) {
+      if (!t) continue;
+      args.forEach((arg, i) => {
+        if (arg.type !== 'SpreadElement') bind(own(t.fn), (t.fn.params as Node[])[i], { expr: arg, scope }, [...t.scope, t.fn]);
       });
     }
   }
@@ -610,29 +652,24 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
       active.delete(key);
     }
   };
-  const lookup = (name: string, scope: Node[]): Src[] | undefined => {
-    for (let i = scope.length - 1; i >= 0; i--) {
-      const own = b.each.get(scope[i])?.get(name);
-      if (own) return own;
-    }
-    return b.names.get(name);
-  };
-  const prop = (v: Val, key: string | null): Val[] =>
-    v.kind === 'obj' ? v.get(key) : v.kind === 'arr' ? (key === null ? v.items() : /^\d+$/.test(key) ? v.at(Number(key)) : [UNKNOWN]) : v.kind === 'str' && key === 'href' ? [v] : [UNKNOWN];
-  const elementsOf = (v: Val, index?: number): Val[] => (v.kind !== 'arr' ? [UNKNOWN] : index === undefined ? v.items() : v.at(index));
+  const prop = (v: Val, key: string | null, d: number): Val[] =>
+    v.kind === 'obj' ? v.get(key, d) : v.kind === 'arr' ? (key === null ? v.items(d) : /^\d+$/.test(key) ? v.at(Number(key), d) : [UNKNOWN]) : v.kind === 'str' && key === 'href' ? [v] : [UNKNOWN];
+  const elementsOf = (v: Val, d: number, index?: number): Val[] => (v.kind !== 'arr' ? [UNKNOWN] : index === undefined ? v.items(d) : v.at(index, d));
+  /** The same elements, with positions no longer known. */
+  const unordered = (vals: Val[]): Val[] => vals.map((v) => (v.kind === 'arr' ? { kind: 'arr', items: v.items, at: (_i, d) => v.items(d) } : v));
   const fromSrc = (src: Src, depth: number): Val[] =>
     src === 'unknown' || 'fn' in src
       ? [UNKNOWN]
       : 'expr' in src
         ? evaluate(src.expr, depth, src.scope)
         : 'member' in src
-          ? capped(fromSrc(src.member, depth + 1).flatMap((v) => prop(v, src.key)))
-          : capped(fromSrc(src.element, depth + 1).flatMap((v) => elementsOf(v, src.index)));
-  /** What the functions an expression names may return. */
+          ? capped(fromSrc(src.member, depth + 1).flatMap((v) => prop(v, src.key, depth + 1)))
+          : capped(fromSrc(src.element, depth + 1).flatMap((v) => elementsOf(v, depth + 1, src.index)));
+  /** What the functions an expression names may return, read in the scopes they were written in. */
   const returned = (fn: Node | undefined, depth: number, scope: Node[]): Val[] => {
-    const fns = !fn ? [] : FUNCTION_TYPES.has(fn.type) ? [fn] : fn.type === 'Identifier' ? (lookup(fn.name as string, scope) ?? []).map(functionNode).filter((f): f is Node => !!f) : [];
+    const fns = !fn ? [] : FUNCTION_TYPES.has(fn.type) ? [{ fn, scope }] : fn.type === 'Identifier' ? (lookupIn(b, fn.name as string, scope) ?? []).map(functionOf).filter((f): f is { fn: Node; scope: Node[] } => !!f) : [];
     if (!fns.length) return [UNKNOWN];
-    return capped(fns.flatMap((f) => once(f, () => returnsOf(f).flatMap((r) => evaluate(r, depth, scope)))));
+    return capped(fns.flatMap((f) => once(f.fn, () => returnsOf(f.fn).flatMap((r) => evaluate(r, depth, [...f.scope, f.fn])))));
   };
   const evaluate = (n: Node | undefined, depth: number, scope: Node[]): Val[] => {
     if (!n) return [UNKNOWN];
@@ -669,14 +706,15 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
         return evaluate((n.expression ?? n.argument) as Node, d, scope);
       case 'ArrayExpression': {
         const els = n.elements as Array<Node | null>;
-        const one = (el: Node | null): Val[] => (!el ? [] : el.type === 'SpreadElement' ? evaluate(el.argument as Node, d, scope).flatMap((v) => elementsOf(v)) : evaluate(el, d, scope));
-        const all = () => once(n, () => capped(els.flatMap(one)));
+        const one = (el: Node | null, at: number): Val[] => (!el ? [] : el.type === 'SpreadElement' ? evaluate(el.argument as Node, at, scope).flatMap((v) => elementsOf(v, at + 1)) : evaluate(el, at, scope));
+        // Every element is read (the step budget bounds a huge list): a cap here could hide the one remote URL.
+        const all = (at: number) => once(n, () => els.flatMap((el) => one(el, at)));
         return [
           {
             kind: 'arr',
             items: all,
             // A written-out position is that element alone, unless a spread before it shifts the positions.
-            at: (i) => (els.slice(0, i + 1).some((e) => e?.type === 'SpreadElement') ? all() : els[i] ? once(n, () => evaluate(els[i]!, d, scope)) : [UNKNOWN])
+            at: (i, at) => (els.slice(0, i + 1).some((e) => e?.type === 'SpreadElement') ? all(at) : els[i] ? once(n, () => evaluate(els[i]!, at, scope)) : [UNKNOWN])
           }
         ];
       }
@@ -684,14 +722,14 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
         return [
           {
             kind: 'obj',
-            get: (key) =>
+            get: (key, at) =>
               once(n, () => {
                 const out: Val[] = [];
                 for (const p of n.properties as Node[]) {
-                  if (p.type === 'SpreadElement') out.push(...evaluate(p.argument as Node, d, scope).flatMap((v) => prop(v, key)));
+                  if (p.type === 'SpreadElement') out.push(...evaluate(p.argument as Node, at, scope).flatMap((v) => prop(v, key, at + 1)));
                   else {
                     const k = nameOf(p.key as Node, p.computed);
-                    if (key === null || k === null || k === key) out.push(...(p.kind === 'init' && !p.method ? evaluate(p.value as Node, d, scope) : [UNKNOWN]));
+                    if (key === null || k === null || k === key) out.push(...(p.kind === 'init' && !p.method ? evaluate(p.value as Node, at, scope) : [UNKNOWN]));
                   }
                 }
                 return out.length ? capped(out) : [UNKNOWN];
@@ -699,7 +737,7 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
           }
         ];
       case 'Identifier': {
-        const srcs = lookup(n.name as string, scope);
+        const srcs = lookupIn(b, n.name as string, scope);
         if (!srcs) return [UNKNOWN];
         const known = memo.get(srcs);
         if (known) {
@@ -718,7 +756,7 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
         return vals;
       }
       case 'MemberExpression':
-        return capped(evaluate(n.object as Node, d, scope).flatMap((v) => prop(v, nameOf(n.property as Node, n.computed))));
+        return capped(evaluate(n.object as Node, d, scope).flatMap((v) => prop(v, nameOf(n.property as Node, n.computed), d)));
       case 'NewExpression':
         // new URL(path, base) is the base, or the path when that is a full URL.
         return (n.callee as Node).type === 'Identifier' && (n.callee as Node).name === 'URL' ? capped((n.arguments as Node[]).flatMap((a) => evaluate(a, d, scope))) : [UNKNOWN];
@@ -747,12 +785,13 @@ function valueReader(b: Bindings): (n: Node | undefined, scope: Node[]) => { val
         // $state.raw(x), $derived.by(() => x)
         if (obj.type === 'Identifier' && (obj.name === '$state' || obj.name === '$derived')) return method === 'by' ? returned(args[0], d, scope) : evaluate(args[0], d, scope);
         if (method === 'map' || method === 'flatMap') {
-          const all = () => returned(args[0], d, scope);
-          return [{ kind: 'arr', items: all, at: all }];
+          const all = (at: number) => returned(args[0], at, scope);
+          return [{ kind: 'arr', items: all, at: (_i, at) => all(at) }];
         }
         const base = evaluate(obj, d, scope);
-        if (method && SAME_ARRAY.has(method)) return base;
-        if (method && ONE_ELEMENT.has(method)) return capped(base.flatMap((v) => (v.kind === 'arr' ? v.items() : [v])));
+        if (method && SAME_ARRAY.has(method) && base.some((v) => v.kind === 'arr'))
+          return unordered(capped([...base, ...(method === 'concat' ? args.flatMap((a) => evaluate(a, d, scope).map((v) => (v.kind === 'arr' ? v : { kind: 'arr' as const, items: () => [v], at: () => [v] }))) : [])]));
+        if (method && ONE_ELEMENT.has(method)) return capped(base.flatMap((v) => (v.kind === 'arr' ? v.items(d) : [v])));
         if (method && STRING_METHODS.has(method)) return capped([...base, ...args.flatMap((a) => evaluate(a, d, scope))]);
         return [UNKNOWN];
       }
