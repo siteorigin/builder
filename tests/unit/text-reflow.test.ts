@@ -99,14 +99,18 @@ async function bundleSites(sites: Record<string, Map<string, string>>): Promise<
 }
 
 interface Layout {
-  rootFontSize: number;
   scrollWidth: number;
   viewportWidth: number;
   /** Rendered elements and lines of text that reach past either side of the viewport. */
   outside: string[];
   /** Lines of text that spill out of the box they belong to. */
   spills: string[];
-  clipsX: boolean;
+  /** Boxes that cut off their own content, or make it scroll sideways. */
+  clipped: string[];
+  /** The page cannot be scrolled the ordinary way. */
+  blocksScroll: boolean;
+  /** The skip link shows before it is focused. */
+  skipLinkShows: boolean;
 }
 
 // Runs in the browser, so it is passed as text (the Node project has no DOM types). Deliberately hidden content
@@ -116,11 +120,18 @@ const MEASURE = `(() => {
   const hidden = (el) => !!el.closest('.so-visually-hidden, .so-form__trap, script, style');
   const name = (el) => (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).join('.') : el.tagName.toLowerCase());
   const past = (b) => b.left < -0.5 || b.right > vw + 0.5;
+  const cuts = (v) => v === 'hidden' || v === 'clip';
   const outside = [];
   const spills = [];
+  const clipped = [];
   for (const el of document.body.querySelectorAll('*')) {
+    if (hidden(el)) continue;
     const b = el.getBoundingClientRect();
-    if (!hidden(el) && b.width > 0 && b.height > 0 && past(b)) outside.push(name(el) + ' ' + Math.round(b.left) + '..' + Math.round(b.right));
+    if (b.width > 0 && b.height > 0 && past(b)) outside.push(name(el) + ' ' + Math.round(b.left) + '..' + Math.round(b.right));
+    const style = getComputedStyle(el);
+    const wide = el.scrollWidth > el.clientWidth + 1;
+    if ((style.overflowX !== 'visible' && wide) || (cuts(style.overflowY) && el.scrollHeight > el.clientHeight + 1))
+      clipped.push(name(el) + ' ' + el.scrollWidth + 'x' + el.scrollHeight + ' in ' + el.clientWidth + 'x' + el.clientHeight);
   }
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let node; (node = walker.nextNode()); ) {
@@ -138,28 +149,36 @@ const MEASURE = `(() => {
       else if (line.left < own.left - 1 || line.right > own.right + 1) spills.push(label + ' in ' + name(box) + ' ' + Math.round(own.left) + '..' + Math.round(own.right));
     }
   }
-  const clips = (el) => ['hidden', 'clip'].includes(getComputedStyle(el).overflowX);
+  const blocks = (el) => cuts(getComputedStyle(el).overflowX) || cuts(getComputedStyle(el).overflowY);
+  const skip = document.querySelector('.so-skip-link');
   return {
-    rootFontSize: parseFloat(getComputedStyle(document.documentElement).fontSize),
     scrollWidth: document.documentElement.scrollWidth,
     viewportWidth: vw,
     outside: [...new Set(outside)],
     spills: [...new Set(spills)],
-    clipsX: clips(document.documentElement) || clips(document.body)
+    clipped: [...new Set(clipped)],
+    blocksScroll: blocks(document.documentElement) || blocks(document.body),
+    skipLinkShows: !!skip && document.activeElement !== skip && skip.getBoundingClientRect().bottom > 0
   };
 })()`;
 
-/** The focused element: its text, destination, the section it sits in, and where it is on screen. */
+/**
+ * The focused element: its text, destination, the section it sits in, where it is on screen, and whether Tab has
+ * been here before (marked on the element, so a repeated label elsewhere is not mistaken for wrapping round).
+ */
 const FOCUSED = `(() => {
   const el = document.activeElement;
   if (!el || el === document.body) return null;
+  const seen = el.hasAttribute('data-test-focused');
+  el.setAttribute('data-test-focused', '');
   const owner = el.closest('[class*="__root"], header');
   const section = owner?.tagName === 'HEADER' ? 'header' : (owner?.className.match(/so-foundation-([a-z-]+)__root/) || [])[1] || '';
   const b = el.getBoundingClientRect();
-  return { section, text: el.textContent.trim(), href: el.getAttribute('href'), left: b.left, right: b.right, top: b.top, bottom: b.bottom, vw: document.documentElement.clientWidth, vh: innerHeight };
+  return { seen, section, text: el.textContent.trim(), href: el.getAttribute('href'), left: b.left, right: b.right, top: b.top, bottom: b.bottom, vw: document.documentElement.clientWidth, vh: innerHeight };
 })()`;
 
 interface Focused {
+  seen: boolean;
   section: string;
   text: string;
   href: string | null;
@@ -183,7 +202,7 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
     // Settled separately, so a browser that launched is still closed when the bundle fails.
     const [bundled, launched] = await Promise.allSettled([
       bundleSites(Object.fromEntries(Object.entries(sites).map(([name, site]) => [name, site.files]))),
-      chromium.launch({ headless: true, executablePath: chromium.executablePath() })
+      chromium.launch({ headless: true, executablePath: chromium.executablePath(), timeout: 30_000 })
     ]);
     if (launched.status === 'fulfilled') browser = launched.value;
     if (bundled.status === 'rejected') throw bundled.reason;
@@ -199,6 +218,7 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
   async function withPage(name: string, size: { width: number; height?: number }, fontSize: number, body: (page: Page) => Promise<void>) {
     // Reduced motion turns off the theme's smooth scrolling, so the scroll Tab starts has finished when focus is measured.
     const context = await browser.newContext({ viewport: { width: size.width, height: size.height ?? 800 }, reducedMotion: 'reduce' });
+    context.setDefaultTimeout(10_000);
     try {
       const page = await context.newPage();
       const cdp = await context.newCDPSession(page);
@@ -212,19 +232,26 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
       });
       await page.goto(`${ORIGIN}/`);
       await page.locator('main section').first().waitFor();
-      const root = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
-      expect(root, "the browser's default font size applies").toBe(fontSize);
+      expect(await fontSizeOf(page, 'html'), "the browser's default font size applies").toBe(fontSize);
       await body(page);
     } finally {
       await context.close();
     }
   }
 
+  const fontSizeOf = async (page: Page, selector: string) =>
+    (await page.evaluate(`parseFloat(getComputedStyle(document.querySelector(${JSON.stringify(selector)})).fontSize)`)) as number;
   const measure = async (page: Page) => (await page.evaluate(MEASURE)) as Layout;
   /** Read after two frames: the theme's reduced-motion rule still runs a 0.01ms transition, as on the skip link. */
   const focused = async (page: Page) => {
-    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    await page.evaluate('new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))');
     return (await page.evaluate(FOCUSED)) as Focused | null;
+  };
+  const tab = async (page: Page) => {
+    await page.keyboard.press('Tab');
+    const f = await focused(page);
+    if (!f) throw new Error('Tab moved focus out of the page');
+    return f;
   };
 
   /** Every way a case fails to fit at the given widths and text sizes, so one assertion names them all. */
@@ -238,7 +265,9 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
             if (layout.scrollWidth > layout.viewportWidth) problems.push(`${at}${where}: the page is ${layout.scrollWidth}px wide`);
             for (const el of layout.outside) problems.push(`${at}${where}: ${el}`);
             for (const line of layout.spills) problems.push(`${at}${where}: ${line}`);
-            if (layout.clipsX) problems.push(`${at}${where}: horizontal overflow is hidden`);
+            for (const el of layout.clipped) problems.push(`${at}${where}: ${el} cuts off or side-scrolls its content`);
+            if (layout.blocksScroll) problems.push(`${at}${where}: page scrolling is turned off`);
+            if (layout.skipLinkShows) problems.push(`${at}${where}: the skip link shows before it is focused`);
           };
           check(await measure(page), '');
           const toggle = page.locator('.so-header__toggle');
@@ -259,42 +288,56 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
     const problems: string[] = [];
     for (const name of Object.keys(CASES)) problems.push(...(await sweep(name, WIDER, TEXT_SIZES)));
     expect(problems).toEqual([]);
-  }, 90_000);
+  }, 120_000);
 
-  it.each(PHONES)('keeps the requested type size and every word at %ipx', async (width) => {
-    await withPage('together', { width }, 32, async (page) => {
-      const size = (sel: string) => page.locator(sel).evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
-      // The display and heading-1 tokens bottom out at 2.6rem and 2.25rem on phones: enlarged text keeps them.
-      expect(await size('.so-foundation-hero-centered__heading')).toBeCloseTo(2.6 * 32, 0);
-      expect(await size('.so-foundation-hero-split__heading')).toBeCloseTo(2.25 * 32, 0);
-      expect(await page.locator('.so-foundation-hero-centered__heading').innerText()).toBe('Thoughtful work for people who care about the details');
-      expect(await page.locator('.so-foundation-contact-details__method-value').first().innerText()).toBe('hello@example.com');
-    });
-  }, 30_000);
+  for (const fontSize of TEXT_SIZES)
+    it(`keeps the requested type size and every word at ${fontSize}px text`, async () => {
+      for (const width of PHONES)
+        await withPage('together', { width }, fontSize, async (page) => {
+          // On phones each text style sits at its minimum, a fixed multiple of the visitor's text size.
+          const scale = {
+            '.so-foundation-hero-centered__heading': 2.6,
+            '.so-foundation-hero-split__heading': 2.25,
+            '.so-foundation-hero-centered__lead': 1.08,
+            '.so-foundation-hero-centered__primary': 0.97,
+            '.so-foundation-contact-details__method-value': 1
+          };
+          for (const [selector, ratio] of Object.entries(scale)) expect(await fontSizeOf(page, selector), `${selector} at ${width}px`).toBeCloseTo(ratio * fontSize, 0);
+          expect(await page.locator('.so-foundation-hero-centered__heading').innerText()).toBe('Thoughtful work for people who care about the details');
+          expect(await page.locator('.so-foundation-hero-centered__primary').innerText()).toBe('Start a project');
+          expect(await page.locator('.so-foundation-contact-details__method-value').first().innerText()).toBe('hello@example.com');
+        });
+    }, 30_000);
 
   for (const fontSize of TEXT_SIZES)
     for (const width of PHONES)
-      it(`reaches every action and contact link by keyboard at ${width}px with ${fontSize}px text`, async () => {
+      it(`reaches every link by keyboard at ${width}px with ${fontSize}px text`, async () => {
         await withPage('together', { width }, fontSize, async (page) => {
           const reached: Focused[] = [];
           for (let i = 0; i < 40; i++) {
             await page.keyboard.press('Tab');
             const f = await focused(page);
-            if (!f || (reached.length && f.text === reached[0].text && f.href === reached[0].href)) break;
+            if (!f || f.seen) break;
             reached.push(f);
           }
           // Each one by its section and destination, so a repeated label elsewhere cannot stand in for it.
           const expected = [
+            ['header', 'Test Studio', '/'],
             ['hero-centered', 'Start a project', '/contact/'],
             ['hero-centered', 'See our work', '/about/'],
             ['hero-split', 'Start a project', '/contact/'],
             ['hero-split', 'See our work', '/about/'],
             ['contact-details', 'Email us', 'mailto:hello@example.com'],
             ['contact-details', 'hello@example.com', 'mailto:hello@example.com'],
-            ['contact-details', '+1 555 0134', 'tel:+15550134']
+            ['contact-details', '+1 555 0134', 'tel:+15550134'],
+            ['shell-footer', 'Home', '/'],
+            ['shell-footer', 'About', '/about/'],
+            ['shell-footer', 'Contact', '/contact/'],
+            ['shell-footer', 'hello@example.com', 'mailto:hello@example.com'],
+            ['shell-footer', '+1 555 0134', 'tel:+15550134']
           ];
-          for (const [section, text, href] of expected)
-            expect(reached.some((f) => f.section === section && f.text === text && f.href === href), `${section}: ${text} is reached by Tab`).toBe(true);
+          const missing = expected.filter(([section, text, href]) => !reached.some((f) => f.section === section && f.text === text && f.href === href));
+          expect(missing, 'reached by Tab').toEqual([]);
           // Measured where Tab's own scrolling left it.
           expect(reached.filter((f) => !onScreen(f)).map(describeFocus)).toEqual([]);
 
@@ -309,19 +352,20 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
       it(`keeps the whole phone menu reachable by keyboard on a short screen at ${width}px with ${fontSize}px text`, async () => {
         await withPage('together', { width, height: 400 }, fontSize, async (page) => {
           const toggle = page.locator('.so-header__toggle');
-          await toggle.focus();
+          const opening = [await tab(page), await tab(page), await tab(page)];
+          expect(opening.map((f) => f.text)).toEqual(['Skip to content', 'Test Studio', 'Open menu']);
           await page.keyboard.press('Enter');
           await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true');
-          const reached: Focused[] = [];
-          for (let i = 0; i < 4; i++) {
-            await page.keyboard.press('Tab');
-            reached.push((await focused(page))!);
-          }
-          expect(reached.map((f) => `${f.section}: ${f.text}`)).toEqual(['header: Home', 'header: About', 'header: Contact', 'header: Book a call']);
-          expect(reached.filter((f) => !onScreen(f)).map(describeFocus)).toEqual([]);
+          const items: Focused[] = [];
+          for (let i = 0; i < 4; i++) items.push(await tab(page));
+          expect(items.map((f) => `${f.section}: ${f.text} ${f.href}`)).toEqual(['header: Home /', 'header: About /about/', 'header: Contact /contact/', 'header: Book a call /contact/']);
+          expect(items.filter((f) => !onScreen(f)).map(describeFocus)).toEqual([]);
+          // One column: every item starts at the same edge.
+          expect(new Set(items.map((f) => Math.round(f.left))).size).toBe(1);
           await page.keyboard.press('Escape');
           await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false');
-          expect(await toggle.evaluate((el) => el === document.activeElement)).toBe(true);
+          await expect.poll(() => page.locator('#so-site-nav').isVisible()).toBe(false);
+          expect((await focused(page))?.text).toBe('Open menu');
         });
       }, 30_000);
 });

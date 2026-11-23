@@ -244,6 +244,7 @@ const HEADER_SOURCE = `<script>
 			display: none;
 			flex-direction: column;
 			flex-wrap: nowrap;
+			justify-content: flex-start;
 			align-items: stretch;
 			gap: var(--so-space-md);
 			padding: var(--so-space-md) var(--so-container-gutter) var(--so-space-xl);
@@ -255,7 +256,6 @@ const HEADER_SOURCE = `<script>
 			max-height: calc(100vh - 100%);
 			max-height: calc(100dvh - 100%);
 			overflow-y: auto;
-			overscroll-behavior: contain;
 		}
 		.so-header--open .so-header__nav {
 			display: flex;
