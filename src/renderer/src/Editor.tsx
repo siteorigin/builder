@@ -17,7 +17,7 @@ import { SettingsModal } from './panels/SettingsModal';
 import { ExportModal } from './panels/ExportModal';
 import { CommandMenu } from './panels/CommandMenu';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
-import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal } from './panels/Dialogs';
+import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, SetHomeModal } from './panels/Dialogs';
 import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
 import { refLabel } from './lib/model';
 import { focusedSurface } from './lib/history';
@@ -473,6 +473,7 @@ export function Editor() {
       {modal?.kind === 'new-code' && <NewCodeComponentModal />}
       {modal?.kind === 'create-component' && <CreateComponentModal target={modal.ref} />}
       {modal?.kind === 'delete-page' && <DeletePageModal pageId={modal.pageId} />}
+      {modal?.kind === 'set-home' && <SetHomeModal pageId={modal.pageId} />}
       {modal?.kind === 'edit-definition' && <EditDefinitionModal target={modal.ref} />}
       {modal?.kind === 'history' && <HistoryModal />}
       {modal?.kind === 'health' && <HealthModal />}

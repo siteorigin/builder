@@ -131,7 +131,7 @@ export class DiskConflictError extends Error {
 }
 
 /** Validation codes that make a project unsafe to generate from. */
-const FATAL_CODES = new Set(['HOME_MISSING', 'PAGE_MISSING', 'PAGE_ORPHAN', 'ROUTE_INVALID', 'ROUTE_DUPLICATE', 'HOME_ROUTE', 'NODE_MISSING', 'NODE_SHARED', 'DEF_MISSING']);
+const FATAL_CODES = new Set(['HOME_MISSING', 'PAGE_MISSING', 'PAGE_ORPHAN', 'ROUTE_INVALID', 'ROUTE_DUPLICATE', 'HOME_ROUTE', 'REDIRECT_INVALID', 'REDIRECT_TARGET', 'NODE_MISSING', 'NODE_SHARED', 'DEF_MISSING']);
 
 export interface Conflict {
   path: string;
@@ -1404,6 +1404,16 @@ export class ProjectSession extends EventEmitter {
     };
   }
 
+  /** A canonical document, other than `skip`, that differs on disk from the loaded project, or a page file it lacks. */
+  private async unloadedEdit(skip: Set<string>): Promise<string | null> {
+    for (const [path, cur] of this.docs) if (!skip.has(path) && !sameContent(path, await this.diskContent(path), cur)) return path;
+    for (const f of await fs.readdir(join(this.dir, DOC_DIR, 'pages')).catch(() => [] as string[])) {
+      const path = `${DOC_DIR}/pages/${f}`;
+      if (isCanonicalPath(path) && !this.docs.has(path) && !skip.has(path)) return path;
+    }
+    return null;
+  }
+
   /** Move history: restore the documents of an entry, refusing if those documents changed since. */
   private async travel(entry: HistoryEntry, direction: 'undo' | 'redo'): Promise<ApplyResult> {
     const expect = direction === 'undo' ? 'after' : 'before';
@@ -1422,6 +1432,16 @@ export class ProjectSession extends EventEmitter {
       else docs.set(path, await this.getBlob(h));
     }
     const next = docsToState(docs, this.state);
+    // History restores only its own documents, and another may have changed outside the app since (a page now on
+    // a route this restores, an old address kept there): never save a project that could not be opened again.
+    const fatal = (s: ProjectState) => validateState(s, { sectionLinks: false }).filter((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
+    const already = new Set(fatal(this.state).map((d) => d.message));
+    const broken = fatal(next).find((d) => !already.has(d.message));
+    if (broken) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${broken.message}`, recoverable: false } };
+    // That check sees the project as loaded. An edit made outside the app that has not been loaded yet would slip
+    // past it, so the restore waits for it.
+    const unloaded = await this.unloadedEdit(new Set(Object.keys(entry.docs)));
+    if (unloaded) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}" yet: ${unloaded} changed outside the app. Try again in a moment.`, recoverable: true } };
     const cursor = this.history.cursor + (direction === 'undo' ? -1 : 1);
     try {
       // The cursor moves in the same journaled change as the documents, so a crash never separates them.

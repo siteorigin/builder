@@ -6,6 +6,8 @@ import { STYLE_PROPS } from '@shared/styles';
 import { catalogueComponent, getTheme } from '@catalogue/index';
 import { declaredTokens } from '@engine/tokens';
 import { displayName, getTree } from '@engine/tree';
+import type { HomeChange } from '@engine/apply';
+import { shellPageLinks } from '@generator/checks';
 
 // ---------------------------------------------------------------------------
 // Changes: what the run did, in words an author can act on
@@ -129,8 +131,20 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, 'Reordered the pages');
       case 'page.remove':
         return plain(op, `Removed page ${quoted(before.pages[op.pageId]?.title ?? 'page')}`);
-      case 'page.setHome':
-        return plain(op, `Made ${where({ kind: 'page', id: op.pageId })} the home page`, linkTo({ kind: 'page', id: op.pageId }));
+      case 'page.setHome': {
+        // The addresses this promotion moved, from its own result: a later edit in the run may move them again.
+        const change = (results[i] ?? {}) as Partial<HomeChange>;
+        const title = (id: string) => quoted(after.pages[id]?.title ?? before.pages[id]?.title ?? 'page');
+        const moved = (change.moved ?? []).map((m) => `${title(m.pageId)} moved from ${m.from} to ${m.to}`);
+        // Only while it is still true at the end of the run: a later edit may have given the address to a page.
+        const stillKept = (Array.isArray(after.site.redirects) ? after.site.redirects : []).some((r) => r.from.toLowerCase() === change.kept?.toLowerCase() && r.pageId === op.pageId);
+        const kept = change.kept && stillKept ? ` ${change.kept} still works and sends visitors to ${title(op.pageId)}.` : '';
+        // Header and footer links keep their words but now lead to the new addresses: name them for review.
+        const links = shellPageLinks(after, (change.moved ?? []).map((m) => m.pageId)).map((l) => (l.label ? quoted(l.label) : 'a link without text'));
+        const review = links.length ? ` Check the header and footer links ${joinWords([...new Set(links)])}: they keep their words and go to the new addresses.` : '';
+        const label = `Made ${where({ kind: 'page', id: op.pageId })} the home page${moved.length ? `: ${joinWords(moved)}.` : ''}${kept}${review}`;
+        return plain(op, label, linkTo({ kind: 'page', id: op.pageId }));
+      }
       case 'node.insert': {
         const what = op.componentId
           ? (catalogueComponent(after.site.themeId, op.componentId)?.name ?? op.componentId)
@@ -372,7 +386,10 @@ export function pagesTouched(ops: EditOperation[]): Set<string> | 'all' {
       pages.add(op.owner.id);
     } else if (op.type === 'page.create') {
       if (op.addToNavigation) return 'all';
-    } else if (op.type === 'page.update' || op.type === 'page.remove' || op.type === 'page.setHome') pages.add(op.pageId);
+    } else if (op.type === 'page.setHome') {
+      // Header and footer links change destination on every page, and a page can be styled by where its links go.
+      return 'all';
+    } else if (op.type === 'page.update' || op.type === 'page.remove') pages.add(op.pageId);
     else if (op.type !== 'page.duplicate' && op.type !== 'page.reorder') return 'all';
   }
   return pages;

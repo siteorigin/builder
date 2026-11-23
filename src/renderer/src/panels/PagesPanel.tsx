@@ -19,7 +19,9 @@ function newPageRoute(st: ProjectState, title: string): { route: string; base: s
   const reserved = validateRoute(`/${slug}/`) ? `/${slug}/` : undefined;
   if (reserved) slug = `${slug.slice(0, 55)}-page`;
   const base = `/${slug}/`;
-  const taken = (r: string) => Object.values(st.pages).some((p) => p.route.toLowerCase() === r.toLowerCase());
+  // Old addresses kept working count as taken: a new page is never given one without asking.
+  const kept: unknown[] = Array.isArray(st.site.redirects) ? st.site.redirects : [];
+  const taken = (r: string) => [...Object.values(st.pages).map((p) => p.route), ...kept.map((x) => (x as { from?: unknown })?.from)].some((u) => typeof u === 'string' && u.toLowerCase() === r.toLowerCase());
   let route = base;
   for (let i = 2; taken(route); i++) route = `/${slug.slice(0, 60 - `-${i}`.length).replace(/-+$/, '')}-${i}/`;
   return { route, base, reserved };
@@ -156,7 +158,9 @@ export function PagesPanel() {
     setCreating(true);
     // New pages go where the form was: at the end of the list. The draft stays until the page exists.
     const nav = addToNav && !!headerMenu;
-    const r = await applyOps([{ type: 'page.create', title: t, route: newRoute, starter: 'intro', addToNavigation: nav || undefined }], `Add page ${t}`);
+    // Sent against the snapshot the address was previewed on: a project that changed meanwhile previews again
+    // rather than taking an address it no longer has free.
+    const r = await applyOps([{ type: 'page.create', title: t, route: newRoute, starter: 'intro', addToNavigation: nav || undefined }], `Add page ${t}`, undefined, snap?.revision);
     setCreating(false);
     const id = r?.[0]?.pageId as string | undefined;
     if (!id) return addInput.current?.focus();
@@ -195,7 +199,7 @@ export function PagesPanel() {
         const r = await applyOps([{ type: 'page.duplicate', pageId: id }], 'Duplicate page');
         if (r?.[0]?.pageId) selectPage(r[0].pageId as string);
       } },
-      ...(isHome ? [] : [{ label: 'Make home page', icon: <House />, onSelect: () => void applyOps([{ type: 'page.setHome', pageId: id }], 'Change home page') }]),
+      ...(isHome ? [] : [{ label: 'Make home page…', icon: <House />, onSelect: () => setState({ modal: { kind: 'set-home', pageId: id } }) }]),
       ...(useStore.getState().settings?.developerMode ? [{ label: 'View generated source…', icon: <Code />, onSelect: () => setState({ modal: { kind: 'page-source', pageId: id } }) }] : []),
       { separator: true },
       { label: 'Move up', icon: <ArrowUp />, disabled: i === 0, onSelect: () => { const o = [...order]; o.splice(i - 1, 0, o.splice(i, 1)[0]); void reorder(o); } },

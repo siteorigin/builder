@@ -28,7 +28,7 @@ import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar } 
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
 import { IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs } from './runtime-files';
-import { routeDir } from '@shared/routes';
+import { routeDir, validateRoute } from '@shared/routes';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
@@ -1143,6 +1143,8 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
     .map((id) => state.pages[id])
     .filter((p) => p && p.shell === 'none')
     .map((p) => routeId(p.route))
+    // An old address only sends visitors on: it shows no header or footer while it does.
+    .concat(liveRedirects(state).map((r) => routeId(r.from)))
     .sort();
   const favicon = state.site.favicon && state.assets.assets[state.site.favicon];
   const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
@@ -1206,6 +1208,60 @@ export function generateAppHtml(state: ProjectState): string {
 	</body>
 </html>
 `;
+}
+
+/**
+ * Old addresses kept working, each with the page it sends visitors to, in the order they were kept. One that a
+ * page uses now, that is not a valid route, or whose page is gone is left out: a page always wins its route.
+ */
+export function liveRedirects(state: ProjectState): Array<{ from: string; page: PageDoc }> {
+  const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
+  const out: Array<{ from: string; page: PageDoc }> = [];
+  for (const r of Array.isArray(state.site.redirects) ? state.site.redirects : []) {
+    const page = r && typeof r.pageId === 'string' && Object.hasOwn(state.pages, r.pageId) ? state.pages[r.pageId] : undefined;
+    if (!page || typeof r.from !== 'string' || r.from === '/' || validateRoute(r.from) || used.has(r.from.toLowerCase())) continue;
+    used.add(r.from.toLowerCase());
+    out.push({ from: r.from, page });
+  }
+  return out;
+}
+
+export function redirectFile(from: string): string {
+  return `src/routes/${routeDir(from)}/+page.svelte`;
+}
+
+/**
+ * The page at an old address: it sends visitors on to the page's current address. It is written where a page
+ * at that address would be, so a page given the address back simply replaces it. Read with scripts on, it goes
+ * at once and keeps the query and the section the old link asked for; without them, a meta refresh goes to the
+ * page. Either way it works from the prerendered HTML alone, on any static host.
+ */
+export function generateRedirect(state: ProjectState, from: string, page: PageDoc): string {
+  const base = state.site.baseUrl?.replace(/\/+$/, '');
+  const canonical = base ? `\n\t<link rel="canonical" href={${js(base + page.route)}} />` : '';
+  return (
+    HEADER_NOTE('siteorigin/site.json') +
+    `<script>
+	// ${from} is an old address of a page, kept working for old links and bookmarks.
+	import { onMount } from 'svelte';
+	import { resolve } from '$app/paths';
+
+	const to = resolve(${js(page.route)});
+	// Runs while the HTML is read, before anything renders.
+	const go = '<' + 'script>location.replace(' + JSON.stringify(to).replace(/</g, '\\\\u003c') + ' + location.search + location.hash);</' + 'script>';
+	// Reached by a link inside the running site instead, the script above never runs: go from here.
+	onMount(() => location.replace(to + location.search + location.hash));
+</script>
+
+<svelte:head>
+	{@html go}
+	<meta http-equiv="refresh" content={'0; url=' + to} />
+	<meta name="robots" content="noindex" />${canonical}
+</svelte:head>
+
+<p><a href={to}>This page has moved. Continue to its new address.</a></p>
+`
+  );
 }
 
 /** SvelteKit route ID for a page route: "/about/" -> "/about". */
@@ -1295,6 +1351,7 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {})
     const page = state.pages[id];
     if (page) files.set(pageFile(page), generatePage(state, page, opts));
   }
+  for (const { from, page } of liveRedirects(state)) files.set(redirectFile(from), generateRedirect(state, from, page));
   files.set(`${GEN_ROOT}/paths.json`, generatePathsJson(state));
   if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, generateFaviconSvg(state));
   files.set('static/robots.txt', generateRobots(state));

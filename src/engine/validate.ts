@@ -35,7 +35,7 @@ const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).jo
 export function validateState(state: ProjectState, opts: { sectionLinks?: boolean } = {}): Diagnostic[] {
   const out: Diagnostic[] = [];
   const routes = new Map<string, string>();
-  if (!state.pages[state.site.homePageId]) out.push({ severity: 'error', code: 'HOME_MISSING', message: 'The site has no Home page.' });
+  if (!Object.hasOwn(state.pages, state.site.homePageId)) out.push({ severity: 'error', code: 'HOME_MISSING', message: 'The site has no Home page.' });
   for (const id of state.site.pageOrder) {
     const p = state.pages[id];
     if (!p) {
@@ -47,6 +47,22 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     const key = p.route.toLowerCase();
     if (routes.has(key)) out.push({ severity: 'error', code: 'ROUTE_DUPLICATE', message: `${p.title} and ${routes.get(key)} share ${p.route}.`, owner: { kind: 'page', id } });
     routes.set(key, p.title);
+  }
+  // Old addresses kept working: each is a route of its own, so no page may use it, and it names a page.
+  const redirects: unknown = state.site.redirects;
+  if (redirects !== undefined && !Array.isArray(redirects)) out.push({ severity: 'error', code: 'REDIRECT_INVALID', message: 'The list of old page addresses is damaged.' });
+  for (const r of Array.isArray(redirects) ? (redirects as unknown[]) : []) {
+    const { from, pageId } = (r && typeof r === 'object' ? r : {}) as { from?: unknown; pageId?: unknown };
+    if (typeof from !== 'string' || typeof pageId !== 'string') {
+      out.push({ severity: 'error', code: 'REDIRECT_INVALID', message: 'An old page address is damaged.' });
+      continue;
+    }
+    const err = from === '/' ? 'The Home page address cannot send visitors elsewhere.' : validateRoute(from);
+    if (err) out.push({ severity: 'error', code: 'ROUTE_INVALID', message: `Old address ${from}: ${err}` });
+    if (!Object.hasOwn(state.pages, pageId)) out.push({ severity: 'error', code: 'REDIRECT_TARGET', message: `The old address ${from} goes to a page that no longer exists.` });
+    const key = from.toLowerCase();
+    if (routes.has(key)) out.push({ severity: 'error', code: 'ROUTE_DUPLICATE', message: `${routes.get(key)} and the old address ${from} share ${from}.` });
+    routes.set(key, `The old address ${from}`);
   }
   for (const id of Object.keys(state.pages)) if (!state.site.pageOrder.includes(id)) out.push({ severity: 'error', code: 'PAGE_ORPHAN', message: `Page ${state.pages[id].title} is not in the page order.` });
   if (new Set(state.site.pageOrder).size !== state.site.pageOrder.length) out.push({ severity: 'error', code: 'PAGE_MISSING', message: 'The page order lists a page twice.' });

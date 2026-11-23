@@ -40,6 +40,93 @@ describe('project session', () => {
     expect(s.state.tokens.custom[0].id).toBe('color.custom-teal');
   });
 
+  it('writes, undoes and reopens an old address kept working, and gives its route back to a page (#37)', async () => {
+    const { dir, s } = await make();
+    const [homeId, aboutId] = s.state.site.pageOrder;
+    const aboutFile = join(dir, 'src/routes/about/+page.svelte');
+    const redirects = (f: string) => readFileSync(f, 'utf8').includes('http-equiv="refresh"');
+    const r = await s.apply({ operations: [{ type: 'page.setHome', pageId: aboutId }] }, { label: 'Change home page' });
+    expect(r.ok).toBe(true);
+    expect(readFileSync(aboutFile, 'utf8')).toContain('const to = resolve("/");');
+    expect(redirects(join(dir, 'src/routes/home/+page.svelte'))).toBe(false);
+    expect(JSON.parse(readFileSync(join(dir, 'siteorigin/site.json'), 'utf8')).redirects).toEqual([{ from: '/about/', pageId: aboutId }]);
+    await s.undo();
+    expect(redirects(aboutFile)).toBe(false);
+    expect(existsSync(join(dir, 'src/routes/home'))).toBe(false);
+    expect(s.state.site.redirects).toBeUndefined();
+    await s.redo();
+    expect(redirects(aboutFile)).toBe(true);
+    await s.close();
+    const again = await ProjectSession.open(dir, 'test');
+    expect(again.state.site.redirects).toEqual([{ from: '/about/', pageId: aboutId }]);
+    // Home again: About takes /about/ back, and the page replaces the redirect in the same file.
+    await again.apply({ operations: [{ type: 'page.setHome', pageId: homeId }] }, { label: 'Change home page' });
+    expect(redirects(aboutFile)).toBe(false);
+    expect(readFileSync(aboutFile, 'utf8')).toContain('A small studio with a long view');
+    expect(readFileSync(join(dir, 'src/routes/home/+page.svelte'), 'utf8')).toContain('const to = resolve("/");');
+    // Declining to keep the address writes none; Home takes its own /home/ back.
+    await again.apply({ operations: [{ type: 'page.setHome', pageId: aboutId, keepOldAddress: false }] }, { label: 'Change home page' });
+    expect(again.state.site.redirects).toBeUndefined();
+    expect(redirects(join(dir, 'src/routes/home/+page.svelte'))).toBe(false);
+    expect(existsSync(aboutFile)).toBe(false);
+    await again.close();
+  });
+
+  it('refuses an undo that would put a page on an address changed outside the app (#37)', async () => {
+    const { dir, s } = await make();
+    const [, aboutId, contactId] = s.state.site.pageOrder;
+    await s.apply({ operations: [{ type: 'page.update', pageId: contactId, route: '/sales/' }] }, { label: 'Move Contact' });
+    await s.close();
+    const sitePath = join(dir, 'siteorigin/site.json');
+    const site = JSON.parse(readFileSync(sitePath, 'utf8'));
+    writeFileSync(sitePath, JSON.stringify({ ...site, redirects: [{ from: '/contact/', pageId: aboutId }] }, null, 2) + '\n');
+    const again = await ProjectSession.open(dir, 'test');
+    const r = await again.undo();
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/Cannot undo "Move Contact": .*\/contact\//);
+    expect(again.state.pages[contactId].route).toBe('/sales/');
+    await again.close();
+    // The project still opens.
+    await (await ProjectSession.open(dir, 'test')).close();
+  });
+
+  it('waits for an outside edit the project has not loaded yet before undoing (#37)', async () => {
+    const { dir, s } = await make();
+    const [, aboutId, contactId] = s.state.site.pageOrder;
+    await s.apply({ operations: [{ type: 'page.update', pageId: contactId, route: '/sales/' }] }, { label: 'Move Contact' });
+    // Written while the project is open, before anything reloads it.
+    const sitePath = join(dir, 'siteorigin/site.json');
+    const site = JSON.parse(readFileSync(sitePath, 'utf8'));
+    writeFileSync(sitePath, JSON.stringify({ ...site, redirects: [{ from: '/contact/', pageId: aboutId }] }, null, 2) + '\n');
+    const r = await s.undo();
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/siteorigin\/site\.json changed outside the app/);
+    expect(JSON.parse(readFileSync(join(dir, `siteorigin/pages/${contactId}.json`), 'utf8')).route).toBe('/sales/');
+    // A page file added outside the app counts too.
+    writeFileSync(sitePath, JSON.stringify(site, null, 2) + '\n');
+    writeFileSync(join(dir, 'siteorigin/pages/pg_outside.json'), readFileSync(join(dir, `siteorigin/pages/${aboutId}.json`), 'utf8'));
+    expect((await s.undo()).error?.message).toMatch(/pg_outside\.json changed outside the app/);
+    rmSync(join(dir, 'siteorigin/pages/pg_outside.json'));
+    expect((await s.undo()).ok).toBe(true);
+    expect(s.state.pages[contactId].route).toBe('/contact/');
+    await s.close();
+  });
+
+  it('refuses to open a project whose old addresses are damaged or go nowhere (#37)', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const sitePath = join(dir, 'siteorigin/site.json');
+    const site = JSON.parse(readFileSync(sitePath, 'utf8'));
+    for (const [redirects, message] of [
+      [{ from: '/x/' }, /old page addresses is damaged/],
+      [[{ from: '/x/' }], /An old page address is damaged/],
+      [[{ from: '/x/', pageId: 'pg_missing' }], /goes to a page that no longer exists/]
+    ] as const) {
+      writeFileSync(sitePath, JSON.stringify({ ...site, redirects }, null, 2) + '\n');
+      await expect(ProjectSession.open(dir, 'test')).rejects.toThrow(message);
+    }
+  });
+
   it('rejects stale revisions', async () => {
     const { s } = await make();
     const r = await s.apply({ expectedRevision: 42, operations: [{ type: 'site.update', name: 'x' }] }, { label: 'x' });

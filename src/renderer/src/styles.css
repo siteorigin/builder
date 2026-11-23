@@ -1374,6 +1374,15 @@ body.dialog-open .toast .btn { visibility: hidden; }
 .pages-head-menu { margin-left: auto; color: var(--text-2); }
 .pages-head-menu:hover { color: var(--text); }
 .delete-page-route { font-weight: 500; overflow-wrap: anywhere; }
+/* Make home page: each move and each link to review is one row, the addresses in the code face. */
+.set-home-moves, .set-home-links { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.set-home-moves li, .set-home-links li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; color: var(--text-2); }
+.set-home-title, .set-home-label { font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+.set-home-route { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.set-home-part { min-width: 48px; font-size: 12px; color: var(--text-3); }
+.set-home-heading { font-weight: 500; margin-bottom: 6px; }
+.set-home-keep { display: flex; align-items: center; gap: 6px; font-weight: 500; }
+.set-home-keep input { margin: 0; accent-color: var(--accent); }
 /* Assets: one image's details replace the grid. Flat on the panel (no card inside a panel), in three
    bands split by straight dividers: what it is and where it is used, what it says, what you can do. */
 .asset-detail { display: flex; flex-direction: column; padding: 0 14px 20px; }

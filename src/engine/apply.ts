@@ -100,7 +100,7 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'page.remove':
       return pageRemove(state, op);
     case 'page.setHome':
-      return pageSetHome(state, op.pageId);
+      return pageSetHome(state, op.pageId, op.keepOldAddress !== false);
     case 'node.insert':
       return nodeInsert(state, op);
     case 'node.remove': {
@@ -383,11 +383,41 @@ function routeTaken(state: ProjectState, route: string, exceptPageId?: string): 
   return Object.values(state.pages).some((p) => p.id !== exceptPageId && p.route.toLowerCase() === route.toLowerCase());
 }
 
-function uniqueRoute(state: ProjectState, base: string): string {
-  let route = base;
-  let i = 2;
-  while (routeTaken(state, route)) route = base.replace(/\/$/, `-${i++}/`);
+/** Where the old address `route` is kept working, compared as case-insensitive filesystems do; -1 when it is not. */
+function redirectIndex(state: ProjectState, route: string): number {
+  const list: unknown = state.site.redirects;
+  return Array.isArray(list) ? list.findIndex((r) => typeof r?.from === 'string' && r.from.toLowerCase() === route.toLowerCase()) : -1;
+}
+
+/**
+ * Whether a route chosen automatically for `forPageId` (or a new page) would collide: with another page, or with
+ * an old address kept working for another page. A page may take back an old address of its own.
+ */
+function routeReserved(state: ProjectState, route: string, forPageId?: string): boolean {
+  if (routeTaken(state, route, forPageId)) return true;
+  const i = redirectIndex(state, route);
+  return i >= 0 && state.site.redirects![i].pageId !== forPageId;
+}
+
+/**
+ * The route a page titled `title` gets automatically: its slug (made valid when it is a reserved name), with a
+ * numbered suffix when it is taken, kept within the 60-character segment limit. The Pages panel previews new
+ * pages' routes the same way.
+ */
+function autoRoute(state: ProjectState, title: string, fallback: string, forPageId?: string): string {
+  let slug = slugify(title) || fallback;
+  if (validateRoute(`/${slug}/`)) slug = `${slug.slice(0, 55)}-page`;
+  let route = `/${slug}/`;
+  for (let i = 2; routeReserved(state, route, forPageId); i++) route = `/${slug.slice(0, 60 - `-${i}`.length).replace(/-+$/, '')}-${i}/`;
   return route;
+}
+
+/** A page now uses `route`: an old address kept working there stops redirecting, because the page takes it over. */
+function claimRoute(state: ProjectState, route: string) {
+  const i = redirectIndex(state, route);
+  if (i < 0) return;
+  state.site.redirects!.splice(i, 1);
+  if (!state.site.redirects!.length) delete state.site.redirects;
 }
 
 // ---------------------------------------------------------------------------
@@ -402,11 +432,9 @@ function pageCreate(state: ProjectState, op: Op<'page.create'>): OpResult {
     if (err) fail(err);
     if (route === '/') fail('The "/" route belongs to the Home page.');
     if (routeTaken(state, route)) fail(`Another page already uses ${route}.`);
-  } else {
-    const slug = slugify(op.title) || 'page';
-    route = uniqueRoute(state, `/${slug}/`);
-  }
+  } else route = autoRoute(state, op.title, 'page');
   if (op.pageId && Object.hasOwn(state.pages, op.pageId)) fail(`Page "${op.pageId}" already exists.`);
+  claimRoute(state, route);
   const id = op.pageId ?? newId('pg');
   const page: PageDoc = { schemaVersion: SCHEMA_VERSION, id, title: op.title.trim(), route, seo: {}, shell: 'default', rootIds: [], nodes: {} };
   if (op.starter === 'intro') {
@@ -448,6 +476,7 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
     if (page.id !== state.site.homePageId && route === '/') fail('Only the Home page can use "/".');
     if (routeTaken(state, route, page.id)) fail(`Another page already uses ${route}.`);
     page.route = route;
+    claimRoute(state, route);
   }
   if (op.navLabel !== undefined) page.navLabel = op.navLabel || undefined;
   if (op.seoTitle !== undefined) page.seo.title = op.seoTitle || undefined;
@@ -486,7 +515,7 @@ function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult 
   const src = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
   const title = op.title?.trim() || `${src.title} copy`;
   const id = newId('pg');
-  const page: PageDoc = { ...clone(src), id, title, route: uniqueRoute(state, `/${slugify(title) || 'page'}/`), rootIds: [], nodes: {} };
+  const page: PageDoc = { ...clone(src), id, title, route: autoRoute(state, title, 'page'), rootIds: [], nodes: {} };
   for (const rid of src.rootIds) page.rootIds.push(copySubtree(src, page, rid, state));
   state.pages[id] = page;
   keepSectionLinksOnCopy(state, src.id, page);
@@ -523,28 +552,60 @@ function pageRemove(state: ProjectState, op: Op<'page.remove'>): OpResult {
   const page = own(state.pages, op.pageId) ?? fail(`Page "${op.pageId}" does not exist.`);
   if (state.site.pageOrder.length <= 1) fail('A site needs at least one page.');
   const refs = pageLinkReferences(state, page.id);
-  if (op.replacementPageId && !state.pages[op.replacementPageId]) fail('The replacement page does not exist.');
+  if (op.replacementPageId && !own(state.pages, op.replacementPageId)) fail('The replacement page does not exist.');
   if (op.replacementPageId === page.id) fail('The replacement must be a different page.');
   if (refs && !op.replacementPageId)
     throw new EngineError('VALIDATION_FAILED', `${refs} link${refs === 1 ? '' : 's'} point to "${page.title}". Choose a replacement page for them.`, { references: refs });
   if (page.id === state.site.homePageId) {
+    // The page replacing Home moves to "/". Its old address is not kept: this removes a page, it moves none.
     const next = op.replacementPageId ?? state.site.pageOrder.find((id) => id !== page.id)!;
-    pageSetHome(state, next);
+    state.pages[next].route = '/';
+    state.site.homePageId = next;
   }
   if (op.replacementPageId) rewritePageLinks(state, page.id, op.replacementPageId);
+  // Old addresses kept for the removed page follow its links to the replacement, or go with it.
+  if (Array.isArray(state.site.redirects)) {
+    state.site.redirects = state.site.redirects.flatMap((r) => (r.pageId !== page.id ? [r] : op.replacementPageId ? [{ ...r, pageId: op.replacementPageId }] : []));
+    if (!state.site.redirects.length) delete state.site.redirects;
+  }
   delete state.pages[page.id];
   state.site.pageOrder = state.site.pageOrder.filter((id) => id !== page.id);
   return {};
 }
 
-function pageSetHome(state: ProjectState, pageId: string): OpResult {
+/** A page's address before and after an edit. */
+export type RouteMove = { pageId: string; from: string; to: string };
+
+/** What making a page Home changes: the addresses that move, and the old address kept working, if any. */
+export type HomeChange = { moved: RouteMove[]; kept?: string };
+
+/**
+ * Make `pageId` the Home page. It moves to "/" and the previous Home page moves to an address of its own. With
+ * `keepOldAddress`, the page's old address keeps working and sends visitors on, so old links and bookmarks still
+ * reach it. That address is kept before the previous Home's is chosen, so the previous Home can never take it.
+ */
+function pageSetHome(state: ProjectState, pageId: string, keepOldAddress: boolean): HomeChange {
   const page = own(state.pages, pageId) ?? fail(`Page "${pageId}" does not exist.`);
-  if (state.site.homePageId === pageId) return {};
-  const old = state.pages[state.site.homePageId];
+  if (state.site.homePageId === pageId) return { moved: [] };
+  const old = own(state.pages, state.site.homePageId);
+  const vacated = page.route;
+  const moved: RouteMove[] = [{ pageId, from: vacated, to: '/' }];
   page.route = '/';
-  if (old) old.route = uniqueRoute(state, `/${slugify(old.title) || 'previous-home'}/`);
   state.site.homePageId = pageId;
-  return {};
+  if (keepOldAddress) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), { from: vacated, pageId }];
+  if (old) {
+    const from = old.route;
+    old.route = autoRoute(state, old.title, 'previous-home', old.id);
+    claimRoute(state, old.route);
+    moved.push({ pageId: old.id, from, to: old.route });
+  }
+  return keepOldAddress ? { moved, kept: vacated } : { moved };
+}
+
+/** What making `pageId` Home would change, without changing anything. */
+export function planHomeChange(state: ProjectState, pageId: string, keepOldAddress: boolean): HomeChange {
+  const draft: ProjectState = { ...state, site: clone(state.site), pages: Object.fromEntries(Object.entries(state.pages).map(([id, p]) => [id, { ...p }])) };
+  return pageSetHome(draft, pageId, keepOldAddress);
 }
 
 // ---------------------------------------------------------------------------

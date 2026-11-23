@@ -62,7 +62,14 @@ export const OPERATION_SCHEMAS = {
     pageId: z.string(),
     replacementPageId: z.string().optional().describe('Links to the removed page are pointed here. Required when other content links to it.')
   }),
-  'page.setHome': z.object({ type: z.literal('page.setHome'), pageId: z.string() }),
+  'page.setHome': z.object({
+    type: z.literal('page.setHome'),
+    pageId: z.string(),
+    keepOldAddress: z
+      .boolean()
+      .optional()
+      .describe("The page moves to \"/\". Unless false, its old address keeps working and sends visitors there, so old links and bookmarks still reach it. The previous Home page moves to a new address of its own.")
+  }),
 
   'node.insert': z.object({
     type: z.literal('node.insert'),
