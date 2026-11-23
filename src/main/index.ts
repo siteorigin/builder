@@ -230,6 +230,7 @@ function registerIpc() {
   );
   handle('project:redo', () => controller.session?.redo());
   handle('project:importAssets', (paths?: string[], only?: 'image' | 'font') => controller.importAssets(paths, only === 'image' || only === 'font' ? only : undefined));
+  handle('project:photoMetadata', (assetId: unknown) => (typeof assetId === 'string' ? controller.photoMetadata(assetId) : null));
   // Export builds from the project folder and needs the writer lock (spec 20).
   handle('project:exportSource', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportSource(format === 'zip' ? 'zip' : 'folder')));
   handle('project:exportStatic', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportStatic(format === 'zip' ? 'zip' : 'folder')));

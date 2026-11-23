@@ -5,14 +5,156 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { basename, delimiter, join, sep } from 'node:path';
 import { createProject, eventually, launch, scratch, step, withTimeout } from './harness.mjs';
+
+// ---------------------------------------------------------------------------
+// A phone photo's metadata, written and read back by hand (little-endian EXIF and an XMP packet)
+// ---------------------------------------------------------------------------
+
+const u16le = (n) => Buffer.from([n & 255, n >> 8]);
+const u32le = (n) => {
+  const b = Buffer.alloc(4);
+  b.writeUInt32LE(n);
+  return b;
+};
+const asciiField = (tag, s) => ({ tag, type: 2, count: s.length + 1, value: Buffer.from(s + '\0', 'latin1') });
+const SERIAL = 'SERIAL-E2E-0042';
+const MAKE = 'Acme Phones';
+
+/** EXIF with orientation 6, a camera make, model and serial, GPS coordinates, and an artist and copyright. */
+function phoneExif() {
+  const dirs = [
+    [asciiField(0x010f, MAKE), asciiField(0x0110, 'Pocket 9'), { tag: 0x0112, type: 3, count: 1, value: u16le(6) }, asciiField(0x013b, 'Jane Doe Photography'), asciiField(0x8298, '(c) 2026 Jane Doe'), { tag: 0x8769, ptr: 1 }, { tag: 0x8825, ptr: 2 }],
+    [asciiField(0xa431, SERIAL)],
+    [asciiField(0x0001, 'N'), { tag: 0x0002, type: 5, count: 3, value: Buffer.concat([51, 1, 30, 1, 1234, 100].map(u32le)) }, asciiField(0x0003, 'W'), { tag: 0x0004, type: 5, count: 3, value: Buffer.concat([0, 1, 7, 1, 3900, 100].map(u32le)) }]
+  ];
+  const size = (d) => 2 + d.length * 12 + 4 + d.reduce((n, e) => n + (e.value && e.value.length > 4 ? e.value.length + (e.value.length & 1) : 0), 0);
+  const starts = [8];
+  for (let k = 1; k < dirs.length; k++) starts.push(starts[k - 1] + size(dirs[k - 1]));
+  const parts = [Buffer.from('II*\0', 'latin1'), u32le(8)];
+  dirs.forEach((d, k) => {
+    let data = starts[k] + 2 + d.length * 12 + 4;
+    const tail = [];
+    parts.push(u16le(d.length));
+    for (const e of d) {
+      if (e.ptr) {
+        parts.push(u16le(e.tag), u16le(4), u32le(1), u32le(starts[e.ptr]));
+        continue;
+      }
+      parts.push(u16le(e.tag), u16le(e.type), u32le(e.count));
+      if (e.value.length <= 4) parts.push(Buffer.concat([e.value, Buffer.alloc(4 - e.value.length)]));
+      else {
+        parts.push(u32le(data));
+        tail.push(e.value, Buffer.alloc(e.value.length & 1));
+        data += e.value.length + (e.value.length & 1);
+      }
+    }
+    parts.push(u32le(0), ...tail);
+  });
+  return Buffer.concat(parts);
+}
+const segment = (marker, payload) => Buffer.concat([Buffer.from([0xff, marker, (payload.length + 2) >> 8, (payload.length + 2) & 255]), payload]);
+const PHONE_XMP =
+  '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:exif="http://ns.adobe.com/exif/1.0/" exif:GPSLatitude="51,30.2N" exif:GPSLongitude="0,7.65W">' +
+  '<dc:creator><rdf:Seq><rdf:li>Jane Doe</rdf:li></rdf:Seq></dc:creator></rdf:Description></rdf:RDF></x:xmpmeta>';
+
+/** A JPEG with the phone metadata added after its JFIF header. */
+function withPhoneMetadata(jpeg) {
+  const at = 4 + jpeg.readUInt16BE(4);
+  const exif = segment(0xe1, Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), phoneExif()]));
+  const xmp = segment(0xe1, Buffer.concat([Buffer.from('http://ns.adobe.com/xap/1.0/\0', 'latin1'), Buffer.from(PHONE_XMP)]));
+  return Buffer.concat([jpeg.subarray(0, at), exif, xmp, jpeg.subarray(at)]);
+}
+
+/** What a JPEG says about itself: its first EXIF directory's tags, orientation and credits, and its XMP. */
+function jpegMetadata(buf) {
+  const out = { tags: [], orientation: undefined, artist: undefined, copyright: undefined, xmp: '' };
+  for (let i = 2; i + 4 <= buf.length && buf[i] === 0xff && buf[i + 1] !== 0xda; ) {
+    const len = buf.readUInt16BE(i + 2);
+    const payload = buf.subarray(i + 4, i + 2 + len);
+    if (buf[i + 1] === 0xe1 && payload.toString('latin1', 0, 6) === 'Exif\0\0') {
+      const t = payload.subarray(6);
+      assert.equal(t.toString('latin1', 0, 2), 'II', 'the EXIF keeps its byte order');
+      const ifd = t.readUInt32LE(4);
+      for (let k = 0; k < t.readUInt16LE(ifd); k++) {
+        const e = ifd + 2 + k * 12;
+        const tag = t.readUInt16LE(e);
+        out.tags.push(tag);
+        const count = t.readUInt32LE(e + 4);
+        const text = () => (count <= 4 ? t.subarray(e + 8, e + 8 + count) : t.subarray(t.readUInt32LE(e + 8), t.readUInt32LE(e + 8) + count)).toString('latin1').replace(/\0+$/, '');
+        if (tag === 0x0112) out.orientation = t.readUInt16LE(e + 8);
+        if (tag === 0x013b) out.artist = text();
+        if (tag === 0x8298) out.copyright = text();
+      }
+    }
+    if (buf[i + 1] === 0xe1 && payload.toString('latin1', 0, 29) === 'http://ns.adobe.com/xap/1.0/\0') out.xmp += payload.subarray(29).toString('utf8');
+    i += 2 + len;
+  }
+  return out;
+}
+
+/** Assert a published copy of the photo carries no location or device details, and keeps its credits. */
+function assertPublicPhoto(buf, label, { original }) {
+  const text = buf.toString('latin1');
+  assert.ok(!text.includes(SERIAL) && !text.includes(MAKE) && !text.includes('Pocket 9'), `${label} has no camera make, model or serial`);
+  const m = jpegMetadata(buf);
+  assert.ok(!m.tags.includes(0x8825), `${label} has no GPS directory`);
+  assert.ok(!/GPS/.test(m.xmp), `${label} has no GPS in its XMP`);
+  assert.equal(m.artist, 'Jane Doe Photography', `${label} keeps the photographer credit`);
+  assert.equal(m.copyright, '(c) 2026 Jane Doe', `${label} keeps the copyright`);
+  assert.match(m.xmp, /<rdf:li>Jane Doe<\/rdf:li>/, `${label} keeps the XMP creator`);
+  assert.equal(m.orientation, original ? 6 : undefined, original ? `${label} keeps its orientation tag` : `${label} is already upright and has no orientation tag`);
+}
 
 const BUILD = process.argv.includes('--build');
 const { WORK, cleanup } = scratch('export');
 const { app, win, errors } = await launch(WORK);
-await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
+const frame = await createProject(win, { name: 'Harbour Lane Studio', parentDir: join(WORK, 'sites'), starter: 'business', sampleImages: true });
 const dir = join(WORK, 'sites', 'harbour-lane-studio');
+
+step('a rotated, geotagged phone photo placed on Home');
+// A real JPEG, encoded by Chromium, stored on its side: 1200 × 2000 with red in its stored top-left corner, so
+// orientation 6 shows it 2000 × 1200 with red at the top right.
+const sideways = Buffer.from(
+  await win.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 1200;
+    c.height = 2000;
+    const g = c.getContext('2d');
+    g.fillStyle = '#1040c0';
+    g.fillRect(0, 0, 1200, 2000);
+    g.fillStyle = '#e01010';
+    g.fillRect(0, 0, 300, 300);
+    return c.toDataURL('image/jpeg', 0.9).split(',')[1];
+  }),
+  'base64'
+);
+const photoPath = join(WORK, 'client-house.jpg');
+writeFileSync(photoPath, withPhoneMetadata(sideways));
+const photoHash = createHash('sha256').update(readFileSync(photoPath)).digest('hex');
+const photoImport = await win.evaluate((p) => window.builder.project.importAssets([p]), photoPath);
+assert.equal(photoImport.ok, true, `the photo imports: ${photoImport.message}`);
+const photoId = photoImport.assetIds[0];
+const photo = (await win.evaluate(() => window.builder.project.snapshot())).state.assets.assets[photoId];
+assert.deepEqual([photo.width, photo.height], [2000, 1200], 'the photo is recorded as it is displayed');
+assert.deepEqual(photo.variants.map((v) => v.width), [480, 960, 1440], 'the photo has three responsive copies');
+const homeHero = await win.evaluate(async () => {
+  const s = await window.builder.project.snapshot();
+  const home = s.state.pages[s.state.site.homePageId];
+  return { pageId: home.id, heroId: home.rootIds[0] };
+});
+const placed = await win.evaluate(
+  ([h, id]) => window.builder.project.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: h.pageId }, nodeId: h.heroId, prop: 'image', value: { assetId: id, alt: 'The front of the house' } }] }, { label: 'Hero image' }),
+  [homeHero, photoId]
+);
+assert.equal(placed.ok, true, `the photo is placed in the Home hero: ${placed.error?.message}`);
+// Let the preview show it before the next edit, so two hot updates of the page never overlap.
+await frame.locator(`main img[src*="${basename(photo.file).replace(/\.jpg$/, '')}"]`).first().waitFor({ timeout: 60000 });
+await win.waitForTimeout(1000);
+assert.deepEqual(await win.evaluate((id) => window.builder.project.photoMetadata(id), photoId), { location: true, device: true }, 'Assets can tell the author the photo records where it was taken');
+const photoFiles = [photo.file, ...photo.variants.map((v) => v.file)];
 
 step('a saved API key, private files, and an image that was imported and then deleted');
 const CANARY = 'sk-i09-canary-0123456789abcdef';
@@ -91,6 +233,8 @@ assert.equal(stat.ok, true, `static export succeeds: ${stat.message} ${stat.warn
 assert.equal(stat.path, staticOut, 'an existing folder is never replaced: the export takes the next free name');
 assert.ok(!stat.warnings.some((w) => /placeholder/.test(w)), `no placeholder warning when every visible image is chosen: ${stat.warnings.join(' ')}`);
 assert.ok(stat.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website export names the draft it left out: ${stat.warnings.join(' ')}`);
+assert.ok(stat.warnings.some((w) => w.includes(photo.name) && /leaves out where/.test(w)), `the website export says it left out where the photo was taken: ${stat.warnings.join(' ')}`);
+assert.ok(src.warnings.some((w) => w.includes(photo.name) && /still records where/.test(w)), `the source export says the photo keeps its location: ${src.warnings.join(' ')}`);
 
 // Issue 212: the first proof is opened in a browser tab now, before any later export, as the author did.
 assert.ok(stat.previewUrl, 'the first website export starts a preview');
@@ -120,6 +264,7 @@ const statZip = await withTimeout(win.evaluate(() => window.builder.project.expo
 assert.equal(statZip.ok, true, `static ZIP export succeeds: ${statZip.message}`);
 assert.equal(statZip.path, staticZip);
 assert.ok(statZip.warnings.some((w) => w.includes(draft.name) && /left out of the website/i.test(w)), `the website ZIP export names the draft it left out: ${statZip.warnings.join(' ')}`);
+assert.ok(statZip.warnings.some((w) => w.includes(photo.name) && /leaves out where/.test(w)), `the website ZIP export says it left out where the photo was taken: ${statZip.warnings.join(' ')}`);
 
 step('issue 212: a second website proof keeps the first one serving its own files');
 await titleProof('Client proof 2');
@@ -210,7 +355,49 @@ if (!siteList.error) {
   assert.deepEqual(siteEntries.filter((f) => deletedFiles.includes(basename(f))), [], 'the site ZIP has no files of the deleted image');
   assert.ok(siteEntries.some((f) => basename(f) === usedFile), `the site ZIP keeps the image the site uses (${usedFile})`);
   for (const f of draftFiles) assert.ok(sourceList.includes(`harbour-lane-studio-source/${f}`), `the source ZIP keeps the draft for later (${f})`);
+  for (const f of photoFiles) {
+    const served = f.replace(/^static\//, '');
+    const entry = spawnSync('unzip', ['-p', staticZip, served], { maxBuffer: 64 * 1024 * 1024 });
+    assert.equal(entry.status, 0, `the site ZIP holds ${served}`);
+    assertPublicPhoto(entry.stdout, `the site ZIP's ${served}`, { original: f === photo.file });
+  }
+  const sourceEntry = spawnSync('unzip', ['-p', sourceZip, `harbour-lane-studio-source/${photo.file}`], { maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(createHash('sha256').update(sourceEntry.stdout).digest('hex'), photoHash, 'the editable project ZIP keeps the original photo as imported');
 }
+
+step('the photo as visitors get it, and as the project keeps it');
+const pixels = async (buf) =>
+  win.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const img = new Image();
+    img.src = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const at = (x, y) => [...g.getImageData(x, y, 1, 1).data.slice(0, 3)];
+    return { width: img.naturalWidth, height: img.naturalHeight, topLeft: at(5, 5), topRight: at(img.naturalWidth - 6, 5) };
+  }, buf.toString('base64'));
+const red = ([r, g, b]) => r > 180 && g < 90 && b < 90;
+const blue = ([r, g, b]) => r < 90 && b > 150;
+for (const f of photoFiles) {
+  const published = readFileSync(join(staticOut, f.replace(/^static\//, '')));
+  assertPublicPhoto(published, `the website's ${basename(f)}`, { original: f === photo.file });
+  const shown = await pixels(published);
+  const width = f === photo.file ? 2000 : photo.variants.find((v) => v.file === f).width;
+  assert.deepEqual([shown.width, shown.height], [width, Math.round((width * 1200) / 2000)], `${basename(f)} is shown upright at its size`);
+  assert.ok(red(shown.topRight) && blue(shown.topLeft), `${basename(f)} is turned the right way: ${JSON.stringify(shown)}`);
+}
+const homeHtml = readFileSync(join(staticOut, 'index.html'), 'utf8');
+for (const f of photoFiles) assert.ok(homeHtml.includes(f.replace(/^static\//, '')), `the Home page offers ${basename(f)} to visitors`);
+const kept = readFileSync(join(dir, photo.file));
+assert.equal(createHash('sha256').update(kept).digest('hex'), photoHash, 'the project keeps the original photo byte for byte');
+assert.equal(readFileSync(join(sourceOut, photo.file)).equals(kept), true, 'the editable project export keeps the original photo as imported');
+const finalState = (await win.evaluate(() => window.builder.project.snapshot())).state;
+assert.deepEqual(finalState.assets.assets[photoId], photo, 'the asset record is unchanged');
+assert.ok(JSON.stringify(finalState.pages[finalState.site.homePageId].nodes[homeHero.heroId]).includes(photoId), 'the Home hero still uses the photo');
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();
 

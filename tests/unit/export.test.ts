@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
+import { chmodSync, linkSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -11,21 +11,32 @@ import { generateProject } from '@generator/index';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { zipDirectory } from '../../src/main/zip';
 import {
+  builtPhotosMessage,
+  cleanBuiltSite,
+  cleanWebsitePhotos,
   copyProjectSource,
   editedGeneratedFile,
   explainBuildFailure,
   exportedAssetFilter,
   finishExportedSource,
   isGeneratedReadme,
+  locatedPhotos,
+  locationKeptNote,
+  locationRemovedNote,
   omittedAssetsWarning,
+  readLibraryImage,
   projectFingerprint,
   projectReadme,
   pruneWebsiteAssets,
   publishFolder,
   sectionLinkWarnings,
-  uniqueChild
+  uncleanablePhotosMessage,
+  uniqueChild,
+  variantCredits
 } from '../../src/main/export';
 import { sha } from '../../src/main/project/fsutil';
+import { cleanPhoto } from '../../src/main/project/photo-metadata';
+import { EOI, IMAGE_DATA, JFIF, PNG_SIG, IHDR, IDAT, IEND, SOI, app, ascii, cameraExif, chunk, exifSeg, geotaggedJpeg, readTiff, seg, tiff } from './fixtures/photos';
 
 /**
  * The ZIP writer's compressor runs as normal, but a test can see every input it was given and hold one: `hold`
@@ -298,6 +309,142 @@ describe('website export assets', () => {
     write(dir, 'static/assets/my-own-file.pdf', 'x');
     expect(await pruneWebsiteAssets(dir, createStarterState('blank', 'Test', false))).toEqual([]);
     expect(existsSync(join(dir, 'static/assets/my-own-file.pdf'))).toBe(true);
+  });
+});
+
+describe('website photo privacy', () => {
+  const photo = (id: string, name: string, file: string, variants: string[] = []): AssetRecord => ({ id, name, file, mime: 'image/jpeg', bytes: 1, width: 2000, height: 1200, hash: 'x', kind: 'image', variants: variants.map((f, i) => ({ width: 480 * (i + 1), file: f })), createdAt: '' });
+  const plainJpeg = () => Buffer.concat([SOI, JFIF, IMAGE_DATA, EOI]);
+  const writeBytes = (root: string, rel: string, data: Buffer) => {
+    mkdirSync(join(root, rel, '..'), { recursive: true });
+    writeFileSync(join(root, rel), data);
+  };
+
+  it('cleans every image visitors can download, gives copies their credits, and leaves the rest alone', async () => {
+    const state = createStarterState('blank', 'Test', false);
+    const hero = photo('hero', 'Client house', 'static/assets/house-11111111.jpg', ['static/assets/house-11111111-480w.jpg', 'static/assets/house-11111111-960w.jpg']);
+    const plain = photo('plain', 'Logo photo', 'static/assets/logo-22222222.jpg');
+    state.assets.assets = { hero, plain };
+    const dir = temp();
+    writeBytes(dir, hero.file, geotaggedJpeg());
+    for (const v of hero.variants!) writeBytes(dir, v.file, plainJpeg());
+    writeBytes(dir, plain.file, plainJpeg());
+    // A file outside the library, a picture imported by code under src/, and one named by its bytes alone.
+    writeBytes(dir, 'static/og.png', Buffer.concat([PNG_SIG, IHDR, chunk('eXIf', cameraExif()), IDAT, IEND]));
+    writeBytes(dir, 'src/lib/siteorigin/custom/team.jpeg', geotaggedJpeg(false, 1));
+    writeBytes(dir, 'static/downloads/photo', geotaggedJpeg());
+    // The page uses the photo itself; a code component uses only the narrow copy of another photo.
+    const banner = photo('banner', 'Client garden', 'static/assets/garden-33333333.jpg', ['static/assets/garden-33333333-480w.jpg']);
+    state.assets.assets.banner = banner;
+    writeBytes(dir, banner.file, geotaggedJpeg());
+    writeBytes(dir, banner.variants![0].file, plainJpeg());
+    write(dir, 'src/routes/+page.svelte', '<img src="/assets/house-11111111.jpg" srcset="/assets/house-11111111-480w.jpg 480w, /assets/house-11111111-960w.jpg 960w" alt="" /><img src="/assets/logo-22222222.jpg" alt="" />');
+    write(dir, 'src/lib/siteorigin/custom/Banner.svelte', '<img src="/assets/garden-33333333-480w.jpg" alt="" />');
+
+    // The order the website export uses: credits first, then pruning, which removes the garden original.
+    const credits = await variantCredits(dir, state);
+    await pruneWebsiteAssets(dir, state);
+    expect(existsSync(join(dir, banner.file))).toBe(false);
+    const before = readFileSync(join(dir, plain.file));
+    const result = await cleanWebsitePhotos(dir, state, credits);
+    expect(result).toEqual({ located: ['Client house', 'src/lib/siteorigin/custom/team.jpeg', 'static/downloads/photo', 'static/og.png'], failed: [] });
+
+    for (const f of [hero.file, 'static/og.png', 'src/lib/siteorigin/custom/team.jpeg', 'static/downloads/photo']) {
+      const bytes = readFileSync(join(dir, f));
+      expect(bytes.toString('latin1'), f).not.toMatch(/GPS|SERIAL|Acme|Springfield/);
+      expect(cleanPhoto(bytes)!.changed, f).toBe(false);
+    }
+    const original = readTiff(app(readFileSync(join(dir, hero.file)), 0xe1, 'Exif\0\0')!);
+    expect(original.short(original.ifd0, 0x0112)).toBe(6);
+    for (const v of [...hero.variants!, ...banner.variants!]) {
+      const copy = readFileSync(join(dir, v.file));
+      const exif = readTiff(app(copy, 0xe1, 'Exif\0\0')!);
+      expect(exif.text(exif.ifd0, 0x013b), v.file).toBe('Jane Doe Photography');
+      expect(exif.ifd0.has(0x0112), v.file).toBe(false);
+      expect(app(copy, 0xe1, 'http://ns.adobe.com/xap/1.0/\0')!.toString('utf8')).toContain('Jane Doe');
+    }
+    // Nothing private and no credits to give: left byte for byte.
+    expect(readFileSync(join(dir, plain.file)).equals(before)).toBe(true);
+    expect(readFileSync(join(dir, 'src/lib/siteorigin/custom/Banner.svelte'), 'utf8')).toBe('<img src="/assets/garden-33333333-480w.jpg" alt="" />');
+  });
+
+  it('names every image it could not clean, by asset name or path', async () => {
+    const state = createStarterState('blank', 'Test', false);
+    const broken = photo('broken', 'Broken scan', 'static/assets/scan-33333333.jpg');
+    state.assets.assets = { broken };
+    const dir = temp();
+    writeBytes(dir, broken.file, Buffer.concat([SOI, Buffer.from([0xff, 0xe1, 0x40, 0x00]), Buffer.from('Exif')]));
+    write(dir, 'static/notes.jpg', 'this is text, not a picture');
+    write(dir, 'static/readme.txt', 'plain text');
+    const result = await cleanWebsitePhotos(dir, state, new Map());
+    expect(result.failed).toEqual(['Broken scan', 'static/notes.jpg']);
+    expect(uncleanablePhotosMessage(result.failed)).toBe('Photo location and camera details couldn’t be removed from Broken scan and static/notes.jpg, so the website was not exported. Replace them with a JPEG, PNG or WebP copy and export again.');
+  });
+
+  it('cleans every image in a finished build, and names what it cannot clean or rewrite', async () => {
+    const dir = temp();
+    const clean = cleanPhoto(geotaggedJpeg())!.data;
+    // From a package: a comment holding an address, which no flag would report, still goes.
+    writeBytes(dir, '_app/immutable/assets/pkg.abc123.jpg', Buffer.concat([SOI, seg(0xfe, Buffer.from('12 Main St')), JFIF, IMAGE_DATA, EOI]));
+    writeBytes(dir, 'assets/already-clean.jpg', clean);
+    writeBytes(dir, 'downloads/photo', geotaggedJpeg());
+    write(dir, 'assets/broken.png', 'not a png');
+    const dataUrl = (b: Buffer) => `data:image/jpeg;base64,${b.toString('base64')}`;
+    write(dir, '_app/immutable/chunks/inline.js', `const a = "${dataUrl(geotaggedJpeg())}";`);
+    write(dir, '_app/immutable/assets/fine.css', `.x{background:url(${dataUrl(clean)})}`);
+    // A camera model only, percent-encoded; and one the parser cannot read.
+    const modelOnly = Buffer.concat([SOI, exifSeg(tiff(true, { ifd0: [ascii(0x0110, 'Phone X')] })), JFIF, IMAGE_DATA, EOI]);
+    write(dir, 'styles/device.css', `.y{background:url(data:image/jpeg;base64,${modelOnly.toString('base64').replace(/\//g, '%2F')})}`);
+    write(dir, 'unreadable.html', `<img src="data:image/png;base64,${Buffer.from('not a png').toString('base64')}">`);
+    write(dir, 'index.html', '<html></html>');
+    const failed = await cleanBuiltSite(dir);
+    expect(failed.sort()).toEqual(['_app/immutable/chunks/inline.js', 'assets/broken.png', 'styles/device.css', 'unreadable.html']);
+    expect(readFileSync(join(dir, '_app/immutable/assets/pkg.abc123.jpg')).toString('latin1')).not.toContain('Main St');
+    expect(readFileSync(join(dir, 'downloads/photo')).toString('latin1')).not.toMatch(/GPS|SERIAL/);
+    expect(readFileSync(join(dir, 'assets/already-clean.jpg')).equals(clean)).toBe(true);
+  });
+
+  it('replaces a built file linked from elsewhere instead of writing through the link', async () => {
+    const dir = temp();
+    const outside = join(temp(), 'original.jpg');
+    writeFileSync(outside, geotaggedJpeg());
+    mkdirSync(join(dir, 'assets'));
+    linkSync(outside, join(dir, 'assets/linked.jpg'));
+    expect(await cleanBuiltSite(dir)).toEqual([]);
+    expect(readFileSync(outside).equals(geotaggedJpeg())).toBe(true);
+    expect(readFileSync(join(dir, 'assets/linked.jpg')).toString('latin1')).not.toContain('SERIAL');
+    expect(builtPhotosMessage(['a.png'])).toBe('a.png in the built website couldn’t be checked for photo location and camera details, so the website was not exported.');
+  });
+
+  it('reads a library image only from a regular file directly in static/assets', async () => {
+    const dir = temp();
+    writeBytes(dir, 'static/assets/ok-11111111.jpg', geotaggedJpeg());
+    writeBytes(dir, 'outside.jpg', geotaggedJpeg());
+    symlinkSync(join(dir, 'outside.jpg'), join(dir, 'static/assets/link-22222222.jpg'));
+    const at = (file: string, kind: 'image' | 'font' = 'image') => readLibraryImage(dir, { ...photo('x', 'X', file), kind });
+    expect(await at('static/assets/ok-11111111.jpg')).not.toBeNull();
+    expect(await at('static/assets/../../outside.jpg')).toBeNull();
+    expect(await at('static/assets/link-22222222.jpg')).toBeNull();
+    expect(await at('outside.jpg')).toBeNull();
+    expect(await at('static/assets/ok-11111111.jpg', 'font')).toBeNull();
+  });
+
+  it('names the library photos an editable project keeps with their location', async () => {
+    const state = createStarterState('blank', 'Test', false);
+    state.assets.assets = { a: photo('a', 'Kitchen', 'static/assets/kitchen-44444444.jpg'), b: photo('b', 'Logo', 'static/assets/logo-55555555.jpg') };
+    const dir = temp();
+    writeBytes(dir, 'static/assets/kitchen-44444444.jpg', geotaggedJpeg());
+    writeBytes(dir, 'static/assets/logo-55555555.jpg', plainJpeg());
+    expect(await locatedPhotos(dir, state)).toEqual(['Kitchen']);
+  });
+
+  it('words the export notes for one photo and for several', () => {
+    expect(locationRemovedNote([])).toBeUndefined();
+    expect(locationRemovedNote(['Kitchen'])).toBe('The website leaves out where Kitchen was taken. The original in your project keeps its location.');
+    expect(locationRemovedNote(['Hall', 'Kitchen', 'Patio'])).toBe('The website leaves out where these photos were taken: Hall, Kitchen and Patio. The originals in your project keep their locations.');
+    expect(locationKeptNote([])).toBeUndefined();
+    expect(locationKeptNote(['Kitchen'])).toBe('Kitchen still records where it was taken. The editable project keeps photos exactly as imported; export Website files to leave locations out.');
+    expect(locationKeptNote(['Hall', 'Kitchen'])).toBe('Hall and Kitchen still record where they were taken. The editable project keeps photos exactly as imported; export Website files to leave locations out.');
   });
 });
 

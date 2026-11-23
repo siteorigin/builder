@@ -69,6 +69,7 @@ export function ExportModal() {
           <span className="grow">
             <strong>Website files, ready to upload</strong>
             <span>{format === 'zip' ? 'Every page as a finished website, in one ZIP file to upload to any web host.' : 'Every page as a finished website folder. Upload it to any web host.'}</span>
+            <span data-testid="export-photo-privacy" style={{ display: 'block', marginTop: 4 }}>Photos leave out where they were taken and the camera details. Credits, copyright, orientation and colour stay.</span>
           </span>
           <ChevronRight className="chev" />
         </button>
@@ -76,7 +77,7 @@ export function ExportModal() {
           <span className="ico">{busy === 'source' ? <Spinner decorative /> : <FolderCode size={18} />}</span>
           <span className="grow">
             <strong>Editable project, for a developer</strong>
-            <span>The complete project, so a developer can keep building it with standard tools.</span>
+            <span>The complete project, so a developer can keep building it with standard tools. Photos stay exactly as imported, including any location they record.</span>
           </span>
           <ChevronRight className="chev" />
         </button>

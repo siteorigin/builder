@@ -293,6 +293,8 @@ export interface BuilderApi {
     undoEntry(entryId: string, workspaceKey: string): Promise<ApplyResult>;
     redo(): Promise<ApplyResult>;
     importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }>;
+    /** What private metadata an image asset's original carries, which website exports leave out. Null when it cannot be read. */
+    photoMetadata(assetId: string): Promise<{ location: boolean; device: boolean } | null>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;
     exportStatic(format?: ExportFormat): Promise<ExportResult>;
     retryPreview(): Promise<void>;
