@@ -372,12 +372,16 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .progress-detail { margin-top: 6px; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- Editor shell ---------- */
-.editor { display: grid; grid-template-rows: var(--toolbar-h) 1fr 28px; height: 100%; }
+.editor { display: grid; grid-template-rows: var(--toolbar-h) 1fr 28px; grid-template-columns: minmax(0, 1fr); height: 100%; }
 .toolbar { display: grid; grid-template-columns: minmax(min(430px, 34vw), 1fr) auto minmax(max-content, 1fr); align-items: center; gap: 12px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--border); position: relative; z-index: 20; }
 .toolbar.mac .toolbar-start { padding-left: 70px; }
 /* The centre group is centred on the window when there is room. In a narrow window the start column
    (identity and save state) keeps a floor and borrows from the empty space on the right instead. */
 .toolbar.mac { grid-template-columns: minmax(min(500px, 40vw), 1fr) auto minmax(max-content, 1fr); }
+/* Below the full toolbar's width (lib/layout.ts toolbarTier, which also drops the Edit and Preview labels and
+   then moves Zoom and Settings into More) the centre group stops centring on the window: the identity takes
+   what the controls leave, and the project and page names shorten. */
+.toolbar:not([data-tier='full']) { grid-template-columns: minmax(0, 1fr) max-content max-content; }
 /* Title-bar icon buttons match the 26–28px rhythm of the fields, segments and Export beside them. */
 .toolbar .icon-btn { flex: none; width: 28px; height: 28px; }
 /* At the narrowest start column (1280–1600px windows) a long page name is capped, so a long name, a long
@@ -388,17 +392,19 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .toolbar .icon-btn[aria-pressed='true']:hover:not(:disabled), .rail .icon-btn.shortcut[aria-pressed='true']:hover { background: color-mix(in srgb, var(--text) 5%, var(--raised)); }
 .toolbar-start, .toolbar-end { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .toolbar-end { justify-content: flex-end; }
-.toolbar-group { display: flex; align-items: center; gap: 2px; }
+.toolbar-group { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .toolbar-mark { display: grid; place-items: center; flex: none; margin: 0 8px 0 2px; }
 .toolbar-mark svg { display: block; }
 .toolbar-center { display: flex; align-items: center; gap: 8px; }
 .toolbar-divider { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
 .project-title { display: flex; align-items: center; gap: 5px; min-width: 0; height: 30px; padding: 0 6px 0 8px; border-radius: var(--r-sm); border: 0; background: transparent; max-width: 360px; transition: background 120ms; }
 .project-title:hover, .project-title[aria-expanded='true'] { background: var(--hover); }
-/* The project name gives way first; the page (the answer to "where am I") keeps its name until the project is short. */
-.project-title .site { font-weight: 600; flex: 0 1 auto; min-width: 56px; }
+/* The project name gives way first; the page (the answer to "where am I") keeps its name until the project is
+   short (the 100:1 shrink weights), then shortens too rather than push the chevron out of the button. Whole
+   numbers: a lone item with a shrink factor under 1 takes only that fraction of the overflow. */
+.project-title .site { font-weight: 600; flex: 0 100 auto; min-width: 56px; }
 .project-title .sep { color: var(--text-3); flex: none; }
-.project-title .page { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 180px; flex: none; color: var(--text-2); }
+.project-title .page { display: inline-flex; align-items: center; gap: 4px; min-width: 48px; max-width: 180px; flex: 0 1 auto; color: var(--text-2); }
 .project-title .page svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
 .project-title .page.def { color: var(--plum); font-weight: 600; }
 .project-title .page.def svg { color: var(--plum); }
@@ -438,6 +444,9 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .resizer:hover, .resizer.dragging, .resizer:focus-visible { outline: none; background: linear-gradient(to right, transparent 2px, var(--accent) 2px, var(--accent) 4px, transparent 4px); }
 .side-panel .resizer { right: -3px; }
 .dock .resizer { left: -3px; }
+/* While a splitter is dragged the preview page takes no pointer events, so a fast drag over it stays with the
+   splitter (the frame is a separate process, which would otherwise get the moves before capture applies). */
+.editor:has(.resizer.dragging) .frame-box iframe { pointer-events: none; }
 .panel-head { display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 10px 0 14px; flex: none; }
 .panel-head h3 { margin: 0; font-size: 13px; font-weight: 600; flex: 1; }
 .panel-head .context { font-size: 12px; color: var(--text-3); max-width: 50%; }

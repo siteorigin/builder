@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Check, Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
-import { openDialogs, openMenus, Tabs } from './components/ui';
+import { openDialogs, openMenus, Tabs, useWindowWidth } from './components/ui';
 import { api, applyOps, errorText, getState, saveLocal, setState, toast, useStore } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas } from './panels/Canvas';
@@ -21,6 +21,7 @@ import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModa
 import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
 import { refLabel } from './lib/model';
 import { useTransitionAnnouncement } from './lib/announce';
+import { PANEL_LIMITS, fitPanels, panelMax, resizePanel, type PanelPrefs, type PanelSide } from './lib/layout';
 
 const LEFT_TABS = [
   { id: 'pages', label: 'Pages', icon: <FileText /> },
@@ -190,39 +191,85 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   return false;
 }
 
-function Resizer({ side }: { side: 'left' | 'right' }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const onDown = useCallback(
-    (e: React.PointerEvent) => {
-      const startX = e.clientX;
-      const s = getState();
-      const start = side === 'left' ? s.leftWidth : s.rightWidth;
-      ref.current?.classList.add('dragging');
-      const move = (ev: PointerEvent) => {
-        const d = ev.clientX - startX;
-        const w = Math.max(side === 'left' ? 200 : 300, Math.min(side === 'left' ? 420 : 560, start + (side === 'left' ? d : -d)));
-        setState(side === 'left' ? { leftWidth: w } : { rightWidth: w });
-      };
-      const up = () => {
-        ref.current?.classList.remove('dragging');
-        window.removeEventListener('pointermove', move);
-        window.removeEventListener('pointerup', up);
-      };
-      window.addEventListener('pointermove', move);
-      window.addEventListener('pointerup', up);
-    },
-    [side]
-  );
-  const onKey = (e: React.KeyboardEvent) => {
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-    e.preventDefault();
-    const s = getState();
-    const d = (e.key === 'ArrowRight' ? 16 : -16) * (side === 'left' ? 1 : -1);
-    if (side === 'left') setState({ leftWidth: Math.max(200, Math.min(420, s.leftWidth + d)) });
-    else setState({ rightWidth: Math.max(300, Math.min(560, s.rightWidth + d)) });
+/** Each panel's preferred width, or null while it is closed. */
+function panelPrefs(): PanelPrefs {
+  const s = getState();
+  return { left: s.leftTab ? s.leftWidth : null, right: s.dockOpen ? s.rightWidth : null };
+}
+
+/** Keep a panel width with the open project. The main process writes it in order, and before the project closes. */
+function saveWidth(side: PanelSide) {
+  const s = getState();
+  saveLocal(side === 'left' ? { leftWidth: s.leftWidth } : { rightWidth: s.rightWidth });
+}
+
+/**
+ * A splitter. Dragging and the arrow keys start from the width the panel is drawn at and stop where the
+ * canvas would drop below its minimum (lib/layout). A step the limit turns into no change leaves the
+ * preferred width alone, so a panel squeezed by a small window still gets its room back in a larger one.
+ */
+function Resizer({ side, width, max }: { side: PanelSide; width: number; max: number }) {
+  // `drawn` is the width the drag last left the panel at: if anything else changes it mid-drag (the other
+  // panel toggled, the window resized, another project opened), the drag ends rather than jump from a
+  // stale starting point.
+  const drag = useRef<{ pointer: number; x: number; from: number; drawn: number; changed: boolean } | null>(null);
+  const outward = side === 'left' ? 1 : -1;
+  /** Make `requested` the panel's preferred width, within its room. Returns the width now drawn, or null when
+   *  the limit turns the request into no change. */
+  const resize = (requested: number) => {
+    const prefs = panelPrefs();
+    const w = resizePanel(side, requested, window.innerWidth, prefs);
+    if (w === fitPanels(window.innerWidth, prefs)[side]) return null;
+    setState(side === 'left' ? { leftWidth: w } : { rightWidth: w });
+    return w;
   };
-  const width = useStore((s) => (side === 'left' ? s.leftWidth : s.rightWidth));
-  return <div ref={ref} className="resizer" tabIndex={0} onPointerDown={onDown} onKeyDown={onKey} role="separator" aria-orientation="vertical" aria-valuenow={width} aria-valuemin={side === 'left' ? 200 : 300} aria-valuemax={side === 'left' ? 420 : 560} aria-label={`Resize ${side === 'left' ? 'sidebar' : 'right panel'}`} />;
+  const end = (el: HTMLDivElement, pointer: number) => {
+    const d = drag.current;
+    if (d?.pointer !== pointer) return;
+    drag.current = null;
+    el.classList.remove('dragging');
+    if (el.hasPointerCapture(pointer)) el.releasePointerCapture(pointer);
+    if (d.changed) saveWidth(side);
+  };
+  return (
+    <div
+      className="resizer"
+      tabIndex={0}
+      role="separator"
+      aria-orientation="vertical"
+      aria-valuenow={width}
+      aria-valuemin={PANEL_LIMITS[side].min}
+      aria-valuemax={max}
+      aria-label={`Resize ${side === 'left' ? 'sidebar' : 'right panel'}`}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        // Captured, so the drag follows the pointer over the preview frame and always hears the release.
+        e.currentTarget.setPointerCapture(e.pointerId);
+        e.currentTarget.classList.add('dragging');
+        const from = fitPanels(window.innerWidth, panelPrefs())[side];
+        drag.current = { pointer: e.pointerId, x: e.clientX, from, drawn: from, changed: false };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (d?.pointer !== e.pointerId) return;
+        if (fitPanels(window.innerWidth, panelPrefs())[side] !== d.drawn) return end(e.currentTarget, e.pointerId);
+        const w = resize(d.from + (e.clientX - d.x) * outward);
+        if (w !== null) {
+          d.drawn = w;
+          d.changed = true;
+        }
+      }}
+      onPointerUp={(e) => end(e.currentTarget, e.pointerId)}
+      onPointerCancel={(e) => end(e.currentTarget, e.pointerId)}
+      onLostPointerCapture={(e) => end(e.currentTarget, e.pointerId)}
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const from = fitPanels(window.innerWidth, panelPrefs())[side];
+        if (resize(from + (e.key === 'ArrowRight' ? 16 : -16) * outward) !== null) saveWidth(side);
+      }}
+    />
+  );
 }
 
 export function Editor() {
@@ -232,6 +279,11 @@ export function Editor() {
   const rightWidth = useStore((s) => s.rightWidth);
   const modal = useStore((s) => s.modal);
   const dockOpen = useStore((s) => s.dockOpen);
+  const windowWidth = useWindowWidth();
+  // The panels are drawn at their preferred widths while the canvas keeps its minimum; in a smaller window
+  // they give way, and get the room back when it grows.
+  const prefs: PanelPrefs = { left: leftTab ? leftWidth : null, right: dockOpen ? rightWidth : null };
+  const shown = fitPanels(windowWidth, prefs);
   const aiBusy = useStore((s) => !!s.runStatus);
   // Joined, so each new snapshot (a fresh array over IPC) does not repeat the same notes.
   const recovery = useStore((s) => s.snapshot?.recoveryNotes.join('\n') ?? '');
@@ -361,20 +413,20 @@ export function Editor() {
           </button>
         </nav>
         {/* Panels stay mounted while hidden, so a search, expanded layers or scroll position survive switching. */}
-        <aside className="side-panel" style={{ width: leftWidth, display: leftTab ? undefined : 'none' }} aria-label="Sidebar panel">
+        <aside className="side-panel" style={{ width: shown.left, display: leftTab ? undefined : 'none' }} aria-label="Sidebar panel">
           {(['pages', 'layers', 'insert', 'assets'] as const).map((t) => (
             <div key={t} className="side-panel-view" hidden={leftTab !== t}>
               {t === 'pages' && <PagesPanel />}
               {t === 'layers' && <LayersPanel />}
               {t === 'insert' && <InsertPanel />}
-              {t === 'assets' && <AssetsPanel />}
+              {t === 'assets' && <AssetsPanel narrow={shown.left < 240} />}
             </div>
           ))}
-          <Resizer side="left" />
+          <Resizer side="left" width={shown.left} max={panelMax('left', windowWidth, prefs)} />
         </aside>
         <Canvas />
-        <aside className="dock" style={{ width: rightWidth, display: dockOpen ? undefined : 'none' }}>
-          <Resizer side="right" />
+        <aside className="dock" style={{ width: shown.right, display: dockOpen ? undefined : 'none' }}>
+          <Resizer side="right" width={shown.right} max={panelMax('right', windowWidth, prefs)} />
           <Tabs<'inspect' | 'chat' | 'styles'>
             className="dock-tabs"
             label="Right panel views"

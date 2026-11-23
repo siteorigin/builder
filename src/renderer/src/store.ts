@@ -3,6 +3,7 @@ import type { AiEvent, AppSettings, ChatMessage, Conversation, LocalWorkspaceSta
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, ResponsiveScope } from '@shared/types';
 import { chatStatePatch, draftFor, withDraft, type ChatDrafts } from './lib/chatDrafts';
+import { PANEL_DEFAULTS } from './lib/layout';
 
 export const api = window.builder;
 
@@ -48,6 +49,7 @@ interface State {
   previewIssue: string | null;
   /** Whether the right dock (Inspector / AI / Site styles) is shown. */
   dockOpen: boolean;
+  /** The widths the panels were given (lib/layout fits them to the window when it is too small for both). */
   leftWidth: number;
   rightWidth: number;
   styleScope: ResponsiveScope;
@@ -85,8 +87,8 @@ export const useStore = create<State>((set) => ({
   drafting: 0,
   previewIssue: null,
   dockOpen: true,
-  leftWidth: 260,
-  rightWidth: 340,
+  leftWidth: PANEL_DEFAULTS.left,
+  rightWidth: PANEL_DEFAULTS.right,
   styleScope: 'base',
   rects: { selected: [], hovered: [] },
   pendingSave: 0,
