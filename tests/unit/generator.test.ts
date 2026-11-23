@@ -8,7 +8,9 @@ import { validateStyleValue } from '@shared/styles';
 import { applyOperations } from '@engine/apply';
 import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, generateProject, js, propLocals, resolveLink } from '@generator/index';
 import { externalLink } from '@shared/links';
-import { usedIcons } from '@generator/runtime-files';
+import { DRAFTS_JS, usedIcons } from '@generator/runtime-files';
+import { contactForm } from '@catalogue/foundation/form';
+import { checkSvelteSource } from '../../src/main/codecheck';
 import { pageIds, pageSections, placeholderImageCount, planSectionPick, sharedPageIds } from '@generator/checks';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -48,6 +50,28 @@ describe('generated Svelte compiles', () => {
     expect(compileAll(generateProject(s))).toEqual([]);
     expect(compileAll(generateProject(s, { instrument: true }))).toEqual([]);
     expect(compileAll(generateProject(createStarterState('blank', 'Blank', false)))).toEqual([]);
+  });
+});
+
+describe('unsent form drafts (issue #274)', () => {
+  it('ships the draft keeper with every site and runs it once from the root layout, in the export and the preview', () => {
+    for (const files of [generateProject(fresh()), generateProject(fresh(), { instrument: true }), generateProject(createStarterState('blank', 'Blank', false))]) {
+      expect(files.get(`${RUNTIME_DIR}/drafts.js`)).toBe(DRAFTS_JS);
+      const layout = files.get('src/routes/+layout.svelte')!;
+      expect(layout).toContain("import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';");
+      expect(layout.match(/keepDrafts\(\);/g)).toHaveLength(1);
+    }
+    // Plain SvelteKit: no editor instrumentation, and nothing imported but Svelte and SvelteKit.
+    expect(DRAFTS_JS).not.toMatch(/data-so-|__so|siteorigin-bridge/);
+    expect([...DRAFTS_JS.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1])).toEqual(['svelte', '$app/navigation']);
+  });
+
+  it('marks the theme contact form and each answer for it, and keeps the form a component a customised copy can save', async () => {
+    const source = contactForm.source!;
+    expect(source).toMatch(/<form\b[^>]*\sdata-keep-draft\s/);
+    expect(source.match(/data-draft-field=\{field\.id \?\? i\}/g)).toHaveLength(2);
+    // Forking or duplicating the form makes it a project component, whose code must pass the ordinary check.
+    expect((await checkSvelteSource(source)).filter((p) => p.severity === 'error')).toEqual([]);
   });
 });
 

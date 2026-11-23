@@ -27,7 +27,7 @@ import { GENERATOR_VERSION, isBinding } from '@shared/types';
 import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
-import { IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs } from './runtime-files';
+import { DRAFTS_JS, IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs } from './runtime-files';
 import { routeDir, validateRoute } from '@shared/routes';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
@@ -1163,9 +1163,12 @@ ${fontImports}
 	import '../lib/siteorigin/styles/site.css';
 	import { page } from '$app/state';
 	import { asset } from '$app/paths';
+	import { keepDrafts } from '../lib/siteorigin/runtime/drafts.js';
 ${imports}${devBridge}
 
 	let { children } = $props();
+	// A message typed into a form and not sent comes back when the visitor returns with Back.
+	keepDrafts();
 	const pagesWithoutShell = new Set(${js(noShell)});
 	const showShell = $derived(!pagesWithoutShell.has(page.route.id ?? ''));
 </script>
@@ -1336,6 +1339,7 @@ export function generateProject(state: ProjectState, opts: GenerateOptions = {})
   files.set(`${RUNTIME_DIR}/Icon.svelte`, iconSvelte());
   files.set(`${RUNTIME_DIR}/icons.js`, iconsJs(state));
   files.set(`${RUNTIME_DIR}/util.js`, UTIL_JS);
+  files.set(`${RUNTIME_DIR}/drafts.js`, DRAFTS_JS);
   files.set(`${STYLES_DIR}/tokens.css`, generateTokensCss(state));
   files.set(`${STYLES_DIR}/theme.css`, theme.baseCss);
   files.set(`${STYLES_DIR}/components.css`, generateComponentsCss(state));

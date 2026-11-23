@@ -249,3 +249,119 @@ export function richParagraphs(value) {
 	return value.map((it) => (it && typeof it === 'object' && !Array.isArray(it) ? Object.fromEntries(Object.entries(it).map(([k, v]) => [k, richParagraphs(v)])) : it));
 }
 `;
+
+/**
+ * Keeps an unsent message with the history entry it was typed in. The root layout registers it once, so a form's
+ * draft is found again by the form's fields and its place on the page, however Svelte orders mounts.
+ */
+export const DRAFTS_JS = `/**
+ * Keeps a message the visitor typed into a form and has not sent with its place in the tab's history, as the
+ * browser keeps a form when JavaScript is off: Back brings it back, a new visit to the page starts empty, and a
+ * message that was sent never comes back. A form takes part with data-keep-draft on the <form>, data-draft-field
+ * naming each answer's control, and aria-busy="true" while it sends.
+ *
+ * SvelteKit's snapshot() holds the drafts, in memory and in the tab's session storage, never in the address or in
+ * anything sent to a server. Besides them, the tab keeps only an opaque id for each message it has sent.
+ */
+import { onMount } from 'svelte';
+import { snapshot } from '$app/navigation';
+
+const FORMS = 'form[data-keep-draft]';
+const SENT = 'siteorigin-drafts-sent';
+// Forms that show the visitor's latest answers since they appeared: typed in, sent from, or given a draft back.
+// An older draft never replaces those, so Back between two entries of one page cannot undo typing.
+const settled = new WeakSet();
+// The message each form holds, as an opaque id. Sending retires the id, so no copy of that message comes back.
+const messages = new WeakMap();
+const sent = new Set();
+
+function sentBefore() {
+	try {
+		const ids = JSON.parse(sessionStorage.getItem(SENT) ?? '[]');
+		return Array.isArray(ids) ? ids : [];
+	} catch {
+		return [];
+	}
+}
+
+function wasSent(id) {
+	return sent.has(id) || sentBefore().includes(id);
+}
+
+function markSent(id) {
+	sent.add(id);
+	try {
+		sessionStorage.setItem(SENT, JSON.stringify([...sentBefore(), id]));
+	} catch {}
+}
+
+function answers(form) {
+	return [...form.querySelectorAll('[data-draft-field]')];
+}
+
+// Every form on the page, known by its fields and then by its place among forms with the same fields.
+function forms() {
+	const seen = new Map();
+	return [...document.querySelectorAll(FORMS)].map((form) => {
+		const key = answers(form).map((a) => a.dataset.draftField).join(' ');
+		const n = seen.get(key) ?? 0;
+		seen.set(key, n + 1);
+		return { form, key, n };
+	});
+}
+
+function capture() {
+	const drafts = [];
+	for (const { form, key, n } of forms()) {
+		// A message on its way is no longer a draft, whatever the reply.
+		if (form.getAttribute('aria-busy') === 'true') continue;
+		const values = answers(form).map((a) => [a.dataset.draftField, a.value]);
+		if (!values.some(([, value]) => value)) continue;
+		let message = messages.get(form);
+		if (!message) messages.set(form, (message = Date.now().toString(36) + Math.random().toString(36).slice(2)));
+		drafts.push({ key, n, message, values });
+	}
+	return drafts.length ? drafts : null;
+}
+
+function restore(drafts) {
+	if (!Array.isArray(drafts)) return;
+	for (const { form, key, n } of forms()) {
+		const draft = drafts.find((d) => d?.key === key && d.n === n);
+		const controls = answers(form);
+		if (!draft || settled.has(form) || controls.some((a) => a.value) || wasSent(draft.message)) continue;
+		settled.add(form);
+		messages.set(form, draft.message);
+		for (const [field, value] of Array.isArray(draft.values) ? draft.values : []) {
+			const control = controls.find((a) => a.dataset.draftField === field);
+			if (control && typeof value === 'string') control.value = value;
+		}
+	}
+}
+
+/** Called once, from the root layout. */
+export function keepDrafts() {
+	snapshot({ id: 'siteorigin-drafts', capture, restore });
+	onMount(() => {
+		const typed = (event) => {
+			const form = event.target instanceof Element ? event.target.closest(FORMS) : null;
+			if (form) settled.add(form);
+		};
+		// Retired as the message leaves, so a reply that comes after the visitor has moved on still counts.
+		const sending = (event) => {
+			const form = event.target;
+			if (!(form instanceof HTMLFormElement) || !form.matches(FORMS)) return;
+			settled.add(form);
+			const message = messages.get(form);
+			messages.delete(form);
+			if (message) markSent(message);
+		};
+		document.addEventListener('input', typed, true);
+		document.addEventListener('submit', sending, true);
+		return () => {
+			document.removeEventListener('input', typed, true);
+			document.removeEventListener('submit', sending, true);
+		};
+	});
+}
+`;
