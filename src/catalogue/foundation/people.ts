@@ -144,7 +144,7 @@ export const team = managed({
           b.el('member', 'li', { name: 'Person', styles: { layout: 'stack', gap: tok('space.xs') } }, [
             b.image('portrait', { $item: 'portrait' }, { name: 'Portrait', styles: { aspectRatio: '4/5', radius: tok('radius.lg'), objectFit: 'cover', marginBlockEnd: tok('space.sm') } }),
             b.text('name', 'h3', { $item: 'name' }, { name: 'Name', styles: { textStyle: tok('text.h3') } }),
-            b.text('role', 'p', { $item: 'role' }, { name: 'Role', styles: { color: tok('color.brand'), fontWeight: '500', fontSize: '0.95rem' } }),
+            b.text('role', 'p', { $item: 'role' }, { name: 'Role', when: { $item: 'role' }, styles: { color: tok('color.brand'), fontWeight: '500', fontSize: '0.95rem' } }),
             b.text('bio', 'p', { $item: 'bio' }, { name: 'Bio', when: { $item: 'bio' }, styles: { ...mutedStyles, textStyle: tok('text.small') } })
           ])
         ])

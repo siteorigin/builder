@@ -106,7 +106,7 @@ export const mediaSplit = managed({
         ]),
         b.el('content', 'div', { name: 'Content', styles: { layout: 'stack', gap: tok('space.lg'), align: 'start' } }, [
           b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
-          b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', styles: { textStyle: tok('text.h2') } }),
+          b.text('heading', 'h2', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h2') } }),
           b.rich('body', { $prop: 'body' }, { name: 'Text', styles: { ...mutedStyles, textStyle: tok('text.body') } }),
           b.link('action', { $prop: 'actionLink' }, { $prop: 'actionLabel' }, 'secondary', { name: 'Action', when: { $prop: 'actionLabel' }, styles: { marginBlockStart: tok('space.xs') } })
         ])
@@ -180,8 +180,9 @@ export const stats = managed({
       b.el('grid', 'dl', { name: 'Grid', styles: { base: { layout: 'grid', columns: 2, gap: tok('space.xl') }, desktop: { columns: 4 } } }, [
         b.repeat('figures', 'items', [
           b.el('figure', 'div', { name: 'Figure', styles: { layout: 'stack', gap: tok('space.xs'), paddingInline: '0', border: '0', marginBlockStart: '0' } }, [
-            b.text('value', 'dd', { $item: 'value' }, { name: 'Value', styles: { textStyle: tok('text.stat'), color: tok('color.brand'), order: -1 } }),
-            b.text('label', 'dt', { $item: 'label' }, { name: 'Label', styles: { ...mutedStyles, textStyle: tok('text.small') } })
+            // A term comes before its description in a <dl>; `order` still shows the figure above its label.
+            b.text('label', 'dt', { $item: 'label' }, { name: 'Label', styles: { ...mutedStyles, textStyle: tok('text.small') } }),
+            b.text('value', 'dd', { $item: 'value' }, { name: 'Value', styles: { textStyle: tok('text.stat'), color: tok('color.brand'), order: -1 } })
           ])
         ])
       ])

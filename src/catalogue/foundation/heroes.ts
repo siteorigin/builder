@@ -44,7 +44,7 @@ export const heroCentered = managed({
       [
         b.el('content', 'div', { name: 'Content', styles: { base: { layout: 'stack', gap: tok('space.lg'), align: 'center', textAlign: 'center', maxWidth: '880px', marginInline: 'auto' } } }, [
           b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
-          b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', styles: { textStyle: tok('text.display') } }),
+          b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.display') } }),
           b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles, maxWidth: '640px' } }),
           actions(b, 'center')
         ])
@@ -88,7 +88,7 @@ export const heroSplit = managed({
         [
           b.el('content', 'div', { name: 'Content', styles: { base: { layout: 'stack', gap: tok('space.lg'), align: 'start' } } }, [
             b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
-            b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', styles: { textStyle: tok('text.h1') } }),
+            b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h1') } }),
             b.text('lead', 'p', { $prop: 'lead' }, { name: 'Supporting text', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles, maxWidth: '560px' } }),
             actions(b, 'start')
           ]),
@@ -125,7 +125,7 @@ export const pageIntro = managed({
       [
         b.el('content', 'div', { name: 'Content', styles: { base: { layout: 'stack', gap: tok('space.md'), maxWidth: '780px' } } }, [
           b.text('eyebrow', 'p', { $prop: 'eyebrow' }, { name: 'Eyebrow', when: { $prop: 'eyebrow' }, styles: eyebrowStyles }),
-          b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', styles: { textStyle: tok('text.h1') } }),
+          b.text('heading', 'h1', { $prop: 'heading' }, { name: 'Heading', when: { $prop: 'heading' }, styles: { textStyle: tok('text.h1') } }),
           b.text('lead', 'p', { $prop: 'lead' }, { name: 'Description', when: { $prop: 'lead' }, styles: { textStyle: tok('text.lead'), ...mutedStyles } })
         ])
       ],

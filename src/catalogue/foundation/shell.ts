@@ -344,7 +344,8 @@ export const footer = managed({
   },
   build: (b) => {
     const linkGroup = (id: string, headingProp: string, listProp: string) =>
-      b.el(`${id}-group`, 'nav', { name: 'Link group', styles: { layout: 'stack', gap: tok('space.md') } }, [
+      // A group without links would be an empty landmark: it is left out.
+      b.el(`${id}-group`, 'nav', { name: 'Link group', when: { $prop: listProp }, styles: { layout: 'stack', gap: tok('space.md') } }, [
         b.text(`${id}-heading`, 'h2', { $prop: headingProp }, { name: 'Group heading', styles: { textStyle: tok('text.eyebrow'), opacity: 0.7 } }),
         b.el(`${id}-list`, 'ul', { name: 'Links', styles: { layout: 'stack', gap: tok('space.sm') } }, [
           b.repeat(`${id}-items`, listProp, [
