@@ -72,7 +72,7 @@ async function bundleComponents(): Promise<{ module: Rendered; files: Map<string
         enforce: 'pre',
         resolveId(id, importer) {
           if (id === '\0entry' || id.startsWith(GEN)) return id;
-          if (id === '$app/paths' || id === '$app/state') return `\0${id}`;
+          if (id === '$app/paths' || id === '$app/state' || id === '$app/navigation') return `\0${id}`;
           if (importer?.startsWith(GEN) && id.startsWith('.')) {
             const path = posix.join(posix.dirname(importer.slice(GEN.length)), id);
             if (files.has(path)) return GEN + path;
@@ -83,6 +83,7 @@ async function bundleComponents(): Promise<{ module: Rendered; files: Map<string
           if (id === '\0entry') return entry;
           if (id === '\0$app/paths') return "export const resolve = (p) => p; export const asset = (p) => '/' + p; export const base = '';";
           if (id === '\0$app/state') return "export const page = { route: { id: '/' }, url: new URL('https://site.test/') };";
+          if (id === '\0$app/navigation') return 'export const afterNavigate = () => {}; export const beforeNavigate = () => {};';
           if (!id.startsWith(GEN)) return null;
           const path = id.slice(GEN.length);
           const source = files.get(path)!;

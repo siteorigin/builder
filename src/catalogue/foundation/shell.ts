@@ -8,6 +8,8 @@ const HEADER_SOURCE = `<script>
 	 * Site header with a working, accessible mobile menu.
 	 * Foundation theme code component. Props are edited in SiteOrigin Builder.
 	 */
+	import { onMount } from 'svelte';
+	import { afterNavigate, beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import SoImage from '../runtime/Image.svelte';
@@ -44,6 +46,129 @@ const HEADER_SOURCE = `<script>
 		void current;
 		open = false;
 	});
+
+	/**
+	 * Publishes how far down the window the header reaches while it stays at the top (0 when it scrolls away, is
+	 * hidden or stays at the bottom) as --so-header-offset on the page root. The theme's [id] scroll margin adds
+	 * to it, so jump links land below it. The computed style also counts a position set as a style: a sticky
+	 * header stays in view at its top inset (only when it has one), a fixed one where it is, and either covers
+	 * the top of the window when it sits nearer the top edge than the bottom.
+	 */
+	function publishOffset(el) {
+		const root = el.ownerDocument.documentElement;
+		const style = getComputedStyle(el);
+		const box = el.getBoundingClientRect();
+		const top = parseFloat(style.top);
+		const pinned = style.position === 'sticky' && Number.isFinite(top) ? top : style.position === 'fixed' ? box.top : NaN;
+		const bottom = pinned + box.height;
+		const reach = box.height > 0 && pinned < el.ownerDocument.defaultView.innerHeight - bottom ? Math.max(bottom, 0) : 0;
+		const value = Math.ceil(reach) + 'px';
+		if (root.style.getPropertyValue('--so-header-offset') !== value) root.style.setProperty('--so-header-offset', value);
+	}
+
+	// The height changes when the brand or the links wrap, at a breakpoint, and when the fonts load; an inset in
+	// window units changes with the window. The sticky setting changes the position without the size, which the
+	// observer would miss.
+	$effect(() => {
+		const el = header;
+		if (!el) return;
+		void sticky;
+		const win = el.ownerDocument.defaultView;
+		const update = () => publishOffset(el);
+		// Chromium can resolve window units against the old size for a frame after the resize event.
+		let frame = 0;
+		const resized = () => {
+			win.cancelAnimationFrame(frame);
+			frame = win.requestAnimationFrame(() => {
+				update();
+				frame = win.requestAnimationFrame(update);
+			});
+		};
+		update();
+		const observer = new ResizeObserver(update);
+		observer.observe(el, { box: 'border-box' });
+		win.addEventListener('resize', resized);
+		return () => {
+			observer.disconnect();
+			win.removeEventListener('resize', resized);
+			win.cancelAnimationFrame(frame);
+			el.ownerDocument.documentElement.style.removeProperty('--so-header-offset');
+		};
+	});
+
+	/**
+	 * A visitor who opens a link to an anchor is scrolled there by the browser before the height above is
+	 * published, so a tall header can cover the target. Once that scroll (smooth by default) has come to rest, and
+	 * again once the fonts have loaded (they can make the header taller), reveals the target if the header covers
+	 * it, until the visitor moves on. Returns a function that stops it.
+	 */
+	function revealBookmark(el) {
+		const doc = el.ownerDocument;
+		const win = doc.defaultView;
+		const hash = win.location.hash;
+		let done = false;
+		let frame = 0;
+		const moves = ['pointerdown', 'wheel', 'touchstart', 'keydown'];
+		const stop = () => {
+			done = true;
+			win.cancelAnimationFrame(frame);
+			for (const type of moves) win.removeEventListener(type, stop, { capture: true });
+		};
+		for (const type of moves) win.addEventListener(type, stop, { capture: true, passive: true });
+		const reveal = () => {
+			if (done || win.location.hash !== hash) return;
+			let target;
+			try {
+				target = doc.getElementById(decodeURIComponent(hash.slice(1)));
+			} catch {
+				return;
+			}
+			if (!target || el.contains(target)) return;
+			publishOffset(el);
+			const box = target.getBoundingClientRect();
+			const cover = el.getBoundingClientRect();
+			if (box.top < cover.bottom - 0.5 && box.bottom > Math.max(cover.top, 0)) target.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'instant' });
+		};
+		// At rest once the page has not moved for three frames, or after two seconds of movement.
+		const settle = () => {
+			let last = NaN;
+			let still = 0;
+			let frames = 0;
+			const step = () => {
+				if (done) return;
+				still = win.scrollY === last ? still + 1 : 0;
+				last = win.scrollY;
+				if (still >= 3 || ++frames >= 120) reveal();
+				else frame = win.requestAnimationFrame(step);
+			};
+			win.cancelAnimationFrame(frame);
+			frame = win.requestAnimationFrame(step);
+		};
+		settle();
+		doc.fonts?.ready.then(() => {
+			if (!done) settle();
+		});
+		return stop;
+	}
+
+	// Only on arriving at the site with an anchor in a fresh visit: a reload, a history visit or a reopened tab
+	// (whose position SvelteKit has restored) keeps that position, and a header shown again later in the visit
+	// leaves the page where it is.
+	let stopReveal;
+	afterNavigate(({ type }) => {
+		stopReveal?.();
+		stopReveal = undefined;
+		const win = header?.ownerDocument.defaultView;
+		if (type !== 'enter' || !win || win.location.hash.length < 2) return;
+		if (win.performance.getEntriesByType?.('navigation')[0]?.type !== 'navigate' || win.history.scrollRestoration === 'manual') return;
+		stopReveal = revealBookmark(header);
+	});
+	// Leaving the page, the outgoing one stays put until the next one renders.
+	beforeNavigate(() => {
+		stopReveal?.();
+		stopReveal = undefined;
+	});
+	onMount(() => () => stopReveal?.());
 
 	function onKeydown(event) {
 		if (event.key === 'Escape' && open) {
