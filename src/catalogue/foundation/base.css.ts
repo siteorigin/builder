@@ -117,17 +117,19 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
   /* Every disclosure prints its content without being opened, so the questions a visitor opened are still the
      ones open after printing, or after cancelling the print dialog. */
   details::details-content { content-visibility: visible; display: block; }
-  /* The FAQ's open/close icon, in any copy of it. An icon of an author's own that tells something stays. */
-  details > summary [class*='__toggle-icon'] { display: none; }
+  /* The FAQ's open/close icon, in any copy of it (whose classes start differently). An icon of an author's own
+     that tells something stays. */
+  details > summary :is([class$='__toggle-icon'], [class*='__toggle-icon ']) { display: none; }
   /* Controls that only work on screen: submit and reset buttons (a button whose label is content, such as an
      address it copies, stays), the skip link, the menu button and phone menu, and the contact form's actions and
      service messages. Components' own (scoped) styles show some of them, hence !important. */
   :is(button, input):is([type='submit'], [type='reset']), form button:not([type]),
   .so-skip-link, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap { display: none !important; }
   .so-header { position: static !important; }
-  /* Where the sheet has room: a heading, or a section's heading group, stays with what follows it, and short
-     units (a plan, a contact method, a question and its answer, the contact form) stay whole. */
-  h1, h2, h3, h4, h5, h6, summary, [class*='__intro'] { break-after: avoid; break-inside: avoid; }
-  li, details, figure, blockquote, tr, img, .so-form__inner, .so-form__form, .so-form__field { break-inside: avoid; }
+  /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of
+     the section), stays with what follows it, and short units (a plan, a contact method, a question and its
+     answer, a gallery image and its caption, the contact form) stay whole. */
+  h1, h2, h3, h4, h5, h6, summary, :is([class$='__intro'], [class*='__intro ']) { break-after: avoid; break-inside: avoid; }
+  li, details, figure, .so-form__inner, .so-form__form, .so-form__field { break-inside: avoid; }
 }
 `;

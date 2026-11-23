@@ -9,9 +9,17 @@
  */
 import { inflateSync } from 'node:zlib';
 
-type Ref = { ref: number };
-type Value = number | string | boolean | null | Ref | Value[] | { [key: string]: Value } | { name: string };
-type Dict = { [key: string]: Value };
+// Interfaces, not type literals: a literal would count as a Dict, and `isDict` could not tell them apart.
+interface Ref {
+  ref: number;
+}
+interface Name {
+  name: string;
+}
+interface Dict {
+  [key: string]: Value;
+}
+type Value = number | string | boolean | null | Ref | Name | Value[] | Dict;
 
 interface PdfObject {
   value: Value;
@@ -19,7 +27,7 @@ interface PdfObject {
 }
 
 const isRef = (v: Value | undefined): v is Ref => !!v && typeof v === 'object' && 'ref' in v;
-const isName = (v: Value | undefined): v is { name: string } => !!v && typeof v === 'object' && 'name' in v;
+const isName = (v: Value | undefined): v is Name => !!v && typeof v === 'object' && 'name' in v;
 const isDict = (v: Value | undefined): v is Dict => !!v && typeof v === 'object' && !Array.isArray(v) && !isRef(v) && !isName(v);
 
 /** Parses one PDF value (dictionary, array, name, number, string or reference) from `src` at `pos`. */
@@ -142,8 +150,10 @@ function utf16(hex: string): string {
 /** A font's glyph codes mapped to text, from its /ToUnicode CMap (bfchar and bfrange sections). */
 function toUnicode(cmap: string): { map: Map<number, string>; bytes: number } {
   const map = new Map<number, string>();
-  const range = /<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/.exec(cmap.slice(cmap.indexOf('begincodespacerange')));
-  const bytes = range ? range[1].length / 2 : 2;
+  const spaces = [...cmap.matchAll(/begincodespacerange([\s\S]*?)endcodespacerange/g)].flatMap((m) => [...m[1].matchAll(/<([0-9a-fA-F]+)>/g)].map((r) => r[1].length / 2));
+  // Codes are read at one fixed width; a map that mixes widths would be misread.
+  if (new Set(spaces).size > 1) throw new Error('This PDF has a font whose codes vary in length, which pdf-text does not read');
+  const bytes = spaces[0] ?? 2;
   for (const section of cmap.matchAll(/beginbfchar([\s\S]*?)endbfchar/g)) {
     for (const [, code, dest] of section[1].matchAll(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/g)) map.set(parseInt(code, 16), utf16(dest));
   }
@@ -167,7 +177,7 @@ function toUnicode(cmap: string): { map: Map<number, string>; bytes: number } {
 /** One run of text as printed: what it says and the colour it is filled with. */
 export interface PdfRun {
   text: string;
-  /** The fill colour as `#rrggbb`. */
+  /** The fill colour as `#rrggbb`; `pattern` for a gradient or pattern, `cmyk(…)` for a CMYK colour. */
   fill: string;
 }
 
@@ -178,6 +188,8 @@ export interface PdfSheet {
 }
 
 const hex = (parts: number[]) => '#' + parts.map((p) => Math.round(Math.min(1, Math.max(0, p)) * 255).toString(16).padStart(2, '0')).join('');
+/** A fill colour from its components: grey, RGB or CMYK. */
+const colour = (parts: number[]) => (parts.length === 1 ? hex([parts[0], parts[0], parts[0]]) : parts.length === 3 ? hex(parts) : `cmyk(${parts.join(',')})`);
 
 /** Every sheet of the PDF, in page order. Each text run (one `BT` … `ET` block) is one run. */
 export function pdfSheets(pdf: Buffer): PdfSheet[] {
@@ -215,9 +227,10 @@ export function pdfSheets(pdf: Buffer): PdfSheet[] {
     const contents = get(page.Contents);
     const streams = (Array.isArray(contents) ? contents : [page.Contents]).map((c) => (isRef(c) ? objects.get(c.ref)?.stream : undefined));
     const sheet: PdfSheet = { runs: [], fills: new Set() };
-    // The fill colour is part of the graphics state, which q and Q save and restore.
+    // The fill colour and its colour space are part of the graphics state, which q and Q save and restore.
     let fill = '#000000';
-    const saved: string[] = [];
+    let space = 'DeviceGray';
+    const saved: Array<[string, string]> = [];
     /** Runs a content stream. A form it draws (`Do`: text with opacity is drawn in one) runs with its own resources. */
     const paint = (src: string, resourcesValue: Value | undefined, depth: number) => {
       if (depth > 16) throw new Error('PDF forms nest too deeply');
@@ -226,43 +239,75 @@ export function pdfSheets(pdf: Buffer): PdfSheet[] {
       const xobjects = isDict(resources) ? get(resources.XObject) : undefined;
       let font: ReturnType<typeof fontFor> | undefined;
       let line = '';
+      let inText = false;
+      // Marked content: a span with /ActualText says what its glyphs read as (a ligature, a cluster).
+      const marked: Array<string | undefined> = [];
       const show = (code: string) => {
         if (!font) throw new Error('PDF text shown before a font was set');
+        if (marked.some((actual) => actual !== undefined)) return;
         const step = font.bytes * 2;
-        for (let i = 0; i + step <= code.length; i += step) line += font.map.get(parseInt(code.slice(i, i + step), 16)) ?? '';
+        if (code.length % step) throw new Error(`PDF text <${code}> is not whole ${font.bytes}-byte codes`);
+        for (let i = 0; i < code.length; i += step) {
+          const text = font.map.get(parseInt(code.slice(i, i + step), 16));
+          if (text === undefined) throw new Error(`PDF glyph <${code.slice(i, i + step)}> has no text in its font's /ToUnicode map`);
+          line += text;
+        }
       };
-      // Operands and operators in order: names, hex strings, arrays of them, numbers, and operator words.
-      const tokens = /\/([^\s/<>[\]()]+)|<([0-9a-fA-F\s]*)>|\[((?:[^\]\\]|\\.)*)\]|\((?:[^)\\]|\\.)*\)|(-?[\d.]+)|([A-Za-z'"*]+)/g;
+      const LITERAL = '\0literal';
+      // Operands and operators in order: names, hex strings, arrays, literal strings, numbers, and operator words.
+      const tokens = /\/([^\s/<>[\]()]+)|<([0-9a-fA-F\s]*)>|\[((?:[^\]\\]|\\.)*)\]|(\((?:[^)\\]|\\.)*\))|(-?[\d.]+)|([A-Za-z'"*]+)/g;
       const operands: string[] = [];
       const numbers: number[] = [];
-      for (const [, name, code, array, number, op] of src.matchAll(tokens)) {
+      for (const [, name, code, array, literal, number, op] of src.matchAll(tokens)) {
         if (name !== undefined) operands.push(name);
         else if (code !== undefined) operands.push(code.replace(/\s+/g, ''));
-        else if (array !== undefined) operands.push(array);
+        else if (array !== undefined) operands.push(array.includes('(') ? LITERAL : array);
+        else if (literal !== undefined) operands.push(LITERAL);
         else if (number !== undefined) numbers.push(Number(number));
         else if (op !== undefined) {
-          if (op === 'q') saved.push(fill);
-          else if (op === 'Q') fill = saved.pop() ?? fill;
-          else if (op === 'rg' || ((op === 'sc' || op === 'scn') && numbers.length === 3)) fill = hex(numbers.slice(-3));
-          else if (op === 'g') fill = hex([numbers[numbers.length - 1], numbers[numbers.length - 1], numbers[numbers.length - 1]]);
+          const textOperand = () => {
+            const last = operands[operands.length - 1] ?? '';
+            if (last === LITERAL) throw new Error(`PDF text shown as a literal string (${op}), which pdf-text does not read`);
+            return last;
+          };
+          if (op === 'q') saved.push([fill, space]);
+          else if (op === 'Q') [fill, space] = saved.pop() ?? [fill, space];
+          else if (op === 'cs') space = operands[0] ?? space;
+          else if (op === 'rg') [fill, space] = [colour(numbers.slice(-3)), 'DeviceRGB'];
+          else if (op === 'g') [fill, space] = [colour(numbers.slice(-1)), 'DeviceGray'];
+          else if (op === 'k') [fill, space] = [colour(numbers.slice(-4)), 'DeviceCMYK'];
+          else if (op === 'sc' || op === 'scn') fill = space === 'Pattern' || operands.length ? 'pattern' : colour(numbers.slice());
           else if (['f', 'F', 'f*', 'B', 'B*', 'b', 'b*'].includes(op)) sheet.fills.add(fill);
-          // Right-to-left text marked this way is stored in visual order, which this reader would return reversed.
-          else if ((op === 'BMC' || op === 'BDC') && operands[0] === 'ReversedChars') throw new Error('This PDF has right-to-left text, which pdf-text does not read');
-          else if (op === 'BT') line = '';
+          else if (op === 'BI') throw new Error('This PDF has an inline image, which pdf-text does not read');
+          else if (op === 'BMC' || op === 'BDC') {
+            // Right-to-left text marked this way is stored in visual order, which this reader would return reversed.
+            if (operands[0] === 'ReversedChars') throw new Error('This PDF has right-to-left text, which pdf-text does not read');
+            const at = operands.indexOf('ActualText');
+            if (at >= 0 && (operands[at + 1] === undefined || operands[at + 1] === LITERAL)) throw new Error('This PDF has /ActualText that pdf-text does not read');
+            marked.push(at >= 0 ? utf16(operands[at + 1].replace(/^feff/i, '')) : undefined);
+          } else if (op === 'EMC') {
+            const actual = marked.pop();
+            if (actual !== undefined && inText) line += actual;
+            else if (actual) sheet.runs.push({ text: actual, fill });
+          } else if (op === 'BT') [line, inText] = ['', true];
           else if (op === 'ET') {
             if (line) sheet.runs.push({ text: line, fill });
-            line = '';
+            [line, inText] = ['', false];
           } else if (op === 'Tf') font = fontFor(isDict(fontDict) ? fontDict[operands[0]] : undefined);
-          else if (op === 'Tj' || op === "'" || op === '"') show(operands[operands.length - 1] ?? '');
-          else if (op === 'TJ') for (const [, part] of (operands[operands.length - 1] ?? '').matchAll(/<([0-9a-fA-F\s]*)>/g)) show(part.replace(/\s+/g, ''));
+          else if (op === 'Tj' || op === "'" || op === '"') show(textOperand());
+          else if (op === 'TJ') for (const [, part] of textOperand().matchAll(/<([0-9a-fA-F\s]*)>/g)) show(part.replace(/\s+/g, ''));
           else if (op === 'Do') {
             const ref = isDict(xobjects) ? xobjects[operands[0]] : undefined;
-            const form = isRef(ref) ? objects.get(ref.ref) : undefined;
-            if (form?.stream && isDict(form.value) && isName(form.value.Subtype) && form.value.Subtype.name === 'Form') {
+            const object = isRef(ref) ? objects.get(ref.ref) : undefined;
+            if (!object) throw new Error(`PDF object /${operands[0]} drawn but not found`);
+            if (isDict(object.value) && isName(object.value.Subtype) && object.value.Subtype.name === 'Form') {
+              if (!object.stream) throw new Error(`PDF form /${operands[0]} could not be decoded`);
               // A form runs in a saved graphics state; a form without resources of its own uses the page's.
-              saved.push(fill);
-              paint(form.stream.toString('latin1'), form.value.Resources ?? resourcesValue, depth + 1);
-              fill = saved.pop() ?? fill;
+              saved.push([fill, space]);
+              const depthBefore = saved.length;
+              paint(object.stream.toString('latin1'), object.value.Resources ?? resourcesValue, depth + 1);
+              if (saved.length !== depthBefore) throw new Error(`PDF form /${operands[0]} does not restore its graphics state`);
+              [fill, space] = saved.pop()!;
             }
           }
           operands.length = 0;
@@ -270,7 +315,10 @@ export function pdfSheets(pdf: Buffer): PdfSheet[] {
         }
       }
     };
-    for (const stream of streams) if (stream) paint(stream.toString('latin1'), page.Resources, 0);
+    for (const stream of streams) {
+      if (!stream) throw new Error('A PDF page content stream could not be decoded');
+      paint(stream.toString('latin1'), page.Resources, 0);
+    }
     return sheet;
   });
 }

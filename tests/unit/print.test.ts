@@ -38,7 +38,9 @@ const PLANS = [
 const FORM_HEADING = 'Send us a message';
 const FIELDS = ['Your full name', 'Your email address', 'Best phone number', 'How can we help?'];
 const SUBMIT = 'Send the enquiry';
-const CONTACT_VALUES = ['hello@example.com', '+1 555 0134', '12 Harbour Lane, Millbrook', 'Monday to Friday, 9am – 5pm'];
+/** The contact section's details: unlike the starter's, the footer does not repeat any of them. */
+const CONTACT_VALUES = ['bookings@harbour-studio.example', '+1 555 0199', '12 Harbour Lane, Millbrook', 'Monday to Friday, 9am – 5pm'];
+const NOT_CONNECTED = 'This form is not connected to a form service yet';
 const HEADER_ACTION = 'Book a site visit';
 const COPYRIGHT = '© 2026 Test Studio. All rights reserved.';
 const PLAIN_HEADING = 'Getting to the studio';
@@ -65,17 +67,26 @@ const SECTIONS: Array<[string, string]> = [
  */
 function exportedSite() {
   const s = createStarterState('business', 'Test Studio', false);
-  const contact = s.pages[s.site.pageOrder[2]];
-  if (contact.route !== '/contact/') throw new Error(`Expected the starter's contact page, got ${contact.route}`);
+  const contact = Object.values(s.pages).find((p) => p.route === '/contact/');
+  if (!contact) throw new Error("Expected the starter's contact page");
   const add = (componentId: string, props: Record<string, unknown>) => {
     const node: InstanceNode = makeInstance(s.components[installComponent(s, componentId)], props);
     contact.nodes[node.id] = node;
     contact.rootIds.push(node.id);
     return node;
   };
-  const faq = contact.rootIds.map((id) => contact.nodes[id]).find((n): n is InstanceNode => n.kind === 'instance' && s.components[n.definitionId]?.componentId === 'faq.list');
-  if (!faq) throw new Error("Expected the starter's contact page to hold an FAQ");
-  faq.props.items = (faq.props.items as ListItem[]).map((item, i) => ({ ...item, question: QUESTIONS[i][0], answer: QUESTIONS[i][1] }));
+  const placed = (componentId: string) => {
+    const node = contact.rootIds.map((id) => contact.nodes[id]).find((n): n is InstanceNode => n.kind === 'instance' && s.components[n.definitionId]?.componentId === componentId);
+    if (!node) throw new Error(`Expected the starter's contact page to hold ${componentId}`);
+    return node;
+  };
+  const faq = placed('faq.list');
+  faq.props.items = QUESTIONS.map(([question, answer], i) => ({ id: `q${i}`, question, answer }));
+  const details = placed('contact.details');
+  const methods = details.props.items as ListItem[];
+  if (methods.length !== CONTACT_VALUES.length) throw new Error('The default contact methods have changed');
+  const links = [{ type: 'email', target: CONTACT_VALUES[0] }, { type: 'tel', target: '+15550199' }];
+  details.props.items = methods.map((item, i) => ({ ...item, value: CONTACT_VALUES[i], link: links[i] ?? item.link }));
   const pricing = add('pricing.plans', {});
   // Each plan's action goes somewhere, so it is shown (a button without a destination is left out).
   pricing.props.plans = (pricing.props.plans as ListItem[]).map((plan, i) => ({ ...plan, name: PLANS[i].name, price: PLANS[i].price, actionLink: { type: 'email', target: 'hello@example.com' } }));
@@ -83,8 +94,10 @@ function exportedSite() {
     const stored = (pricing.props.plans as ListItem[])[i];
     if (stored.description !== plan.description || stored.actionLabel !== plan.action) throw new Error(`The default plan ${i + 1} has changed`);
   }
+  // Not connected to a form service, so on screen it says so (a message a handout leaves out).
   add('contact.form', {
-    provider: 'netlify',
+    provider: 'endpoint',
+    endpoint: '',
     submitLabel: SUBMIT,
     fields: FIELDS.map((label, i) => ({ id: `f${i}`, label, name: '', type: i === 3 ? 'textarea' : 'text', required: i < 2, placeholder: '' }))
   });
@@ -209,6 +222,11 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
     const page = await openSite(browser, open);
     try {
       expect(await openStates(page)).toEqual(expected(open));
+      // Records every change to a question's open state from here on, including any made only while printing.
+      await page.evaluate(`(() => {
+        window.openWrites = [];
+        new MutationObserver((records) => window.openWrites.push(...records.map((r) => r.target.open))).observe(document.body, { subtree: true, attributeFilter: ['open'] });
+      })()`);
       const sheets = await print(page);
       for (const [question, answer] of QUESTIONS) {
         expect(sheetsWith(sheets, question), question).toHaveLength(1);
@@ -218,8 +236,10 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(await openStates(page)).toEqual(expected(open));
       // Nor does the print preview switching to print media and back.
       await page.emulateMedia({ media: 'print' });
+      expect(await openStates(page)).toEqual(expected(open));
       await page.emulateMedia({ media: null });
       expect(await openStates(page)).toEqual(expected(open));
+      expect(await page.evaluate('window.openWrites')).toEqual([]);
     } finally {
       await page.context().close();
     }
@@ -228,11 +248,14 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
   it('keeps the contact details and leaves out controls that only work on screen', async () => {
     const page = await openSite(browser, []);
     try {
+      // On screen, the form says it cannot be sent yet.
+      expect(await page.locator('.so-form__status', { hasText: NOT_CONNECTED }).isVisible()).toBe(true);
       // Controls from an author's own component: a form's submit, reset and typeless buttons, which do nothing on
       // paper, and a button whose label is a contact detail it copies, which a handout keeps.
       await page.evaluate(`(() => {
         const own = document.createElement('div');
-        own.innerHTML = '<form><input type="submit" value="Send the request"><button type="reset">Clear the request</button><button>Request a callback</button></form>'
+        own.innerHTML = '<form><input type="submit" value="Send the request"><button type="submit">Submit the request</button><button type="reset">Clear the request</button>'
+          + '<input type="reset" value="Reset the request"><button>Request a callback</button></form>'
           + '<button type="button" aria-label="Copy email address">studio@example.com</button>';
         document.querySelector('.so-foundation-layout-section__root p').after(own);
       })()`);
@@ -240,14 +263,15 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       for (const value of [...CONTACT_VALUES, 'studio@example.com']) expect(text, value).toContain(squash(value));
       for (const field of FIELDS) expect(text, field).toContain(squash(field));
       for (const plan of PLANS) expect(text, plan.action).toContain(squash(plan.action));
-      for (const control of [SUBMIT, HEADER_ACTION, 'Send the request', 'Clear the request', 'Request a callback', 'Open menu', 'Skip to content', 'This form is not connected to a form service yet', 'Leave this field empty'])
+      const controls = [SUBMIT, HEADER_ACTION, 'Send the request', 'Submit the request', 'Clear the request', 'Reset the request', 'Request a callback', 'Open menu', NOT_CONNECTED];
+      for (const control of controls)
         expect(text, control).not.toContain(squash(control));
     } finally {
       await page.context().close();
     }
   }, 60_000);
 
-  it('hides the menu button and an open phone menu, the FAQ toggle icons, the form actions and messages, and unsticks the header in print', async () => {
+  it('hides the menu button and an open phone menu, the skip link, the FAQ toggle icons, the form actions, messages and trap, and unsticks the header in print', async () => {
     const page = await openSite(browser, [], 390);
     try {
       await page.click('.so-header__toggle');
@@ -256,6 +280,10 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         const own = document.createElement('details');
         own.innerHTML = '<summary>Weekend visits <span class="so-icon" id="status-icon">✓</span></summary><p>By appointment.</p>';
         document.querySelector('.so-foundation-layout-section__root p').after(own);
+        // A project's copy of the FAQ, whose classes start with the copy's own name.
+        const copy = document.createElement('details');
+        copy.innerHTML = '<summary>Parking <span class="so-icon so-proj-faq-copy__toggle-icon" id="copy-icon">+</span></summary><p>On Harbour Lane.</p>';
+        own.after(copy);
       })()`);
       const styles = () =>
         page.evaluate<Record<string, string>>(`(() => {
@@ -264,7 +292,10 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
             toggle: display('.so-header__toggle'),
             nav: display('.so-header__nav'),
             icons: display('.so-foundation-faq-list__toggle-icon'),
+            copyIcon: display('#copy-icon'),
             status: display('#status-icon'),
+            skip: display('.so-skip-link'),
+            trap: display('.so-form__trap'),
             formActions: display('.so-form__actions'),
             formMessages: display('.so-form__messages'),
             header: getComputedStyle(document.querySelector('.so-header')).position
@@ -275,16 +306,30 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(screen.toggle).not.toBe('none');
       expect(screen.nav).not.toBe('none');
       expect(screen.icons.split(',')).not.toContain('none');
+      expect(screen.copyIcon).not.toBe('none');
       expect(screen.status).not.toBe('none');
+      expect(screen.skip).not.toBe('none');
       expect(screen.formActions).not.toBe('none');
       expect(screen.formMessages).not.toBe('none');
       expect(screen.header).toBe('sticky');
       await page.emulateMedia({ media: 'print' });
-      expect(await styles()).toEqual({ toggle: 'none', nav: 'none', icons: 'none,none,none,none', status: screen.status, formActions: 'none', formMessages: 'none', header: 'static' });
+      expect(await styles()).toEqual({
+        toggle: 'none',
+        nav: 'none',
+        icons: 'none,none,none,none',
+        copyIcon: 'none',
+        status: screen.status,
+        skip: 'none',
+        trap: 'none',
+        formActions: 'none',
+        formMessages: 'none',
+        header: 'static'
+      });
       const text = squash((await print(page)).join('\n'));
       expect(text).not.toContain(squash(HEADER_ACTION));
       expect(text).toContain(squash(QUESTIONS[3][1]));
       expect(text).toContain(squash('By appointment.'));
+      expect(text).toContain(squash('On Harbour Lane.'));
     } finally {
       await page.context().close();
     }
@@ -303,6 +348,9 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(first).toHaveLength(1);
       expect(end).toHaveLength(1);
       expect(end[0]).toBeGreaterThan(first[0]);
+      // Every sentence, once, in order, across the sheets.
+      const numbers = [...squash(sheets.join('\n')).matchAll(/Sentence(\d+)ofalonganswer/g)].map((m) => Number(m[1]));
+      expect(numbers).toEqual(Array.from({ length: 90 }, (_, i) => i + 1));
       expect(await openStates(page)).toEqual(expected([]));
     } finally {
       await page.context().close();
@@ -352,7 +400,8 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
   }, 60_000);
 
   it.each(SECTIONS)('keeps plans, the form, questions and headings whole on a sheet as a page break moves through %s', async (_name, root) => {
-    const page = await openSite(browser, []);
+    // One question open and the rest closed, as a visitor might leave them.
+    const page = await openSite(browser, [1]);
     try {
       // Pushes the section down in steps of a few lines, through a whole sheet, so a page boundary crosses each part.
       for (let shift = 0; shift < 1080; shift += 40) {
@@ -380,6 +429,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
           expect(sheetsWith(sheets, heading), `${heading} ${at}`).toHaveLength(1);
           expect(sheetsWith(sheets, first), `${heading} ${at}`).toEqual(sheetsWith(sheets, heading));
         }
+        expect(sheetsWith(sheets, PLAIN_MORE), `${PLAIN_MORE} ${at}`).toHaveLength(1);
       }
     } finally {
       await page.context().close();
@@ -404,7 +454,7 @@ describe.each(ENGINES.filter(([name]) => name === 'webkit'))('printing a Foundat
   it('shows every FAQ answer under print media with only the first question open, and keeps that state', async () => {
     const page = await openSite(browser, [0]);
     try {
-      const visible = () => page.evaluate<boolean[]>("[...document.querySelectorAll('details > p')].map((p) => p.checkVisibility() && p.getBoundingClientRect().height > 0)");
+      const visible = () => page.evaluate<boolean[]>("[...document.querySelectorAll('details > p')].map((p) => p.checkVisibility({ visibilityProperty: true, opacityProperty: true }) && p.getBoundingClientRect().height > 0)");
       expect(await visible()).toEqual(expected([0]));
       await page.emulateMedia({ media: 'print' });
       expect(await visible()).toEqual(QUESTIONS.map(() => true));
