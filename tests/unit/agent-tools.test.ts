@@ -782,6 +782,17 @@ describe('selection tools', () => {
     expect(nodeAt(session.state, 0).overrides?.root?.base).toBeUndefined();
   });
 
+  it('sets a cropped image’s focal point for one screen size (#166)', async () => {
+    const { session, adapter, run } = await setup(
+      [() => [call('f1', 'style_selected_element', { partId: 'media', scope: 'phone', styles: [{ property: 'aspectRatio', value: '16/9' }, { property: 'objectPosition', value: '50% 20%' }] })], () => finish()],
+      focused
+    );
+    const hero = nodeAt(session.state, 0);
+    await run('Keep her face in view on phones', { ...heroRef(session.state), instancePath: [hero.id], nodeId: 'media', partId: 'media' });
+    expect(adapter.requests[0].tools.find((t) => t.name === 'style_selected_element')?.description).toContain('"X% Y%"');
+    expect(nodeAt(session.state, 0).overrides?.media).toEqual({ phone: { aspectRatio: '16/9', objectPosition: '50% 20%' } });
+  });
+
   it('edits a plain text element through the same tool', async () => {
     const { session, run } = await setup([() => [call('t1', 'update_selected_props', { props: { text: 'Hello there' } })], () => finish()], focused, 'blank');
     const home = pageAt(session.state, '/')!;

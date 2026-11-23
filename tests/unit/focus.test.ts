@@ -2,12 +2,16 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EditOperation, InstanceNode, ProjectState } from '@shared/types';
-import { coverCrop, cropAxis, describeFocus, focusFromPoint, formatFocus, parseFocus, parseRatio } from '@shared/focus';
-import { MEDIA_QUERIES, styleToCss, validateStyleValue } from '@shared/styles';
+import type { InstanceNode, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
+import { cascadedStyle, coverCrop, cropAxis, describeFocus, focusFromPoint, formatFocus, parseFocus, parseRatio } from '@shared/focus';
+import { MEDIA_QUERIES, partStyleControls, styleToCss, validateStyleValue } from '@shared/styles';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { generateComponentsCss, generateSiteCss, overrideClass } from '@generator/index';
+import { componentDetail } from '@agent/context';
+import { executeTool, type ToolHost } from '@agent/tools';
+import { selectionTarget, selectionTools } from '@agent/selection';
 import { ProjectSession } from '../../src/main/project/session';
 
 const fresh = () => createStarterState('business', 'Focus Studio', false);
@@ -113,6 +117,66 @@ describe('the crop a focal point gives', () => {
   });
 });
 
+describe('where Image focus is offered', () => {
+  it('adds it after the aspect ratio of every image part that can be cropped, in components a project already has', () => {
+    const s = fresh();
+    const def = (componentId: string) => Object.values(s.components).find((d) => d.componentId === componentId)!;
+    // The stored list is what the issue saw: no focus control.
+    expect(def('hero.split').parts.media.styleControls).toEqual(['aspectRatio', 'radius', 'shadow']);
+    expect(partStyleControls(def('hero.split'), 'media')).toEqual(['aspectRatio', 'objectPosition', 'radius', 'shadow']);
+    expect(partStyleControls(def('content.media'), 'media')).toContain('objectPosition');
+    expect(partStyleControls(def('media.gallery'), 'image')).toEqual(['aspectRatio', 'objectPosition', 'radius']);
+    expect(partStyleControls(def('team.grid'), 'portrait')).toEqual(['aspectRatio', 'objectPosition', 'radius']);
+  });
+
+  it('leaves other parts as they are', () => {
+    const s = fresh();
+    const hero = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
+    expect(partStyleControls(hero, 'heading')).toEqual(hero.parts.heading.styleControls);
+    expect(partStyleControls(hero, 'missing')).toBeUndefined();
+    // An image part with no aspect ratio to crop to, or one that already offers focus, is unchanged.
+    const media = { ...hero.parts.media, styleControls: ['radius'] };
+    expect(partStyleControls({ ...hero, parts: { ...hero.parts, media } }, 'media')).toEqual(['radius']);
+    const offered = { ...hero.parts.media, styleControls: ['objectPosition', 'aspectRatio'] };
+    expect(partStyleControls({ ...hero, parts: { ...hero.parts, media: offered } }, 'media')).toEqual(['objectPosition', 'aspectRatio']);
+  });
+
+  it('tells the AI about the control and the grammar', async () => {
+    const s = fresh();
+    const hero = Object.values(s.components).find((d) => d.componentId === 'hero.split')!;
+    expect(componentDetail(hero).parts.media.styleControls).toContain('objectPosition');
+    const host = { state: () => s, revision: () => 1 } as unknown as ToolHost;
+    const read = await executeTool('read_project', '{}', host, 'c1');
+    const focus = (read.content as { styleProperties: string[] }).styleProperties.find((p) => p.startsWith('objectPosition'));
+    expect(focus).toContain('"X% Y%"');
+    const inst = instanceOf(s, 'Home', 'hero.split');
+    const tools = selectionTools(s, selectionTarget({ owner: ownerOf(s, 'Home'), instancePath: [inst.id], nodeId: 'media', partId: 'media' }));
+    expect(tools?.find((t) => t.name === 'style_selected_element')?.description).toContain('"X% Y%"');
+  });
+});
+
+describe('the rules a crop is worked out from', () => {
+  const placement = { phone: { objectPosition: '50% 10%' } };
+  it('takes a stronger tier over a weaker one, whatever its screen size', () => {
+    // A selected variant's all-sizes rule beats the design's phone rule: its selector is more specific.
+    expect(cascadedStyle([[undefined], [{ base: { aspectRatio: '16/9' } }], [{ phone: { aspectRatio: '1/1' }, base: { aspectRatio: '4/5' } }]], 'phone', 'aspectRatio')).toBe('16/9');
+    // The placement's own all-sizes value beats a variant's phone value.
+    expect(cascadedStyle([[{ base: { aspectRatio: '3/2' } }], [{ phone: { aspectRatio: '16/9' } }]], 'phone', 'aspectRatio')).toBe('3/2');
+  });
+
+  it('within a tier, takes the size over all sizes and a later layer over an earlier one', () => {
+    expect(cascadedStyle([[placement], [{ base: { objectPosition: 'top' } }]], 'phone', 'objectPosition')).toBe('50% 10%');
+    expect(cascadedStyle([[placement], [{ base: { objectPosition: 'top' } }]], 'tablet', 'objectPosition')).toBe('top');
+    expect(cascadedStyle([[{ base: { aspectRatio: '1/1' } }, { base: { aspectRatio: '3/2' } }]], 'desktop', 'aspectRatio')).toBe('3/2');
+    expect(cascadedStyle([[{ phone: { aspectRatio: '1/1' } }, { base: { aspectRatio: '3/2' } }]], 'phone', 'aspectRatio')).toBe('1/1');
+  });
+
+  it('skips a value the export would drop', () => {
+    const tiers = [[{ phone: { objectPosition: '50% 10%; color: red' } }], [{ base: { objectPosition: 'bottom' } }]];
+    expect(cascadedStyle(tiers, 'phone', 'objectPosition', (v) => parseFocus(v) !== null)).toBe('bottom');
+  });
+});
+
 describe('a focal point on one placement', () => {
   it('exports a portrait-to-landscape crop for phones on that hero only', () => {
     const s = fresh();
@@ -157,25 +221,33 @@ describe('undoing a focal point', () => {
   const dirs: string[] = [];
   afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-  it('takes a run of nudges back in one step and rewrites the exported stylesheet', async () => {
+  it('takes back one drag at a time and rewrites the exported stylesheet', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'so-focus-'));
     dirs.push(dir);
     const session = await ProjectSession.create(dir, fresh());
     const hero = instanceOf(session.state, 'Home', 'hero.split');
     const siteCss = () => readFileSync(join(dir, 'src/lib/siteorigin/styles/site.css'), 'utf8');
+    const media = () => instanceOf(session.state, 'Home', 'hero.split').overrides?.media;
     await session.apply({ operations: [setStyle(session.state, 'Home', hero, 'media', 'phone', 'aspectRatio', '16/9')] }, { label: 'Style Image' });
-    // Dragging or holding an arrow key sends a run of edits under one key: they make one history entry.
-    for (const y of [45, 40, 30, 20]) {
-      const r = await session.apply({ operations: [setStyle(session.state, 'Home', hero, 'media', 'phone', 'objectPosition', `50% ${y}%`)] }, { label: 'Style Image', coalesceKey: `${hero.id}:media:phone:objectPosition` });
+    // Two drags in quick succession, each committed on release with no history key (as the inspector sends them).
+    for (const y of [30, 20]) {
+      const r = await session.apply({ operations: [setStyle(session.state, 'Home', hero, 'media', 'phone', 'objectPosition', `50% ${y}%`)], expectedRevision: session.revision }, { label: 'Style Image' });
       expect(r.ok).toBe(true);
     }
     expect(siteCss()).toContain('object-position: 50% 20%');
     await session.undo();
-    expect(instanceOf(session.state, 'Home', 'hero.split').overrides?.media).toEqual({ phone: { aspectRatio: '16/9' } });
+    expect(media()).toEqual({ phone: { aspectRatio: '16/9', objectPosition: '50% 30%' } });
+    expect(siteCss()).toContain('object-position: 50% 30%');
+    await session.undo();
+    expect(media()).toEqual({ phone: { aspectRatio: '16/9' } });
     expect(siteCss()).not.toContain('object-position');
     expect(siteCss()).toContain('aspect-ratio: 16/9');
+    // A drag started before an Undo is refused when it lands: it was planned against a project that moved on.
+    const stale = await session.apply({ operations: [setStyle(session.state, 'Home', hero, 'media', 'phone', 'objectPosition', '50% 90%')], expectedRevision: session.revision - 1 }, { label: 'Style Image' });
+    expect(stale.ok).toBe(false);
+    expect(media()).toEqual({ phone: { aspectRatio: '16/9' } });
     await session.redo();
-    expect(siteCss()).toContain('object-position: 50% 20%');
+    expect(siteCss()).toContain('object-position: 50% 30%');
     await session.close();
   });
 });

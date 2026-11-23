@@ -2,7 +2,7 @@ import type { AssetRecord, ComponentDefinition, ElementRef, ImageValue, NodeTree
 import { isBinding } from '@shared/types';
 import { isRichBlock, richTextToPlain } from '@shared/richtext';
 import { childLists, headerMenu } from '@engine/tree';
-import { listPropFor, refLabel, resolveRef } from './model';
+import { boundValue, refLabel, resolveRef } from './model';
 
 /**
  * The starters offered in an empty AI conversation. Each is chosen from what the project holds right now (the page
@@ -311,31 +311,6 @@ function createPageStarter(state: ProjectState): string | null {
 // Starters for a selection
 // ---------------------------------------------------------------------------
 
-/**
- * A value a node takes from its component's properties, read where the component is placed: the placement's own
- * value, else the component's default, and for a repeated item's field the selected item's. Unknown when it cannot
- * be told (a value the placement itself takes from an enclosing component, or an item that is gone).
- */
-function resolved(r: ReturnType<typeof resolveRef>, ref: ElementRef, v: unknown): { known: true; value: unknown } | { known: false } {
-  if (!isBinding(v)) return { known: true, value: v };
-  const { instance, def } = r;
-  if (!instance || !def) return { known: false };
-  const props = instance.props ?? {};
-  let value: unknown;
-  if ('$prop' in v) value = Object.hasOwn(props, v.$prop) ? props[v.$prop] : own(def.properties, v.$prop)?.default;
-  else {
-    const listProp = listPropFor(def, ref.nodeId);
-    const schema = listProp ? own(def.properties, listProp) : undefined;
-    const itemId = ref.itemPath?.[ref.itemPath.length - 1];
-    if (!listProp || schema?.type !== 'list' || !itemId) return { known: false };
-    const items = Object.hasOwn(props, listProp) ? props[listProp] : schema.default;
-    const item = Array.isArray(items) ? (items.find((i) => i && typeof i === 'object' && (i as { id?: unknown }).id === itemId) as Record<string, unknown> | undefined) : undefined;
-    if (!item) return { known: false };
-    value = Object.hasOwn(item, v.$item) ? item[v.$item] : schema.fields[v.$item]?.default;
-  }
-  return isBinding(value) ? { known: false } : { known: true, value };
-}
-
 function selectionStarters(input: SuggestionInput, ref: ElementRef): ChatSuggestion[] | null {
   const { state } = input;
   let r: ReturnType<typeof resolveRef>;
@@ -353,11 +328,11 @@ function selectionStarters(input: SuggestionInput, ref: ElementRef): ChatSuggest
   const out: string[] = [];
 
   if (n.kind === 'text') {
-    const t = resolved(r, ref, n.text);
+    const t = boundValue(r, ref, n.text);
     if (t.known && !plainOf(t.value).trim()) out.push(`Write the text for ${the}${where}`, `Suggest three ways to write ${the}${where}`);
     else out.push(`Rewrite ${the}${where} to sound warmer and more confident`, `Make ${the}${where} shorter and easier to scan`, `Suggest three other ways to write ${the}${where}`);
   } else if (n.kind === 'link') {
-    const link = resolved(r, ref, n.link);
+    const link = boundValue(r, ref, n.link);
     const target = link.known && link.value && typeof link.value === 'object' ? (link.value as { type?: string; target?: string }) : null;
     const dest = target?.type === 'page' && target.target ? own(state.pages, target.target) : undefined;
     const other = state.site.pageOrder.map((id) => own(state.pages, id)).find((p): p is PageDoc => !!p && p.id !== (ref.owner.kind === 'page' ? ref.owner.id : ''));
@@ -365,7 +340,7 @@ function selectionStarters(input: SuggestionInput, ref: ElementRef): ChatSuggest
     else if (target && (target.type === 'none' || !target.target) && other) out.push(`Link ${the}${where} to the ${pageName(state, other)} page and word it to match`);
     out.push(`Rewrite ${the}${where} to sound warmer and more confident`, `Make ${the}${where} shorter and easier to scan`);
   } else if (n.kind === 'image') {
-    const v = resolved(r, ref, n.image);
+    const v = boundValue(r, ref, n.image);
     const slot = v.known ? slotOf(state, v.value) : null;
     const others = imageAssets(state).filter((a) => a.id !== slot?.asset?.id);
     if (v.known && !slot?.asset) out.push(others.length ? `Choose an image for ${the}${where} from my images` : `Suggest what kind of photo suits ${the}${where}`);

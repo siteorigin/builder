@@ -2,7 +2,9 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef } from '@shared/types';
 import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, type StylePropDef } from '@shared/styles';
+import { cascadedStyle, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
+import { FocusEditor, type FocusImage } from './FocusEditor';
 import { DraftInput } from '../components/ui';
 import { setState, useStore } from '../store';
 
@@ -171,13 +173,15 @@ export function StyleControls({
   onReset,
   resetLabel,
   target,
-  designSizesWin
+  designSizesWin,
+  image
 }: {
   styles: ResponsiveStyles | undefined;
   inherited: ResponsiveStyles | undefined;
   allowed?: string[];
   tokens: TokenDef[];
-  onSet: (prop: string, value: StyleValue | null) => void;
+  /** `expectedRevision`: the change applies only to the project as it was then (a drag started there). */
+  onSet: (prop: string, value: StyleValue | null, expectedRevision?: number) => void;
   /** Clears this element's changes: at one size when a size is given, otherwise at every size. */
   onReset?: (scope?: ResponsiveScope) => void;
   /** Replaces the every-size reset's wording (for example, "Restore original design"). */
@@ -189,6 +193,8 @@ export function StyleControls({
    * one size then win over a change made for All sizes, as they do on the page.
    */
   designSizesWin?: boolean;
+  /** For an image: the picture Image focus is chosen on, and the rules under these styles. */
+  image?: FocusImage;
 }) {
   const scope = useStore((s) => s.styleScope);
   const viewport = useStore((s) => s.viewport);
@@ -307,8 +313,23 @@ export function StyleControls({
             ))}
           </div>
         )}
+        {p.kind === 'focus' && focusEditor(p, label, value)}
       </div>
     );
+  };
+
+  // The crop a focal point is chosen in: the size being edited, or the previewed one under All sizes, worked
+  // out the way the exported site applies the rules.
+  const focusEditor = (p: StylePropDef, label: string, value: StyleValue | undefined) => {
+    const size = scope === 'base' ? preview : scope;
+    const below = image?.below ?? (inherited ? [[inherited]] : []);
+    const tiers = [[styles], ...below];
+    const ratio = parseRatio(cascadedStyle(tiers, size, 'aspectRatio', (v) => v === 'auto' || parseRatio(v) !== null));
+    const fit = cascadedStyle(tiers, size, 'objectFit');
+    // What shows through when nothing is set here: this element's all-sizes value when a size is being
+    // edited, then whatever lies under it.
+    const under = cascadedStyle([[scope === 'base' ? undefined : { base: styles?.base }], ...below], size, p.id, (v) => parseFocus(v) !== null);
+    return <FocusEditor label={label} value={value} under={under} scope={scope} size={size} ratio={ratio} fit={fit} image={image} onSet={(v, rev) => onSet(p.id, v, rev)} />;
   };
 
   const group = (g: StylePropDef['group'], list: StylePropDef[]) => (
@@ -457,7 +478,7 @@ function Control({
       </select>
     );
   }
-  if (def.kind === 'enum' || def.kind === 'ratio') {
+  if (def.kind === 'enum' || def.kind === 'ratio' || def.kind === 'focus') {
     return (
       <select className={`select sm grow style-select${state}`} value={set ? String(value) : ''} onChange={(e) => onSet(e.target.value === '' ? null : e.target.value)} aria-label={label} aria-describedby={describedBy}>
         {ghost}

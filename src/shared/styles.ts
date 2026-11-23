@@ -1,5 +1,5 @@
 import { isFocusValue } from './focus';
-import type { StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import type { ComponentDefinition, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 
 /**
  * The finite set of visual style properties the editor and AI can set.
@@ -160,6 +160,20 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
     default:
       return undefined;
   }
+}
+
+/**
+ * The style controls a component part offers: the part's own list, plus Image focus on an image it lets authors
+ * crop to an aspect ratio. Derived rather than stored, so components already in a project offer it too.
+ */
+export function partStyleControls(def: Pick<ComponentDefinition, 'parts' | 'tree'>, partId: string): string[] | undefined {
+  const part = Object.hasOwn(def.parts, partId) ? def.parts[partId] : undefined;
+  const list = part?.styleControls;
+  if (!part || !list?.length) return list;
+  const node = def.tree && Object.hasOwn(def.tree.nodes, part.nodeId) ? def.tree.nodes[part.nodeId] : undefined;
+  const at = list.indexOf('aspectRatio');
+  if (node?.kind !== 'image' || at < 0 || list.includes('objectPosition')) return list;
+  return [...list.slice(0, at + 1), 'objectPosition', ...list.slice(at + 1)];
 }
 
 export const STYLE_GROUP_LABELS: Record<StylePropDef['group'], string> = {

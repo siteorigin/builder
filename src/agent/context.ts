@@ -1,6 +1,7 @@
 import { axesOf, selectedVariants } from '@shared/variants';
 import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { partStyleControls } from '@shared/styles';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
 import { displayName } from '@engine/tree';
 import { TABLE_LIMITS } from '@engine/table';
@@ -214,7 +215,7 @@ export function componentDetail(def: ComponentDefinition) {
     kind: def.kind,
     owner: def.owner,
     properties: propSchemaSummary(def.properties),
-    parts: Object.fromEntries(Object.entries(def.parts).map(([k, p]) => [k, { label: p.label, styleControls: p.styleControls ?? [] }])),
+    parts: Object.fromEntries(Object.entries(def.parts).map(([k, p]) => [k, { label: p.label, styleControls: partStyleControls(def, k) ?? [] }])),
     variantAxes: Object.fromEntries(axesOf(def).map(([axis, a]) => [axis, { label: a.label, default: a.default, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, v.label])) }])),
     slots: def.slots ?? {},
     examples: def.examples ?? []

@@ -4,6 +4,8 @@
  * style list offers or "X% Y%" across and down the picture, and reaches the exported site as `object-position`.
  */
 
+import type { ResponsiveStyles, StyleValue } from './types';
+
 export interface FocalPoint {
   /** Percent across the picture, 0 at the left edge. */
   x: number;
@@ -115,4 +117,28 @@ export function describeFocus(p: FocalPoint): string {
   const n = normalizeFocus(p);
   if (n.x === 50 && n.y === 50) return 'Center';
   return `${n.x}% from the left, ${n.y}% from the top`;
+}
+
+/**
+ * A style value as the exported site applies it at one screen size, from layers of rules grouped in tiers,
+ * strongest tier first: a placement's own styles, then the selected variants (in axis order), then the design.
+ * A stronger tier wins outright, since its selectors are more specific or load later. Within a tier the rules
+ * share specificity, so a rule for the size beats one for all sizes, and a later layer beats an earlier one.
+ */
+export function cascadedStyle(
+  tiers: Array<Array<ResponsiveStyles | undefined>>,
+  size: 'phone' | 'tablet' | 'desktop',
+  prop: string,
+  /** Values the export writes; anything else is skipped there, so it is skipped here too. */
+  valid: (v: StyleValue) => boolean = () => true
+): StyleValue | undefined {
+  for (const tier of tiers) {
+    for (const scope of [size, 'base'] as const) {
+      for (let i = tier.length - 1; i >= 0; i--) {
+        const v = tier[i]?.[scope]?.[prop];
+        if (v !== undefined && valid(v)) return v;
+      }
+    }
+  }
+  return undefined;
 }
