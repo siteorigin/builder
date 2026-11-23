@@ -42,6 +42,10 @@ const assetToken = (name: string) => name.match(ASSET_TOKEN_RE)?.[1] ?? name;
 const MENTION_CACHE_LIMIT = 200_000;
 /** Project files are searched this much at a time, so a file of any size can be searched. */
 const SEARCH_CHUNK = 1024 * 1024;
+/** Folders that are not the project's own work: tools, caches, history and builds. */
+const NOT_SEARCHED = new Set(['node_modules', '.git', LOCAL_DIR, '.svelte-kit', 'build']);
+/** The ordinary sweep searches files up to this size, so a large video never holds up a save. */
+const SWEEP_SEARCH_LIMIT = 32 * 1024 * 1024;
 
 /** The files in static/assets/, with what still needs each (see assetInventory). */
 interface AssetInventory {
@@ -62,6 +66,7 @@ interface AssetFile {
   name: string;
   bytes: number;
   mtimeMs: number;
+  ino: number;
   token: string;
 }
 
@@ -1472,12 +1477,20 @@ export class ProjectSession extends EventEmitter {
   private async collectAssets() {
     const inv = await this.assetInventory(this.history, 'sweep');
     if (!inv) return;
-    for (const f of inv.files) {
-      if (!inv.unneeded(f)) continue;
-      // Only the file the inventory looked at: one written since (by another app) is new, and waits its own turn.
-      const st = await fs.lstat(join(inv.dir, f.name)).catch(() => null);
-      if (!st?.isFile() || st.mtimeMs !== f.mtimeMs || st.size !== f.bytes || Date.now() - st.mtimeMs < ASSET_GRACE_MS) continue;
-      await fs.rm(join(inv.dir, f.name), { force: true });
+    for (const f of inv.files) if (inv.unneeded(f) && Date.now() - f.mtimeMs >= ASSET_GRACE_MS && (await this.sameAssetFile(inv.dir, f))) await fs.rm(join(inv.dir, f.name), { force: true });
+  }
+
+  /**
+   * Whether `f` is still the very file an inventory saw, in the project's own static/assets/ folder: a file written
+   * since (by another app) is new and waits its own turn, and a folder swapped for a link is never deleted from.
+   */
+  private async sameAssetFile(dir: string, f: AssetFile): Promise<boolean> {
+    try {
+      if (safeJoin(this.dir, 'static/assets') !== dir || !(await fs.lstat(dir)).isDirectory()) return false;
+      const st = await fs.lstat(join(dir, f.name));
+      return st.isFile() && st.ino === f.ino && st.size === f.bytes && st.mtimeMs === f.mtimeMs;
+    } catch {
+      return false;
     }
   }
 
@@ -1520,13 +1533,14 @@ export class ProjectSession extends EventEmitter {
     return tokens.filter((t) => known!.get(t));
   }
 
-  /** Which of `tokens` the project file `rel` holds; null when it could not be read. */
-  private async namedInFile(rel: string, tokens: string[]): Promise<string[] | null> {
+  /** Which of `tokens` the project file `rel` holds; null when it could not be read. One over `limit` is not searched. */
+  private async namedInFile(rel: string, tokens: string[], limit = Infinity): Promise<string[] | null> {
     const abs = join(this.dir, rel);
     const gone = (e: unknown) => ((e as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null);
     let stamp: string;
     try {
       const st = await fs.stat(abs);
+      if (st.size > limit) return [];
       stamp = `${st.size}:${st.mtimeMs}:${st.ctimeMs}:${st.ino}`;
     } catch (e) {
       return gone(e);
@@ -1549,11 +1563,11 @@ export class ProjectSession extends EventEmitter {
 
   /**
    * Which of `tokens` the project names as it is now: any of its documents in memory, the version on disk of a
-   * document held in conflict, and any file in its documents (siteorigin/), source (src/) and public files (static/,
-   * leaving out the imported files themselves), whatever kind of file it is. Links are not followed. Anything that
-   * cannot be read is taken to name them all.
+   * document held in conflict, and any file in the project folder, whatever kind of file it is, except its tools,
+   * caches, history and builds (NOT_SEARCHED) and the imported files themselves. Links are not followed. Anything
+   * that cannot be read is taken to name them all. Files over `limit` are not searched.
    */
-  private async namedNow(tokens: string[]): Promise<Set<string>> {
+  private async namedNow(tokens: string[], limit = Infinity): Promise<Set<string>> {
     const found = new Set<string>();
     const look = (text: string | null) => {
       if (text) for (const t of tokens) if (!found.has(t) && text.includes(t)) found.add(t);
@@ -1579,16 +1593,17 @@ export class ProjectSession extends EventEmitter {
       for (const e of entries) {
         const open = tokens.filter((t) => !found.has(t));
         if (!complete || !open.length) return;
-        const child = `${rel}/${e.name}`;
-        if (e.isDirectory()) await walk(child);
-        else if (e.isFile() && !(rel === 'static/assets' && IMPORTED_ASSET_RE.test(e.name))) {
-          const hits = await this.namedInFile(child, open);
+        const child = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) {
+          if (!NOT_SEARCHED.has(e.name)) await walk(child);
+        } else if (e.isFile() && !(rel === 'static/assets' && IMPORTED_ASSET_RE.test(e.name))) {
+          const hits = await this.namedInFile(child, open, limit);
           if (hits) hits.forEach((t) => found.add(t));
           else complete = false;
         }
       }
     };
-    for (const root of [DOC_DIR, 'src', 'static']) await walk(root);
+    await walk('');
     return complete ? found : new Set(tokens);
   }
 
@@ -1611,7 +1626,7 @@ export class ProjectSession extends EventEmitter {
     const files: AssetFile[] = [];
     for (const name of await fs.readdir(dir).catch(() => [] as string[])) {
       const st = await fs.lstat(join(dir, name)).catch(() => null);
-      if (st?.isFile()) files.push({ name, bytes: st.size, mtimeMs: st.mtimeMs, token: assetToken(name) });
+      if (st?.isFile()) files.push({ name, bytes: st.size, mtimeMs: st.mtimeMs, ino: st.ino, token: assetToken(name) });
     }
     // The library names its files outright; only the other imported files need a closer look.
     const library = new Set([...libraryFiles(this.docs.get(ASSETS_DOC)), ...libraryFiles(await this.diskContent(ASSETS_DOC))]);
@@ -1629,7 +1644,7 @@ export class ProjectSession extends EventEmitter {
       for (const [i, e] of h.entries.entries()) for (const b of entryBlobs(e)) for (const t of await this.namedIn(b, tokens)) byEntry[i].add(t);
       const kept = (t: string) => pinned.has(t) || byEntry.some((s) => s.has(t));
       const ask = mode === 'storage' ? tokens : [...new Set(candidates.filter((f) => !kept(f.token) && now - f.mtimeMs >= ASSET_GRACE_MS).map((f) => f.token))];
-      if (ask.length) current = await this.namedNow(ask);
+      if (ask.length) current = await this.namedNow(ask, mode === 'sweep' ? SWEEP_SEARCH_LIMIT : Infinity);
     }
     const inHistory = (t: string) => byEntry.some((s) => s.has(t));
     const inUse = (f: AssetFile) => listed(f) || current.has(f.token);
@@ -1748,7 +1763,7 @@ export class ProjectSession extends EventEmitter {
             if ((e as NodeJS.ErrnoException).code !== 'ENOENT') failed++;
           }
         };
-        for (const f of drop.files) if (!named.has(f.token)) await remove(join(drop.dir, f.name), f.bytes);
+        for (const f of drop.files) if (!named.has(f.token) && (await this.sameAssetFile(drop.dir, f))) await remove(join(drop.dir, f.name), f.bytes);
         for (const [b, bytes] of drop.blobs) await remove(this.local('history', 'blobs', `${b}.json`), bytes);
         return { ok: true, freed, ...(failed ? { message: `${failed === 1 ? 'One file' : `${failed} files`} could not be deleted yet. ${failed === 1 ? 'It is' : 'They are'} removed automatically later.` } : {}) };
       });

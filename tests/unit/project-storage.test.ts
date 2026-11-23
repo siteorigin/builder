@@ -4,7 +4,7 @@
  * only the dropped steps could bring back.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
@@ -177,9 +177,12 @@ describe('project storage', () => {
     const { dir, s } = await make();
     const styled = image(dir, 'photo', '1a2b3c4d');
     const built = image(dir, 'third', 'eeeeffff');
+    const aliased = image(dir, 'hero', '99990000');
     const gone = image(dir, 'other', 'ccccdddd');
-    await add(s, [styled.asset, built.asset, gone.asset], 'Import 3 images');
-    await remove(s, [styled.asset, built.asset, gone.asset], 'Remove 3 images');
+    await add(s, [styled.asset, built.asset, aliased.asset, gone.asset], 'Import 4 images');
+    await remove(s, [styled.asset, built.asset, aliased.asset, gone.asset], 'Remove 4 images');
+    // Build configuration at the project's top level names one by an alias.
+    write(dir, 'vite.config.ts', `export default { resolve: { alias: { hero: '/static/assets/${aliased.files[0]}' } } };\n`);
     // A hand-written style sheet uses one small copy by its address; a caption file of a kind no list of text
     // extensions would name builds the other's address from its parts.
     write(dir, 'static/css/extra.css', `.hero { background: url(/assets/${styled.files[1]}); }\n`);
@@ -190,13 +193,13 @@ describe('project storage', () => {
     await site(s, { name: 'Unrelated' }, 'Unrelated edit');
 
     const info = await s.storageInfo();
-    expect(info.media.files).toBe(6);
+    expect(info.media.files).toBe(9);
     expect(info.kept.files).toBe(3);
     const plan = info.reclaim!;
-    expect(plan.undo).toEqual(['Import 3 images', 'Remove 3 images', 'Describe with image', 'Describe plainly']);
+    expect(plan.undo).toEqual(['Import 4 images', 'Remove 4 images', 'Describe with image', 'Describe plainly']);
     expect(plan.keptUndo).toBe(1);
     expect((await s.reclaimStorage(plan.key)).ok).toBe(true);
-    for (const f of [...styled.files, ...built.files]) expect(has(dir, f)).toBe(true);
+    for (const f of [...styled.files, ...built.files, ...aliased.files]) expect(has(dir, f)).toBe(true);
     for (const f of gone.files) expect(has(dir, f)).toBe(false);
     expect(labels(s)).toEqual(['Unrelated edit']);
     await ok(s.undo());
@@ -250,6 +253,22 @@ describe('project storage', () => {
     expect(labels(s)).toEqual([]);
     for (const f of files) expect(has(dir, f)).toBe(true);
     expect((await s.storageInfo()).media.files).toBe(3);
+  });
+
+  it('never deletes through a static/assets folder swapped for a link while the reclaim is under way', async () => {
+    const { dir, s } = await make();
+    const { asset, files } = image(dir, 'photo', '1a2b3c4d');
+    await add(s, [asset], 'Import image');
+    await remove(s, [asset], 'Remove image');
+    const { key } = (await s.storageInfo()).reclaim!;
+    const elsewhere = mkdtempSync(join(tmpdir(), 'so-elsewhere-'));
+    dirs.push(elsewhere);
+    s.once('history', () => {
+      renameSync(join(dir, ASSETS), join(elsewhere, 'assets'));
+      symlinkSync(join(elsewhere, 'assets'), join(dir, ASSETS));
+    });
+    expect((await s.reclaimStorage(key)).ok).toBe(true);
+    for (const f of files) expect(existsSync(join(elsewhere, 'assets', f))).toBe(true);
   });
 
   it('refuses while an AI run is open or an import is in progress', async () => {
