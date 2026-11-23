@@ -6,6 +6,7 @@ import { attachImage, chatStatePatch, draftFor, imagesFor, withDraft, type ChatD
 import { PANEL_DEFAULTS } from './lib/layout';
 import { draftCount, HELD_DRAFT, setDraft, trackApply, type ApplyOutcome } from './lib/pending';
 import { checkHeld, fieldKey, placeOf, readFields, shownField, typedText, whereOf } from './lib/held';
+import type { RevealedItem } from './lib/reveal';
 
 export const api = window.builder;
 
@@ -115,7 +116,10 @@ interface State {
   leftWidth: number;
   rightWidth: number;
   styleScope: ResponsiveScope;
-  rects: { selected: Rect[]; hovered: Rect[] };
+  /** `revealed`: the list item open in the inspector, outlined on the page (see revealedItem). */
+  rects: { selected: Rect[]; hovered: Rect[]; revealed: Rect[] };
+  /** The list item open in the inspector, revealed on the page while it is edited. Never saved. */
+  revealedItem: RevealedItem | null;
   pendingSave: number;
   modal: Modal;
   toasts: Toast[];
@@ -157,7 +161,8 @@ export const useStore = create<State>((set) => ({
   leftWidth: PANEL_DEFAULTS.left,
   rightWidth: PANEL_DEFAULTS.right,
   styleScope: 'base',
-  rects: { selected: [], hovered: [] },
+  rects: { selected: [], hovered: [], revealed: [] },
+  revealedItem: null,
   pendingSave: 0,
   modal: null,
   toasts: [],

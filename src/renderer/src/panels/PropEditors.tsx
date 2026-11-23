@@ -1,8 +1,11 @@
-import { createElement, Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { createElement, Fragment, useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, ImageOff, ImagePlus, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
-import { api, toast, useStore, type PendingEdit } from '../store';
+import { api, getState, setState, toast, useStore, type PendingEdit } from '../store';
+import { isImeComposing } from '../lib/ime';
+import type { ListPlace } from '../lib/reveal';
 import { DraftInput, Field, Switch, SwitchRow } from '../components/ui';
 import { isSettling } from '../lib/pending';
 import { announcementText } from '../lib/announce';
@@ -530,12 +533,12 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
  * The control for one scalar value. With `id`, a visible <label htmlFor> names it and `describedBy` points at
  * its hint; without, it names itself with aria-label.
  */
-export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean }) {
+export function ScalarEditor({ schema, value, onChange, state, label, id, describedBy, invalid, onLive }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; id?: string; describedBy?: string; invalid?: boolean; onLive?: (text: string) => void }) {
   const name = id ? undefined : (label ?? schema.label);
   const wired = { id, 'aria-describedby': describedBy, 'aria-invalid': invalid || undefined };
   switch (schema.type) {
     case 'string':
-      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} ariaLabel={name} />;
+      return <DraftInput {...wired} multiline={schema.multiline} rows={2} value={String(value ?? '')} onCommit={onChange} onLive={onLive} ariaLabel={name} />;
     case 'richtext':
       return (
         <DraftInput
@@ -582,7 +585,7 @@ export interface FieldAction {
  * titled card. `hint` replaces the schema's description and `error` replaces both, for text and link fields; a
  * link can also offer an `action` that fixes its problem.
  */
-export function ScalarField({ schema, value, onChange, state, label, hint, error, action }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction }) {
+export function ScalarField({ schema, value, onChange, state, label, hint, error, action, onLive }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => void; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void }) {
   const id = useId();
   const shown = label ?? schema.label;
   const note = hint ?? schema.description;
@@ -614,7 +617,7 @@ export function ScalarField({ schema, value, onChange, state, label, hint, error
     );
   return (
     <Field label={shown} hint={note} error={error} controlId={id}>
-      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} />
+      <ScalarEditor schema={schema} value={value} onChange={onChange} state={state} id={id} describedBy={note || error ? `${id}-note` : undefined} invalid={!!error} onLive={onLive} />
     </Field>
   );
 }
@@ -639,7 +642,7 @@ export type ListOp =
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, hint, annotate, linkPairs, error, action }: {
+export function PropField({ name, schema, value, onChange, onList, state, focusItem, label, hint, annotate, linkPairs, error, action, place }: {
   name: string;
   schema: PropSchema;
   value: unknown;
@@ -657,8 +660,10 @@ export function PropField({ name, schema, value, onChange, onList, state, focusI
   /** For a single field: a problem to show under it, and a fix for it. */
   error?: string;
   action?: FieldAction;
+  /** For a list: the placement it belongs to, so the item open here is revealed on the page (see lib/reveal). */
+  place?: ListPlace;
 }) {
-  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} annotate={annotate} linkPairs={linkPairs} />;
+  if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={(value as ListItem[]) ?? []} onList={onList} state={state} focusItem={focusItem} annotate={annotate} linkPairs={linkPairs} place={place} />;
   return <ScalarField schema={schema} value={value} onChange={onChange} state={state} label={label} hint={hint} error={error} action={action} />;
   void name;
 }
@@ -751,6 +756,65 @@ export function ContactMismatch({ text, link, onRepair }: { text: unknown; link:
   );
 }
 
+/** Who holds a revealed item between a part's inspector going and its section's list showing. */
+const HANDED_OVER = 'handed-over';
+
+/**
+ * Reveals a list item on the page while it is open in the inspector (see lib/reveal): its disclosure opened and
+ * outlined, and what is typed into its plain text fields shown there before it is saved. The item is claimed when it
+ * opens and whenever its fields take focus, and only its own claimant clears or changes it, so a second list opened
+ * later keeps the page. It is followed by its id through saves and moves. Spread `handlers` on the element holding
+ * the item's fields; `typed(field)` is a plain text field's live-text callback.
+ */
+export function useRevealedItem(place: ListPlace | undefined, item: ListItem | undefined) {
+  const owner = useId();
+  // Escape in a field cancels what was typed there: the page shows its own text again at once.
+  const cancelling = useRef<string | null>(null);
+  const itemId = place && item ? item.id : null;
+  const claim = () => {
+    if (!place || !itemId) return;
+    const r = getState().revealedItem;
+    if (r?.owner === owner && r.itemId === itemId && r.list === place.list && refKey(r.ref) === refKey(place.ref)) return;
+    setState({ revealedItem: { owner, ref: place.ref, list: place.list, itemId, draft: null } });
+  };
+  useEffect(() => {
+    claim();
+    return () => {
+      const r = getState().revealedItem;
+      if (r?.owner !== owner) return;
+      // On the way to the section the item belongs to, its list there takes the item over once it shows (see
+      // ListEditor), so the page keeps it open in between. Anything else ends the reveal now.
+      const sel = getState().selection;
+      if (place && sel && refKey(sel) === refKey(place.ref)) {
+        setState({ revealedItem: { ...r, owner: HANDED_OVER, draft: null, cancelled: undefined } });
+        setTimeout(() => getState().revealedItem?.owner === HANDED_OVER && setState({ revealedItem: null }), 1000);
+      } else setState({ revealedItem: null });
+    };
+  }, [place && refKey(place.ref), place?.list, itemId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const show = (draft: { field: string; text: string } | null, cancelled?: string) => {
+    const r = getState().revealedItem;
+    if (!itemId || r?.owner !== owner || r.itemId !== itemId) return;
+    const next = draft ? undefined : cancelled;
+    if (draft ? r.draft?.field === draft.field && r.draft.text === draft.text : !r.draft && r.cancelled === next) return;
+    setState({ revealedItem: { ...r, draft, cancelled: next } });
+  };
+  return {
+    typed: (field: string) => (itemId ? (text: string) => show({ field, text }) : undefined),
+    handlers: {
+      onFocus: claim,
+      // Typing ended: the page shows the saved text again once the save has arrived, or at once when it was cancelled.
+      onBlur: () => {
+        show(null, cancelling.current ?? undefined);
+        cancelling.current = null;
+      },
+      // A text field leaves on Escape, putting back what was saved (see DraftInput): the field typed in is cancelled.
+      onKeyDownCapture: (e: ReactKeyboardEvent) => {
+        if (e.key === 'Escape' && !isImeComposing(e) && (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement)) cancelling.current = getState().revealedItem?.draft?.field ?? null;
+      }
+    }
+  };
+}
+
 /**
  * A repeatable list. Focus follows the edit: a new item opens with its row focused, and removing an item moves
  * focus to the row that takes its place (or to Add when the list is empty). A moved item keeps focus on the button
@@ -758,8 +822,13 @@ export function ContactMismatch({ text, link, onRepair }: { text: unknown; link:
  * announced. The limits are stated where they bite: the count shows the maximum, and Add and Remove stay focusable
  * with the reason once the list is full or at its minimum.
  */
-function ListEditor({ name, schema, items, onList, state, focusItem, annotate, linkPairs }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => void; state: ProjectState; focusItem?: string; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; linkPairs?: LinkPairs }) {
-  const [open, setOpen] = useState<string | null>(null);
+function ListEditor({ name, schema, items, onList, state, focusItem, annotate, linkPairs, place }: { name: string; schema: ListProp; items: ListItem[]; onList: (op: ListOp) => void; state: ProjectState; focusItem?: string; annotate?: (item: ListItem, index: number) => ListItemNote | undefined; linkPairs?: LinkPairs; place?: ListPlace }) {
+  // Opens on the item of this list already revealed on the page (a part of it was selected, and the list is shown
+  // now), so the page keeps that item open while the list takes it over.
+  const [open, setOpen] = useState<string | null>(() => {
+    const r = getState().revealedItem;
+    return place && r && r.list === place.list && refKey(r.ref) === refKey(place.ref) && items.some((x) => x.id === r.itemId) ? r.itemId : null;
+  });
   const labelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const after = useRef<{ kind: 'added'; before: string[] } | { kind: 'removed'; focus: string | null } | { kind: 'moved'; id: string; direction: MoveDirection; index: number; from: number; title: string; at: number } | null>(null);
@@ -802,6 +871,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
     }
   }, [ids]); // eslint-disable-line react-hooks/exhaustive-deps
   const openId = focusItem ?? open;
+  const reveal = useRevealedItem(place, openId ? items.find((x) => x.id === openId) : undefined);
   const titleOf = (it: ListItem, i: number) => {
     const t = schema.titleField ? it[schema.titleField] : Object.values(it).find((v) => typeof v === 'string' && v && v !== it.id);
     return (typeof t === 'string' && t) || `${schema.itemLabel} ${i + 1}`;
@@ -863,7 +933,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
               </button>
             </div>
             {/* The controlled region always exists, so aria-controls resolves while the item is closed. */}
-            <div className="list-editor-body" id={`list-item-${it.id}`} hidden={openId !== it.id}>
+            <div className="list-editor-body" id={`list-item-${it.id}`} hidden={openId !== it.id} {...(openId === it.id ? reveal.handlers : {})}>
               {openId === it.id && (
                 <>
                   <FieldGroups
@@ -879,6 +949,7 @@ function ListEditor({ name, schema, items, onList, state, focusItem, annotate, l
                         hint={note?.field === key ? note.hint : undefined}
                         error={note?.field === key ? note.error : undefined}
                         action={note?.field === key ? note.action : undefined}
+                        onLive={fs.type === 'string' ? reveal.typed(key) : undefined}
                       />
                     )}
                   />
