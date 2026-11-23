@@ -4,7 +4,7 @@
  * only the dropped steps could bring back.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, promises as fsp, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
@@ -27,9 +27,15 @@ async function make() {
   open.push(s);
   return { dir, s };
 }
+async function reopen(dir: string) {
+  const s = await ProjectSession.open(dir, 'test');
+  open.push(s);
+  return s;
+}
 
 const ASSETS = 'static/assets';
 const has = (dir: string, f: string) => existsSync(join(dir, ASSETS, f));
+const blobBytes = (dir: string) => readdirSync(join(dir, '.siteorigin/history/blobs')).filter((f) => f.endsWith('.json')).reduce((n, f) => n + statSync(join(dir, '.siteorigin/history/blobs', f)).size, 0);
 
 /** An image as the importer leaves it: an original and two responsive copies, `bytes` each. */
 function image(dir: string, slug: string, hash: string, bytes = 1000): { asset: AssetRecord; files: string[] } {
@@ -60,31 +66,36 @@ async function ok(p: Promise<{ ok: boolean; error?: { message: string } }>) {
 }
 
 const site = (s: ProjectSession, patch: { name?: string; description?: string }, label: string) => ok(s.apply({ operations: [{ type: 'site.update', ...patch }] }, { label }));
+const add = (s: ProjectSession, assets: AssetRecord[], label: string) => ok(s.apply({ operations: assets.map((asset) => ({ type: 'asset.add' as const, asset })) }, { label }));
+const remove = (s: ProjectSession, assets: AssetRecord[], label: string) => ok(s.apply({ operations: assets.map((a) => ({ type: 'asset.remove' as const, assetId: a.id })) }, { label }));
 const labels = (s: ProjectSession) => s.historyInfo().entries.map((e) => e.label);
+const write = (dir: string, rel: string, content: string | Buffer) => {
+  mkdirSync(join(dir, rel, '..'), { recursive: true });
+  writeFileSync(join(dir, rel), content);
+};
 
 describe('project storage', () => {
   it('counts removed images as kept for Undo, across a reopen, and as media again once undone', async () => {
     const { dir, s } = await make();
     const { asset } = image(dir, 'photo', '1a2b3c4d');
-    await ok(s.apply({ operations: [{ type: 'asset.add', asset }] }, { label: 'Import image' }));
+    await add(s, [asset], 'Import image');
     let info = await s.storageInfo();
     expect(info.media).toEqual({ files: 3, bytes: 3000 });
     expect(info.kept).toEqual({ files: 0, bytes: 0 });
     expect(info.reclaim).toBeNull();
 
-    await ok(s.apply({ operations: [{ type: 'asset.remove', assetId: asset.id }] }, { label: 'Remove image' }));
+    await remove(s, [asset], 'Remove image');
     info = await s.storageInfo();
     expect(info.media).toEqual({ files: 0, bytes: 0 });
     expect(info.kept).toEqual({ files: 3, bytes: 3000 });
-    expect(info.history.steps).toBe(2);
-    expect(info.history.bytes).toBeGreaterThan(0);
-    expect(info.reclaim).toMatchObject({ files: { files: 3, bytes: 3000 }, undo: ['Import image', 'Remove image'], redo: [], keptUndo: 0, keptRedo: 0 });
+    // Each stored version counts once, however many steps share it.
+    expect(info.history).toEqual({ steps: 2, bytes: blobBytes(dir) });
+    expect(info.reclaim).toMatchObject({ files: { files: 3, bytes: 3000 }, historyBytes: blobBytes(dir), undo: ['Import image', 'Remove image'], redo: [], keptUndo: 0, keptRedo: 0 });
     expect(info.blocked).toBeUndefined();
 
     // The same after closing and reopening: history still holds them.
     await s.close();
-    const again = await ProjectSession.open(dir, 'test');
-    open.push(again);
+    const again = await reopen(dir);
     expect((await again.storageInfo()).kept).toEqual({ files: 3, bytes: 3000 });
     await ok(again.undo());
     info = await again.storageInfo();
@@ -98,8 +109,8 @@ describe('project storage', () => {
     const gone = image(dir, 'photo', '1a2b3c4d', 2000);
     writeFileSync(join(dir, ASSETS, 'hand-placed.png'), 'png');
     await site(s, { name: 'Before' }, 'Rename site');
-    await ok(s.apply({ operations: [{ type: 'asset.add', asset: kept.asset }, { type: 'asset.add', asset: gone.asset }] }, { label: 'Import 2 images' }));
-    await ok(s.apply({ operations: [{ type: 'asset.remove', assetId: gone.asset.id }] }, { label: 'Remove photo' }));
+    await add(s, [kept.asset, gone.asset], 'Import 2 images');
+    await remove(s, [gone.asset], 'Remove photo');
     await site(s, { name: 'Later' }, 'Later edit');
     await site(s, { name: 'Latest' }, 'Latest edit');
 
@@ -124,85 +135,123 @@ describe('project storage', () => {
     const after = await s.storageInfo();
     expect(after.kept).toEqual({ files: 0, bytes: 0 });
     expect(after.reclaim).toBeNull();
-    // Every step that stayed still undoes and redoes.
-    await ok(s.undo());
-    await ok(s.undo());
-    expect(s.state.site.name).toBe('Before');
-    expect(s.historyInfo().canUndo).toBe(false);
-    await ok(s.redo());
-    await ok(s.redo());
-    expect(s.state.site.name).toBe('Latest');
+    // The shorter history is what the project reopens with, and every step that stayed still undoes and redoes.
+    await s.close();
+    const again = await reopen(dir);
+    expect(labels(again)).toEqual(['Later edit', 'Latest edit']);
+    await ok(again.undo());
+    await ok(again.undo());
+    expect(again.state.site.name).toBe('Before');
+    expect(again.historyInfo().canUndo).toBe(false);
+    await ok(again.redo());
+    await ok(again.redo());
+    expect(again.state.site.name).toBe('Latest');
   });
 
-  it('drops the redo steps that would bring a removed image back, keeping the ones before them', async () => {
+  it('drops the redo steps that would bring a removed image back, keeping the nearer ones', async () => {
     const { dir, s } = await make();
     const { asset, files } = image(dir, 'photo', '1a2b3c4d');
     await site(s, { name: 'First' }, 'Rename site');
-    await ok(s.apply({ operations: [{ type: 'asset.add', asset }] }, { label: 'Import image' }));
-    await site(s, { name: 'Third' }, 'Rename again');
-    await ok(s.undo());
-    await ok(s.undo());
+    await site(s, { name: 'Second' }, 'Rename again');
+    await add(s, [asset], 'Import image');
+    await site(s, { name: 'Fourth' }, 'Rename last');
+    for (let i = 0; i < 3; i++) await ok(s.undo());
     const plan = (await s.storageInfo()).reclaim!;
-    expect(plan).toMatchObject({ undo: [], redo: ['Import image', 'Rename again'], keptUndo: 1, keptRedo: 0 });
+    expect(plan).toMatchObject({ undo: [], redo: ['Import image', 'Rename last'], keptUndo: 1, keptRedo: 1 });
     expect((await s.reclaimStorage(plan.key)).ok).toBe(true);
     for (const f of files) expect(has(dir, f)).toBe(false);
-    expect(labels(s)).toEqual(['Rename site']);
+    expect(labels(s)).toEqual(['Rename site', 'Rename again']);
+    await ok(s.redo());
+    expect(s.state.site.name).toBe('Second');
     expect(s.historyInfo().canRedo).toBe(false);
     await ok(s.undo());
+    await ok(s.undo());
+    expect(s.state.site.name).toBe('Storage');
   });
 
-  it('keeps a file the project still names outside its library, and drops a later step whose undo would name a deleted one', async () => {
+  it('keeps every size of an image the project still names in any file, and drops a later step whose undo would name a deleted one', async () => {
     const { dir, s } = await make();
-    const { asset, files } = image(dir, 'photo', '1a2b3c4d');
-    await ok(s.apply({ operations: [{ type: 'asset.add', asset }] }, { label: 'Import image' }));
-    await ok(s.apply({ operations: [{ type: 'asset.remove', assetId: asset.id }] }, { label: 'Remove image' }));
-    // A hand-written style sheet uses the small copy by its address.
-    mkdirSync(join(dir, 'static/css'), { recursive: true });
-    writeFileSync(join(dir, 'static/css/extra.css'), `.hero { background: url(/assets/${files[1]}); }\n`);
-    // A document named the large copy for a while: undoing the second edit would bring that mention back.
-    await site(s, { description: `See /assets/${files[2]}` }, 'Describe with image');
+    const styled = image(dir, 'photo', '1a2b3c4d');
+    const built = image(dir, 'third', 'eeeeffff');
+    const gone = image(dir, 'other', 'ccccdddd');
+    await add(s, [styled.asset, built.asset, gone.asset], 'Import 3 images');
+    await remove(s, [styled.asset, built.asset, gone.asset], 'Remove 3 images');
+    // A hand-written style sheet uses one small copy by its address; a caption file of a kind no list of text
+    // extensions would name builds the other's address from its parts.
+    write(dir, 'static/css/extra.css', `.hero { background: url(/assets/${styled.files[1]}); }\n`);
+    write(dir, 'static/media/captions.vtt', `WEBVTT\n\n00:00.000 --> 00:01.000\n<img src="/assets/third-' + 'eeeeffff' + '.png">\n`);
+    // A document named a copy of the third image for a while: undoing the second edit would bring that mention back.
+    await site(s, { description: `See /assets/${gone.files[2]}` }, 'Describe with image');
     await site(s, { description: 'Plain' }, 'Describe plainly');
     await site(s, { name: 'Unrelated' }, 'Unrelated edit');
 
     const info = await s.storageInfo();
-    expect(info.media.files).toBe(1);
-    expect(info.kept.files).toBe(2);
+    expect(info.media.files).toBe(6);
+    expect(info.kept.files).toBe(3);
     const plan = info.reclaim!;
-    expect(plan.undo).toEqual(['Import image', 'Remove image', 'Describe with image', 'Describe plainly']);
+    expect(plan.undo).toEqual(['Import 3 images', 'Remove 3 images', 'Describe with image', 'Describe plainly']);
     expect(plan.keptUndo).toBe(1);
     expect((await s.reclaimStorage(plan.key)).ok).toBe(true);
-    expect(has(dir, files[0])).toBe(false);
-    expect(has(dir, files[1])).toBe(true);
-    expect(has(dir, files[2])).toBe(false);
+    for (const f of [...styled.files, ...built.files]) expect(has(dir, f)).toBe(true);
+    for (const f of gone.files) expect(has(dir, f)).toBe(false);
     expect(labels(s)).toEqual(['Unrelated edit']);
     await ok(s.undo());
     expect(s.state.site.description).toBe('Plain');
   });
 
-  it('refuses a plan the project has moved past, changing nothing', async () => {
+  it('finds a name in a large file even where it spans two reads', async () => {
     const { dir, s } = await make();
     const { asset, files } = image(dir, 'photo', '1a2b3c4d');
-    await ok(s.apply({ operations: [{ type: 'asset.add', asset }] }, { label: 'Import image' }));
-    await ok(s.apply({ operations: [{ type: 'asset.remove', assetId: asset.id }] }, { label: 'Remove image' }));
+    await add(s, [asset], 'Import image');
+    await remove(s, [asset], 'Remove image');
+    // Twelve megabytes of data, with the image's hash split across the first one-megabyte read.
+    const big = Buffer.alloc(12 * 1024 * 1024, 0x20);
+    big.write('1a2b3c4d', 1024 * 1024 - 4, 'latin1');
+    write(dir, 'static/data/archive.json', big);
+    const info = await s.storageInfo();
+    expect(info.media).toEqual({ files: 3, bytes: 3000 });
+    expect(info.reclaim).toBeNull();
+    for (const f of files) expect(has(dir, f)).toBe(true);
+  });
+
+  it('refuses a plan whose steps were replaced since, though the position in history is the same, changing nothing', async () => {
+    const { dir, s } = await make();
+    const { asset, files } = image(dir, 'photo', '1a2b3c4d');
+    await add(s, [asset], 'Import image');
+    await remove(s, [asset], 'Remove image');
     const plan = (await s.storageInfo()).reclaim!;
     await ok(s.undo());
-    await ok(s.redo());
-    const second = image(dir, 'other', 'ccccdddd');
-    await ok(s.apply({ operations: [{ type: 'asset.add', asset: second.asset }] }, { label: 'Import other' }));
-    await ok(s.apply({ operations: [{ type: 'asset.remove', assetId: second.asset.id }] }, { label: 'Remove other' }));
+    await remove(s, [asset], 'Remove image');
+    const ids = s.historyInfo().entries.map((e) => e.id);
     const r = await s.reclaimStorage(plan.key);
     expect(r.ok).toBe(false);
     expect(r.message).toMatch(/changed/);
-    for (const f of [...files, ...second.files]) expect(has(dir, f)).toBe(true);
-    expect(labels(s)).toEqual(['Import image', 'Remove image', 'Import other', 'Remove other']);
+    for (const f of files) expect(has(dir, f)).toBe(true);
+    expect(s.historyInfo().entries.map((e) => e.id)).toEqual(ids);
     expect((await s.reclaimStorage('nonsense')).ok).toBe(false);
+    // The plan for the project as it is now goes ahead.
+    expect((await s.reclaimStorage((await s.storageInfo()).reclaim!.key)).ok).toBe(true);
+  });
+
+  it('keeps a file another app names while the reclaim is under way, though its steps go', async () => {
+    const { dir, s } = await make();
+    const { asset, files } = image(dir, 'photo', '1a2b3c4d');
+    await add(s, [asset], 'Import image');
+    await remove(s, [asset], 'Remove image');
+    const { key } = (await s.storageInfo()).reclaim!;
+    // Saved after the plan was checked and the history trimmed, before anything is deleted.
+    s.once('history', () => write(dir, 'static/late.css', `.a { background: url(/assets/${files[0]}); }\n`));
+    expect((await s.reclaimStorage(key)).ok).toBe(true);
+    expect(labels(s)).toEqual([]);
+    for (const f of files) expect(has(dir, f)).toBe(true);
+    expect((await s.storageInfo()).media.files).toBe(3);
   });
 
   it('refuses while an AI run is open or an import is in progress', async () => {
     const { dir, s } = await make();
     const { asset, files } = image(dir, 'photo', '1a2b3c4d');
-    await ok(s.apply({ operations: [{ type: 'asset.add', asset }] }, { label: 'Import image' }));
-    await ok(s.apply({ operations: [{ type: 'asset.remove', assetId: asset.id }] }, { label: 'Remove image' }));
+    await add(s, [asset], 'Import image');
+    await remove(s, [asset], 'Remove image');
     const { key } = (await s.storageInfo()).reclaim!;
 
     expect(await s.beginRun('run_a')).toBeNull();
@@ -221,51 +270,58 @@ describe('project storage', () => {
     expect((await s.reclaimStorage(key)).ok).toBe(true);
   });
 
-  it('holds an import back until a reclaim has finished deleting', async () => {
+  it('holds an import back until a reclaim has deleted every file', async () => {
     const { dir, s } = await make();
-    const { asset } = image(dir, 'photo', '1a2b3c4d');
-    await ok(s.apply({ operations: [{ type: 'asset.add', asset }] }, { label: 'Import image' }));
-    await ok(s.apply({ operations: [{ type: 'asset.remove', assetId: asset.id }] }, { label: 'Remove image' }));
+    const { asset, files } = image(dir, 'photo', '1a2b3c4d');
+    await add(s, [asset], 'Import image');
+    await remove(s, [asset], 'Remove image');
     const { key } = (await s.storageInfo()).reclaim!;
     const rm = fsp.rm;
+    const order: string[] = [];
     let reached!: () => void;
     const deleting = new Promise<void>((r) => (reached = r));
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));
     vi.spyOn(fsp, 'rm').mockImplementation(async (...args: Parameters<typeof fsp.rm>) => {
-      if (String(args[0]).startsWith(join(dir, ASSETS))) {
-        reached();
-        await held;
+      const p = String(args[0]);
+      if (p.startsWith(join(dir, ASSETS))) {
+        order.push(p.split('/').pop()!);
+        if (order.length === 1) {
+          reached();
+          await held;
+        }
       }
       return rm(...args);
     });
     const reclaim = s.reclaimStorage(key);
     await deleting;
-    const order: string[] = [];
     const importing = s.withImport(async () => void order.push('import'));
     await new Promise((r) => setTimeout(r, 20));
-    expect(order).toEqual([]);
     release();
     expect((await reclaim).ok).toBe(true);
     await importing;
-    expect(order).toEqual(['import']);
+    // Every file went before the import ran.
+    expect(order.slice(0, -1).sort()).toEqual([...files].sort());
+    expect(order.at(-1)).toBe('import');
   });
 
-  it('keeps an imported file a style sheet names when a sweep finds no record or history for it', async () => {
+  it('keeps an image a style sheet names, and one still in its grace period, when a sweep finds no record or history for them', async () => {
     const { dir, s } = await make();
-    const { asset, files } = image(dir, 'photo', '1a2b3c4d');
-    await ok(s.apply({ operations: [{ type: 'asset.add', asset }] }, { label: 'Import image' }));
-    await ok(s.apply({ operations: [{ type: 'asset.remove', assetId: asset.id }] }, { label: 'Remove image' }));
+    const named = image(dir, 'photo', '1a2b3c4d');
+    const unnamed = image(dir, 'other', 'ccccdddd');
+    const fresh = image(dir, 'fresh', 'eeeeffff');
+    await add(s, [named.asset, unnamed.asset, fresh.asset], 'Import 3 images');
+    await remove(s, [named.asset, unnamed.asset, fresh.asset], 'Remove 3 images');
     await site(s, { name: 'Later' }, 'Later edit');
-    writeFileSync(join(dir, 'static/extra.css'), `.a { background: url(/assets/${files[2]}); }\n`);
+    write(dir, 'static/extra.css', `.a { background: url(/assets/${named.files[2]}); }\n`);
     const old = new Date(Date.now() - 60 * 60_000);
-    for (const f of files) utimesSync(join(dir, ASSETS, f), old, old);
+    for (const f of [...named.files, ...unnamed.files]) utimesSync(join(dir, ASSETS, f), old, old);
     s.historyByteLimit = 1;
     await s.collectGarbage();
     expect(labels(s)).toEqual(['Later edit']);
-    expect(has(dir, files[0])).toBe(false);
-    expect(has(dir, files[1])).toBe(false);
-    expect(has(dir, files[2])).toBe(true);
+    for (const f of named.files) expect(has(dir, f)).toBe(true);
+    for (const f of unnamed.files) expect(has(dir, f)).toBe(false);
+    for (const f of fresh.files) expect(has(dir, f)).toBe(true);
   });
 });
 
@@ -276,17 +332,18 @@ describe('the Free up space dialog wording', () => {
     const t = describeTrim(plan(['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5', 'Step 6'], [], 2, 0));
     expect(t.undo).toEqual({ lead: 'These 6 steps can no longer be undone:', steps: ['Step 6', 'Step 5', 'Step 4', 'Step 3'], more: 'and 2 earlier steps', after: 'Your 2 latest steps can still be undone.' });
     expect(t.redo).toBeNull();
+    expect(describeTrim(plan(['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5'], [], 0, 0)).undo?.more).toBe('and 1 earlier step');
   });
 
-  it('says when nothing is left to undo, and which redo steps stay', () => {
-    const t = describeTrim(plan(['Remove 6 unused images'], ['Import image'], 0, 1));
+  it('says when nothing is left to undo, and which redo steps stay, nearest first', () => {
+    const t = describeTrim(plan(['Remove 6 unused images'], ['Import image', 'Rename site'], 0, 1));
     expect(t.undo).toMatchObject({ lead: 'This step can no longer be undone:', steps: ['Remove 6 unused images'], more: null, after: 'Nothing will be left to undo.' });
-    expect(t.redo).toMatchObject({ lead: 'This step can no longer be redone:', steps: ['Import image'], after: '1 step before it can still be redone.' });
+    expect(t.redo).toMatchObject({ lead: 'These 2 steps can no longer be redone:', steps: ['Import image', 'Rename site'], after: '1 step before them can still be redone.' });
   });
 
   it('formats sizes the way the panel shows them', () => {
     expect(formatBytes(49_661_260)).toBe('47.4 MB');
-    expect(formatBytes(2048)).toBe('2 KB');
+    expect(formatBytes(1536)).toBe('2 KB');
     expect(formatBytes(1)).toBe('1 byte');
   });
 });

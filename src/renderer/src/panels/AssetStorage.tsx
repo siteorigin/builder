@@ -18,7 +18,8 @@ export function useProjectStorage(): { info: StorageInfo | null; refresh: () => 
     const e = s.snapshot?.history.entries ?? [];
     return `${e.length}:${e[0]?.id ?? ''}:${e.at(-1)?.id ?? ''}:${e.filter((x) => x.applied).length}`;
   });
-  const busy = useStore((s) => `${!!s.snapshot?.aiBusy}:${s.snapshot?.conflicts.length ?? 0}`);
+  // What else can change the figures or whether space can be freed: the AI, conflicts, the lock, files found missing.
+  const busy = useStore((s) => `${!!s.snapshot?.aiBusy}:${s.snapshot?.conflicts.length ?? 0}:${!!s.snapshot?.readOnly}:${JSON.stringify(s.snapshot?.missingAssets ?? [])}`);
   const [got, setGot] = useState<{ opening: string; info: StorageInfo } | null>(null);
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -90,21 +91,30 @@ function Trimmed({ side }: { side: TrimmedSide }) {
 
 /**
  * Shows exactly what freeing up space deletes and which Undo and Redo steps go with it, before anything happens.
- * Only the plan shown is carried out: if the project changed meanwhile, the dialog shows the new plan instead.
+ * Free carries out the plan on screen and no other: when the project changes the plan, the new one is shown only once
+ * the author asks for it, and Free waits until then.
  */
 export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo; onClose: () => void; refresh: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const plan = info.reclaim;
+  const [shown, setShown] = useState(info);
+  const changed = (info.reclaim?.key ?? null) !== (shown.reclaim?.key ?? null);
+  // New figures for the same plan (the history's size, say) are shown as they come.
+  useEffect(() => {
+    if (!changed) setShown(info);
+  }, [info, changed]);
+  const plan = shown.reclaim;
   const trim = plan ? describeTrim(plan) : null;
   const total = plan ? plan.files.bytes + plan.historyBytes : 0;
   const free = async () => {
     const opening = getState().snapshot?.workspaceKey;
-    if (!plan || !opening || busy) return;
+    if (!plan || !opening || busy || changed) return;
     setBusy(true);
     setError(null);
     const r = await api.project.reclaimStorage(plan.key, opening).catch((e: Error) => ({ ok: false, message: e.message, freed: undefined }));
     setBusy(false);
+    // A reply for a project that has since closed says nothing about the one open now.
+    if (getState().snapshot?.workspaceKey !== opening) return;
     if (r.ok) {
       toast([`Freed ${formatBytes(r.freed ?? 0)}.`, r.message ?? ''].filter(Boolean).join(' '), 'info');
       refresh();
@@ -113,6 +123,10 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
       setError(r.message ?? 'The space could not be freed.');
       refresh();
     }
+  };
+  const showNew = () => {
+    setShown(info);
+    setError(null);
   };
   return (
     <Modal
@@ -125,7 +139,7 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
           <button className="btn" data-autofocus onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="btn btn-danger-fill" onClick={() => void free()} disabled={busy || !plan || !!info.blocked}>
+          <button className="btn btn-danger-fill" onClick={() => void free()} disabled={busy || !plan || changed || !!info.blocked}>
             {busy && <Spinner decorative />} {plan ? `Free ${formatBytes(total)}` : 'Free up space'}
           </button>
         </>
@@ -133,39 +147,47 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
     >
       <div className="storage-dialog" data-testid="free-space-dialog">
         <table className="storage-table">
+          <caption className="sr-only">What the project takes on disk</caption>
           <tbody>
             <tr>
               <th scope="row">Images and fonts in use</th>
-              <td>{files(info.media.files)}</td>
-              <td>{formatBytes(info.media.bytes)}</td>
+              <td>{files(shown.media.files)}</td>
+              <td>{formatBytes(shown.media.bytes)}</td>
             </tr>
             <tr>
               <th scope="row">Removed, kept for Undo</th>
-              <td>{files(info.kept.files)}</td>
-              <td>{formatBytes(info.kept.bytes)}</td>
+              <td>{files(shown.kept.files)}</td>
+              <td>{formatBytes(shown.kept.bytes)}</td>
             </tr>
             <tr>
               <th scope="row">Undo history</th>
-              <td>{plural(info.history.steps, 'step', 'steps')}</td>
-              <td>{formatBytes(info.history.bytes)}</td>
+              <td>{plural(shown.history.steps, 'step', 'steps')}</td>
+              <td>{formatBytes(shown.history.bytes)}</td>
             </tr>
           </tbody>
         </table>
         {plan && trim ? (
           <>
             <p>
-              Deletes {plural(plan.files.files, 'removed file', 'removed files')} ({formatBytes(plan.files.bytes)}) that nothing in the project uses
+              Deletes {plural(plan.files.files, 'removed file', 'removed files')} ({formatBytes(plan.files.bytes)}) that nothing in the project names
               {plan.historyBytes ? `, and ${formatBytes(plan.historyBytes)} of saved history` : ''}. Your site doesn’t change: every page, image and font in use stays as it is.
             </p>
             {trim.undo && <Trimmed side={trim.undo} />}
             {trim.redo && <Trimmed side={trim.redo} />}
             <p>
-              <b>This can’t be undone.</b>
+              <b>This can’t be undone.</b> To keep every step, close this and leave the files where they are.
             </p>
-            <p className="muted">To keep every step instead, export an editable project: the copy leaves removed files out, and this project stays as it is.</p>
           </>
         ) : (
           <p>There is nothing to free right now.</p>
+        )}
+        {changed && (
+          <div className="scope-note" role="status">
+            <span className="grow">The project changed since these figures were worked out.</span>
+            <button className="link" onClick={showNew} disabled={busy}>
+              Show the new figures
+            </button>
+          </div>
         )}
         {(error || info.blocked) && (
           <div className="scope-note danger" role="alert">

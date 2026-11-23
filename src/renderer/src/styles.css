@@ -708,6 +708,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .storage-steps { margin: -4px 0 0; padding-left: 18px; }
 .storage-steps li { margin: 2px 0; overflow-wrap: anywhere; }
 .storage-steps li.more { list-style: none; margin-left: -18px; color: var(--text-2); }
+.storage-dialog .scope-note:not(.danger) { align-items: center; background: var(--panel-2); }
 
 /* ---------- Inspector ---------- */
 .insp-head { position: sticky; top: 0; z-index: 2; padding: 12px 14px 10px; border-bottom: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; gap: 6px; }

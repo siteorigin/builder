@@ -242,6 +242,9 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const [fixing, setFixing] = useState(false);
   const storage = useProjectStorage();
   const [freeing, setFreeing] = useState(false);
+  // Free up space belongs to the project it was opened for.
+  const opening = snap?.workspaceKey;
+  useEffect(() => setFreeing(false), [opening]);
   const assetsDoc = snap?.state.assets.assets;
   // Images whose files are not in the project folder: their uses stay, and the details offer to bring the files back.
   const missingAssets = snap?.missingAssets;
