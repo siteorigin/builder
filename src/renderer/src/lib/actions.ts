@@ -1,7 +1,7 @@
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, OwnerRef } from '@shared/types';
 import { isBinding } from '@shared/types';
-import { findParent } from '@engine/tree';
+import { enclosingRepeatProp, findParent } from '@engine/tree';
 import { api, applyOps, getState, setState, toast } from '../store';
 import { boundaryOf, refLabel, resolveRef, treeFor } from './model';
 
@@ -130,8 +130,10 @@ export async function commitText(ref: ElementRef, text: string | string[]) {
     await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, value: text }], 'Edit text');
   } else {
     const def = r.def!;
-    // Find which list the repeated item belongs to.
-    const listProp = Object.entries(def.properties).find(([, p]) => p.type === 'list' && binding.$item in p.fields)?.[0];
+    // The list the repeated item belongs to is the one its enclosing repeat walks; matching field names alone
+    // cannot tell a footer's links from its contact links.
+    const repeated = enclosingRepeatProp(def, ref.nodeId);
+    const listProp = repeated && def.properties[repeated]?.type === 'list' ? repeated : Object.entries(def.properties).find(([, p]) => p.type === 'list' && binding.$item in p.fields)?.[0];
     const itemId = ref.itemPath?.[ref.itemPath.length - 1];
     if (!listProp || !itemId) return;
     await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], 'Edit text');

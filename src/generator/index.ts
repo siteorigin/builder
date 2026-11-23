@@ -276,6 +276,9 @@ function addOverrideRules(rules: RuleSet, state: ProjectState, inst: InstanceNod
   if (!def) return;
   for (const partId of Object.keys(inst.overrides ?? {}).sort()) {
     const part = def.parts[partId];
+    // Inside a definition only a code component's root is reachable (through its class); its inner parts
+    // take override classes only from a page.
+    if (def.kind === 'code' && partId !== 'root') continue;
     // Doubled root selector: nested overrides must beat the nested definition's variant rules.
     const isRoot = partId === 'root' || !part || part.nodeId === def.tree?.rootIds[0];
     const sel = isRoot ? `${rootSelector}${rootSelector}${rootSelector}` : `${rootSelector}${rootSelector} .${nodeClass(def, part.nodeId)}`;
@@ -302,7 +305,9 @@ export function generateSiteCss(state: ProjectState): string {
         for (const partId of Object.keys(n.overrides ?? {}).sort()) {
           if (!def) continue;
           const cls = overrideClass(n.id, partId);
-          addRules(rules, `.${cls}.${cls}`, n.overrides![partId]);
+          // A code component's own styles are scoped (one class plus Svelte's hash class), so its overrides
+          // take one more class to win whatever order the stylesheets load in.
+          addRules(rules, def.kind === 'code' ? `.${cls}.${cls}.${cls}` : `.${cls}.${cls}`, n.overrides![partId]);
         }
       } else {
         addRules(rules, `.${pageNodeClass(id)}`, n.styles);
@@ -374,7 +379,14 @@ function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string 
   return `{[${parts.join(', ')}]}`;
 }
 
-function anchorAttr(node: GraphNode): string {
+/** True for the root node of the definition being emitted. */
+function isDefRoot(ctx: EmitCtx, node: GraphNode): boolean {
+  return !!ctx.def && node.id === ctx.def.tree?.rootIds[0];
+}
+
+/** The anchor as an id. A definition's root takes the anchor its placement gives it (`so_id`) first. */
+function anchorAttr(ctx: EmitCtx, node: GraphNode): string {
+  if (isDefRoot(ctx, node)) return node.anchor ? ` id={so_id ?? ${js(node.anchor)}}` : ' id={so_id}';
   return node.anchor ? ` id=${attrJs(node.anchor)}` : '';
 }
 
@@ -419,36 +431,36 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       ctx.indent++;
       const children = emitNodes(ctx, node.children);
       ctx.indent--;
-      return `${p}<${node.tag} class=${classExpr(ctx, node)}${anchorAttr(node)}${ids}>${children ? `\n${children}\n${p}` : ''}</${node.tag}>`;
+      return `${p}<${node.tag} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids}>${children ? `\n${children}\n${p}` : ''}</${node.tag}>`;
     }
     case 'text': {
       if (node.rich) {
         useImport(ctx, 'SoRichText', `${RUNTIME_DIR}/RichText.svelte`);
         const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(Array.isArray(node.text) ? node.text : String(node.text).split(/\n{2,}/));
         const listAttr = node.list ? ` list=${js(node.list)}` : '';
-        return `${p}<SoRichText paragraphs={${val}}${listAttr} class=${classExpr(ctx, node)}${anchorAttr(node)}${ids} />`;
+        return `${p}<SoRichText paragraphs={${val}}${listAttr} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
       }
       const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(Array.isArray(node.text) ? node.text.join('\n\n') : node.text);
-      return `${p}<${node.tag} class=${classExpr(ctx, node)}${anchorAttr(node)}${ids}>{${val}}</${node.tag}>`;
+      return `${p}<${node.tag} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids}>{${val}}</${node.tag}>`;
     }
     case 'image': {
       useImport(ctx, 'SoImage', `${RUNTIME_DIR}/Image.svelte`);
       const val = isBinding(node.image) ? bindExpr(ctx, node.image) : js(resolveImage(node.image, ctx.rctx));
-      return `${p}<SoImage image={${val}} class=${classExpr(ctx, node)}${anchorAttr(node)}${ids} />`;
+      return `${p}<SoImage image={${val}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
     }
     case 'link': {
       useImport(ctx, 'SoLink', `${RUNTIME_DIR}/Link.svelte`);
       const link = isBinding(node.link) ? bindExpr(ctx, node.link) : js(resolveLink(node.link as LinkValue, ctx.rctx));
       const label = bindExpr(ctx, node.label);
       const appearance = bindExpr(ctx, node.appearance);
-      return `${p}<SoLink link={${link}} appearance={${appearance}} class=${classExpr(ctx, node)}${anchorAttr(node)}${ids}>{${label}}</SoLink>`;
+      return `${p}<SoLink link={${link}} appearance={${appearance}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids}>{${label}}</SoLink>`;
     }
     case 'icon': {
       useImport(ctx, 'SoIcon', `${RUNTIME_DIR}/Icon.svelte`);
-      return `${p}<SoIcon name={${bindExpr(ctx, node.icon)}} class=${classExpr(ctx, node)}${anchorAttr(node)}${ids} />`;
+      return `${p}<SoIcon name={${bindExpr(ctx, node.icon)}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
     }
     case 'divider':
-      return `${p}<hr class=${classExpr(ctx, node, [js('so-divider')])}${anchorAttr(node)}${ids} />`;
+      return `${p}<hr class=${classExpr(ctx, node, [js('so-divider')])}${anchorAttr(ctx, node)}${ids} />`;
     case 'repeat': {
       const v = `item${ctx.items.length ? ctx.items.length + 1 : ''}`;
       const list = bindExpr(ctx, node.list);
@@ -482,11 +494,16 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   }
   const variant = node.variant ?? def.defaultVariant;
   if (variant && def.variants?.[variant]) attrs.push(`variant=${js(variant)}`);
-  // Instance overrides at page level are applied through generated override classes.
-  if (!ctx.def && node.overrides && Object.keys(node.overrides).length && (def.kind === 'managed' || def.provenance?.forkedFrom)) {
+  // A section's anchor lands on its component's root element.
+  if (isDefRoot(ctx, node)) attrs.push(node.anchor ? `so_id={so_id ?? ${js(node.anchor)}}` : 'so_id={so_id}');
+  else if (node.anchor) attrs.push(`so_id=${attrJs(node.anchor)}`);
+  // Instance overrides at page level are applied through generated override classes. Code components get the
+  // same map, and their root override also through `class`, which every code component places on its root.
+  if (!ctx.def && node.overrides && Object.keys(node.overrides).length) {
     const map: Record<string, string> = {};
     for (const partId of Object.keys(node.overrides).sort()) map[partId] = overrideClass(node.id, partId);
     attrs.push(`so_o={${js(map)}}`);
+    if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) attrs.push(`class=${attrJs(map.root)}`);
   }
   if (ctx.instrument && def.kind === 'managed') {
     const childCtx = ctx.def ? `__so + ${js('|' + node.id)}` : js(`${ctx.ctxExpr}|${node.id}`);
@@ -552,6 +569,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   if (def.variants && Object.keys(def.variants).length) propDecls.push(`\t\tvariant = ${js(def.defaultVariant ?? Object.keys(def.variants)[0])},`);
   for (const slotName of Object.keys(def.slots ?? {}).sort()) propDecls.push(`\t\tslot_${safeIdent(slotName)} = undefined,`);
   propDecls.push(`\t\tso_o = undefined,`);
+  propDecls.push(`\t\tso_id = undefined,`);
   if (opts.instrument) propDecls.push(`\t\t__so = '',`);
   propDecls.push(`\t\tclass: className = ''`);
   const imports = renderImports(ctx.imports);

@@ -32,7 +32,7 @@ import { isBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
-import { findParent, instancesOf } from '@engine/tree';
+import { enclosingRepeatProp, instancesOf } from '@engine/tree';
 import { applyOps, setState, useStore } from '../store';
 import { DraftInput, Field, openSection, Section, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { FieldGroups, groupFields, ImageEditor, LinkEditor, PropField, ScalarField, IconPicker } from './PropEditors';
@@ -102,16 +102,7 @@ function countStyles(styles: ResponsiveStyles | undefined): number {
 const changes = (n: number) => `${n} change${n === 1 ? '' : 's'}`;
 
 /** The nearest repeat enclosing a node in a definition tree, if any. */
-function enclosingRepeat(def: ComponentDefinition, nodeId: string): string | undefined {
-  if (!def.tree) return undefined;
-  let id: string | null | undefined = nodeId;
-  for (let guard = 0; id && guard < 50; guard++) {
-    const n = def.tree.nodes[id];
-    if (n && n.kind === 'repeat' && n.id !== nodeId) return n.list.$prop;
-    id = findParent(def.tree, id)?.parentId;
-  }
-  return undefined;
-}
+const enclosingRepeat = enclosingRepeatProp;
 
 const focusName = () => requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>('#dock-panel-inspect .insp-name h3')?.focus()));
 
@@ -472,16 +463,7 @@ function PartInspector({ state, selection, tokens }: { state: ProjectState; sele
   const contentList = Object.entries(def.properties).find(([, p]) => p.type === 'list' && bindings.some((b) => b.item && b.item in (p as { fields: object }).fields))?.[0];
   // A structural part (a card itself) has no content binding, but it still repeats once per list item:
   // find the list from the repeat that encloses it, so its Style scope says "All 3 cards" too.
-  const repeatList = (() => {
-    if (!def.tree) return undefined;
-    let id: string | null | undefined = node.id;
-    for (let guard = 0; id && guard < 50; guard++) {
-      const n = def.tree.nodes[id];
-      if (n && n.kind === 'repeat' && n.id !== node.id) return n.list.$prop;
-      id = findParent(def.tree, id)?.parentId;
-    }
-    return undefined;
-  })();
+  const repeatList = enclosingRepeatProp(def, node.id);
   // The repeat that encloses the part names its list exactly; a field-name match is only a fallback.
   const listProp = (repeatList && def.properties[repeatList]?.type === 'list' ? repeatList : undefined) ?? contentList;
   const listSchema = listProp ? (def.properties[listProp] as Extract<ComponentDefinition['properties'][string], { type: 'list' }>) : undefined;

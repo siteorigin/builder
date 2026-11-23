@@ -77,6 +77,22 @@ export function isDescendant(tree: NodeTree, ancestorId: string, nodeId: string)
   return subtreeIds(tree, ancestorId).includes(nodeId);
 }
 
+/**
+ * The list property a definition node repeats over: the `$prop` of the nearest repeat enclosing it (not the
+ * node itself). A definition can repeat over several lists with the same item fields (a footer's links and its
+ * contact links), so the enclosing repeat is the only exact answer.
+ */
+export function enclosingRepeatProp(def: ComponentDefinition, nodeId: string): string | undefined {
+  if (!def.tree) return undefined;
+  let id: string | null | undefined = nodeId;
+  for (let guard = 0; id && guard < 50; guard++) {
+    const n: GraphNode | undefined = def.tree.nodes[id];
+    if (n && n.kind === 'repeat' && n.id !== nodeId) return n.list.$prop;
+    id = findParent(def.tree, id)?.parentId;
+  }
+  return undefined;
+}
+
 export function allTrees(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree; label: string }> {
   const out: Array<{ owner: OwnerRef; tree: NodeTree; label: string }> = [
     { owner: { kind: 'shell', id: 'header' }, tree: state.site.shell.header, label: 'Header' },

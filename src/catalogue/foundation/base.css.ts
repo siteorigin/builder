@@ -21,6 +21,8 @@ ul, ol { margin: 0; padding: 0; list-style: none; }
 img, svg { display: block; max-width: 100%; }
 a { color: inherit; }
 address { font-style: normal; }
+/* Jump links land below the sticky site header (72px tall) instead of under it. */
+[id] { scroll-margin-top: 5.5rem; }
 :focus-visible { outline: 2px solid var(--so-color-focus); outline-offset: 3px; border-radius: 4px; }
 ::selection { background: color-mix(in srgb, var(--so-color-brand) 22%, transparent); }
 

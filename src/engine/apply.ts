@@ -68,6 +68,8 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
       return nodeMove(state, op);
     case 'node.duplicate':
       return nodeDuplicate(state, op);
+    case 'node.copy':
+      return nodeCopy(state, op);
     case 'node.rename': {
       const n = getNode(editableTree(state, op.owner), op.nodeId);
       if (op.name.trim()) n.name = op.name.trim();
@@ -475,8 +477,10 @@ function dependsOn(state: ProjectState, defId: string, targetId: string, seen = 
   if (seen.has(defId)) return false;
   seen.add(defId);
   const def = state.components[defId];
-  if (!def?.tree) return false;
-  for (const n of Object.values(def.tree.nodes)) {
+  // Code converted from a managed component still imports what that design used.
+  const tree = def?.tree ?? (def?.provenance?.forkedFrom ? state.components[def.provenance.forkedFrom]?.tree : undefined);
+  if (!tree) return false;
+  for (const n of Object.values(tree.nodes)) {
     if (n.kind === 'instance' && (n.definitionId === targetId || dependsOn(state, n.definitionId, targetId, seen))) return true;
   }
   return false;
@@ -507,6 +511,63 @@ function nodeDuplicate(state: ProjectState, op: Op<'node.duplicate'>): OpResult 
   return { nodeId: nid };
 }
 
+/** IDs the generated layout already uses: the main landmark and the header's navigation. */
+const RESERVED_ANCHORS = new Set(['main', 'so-site-nav']);
+
+/**
+ * Anchors that would share a document with one placed in `owner`: a page renders with the shared header and
+ * footer, and those render with every page. A definition is checked on its own.
+ */
+function anchorsInUse(state: ProjectState, owner: OwnerRef, exceptNodeId?: string): Set<string> {
+  const trees: NodeTree[] =
+    owner.kind === 'component'
+      ? [getTree(state, owner)]
+      : [state.site.shell.header, state.site.shell.footer, ...(owner.kind === 'page' ? [getTree(state, owner)] : Object.values(state.pages))];
+  const out = new Set(RESERVED_ANCHORS);
+  for (const t of trees) for (const n of Object.values(t.nodes)) if (n.anchor && !(t === getTree(state, owner) && n.id === exceptNodeId)) out.add(n.anchor);
+  return out;
+}
+
+/** A managed definition places a placement's anchor on its root, unless that root is a code component. */
+function anchorCapable(state: ProjectState, def: ComponentDefinition | undefined, depth = 0): boolean {
+  if (!def || def.kind !== 'managed' || !def.tree || depth > 10) return false;
+  const root = def.tree.nodes[def.tree.rootIds[0]];
+  return root?.kind !== 'instance' || anchorCapable(state, state.components[root.definitionId], depth + 1);
+}
+
+/**
+ * Copy page content to a position in any editable document (another page, usually). The copy gets new node
+ * and list item IDs; an anchor stays only while nothing in the destination already uses it.
+ */
+function nodeCopy(state: ProjectState, op: Op<'node.copy'>): OpResult {
+  // Only page content is self-contained: a definition's nodes carry bindings to its own properties.
+  if (op.owner.kind !== 'page') fail('Only content on a page can be copied. Copy the section that holds it instead.');
+  const from = getTree(state, op.owner);
+  getNode(from, op.nodeId);
+  if (!findParent(from, op.nodeId)) fail('Node is not attached.');
+  const to = editableTree(state, op.toOwner);
+  for (const id of subtreeIds(from, op.nodeId)) {
+    const n = from.nodes[id];
+    if (n.kind !== 'instance') continue;
+    const def = state.components[n.definitionId] ?? fail(`Component definition "${n.definitionId}" is missing.`);
+    if (def.category === 'shell') fail('The shared header and footer cannot be copied.');
+    if (op.toOwner.kind === 'component' && (def.id === op.toOwner.id || dependsOn(state, def.id, op.toOwner.id))) fail('A component cannot contain itself.');
+  }
+  // A definition keeps its one designated root; a slot belongs to an instance parent.
+  if (op.toOwner.kind === 'component' && !op.parentId) fail('Paste inside the component, not beside its root.');
+  if (op.slot && !op.parentId) fail('A slot needs the instance that has it as parentId.');
+  const list = insertionList(to, op.parentId, op.slot, state);
+  const taken = anchorsInUse(state, op.toOwner);
+  const nid = copySubtree(from, to, op.nodeId, state);
+  for (const id of subtreeIds(to, nid)) {
+    const n = to.nodes[id];
+    if (n.anchor && taken.has(n.anchor)) delete n.anchor;
+    else if (n.anchor) taken.add(n.anchor);
+  }
+  list.splice(op.index === undefined ? list.length : Math.min(op.index, list.length), 0, nid);
+  return { nodeId: nid };
+}
+
 function checkTokenRef(state: ProjectState, value: StyleValue) {
   if (value && typeof value === 'object' && 'token' in value) {
     if (!effectiveTokens(state).some((t) => t.id === value.token)) fail(`Token "${value.token}" does not exist.`);
@@ -528,7 +589,8 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     const def = state.components[node.definitionId] ?? fail('Missing definition.');
     const partId = op.partId ?? 'root';
     if (partId !== 'root' && !own(def.parts, partId)) fail(`"${def.name}" has no part "${partId}". Parts: ${Object.keys(def.parts).join(', ')}.`);
-    if (def.kind === 'code') fail(`"${def.name}" is a code component; its styles are edited in source.`);
+    // Code components take overrides on their root and on parts they declare: the generator hands them the
+    // override classes (root through `class`, every part through `so_o`) to place in their markup.
     node.overrides ??= {};
     node.overrides[partId] ??= {};
     target = { styles: node.overrides[partId] as Record<string, Record<string, StyleValue>> };
@@ -634,9 +696,12 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
       return {};
     }
     case 'anchor': {
-      if (node.kind === 'instance' || node.kind === 'repeat' || node.kind === 'slot') fail('Anchors can be set on elements, text, images, buttons, icons and dividers.');
+      if (node.kind === 'repeat' || node.kind === 'slot') fail('Anchors can be set on sections, elements, text, images, buttons, icons and dividers.');
+      // A section's anchor becomes the id of its component's root element, which only managed components place.
+      if (node.kind === 'instance' && !anchorCapable(state, state.components[node.definitionId])) fail('Anchors can only be set on sections built in the editor, not on code components.');
       const a = String(v ?? '').replace(/^#/, '');
       if (a && !/^[A-Za-z][\w-]{0,60}$/.test(a)) fail('Anchors start with a letter and use letters, numbers, - and _.');
+      if (a && anchorsInUse(state, owner, node.id).has(a)) fail(RESERVED_ANCHORS.has(a) ? `"${a}" is used by the site itself. Choose another anchor.` : `Another element on this page already uses the anchor "${a}".`);
       if (a) node.anchor = a;
       else delete node.anchor;
       return {};
