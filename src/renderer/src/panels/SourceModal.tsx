@@ -5,6 +5,7 @@ import { Field, Modal, TabPanel, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
 import { prepareCodeForSave } from '../lib/code';
 import { CodeEditor } from '../components/CodeEditor';
+import { PropSchemaEditor, propertiesFromRows, rowsFromProperties, schemaProblems, type SchemaRow } from './PropSchemaEditor';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -28,14 +29,27 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   const [status, setStatus] = useState<string | null>(null);
   // Closing the editor cancels an automatic fix that is still running, and a save in progress.
   const alive = useAlive();
+  const [rows, setRows] = useState<SchemaRow[]>(() => rowsFromProperties(def?.properties ?? {}));
+  const [savedProps, setSavedProps] = useState(() => JSON.stringify(def?.properties ?? {}));
+  const loaded = useRef<string | null>(null);
+  // Re-read when the stored source changes; a draft with unsaved edits is kept.
   useEffect(() => {
     void api.project.readSource(definitionId).then((r) => {
       setSrc(r);
-      setDraft(r.source);
+      setDraft((d) => (loaded.current === null || d === loaded.current ? r.source : d));
+      loaded.current = r.source;
     });
-  }, [definitionId, def]);
+  }, [definitionId, def?.source]);
+  // A saved (or undone) manifest replaces the rows, unless there are unsaved edits to them.
+  const propsKey = JSON.stringify(def?.properties ?? {});
+  const propsDirty = JSON.stringify(propertiesFromRows(rows)) !== savedProps;
+  useEffect(() => {
+    if (propsKey === savedProps) return;
+    if (!propsDirty) setRows(rowsFromProperties(def?.properties ?? {}));
+    setSavedProps(propsKey);
+  }, [propsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!def) return null;
-  const dirty = !!src && draft !== src.source;
+  const dirty = !!src && (draft !== src.source || propsDirty);
   // Unsaved code is never lost to Escape, the backdrop or ×: ask first.
   const close = () =>
     dirty && src?.editable
@@ -43,12 +57,33 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       : setState({ modal: null });
   const save = async () => {
     setErrors([]);
+    const problems = propsDirty ? schemaProblems(rows) : [];
+    if (problems.length) return (setErrors(problems), setTab('manifest'));
     const r = await prepareCodeForSave(draft, setStatus, alive);
     if (!r.ok) return setErrors(r.problems);
     if (!alive()) return;
     if (r.source !== draft) setDraft(r.source);
-    if (await applyOps([{ type: 'component.updateSource', definitionId, source: r.source, expectedHash: src!.hash }], `Edit ${def.name} source`))
-      toast(r.fixed ? `Fixed and saved: ${r.fixed}` : r.warnings?.length ? `Saved with ${r.warnings.length} warning${r.warnings.length === 1 ? '' : 's'}. ${r.warnings[0]}` : 'Saved. Every page using this component is updated.');
+    const properties = propsDirty ? propertiesFromRows(rows) : undefined;
+    // A renamed property is a new property: placements lose what they set for the old name.
+    const renamed = properties ? rows.filter((row) => row.orig && row.orig !== row.name && !rows.some((x) => x.name === row.orig)) : [];
+    if (
+      renamed.length &&
+      (await confirmDialog({
+        title: 'Rename properties?',
+        body: `Placements lose the content they set for ${renamed.map((x) => `"${x.orig}"`).join(', ')}, and the source must use the new name${renamed.length === 1 ? '' : 's'}.`,
+        confirmLabel: 'Rename',
+        cancelLabel: 'Keep editing'
+      })) !== true
+    )
+      return;
+    if (!(await applyOps([{ type: 'component.updateSource', definitionId, source: r.source, expectedHash: src!.hash, ...(properties ? { properties } : {}) }], `Edit ${def.name} source`))) return;
+    if (properties) {
+      // Show the schema as the engine stored it (filled defaults, trimmed labels), even when nothing changed.
+      const stored = (await api.project.snapshot())?.state.components[definitionId]?.properties ?? {};
+      setRows(rowsFromProperties(stored));
+      setSavedProps(JSON.stringify(stored));
+    }
+    toast(r.fixed ? `Fixed and saved: ${r.fixed}` : r.warnings?.length ? `Saved with ${r.warnings.length} warning${r.warnings.length === 1 ? '' : 's'}. ${r.warnings[0]}` : 'Saved. Every page using this component is updated.');
   };
   return (
     <Modal
@@ -60,7 +95,14 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
         src?.editable ? (
           <>
             <span className="faint grow" style={{ fontSize: 12 }}>{status ?? `Saved code is checked first, and fixed automatically when needed. ${src.path}`}</span>
-            <button className="btn" disabled={!dirty || !!status} onClick={() => setDraft(src.source)}>
+            <button
+              className="btn"
+              disabled={!dirty || !!status}
+              onClick={() => {
+                setDraft(src.source);
+                setRows(rowsFromProperties(def.properties));
+              }}
+            >
               Revert
             </button>
             <button className="btn btn-primary" disabled={!dirty || !!status} onClick={() => void save()}>
@@ -82,7 +124,11 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       <div className="col" style={{ gap: 10 }}>
         <Tabs value={tab} onChange={setTab} label="Source views" idBase="source" options={[{ value: 'source', label: 'Svelte source' }, { value: 'manifest', label: 'Properties' }]} />
         <TabPanel idBase="source" value={tab}>
-          {tab === 'manifest' ? (
+          {tab === 'manifest' && src?.editable ? (
+            <div style={{ maxHeight: '60vh', overflow: 'auto' }}>
+              <PropSchemaEditor rows={rows} onChange={setRows} readOnly={!!status} />
+            </div>
+          ) : tab === 'manifest' ? (
             <pre className="code-view" tabIndex={0}>{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.keys(def.variants ?? {}) }, null, 2)}</pre>
           ) : src?.editable ? (
             <CodeEditor value={draft} onChange={setDraft} />
@@ -155,25 +201,36 @@ const STARTER = `<script>
 </style>
 `;
 
+/** The properties the starter source reads; the person edits them in the Properties tab before creating. */
+const STARTER_PROPERTIES = {
+  heading: { type: 'string', label: 'Heading', default: 'Hello' },
+  text: { type: 'string', label: 'Text', default: 'A custom component.', multiline: true }
+} as const;
+
 export function NewCodeComponentModal() {
   const [name, setName] = useState('');
   const [source, setSource] = useState(STARTER);
+  const [tab, setTab] = useState<'source' | 'manifest'>('source');
+  const [rows, setRows] = useState<SchemaRow[]>(() => rowsFromProperties(structuredClone(STARTER_PROPERTIES) as never));
+  const [initialProps] = useState(() => JSON.stringify(STARTER_PROPERTIES));
   const [errors, setErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const alive = useAlive();
   // Every way out (×, Escape, backdrop, Cancel) goes through here, so unsaved code is never dropped silently.
   const close = () =>
-    source !== STARTER || name.trim()
+    source !== STARTER || name.trim() || JSON.stringify(propertiesFromRows(rows)) !== initialProps
       ? void confirmDialog({ title: 'Discard this new component?', body: 'Your code has not been saved.', confirmLabel: 'Discard', cancelLabel: 'Keep editing', danger: true }).then((ok) => ok === true && setState({ modal: null }))
       : setState({ modal: null });
   const create = async () => {
     setErrors([]);
+    const problems = schemaProblems(rows);
+    if (problems.length) return (setErrors(problems), setTab('manifest'));
     const checked = await prepareCodeForSave(source, setStatus, alive);
     if (!checked.ok) return setErrors(checked.problems);
     if (!alive()) return;
     if (checked.fixed) toast(`Fixed before saving: ${checked.fixed}`);
     const r = await applyOps(
-      [{ type: 'component.createCode', name: name.trim(), source: checked.source, properties: { heading: { type: 'string', label: 'Heading', default: 'Hello' }, text: { type: 'string', label: 'Text', default: 'A custom component.' } } }],
+      [{ type: 'component.createCode', name: name.trim(), source: checked.source, properties: propertiesFromRows(rows) }],
       `Create ${name.trim()}`
     );
     const id = r?.[0]?.definitionId as string | undefined;
@@ -204,7 +261,16 @@ export function NewCodeComponentModal() {
         <Field label="Name">
           <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Booking widget" />
         </Field>
-        <CodeEditor value={source} onChange={setSource} height="46vh" />
+        <Tabs value={tab} onChange={setTab} label="New component views" idBase="new-code" options={[{ value: 'source', label: 'Svelte source' }, { value: 'manifest', label: `Properties (${rows.length})` }]} />
+        <TabPanel idBase="new-code" value={tab}>
+          {tab === 'source' ? (
+            <CodeEditor value={source} onChange={setSource} height="46vh" />
+          ) : (
+            <div style={{ height: '46vh', overflow: 'auto' }}>
+              <PropSchemaEditor rows={rows} onChange={setRows} readOnly={!!status} />
+            </div>
+          )}
+        </TabPanel>
         {errors.map((e, i) => (
           <div key={i} className="scope-note danger mono">
             {e}

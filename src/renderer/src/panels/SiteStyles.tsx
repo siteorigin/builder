@@ -7,6 +7,7 @@ import { getTheme, listThemes } from '@catalogue/index';
 import { allTrees, instancesOf } from '@engine/tree';
 import { api, applyOps, useStore } from '../store';
 import { DraftInput, Field, Section, openSection } from '../components/ui';
+import { CustomTokens } from './CustomTokens';
 
 const FONT_CHOICES = [
   { label: 'Inter (sans-serif)', value: "'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif" },
@@ -752,6 +753,7 @@ export function SiteStyles() {
     { id: 'tok-color', label: 'Colors' },
     { id: 'tok-text', label: 'Text' },
     { id: 'tok-layout', label: 'Layout' },
+    { id: 'tok-custom', label: 'Yours' },
     { id: 'site-settings', label: 'Site' }
   ];
   const reviewId = `${uid}-review`;
@@ -886,6 +888,10 @@ export function SiteStyles() {
             </div>
           );
         })}
+      </Section>
+
+      <Section title="Your styles" id="tok-custom" defaultOpen={st.tokens.custom.length > 0} scope={st.tokens.custom.length ? String(st.tokens.custom.length) : undefined}>
+        <CustomTokens state={st} />
       </Section>
 
       <Section title="Site details" id="site-settings" defaultOpen={false}>

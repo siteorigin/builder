@@ -117,6 +117,11 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
       if (from && from.type !== schema.type) fail(`"${parent!.name}" passes its ${from.type} property to "${name}". Change both together, or unbind it there first.`);
       continue;
     }
+    // Placements start with every default filled in; an untouched default is not content to keep.
+    if (retyped && JSON.stringify(v) === JSON.stringify(prev!.default)) {
+      node.props[name] = clone(schema.default);
+      continue;
+    }
     if (retyped && !(lossless[prev!.type] ?? []).includes(schema.type)) fail(`${label}: "${name}" has content that a ${schema.type} property cannot keep. Remove the property and add it again to start over.`);
     try {
       node.props[name] = normalizeProp(schema, v, state, `${def.name} → ${schema.label}`);

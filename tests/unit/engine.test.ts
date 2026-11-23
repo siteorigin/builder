@@ -766,3 +766,15 @@ describe('review follow-ups for definition editing', () => {
     }
   });
 });
+
+describe('schema type changes on placed components', () => {
+  it('treats an untouched default as no content, so the type can change', () => {
+    let s = fresh();
+    const c = applyOperations(s, [{ type: 'component.createCode', name: 'Flag', source: '<p>x</p>\n', properties: { shown: { type: 'string', label: 'Shown', default: 'yes' } } }]);
+    s = c.state;
+    const id = c.results[0].definitionId as string;
+    const ins = applyOperations(s, [{ type: 'node.insert', owner: owner(s), definitionId: id }]);
+    s = applyOperations(ins.state, [{ type: 'component.setPropSchema', definitionId: id, prop: 'shown', schema: { type: 'boolean', label: 'Shown', default: true } }]).state;
+    expect((home(s).nodes[ins.results[0].nodeId as string] as InstanceNode).props.shown).toBe(true);
+  });
+});
