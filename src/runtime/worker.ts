@@ -4,13 +4,10 @@
  * Its environment is constructed explicitly by the main process and never contains provider credentials.
  */
 import { createRequire } from 'node:module';
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import bridgeSource from './bridge.client.js?raw';
-import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, previewFsPolicy, realFileInside } from './policy';
-import { projectSrcPath } from './paths';
+import { devPlugin } from './dev-plugin';
+import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, previewFsPolicy } from './policy';
 
 type Msg =
   | { type: 'start'; dir: string; port?: number; packaged?: boolean }
@@ -27,68 +24,6 @@ async function loadVite(dir: string) {
   const req = createRequire(join(dir, 'package.json'));
   const entry = req.resolve('vite');
   return (await import(pathToFileURL(entry).href)) as typeof import('vite');
-}
-
-/**
- * Hashes of the project files the dev variants stand in for, written by the editor next to the variants
- * (before the project files themselves), re-read when they change.
- */
-let manifest: { mtimeMs: number; files: Record<string, string> } | null = null;
-function generatedHashes(dir: string): Record<string, string> {
-  const file = join(dir, '.siteorigin', 'cache', 'dev', '.clean-hashes.json');
-  try {
-    const cache = join(dir, '.siteorigin', 'cache', 'dev');
-    if (!realFileInside(cache, file) || !realFileInside(dir, file)) return {};
-    const mtimeMs = statSync(file).mtimeMs;
-    if (manifest?.mtimeMs !== mtimeMs) manifest = { mtimeMs, files: JSON.parse(readFileSync(file, 'utf8')) ?? {} };
-    return manifest.files;
-  } catch {
-    return {};
-  }
-}
-
-/** Does the project file differ from what the editor generated for it? */
-function editedOutside(dir: string, rel: string): boolean {
-  const expected = generatedHashes(dir)[rel];
-  if (!expected) return false;
-  try {
-    return createHash('sha256').update(readFileSync(join(dir, ...rel.split('/')))).digest('hex') !== expected;
-  } catch {
-    return false;
-  }
-}
-
-function devPlugin(dir: string) {
-  const devRoot = join(dir, '.siteorigin', 'cache', 'dev');
-  const VIRTUAL = 'virtual:siteorigin-bridge';
-  // Vite names modules by real path, so a project opened through a link is matched by both names.
-  const names = [dir];
-  try {
-    const real = realpathSync.native(dir);
-    if (real !== dir) names.push(real);
-  } catch {
-    // The folder is checked again when Vite starts; keep the name it was opened by.
-  }
-  return {
-    name: 'siteorigin-editor-instrumentation',
-    enforce: 'pre' as const,
-    resolveId(id: string) {
-      if (id === VIRTUAL) return '\0' + VIRTUAL + '.js';
-      return null;
-    },
-    load(id: string) {
-      if (id === '\0' + VIRTUAL + '.js') return bridgeSource;
-      const rel = projectSrcPath(names, id);
-      if (!rel) return null;
-      const variant = join(devRoot, ...rel.split('/'));
-      if (!existsSync(variant)) return null;
-      // Only a file really inside the cache (no link out of it) is ever served in place of the project's.
-      if (!realFileInside(devRoot, variant) || !realFileInside(dir, variant)) return null;
-      // A generated file edited outside the app is shown as edited, not as the editor's instrumented copy.
-      if (editedOutside(dir, rel)) return null;
-      return readFileSync(variant, 'utf8');
-    }
-  };
 }
 
 /**

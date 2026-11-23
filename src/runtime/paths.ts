@@ -21,3 +21,14 @@ export function projectSrcPath(dirs: string | string[], id: string): string | nu
   }
   return null;
 }
+
+/**
+ * Does a module id Vite asks for name the module itself, rather than something derived from its file? Importers add
+ * queries for those: a Svelte component's stylesheet (`?svelte&type=style&lang.css`, and SvelteKit's `?inline&…`
+ * for the styles it writes into a server-rendered page), `?raw`, `?url`, `?direct`. Only a dependency version stamp
+ * (`?v=`, alone) still names the module.
+ */
+export function wholeModuleId(id: string): boolean {
+  const q = id.indexOf('?');
+  return q < 0 || /^(?:v=[\w.-]*)?$/.test(id.slice(q + 1));
+}
