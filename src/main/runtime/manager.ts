@@ -9,7 +9,7 @@ import type { WebsiteTools } from '@shared/api';
 import { sha } from '../project/fsutil';
 import { statesFailure, type BuildErrorInfo } from '../../runtime/build-diagnostics';
 import { LineTail } from './line-tail';
-import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, notInstalled, npmErrorCode, type LockedPackage, type ToolsAvailability } from './availability';
+import { NETWORK_CODES, ToolsDownloadError, cacheCoverage, lockedPackages, nativeNotInstalled, npmErrorCode, type LockedPackage, type ToolsAvailability } from './availability';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -142,14 +142,17 @@ export async function prepareDependencies(dir: string, onLine: (line: string) =>
     // Plain error lines, so the code npm reports can be read whatever the author's own npm settings say.
     '--color=false',
     '--heading=npm',
-    // The platform and the packages the check worked out, whatever those settings say.
+    // The packages the check worked out, laid out where it expects them, whatever those settings say.
     `--os=${process.platform}`,
     `--cpu=${process.arch}`,
     '--include=dev',
+    '--include=optional',
+    '--include=peer',
+    '--install-strategy=hoisted',
     `--cache=${cache}`
   ];
-  // npm skips an optional package it could not fetch without failing, so what the check counted must be in place.
-  const left = () => (tools ? notInstalled(dir, tools.packages) : []);
+  // npm skips an optional native tool it could not fetch without failing: the ones the check counted must be in place.
+  const left = () => (tools ? nativeNotInstalled(dir, tools.packages) : []);
   const download = async () => {
     try {
       await runNpm([...base, '--prefer-offline'], dir, onLine, signal);

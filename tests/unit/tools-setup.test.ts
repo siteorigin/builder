@@ -46,8 +46,9 @@ vi.mock('node:child_process', async (importOriginal) => {
       const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => true });
       setTimeout(() => {
         if (result.code === 0) npm.install?.(opts.cwd);
-        if (result.stderr) child.stderr.emit('data', result.stderr);
+        // The process ends before the last of its output has been read, as a real one can.
         child.emit('exit', result.code);
+        if (result.stderr) child.stderr.emit('data', result.stderr);
         child.emit('close', result.code);
       }, 0);
       return child;
@@ -66,7 +67,7 @@ const starter = join(__dirname, '../../templates/sveltekit-brochure/files');
 /** The native build tool this computer needs: optional in the lock, and what a skipped fetch leaves out. */
 const binding = `node_modules/@rolldown/binding-${process.platform}-${process.arch}${process.platform === 'linux' ? '-gnu' : process.platform === 'win32' ? '-msvc' : ''}`;
 
-let needed: Array<{ location: string; integrity?: string }> = [];
+let needed: Array<{ location: string; integrity?: string; native?: boolean }> = [];
 beforeAll(async () => {
   needed = await lockedPackages(npmDir, starter);
 });
@@ -118,7 +119,9 @@ describe('a development build, with no tools shipped', () => {
     expect(npm.trace[0]).toMatch(/^Downloading the website tools/);
     expect(npm.trace[1]).toBe('npm --prefer-offline');
     // The platform and packages npm installs are the ones the check counted, whatever the author's npm settings say.
-    expect(npm.runs[0]).toEqual(expect.arrayContaining(['ci', `--cache=${userCache()}`, `--os=${process.platform}`, `--cpu=${process.arch}`, '--include=dev', '--color=false', '--heading=npm']));
+    expect(npm.runs[0]).toEqual(
+      expect.arrayContaining(['ci', `--cache=${userCache()}`, `--os=${process.platform}`, `--cpu=${process.arch}`, '--include=dev', '--include=optional', '--include=peer', '--install-strategy=hoisted', '--color=false', '--heading=npm'])
+    );
     expect(existsSync(marker())).toBe(true);
   });
 
@@ -138,7 +141,9 @@ describe('a development build, with no tools shipped', () => {
       npm.results.push({ code: 1, stderr: `npm error code ${code}\nnpm error the cached copy could not be used\n` });
       await install();
       expect(modes()).toEqual([['--offline'], ['--prefer-offline']]);
-      expect(npm.trace.indexOf('A saved copy of the website tools could not be used, so it is being downloaded again…')).toBeLessThan(npm.trace.lastIndexOf('npm --prefer-offline'));
+      const explained = npm.trace.indexOf('A saved copy of the website tools could not be used, so it is being downloaded again…');
+      expect(explained).toBeGreaterThan(npm.trace.indexOf('npm --offline'));
+      expect(explained).toBeLessThan(npm.trace.indexOf('npm --prefer-offline'));
       expect(existsSync(marker())).toBe(true);
     });
   }
@@ -178,9 +183,17 @@ describe('a development build, with no tools shipped', () => {
     npm.skip.push(binding);
     const error = await install().catch((e) => e);
     expect(error).toBeInstanceOf(ToolsDownloadError);
+    expect(error.code).toBe('EMISSING');
     expect(error.message).toContain(binding.replace('node_modules/', ''));
     // No marker: the next preview start installs again.
     expect(existsSync(marker())).toBe(false);
+  });
+
+  it('leaves it to npm whether an optional package that is not a native tool is needed', async () => {
+    const plain = needed.find((p) => !p.native)!;
+    npm.skip.push(plain.location);
+    await install();
+    expect(existsSync(marker())).toBe(true);
   });
 
   it('keeps a download that failed for another reason a plain failure', async () => {

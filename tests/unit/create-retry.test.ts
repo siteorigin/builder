@@ -271,6 +271,7 @@ describe('New project when the website tools cannot be downloaded', () => {
     // The editor opens with it: the first snapshot it gets already says so.
     const first = hooks.sent.find((m) => m.channel === 'project:changed')?.payload as { runtime: unknown };
     expect(first.runtime).toMatchObject(error);
+    expect(hooks.sent.filter((m) => m.channel === 'runtime:status').map((m) => m.payload)).toEqual([expect.objectContaining(error)]);
     // The switch to it is told as opening the project, not as starting a preview that waits for its tools.
     const steps = hooks.sent.filter((m) => m.channel === 'create:progress').map((m) => m.payload as { step: string; message: string });
     expect(steps.filter((p) => p.step === 'preview').map((p) => p.message)).toEqual(['Opening the project…']);

@@ -42,6 +42,9 @@ describe('the website tools setup installs', () => {
     expect(mac).toContain('node_modules/@sveltejs/kit');
     const lock = JSON.parse(readFileSync(join(starter, 'package-lock.json'), 'utf8'));
     expect(packages.find((p) => p.location === 'node_modules/@sveltejs/kit')?.integrity).toBe(lock.packages['node_modules/@sveltejs/kit'].integrity);
+    // Native tools are told apart: npm skips one it could not fetch without failing.
+    expect(packages.find((p) => p.location === 'node_modules/@rolldown/binding-darwin-arm64')?.native).toBe(true);
+    expect(packages.find((p) => p.location === 'node_modules/@sveltejs/kit')?.native).toBe(false);
     expect(mac).toContain('node_modules/@rolldown/binding-darwin-arm64');
     expect(mac).not.toContain('node_modules/@rolldown/binding-linux-x64-gnu');
     // The WebAssembly binding is optional and for another CPU; its own dependencies have no platform of their own but
@@ -101,8 +104,10 @@ describe('website tools availability', () => {
     expect(contentPaths('/c', `${integrity} ${sri('svelte', 'sha1')}`)).toEqual([cacachePath('/c/_cacache', integrity)]);
     // Two of the strongest: npm takes either copy.
     expect(contentPaths('/c', `${integrity} ${sri('kit')}`)).toEqual([cacachePath('/c/_cacache', integrity), cacachePath('/c/_cacache', sri('kit'))]);
-    // An algorithm this Node cannot compute is passed over, as npm passes it over.
+    // An algorithm this Node cannot compute is passed over, as npm passes it over; one it can but npm does not rank
+    // is still used when it is the only one.
     expect(contentPaths('/c', `whirlpool-${Buffer.from('x').toString('base64')} ${sri('svelte', 'md5')}`)).toEqual([cacachePath('/c/_cacache', sri('svelte', 'md5'))]);
+    expect(contentPaths('/c', sri('svelte', 'blake2b512'))).toEqual([cacachePath('/c/_cacache', sri('svelte', 'blake2b512'))]);
   });
 
   it('says nothing is downloaded when every package this computer needs is in the cache, and counts what is not', async () => {

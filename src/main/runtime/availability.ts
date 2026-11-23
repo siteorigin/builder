@@ -7,6 +7,8 @@ import { join } from 'node:path';
 export interface LockedPackage {
   location: string;
   integrity?: string;
+  /** Built for particular platforms (a native tool): npm skips such an optional package silently when its fetch fails. */
+  native?: boolean;
 }
 
 /** Whether the website tools a project needs are all in the npm caches, so setting them up needs no network. */
@@ -29,6 +31,7 @@ export interface Platform {
 interface IdealNode {
   location: string;
   integrity?: string | null;
+  package: { os?: unknown; cpu?: unknown; libc?: unknown };
   isProjectRoot?: boolean;
   isLink?: boolean;
   inBundle?: boolean;
@@ -61,12 +64,13 @@ export async function lockedPackages(npmDir: string, dir: string, platform: Plat
   const tree: { inventory: Map<string, IdealNode> } = await arb.buildIdealTree();
   return [...tree.inventory.values()]
     .filter((n) => !n.isProjectRoot && !n.isLink && !n.inBundle && !n.inert)
-    .map((n) => ({ location: n.location, integrity: n.integrity ?? undefined }));
+    .map((n) => ({ location: n.location, integrity: n.integrity ?? undefined, native: !!(n.package.os || n.package.cpu || n.package.libc) }));
 }
 
 // The digest npm reads a package from is the strongest one its integrity lists that this Node can compute (ssri's
-// `pickAlgorithm`, which drops the others).
-const PRIORITY = ['md5', 'whirlpool', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512'].filter((a) => getHashes().includes(a));
+// `pickAlgorithm`, which drops the others and ranks any it does not know below these).
+const PRIORITY = ['md5', 'whirlpool', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512'];
+const HASHES = new Set(getHashes());
 
 /**
  * Where an integrity's content lives inside an npm cache (`<cache>/_cacache`, cacache's content-v2 layout), one path
@@ -79,7 +83,7 @@ export function contentPaths(cache: string, integrity: string): string[] {
     .map((s) => /^([a-z0-9]+)-([A-Za-z0-9+/=]+)(\?.*)?$/i.exec(s))
     .filter((m): m is RegExpExecArray => !!m)
     .map((m) => ({ algorithm: m[1].toLowerCase(), hex: Buffer.from(m[2], 'base64').toString('hex') }))
-    .filter((d) => PRIORITY.includes(d.algorithm));
+    .filter((d) => HASHES.has(d.algorithm));
   if (!digests.length) return [];
   const strongest = digests.reduce((best, d) => (PRIORITY.indexOf(d.algorithm) > PRIORITY.indexOf(best.algorithm) ? d : best)).algorithm;
   return digests.filter((d) => d.algorithm === strongest && d.hex).map((d) => join(cache, '_cacache', 'content-v2', d.algorithm, d.hex.slice(0, 2), d.hex.slice(2, 4), d.hex.slice(4)));
@@ -98,9 +102,12 @@ export function cacheCoverage(packages: LockedPackage[], caches: string[]): Tool
  */
 export const NETWORK_CODES = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'EIDLETIMEOUT', 'FETCH_ERROR', 'ENETUNREACH', 'ENETDOWN', 'EHOSTUNREACH', 'ECONNABORTED'];
 
-/** Of the packages, those npm has not put into the project: an optional one it could not fetch is skipped silently. */
-export function notInstalled(dir: string, packages: LockedPackage[]): LockedPackage[] {
-  return packages.filter((p) => !existsSync(join(dir, p.location, 'package.json')));
+/**
+ * Of the native tools among the packages, those npm has not put into the project: an optional package it could not
+ * fetch is skipped without failing the install, and a build tool without its native part does not run.
+ */
+export function nativeNotInstalled(dir: string, packages: LockedPackage[]): LockedPackage[] {
+  return packages.filter((p) => p.native && !existsSync(join(dir, p.location, 'package.json')));
 }
 
 /** The error code npm printed for a failed run (`npm error code ENOTFOUND`), if it printed one. */
