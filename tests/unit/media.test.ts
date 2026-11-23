@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { brotliCompressSync, deflateSync } from 'node:zlib';
+import { brotliCompressSync, constants as zlib, deflateSync } from 'node:zlib';
 import { fontInfo, imageInfo, orientPixels } from '../../src/main/project/media';
 
 const u16 = (n: number) => Buffer.from([n >> 8, n & 255]);
@@ -144,7 +144,8 @@ function woff(tables: Array<[string, Buffer]>): Buffer {
 
 function woff2(tables: Array<[number, Buffer]>): Buffer {
   const dir = Buffer.concat(tables.map(([index, raw]) => Buffer.from([index, ...(raw.length < 128 ? [raw.length] : [0x80 | (raw.length >> 7), raw.length & 127])])));
-  const packed = brotliCompressSync(Buffer.concat(tables.map(([, raw]) => raw)));
+  // Quality 1: the fixtures only need a valid stream, and the default (11) takes seconds on the bomb's 70 MB.
+  const packed = brotliCompressSync(Buffer.concat(tables.map(([, raw]) => raw)), { params: { [zlib.BROTLI_PARAM_QUALITY]: 1 } });
   const header = Buffer.alloc(48);
   header.write('wOF2', 0, 'ascii');
   header.writeUInt16BE(tables.length, 12);
@@ -171,8 +172,8 @@ describe('web font metadata', () => {
     // A WOFF table claiming far more than a metadata table can be.
     const big = Buffer.alloc(8 * 1024 * 1024);
     expect(() => fontInfo(woff([['name', big]]))).toThrow(/damaged/);
-    // A WOFF2 stream that unpacks past the budget.
-    expect(() => fontInfo(woff2([[5, Buffer.alloc(70 * 1024 * 1024)]]))).toThrow(/too large|damaged/);
+    // A WOFF2 stream that unpacks past the budget is stopped by the output limit, not read to the end.
+    expect(() => fontInfo(woff2([[5, Buffer.alloc(70 * 1024 * 1024)]]))).toThrow(/too large/);
     const collection = woff2([[5, nameTable('X')]]);
     collection.write('ttcf', 4, 'latin1');
     expect(() => fontInfo(collection)).toThrow(/collection/);
