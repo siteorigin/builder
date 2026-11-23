@@ -268,12 +268,17 @@ describe('empty action rows', () => {
   it.each(['hero.centered', 'hero.split', 'cta.banner'] as const)('%s renders the actions row for either label and leaves it out when both are cleared', (componentId) => {
     const actions = classed(nodeClass(componentId, 'actions'));
     const buttons = (out: string) => [...out.matchAll(/<(?:a|span)\b[^>]*class="[^"]*so-btn[^"]*"[^>]*>([^<]*)<\/(?:a|span)>/g)].map((m) => m[1]);
+    // Resolved links, as the export passes them: a button shows only with a destination.
+    const to = { href: '/contact/' };
     for (const [primaryLabel, secondaryLabel] of [['Go', ''], ['', 'More'], ['Go', 'More']]) {
-      const out = html(componentId, { primaryLabel, secondaryLabel });
+      const out = html(componentId, { primaryLabel, secondaryLabel, primaryLink: to, secondaryLink: to });
       expect(out).toMatch(actions);
       expect(buttons(out)).toEqual([primaryLabel, secondaryLabel].filter(Boolean));
     }
-    for (const blank of ['', '  ']) expect(html(componentId, { primaryLabel: blank, secondaryLabel: '' })).not.toMatch(actions);
+    for (const blank of ['', '  ']) expect(html(componentId, { primaryLabel: blank, secondaryLabel: '', primaryLink: to, secondaryLink: to })).not.toMatch(actions);
+    // A label with nowhere to go leaves no button for visitors.
+    expect(buttons(html(componentId, { primaryLabel: 'Go', secondaryLabel: 'More', primaryLink: null, secondaryLink: null }))).toEqual([]);
+    expect(buttons(html(componentId, { primaryLabel: 'Go', secondaryLabel: 'More', primaryLink: to, secondaryLink: null }))).toEqual(['Go']);
   });
 });
 

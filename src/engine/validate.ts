@@ -145,7 +145,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     for (const n of Object.values(tree.nodes)) walk(n, n.id);
     if (owner.kind !== 'component')
       for (const b of unlinkedButtons(state, tree))
-        out.push({ severity: 'warning', code: 'BUTTON_UNLINKED', message: `${label}: the “${b.label}” button has no link, so it shows as plain text. Choose a destination or clear its label.`, owner, nodeId: b.nodeId });
+        out.push({ severity: 'warning', code: 'BUTTON_UNLINKED', message: `${label}: the “${b.label}” button has no link, so visitors won’t see it. Choose where it goes, or hide the button.`, owner, nodeId: b.nodeId });
     // Theme definitions are fixed theme data; a project component's own forms are checked like a page's.
     const inTheme = owner.kind === 'component' && state.components[owner.id]?.owner === 'theme';
     for (const n of Object.values(tree.nodes)) {

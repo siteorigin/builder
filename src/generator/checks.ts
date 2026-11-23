@@ -18,6 +18,21 @@ interface Scope {
   item?: Record<string, unknown>;
   /** Fields of the list the current item comes from, for their defaults. */
   fields?: Record<string, PropSchema>;
+  /** The property holding that list, when the definition's own property is the list. */
+  list?: string;
+  /** The placement in the page or shell tree, while walking the definition it places directly. */
+  placement?: string;
+  /** Inside a component placed in another's design: which of its properties the placement's own fields fill. */
+  forwarded?: Record<string, PlacementField>;
+  /** How many lists were entered since the placement, and the item of the first, which this rendering is part of. */
+  repeats?: number;
+  occurrence?: string;
+  /** The items of the lists entered in this definition, outermost first (what the editor's selection names). */
+  path?: string[];
+  /** Walked once but rendered more than once: slot content the receiving component places inside a list. */
+  multiple?: boolean;
+  /** The slots this content is shown through, outermost first, each named by the frame supplying it and the slot. */
+  slots?: string[];
 }
 
 function evaluate(v: unknown, scope: Scope): unknown {
@@ -42,8 +57,15 @@ function shown(v: unknown, state: ProjectState): boolean {
 }
 
 interface Visit {
-  /** A link node about to render. */
-  link?: (n: GraphNode & { kind: 'link' }, scope: Scope, reportId: string) => void;
+  /** Every node about to render, before its kind's own callback. */
+  node?: (n: GraphNode, scope: Scope, reportId: string, inDef: boolean) => void;
+  /**
+   * A link node about to render; `inDef` when it is a component definition's node rather than the tree's own, and
+   * `ownId` the id its markup carries.
+   */
+  link?: (n: GraphNode & { kind: 'link' }, scope: Scope, reportId: string, inDef: boolean, ownId: string | undefined) => void;
+  /** Content of the slot named (as in `Scope.slots`) is shown again, by another slot of the same name. */
+  again?: (slot: string) => void;
   /** An image node about to render. */
   image?: (n: GraphNode & { kind: 'image' }, scope: Scope, reportId: string) => void;
   /** A text node about to render. */
@@ -74,6 +96,8 @@ interface Frame {
   n: number;
   /** Definitions being expanded through definition trees on the way here: one that places itself stops. */
   defs: Set<string>;
+  /** The frame this one is a copy of (with a scope marking how its slot content is shown): one frame for dedupe. */
+  origin?: Frame;
 }
 
 /** Each property's effective value for a placement: its own (evaluated where it is placed) or the default. */
@@ -125,9 +149,10 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
     if (page) visit.enter?.(n);
     // A definition's root takes the id its placement gives it first (`so_id ?? anchor`).
     const ownId = frame.def && frame.def.tree?.rootIds[0] === id ? (frame.soId ?? n.anchor) : n.anchor;
+    visit.node?.(n, frame.scope, reportId, !!frame.def);
     switch (n.kind) {
       case 'link':
-        visit.link?.(n, frame.scope, reportId);
+        visit.link?.(n, frame.scope, reportId, !!frame.def, ownId);
         break;
       case 'image':
         visit.image?.(n, frame.scope, reportId);
@@ -143,17 +168,31 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         const items = evaluate(n.list, frame.scope);
         const schema = isBinding(n.list) && '$prop' in n.list ? frame.def.properties[n.list.$prop] : undefined;
         const fields = schema?.type === 'list' ? schema.fields : undefined;
-        for (const item of Array.isArray(items) ? items : []) for (const c of n.children) walk({ ...frame, scope: { ...frame.scope, item: item as Record<string, unknown>, fields } }, c, inner);
+        const list = schema?.type === 'list' && isBinding(n.list) && '$prop' in n.list ? n.list.$prop : undefined;
+        const repeats = (frame.scope.repeats ?? 0) + 1;
+        for (const item of Array.isArray(items) ? (items as Array<Record<string, unknown>>) : []) {
+          const occurrence = repeats === 1 && typeof item?.id === 'string' ? item.id : frame.scope.occurrence;
+          const path = [...(frame.scope.path ?? []), String(item?.id ?? '')];
+          for (const c of n.children) walk({ ...frame, scope: { ...frame.scope, item, fields, list, repeats, occurrence, path } }, c, inner);
+        }
         break;
       }
       case 'slot': {
         const from = frame.slots;
         if (!from) break;
         const k = `${from.owner}:${n.slot}`;
-        const walked = slotsWalked.get(from.frame) ?? new Set<string>();
-        if (walked.has(k)) break;
-        slotsWalked.set(from.frame, walked.add(k));
-        for (const c of from.content[n.slot] ?? []) walk(from.frame, c, inner);
+        const supplier = from.frame.origin ?? from.frame;
+        const walked = slotsWalked.get(supplier) ?? new Set<string>();
+        const slot = JSON.stringify([from.frame.n, from.owner, n.slot]);
+        if (walked.has(k)) {
+          visit.again?.(slot);
+          break;
+        }
+        slotsWalked.set(supplier, walked.add(k));
+        // Content a slot inside a list shows once per item, though it is walked once, in the frame that supplied it.
+        const multiple = from.frame.scope.multiple || frame.scope.multiple || (frame.scope.repeats ?? 0) > (from.frame.scope.repeats ?? 0);
+        const target = { ...from.frame, origin: supplier, scope: { ...from.frame.scope, multiple, slots: [...(from.frame.scope.slots ?? []), slot] } };
+        for (const c of from.content[n.slot] ?? []) walk(target, c, inner);
         break;
       }
       case 'instance': {
@@ -162,14 +201,23 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         const props = effectiveProps(def, n, frame.scope);
         if (def.kind === 'managed' && def.tree) {
           const trail = `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`;
-          const child: Frame = { tree: def.tree, def, scope: { props, trail }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          // A component inside a design reads the placement's own fields only through the bindings it is given.
+          const forwarded: Record<string, PlacementField> = {};
+          if (frame.def) for (const [k, v] of Object.entries(n.props)) {
+            const f = placementField(v, frame.scope);
+            if (f) forwarded[k] = f;
+          }
+          const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots };
+          const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
+          const child: Frame = { tree: def.tree, def, scope: { props, trail, ...where }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`);
           // Code that places `so_id` as an id (a converted section does, on its root) carries the placement's id.
           if (ownId && SO_ID_ATTR.test(def.source ?? '')) visit.id?.(ownId, reportId);
-          // Code places its slot content where its own markup says; count all of it as rendered.
-          for (const ids of Object.values(n.slots ?? {})) for (const c of ids) walk(frame, c, inner);
+          // Code places its slot content where its own markup says; count all of it as rendered, as often as it likes.
+          const placed = frame.scope.multiple ? frame : { ...frame, origin: frame.origin ?? frame, scope: { ...frame.scope, multiple: true } };
+          for (const ids of Object.values(n.slots ?? {})) for (const c of ids) walk(placed, c, inner);
         }
         break;
       }
@@ -182,27 +230,103 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
   for (const r of tree.rootIds) walk(top, r, new Set());
 }
 
+/** A content field of a placement: one of its properties, or one field of one item in a list property. */
+export interface PlacementField {
+  prop: string;
+  itemId?: string;
+  field?: string;
+}
+
 export interface UnlinkedButton {
   /** Node in the page or shell tree (the instance, for buttons inside a component). */
   nodeId: string;
   label: string;
+  /** The button's own node in the component definition, for a button inside a component. */
+  defNodeId?: string;
+  /** For a button inside lists of the placed component's own design: their items, outermost first. */
+  itemPath?: string[];
+  /** Where the placement's content sets the button's destination. */
+  link?: PlacementField;
+  /** The label field that decides whether this one button shows at all: clearing it hides only this button. */
+  hide?: PlacementField;
 }
 
 /**
- * Buttons that will render with a label but no destination. They show as plain text on the site, which is
- * easy to miss in the editor, so they are reported as diagnostics.
+ * The placement's own field a definition binding reads: directly, for the definition the placement places, or
+ * through the bindings that hand it to a component inside that design.
+ */
+function placementField(b: unknown, scope: Scope): PlacementField | undefined {
+  if (!isBinding(b)) return undefined;
+  if ('$prop' in b) return scope.placement ? { prop: b.$prop } : scope.forwarded?.[b.$prop];
+  const id = scope.item?.id;
+  if (!scope.list || typeof id !== 'string' || !id) return undefined;
+  const list = scope.placement ? { prop: scope.list } : scope.forwarded?.[scope.list];
+  return list && !list.itemId ? { prop: list.prop, itemId: id, field: b.$item } : undefined;
+}
+
+/** The schema of a placement's field: a property of the placed component, or a field of its list's items. */
+function fieldSchema(state: ProjectState, tree: NodeTree, placementId: string, f: PlacementField): PropSchema | undefined {
+  const inst = tree.nodes[placementId];
+  const schema = inst?.kind === 'instance' ? state.components[inst.definitionId]?.properties[f.prop] : undefined;
+  if (!f.itemId) return schema;
+  return schema?.type === 'list' && f.field ? schema.fields[f.field] : undefined;
+}
+
+const sameBinding = (a: unknown, b: unknown) => isBinding(a) && isBinding(b) && ('$prop' in a ? '$prop' in b && a.$prop === b.$prop : '$item' in b && a.$item === b.$item);
+
+/**
+ * Buttons that will render with a label but no destination. The site leaves them out, which is easy to miss in
+ * the editor, so they are reported as diagnostics, flagged in the Inspector and listed when the site is exported.
  */
 export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedButton[] {
   const out: UnlinkedButton[] = [];
+  // How often each placement field is read by what renders: as a condition (of the button, or of anything around
+  // it), as text, as a button label, or by code. Clearing a label something else also reads would change that too.
+  const key = (f: PlacementField, placement: string) => JSON.stringify([placement, f.prop, f.itemId ?? null, f.field ?? null]);
+  const uses = new Map<string, number>();
+  // Slots shown more than once, and the slots each finding is shown through.
+  const shownAgain = new Set<string>();
+  const through = new Map<UnlinkedButton, string[]>();
   walkRendered(state, tree, {
-    link: (n, scope, reportId) => {
+    again: (slot) => void shownAgain.add(slot),
+    node: (n, scope, reportId, inDef) => {
+      if (!inDef) return;
+      const reads: unknown[] = [n.when, n.unless];
+      if (n.kind === 'text') reads.push(n.text);
+      if (n.kind === 'link') reads.push(n.label);
+      if (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') reads.push(...Object.values(n.props));
+      const fields = new Set(reads.map((b) => placementField(b, scope)).filter((f): f is PlacementField => !!f).map((f) => key(f, reportId)));
+      for (const f of fields) uses.set(f, (uses.get(f) ?? 0) + (scope.multiple ? 2 : 1));
+    },
+    link: (n, scope, reportId, inDef, ownId) => {
       const appearance = String(evaluate(n.appearance, scope) ?? '');
       const label = String(evaluate(n.label, scope) ?? '').trim();
       const link = evaluate(n.link, scope) as LinkValue | undefined;
-      if (BUTTONS.has(appearance) && label && !resolveLink(link, { state })) out.push({ nodeId: reportId, label });
+      if (!BUTTONS.has(appearance) || !label || resolveLink(link, { state })) return;
+      if (!inDef) return void out.push({ nodeId: reportId, label });
+      const found: UnlinkedButton = { nodeId: reportId, label, defNodeId: n.id };
+      if (scope.placement && scope.path?.length) found.itemPath = scope.path;
+      const to = placementField(n.link, scope);
+      if (to && fieldSchema(state, tree, reportId, to)?.type === 'link') found.link = to;
+      // Clearing the label hides the button only when the label is also its condition, is text that may be
+      // empty, and belongs to this one rendering (not a label every list item shares).
+      const hide = sameBinding(n.when, n.label) ? placementField(n.label, scope) : undefined;
+      const repeats = scope.repeats ?? 0;
+      // A button carrying an id may be what another link goes to: hiding it would take that target away.
+      const own = hide && !scope.multiple && !ownId && (hide.itemId ? repeats === 1 && hide.itemId === scope.occurrence : repeats === 0);
+      if (hide && own && fieldSchema(state, tree, reportId, hide)?.type === 'string') found.hide = hide;
+      if (scope.slots?.length) through.set(found, scope.slots);
+      out.push(found);
     }
   });
+  // ...and only when no other rendered button reads that label.
+  for (const b of out) if (b.hide && ((uses.get(key(b.hide, b.nodeId)) ?? 0) > 1 || through.get(b)?.some((x) => shownAgain.has(x)))) delete b.hide;
   return out;
+}
+
+/** The unlinked buttons one node of a page or shell tree renders: the node itself, or those inside a placement. */
+export function unlinkedButtonsAt(state: ProjectState, tree: NodeTree, nodeId: string): UnlinkedButton[] {
+  return tree.nodes[nodeId] ? unlinkedButtons(state, { ...tree, rootIds: [nodeId] }) : [];
 }
 
 /** How many images on the site's pages and shell render as placeholders because no image is chosen yet. */

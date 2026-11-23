@@ -70,9 +70,6 @@ address, cite { font-style: normal; }
 :is(a, button).so-btn--text:hover::after { transform: translateX(3px); }
 .so-btn--light { --so-btn-bg: var(--so-color-on-brand); --so-btn-fg: var(--so-color-brand-strong); --so-btn-bg-hover: color-mix(in srgb, var(--so-color-on-brand) 88%, var(--so-color-brand)); }
 :is(a, button).so-btn--light:hover { background: var(--so-btn-bg-hover, color-mix(in srgb, var(--so-btn-bg) 88%, var(--so-btn-fg))); }
-/* A button with no destination is shown as a label: no pointer, no hover or press feedback. */
-.so-btn--static { cursor: default; box-shadow: none; }
-.so-btn--static.so-btn--text::after { content: none; }
 
 .so-img { width: 100%; height: auto; object-fit: cover; }
 .so-img--placeholder {

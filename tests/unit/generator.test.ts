@@ -231,11 +231,16 @@ describe('responsive overrides', () => {
 });
 
 describe('links and buttons', () => {
-  it('renders unlinked buttons as static text with one class list', () => {
+  it('leaves unlinked buttons out of the site, with one class list per element, and flags them only in the editor', () => {
     const link = generateProject(fresh()).get(`${RUNTIME_DIR}/Link.svelte`)!;
-    expect(link).toContain("'so-btn--static'");
-    expect(link.match(/className/g)!.length).toBe(3);
+    expect(link).not.toContain('so-btn--static');
+    expect(link).not.toContain('data-so-unlinked');
+    expect(link.match(/className/g)!.length).toBe(4);
     expect(link).toContain("import { resolve } from '$app/paths'");
+    expect(generateProject(fresh()).get(`${STYLES_DIR}/theme.css`)).not.toContain('so-btn--static');
+    const dev = generateProject(fresh(), { instrument: true }).get(`${RUNTIME_DIR}/Link.svelte`)!;
+    expect(dev).toContain('data-so-unlinked');
+    expect(dev.match(/className/g)!.length).toBe(5);
   });
 
   it('reports a labelled button without a link', () => {
@@ -245,6 +250,7 @@ describe('links and buttons', () => {
     const found = validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED');
     expect(found).toHaveLength(1);
     expect(found[0].message).toContain('Start a project');
+    expect(found[0].message).toContain('visitors won’t see it');
     addToHome(s, 'pricing.plans');
     expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toHaveLength(4);
   });

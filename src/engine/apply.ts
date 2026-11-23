@@ -1136,7 +1136,10 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
-    const list = (node.props[op.prop] as Array<ListItem>) ?? [];
+    if (isBinding(node.props[op.prop])) fail(`${schema.label} comes from the enclosing component's own property; edit its items there.`);
+    // A placement without its own list shows the definition's items, so an edit to one of them starts from those.
+    const own = node.props[op.prop];
+    const list = (Array.isArray(own) ? own : clone(schema.default)) as Array<ListItem>;
     const idx = list.findIndex((i) => i.id === op.itemId);
     if (idx < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
     const before = list[idx];
