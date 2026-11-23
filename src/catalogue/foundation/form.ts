@@ -65,10 +65,17 @@ const FORM_SOURCE = `<script>
 		return RESERVED.includes(name) ? name + '-field' : name;
 	}
 
+	// The sent or error message describes the last attempt; once the visitor edits again it no longer does.
+	function clearFeedback() {
+		if (status === 'sent' || status === 'error') status = 'idle';
+	}
+
 	async function submit(event) {
 		event.preventDefault();
 		if (!ready || status === 'sending') return;
 		const form = event.currentTarget;
+		// The message as sent. The fields stay read-only until the reply, so the reset after a successful
+		// send can never discard something the visitor typed in the meantime.
 		const data = new FormData(form);
 		// Bots fill in every field; people never see this one. Drop the message quietly.
 		if (data.get(honeypot)) {
@@ -124,15 +131,25 @@ const FORM_SOURCE = `<script>
 						{field.label}{#if field.required}<span class="so-form__required" aria-hidden="true">*</span>{/if}
 					</label>
 					{#if field.type === 'textarea'}
-						<textarea id={uid + '-' + i} name={fieldName(field, i)} required={field.required} rows="5" placeholder={field.placeholder || undefined}></textarea>
+						<textarea
+							id={uid + '-' + i}
+							name={fieldName(field, i)}
+							required={field.required}
+							readonly={status === 'sending'}
+							rows="5"
+							placeholder={field.placeholder || undefined}
+							oninput={clearFeedback}
+						></textarea>
 					{:else}
 						<input
 							id={uid + '-' + i}
 							type={field.type === 'email' || field.type === 'tel' ? field.type : 'text'}
 							name={fieldName(field, i)}
 							required={field.required}
+							readonly={status === 'sending'}
 							autocomplete={AUTOCOMPLETE[field.type] ?? (fieldName(field, i) === 'name' ? 'name' : undefined)}
 							placeholder={field.placeholder || undefined}
+							oninput={clearFeedback}
 						/>
 					{/if}
 				</div>
