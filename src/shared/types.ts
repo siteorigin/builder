@@ -417,6 +417,8 @@ export interface PageSeo {
   description?: string;
   socialImage?: string | null;
   noindex?: boolean;
+  /** Left out of the site's own search (the Site search section), whatever search engines are told. */
+  searchHidden?: boolean;
 }
 
 export interface PageDoc extends NodeTree {

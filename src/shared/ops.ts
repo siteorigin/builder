@@ -59,6 +59,7 @@ export const OPERATION_SCHEMAS = {
     seoTitle: z.string().max(120).optional(),
     description: z.string().max(320).optional(),
     noindex: z.boolean().optional(),
+    searchHidden: z.boolean().optional().describe("Leave the page out of the site's own Site search results. Independent of noindex."),
     draft: z.boolean().optional().describe('true keeps the page as a draft: still editable and previewed, but left out of the exported website. false publishes it. The Home page cannot be a draft.'),
     showHeader: z.boolean().optional().describe('Whether this page shows the site\'s shared header. Only this page changes; the footer setting is separate.'),
     showFooter: z.boolean().optional().describe('Whether this page shows the site\'s shared footer. Only this page changes; the header setting is separate.'),

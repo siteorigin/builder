@@ -11,7 +11,8 @@ import { validateState } from '@engine/validate';
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { describeDraftLink, publicationPlan, unlinkedButtons } from '@generator/checks';
-import { defFile, draftOnlyComponents, generateProject, liveRedirects, publishedState } from '@generator/index';
+import { RUNTIME_DIR, defFile, draftOnlyComponents, generateProject, liveRedirects, publishedState } from '@generator/index';
+import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
 import { pageTitle, readBuildFailure, type BuildFailureContext, type BuildReport, type ExplainedBuild } from './build-failure';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
@@ -112,16 +113,20 @@ async function websiteFiles(project: string, state: ProjectState): Promise<{ fil
   return { files, draftOnly: new Set(draftOnlyComponents(state).map(defFile)), candidate: (rel: string) => rel.startsWith('static/assets/') && (library.has(rel) || IMPORTED_ASSET.test(rel.slice('static/assets/'.length))) };
 }
 
+/** The generated index of the pages Site search finds: the words pages show, which never load a file. */
+const SEARCH_INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
+
 /**
  * Everything the website build reads as text, apart from library files, to search for the file names it uses. A
  * draft-only component counts once anything else the website reads names its file (a code component importing it),
- * and so on through what that one names.
+ * and so on through what that one names. The search index is left out: a page that mentions a file's name in its
+ * text does not use that file.
  */
 async function websiteText(project: string, { files, candidate, draftOnly }: { files: string[]; candidate: (rel: string) => boolean; draftOnly: Set<string> }): Promise<string> {
   const texts: string[] = [];
   const held = new Map<string, string>();
   for (const rel of files) {
-    if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel)) continue;
+    if (!/^(src|static)\//.test(rel) || candidate(rel) || !TEXT_FILE.test(rel) || rel === SEARCH_INDEX) continue;
     const text = await fs.readFile(join(project, rel), 'utf8');
     if (draftOnly.has(rel)) held.set(rel, text);
     else texts.push(text);

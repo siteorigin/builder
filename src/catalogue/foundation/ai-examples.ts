@@ -216,5 +216,12 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
         ]
       }
     }
+  },
+  {
+    id: 'site-search-portfolio',
+    componentId: 'site.search',
+    keywords: ['search', 'find', 'look up', 'lookup', 'portfolio', 'projects', 'archive', 'directory'],
+    description: 'A search box visitors use to find a page by its name or the words on it',
+    props: { eyebrow: 'Portfolio', heading: 'Find a project', lead: 'Search every project by name, place or material.', label: 'Search projects', placeholder: 'For example: walnut table', buttonLabel: 'Search' }
   }
 ];

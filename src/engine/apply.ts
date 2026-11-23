@@ -519,6 +519,7 @@ function pageUpdate(state: ProjectState, op: Op<'page.update'>): OpResult {
   if (op.seoTitle !== undefined) page.seo.title = op.seoTitle || undefined;
   if (op.description !== undefined) page.seo.description = op.description || undefined;
   if (op.noindex !== undefined) page.seo.noindex = op.noindex || undefined;
+  if (op.searchHidden !== undefined) page.seo.searchHidden = op.searchHidden || undefined;
   if (op.draft !== undefined) {
     if (op.draft && page.id === state.site.homePageId) fail('The Home page cannot be a draft. Make another page Home first.');
     if (op.draft) page.draft = true;

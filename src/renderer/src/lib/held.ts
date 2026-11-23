@@ -29,6 +29,7 @@ const PAGE_FIELDS: Record<string, string[]> = {
   seoTitle: ['seo', 'title'],
   description: ['seo', 'description'],
   noindex: ['seo', 'noindex'],
+  searchHidden: ['seo', 'searchHidden'],
   draft: ['draft'],
   showHeader: ['showHeader'],
   showFooter: ['showFooter'],
