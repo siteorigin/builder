@@ -160,6 +160,24 @@ export function instancesOf(state: ProjectState, definitionId: string): Array<{ 
   return out;
 }
 
+/** How many times each definition is placed, counted the way `instancesOf` counts, in one pass over the project. */
+export function placementCounts(state: ProjectState): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const t of allTrees(state)) for (const n of Object.values(t.tree.nodes)) if (n.kind === 'instance') out[n.definitionId] = (out[n.definitionId] ?? 0) + 1;
+  return out;
+}
+
+/** Where a definition is placed: one entry per page, shared header or footer, or component design, in site order. */
+export function placesOf(state: ProjectState, definitionId: string): Array<{ owner: OwnerRef; label: string; nodeIds: string[] }> {
+  const out: Array<{ owner: OwnerRef; label: string; nodeIds: string[] }> = [];
+  for (const u of instancesOf(state, definitionId)) {
+    const last = out.at(-1);
+    if (last && last.owner.kind === u.owner.kind && last.owner.id === u.owner.id) last.nodeIds.push(u.node.id);
+    else out.push({ owner: u.owner, label: u.label, nodeIds: [u.node.id] });
+  }
+  return out;
+}
+
 export function displayName(state: ProjectState, node: GraphNode, def?: ComponentDefinition): string {
   if (node.name) return node.name;
   switch (node.kind) {

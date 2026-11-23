@@ -68,6 +68,28 @@ export function directDependencies(def: ComponentDefinition): string[] {
   return [...ids].sort();
 }
 
+/** The longest component name an operation accepts. */
+const NAME_MAX = 60;
+/** One trailing "(unique)" or "(unique 3)" that an earlier separate copy added. */
+const UNIQUE_SUFFIX = /\s*\(unique(?:\s+\d+)?\)\s*$/i;
+
+/**
+ * The name a separate copy of a component gets when the author gives none: "Card (unique)", then "Card (unique 2)"
+ * and so on. Suffixes an earlier copy added are replaced rather than stacked, and the name is one no installed
+ * component has yet, so every variant in the library can be told apart.
+ */
+export function uniqueCopyName(state: ProjectState, name: string): string {
+  let base = name.trim();
+  while (UNIQUE_SUFFIX.test(base)) base = base.replace(UNIQUE_SUFFIX, '');
+  base ||= 'Component';
+  const taken = new Set(Object.values(state.components).map((d) => d.name.trim().toLowerCase()));
+  for (let i = 1; ; i++) {
+    const suffix = i === 1 ? ' (unique)' : ` (unique ${i})`;
+    const candidate = `${base.slice(0, NAME_MAX - suffix.length).trimEnd()}${suffix}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+}
+
 export function componentRemove(state: ProjectState, op: Op<'component.remove'>): OpResult {
   const def = own(state.components, op.definitionId) ?? fail(`Component "${op.definitionId}" does not exist.`);
   const uses = instancesOf(state, def.id);

@@ -50,7 +50,8 @@ import {
   setPart,
   setPropSchema,
   setSlot,
-  setVariant
+  setVariant,
+  uniqueCopyName
 } from './definitions';
 import { contractConflicts, themeRefresh } from './theme-updates';
 
@@ -1503,7 +1504,7 @@ export function ensureProjectOwned(state: ProjectState, defId: string): string {
 
 function makeUnique(state: ProjectState, op: Op<'component.makeUnique'>): OpResult {
   const { node, def } = instanceTarget(state, op.owner, op.nodeId);
-  const copy = copyDefinition(state, def, op.name?.trim() || `${def.name} (unique)`);
+  const copy = copyDefinition(state, def, op.name?.trim() || uniqueCopyName(state, def.name));
   node.definitionId = copy.id;
   return { definitionId: copy.id };
 }
