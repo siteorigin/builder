@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import type { AssetRecord } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
+import { describeTrim, formatBytes } from '../../src/renderer/src/lib/storage';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -265,5 +266,27 @@ describe('project storage', () => {
     expect(has(dir, files[0])).toBe(false);
     expect(has(dir, files[1])).toBe(false);
     expect(has(dir, files[2])).toBe(true);
+  });
+});
+
+describe('the Free up space dialog wording', () => {
+  const plan = (undo: string[], redo: string[], keptUndo: number, keptRedo: number) => ({ key: 'k', files: { files: 1, bytes: 1 }, historyBytes: 0, undo, redo, keptUndo, keptRedo });
+
+  it('names the newest lost undo steps first, counts the rest, and says what stays', () => {
+    const t = describeTrim(plan(['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5', 'Step 6'], [], 2, 0));
+    expect(t.undo).toEqual({ lead: 'These 6 steps can no longer be undone:', steps: ['Step 6', 'Step 5', 'Step 4', 'Step 3'], more: 'and 2 earlier steps', after: 'Your 2 latest steps can still be undone.' });
+    expect(t.redo).toBeNull();
+  });
+
+  it('says when nothing is left to undo, and which redo steps stay', () => {
+    const t = describeTrim(plan(['Remove 6 unused images'], ['Import image'], 0, 1));
+    expect(t.undo).toMatchObject({ lead: 'This step can no longer be undone:', steps: ['Remove 6 unused images'], more: null, after: 'Nothing will be left to undo.' });
+    expect(t.redo).toMatchObject({ lead: 'This step can no longer be redone:', steps: ['Import image'], after: '1 step before it can still be redone.' });
+  });
+
+  it('formats sizes the way the panel shows them', () => {
+    expect(formatBytes(49_661_260)).toBe('47.4 MB');
+    expect(formatBytes(2048)).toBe('2 KB');
+    expect(formatBytes(1)).toBe('1 byte');
   });
 });
