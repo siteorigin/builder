@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { inflateRawSync, crc32 } from 'node:zlib';
+import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync, inflateRawSync, crc32 } from 'node:zlib';
 import { createStarterState } from '@catalogue/starters';
 import { assetUsages } from '@engine/apply';
 import { generateProject } from '@generator/index';
@@ -392,8 +392,8 @@ describe('website photo privacy', () => {
     const dataUrl = (b: Buffer) => `data:image/jpeg;base64,${b.toString('base64')}`;
     write(dir, '_app/immutable/chunks/inline.js', `const a = "${dataUrl(geotaggedJpeg())}";`);
     write(dir, '_app/immutable/assets/fine.css', `.x{background:url(${dataUrl(clean)})}`);
-    // A camera model only, percent-encoded; one behind character references; clean base64 broken over lines;
-    // and one the parser cannot read.
+    // A camera model only, percent-encoded; one behind character references; base64 broken over lines, which
+    // reads as damaged and stops the export rather than guessing where the URL ends; and one the parser cannot read.
     const modelOnly = Buffer.concat([SOI, exifSeg(tiff(true, { ifd0: [ascii(0x0110, 'Phone X')] })), JFIF, IMAGE_DATA, EOI]);
     write(dir, 'styles/device.css', `.y{background:url(data:image/jpeg;base64,${modelOnly.toString('base64').replace(/\//g, '%2F')})}`);
     write(dir, 'entity.html', `<img src="data&#58;image&#x2F;jpeg;base64,${geotaggedJpeg().toString('base64')}">`);
@@ -403,7 +403,7 @@ describe('website photo privacy', () => {
     write(dir, 'static-photo.tiff', 'II*\0 a TIFF this cannot rewrite');
     write(dir, 'index.html', '<html></html>');
     const failed = await cleanBuiltSite(dir);
-    expect(failed.sort()).toEqual(['assets/broken.png', 'static-photo.tiff', 'unreadable.html']);
+    expect(failed.sort()).toEqual(['assets/broken.png', 'static-photo.tiff', 'styles/wrapped.css', 'unreadable.html']);
     // Inline images are cleaned where they are, and written back as plain base64.
     for (const f of ['_app/immutable/chunks/inline.js', 'styles/device.css', 'entity.html']) {
       const text = readFileSync(join(dir, f), 'utf8');
@@ -417,6 +417,20 @@ describe('website photo privacy', () => {
     expect(readFileSync(join(dir, '_app/immutable/assets/pkg.abc123.jpg')).toString('latin1')).not.toContain('Main St');
     expect(readFileSync(join(dir, 'downloads/photo')).toString('latin1')).not.toMatch(/GPS|SERIAL/);
     expect(readFileSync(join(dir, 'assets/already-clean.jpg')).equals(clean)).toBe(true);
+  });
+
+  it('rewrites a page’s precompressed copies with it, and keeps its other bytes exactly', async () => {
+    const dir = temp();
+    const page = Buffer.concat([Buffer.from('<meta charset="windows-1252"><p>Caf\xe9</p><img src="data:image/jpeg;base64,', 'latin1'), Buffer.from(geotaggedJpeg().toString('base64')), Buffer.from('">')]);
+    writeBytes(dir, 'index.html', page);
+    writeBytes(dir, 'index.html.br', brotliCompressSync(page));
+    writeBytes(dir, 'index.html.gz', gzipSync(page));
+    expect(await cleanBuiltSite(dir)).toEqual([]);
+    const cleaned = readFileSync(join(dir, 'index.html'));
+    expect(cleaned.subarray(0, 41).equals(page.subarray(0, 41))).toBe(true);
+    expect(cleaned.toString('latin1')).not.toContain(geotaggedJpeg().toString('base64').slice(0, 200));
+    expect(brotliDecompressSync(readFileSync(join(dir, 'index.html.br'))).equals(cleaned)).toBe(true);
+    expect(gunzipSync(readFileSync(join(dir, 'index.html.gz'))).equals(cleaned)).toBe(true);
   });
 
   it('replaces a built file linked from elsewhere instead of writing through the link', async () => {

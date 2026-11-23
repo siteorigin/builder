@@ -452,6 +452,7 @@ const XMP_CREDITS: Array<{ prefix: string; name: string; kind: 'text' | 'Seq' | 
   { prefix: 'xmpRights', name: 'UsageTerms', kind: 'Alt' },
   { prefix: 'xmpRights', name: 'Owner', kind: 'Bag' }
 ];
+const RENDER_VALUE = /^([-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?|True|False)$/;
 /** Gain-map rendering parameters (Adobe/Google Ultra HDR): numbers and flags only. */
 const HDRGM_PROPS = ['Version', 'BaseRenditionIsHDR', 'GainMapMin', 'GainMapMax', 'Gamma', 'OffsetSDR', 'OffsetHDR', 'HDRCapacityMin', 'HDRCapacityMax'];
 const XMP_LOCATION = /GPS(Latitude|Longitude|Altitude|AreaInformation|DestLatitude|DestLongitude)\b|Location(Created|Shown)\b|\b(photoshop:(City|State|Country)|Iptc4xmpCore:(Location|CountryCode)|Iptc4xmpExt:(City|Sublocation|ProvinceState|CountryName))\b/;
@@ -578,7 +579,7 @@ function filterXmp(bytes: Buffer, opts: XmpOptions = {}): XmpResult {
   const renderNs = new Set(ns);
   if (opts.gainMap || opts.container?.length) {
     for (const name of opts.gainMap ? HDRGM_PROPS : ['Version']) {
-      const values = nsValues(xmp, 'hdrgm', name).filter((v) => /^[\w.+-]+$/.test(v.text));
+      const values = nsValues(xmp, 'hdrgm', name).filter((v) => RENDER_VALUE.test(v.text));
       if (!values.length) continue;
       renderNs.add('hdrgm');
       if (values.length === 1) attrs.push(` hdrgm:${name}="${values[0].text}"`);
@@ -588,8 +589,8 @@ function filterXmp(bytes: Buffer, opts: XmpOptions = {}): XmpResult {
   // Apple's gain map says what it is in its own XMP, which its rendering needs.
   if (opts.gainMap) {
     const kind = nsValues(xmp, 'apdi', 'AuxiliaryImageType').find((v) => /^urn:com:apple:photo:\d{4}:aux:hdrgainmap$/.test(v.text));
-    const version = nsValues(xmp, 'HDRGainMap', 'HDRGainMapVersion').find((v) => /^[\w.+-]+$/.test(v.text));
-    const headroom = nsValues(xmp, 'HDRGainMap', 'HDRGainMapHeadroom').find((v) => /^[\w.+-]+$/.test(v.text));
+    const version = nsValues(xmp, 'HDRGainMap', 'HDRGainMapVersion').find((v) => RENDER_VALUE.test(v.text));
+    const headroom = nsValues(xmp, 'HDRGainMap', 'HDRGainMapHeadroom').find((v) => RENDER_VALUE.test(v.text));
     if (headroom) {
       attrs.push(` HDRGainMap:HDRGainMapHeadroom="${headroom.text}"`);
       renderNs.add('HDRGainMap');

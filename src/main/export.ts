@@ -8,6 +8,7 @@ import { basename, join, relative, sep } from 'node:path';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { STARTER_ASSETS } from '@catalogue/starters';
 import { validateState } from '@engine/validate';
+import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { addCredits, cleanPhoto, hasCredits, photoMetadata, sniffImageType, type PhotoCredits } from './project/photo-metadata';
 
@@ -252,14 +253,20 @@ export async function cleanWebsitePhotos(project: string, state: ProjectState, c
 /** Built files that can carry an image inline, as a data: URL. */
 const INLINE_HOST = /\.(html?|css|[cm]?js|json|svg|xml|webmanifest)$/i;
 /**
- * A raster data: URL, with its colon and slash also accepted as HTML character references, and base64 broken
- * over lines as some tools write it.
+ * A raster data: URL, with its colon and slash also accepted as HTML character references. It ends at the first
+ * character a URL cannot hold, so base64 broken over lines reads as a damaged image and stops the export.
  */
-const INLINE_IMAGE = /data(?::|&#0*58;|&#x0*3a;|&colon;)image(?:\/|&#0*47;|&#x0*2f;|&sol;)(jpeg|jpg|png|webp|gif|avif|heic|heif|tiff?)([^,"'()\s]*),([A-Za-z0-9+/=%._~!$&*:;@-]+(?:[\r\n]+[A-Za-z0-9+/=%]+)*)/gi;
+const INLINE_IMAGE = /data(?::|&#0*58;|&#x0*3a;|&colon;)image(?:\/|&#0*47;|&#x0*2f;|&sol;)(jpeg|jpg|png|webp|gif|avif|heic|heif|tiff?)([^,"'()\s]*),([A-Za-z0-9+/=%._~!$&*:;@-]+)/gi;
+
+/** Rewrite a built file, and any precompressed copy beside it, so no copy keeps the old bytes. */
+async function rewriteBuilt(path: string, bytes: Buffer) {
+  await atomicWrite(path, bytes);
+  for (const [ext, zip] of [['.br', brotliCompressSync], ['.gz', gzipSync]] as const) if (existsSync(path + ext)) await atomicWrite(path + ext, zip(bytes));
+}
 
 /** The bytes of a data: URL's payload: percent-decoded, then base64-decoded when it says so. */
 function inlineBytes(params: string, payload: string): Buffer {
-  const raw = Buffer.from(payload.replace(/[\r\n]/g, '').replace(/%([0-9a-f]{2})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16))), 'latin1');
+  const raw = Buffer.from(payload.replace(/%([0-9a-f]{2})/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16))), 'latin1');
   return /;base64$/i.test(params) ? Buffer.from(raw.toString('latin1'), 'base64') : raw;
 }
 
@@ -277,11 +284,11 @@ export async function cleanBuiltSite(dir: string): Promise<string[]> {
     const r = buf && cleanPhoto(buf);
     if (!r) failed.push(rel);
     // Renamed into place, so a file the build linked from elsewhere is replaced rather than written through.
-    else if (r.changed) await atomicWrite(join(dir, rel), r.data);
+    else if (r.changed) await rewriteBuilt(join(dir, rel), r.data);
   }
   for (const rel of (await listFiles(dir)).map((f) => f.split(sep).join('/'))) {
     if (!INLINE_HOST.test(rel)) continue;
-    const text = await fs.readFile(join(dir, rel), 'utf8').catch(() => null);
+    const text = await fs.readFile(join(dir, rel), 'latin1').catch(() => null);
     if (text === null) {
       failed.push(rel);
       continue;
@@ -297,7 +304,7 @@ export async function cleanBuiltSite(dir: string): Promise<string[]> {
       return r.changed ? `data:image/${type.toLowerCase()};base64,${r.data.toString('base64')}` : match;
     });
     if (bad) failed.push(rel);
-    else if (cleaned !== text) await atomicWrite(join(dir, rel), cleaned);
+    else if (cleaned !== text) await rewriteBuilt(join(dir, rel), Buffer.from(cleaned, 'latin1'));
   }
   return failed;
 }
