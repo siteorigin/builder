@@ -131,6 +131,8 @@ export class ProjectSession extends EventEmitter {
   private idempotency = new Map<string, { fingerprint: string; result: ApplyResult }>();
   /** The documents were read in an older format and the update has not been stored yet. */
   private migrationDue = false;
+  /** Publishing an update failed and may have left its journal, which only reopening the project can finish. */
+  private migrationFailed = false;
 
   constructor(public readonly dir: string) {
     super();
@@ -217,6 +219,7 @@ export class ProjectSession extends EventEmitter {
    * folder, then the update is published through the journal, so a crash leaves the old or new project, never a mix.
    */
   private async publishMigration() {
+    if (this.migrationFailed) return;
     const read = await readProject(this.dir);
     if (!read.migration) {
       this.migrationDue = false;
@@ -227,13 +230,14 @@ export class ProjectSession extends EventEmitter {
     if (fatal.length) throw new ProjectFormatError(`This project's documents are inconsistent, so it was not updated to protect your site: ${fatal.slice(0, 4).map((d) => d.message).join(' ')}`);
     const { from, to } = read.migration;
     const backup = `migration-v${from}-to-v${to}-${Date.now()}`;
-    // The journal must describe the exact bytes being replaced, however they are formatted.
+    // The journal describes the exact bytes that were validated, however they are formatted. Saving compares them
+    // with the disk again, so a file edited since then is a conflict rather than something to overwrite.
     const before = new Map<string, string>();
     for (const path of stateToDocs(read.stored).keys()) {
-      const disk = await this.diskContent(path);
-      if (disk === null) continue;
-      before.set(path, disk);
-      await atomicWrite(this.local('recovery', backup, path), disk);
+      const stored = read.raw.get(path);
+      if (stored === undefined) continue;
+      before.set(path, stored);
+      await atomicWrite(this.local('recovery', backup, path), stored);
     }
     const held = this.docs;
     this.docs = before;
@@ -241,6 +245,7 @@ export class ProjectSession extends EventEmitter {
       await this.persist(read.state, { label: 'Update project format', history: false, source: 'system' });
     } catch (e) {
       this.docs = held;
+      this.migrationFailed = true;
       throw e;
     }
     this.migrationDue = false;
@@ -433,15 +438,21 @@ export class ProjectSession extends EventEmitter {
     } catch {
       return;
     }
+    let settled = false;
     for (const c of list) {
       if (typeof c?.path !== 'string' || !isCanonicalPath(c.path)) continue;
       const builder = c.builder === null ? null : await this.getBlob(String(c.builder)).catch(() => undefined);
       if (builder === undefined) continue;
       // Already settled outside the app (the file was put back): nothing to choose.
-      if (settledOnDisk(c.path, await this.diskContent(c.path), builder)) continue;
+      if (settledOnDisk(c.path, await this.diskContent(c.path), builder)) {
+        settled = true;
+        continue;
+      }
       this.holdConflict(c.path, builder, String(c.reason ?? 'Changed outside SiteOrigin Builder.'));
       this.loadedHolds.add(c.path);
     }
+    // Forgotten on disk too, or a later change to that file would bring the old choice back.
+    if (settled) await this.saveConflicts();
   }
 
   /**
@@ -452,6 +463,7 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(async () => {
       if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? 'This project is read-only.' };
       if (this.activeRun) return { ok: false, message: 'Stop the AI before resolving conflicts.' };
+      if (this.migrationFailed) return { ok: false, message: 'This project could not be updated to the current format. Close and reopen it.' };
       const conflict = this.conflicts.find((c) => c.path === path);
       if (!conflict) return { ok: true };
       if (conflict.kind === 'generated') {
@@ -526,7 +538,7 @@ export class ProjectSession extends EventEmitter {
       await fs.rm(this.local('journal.json'), { force: true });
       this.recoveryNotes.push(why);
     };
-    let journal: { writes: Array<{ path: string; blob: string; before: string | null }>; deletes: Array<{ path: string; before: string }> };
+    let journal: { schemaVersion?: number; writes: Array<{ path: string; blob: string; before: string | null }>; deletes: Array<{ path: string; before: string }> };
     try {
       journal = JSON.parse(j);
     } catch {
@@ -534,6 +546,9 @@ export class ProjectSession extends EventEmitter {
     }
     // Only well-formed journals for canonical documents, with verified blobs, are ever replayed.
     if (!journal || !Array.isArray(journal.writes) || !Array.isArray(journal.deletes)) return keepAside('An interrupted save could not be read, so it was set aside. Your files were not changed.');
+    // Checked again under the lock: a newer app may have written this journal after the check before it.
+    if (typeof journal.schemaVersion === 'number' && journal.schemaVersion > SCHEMA_VERSION)
+      throw new ProjectFormatError(`This project has an unfinished save from a newer version of SiteOrigin Builder (format ${journal.schemaVersion}). Update the app to edit it.`, true);
     const allPaths = [...journal.writes, ...journal.deletes].map((e) => e?.path);
     const bad = allPaths.some((p) => typeof p !== 'string' || !isCanonicalPath(p)) || new Set(allPaths).size !== allPaths.length;
     const contents = new Map<string, string>();
@@ -780,8 +795,8 @@ export class ProjectSession extends EventEmitter {
     await this.stillOwner();
     if (this.readOnly) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: this.readOnly.reason, recoverable: false } };
     if (this.pending.size) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Resolve the file conflicts in Project health before making more changes.', recoverable: false } };
-    // A failed update may have left its journal: only reopening can finish it, and a new save would replace it.
-    if (this.migrationDue) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'This project could not be updated to the current format. Close and reopen it.', recoverable: false } };
+    // A new save would replace the journal the failed update left.
+    if (this.migrationFailed) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'This project could not be updated to the current format. Close and reopen it.', recoverable: false } };
     return null;
   }
 

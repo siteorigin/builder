@@ -84,16 +84,19 @@ export interface ReadProject {
   state: ProjectState;
   /** The documents as stored, before any migration. */
   stored: ProjectState;
+  /** The exact text each stored document was parsed from, by project-relative path. */
+  raw: Map<string, string>;
   /** Set when the stored documents are in an older format than `state`. */
   migration: MigrationResult | null;
 }
 
 export async function readProject(dir: string, opts: ReadOptions = {}): Promise<ReadProject> {
-  const stored = await readStoredState(dir, opts);
+  const raw = new Map<string, string>();
+  const stored = await readStoredState(dir, opts, raw);
   const newest = newestDocumentVersion(stored);
   if (newest > SCHEMA_VERSION) {
     if (!opts.allowNewer) throw new ProjectFormatError(`This project was created by a newer version of SiteOrigin Builder (format ${newest}). Update the app to edit it.`, true);
-    return { state: stored, stored, migration: null };
+    return { state: stored, stored, raw, migration: null };
   }
   let migration: MigrationResult | null;
   try {
@@ -101,12 +104,16 @@ export async function readProject(dir: string, opts: ReadOptions = {}): Promise<
   } catch (e) {
     throw new ProjectFormatError(`This project could not be updated to the current format, so it was not changed: ${(e as Error).message}`);
   }
-  return { state: migration?.state ?? stored, stored, migration };
+  return { state: migration?.state ?? stored, stored, raw, migration };
 }
 
-async function readStoredState(dir: string, opts: ReadOptions): Promise<ProjectState> {
+async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, string>): Promise<ProjectState> {
   const overlay = opts.overlay ?? new Map<string, string | null>();
-  const text = async (rel: string): Promise<string | null> => (overlay.has(rel) ? overlay.get(rel)! : readIfExists(safeJoin(dir, rel)));
+  const text = async (rel: string): Promise<string | null> => {
+    const t = overlay.has(rel) ? overlay.get(rel)! : await readIfExists(safeJoin(dir, rel));
+    if (t !== null) raw.set(rel, t);
+    return t;
+  };
   const exists = (rel: string) => (overlay.has(rel) ? overlay.get(rel) !== null : existsSync(join(dir, rel)));
   /** Directory entries on disk, plus overlay documents in that folder, minus overlay deletions. */
   const list = async (rel: string, pick: (overlayPath: string) => string | null): Promise<string[]> => {

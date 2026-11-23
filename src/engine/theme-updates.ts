@@ -111,8 +111,8 @@ function placementConflicts(state: ProjectState, def: ComponentDefinition, next:
       try {
         normalizeProp(schema, node.props[name], state, `${label}: ${def.name} → ${schema.label}`, node.props[name]);
       } catch (e) {
-        if (!(e instanceof EngineError)) throw e;
-        out.add(e.message);
+        // Content too malformed to check (a hand-edited list) is a reason to hold the update, never to fail.
+        out.add(e instanceof EngineError ? e.message : `${label}: ${def.name} holds content in "${name}" that could not be checked.`);
       }
     }
     if (next.kind !== 'managed' || !next.tree) continue;
@@ -121,7 +121,7 @@ function placementConflicts(state: ProjectState, def: ComponentDefinition, next:
     for (const partId of Object.keys(node.overrides ?? {})) {
       const target = own(next.parts, partId)?.nodeId;
       const kind = target && rendered.has(target) ? next.tree.nodes[target].kind : undefined;
-      if (partId !== 'root' && (!kind || kind === 'slot' || kind === 'repeat')) out.add(`${label}: ${def.name} would lose the styles set on its "${partId}" part.`);
+      if (!kind || kind === 'slot' || kind === 'repeat') out.add(`${label}: ${def.name} would lose the styles set on its "${partId}" part.`);
     }
   }
   return [...out];
@@ -145,7 +145,7 @@ export function themeUpdates(state: ProjectState): ThemeUpdates {
   });
   if (!outdated.length) return out;
   const pinned = pinnedByProject(state);
-  const nestedInTheme = new Set(Object.values(state.components).filter((d) => d.owner === 'theme').flatMap((d) => directDependencies(d)));
+  const nestedInTheme = new Set(Object.values(state.components).filter((d) => d.owner === 'theme').flatMap((d) => dependenciesOf(state, d)));
   for (const def of outdated) {
     const next = catalogue.get(def.id)!;
     const keep = (reason: string) => out.kept.push({ id: def.id, name: def.name, reason });
@@ -158,7 +158,7 @@ export function themeUpdates(state: ProjectState): ThemeUpdates {
       keep(`"${user.name}" is built on this version.`);
       continue;
     }
-    if (directDependencies(def).length || directDependencies(next).length || (next.dependencies ?? []).length || nestedInTheme.has(def.id)) {
+    if (dependenciesOf(state, def).length || dependenciesOf(state, next).length || nestedInTheme.has(def.id)) {
       keep('It is part of a nested theme component, so it can only change together with the others.');
       continue;
     }

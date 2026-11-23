@@ -92,10 +92,10 @@ export function migrateProject(project: ProjectState, migrations: Migration[] = 
   const pending = migrations.slice(from - 1);
   pending.forEach((m, i) => {
     const source = from + i;
-    const docs = documents(state).filter((d) => d.schemaVersion === source);
-    const due = new Set<unknown>(docs);
+    const due = new Set<unknown>(documents(state).filter((d) => d.schemaVersion === source));
     m.migrate(state, (doc) => due.has(doc));
-    for (const doc of docs) doc.schemaVersion = source + 1;
+    // Read back from the project: a step may have replaced a document object rather than changed it.
+    for (const doc of documents(state)) if (doc.schemaVersion === source || !Number.isInteger(doc.schemaVersion)) doc.schemaVersion = source + 1;
   });
   for (const id of pristine) if (state.components[id] && state.themeLock.components[id]) state.themeLock.components[id].hash = definitionHash(state.components[id]);
   return { state, from, to, applied: pending.map((m) => m.id) };

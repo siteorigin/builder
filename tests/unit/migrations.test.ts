@@ -125,6 +125,22 @@ describe('the migration pipeline', () => {
     expect(state.pages[current.id].schemaVersion).toBe(4);
   });
 
+  it('advances a document a step replaced rather than changed', async () => {
+    const stored = (await readProject(copyFixture())).stored;
+    const replace: Migration = {
+      id: 'replace',
+      description: 'replace',
+      migrate: (p, due) => {
+        for (const [id, page] of Object.entries(p.pages)) if (due(page)) p.pages[id] = { ...page, title: `${page.title}!` };
+      }
+    };
+    const seen: boolean[] = [];
+    const after: Migration = { id: 'after', description: 'after', migrate: (p, due) => void seen.push(...Object.values(p.pages).map((x) => due(x))) };
+    const { state } = migrateProject(stored, [replace, after])!;
+    expect(seen.every(Boolean)).toBe(true);
+    expect(Object.values(state.pages).every((x) => x.schemaVersion === 3)).toBe(true);
+  });
+
   it('is a no-op on a current project and on documents already migrated', async () => {
     const state = await v1();
     expect(migrateProject(state)).toBeNull();
@@ -281,6 +297,54 @@ describe('opening an older project', () => {
     const err = await ProjectSession.open(dir, 'old-app').catch((e) => e);
     expect(err.readOnly).toBe(true);
     expect(tree(dir)).toEqual(before);
+  });
+
+  it('forgets a hold that was settled while the app was closed', async () => {
+    const dir = copyFixture();
+    const body = readFileSync(join(dir, SITE), 'utf8');
+    const blob = sha(body);
+    mkdirSync(join(dir, '.siteorigin/history/blobs'), { recursive: true });
+    writeFileSync(join(dir, `.siteorigin/history/blobs/${blob}.json`), body);
+    write(dir, '.siteorigin/conflicts.json', { conflicts: [{ path: SITE, reason: 'Changed outside.', builder: blob }] });
+    const s = await session(dir);
+    expect(s.conflicts).toEqual([]);
+    expect(existsSync(join(dir, '.siteorigin/conflicts.json'))).toBe(false);
+  });
+
+  it('does not overwrite a file edited after it was validated', async () => {
+    const dir = copyFixture();
+    const realRename = fsp.rename.bind(fsp);
+    let edited = false;
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      // The first file of the recovery copy: validation is done and nothing has been published.
+      if (!edited && String(to).includes('/recovery/migration-')) {
+        edited = true;
+        write(dir, SITE, { ...read(dir, SITE), description: 'Edited at the last moment' });
+      }
+      return realRename(from, to);
+    });
+    await expect(ProjectSession.open(dir, 'race')).rejects.toThrow(/changed outside/);
+    vi.restoreAllMocks();
+    expect(read(dir, SITE).description).toBe('Edited at the last moment');
+  });
+
+  it('stays blocked after a failed update even if a reload finds nothing left to migrate', async () => {
+    const dir = copyFixture();
+    const s = await session(dir);
+    for (const f of ['siteorigin/tokens.json', 'siteorigin/assets.json']) write(dir, f, { ...read(dir, f), schemaVersion: 1 });
+    const realRename = fsp.rename.bind(fsp);
+    let writes = 0;
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if ((String(to) === join(dir, 'siteorigin/tokens.json') || String(to) === join(dir, 'siteorigin/assets.json')) && ++writes === 2) throw new Error('simulated failure');
+      return realRename(from, to);
+    });
+    await expect(s.reloadFromDisk()).rejects.toThrow('simulated failure');
+    vi.restoreAllMocks();
+    const assets = read(dir, 'siteorigin/assets.json');
+    write(dir, 'siteorigin/assets.json', { ...assets, schemaVersion: SCHEMA_VERSION });
+    await s.reloadFromDisk();
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Blocked' }] }, { label: 'x' })).error?.message).toMatch(/Close and reopen/);
+    expect(existsSync(join(dir, '.siteorigin/journal.json'))).toBe(true);
   });
 
   it('blocks edits after a failed update instead of replacing its journal', async () => {
@@ -460,6 +524,18 @@ describe('theme component updates', () => {
       inst.overrides = { retired: { base: { opacity: 0.5 } } };
     });
     expect(themeUpdates(state).kept.find((k) => k.id === 'foundation.hero.centered')?.reason).toMatch(/retired/);
+  });
+
+  it('holds an update over malformed content instead of failing', async () => {
+    const state = await outdated((s) => {
+      const faq = s.components['foundation.faq.list'];
+      faq.description = 'An older description';
+      s.themeLock.components[faq.id].hash = definitionHash(faq);
+      const placed = Object.values(s.pages).flatMap((p) => Object.values(p.nodes)).find((n) => n.kind === 'instance' && n.definitionId === faq.id) as InstanceNode;
+      // A hand-edited list whose items are not objects.
+      placed.props.items = ['legacy'];
+    });
+    expect(themeUpdates(state).kept.find((k) => k.id === 'foundation.faq.list')?.reason).toMatch(/could not be checked/);
   });
 
   it('moves the locked pack version only when the whole set is current', async () => {
