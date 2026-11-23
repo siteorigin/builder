@@ -143,7 +143,7 @@ const forSecond = [
 await eventually(async () => assert.deepEqual(await starterTexts(), forSecond));
 // Renaming the open page renames its starters.
 await win.evaluate((id) => window.builder.project.apply({ operations: [{ type: 'page.update', pageId: id, title: 'Say hello' }] }, { label: 'Rename page' }), (await win.evaluate(() => window.builder.project.snapshot())).state.site.pageOrder[1]);
-await eventually(async () => assert.match((await starterTexts())[0], /^Build out the “Say hello” page/));
+await eventually(async () => assert.deepEqual(await starterTexts(), [forSecond[0].replace('お問い合わせ', 'Say hello'), ...forSecond.slice(1)]));
 await suggestions().locator('.suggestion', { hasText: 'On another page' }).click();
 await composerIs(forSecond[1]);
 await message().fill('');

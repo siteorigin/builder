@@ -190,6 +190,8 @@ describe('a missing page is offered explicitly, and a page that goes by another 
     ];
     for (const [title, set] of renames) {
       const { state, second } = base();
+      // The header's label for the page would name it too: leave it out, so only the renamed field is tested.
+      (headerMenu(state)!.node.props.links as Array<{ label: string }>).forEach((l) => (l.label = 'Link'));
       set(state.pages[second]);
       expect(create(state), title).not.toMatch(/Contact/);
     }
@@ -216,13 +218,21 @@ describe('a missing page is offered explicitly, and a page that goes by another 
     expect(create(other.state)).toMatch(/^Create a new Contact page/);
   });
 
+  it('does not take Home for the page a deleted page was replaced by', () => {
+    const s = createStarterState('business', 'Studio', false);
+    const contact = s.site.pageOrder.find((id) => s.pages[id].title === 'Contact')!;
+    const removed = applyOperations(s, [{ type: 'page.remove', pageId: contact, replacementPageId: s.site.homePageId }]).state;
+    // The header and footer still say Contact, now leading Home; the Contact page is gone and is offered again.
+    expect(create(removed)).toMatch(/^Create a new Contact page/);
+  });
+
   it('moves on through About, Services and FAQ, and stops when the site has them all', () => {
     const s = createStarterState('business', 'Studio', false);
     // The business starter has About and Contact.
     expect(create(s)).toMatch(/^Create a new Services page/);
     const services = applyOperations(s, [{ type: 'page.create', title: 'What we do', starter: 'intro' }]).state;
     expect(create(services)).toMatch(/^Create a new FAQ page with the questions people ask most/);
-    const more = applyOperations(services, [{ type: 'page.create', title: 'Questions', starter: 'intro' }]).state;
+    const more = applyOperations(services, [{ type: 'page.create', title: 'FAQ', starter: 'intro' }]).state;
     expect(create(more)).toBeUndefined();
     // Every starter is still unique and the list never grows past four.
     const all = texts(starters(more, more.site.homePageId));
@@ -329,20 +339,32 @@ describe('starters for a selection', () => {
 describe('what the page holds, counted the way the page shows it', () => {
   const pageOf = () => lighthouse();
 
-  it('counts copy written into a component made from a filled section, not only the properties placed on the page', () => {
+  it('counts copy written into a component itself, but not copy that shows only on a condition or once per list item', () => {
     const { state, second } = pageOf();
-    const page = state.pages[second];
-    const copy = 'Lighthouse keepers wrote their days down in logbooks and left them for the next watch. ';
-    const box: GraphNode = { id: 'n_box', kind: 'element', tag: 'section', children: ['n_t1', 'n_t2'] };
-    page.nodes.n_box = box;
-    page.nodes.n_t1 = { id: 'n_t1', kind: 'text', tag: 'h2', text: 'The keepers' };
-    page.nodes.n_t2 = { id: 'n_t2', kind: 'text', tag: 'p', text: copy.repeat(3) };
-    page.rootIds = ['n_box'];
+    state.pages[second].rootIds = [];
+    state.pages[second].nodes = {};
+    const copy = 'Lighthouse keepers wrote their days down in logbooks and left them for the next watch. '.repeat(3);
+    const def = state.components[installComponent(state, 'layout.section')];
+    const inner = def.tree!.nodes.inner as { children: string[] };
+    const place = () => {
+      const inst = makeInstance(def, {});
+      state.pages[second].nodes[inst.id] = inst;
+      state.pages[second].rootIds = [inst.id];
+    };
+    // The component has no copy of its own, and none is placed in it: the page is mostly empty.
+    place();
+    expect(starters(state, second)[0].text).toMatch(/^Build out the “お問い合わせ” page/);
+    // Copy written into the component is on every page it is placed on.
+    def.tree!.nodes.n_lit = { id: 'n_lit', kind: 'text', tag: 'p', text: copy };
+    inner.children.push('n_lit');
     expect(starters(state, second)[0].text).toMatch(/^Rewrite the opening of the “お問い合わせ” page/);
-    const made = applyOperations(state, [{ type: 'component.createFromNode', owner: { kind: 'page', id: second }, nodeId: 'n_box', name: 'Keepers' }]).state;
-    // The page now holds one placement with no properties of its own: the copy lives in the component.
-    expect(Object.values(made.pages[made.site.pageOrder[1]].nodes).filter((n) => n.kind === 'text')).toHaveLength(0);
-    expect(starters(made, second)[0].text).toMatch(/^Rewrite the opening of the “お問い合わせ” page/);
+    // Copy that shows only when a condition holds, or once per item of a list, is not known to be on the page.
+    def.tree!.nodes.n_lit = { id: 'n_lit', kind: 'text', tag: 'p', text: copy, when: { $prop: 'shown' } };
+    expect(starters(state, second)[0].text).toMatch(/^Build out the “お問い合わせ” page/);
+    def.tree!.nodes.n_lit = { id: 'n_lit', kind: 'text', tag: 'p', text: copy };
+    def.tree!.nodes.n_rep = { id: 'n_rep', kind: 'repeat', list: { $prop: 'items' }, children: ['n_lit'] };
+    inner.children = inner.children.filter((c) => c !== 'n_lit').concat('n_rep');
+    expect(starters(state, second)[0].text).toMatch(/^Build out the “お問い合わせ” page/);
   });
 
   it('counts a list item as the list shows it: a field the item leaves out is the list default, and four short pieces are not a mostly empty page', () => {
@@ -395,15 +417,15 @@ describe('what the page holds, counted the way the page shows it', () => {
 describe('the image starter picks a real target', () => {
   it('picks the newest unused image for an empty image, an older one when the newest is in use, and the library when all are in use', () => {
     const { state, home, second } = lighthouse();
-    state.assets.assets.a_new = asset('a_new', 'Newest', { createdAt: '2026-11-23T10:00:00.000Z' });
-    state.assets.assets.a_old = asset('a_old', 'Older', { createdAt: '2026-11-21T10:00:00.000Z' });
+    state.assets.assets.a_znew = asset('a_znew', 'Newest', { createdAt: '2026-11-23T10:00:00.000Z' });
+    state.assets.assets.a_aold = asset('a_aold', 'Older', { createdAt: '2026-11-21T10:00:00.000Z' });
     addHero(state, second, { assetId: null, alt: '' });
     expect(starters(state, second)[0].text).toBe('Place the “Newest” image in the empty image on the “お問い合わせ” page');
     // The newest is in use on Home: the older one is the unused image.
-    addHero(state, home, { assetId: 'a_new', alt: 'Used on Home' });
+    addHero(state, home, { assetId: 'a_znew', alt: 'Used on Home' });
     expect(starters(state, second)[0].text).toBe('Place the “Older” image in the empty image on the “お問い合わせ” page');
     // Everything is in use: the AI is told to choose, and no used image is named.
-    addHero(state, home, { assetId: 'a_old', alt: 'Used on Home too' });
+    addHero(state, home, { assetId: 'a_aold', alt: 'Used on Home too' });
     expect(starters(state, second)[0].text).toBe('Choose an image from my images for the empty image on the “お問い合わせ” page');
   });
 
@@ -428,7 +450,8 @@ describe('the image starter picks a real target', () => {
     deco.state.assets.assets.a_photo = asset('a_photo', 'Quayside');
     addHero(deco.state, deco.second, { assetId: 'a_photo', alt: '', decorative: true });
     expect(starters(deco.state, deco.second).map((s) => s.kind)).toEqual(['page', 'cross-page', 'create-page']);
-    expect(starters(deco.state, deco.second)[0].text).toMatch(/^Rewrite the opening|^Build out/);
+    // The hero's copy fills the page, and its decorative image needs no description: the copy is what is left to work on.
+    expect(starters(deco.state, deco.second)[0].text).toBe('Rewrite the opening of the “お問い合わせ” page to sound warmer and more confident');
   });
 });
 
@@ -450,6 +473,7 @@ describe('other pages and missing pages, more closely', () => {
   it('keeps a one-page site to its own starters plus one that needs no page, and names the pages it could not tell apart', () => {
     const s = createStarterState('blank', 'Test', false);
     expect(starters(s, s.site.homePageId).map((x) => x.kind)).toEqual(['page', 'create-page', 'site']);
+    expect(starters(s, s.site.homePageId)[1].text).toMatch(/^Create a new Contact page/);
     expect(starters(s, s.site.homePageId)[2].text).toBe('Make the brand color a deep navy blue across the whole site');
   });
 
@@ -460,6 +484,11 @@ describe('other pages and missing pages, more closely', () => {
       const r = applyOperations(state, [{ type: 'page.create', title }]);
       expect(texts(starters(r.state, r.state.site.homePageId)).join('\n')).toContain('Create a new About page');
     }
+    // The last part of the address is the page's own name: /info/about/ is About, /about/team/ is Team.
+    const about = applyOperations(state, [{ type: 'page.create', title: 'Say hello', route: '/info/about/' }]).state;
+    expect(texts(starters(about, about.site.homePageId)).join('\n')).not.toContain('Create a new About');
+    const team = applyOperations(state, [{ type: 'page.create', title: 'Say hello', route: '/about/team/' }]).state;
+    expect(texts(starters(team, team.site.homePageId)).join('\n')).toContain('Create a new About');
     const biz = createStarterState('business', 'Studio', false);
     const repairs = applyOperations(biz, [{ type: 'page.create', title: 'Repairs', route: '/services/repairs/' }]).state;
     expect(texts(starters(repairs, repairs.site.homePageId)).join('\n')).toContain('Create a new Services page');
@@ -560,12 +589,14 @@ describe('selection starters follow the component the element belongs to', () =>
     state.pages[second].nodes.n_img = { id: 'n_img', kind: 'image', image: { assetId: 'a_deleted', alt: 'x' } };
     state.pages[second].nodes.n_font = { id: 'n_font', kind: 'image', image: { assetId: 'f_one', alt: 'x' } };
     state.pages[second].nodes.n_icon = { id: 'n_icon', kind: 'icon', icon: 'star' };
+    state.pages[second].nodes.n_div = { id: 'n_div', kind: 'divider' };
     state.pages[second].nodes.n_box = { id: 'n_box', kind: 'element', tag: 'section', children: ['n_img'] };
-    state.pages[second].rootIds.push('n_img', 'n_font', 'n_icon', 'n_box');
+    state.pages[second].rootIds.push('n_img', 'n_font', 'n_icon', 'n_div', 'n_box');
     const on = (nodeId: string): ElementRef => ({ owner: { kind: 'page', id: second }, instancePath: [], nodeId });
     expect(ask(state, second, on('n_img'))).toEqual(['Suggest what kind of photo suits the Image']);
     expect(ask(state, second, on('n_font'))).toEqual(['Suggest what kind of photo suits the Image']);
     expect(ask(state, second, on('n_icon'))).toEqual(['Choose a better icon for the Icon']);
+    expect(ask(state, second, on('n_div'))).toEqual(['Suggest a better layout for the Divider']);
     expect(ask(state, second, on('n_box'))).toEqual(['Add a heading, some text and a button to the Section', 'Suggest a better layout for the Section']);
     state.pages[second].nodes.n_text = { id: 'n_text', kind: 'text', tag: 'p', text: 'Words' };
     state.pages[second].rootIds.push('n_text');

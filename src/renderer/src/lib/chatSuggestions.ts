@@ -101,7 +101,7 @@ function imageTraits(def: ComponentDefinition | undefined): Map<string, ImageTra
     if (n.kind !== 'image' || !isBinding(n.image)) continue;
     const key = '$prop' in n.image ? n.image.$prop : n.image.$item;
     const before = out.get(key);
-    const optional = n.when !== undefined || n.unless !== undefined;
+    const optional = n.when !== undefined;
     out.set(key, { fallback: (before?.fallback ?? false) || n.fallbackAlt !== undefined, optional: before ? before.optional && optional : optional });
   }
   return out;
@@ -143,6 +143,8 @@ function contentOf(state: ProjectState, tree: NodeTree, rootIds: string[], top =
     const n = own(tree.nodes, id);
     if (!n || seen.has(id)) return;
     seen.add(id);
+    // Inside a component's own tree, copy that only shows on a condition, or once per list item, is not on the page for sure.
+    if (!top && (n.when !== undefined || n.unless !== undefined || n.kind === 'repeat')) return;
     if (n.kind === 'text') copy(n.text);
     else if (n.kind === 'link') copy(n.label);
     else if (n.kind === 'image') {
@@ -220,7 +222,7 @@ const DESTINATIONS: Array<{ name: string; about: string; aliases: string[] }> = 
   { name: 'Contact', about: 'a short note, how to get in touch and a simple way to send a message', aliases: ['contact', 'contact us', 'get in touch', 'reach us', 'enquiries', 'enquiry', 'inquiry', 'inquiries', 'お問い合わせ', 'お問合せ', 'お問合わせ', '問い合わせ', 'コンタクト', 'contacto', 'kontakt', 'contatto', 'contato', 'contactez nous', '联系我们', '문의'] },
   { name: 'About', about: 'who is behind the site, what it stands for and a call to action', aliases: ['about', 'about us', 'our story', 'who we are', 'about me', '会社概要', '私たちについて', '会社情報', 'acerca de', 'sobre nosotros', 'uber uns', 'über uns', 'a propos', 'à propos', '关于我们', '소개'] },
   { name: 'Services', about: 'three or four services as cards, each with a short description', aliases: ['services', 'service', 'what we do', 'our services', 'offerings', 'サービス', '事業内容', 'servicios', 'dienstleistungen', 'leistungen', '服务', '서비스'] },
-  { name: 'FAQ', about: 'the questions people ask most, with short answers', aliases: ['faq', 'faqs', 'questions', 'frequently asked questions', 'よくある質問', 'preguntas frecuentes', 'häufige fragen', '常见问题'] }
+  { name: 'FAQ', about: 'the questions people ask most, with short answers', aliases: ['faq', 'faqs', 'frequently asked questions', 'よくある質問', 'preguntas frecuentes', 'häufige fragen', '常见问题'] }
 ];
 
 const isCjk = (s: string) => /[\u3000-\u9fff\uac00-\ud7af\uff00-\uffef]/.test(s);
@@ -275,7 +277,9 @@ function lastSegment(route: string): string {
 /** Every name a live page answers to: its title, menu labels, address, and the old addresses that lead to it. */
 function namesOf(state: ProjectState, page: PageDoc): string[] {
   const old = (state.site.redirects ?? []).filter((r) => r?.pageId === page.id).map((r) => r.from);
-  return [page.title, page.navLabel ?? '', ...linkLabelsTo(state, page.id), ...[page.route, ...old].map((r) => lastSegment(String(r)))];
+  // Home is where a deleted page's links are sent, still carrying their labels, so its links say nothing about what it is.
+  const labels = page.id === state.site.homePageId ? [] : linkLabelsTo(state, page.id);
+  return [page.title, page.navLabel ?? '', ...labels, ...[page.route, ...old].map((r) => lastSegment(String(r)))];
 }
 
 /** Whether the shared header's menu has room for one more link. */
