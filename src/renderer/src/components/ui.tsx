@@ -87,8 +87,9 @@ export function useDialogFocus(ref: React.RefObject<HTMLElement | null>, onClose
     const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((n) => n.offsetParent !== null);
     if (!items.length) return e.preventDefault();
     const i = items.indexOf(document.activeElement as HTMLElement);
-    if (e.shiftKey && i <= 0) (e.preventDefault(), items[items.length - 1].focus());
-    else if (!e.shiftKey && (i === -1 || i === items.length - 1)) (e.preventDefault(), items[0].focus());
+    if (e.shiftKey && (i === 0 || (i === -1 && (document.activeElement === el || !el.contains(document.activeElement))))) (e.preventDefault(), items[items.length - 1].focus());
+    // Focus on a programmatically focusable element (tabindex -1, such as a result region) tabs on natively.
+    else if (!e.shiftKey && (i === items.length - 1 || (i === -1 && (document.activeElement === el || !el.contains(document.activeElement))))) (e.preventDefault(), items[0].focus());
   };
 }
 

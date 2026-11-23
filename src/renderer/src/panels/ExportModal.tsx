@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronRight, CircleCheck, Cloud, FolderCode, Globe, TriangleAlert, Upload } from 'lucide-react';
 import type { ExportFormat, ExportResult, RecentExport } from '@shared/api';
 import { api, setState, useStore } from '../store';
@@ -22,13 +22,26 @@ export function ExportModal() {
   const [result, setResult] = useState<ExportResult | null>(null);
   const [format, setFormat] = useState<ExportFormat>('folder');
   const close = () => !busy && setState({ modal: null });
+  const resultRef = useRef<HTMLDivElement>(null);
+  const buttons = useRef<Record<'static' | 'source', HTMLButtonElement | null>>({ static: null, source: null });
+  // Where focus goes once the job ends: the result when there is one to read, else back on the button used.
+  const settle = useRef<'static' | 'source' | 'result' | null>(null);
+  useEffect(() => {
+    if (busy || !settle.current) return;
+    const target = settle.current === 'result' ? resultRef.current : buttons.current[settle.current];
+    settle.current = null;
+    target?.focus();
+  }, [busy, result]);
   const run = async (kind: 'static' | 'source') => {
+    if (busy) return;
     setBusy(kind);
     setResult(null);
     try {
       const r = kind === 'static' ? await api.project.exportStatic(format) : await api.project.exportSource(format);
       if (r.message || !r.ok) setResult(r);
+      settle.current = r.message ? 'result' : kind;
     } catch (e) {
+      settle.current = 'result';
       setResult({ ok: false, message: 'The export could not be completed.', warnings: [(e as Error).message] });
     } finally {
       setBusy(null);
@@ -64,7 +77,7 @@ export function ExportModal() {
             )}
           </div>
         )}
-        <button className="welcome-action" disabled={!!busy || !!blocked} onClick={() => void run('static')}>
+        <button ref={(el) => void (buttons.current.static = el)} className="welcome-action" disabled={!!blocked} aria-disabled={!!busy || undefined} onClick={() => void run('static')}>
           <span className="ico">{busy === 'static' ? <Spinner decorative /> : <Globe size={18} />}</span>
           <span className="grow">
             <strong>Website files, ready to upload</strong>
@@ -73,7 +86,7 @@ export function ExportModal() {
           </span>
           <ChevronRight className="chev" />
         </button>
-        <button className="welcome-action secondary" disabled={!!busy || !!blocked} onClick={() => void run('source')}>
+        <button ref={(el) => void (buttons.current.source = el)} className="welcome-action secondary" disabled={!!blocked} aria-disabled={!!busy || undefined} onClick={() => void run('source')}>
           <span className="ico">{busy === 'source' ? <Spinner decorative /> : <FolderCode size={18} />}</span>
           <span className="grow">
             <strong>Editable project, for a developer</strong>
@@ -90,7 +103,7 @@ export function ExportModal() {
           <Cloud size={14} /> One-click publishing with SiteOrigin Hosting is coming soon.
         </p>
         {result && result.message && (
-          <div className={`scope-note ${result.ok ? 'shared' : 'danger'}`} role={result.ok ? 'status' : 'alert'} style={{ flexDirection: 'column', gap: 8 }}>
+          <div ref={resultRef} tabIndex={-1} className={`scope-note ${result.ok ? 'shared' : 'danger'}`} role={result.ok ? 'status' : 'alert'} style={{ flexDirection: 'column', gap: 8 }}>
             <div className="row">
               {result.ok ? <CircleCheck size={15} /> : <TriangleAlert size={15} />}
               <strong>{result.message}</strong>
