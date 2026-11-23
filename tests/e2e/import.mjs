@@ -76,7 +76,7 @@ const snap = await win.evaluate(() => window.builder.project.snapshot());
 const preview = new URL(await win.locator('.frame-box iframe').getAttribute('src'));
 for (const id of run.result.assetIds) {
   const asset = snap.state.assets.assets[id];
-  assert.deepEqual(asset.variants?.map((v) => v.width), [480, 960, 1440], `${id} has its copies`);
+  assert.deepEqual(asset.variants?.map((v) => v.width), [160, 480, 960, 1440], `${id} has its copies`);
   for (const v of asset.variants) {
     const res = await fetch(new URL(`/${v.file.replace(/^static\//, '')}`, preview.origin), { signal: AbortSignal.timeout(30000) });
     const data = Buffer.from(await res.arrayBuffer());
@@ -138,16 +138,16 @@ const diskBytes = () => onDisk().reduce((n, f) => n + statSync(join(assetDir, f)
 const imported = onDisk();
 const importedBytes = diskBytes();
 const mb = (b) => `${(b / (1024 * 1024)).toFixed(1)} MB`;
-assert.equal(imported.length, PHOTOS * 4, 'each photo is an original and three responsive copies');
+assert.equal(imported.length, PHOTOS * 5, 'each photo is an original and four responsive copies');
 
 step('remove every unused image: the files stay, and the Assets panel says they are kept for Undo');
 await win.getByRole('button', { name: 'Assets', exact: true }).click();
 const storage = win.getByTestId('asset-storage');
-await storage.getByText(`${PHOTOS * 4} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await storage.getByText(`${PHOTOS * 5} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
 await win.getByRole('button', { name: /^Unused/ }).click();
 await win.getByRole('button', { name: `Remove all ${PHOTOS}` }).click();
 await storage.getByText('Kept for Undo').waitFor({ timeout: 15000 });
-await storage.getByText(`${PHOTOS * 4} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
+await storage.getByText(`${PHOTOS * 5} files · ${mb(importedBytes)}`).waitFor({ timeout: 15000 });
 await storage.getByText('0 files · 0 bytes').waitFor();
 assert.deepEqual(onDisk().sort(), imported.sort(), 'removing keeps every file for Undo');
 
@@ -170,7 +170,7 @@ const { plan, refused } = await win.evaluate(async () => {
   return { plan: info.reclaim, refused: await window.builder.project.reclaimStorage(info.reclaim.key, `${key}-another-opening`) };
 });
 assert.equal(refused.ok, false, 'a plan is only carried out in the opening it was made for');
-assert.deepEqual(plan.files, { files: PHOTOS * 4, bytes: importedBytes }, 'the plan frees every removed file');
+assert.deepEqual(plan.files, { files: PHOTOS * 5, bytes: importedBytes }, 'the plan frees every removed file');
 assert.deepEqual(onDisk().sort(), imported.sort(), 'nothing is deleted before the author confirms');
 await win.getByRole('button', { name: `Free ${mb(plan.files.bytes + plan.historyBytes)}`, exact: true }).click();
 await dialog.waitFor({ state: 'detached', timeout: 15000 });

@@ -378,6 +378,20 @@ describe('shell.header', () => {
     expect(blankName).toMatch(/^<a\b[^>]*><img\b[^>]*alt="Studio wordmark"[^>]*\/?><\/a>$/);
   });
 
+  it('asks for a logo only as wide as its small slot, so a photo logo loads a small copy (#170)', () => {
+    const photo = (width?: number, height?: number) => ({ src: '/assets/dining.jpg', alt: 'Dining room', width, height, srcset: '/assets/dining-160w.jpg 160w, /assets/dining-480w.jpg 480w, /assets/dining.jpg 1536w' });
+    const sizes = (image: Record<string, unknown>) => brand(html('shell.header', { siteName: 'Test Studio', logo: image, showSiteName: false })).match(/<img\b[^>]*\bsizes="([^"]*)"/)?.[1];
+    // 34px tall: a 3:2 photo shows 51px wide.
+    expect(sizes(photo(1536, 1024))).toBe('51px');
+    // A long wordmark stops at the slot's 200px, and so does a logo whose dimensions are unknown.
+    expect(sizes(photo(2400, 200))).toBe('200px');
+    expect(sizes(photo())).toBe('200px');
+    // The slot itself holds the logo to that width, letterboxed rather than cropped.
+    const rule = bundle.defs['shell.header'].source!.match(/\.so-header__brand :global\(\.so-header__logo\)\s*\{([^}]*)\}/)![1];
+    expect(rule).toMatch(/max-width:\s*200px/);
+    expect(rule).toMatch(/object-fit:\s*contain/);
+  });
+
   it('shows a text-only brand as is, and names an empty one Home', () => {
     const textOnly = brand(html('shell.header', { siteName: 'Test Studio', logo: null }));
     expect(textOnly).toMatch(/^<a\b[^>]*><span>Test Studio<\/span><\/a>$/);

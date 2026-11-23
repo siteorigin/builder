@@ -226,7 +226,7 @@ async function photoProject(): Promise<{ dir: string; record: AssetRecord; sourc
 describe('finding image files that left the project folder', () => {
   it('reports a missing original, missing copies, or both, and nothing for files that are there', async () => {
     const { dir, record } = await photoProject();
-    expect(record.variants?.map((v) => v.width)).toEqual([480, 960]);
+    expect(record.variants?.map((v) => v.width)).toEqual([160, 480, 960]);
     const assets = { [record.id]: record };
     expect(await findMissingAssetFiles(dir, assets)).toEqual([]);
     const original = readFileSync(join(dir, record.file));
@@ -316,7 +316,7 @@ describe('bringing missing files back', () => {
     if (r.same) return;
     expect(r.stored).toMatchObject({ mime: 'image/png', width: 1000, height: 500, hash: sha(other), bytes: other.length });
     expect(r.stored.file).toMatch(/^static\/assets\/new-nook-[0-9a-f]{8}\.png$/);
-    expect(r.stored.variants?.map((v) => v.width)).toEqual([480]);
+    expect(r.stored.variants?.map((v) => v.width)).toEqual([160, 480]);
     for (const f of [r.stored.file, ...r.stored.variants!.map((v) => v.file)]) expect(existsSync(join(dir, f))).toBe(true);
   });
 
@@ -344,7 +344,7 @@ describe('bringing missing files back', () => {
     const { record } = await importAsset(dir, sourceFile('wide.jpg', photo), []);
     // Imported by an older version, which also made a 960px copy of a 1000px picture.
     const stem = record.file.replace(/\.jpg$/, '');
-    expect(record.variants?.map((v) => v.width)).toEqual([480]);
+    expect(record.variants?.map((v) => v.width)).toEqual([160, 480]);
     const older: AssetRecord = { ...record, variants: [{ width: 480, file: `${stem}-480w.jpg` }, { width: 960, file: `${stem}-960w.jpg` }] };
     const r = await restoreAssetFiles(dir, older);
     expect(r).toEqual({ written: [`${stem}-960w.jpg`], failed: [] });

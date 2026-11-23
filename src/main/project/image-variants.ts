@@ -7,8 +7,11 @@ import sharp from 'sharp';
 import { MAX_VARIANT_PIXELS, WEB_EDGE, webCopySize, type VariantReply, type VariantRequest } from './media-client';
 import { isAnimatedPng } from './media';
 
-/** Widths of the smaller copies, each made only when it is meaningfully smaller than the picture. */
-export const VARIANT_WIDTHS = [480, 960, 1440];
+/**
+ * Widths of the smaller copies, each made only when it is meaningfully smaller than the picture. The 160px copy
+ * serves small placements (a logo, an avatar) at twice their size on high-density screens.
+ */
+export const VARIANT_WIDTHS = [160, 480, 960, 1440];
 
 export interface Variant {
   width: number;
