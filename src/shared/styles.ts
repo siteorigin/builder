@@ -1,4 +1,4 @@
-import type { StyleValue, TokenGroup } from './types';
+import type { StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 
 /**
  * The finite set of visual style properties the editor and AI can set.
@@ -234,23 +234,130 @@ function wholeCall(value: string): boolean {
   return false;
 }
 
-const TOKEN_LENGTH_RE = /^(-?)(\d*\.?\d+)(px|rem|em|%|vw|vh|svh|dvh|ch|ex)$/i;
-const MATH_NUMBER_RE = /\d*\.?\d+(px|rem|em|%|vw|vh|svh|dvh|ch|ex)?/gi;
+const LENGTH_UNITS = 'px|rem|em|%|vw|vh|vi|vb|vmin|vmax|svw|svh|svi|svb|lvw|lvh|dvw|dvh|ch|ex|cap|ic|lh|rlh|cqw|cqh|cqi|cqb|cqmin|cqmax|cm|mm|q|in|pt|pc';
+const CSS_NUMBER = '(?:\\d+(?:\\.\\d+)?|\\.\\d+)';
+const TOKEN_LENGTH_RE = new RegExp(`^([+-]?)${CSS_NUMBER}(?:${LENGTH_UNITS})$`, 'i');
+const TOKEN_ZERO_RE = /^[+-]?(?:0+(?:\.0+)?|\.0+)$/;
+/** One piece of a math function: whitespace, a function opening, a site style's variable, a number or length, or punctuation. */
+const MATH_TOKEN_RE = new RegExp(`\\s+|(?:calc|min|max|clamp)\\(|var\\(\\s*--so-[a-z0-9-]+\\s*\\)|[+-]?${CSS_NUMBER}(?:${LENGTH_UNITS})?|[()+\\-*/,]`, 'iy');
+/** How many arguments each math function takes, at least and at most. */
+const MATH_ARITY: Record<string, [number, number]> = { calc: [1, 1], clamp: [3, 3], min: [1, Infinity], max: [1, Infinity] };
 
 /**
- * A length a spacing, page-width or corner site style can hold: a number with a unit, 0, or a clamp(), min(),
- * max() or calc() of numbers and lengths. A bare number other than 0, a keyword such as `auto` and a list of
- * lengths are not one length. Widths and corners cannot be negative; spacing can, for pulling things closer.
+ * One calc(), min(), max() or clamp() call: numbers, lengths, site style variables, nested calls and brackets
+ * joined by operators, each function given its number of arguments. CSS reads a + or - without a space on both
+ * sides as a sign, so those are refused rather than written out as a value the browser drops.
+ */
+function isMathLength(value: string): boolean {
+  const toks: Array<{ t: string; spaced: boolean }> = [];
+  let spaced = false;
+  for (let at = 0; at < value.length; ) {
+    MATH_TOKEN_RE.lastIndex = at;
+    const m = MATH_TOKEN_RE.exec(value);
+    if (!m) return false;
+    at = MATH_TOKEN_RE.lastIndex;
+    if (/^\s+$/.test(m[0])) spaced = true;
+    else (toks.push({ t: m[0].toLowerCase(), spaced }), (spaced = false));
+  }
+  let i = 0;
+  const call = (): boolean => {
+    const fn = toks[i]?.t.match(/^(calc|min|max|clamp)\($/)?.[1];
+    if (!fn) return false;
+    i++;
+    let args = 0;
+    for (;;) {
+      if (!expr()) return false;
+      args++;
+      if (toks[i]?.t !== ',') break;
+      i++;
+    }
+    if (toks[i]?.t !== ')') return false;
+    i++;
+    return args >= MATH_ARITY[fn][0] && args <= MATH_ARITY[fn][1];
+  };
+  const operand = (): boolean => {
+    const t = toks[i]?.t;
+    if (t === undefined) return false;
+    if (t.endsWith('(') && t !== '(') return call();
+    if (t === '(') {
+      i++;
+      if (!expr() || toks[i]?.t !== ')') return false;
+      i++;
+      return true;
+    }
+    if (t.startsWith('var(') || /^[+-]?[\d.]/.test(t)) return (i++, true);
+    return false;
+  };
+  const expr = (): boolean => {
+    if (!operand()) return false;
+    while (toks[i] && /^[+\-*/]$/.test(toks[i].t)) {
+      const op = toks[i];
+      if ((op.t === '+' || op.t === '-') && (!op.spaced || !toks[i + 1]?.spaced)) return false;
+      i++;
+      if (!operand()) return false;
+    }
+    return true;
+  };
+  return call() && i === toks.length;
+}
+
+/**
+ * A length a spacing, page-width or corner site style can hold: a number with a unit, 0, or one calc(), min(),
+ * max() or clamp() of lengths. A bare number other than 0, a keyword such as `auto` and a list of lengths are
+ * not one length. Widths and corners cannot be negative; spacing can, for pulling things closer.
  */
 export function isTokenLength(value: string, { negative = true }: { negative?: boolean } = {}): boolean {
   const s = value.trim();
-  if (s === '0') return true;
+  if (TOKEN_ZERO_RE.test(s)) return true;
   const m = TOKEN_LENGTH_RE.exec(s);
-  if (m) return negative || !m[1];
-  if (!/^(calc|min|max|clamp)\(/i.test(s) || !wholeCall(s) || !balanced(s)) return false;
-  // Inside, only numbers, lengths, the math functions themselves, operators and commas: no names or colors.
-  const rest = s.replace(/(calc|min|max|clamp)\(/gi, '(').replace(MATH_NUMBER_RE, '0');
-  return /^[0()+\-*/,\s]+$/.test(rest) && !/\(\s*\)|\(\s*,|,\s*\)|,\s*,/.test(rest);
+  if (m) return negative || m[1] !== '-';
+  return /^(calc|min|max|clamp)\(/i.test(s) && balanced(s) && isMathLength(s);
+}
+
+/**
+ * A style's value with its links to other styles followed to the end, for showing it or copying it out.
+ * Undefined when a link names a style that does not exist, or the links loop.
+ */
+export function followToken(tokens: TokenDef[], id: string): TokenValue | undefined {
+  const byId = new Map(tokens.map((t) => [t.id, t]));
+  const seen = new Set<string>();
+  for (let cur: string | null = id; cur && !seen.has(cur); ) {
+    seen.add(cur);
+    const v = byId.get(cur)?.value;
+    const next = linkOf(v);
+    if (!next) return v;
+    cur = next;
+  }
+  return undefined;
+}
+
+/** A style's value as CSS text, a style it follows already followed; empty when it cannot be followed or is not text. */
+export function followedText(tokens: TokenDef[], id: string): string {
+  const v = followToken(tokens, id);
+  return typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '';
+}
+
+/** A metric written as a number in a hand-edited document reads as the same CSS text. */
+const metricText = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : null);
+
+/**
+ * A text style's metrics as the editor shows them, a style it is linked to (by hand, or by an older version)
+ * followed. Null when they cannot be read: a broken link, or a size, line height, letter spacing, weight or
+ * font that is missing.
+ */
+export function textMetrics(tokens: TokenDef[], id: string): TextStyleValue | null {
+  const v = followToken(tokens, id) as Record<string, unknown> | undefined;
+  if (!v || typeof v !== 'object') return null;
+  const size = metricText(v.size);
+  const lineHeight = metricText(v.lineHeight);
+  const tracking = metricText(v.tracking);
+  const weight = Number(v.weight);
+  const family = v.family;
+  const familyOk = (typeof family === 'string' && family.trim()) || linkOf(family);
+  if (size === null || lineHeight === null || tracking === null || !Number.isFinite(weight) || !familyOk) return null;
+  const out: TextStyleValue = { family: family as TextStyleValue['family'], size, lineHeight, tracking, weight };
+  if (typeof v.transform === 'string') out.transform = v.transform as TextStyleValue['transform'];
+  return out;
 }
 
 /** Whether a literal CSS value is free of characters and constructs that could escape its declaration. */

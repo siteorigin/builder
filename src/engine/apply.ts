@@ -19,7 +19,7 @@ import type {
 import type { Binding } from '@shared/types';
 import { ICON_POSITIONS, SCHEMA_VERSION, isBinding, isComparison, type IconPosition, type TextTag } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
-import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textMetrics, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { findVariant, variantOptions } from '@shared/variants';
@@ -35,7 +35,7 @@ import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { bindingSlots, enclosingList, normalizeProperties } from './schema';
-import { forEachTokenRef, tokenUsageCounts, declaredTokens, followToken } from './tokens';
+import { forEachTokenRef, tokenUsageCounts, declaredTokens, followToken, findTokenCycle } from './tokens';
 import { settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import {
@@ -1285,18 +1285,7 @@ function listInsert(state: ProjectState, op: Op<'instance.listInsert'>): OpResul
 // ---------------------------------------------------------------------------
 
 function assertNoTokenCycles(state: ProjectState) {
-  const theme = getTheme(state.site.themeId);
-  const value = (id: string) => (Object.hasOwn(state.tokens.overrides, id) ? state.tokens.overrides[id] : [...theme.tokens, ...state.tokens.custom].find((t) => t.id === id)?.value);
-  for (const t of [...theme.tokens, ...state.tokens.custom]) {
-    const seen = new Set<string>();
-    let cur: string | undefined = t.id;
-    while (cur) {
-      if (seen.has(cur)) fail('That change would make site styles refer to each other in a loop.');
-      seen.add(cur);
-      const v = value(cur);
-      cur = v && typeof v === 'object' && 'token' in v ? (v as { token: string }).token : undefined;
-    }
-  }
+  if (findTokenCycle(state)) fail('That change would make site styles refer to each other in a loop.');
 }
 
 /** What each kind of site style is called in messages. */
@@ -1307,8 +1296,10 @@ function tokenSet(state: ProjectState, op: Op<'token.set'>): OpResult {
   const custom = state.tokens.custom.find((t) => t.id === op.tokenId);
   if (op.value === null) {
     // A custom style's value is its own: there is no theme default under it to go back to.
-    if (custom && !Object.hasOwn(state.tokens.overrides, op.tokenId)) fail(`"${custom.label}" is one of your own site styles, so it has no theme default to go back to. Give it a new value, or remove it.`);
+    if (custom) fail(`"${custom.label}" is one of your own site styles, so it has no theme default to go back to. Give it a new value, or remove it.`);
     delete state.tokens.overrides[op.tokenId];
+    // The theme's own value can link to a style that now links back.
+    assertNoTokenCycles(state);
     return {};
   }
   const v = op.value as Record<string, unknown>;
@@ -1317,8 +1308,17 @@ function tokenSet(state: ProjectState, op: Op<'token.set'>): OpResult {
     if (typeof v.token !== 'string' || Object.keys(v).length !== 1) fail('A site style reference must be { "token": "group.name" }.');
     // Text styles are written out metric by metric, so one cannot stand in for another as a whole.
     if (tdef.group === 'text') fail(`"${tdef.label}" is a text style, and a text style cannot follow another text style. Change its font, size or spacing instead.`);
-    const target = effectiveTokens(state).find((t) => t.id === v.token) ?? fail(`Token "${v.token}" does not exist.`);
+    const tokens = effectiveTokens(state);
+    const target = tokens.find((t) => t.id === v.token) ?? fail(`Token "${v.token}" does not exist.`);
     if (target.group !== tdef.group) fail(`"${tdef.label}" can only follow another ${TOKEN_KIND[tdef.group]} style, and "${target.label}" is a ${TOKEN_KIND[target.group]} style.`);
+    // The style followed must lead to a value: every style further along it exists and is the same kind.
+    const seen = new Set([target.id, op.tokenId]);
+    for (let cur = linkOf(target.value); cur && !seen.has(cur); ) {
+      seen.add(cur);
+      const next = tokens.find((t) => t.id === cur) ?? fail(`"${target.label}" follows "${cur}", which does not exist. Link to another style, or give "${target.label}" its own value first.`);
+      if (next.group !== tdef.group) fail(`"${target.label}" follows "${next.label}", which is a ${TOKEN_KIND[next.group]} style.`);
+      cur = linkOf(next.value);
+    }
     state.tokens.overrides[op.tokenId] = { token: target.id };
   } else tokenSetLiteral(state, tdef, op.value);
   // A custom style has no theme default to return to: its value is its own, not an override.
@@ -1341,14 +1341,18 @@ function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
     state.tokens.overrides[id] = v as TokenValue;
   } else if (tdef.group === 'text') {
     if (!v || typeof v !== 'object' || Array.isArray(v)) fail('Text styles need { family, size, lineHeight, weight, tracking }.');
-    // A text style saved as a link to another (hand-edited, or from an older version) starts from the one it follows.
+    // A text style saved as a link to another (hand-edited, or from an older version) starts from the one it
+    // follows, or from the theme's own metrics when that link leads nowhere.
     const own = state.tokens.overrides[id] ?? tdef.value;
-    const cur = (linkOf(own) ? followToken(effectiveTokens(state), id) : own) as Record<string, unknown> | undefined;
+    const declared = getTheme(state.site.themeId).tokens.find((t) => t.id === id)?.value;
+    const cur = (linkOf(own) ? (textMetrics(effectiveTokens(state), id) ?? (linkOf(declared) ? undefined : declared)) : own) as Record<string, unknown> | undefined;
     // Only the text-style keys are kept, so nothing else can change how the style is written out.
     const merged: Record<string, unknown> = Object.fromEntries(TEXT_KEYS.map((k) => [k, Object.hasOwn(v, k) ? (v as Record<string, unknown>)[k] : cur?.[k]]).filter(([, x]) => x !== undefined));
+    if (merged.family === undefined || merged.family === null || merged.family === '') fail('Text styles need a font family.');
     for (const k of ['size', 'lineHeight', 'tracking'] as const) {
-      const s = String(merged[k]);
-      if (!/^[0-9a-z.,%+\-*/ ()]+$/i.test(s) || !isSafeCssValue(s)) fail(`Invalid ${k} "${s}".`);
+      const x = merged[k];
+      const s = typeof x === 'number' && Number.isFinite(x) ? String(x) : typeof x === 'string' ? x : '';
+      if (!s.trim() || !/^[0-9a-z.,%+\-*/ ()]+$/i.test(s) || !isSafeCssValue(s)) fail(`Invalid ${k} "${x === undefined ? '' : String(x)}".`);
     }
     const w = Number(merged.weight);
     if (!Number.isFinite(w) || w < 100 || w > 900) fail('Weight must be between 100 and 900.');

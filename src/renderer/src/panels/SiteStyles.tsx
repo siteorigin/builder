@@ -2,11 +2,10 @@ import { variantOptions } from '@shared/variants';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { ChevronDown, ChevronRight, Globe, Link2, Palette, RotateCcw } from 'lucide-react';
 import type { ProjectState, TextStyleValue, TokenDef } from '@shared/types';
-import { tokenVar } from '@shared/styles';
+import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
 import { allTrees, instancesOf } from '@engine/tree';
-import { followToken } from '@engine/tokens';
 import { api, applyOps, useStore } from '../store';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field, Section, openSection } from '../components/ui';
@@ -135,17 +134,7 @@ function resolveColor(tokens: TokenDef[], v: unknown): string {
   return typeof end === 'string' ? end : '';
 }
 
-/** A style's own value as text, a style it follows already followed; empty when it cannot be followed. */
-const resolvedText = (tokens: TokenDef[], id: string) => {
-  const v = followToken(tokens, id);
-  return typeof v === 'string' ? v : '';
-};
-
-/** A text style's metrics; one saved as a link to another (by hand, or by an older version) shows the one it follows. */
-const textValue = (tokens: TokenDef[], id: string): TextStyleValue | null => {
-  const v = followToken(tokens, id);
-  return v && typeof v === 'object' && 'size' in v ? (v as TextStyleValue) : null;
-};
+const resolvedText = followedText;
 
 const toPx = (v: string): number | null => {
   const m = /^(-?\d*\.?\d+)(rem|em|px)$/.exec(v.trim());
@@ -180,9 +169,10 @@ const sameValue = (a: unknown, b: unknown): boolean => {
 /** Pixels back in the unit the value was written in, so rem-based sizes stay rem-based. */
 const unitOf = (v: string) => (/rem\s*$/.test(v.trim()) ? 'rem' : /em\s*$/.test(v.trim()) ? 'em' : 'px');
 const fromPx = (n: number, unit: string) => (unit === 'px' ? `${n}px` : `${+(n / 16).toFixed(4)}${unit}`);
-const parseNum = (s: string) => {
+/** A typed number of pixels; negative only where the value can be (spacing). */
+const parseNum = (s: string, negative = false) => {
   const n = Number(s.trim().replace(/px$/i, ''));
-  return s.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : null;
+  return s.trim() !== '' && Number.isFinite(n) && (negative || n >= 0) ? n : null;
 };
 /** clamp(min, preferred, max) split into its three parts, or null. */
 const clampParts = (v: string): [string, string, string] | null => {
@@ -195,7 +185,7 @@ const clampParts = (v: string): [string, string, string] | null => {
  * its smallest and largest sizes, each edited on its own so the scaling in between is kept; and the CSS
  * itself one step away for anything else.
  */
-function SizeControl({ value, name, id, onCommit, cssToggle = true }: { value: string; name: string; id?: string; onCommit: (v: string) => void; cssToggle?: boolean }) {
+function SizeControl({ value, name, id, onCommit, cssToggle = true, negative = false }: { value: string; name: string; id?: string; onCommit: (v: string) => void; cssToggle?: boolean; negative?: boolean }) {
   const [asCss, setAsCss] = useState(false);
   const parts = clampParts(value);
   const range = clampRange(value);
@@ -213,7 +203,7 @@ function SizeControl({ value, name, id, onCommit, cssToggle = true }: { value: s
           value={String(range[i === 0 ? 0 : 1])}
           ariaLabel={`${name}, ${label.toLowerCase()}, in pixels`}
           onCommit={(s) => {
-            const n = parseNum(s);
+            const n = parseNum(s, negative);
             if (n === null) return false;
             const next = [...parts];
             next[i] = fromPx(n, unitOf(parts[i]));
@@ -235,7 +225,7 @@ function SizeControl({ value, name, id, onCommit, cssToggle = true }: { value: s
         </div>
       ) : simple ? (
         <span className="ss-num">
-          <DraftInput id={id} className="input sm" value={String(px)} ariaLabel={`${name}, in pixels`} onCommit={(s) => { const n = parseNum(s); if (n === null) return false; onCommit(fromPx(n, unitOf(value))); }} />
+          <DraftInput id={id} className="input sm" value={String(px)} ariaLabel={`${name}, in pixels`} onCommit={(s) => { const n = parseNum(s, negative); if (n === null) return false; onCommit(fromPx(n, unitOf(value))); }} />
           <span className="ss-unit">px</span>
         </span>
       ) : (
@@ -399,7 +389,8 @@ export function SiteStyles() {
   const site = st.site;
   const updSite = (patch: Record<string, unknown>) => void applyOps([{ type: 'site.update', ...patch }], 'Update site settings');
   const changedIds = tokens.map((t) => t.id).filter(changed);
-  const savedIds = Object.keys(overrides).filter((id) => byId(id));
+  // Theme styles only: an override on one of your own styles is its value in use, with no theme value under it.
+  const savedIds = Object.keys(overrides).filter((id) => theme.tokens.some((t) => t.id === id));
   const resetAll = (e: React.MouseEvent<HTMLButtonElement>) => {
     const panel = e.currentTarget.closest('.ss');
     const trigger = e.currentTarget;
@@ -484,7 +475,7 @@ export function SiteStyles() {
     const t = byId(id);
     if (!t) return [];
     if (t.group === 'text') {
-      const v = textValue(tokens, id) ?? undefined;
+      const v = textMetrics(tokens, id) ?? undefined;
       const b = themeValue(id) as TextStyleValue;
       return TEXT_METRICS.filter((k) => !sameValue(metricOf(v, k), metricOf(b, k))).map((k) => ({ what: METRIC_NAMES[k], now: show('text', k, metricOf(v, k)), was: show('text', k, metricOf(b, k)) }));
     }
@@ -590,7 +581,7 @@ export function SiteStyles() {
   };
 
   const textRow = (t: TokenDef) => {
-    const v = textValue(tokens, t.id);
+    const v = textMetrics(tokens, t.id);
     if (!v) return null;
     const base = (themeValue(t.id) ?? v) as TextStyleValue;
     const famRef = refOf(v.family);
@@ -776,7 +767,7 @@ export function SiteStyles() {
         ) : g === 'shadow' ? (
           <ShadowControl value={value} name={name} onCommit={commit} />
         ) : (
-          <SizeControl value={value} name={name} onCommit={commit} cssToggle={wide} />
+          <SizeControl value={value} name={name} onCommit={commit} cssToggle={wide} negative={g === 'space'} />
         )}
       </div>
     );

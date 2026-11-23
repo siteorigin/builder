@@ -1,9 +1,9 @@
 import { useId, useMemo, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
-import type { ProjectState, TextStyleValue, TokenDef, TokenGroup } from '@shared/types';
+import type { ProjectState, TokenDef, TokenGroup } from '@shared/types';
 import { effectiveTokens } from '@generator/index';
-import { followToken, tokenUsageCounts } from '@engine/tokens';
-import { linkOf } from '@shared/styles';
+import { tokenUsageCounts } from '@engine/tokens';
+import { followedText, linkOf, textMetrics } from '@shared/styles';
 import { applyOps } from '../store';
 import { ColorPick } from '../components/ColorPick';
 import { DraftInput, Field } from '../components/ui';
@@ -32,12 +32,13 @@ function NewStyle({ tokens }: { tokens: TokenDef[] }) {
   const [group, setGroup] = useState<TokenGroup>('color');
   const [label, setLabel] = useState('');
   const [value, setValue] = useState('');
-  const textStyles = tokens.filter((t) => t.group === 'text');
+  // Only text styles whose metrics can be read can be started from; their metrics are what is copied.
+  const textStyles = tokens.filter((t) => t.group === 'text' && textMetrics(tokens, t.id));
   const [basedOn, setBasedOn] = useState('');
   const spec = GROUPS.find((g) => g.group === group)!;
   const create = async () => {
     const base = textStyles.find((t) => t.id === (basedOn || textStyles[0]?.id));
-    const v = group === 'text' ? structuredClone(base?.value) : value.trim();
+    const v = group === 'text' ? (base ? textMetrics(tokens, base.id) : null) : value.trim();
     if (!label.trim() || !v) return;
     if (await applyOps([{ type: 'token.create', group, label: label.trim(), value: v }], `Add ${label.trim()}`)) {
       setLabel('');
@@ -101,6 +102,7 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
   const uid = useId();
   const [removing, setRemoving] = useState(false);
   const [choice, setChoice] = useState('');
+  const [editingStack, setEditingStack] = useState(false);
   // Styles that follow this one (directly or through others) would end up following themselves.
   const followers = new Set<string>();
   for (let grew = true; grew; ) {
@@ -117,10 +119,11 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
   const ref = linkOf(t.value);
   const follows = ref ? (tokens.find((x) => x.id === ref)?.label ?? ref) : null;
   // The value in effect, a style it follows already followed: what a link shows, and what unlinking keeps.
-  const resolved = followToken(tokens, t.id);
-  const literal = typeof resolved === 'string' ? resolved : '';
+  const literal = followedText(tokens, t.id);
   /** A picker's changes merge with each other, never with a typed value: undo returns to what was typed. */
   const set = (value: unknown, by?: 'picker') => applyOps([{ type: 'token.set', tokenId: t.id, value }], `Change ${t.label}`, by ? `token:${t.id}:${by}` : `token:${t.id}`);
+  /** Linking and unlinking are steps of their own, so undo always returns to the link before. */
+  const relink = (value: unknown) => applyOps([{ type: 'token.set', tokenId: t.id, value }], `Change ${t.label}`);
   const remove = async () => {
     if (!uses) return void applyOps([{ type: 'token.remove', tokenId: t.id }], `Remove ${t.label}`);
     if (!replacement) return;
@@ -129,18 +132,29 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
   const spec = GROUPS.find((g) => g.group === t.group);
   let value: React.ReactNode;
   if (t.group === 'text') {
-    const v = resolved && typeof resolved === 'object' && 'size' in resolved ? (resolved as TextStyleValue) : null;
+    const v = textMetrics(tokens, t.id);
     const famRef = linkOf(v?.family);
-    const stack = famRef ? String(followToken(tokens, famRef) ?? '') : String(v?.family ?? '');
-    value = (
+    const stack = famRef ? followedText(tokens, famRef) : String(v?.family ?? '');
+    // A text style whose metrics cannot be read (hand-edited, or linked to a style that is gone) starts again from one that can.
+    const restart = v ? null : tokens.find((x) => x.group === 'text' && x.id !== t.id && textMetrics(tokens, x.id));
+    value = v ? (
       <div className="row" style={{ gap: 8 }}>
-        <span className="grow" style={{ fontFamily: stack || undefined, fontWeight: v?.weight, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span className="grow" style={{ fontFamily: stack || undefined, fontWeight: v.weight, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {famRef ? (tokens.find((x) => x.id === famRef)?.label ?? famRef) : familyName(stack)}
-          {v && <span className="faint"> · {v.weight}</span>}
+          <span className="faint"> · {v.weight}</span>
         </span>
         <button type="button" className="btn btn-sm" onClick={() => onEditText(t.id)}>
           Edit text style<span className="sr-only"> {t.label}</span>
         </button>
+      </div>
+    ) : (
+      <div className="row faint" style={{ gap: 8, fontSize: 12 }}>
+        <span className="grow">Its settings are missing.</span>
+        {restart && (
+          <button type="button" className="btn btn-sm" onClick={() => void relink(textMetrics(tokens, restart.id))}>
+            Start from {restart.label}
+          </button>
+        )}
       </div>
     );
   } else {
@@ -150,38 +164,53 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
       ) : (
         <DraftInput id={`${uid}-value`} className="input sm mono" value={literal} placeholder={spec?.placeholder} onCommit={(v) => (v.trim() ? set(v.trim()) : false)} />
       );
+    // A link to a style that is gone shows nothing to keep, so a value can be typed over it instead.
+    const broken = !!ref && !literal;
     value = (
-      <div className="grid-2">
-        <Field label="Value" controlId={ref ? undefined : `${uid}-value`}>
-          {ref ? (
-            <span className="mono faint" style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }} title={literal}>
-              {t.group === 'font' ? familyName(literal) : literal}
-            </span>
-          ) : (
-            own
-          )}
-        </Field>
-        <Field label="Same as" controlId={`${uid}-link`}>
-          <select
-            id={`${uid}-link`}
-            className="select sm"
-            value={ref ?? ''}
-            onChange={(e) => {
-              // Linking stores the style followed; unlinking keeps the value it showed as this style's own.
-              if (e.target.value) void set({ token: e.target.value });
-              else if (literal) void set(literal);
-            }}
-          >
-            <option value="">{OWN[t.group] ?? 'Its own value'}</option>
-            {ref && !others.some((o) => o.id === ref) && <option value={ref}>{follows}</option>}
-            {others.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.label}
+      <>
+        <div className="grid-2">
+          <Field label="Value" controlId={ref && !broken ? undefined : `${uid}-value`}>
+            {ref && !broken ? (
+              <span className="mono faint" style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12 }} title={literal}>
+                {t.group === 'font' ? familyName(literal) : literal}
+              </span>
+            ) : (
+              own
+            )}
+          </Field>
+          <Field label="Same as" controlId={`${uid}-link`}>
+            <select
+              id={`${uid}-link`}
+              className="select sm"
+              value={ref ?? ''}
+              onChange={(e) => {
+                // Linking stores the style followed; unlinking keeps the value it showed as this style's own.
+                if (e.target.value) void relink({ token: e.target.value });
+                else if (literal) void relink(literal);
+              }}
+            >
+              <option value="" disabled={broken}>
+                {OWN[t.group] ?? 'Its own value'}
               </option>
-            ))}
-          </select>
-        </Field>
-      </div>
+              {ref && !others.some((o) => o.id === ref) && <option value={ref}>{follows}</option>}
+              {others.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        {t.group === 'font' && !ref && (
+          <div className="col" style={{ gap: 4 }}>
+            {editingStack && <DraftInput className="input sm mono" value={literal} ariaLabel={`${t.label} font stack`} onCommit={(v) => (v.trim() ? set(v.trim()) : false)} />}
+            <button type="button" className="link-btn" style={{ alignSelf: 'flex-start', fontSize: 12 }} aria-expanded={editingStack} onClick={() => setEditingStack(!editingStack)}>
+              {editingStack ? 'Hide font stack' : 'Edit font stack'}
+              <span className="sr-only"> for {t.label}</span>
+            </button>
+          </div>
+        )}
+      </>
     );
   }
   return (

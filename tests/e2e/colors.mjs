@@ -227,8 +227,15 @@ await eventually(async () => assert.equal(await customValue('color.custom-sea'),
 await sea.getByLabel('Same as').selectOption('color.brand');
 await eventually(async () => assert.deepEqual(await customValue('color.custom-sea'), { token: 'color.brand' }, 'it follows Brand as a link'));
 await eventually(async () => assert.equal(await sea.locator('input[type="color"]').isDisabled(), true, 'a linked color has no picker of its own'));
+const brandNow = await saved();
+assert.equal(brandNow, 'rgba(209, 65, 49, 0.5)', 'Brand is the color set in the step before');
+await eventually(async () => assert.equal(await sea.locator('.color-pick-fill').evaluate((el) => getComputedStyle(el).backgroundColor), brandNow, 'the linked swatch paints the color it follows'));
 await sea.getByLabel('Same as').selectOption('');
-await eventually(async () => assert.equal(await customValue('color.custom-sea'), await saved(), 'unlinking keeps the color it showed'));
+await eventually(async () => assert.equal(await customValue('color.custom-sea'), brandNow, 'unlinking keeps the color it showed'));
+await undo();
+await eventually(async () => assert.deepEqual(await customValue('color.custom-sea'), { token: 'color.brand' }, 'one undo returns to the link'));
+await sea.getByLabel('Same as').selectOption('');
+await eventually(async () => assert.equal(await customValue('color.custom-sea'), brandNow, 'and it can be unlinked again'));
 await eventually(async () => assert.equal(await sea.locator('input[type="color"]').isDisabled(), false, 'and its picker is back'));
 
 step('a text style of your own opens in the Text styles list');
@@ -242,6 +249,17 @@ await yours.locator('[data-token-id="text.custom-callout"]').getByRole('button',
 const callout = section('Text styles').locator('[data-token-id="text.custom-callout"] .ss-text-toggle');
 await eventually(async () => assert.equal(await callout.getAttribute('aria-expanded'), 'true', 'the jump opens the collapsed list at that style'));
 await eventually(async () => assert.equal(await callout.evaluate((el) => el === document.activeElement), true, 'and lands on it'));
+await eventually(async () => {
+  const inView = await callout.evaluate((el) => {
+    const scroller = el.closest('.panel-body');
+    const top = scroller.querySelector('.insp-head')?.getBoundingClientRect().bottom ?? scroller.getBoundingClientRect().top;
+    const r = el.getBoundingClientRect();
+    return r.top >= top - 1 && r.bottom <= scroller.getBoundingClientRect().bottom + 1;
+  });
+  assert.equal(inView, true, 'scrolled into view below the panel header');
+});
+await section('Text styles').locator('[data-token-id="text.custom-callout"]').getByLabel('Weight of Callout').selectOption('700');
+await eventually(async () => assert.equal((await customValue('text.custom-callout'))?.weight, 700, 'its editor changes the custom text style'));
 
 assert.deepEqual(errors, [], 'no uncaught errors in the editor');
 await app.close();

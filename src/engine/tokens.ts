@@ -1,7 +1,7 @@
 import { variantOptions } from '@shared/variants';
-import type { ProjectState, ResponsiveStyles, TokenDef, TokenValue } from '@shared/types';
+import type { ProjectState, ResponsiveStyles, TokenDef } from '@shared/types';
 import { getTheme } from '@catalogue/index';
-import { linkOf } from '@shared/styles';
+import { linkOf, tokenVar } from '@shared/styles';
 import { allTrees } from './tree';
 
 export interface TokenRefSite {
@@ -45,7 +45,8 @@ export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site:
   }
   const tokenValue = (holder: Record<string, unknown>, key: string) => {
     const v = holder[key];
-    const ref = refOf(v);
+    // Only a value that is exactly { token } is a link; a stray `token` beside text metrics is not one.
+    const ref = linkOf(v);
     if (ref) return fn(ref, { label: 'Site styles', kind: 'token', replace: (next) => (holder[key] = next) });
     if (v && typeof v === 'object' && 'family' in (v as object)) {
       const fam = v as Record<string, unknown>;
@@ -69,36 +70,34 @@ export function declaredTokens(state: ProjectState): TokenDef[] {
   return [...getTheme(state.site.themeId).tokens, ...state.tokens.custom];
 }
 
-/** The first token that refers back to itself through other tokens, or null. */
+/**
+ * The first token that refers back to itself through other tokens, or null. A token refers to another by
+ * linking to it, or by naming its variable in CSS text (a border's `var(--so-color-border)`): a loop through
+ * either leaves every variable in it without a value.
+ */
 export function findTokenCycle(state: ProjectState): string | null {
   const declared = declaredTokens(state);
   const byId = new Map(declared.map((t) => [t.id, t]));
+  const byVar = new Map(declared.map((t) => [tokenVar(t.id), t.id]));
   const value = (id: string) => (Object.hasOwn(state.tokens.overrides, id) ? state.tokens.overrides[id] : byId.get(id)?.value);
-  for (const t of declared) {
-    const seen = new Set<string>();
-    let cur: string | null = t.id;
-    while (cur) {
-      if (seen.has(cur)) return t.id;
-      seen.add(cur);
-      cur = refOf(value(cur));
-    }
-  }
+  const next = (id: string): string[] => {
+    const v = value(id);
+    const link = linkOf(v);
+    if (link) return [link];
+    if (typeof v !== 'string') return [];
+    return [...v.matchAll(/var\(\s*(--so-[a-z0-9-]+)\s*[,)]/gi)].map((m) => byVar.get(m[1])).filter((x): x is string => !!x);
+  };
+  const done = new Set<string>();
+  const open = new Set<string>();
+  const loops = (id: string): boolean => {
+    if (done.has(id)) return false;
+    if (open.has(id)) return true;
+    open.add(id);
+    if (next(id).some(loops)) return true;
+    open.delete(id);
+    done.add(id);
+    return false;
+  };
+  for (const t of declared) if (loops(t.id)) return t.id;
   return null;
-}
-
-/**
- * A style's value with its links to other styles followed to the end, for showing it or copying it out.
- * Undefined when a link names a style that does not exist, or the links loop.
- */
-export function followToken(tokens: TokenDef[], id: string): TokenValue | undefined {
-  const byId = new Map(tokens.map((t) => [t.id, t]));
-  const seen = new Set<string>();
-  for (let cur: string | null = id; cur && !seen.has(cur); ) {
-    seen.add(cur);
-    const v = byId.get(cur)?.value;
-    const next = linkOf(v);
-    if (!next) return v;
-    cur = next;
-  }
-  return undefined;
 }

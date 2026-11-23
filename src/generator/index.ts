@@ -25,7 +25,7 @@ import type {
   TokenValue
 } from '@shared/types';
 import { ELEMENT_TAGS, GENERATOR_VERSION, TEXT_TAGS, isBinding, isComparison, type Condition } from '@shared/types';
-import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar, linkOf } from '@shared/styles';
+import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar, linkOf, textMetrics } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
 import { DRAFTS_JS, IMAGE_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
@@ -266,15 +266,24 @@ function tokenCssValue(v: TokenValue | unknown): string {
 export function generateTokensCss(state: ProjectState): string {
   // Imported web fonts come first, so the tokens below can name their families.
   const lines: string[] = [fontFaceCss(state) + '/* Site tokens. Generated from the theme defaults and siteorigin/tokens.json. */', ':root {'];
-  for (const t of effectiveTokens(state)) {
+  const tokens = effectiveTokens(state);
+  const theme = getTheme(state.site.themeId);
+  for (const t of tokens) {
     const name = tokenVar(t.id);
-    const link = t.group === 'text' ? linkOf(t.value) : null;
+    let value = t.value;
+    let link = t.group === 'text' ? linkOf(value) : null;
+    // A text style linked to another (by hand, or by an older version) that leads nowhere keeps the theme's metrics.
+    if (link && !textMetrics(tokens, t.id)) {
+      const own = theme.tokens.find((x) => x.id === t.id)?.value;
+      if (!own || linkOf(own)) continue;
+      (value = own), (link = null);
+    }
     if (link) {
       // Text styles are read metric by metric, so one that follows another follows each metric.
       for (const k of ['family', 'size', 'line-height', 'weight', 'tracking', 'transform']) lines.push(`\t${name}-${k}: var(${tokenVar(link)}-${k});`);
-    } else if (t.group === 'text' && t.value && typeof t.value === 'object') {
+    } else if (t.group === 'text' && value && typeof value === 'object') {
       // A stray `token` beside the metrics (written by an older version) is ignored: the metrics are the style.
-      const ts = t.value as TextStyleValue;
+      const ts = value as TextStyleValue;
       lines.push(`\t${name}-family: ${tokenCssValue(ts.family)};`);
       lines.push(`\t${name}-size: ${ts.size};`);
       lines.push(`\t${name}-line-height: ${ts.lineHeight};`);
