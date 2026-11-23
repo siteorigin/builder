@@ -125,6 +125,8 @@ export async function checkSvelteSource(source: string, opts: { strict?: boolean
   };
 
   if (ast.module) add('error', 'Module scripts are not supported in project components.', ast.module as Node);
+  // <svelte:options customElement={{ extend }}> carries code the compiler emits as is.
+  if (strict && (ast.options as { customElement?: unknown } | null)?.customElement) forbid('custom element options', ast.options as Node);
   // Styles cannot pull in remote stylesheets, fonts or images.
   const css = (ast.css as { content?: { styles?: string } } | null)?.content?.styles ?? '';
   if (strict && CSS_REMOTE.test(css)) forbid('remote stylesheets or images in CSS', ast.css as Node);
@@ -190,6 +192,9 @@ export async function checkSvelteSource(source: string, opts: { strict?: boolean
         // [].constructor.constructor('…') reaches Function without naming it.
         if (propName === 'constructor' && obj.type === 'MemberExpression' && nameOf(obj.property as Node, obj.computed) === 'constructor') add('error', 'eval and Function are not allowed.', n);
         const onGlobal = obj.type === 'Identifier' && GLOBAL_OBJECTS.has(obj.name as string);
+        // window.eval and globalThis.Function are eval and Function under another name.
+        if (onGlobal && (propName === 'eval' || propName === 'Function')) add('error', 'eval and Function are not allowed.', n);
+        if (strict && onGlobal && propName && LOADERS.has(propName)) forbid('network requests', n);
         if (propName) checkCapability(propName, n, onGlobal, parent?.type === 'CallExpression' && key === 'callee');
         else if (strict && onGlobal) forbid('global object access', n);
         break;
@@ -235,6 +240,12 @@ export async function checkSvelteSource(source: string, opts: { strict?: boolean
         else if (strict && literal !== null && EMBEDS.has(literal.toLowerCase())) forbid('embedded external content', n);
         break;
       }
+      case 'StyleDirective': {
+        const values = n.value === true ? [] : Array.isArray(n.value) ? (n.value as Node[]) : [n.value as Node];
+        const texts = values.map((v) => (v.type === 'Text' ? String(v.data) : v.type === 'ExpressionTag' ? literalText(v.expression as Node) : null));
+        if (strict && texts.some((t) => t !== null && CSS_REMOTE.test(t))) forbid('remote stylesheets or images in CSS', n);
+        break;
+      }
       case 'SpreadAttribute':
         // Spread attributes could carry src, href or event handlers the checks cannot see.
         if (strict) forbid('spread attributes', n);
@@ -244,12 +255,15 @@ export async function checkSvelteSource(source: string, opts: { strict?: boolean
         const attr = String(n.name).toLowerCase();
         const values = n.value === true ? [] : Array.isArray(n.value) ? (n.value as Node[]) : [n.value as Node];
         const texts = values.map((v) => (v.type === 'Text' ? String(v.data) : v.type === 'ExpressionTag' ? literalText(v.expression as Node) : null));
-        const navigates = attr === 'href' && parent?.type === 'RegularElement' && ['a', 'area'].includes(String(parent.name).toLowerCase());
+        const host = parent?.type === 'RegularElement' ? String(parent.name) : parent?.type === 'SvelteElement' ? (typeof parent.tag === 'string' ? parent.tag : String((parent.tag as Node)?.value ?? '')) : '';
+        const navigates = attr === 'href' && ['a', 'area'].includes(host.toLowerCase());
         if (attr.startsWith('on') && texts.some((t) => t !== null)) forbid('event handlers written as text', n);
         if (URL_ATTRS.has(attr)) {
           const first = texts[0];
-          if (first !== null && first !== undefined && SCRIPT_URL.test(first)) forbid('script URLs', n);
-          else if (!navigates && first !== null && first !== undefined && REMOTE_URL.test(first)) forbid('remote content (use an image from the project)', n);
+          // srcset lists several URLs; each one counts.
+          const urls = first === null || first === undefined ? [] : attr === 'srcset' ? first.split(',').map((c) => c.trim()) : [first];
+          if (urls.some((u) => SCRIPT_URL.test(u))) forbid('script URLs', n);
+          else if (!navigates && urls.some((u) => REMOTE_URL.test(u))) forbid('remote content (use an image from the project)', n);
         }
         if (attr === 'style' && texts.some((t) => t !== null && CSS_REMOTE.test(t))) forbid('remote stylesheets or images in CSS', n);
         break;

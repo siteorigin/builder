@@ -147,6 +147,16 @@ describe('syntax-tree code checks', () => {
     expect(await strictErrors(`<script>\n\timport Image from '../runtime/Image.svelte';\n</script>\n<a href="https://example.com">Visit</a>\n<img src="/assets/logo.png" alt="Logo" />\n<p title="javascript: the language">x</p>\n<style>\n\tp { background: url('/assets/bg.png'); }\n</style>\n`)).toEqual([]);
   });
 
+  it('closes renamed evaluators, srcset candidates, style directives and custom element options', async () => {
+    expect((await errors(`<script>\n\timport { onMount } from 'svelte';\n\tonMount(() => window.eval('1'));\n</script>\n<p>x</p>\n`)).some((p) => p.message.includes('eval'))).toBe(true);
+    const strictErrors = (src: string) => errors(src, true);
+    expect((await strictErrors(`<script>\n\timport { onMount } from 'svelte';\n\tonMount(() => { const i = new window.Image(); });\n</script>\n<p>x</p>\n`)).length).toBeGreaterThan(0);
+    expect((await strictErrors(`<img srcset="/assets/a.png 1x, https://tracker.example/b.png 2x" alt="" />\n`)).length).toBeGreaterThan(0);
+    expect((await strictErrors(`<p style:background-image="url(https://cdn.example/x.png)">x</p>\n`)).length).toBeGreaterThan(0);
+    expect((await strictErrors(`<svelte:options customElement={{ tag: 'x-card', extend: (C) => C }} />\n<p>x</p>\n`)).length).toBeGreaterThan(0);
+    expect(await strictErrors(`<svelte:element this={'a'} href="https://example.com">Visit</svelte:element>\n`)).toEqual([]);
+  });
+
   it('treats browser guards as browser-only code', async () => {
     const guarded = `<script>\n\timport { browser } from '$app/environment';\n\tconst w = browser ? window.innerWidth : 0;\n\tif (browser) document.title = 'x';\n</script>\n{#if browser}<p>{window.location.pathname}</p>{/if}\n<p>{w}</p>\n`;
     expect((await checkSvelteSource(guarded)).filter((p) => p.message.startsWith('Browser-only'))).toEqual([]);
