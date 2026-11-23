@@ -3,12 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext } from '@shared/api';
-import type { ElementRef, InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
+import type { ElementRef, InstanceNode, LinkValue, ListItem, ProjectState, PropSchema } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolDefinition } from '@agent/types';
 import { toolsForRun } from '@agent/tools';
+import { withStoredFields } from '@agent/macros';
 import { hasOpenSchema, propsJsonSchema } from '@agent/propschema';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { selectionTools } from '@agent/selection';
@@ -47,10 +48,12 @@ const lastResult = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) 
 const dirs: string[] = [];
 afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
 
-async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, starter: 'business' | 'blank' = 'business') {
+async function setup(turns: Turn[], caps: Partial<ModelCapabilities> = {}, starter: 'business' | 'blank' = 'business', prepare?: (s: ProjectState) => void) {
   const dir = mkdtempSync(join(tmpdir(), 'so-tools-'));
   dirs.push(dir);
-  const session = await ProjectSession.create(dir, createStarterState(starter, 'Test Studio', false));
+  const initial = createStarterState(starter, 'Test Studio', false);
+  prepare?.(initial);
+  const session = await ProjectSession.create(dir, initial);
   const adapter = new FakeAdapter(turns, caps);
   const events: AiEvent[] = [];
   const orch = new Orchestrator({
@@ -187,6 +190,209 @@ describe('upsert_page_with_sections', () => {
     expect(componentsOn(session.state, '/')).toEqual(['cta.banner', 'hero.split']);
   });
 
+  it('removes forked and custom project sections when asked, but leaves layout that is not an instance', async () => {
+    let layoutId = '';
+    const { session, run } = await setup(
+      [() => [call('r1', 'upsert_page_with_sections', { slug: 'home', removeOtherSections: true, sections: [{ componentId: 'hero.split', props: { heading: 'Only this' } }] })], () => finish()],
+      {},
+      'business',
+      (s) => {
+        // Hand-built layout at the page root is not a section the macro can express, so it must survive.
+        const home = s.pages[s.site.homePageId];
+        layoutId = 'n_layout';
+        home.nodes[layoutId] = { id: layoutId, kind: 'text', tag: 'p', text: 'Hand-made note' };
+        home.rootIds.push(layoutId);
+      }
+    );
+    const home = () => pageAt(session.state, '/')!;
+    const instanceOf = (componentId: string) => home().rootIds.find((id) => session.state.components[(home().nodes[id] as InstanceNode).definitionId]?.componentId === componentId)!;
+    const homeOwner = { kind: 'page' as const, id: session.state.site.homePageId };
+    const testimonials = (home().nodes[instanceOf('testimonials.grid')] as InstanceNode).definitionId;
+    const fork = await session.apply({ operations: [{ type: 'component.fork', definitionId: testimonials }] }, { label: 'Edit everywhere', source: 'user' });
+    expect(fork.ok).toBe(true);
+    const unique = await session.apply({ operations: [{ type: 'component.makeUnique', owner: homeOwner, nodeId: instanceOf('cta.banner'), name: 'Our banner' }] }, { label: 'Make unique', source: 'user' });
+    expect(unique.ok).toBe(true);
+    const code = await session.apply({ operations: [{ type: 'component.convertToCode', owner: homeOwner, nodeId: instanceOf('logos.strip'), name: 'Logo code' }] }, { label: 'Convert to code', source: 'user' });
+    expect(code.ok).toBe(true);
+    const defs = home().rootIds.filter((id) => home().nodes[id].kind === 'instance').map((id) => session.state.components[(home().nodes[id] as InstanceNode).definitionId]);
+    expect(defs.filter((d) => d.owner === 'project').map((d) => d.kind).sort()).toEqual(['code', 'managed', 'managed']);
+
+    await run('Rebuild the home page with just a hero');
+    expect(home().rootIds.map((id) => (home().nodes[id].kind === 'instance' ? session.state.components[(home().nodes[id] as InstanceNode).definitionId].componentId : id))).toEqual(['hero.split', layoutId]);
+    expect(((home().nodes[home().rootIds[0]] as InstanceNode).props.heading as string)).toBe('Only this');
+  });
+
+  it('rewrites copy in an existing team without losing the portraits it leaves out', async () => {
+    const portraits = ['a_p1', 'a_p2', 'a_p3'];
+    const people = [
+      { name: 'Hannah Wells', role: 'Founder', bio: 'Hannah leads every project from the first sketch.' },
+      { name: 'Marcus Lee', role: 'Project manager', bio: 'Marcus keeps budgets honest.' },
+      { name: 'Sofia Alvarez', role: 'Interior designer', bio: 'Sofia chooses every finish.' }
+    ];
+    const { session, run } = await setup(
+      [() => [call('t1', 'upsert_page_with_sections', { slug: 'about', sections: [{ componentId: 'team.grid', props: { people } }] })], () => finish()],
+      {},
+      'business',
+      (s) => {
+        for (const id of portraits) s.assets.assets[id] = { id, name: id, file: `static/assets/${id}.jpg`, mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' };
+        const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+        const team = about.rootIds.map((id) => about.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'team.grid')!;
+        (team.props.people as ListItem[]).forEach((p, i) => (p.portrait = { assetId: portraits[i], alt: `Portrait of ${p.name}` }));
+      }
+    );
+    const team = () => {
+      const about = pageAt(session.state, '/about/')!;
+      return about.rootIds.map((id) => about.nodes[id] as InstanceNode).find((n) => session.state.components[n.definitionId]?.componentId === 'team.grid')!;
+    };
+    const ids = (team().props.people as ListItem[]).map((p) => p.id);
+    await run('Rewrite the team bios');
+    const after = team().props.people as ListItem[];
+    expect(after.map((p) => p.bio)).toEqual(people.map((p) => p.bio));
+    expect(after.map((p) => p.role)).toEqual(people.map((p) => p.role));
+    expect(after.map((p) => p.portrait)).toEqual(portraits.map((assetId, i) => ({ assetId, alt: `Portrait of ${people[i].name}` })));
+    expect(after.map((p) => p.id)).toEqual(ids);
+  });
+
+  it('matches team members by id or unchanged name, never by position', async () => {
+    const portraits = ['a_p1', 'a_p2', 'a_p3'];
+    const teamOf = (s: ProjectState) => {
+      const about = pageAt(s, '/about/')!;
+      return about.rootIds.map((id) => about.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'team.grid')!;
+    };
+    let ids: string[] = [];
+    const { session, run } = await setup(
+      [
+        () => {
+          ids = (teamOf(session.state).props.people as ListItem[]).map((p) => p.id);
+          const people = [
+            { name: 'Sofia Alvarez', bio: 'Now first.' },
+            { id: ids[0], name: 'Hannah Wells-Grant', bio: 'Renamed, with her id.' },
+            { name: 'Dana Fox', role: 'Junior designer', bio: 'Joined this year.' }
+          ];
+          return [call('t1', 'upsert_page_with_sections', { slug: 'about', sections: [{ componentId: 'team.grid', props: { people } }] })];
+        },
+        () => finish()
+      ],
+      {},
+      'business',
+      (s) => {
+        for (const id of portraits) s.assets.assets[id] = { id, name: id, file: `static/assets/${id}.jpg`, mime: 'image/jpeg', bytes: 1, width: 10, height: 10, hash: 'x', kind: 'image', createdAt: '' };
+        (teamOf(s).props.people as ListItem[]).forEach((p, i) => (p.portrait = { assetId: portraits[i], alt: `Portrait of ${p.name}` }));
+      }
+    );
+    await run('Reorder the team, rename Hannah and add Dana');
+    const people = teamOf(session.state).props.people as Array<ListItem & { portrait: { assetId: string | null } }>;
+    expect(people.map((p) => [p.id, p.name, p.role, p.portrait.assetId])).toEqual([
+      [ids[2], 'Sofia Alvarez', 'Interior designer', 'a_p3'],
+      [ids[0], 'Hannah Wells-Grant', 'Founder & lead designer', 'a_p1'],
+      [expect.any(String), 'Dana Fox', 'Junior designer', null]
+    ]);
+    expect(ids).not.toContain(people[2].id);
+  });
+
+  it('updates a fork requested by its definition, not an earlier theme copy of the same section', async () => {
+    let forkId = '';
+    const { session, run } = await setup([() => [call('f1', 'upsert_page_with_sections', { slug: 'home', removeOtherSections: true, sections: [{ componentId: forkId, props: { heading: 'The fork' } }] })], () => finish()]);
+    const homeId = session.state.site.homePageId;
+    const home = () => session.state.pages[homeId];
+    const ctaId = home().rootIds.find((id) => session.state.components[(home().nodes[id] as InstanceNode).definitionId]?.componentId === 'cta.banner')!;
+    const fork = await session.apply({ operations: [{ type: 'component.fork', definitionId: (home().nodes[ctaId] as InstanceNode).definitionId }] }, { label: 'Edit everywhere', source: 'user' });
+    forkId = (fork.results?.[0] as { definitionId: string }).definitionId;
+    const theme = await session.apply({ operations: [{ type: 'node.insert', owner: { kind: 'page', id: homeId }, index: 0, componentId: 'cta.banner' }] }, { label: 'Add banner', source: 'user' });
+    expect(theme.ok).toBe(true);
+    expect(session.state.components[(home().nodes[home().rootIds[0]] as InstanceNode).definitionId].owner).toBe('theme');
+
+    await run('Keep only our banner');
+    expect(home().rootIds).toEqual([ctaId]);
+    expect((home().nodes[ctaId] as InstanceNode).definitionId).toBe(forkId);
+    expect((home().nodes[ctaId] as InstanceNode).props.heading).toBe('The fork');
+  });
+
+  it('gives a fork to the request that names its definition, even after a catalogue request for the same section', async () => {
+    let forkId = '';
+    const { session, run } = await setup([
+      () => [call('f1', 'upsert_page_with_sections', { slug: 'home', removeOtherSections: true, sections: [{ componentId: 'cta.banner', props: { heading: 'Theme copy' } }, { componentId: forkId, props: { heading: 'The fork' } }] })],
+      () => finish()
+    ]);
+    const homeId = session.state.site.homePageId;
+    const home = () => session.state.pages[homeId];
+    const ctaId = home().rootIds.find((id) => session.state.components[(home().nodes[id] as InstanceNode).definitionId]?.componentId === 'cta.banner')!;
+    const fork = await session.apply({ operations: [{ type: 'component.fork', definitionId: (home().nodes[ctaId] as InstanceNode).definitionId }] }, { label: 'Edit everywhere', source: 'user' });
+    forkId = (fork.results?.[0] as { definitionId: string }).definitionId;
+    await run('A theme banner, then ours');
+    const [first, second] = home().rootIds.map((id) => home().nodes[id] as InstanceNode);
+    expect(home().rootIds).toHaveLength(2);
+    expect(second.id).toBe(ctaId);
+    expect(second.props.heading).toBe('The fork');
+    expect(first.props.heading).toBe('Theme copy');
+    expect(session.state.components[first.definitionId].owner).toBe('theme');
+  });
+
+  it('keeps an omitted portrait whose asset has gone missing instead of rejecting the copy edit', async () => {
+    const { session, run } = await setup(
+      [
+        () => [call('m1', 'upsert_page_with_sections', { slug: 'about', sections: [{ componentId: 'team.grid', props: { people: [{ name: 'Hannah Wells', bio: 'New bio.' }] } }] })],
+        (req) => {
+          expect(lastResult(req).ok).toBe(true);
+          return finish();
+        }
+      ],
+      {},
+      'business',
+      (s) => {
+        const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+        const team = about.rootIds.map((id) => about.nodes[id] as InstanceNode).find((n) => s.components[n.definitionId]?.componentId === 'team.grid')!;
+        (team.props.people as ListItem[])[0].portrait = { assetId: 'a_gone', alt: 'Hannah' };
+      }
+    );
+    await run('Rewrite Hannah’s bio');
+    const about = pageAt(session.state, '/about/')!;
+    const team = about.rootIds.map((id) => about.nodes[id] as InstanceNode).find((n) => session.state.components[n.definitionId]?.componentId === 'team.grid')!;
+    expect((team.props.people as ListItem[]).map((p) => [p.name, p.bio, p.portrait])).toEqual([['Hannah Wells', 'New bio.', { assetId: 'a_gone', alt: 'Hannah' }]]);
+  });
+
+  it('never fills a link this call cleared, even when its page now has the waiting route', async () => {
+    const { session, run } = await setup([
+      () => [call('o1', 'upsert_page_with_sections', { slug: 'offers', title: 'Offers', sections: [{ componentId: 'cta.banner', props: { heading: 'Offer', primaryLink: '/booking/' } }] })],
+      () => [call('o2', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'page.update', pageId: pageAt(session.state, '/offers/')!.id, route: '/booking/' }] })],
+      () => [call('o3', 'upsert_page_with_sections', { slug: 'booking', sections: [{ componentId: 'cta.banner', props: { primaryLink: '' } }] })],
+      () => finish()
+    ]);
+    await run('Make an offers page, move it to booking and clear its link');
+    const page = pageAt(session.state, '/booking/')!;
+    expect((page.nodes[page.rootIds[0]] as InstanceNode).props.primaryLink).toEqual({ type: 'none', target: '' });
+  });
+
+  it('lets a new link value replace one still waiting, and keeps a waiting link an update leaves out', async () => {
+    const cta = { componentId: 'cta.banner', props: { heading: 'Book', primaryLink: '/booking/', secondaryLabel: 'Later', secondaryLink: '/later/' } };
+    const first = { slug: 'pricing', title: 'Pricing', sections: [{ componentId: 'intro.page', props: { heading: 'Pricing' } }, { componentId: 'pricing.plans', props: { plans: [{ name: 'One', price: '$1', features: 'A', actionLink: '/booking/' }, { name: 'Two', price: '$2', features: 'B', actionLink: '/later/' }] } }, cta] };
+    // Reordered rows, a new route for One, an omitted link for Two; the banner's first link is cleared and its second omitted.
+    const update = { slug: 'pricing', sections: [{ componentId: 'pricing.plans', props: { plans: [{ name: 'Two', price: '$3' }, { name: 'One', actionLink: '/reserve/' }] } }, { componentId: 'cta.banner', props: { primaryLink: '' } }] };
+    const stub = (slug: string) => ({ slug, title: slug, sections: [{ componentId: 'intro.page', props: { heading: slug } }] });
+    const { session, run } = await setup([
+      () => [call('p1', 'upsert_page_with_sections', first)],
+      () => [call('p2', 'upsert_page_with_sections', update)],
+      () => [call('p3', 'upsert_page_with_sections', stub('booking'))],
+      () => [call('p4', 'upsert_page_with_sections', stub('later'))],
+      (req) => {
+        expect(lastResult(req).linksWaitingForPages).toEqual(['/reserve/']);
+        return [call('p5', 'upsert_page_with_sections', stub('reserve'))];
+      },
+      () => finish()
+    ]);
+    await run('Build pricing, change its links, then build the pages');
+    const page = pageAt(session.state, '/pricing/')!;
+    const nodes = page.rootIds.map((id) => page.nodes[id] as InstanceNode);
+    const plans = nodes.find((n) => Array.isArray(n.props.plans))!.props.plans as Array<ListItem & { actionLink: LinkValue }>;
+    const target = (route: string) => ({ type: 'page', target: pageAt(session.state, route)!.id });
+    expect(plans.map((i) => [i.name, i.price, i.actionLink])).toEqual([
+      ['Two', '$3', target('/later/')],
+      ['One', '$1', target('/reserve/')]
+    ]);
+    const banner = nodes.find((n) => n.props.primaryLink !== undefined)!;
+    expect([banner.props.primaryLink, banner.props.secondaryLink]).toEqual([{ type: 'none', target: '' }, target('/later/')]);
+  });
+
   it('connects a link to a page built later, including a link inside a list item', async () => {
     const pricing = { slug: 'pricing', title: 'Pricing', sections: [{ componentId: 'intro.page', props: { heading: 'Pricing' } }, { componentId: 'pricing.plans', props: { plans: [{ name: 'One', price: '$1', features: 'A', actionLabel: 'Book', actionLink: '/booking/' }] } }] };
     const { session, run } = await setup([
@@ -227,6 +433,34 @@ describe('upsert_page_with_sections', () => {
     await run('Change this', { owner: { kind: 'page', id: session.state.site.homePageId }, instancePath: [], nodeId: hero });
     expect(pageAt(session.state, '/services/')).toBeUndefined();
     expect(JSON.stringify(adapter.requests[1].items.at(-1))).toContain('Unknown tool');
+  });
+});
+
+describe('withStoredFields', () => {
+  const schema = catalogueComponent('foundation', 'team.grid')!.properties.people as Extract<PropSchema, { type: 'list' }>;
+  const person = (id: string, name: string, assetId: string) => ({ id, name, role: `${name}'s role`, bio: '', portrait: { assetId, alt: name } });
+
+  it('lets an id claim its item before a title can, and never matches a repeated or unknown id', () => {
+    const stored = [person('i1', 'Hannah', 'a1'), person('i2', 'Marcus', 'a2')];
+    const r = withStoredFields(schema, [{ name: 'Hannah', bio: 'title only' }, { id: 'i1', name: 'Hannah W', bio: 'by id' }, { id: 'i1', name: 'Again' }, { id: 'zz', name: 'Marcus' }], stored);
+    expect(r.ids).toEqual([undefined, 'i1', undefined, undefined]);
+    expect(r.items).toEqual([{ name: 'Hannah', bio: 'title only' }, { ...stored[0], name: 'Hannah W', bio: 'by id' }, { name: 'Again' }, { name: 'Marcus' }]);
+  });
+
+  it('matches a title only when it is unique on both sides', () => {
+    const stored = [person('i1', 'Ada', 'a1'), person('i2', 'Bea', 'a2'), person('i3', 'Bea', 'a3')];
+    const r = withStoredFields(schema, [{ name: 'Ada', bio: 'one' }, { name: 'Ada', bio: 'two' }, { name: 'Bea', bio: 'three' }, { name: '  ', bio: 'blank' }], stored);
+    expect(r.ids).toEqual([undefined, undefined, undefined, undefined]);
+    expect(withStoredFields(schema, [{ name: 'Ada', bio: 'one' }], stored).ids).toEqual(['i1']);
+  });
+
+  it('matches nothing by an id two stored items share, and copies what it inherits', () => {
+    const stored = [person('d', 'Ada', 'a1'), person('d', 'Bea', 'a2'), person('i3', 'Cy', 'a3')];
+    expect(withStoredFields(schema, [{ id: 'd', name: 'Ada', bio: 'x' }], stored).ids).toEqual([undefined]);
+    const r = withStoredFields(schema, [{ name: 'Cy', bio: 'x' }], stored);
+    expect(r.ids).toEqual(['i3']);
+    expect((r.items[0] as typeof stored[number]).portrait).toEqual(stored[2].portrait);
+    expect((r.items[0] as typeof stored[number]).portrait).not.toBe(stored[2].portrait);
   });
 });
 
