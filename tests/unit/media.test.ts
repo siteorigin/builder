@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { brotliCompressSync, constants as zlib, deflateSync } from 'node:zlib';
-import { fontInfo, imageInfo } from '../../src/main/project/media';
+import { fontInfo, imageInfo, isAnimatedPng } from '../../src/main/project/media';
 
 const u16 = (n: number) => Buffer.from([n >> 8, n & 255]);
 const u32 = (n: number) => Buffer.from([n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255]);
@@ -191,5 +191,32 @@ describe('web font metadata', async () => {
 
   it('keeps only characters that are safe in a CSS family name', async () => {
     await expect(fontInfo(woff([['name', nameTable("Evil'; } body{x")]]))).resolves.toMatchObject({ family: 'Evil bodyx' });
+  });
+});
+
+describe('animated PNG detection', () => {
+  const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  // Chunk checksums are not read, so a zeroed one is enough here.
+  const chunk = (type: string, len = 0) => Buffer.concat([u32(len), Buffer.from(type, 'ascii'), Buffer.alloc(len), u32(0)]);
+
+  it('is true when an animation control chunk comes before the image data', () => {
+    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('acTL', 8), chunk('IDAT', 4), chunk('IEND')]))).toBe(true);
+    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('tEXt', 5), chunk('acTL', 8), chunk('IDAT', 4)]))).toBe(true);
+  });
+
+  it('is false for a still PNG, an acTL after the image data, and anything that is not a PNG', () => {
+    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('IDAT', 4), chunk('IEND')]))).toBe(false);
+    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('IDAT', 4), chunk('acTL', 8), chunk('IEND')]))).toBe(false);
+    expect(isAnimatedPng(jpeg(10, 10))).toBe(false);
+    expect(isAnimatedPng(Buffer.alloc(0))).toBe(false);
+  });
+
+  it('does not throw on truncated or lying chunks', () => {
+    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13)]).subarray(0, 25))).toBe(false);
+    expect(isAnimatedPng(Buffer.concat([sig, u32(0xfffffff0), Buffer.from('tEXt', 'ascii')]))).toBe(false);
+    expect(isAnimatedPng(sig)).toBe(false);
+    // An animation control chunk cut short, or of the wrong length, is not a readable animation header.
+    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('acTL', 8)]).subarray(0, 8 + 25 + 14))).toBe(false);
+    expect(isAnimatedPng(Buffer.concat([sig, chunk('IHDR', 13), chunk('acTL', 4), chunk('IDAT', 4)]))).toBe(false);
   });
 });
