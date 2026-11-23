@@ -7,7 +7,7 @@
 // accelerators the items carry.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { eventually, launch, scratch, step } from './harness.mjs';
+import { eventually, launch, scratch, step, withTimeout } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('menu');
 const dirA = join(WORK, 'sites', 'harbour-bakery');
@@ -223,13 +223,35 @@ if (process.platform === 'darwin') {
 }
 
 step('Welcome: a navigation the editor refuses leaves the File menu working');
-// Electron reports the navigation starting before will-navigate refuses it, and then only that loading stopped.
-// Playwright never sees that navigation end, so this comes last and polls instead of waiting on locators.
+// Electron reports the navigation starting before will-navigate refuses it, and nothing commits. Playwright never
+// sees that navigation end, so this comes last and polls instead of waiting on locators.
 await win.evaluate(() => {
   location.href = 'https://example.com/';
 });
 await choose('New Project…');
 await eventually(async () => assert.equal(await newProjectDialog().count(), 1, 'the New project dialog opened'));
+
+step('a crashed editor is loaded again for a File command, which it then carries out');
+// Playwright treats a crashed page as finished even once it reloads, so the page is read through the main process.
+const inPage = (code) =>
+  withTimeout(
+    app.evaluate(({ BrowserWindow }, c) => BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(c), code),
+    5000,
+    'Reading the page'
+  );
+await inPage('window.beforeCrash = true');
+await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer());
+await eventually(async () => assert.ok(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.isCrashed()), 'the renderer crashed'));
+await choose('New Project…');
+await eventually(
+  async () =>
+    assert.equal(
+      await inPage(`!window.beforeCrash && !!document.querySelector('.welcome') && [...document.querySelectorAll('[role="dialog"]')].some((d) => d.textContent.includes('New project'))`),
+      true,
+      'a reloaded Welcome shows the New project dialog'
+    ),
+  60000
+);
 
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();

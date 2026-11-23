@@ -65,7 +65,14 @@ export function App() {
       api.on('runtime:status', (runtime) => setState({ runtime })),
       api.on('ai:event', applyAiEvent),
       api.on('inspect:request', (req) => void runInspection(req)),
-      api.on('menu:command', (cmd) => window.dispatchEvent(new CustomEvent('builder-command', { detail: cmd }))),
+      api.on('menu:command', ({ cmd, id }) => {
+        // Confirmed at once, so the main process stops offering it. It may have offered it twice (a screen said it was
+        // ready again before this confirmation arrived): it is acted on once.
+        api.menuReceived(id);
+        if (id <= lastMenuCommand) return;
+        lastMenuCommand = id;
+        window.dispatchEvent(new CustomEvent('builder-command', { detail: cmd }));
+      }),
       // Edit → Undo and Redo, and their keys when nothing on the page took them: a text field (a dialog's too,
       // so this runs before the editor's dialog guard) keeps its own history, the editor undoes the project.
       api.on('menu:history', ({ action, fromKey }) => {
@@ -130,6 +137,9 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
 
 /** Counts project openings and closings, so a reply that arrives after the project changed is ignored. */
 let opened = 0;
+
+/** The last File menu command this page acted on: the main process numbers them in the order they were chosen. */
+let lastMenuCommand = 0;
 
 /** Show the conversation that was open when the project was last used, with its unsent draft. */
 async function restoreConversation(seq: number, remembered: string | undefined) {

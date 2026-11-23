@@ -66,6 +66,7 @@ const api: BuilderApi = {
   }) as BuilderApi['on'],
   inspectResult: (requestId, report) => ipcRenderer.send('inspect:result', requestId, report),
   menuReady: () => ipcRenderer.send('menu:ready'),
+  menuReceived: (id) => ipcRenderer.send('menu:received', id),
   leaveResult: (requestId, answer) => ipcRenderer.send('lifecycle:result', requestId, answer),
   pathForFile: (file: File) => webUtils.getPathForFile(file)
 };
