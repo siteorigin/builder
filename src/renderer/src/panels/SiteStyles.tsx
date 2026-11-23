@@ -375,7 +375,7 @@ export function SiteStyles() {
     return !sameValue(v, b);
   };
   /** A picker's changes merge with each other, never with a typed value: undo returns to what was typed. */
-  const set = (id: string, value: unknown, by?: 'picker') => void applyOps([{ type: 'token.set', tokenId: id, value }], `Change ${byId(id)?.label ?? id}`, by ? `token:${id}:${by}` : `token:${id}`);
+  const set = (id: string, value: unknown, by?: 'picker') => applyOps([{ type: 'token.set', tokenId: id, value }], `Change ${byId(id)?.label ?? id}`, by ? `token:${id}:${by}` : `token:${id}`);
   const group = (g: TokenDef['group']) => tokens.filter((t) => t.group === g);
   const changedNote = (ids: string[]) => {
     const n = ids.filter(changed).length;

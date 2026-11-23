@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { colorFromPicker, paintableColor, retirePicks, toHex6 } from '@shared/color';
 import { resolveCssColor } from '../lib/color';
 
-/** How long a pick may wait for its save to come back before the swatch goes back to the saved color. */
-const SAVE_WAIT_MS = 3000;
+/** A backstop for a pick whose save never reports back (the owner's `onPick` returns nothing to wait on): the swatch then goes back to the saved color. */
+const SAVE_WAIT_MS = 30000;
 
 /**
  * A colour swatch that shows the saved CSS colour as it renders (opacity over a checkerboard, wide-gamut
@@ -15,8 +15,9 @@ const SAVE_WAIT_MS = 3000;
  * The native picker reports every step of a drag, and a save takes a moment to come back. So the input
  * shows what was last picked while saves are in flight, and each step is worked out from the last one
  * sent: dragging from red to blue and back to red before the first save lands ends on red. A save that
- * lands mid-drag only retires the picks up to it; a value nobody here sent (an undo, an edit elsewhere)
- * or a save that never lands puts the swatch back on the saved color.
+ * lands mid-drag only retires the picks up to it. A pick the owner reports as not saved (its `onPick`
+ * returns a promise that resolves to null or false, or rejects) is dropped, and with nothing left in
+ * flight the swatch goes back to the saved color.
  */
 export function ColorPick({
   value,
@@ -28,8 +29,8 @@ export function ColorPick({
 }: {
   /** The colour in effect, as CSS: a token reference already followed. */
   value: string;
-  /** Receives the CSS to save. Without it the swatch is a read-only chip. */
-  onPick?: (next: string) => void;
+  /** Receives the CSS to save. May return a promise that resolves to null or false (or rejects) when the save did not happen. Without it the swatch is a read-only chip. */
+  onPick?: (next: string) => unknown;
   /** Linked to another colour: shown at full strength with a dashed edge, not editable. */
   disabled?: boolean;
   label?: string;
@@ -76,7 +77,13 @@ export function ColorPick({
             inflight.current.push(next);
             clearTimeout(timer.current);
             timer.current = setTimeout(settle, SAVE_WAIT_MS);
-            onPick(next);
+            const notSaved = () => {
+              const at = inflight.current.lastIndexOf(next);
+              if (at < 0) return;
+              inflight.current.splice(at, 1);
+              if (!inflight.current.length) settle();
+            };
+            Promise.resolve(onPick(next)).then((saved) => (saved === null || saved === false ? notSaved() : undefined), notSaved);
           }}
         />
       )}

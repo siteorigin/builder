@@ -41,6 +41,10 @@ describe('parseColor', () => {
     expect(opacityOf('rgb(209, 65, 49)')).toBe(1);
     expect(opacityOf('rgb(1 2 3/0.5)')).toBe(0.5);
     expect(opacityOf('rgb(1 2 3 /0.5)')).toBe(0.5);
+    expect(opacityOf('rgb(1 2 3/ 0.5)')).toBe(0.5);
+    // CSS rounds a half up: 50% of 255 is 127.5, which is 0x80.
+    expect(pickerHex('rgb(50% 0% 0%)')).toBe('#800000');
+    expect(pickerHex('rgb(90% 0% 0%)')).toBe('#e60000');
     expect(opacityOf('rgb(1,2,3,.5)')).toBe(0.5);
     expect(pickerHex('rgb(1,2,3,.5)')).toBe('#010203');
     expect(pickerHex('rgb(100% 0% 0% / 50%)')).toBe('#ff0000');
@@ -136,6 +140,8 @@ describe('parseColor', () => {
     expect(parseColor('oklab(0.7 1e200 1e200)')).toBeNull();
     // Only the blue channel overflows here: checking just the first would let it through.
     expect(parseColor('oklab(0.7 1e200 -2.5e199)')).toBeNull();
+    // Large but finite is still a color: only an overflow is refused.
+    expect(parseColor('oklab(0.7 1.1 0)')).not.toBeNull();
     expect(parseColor('lab(50 1e200 -2.5e199)')).toBeNull();
   });
 
@@ -172,6 +178,7 @@ describe('toHex6', () => {
     expect(toHex6({ r: 0, g: 127.5, b: 255, a: 1 })).toBe('#0080ff');
     expect(toHex6({ r: -4, g: 300, b: 0.4, a: 1 })).toBe('#00ff00');
     expect(toHex6({ r: 0, g: 0, b: 300, a: 1 })).toBe('#0000ff');
+    expect(toHex6({ r: 0, g: 0, b: -5, a: 1 })).toBe('#000000');
   });
 });
 
@@ -192,6 +199,7 @@ describe('colorFromPicker', () => {
     expect(colorFromPicker('rgba(0, 0, 0, 0)', '#c0392b')).toBe('rgba(192, 57, 43, 0)');
     expect(colorFromPicker('#d1413100', '#0000ff')).toBe('#0000ff00');
     expect(colorFromPicker('#d130', '#0000ff')).toBe('#0000ff00');
+    expect(colorFromPicker('#d1413100', '#000000')).toBe('#00000000');
   });
 
   it('saves a plain #rrggbb over a value it cannot resolve', () => {
@@ -212,6 +220,7 @@ describe('colorFromPicker', () => {
     // A tiny alpha stays tiny: rounding it to 0 or 1 would change what the next pick does.
     expect(colorFromPicker('rgb(209 65 49 / 0.0000004)', '#c0392b')).toBe('rgb(192 57 43 / 4e-7)');
     expect(colorFromPicker('rgb(209 65 49 / 0.123456789)', '#c0392b')).toBe('rgb(192 57 43 / 0.123456789)');
+    expect(colorFromPicker('rgb(209 65 49 / 0.1234567891)', '#c0392b')).toBe('rgb(192 57 43 / 0.1234567891)');
     expect(colorFromPicker('rgb(209 65 49 / 0.9999996)', '#c0392b')).toBe('rgb(192 57 43 / 0.9999996)');
     expect(colorFromPicker('  RGBA(209, 65, 49, 0.5) ', '#c0392b')).toBe('rgba(192, 57, 43, 0.5)');
     // A colour only a browser could resolve keeps its opacity too.
@@ -233,15 +242,17 @@ describe('colorFromPicker', () => {
 describe('paintableColor', () => {
   it('paints colors and gradients, and nothing that could load a resource or has no color of its own', () => {
     for (const v of ['#d14131', 'rgb(209, 65, 49)', 'rgba(209 65 49 / 0.5)', 'color-mix(in srgb, #f00 50%, #00f)', 'linear-gradient(red, blue)', 'var(--so-color-brand)']) expect(paintableColor(v), v).toBe(true);
-    for (const v of ['', '   ', 'currentcolor', 'CurrentColor', 'url(http://127.0.0.1:1/x.png)', 'url("x") red', 'image-set("a.png" 1x)', 'red; background: blue', '#fff /* x */', 'red}']) expect(paintableColor(v), v).toBe(false);
+    for (const v of ['', '   ', 'currentcolor', 'CurrentColor', 'url(http://127.0.0.1:1/x.png)', 'url("x") red', 'image-set("a.png" 1x)', 'red; background: blue', '#fff /* x */', 'red}', '\\75rl(http://127.0.0.1:1/x.png)', 'U\\rl(x)', '\\75 rl(x)']) expect(paintableColor(v), v).toBe(false);
   });
 });
 
 describe('retirePicks', () => {
-  it('retires the picks up to the saved one, and all of them for a value nobody here sent', () => {
+  it('retires the picks up to the saved one, and none for a value nobody here sent', () => {
     expect(retirePicks(['#00f', '#0f0'], '#00f')).toEqual(['#0f0']);
     expect(retirePicks(['#00f', '#0f0'], '#0f0')).toEqual([]);
-    expect(retirePicks(['#00f', '#0f0'], '#f00')).toEqual([]);
+    expect(retirePicks(['#00f', '#0f0', '#ff0'], '#0f0')).toEqual(['#ff0']);
+    // An edit from elsewhere lands between our saves: the picks are still in flight and will land after it.
+    expect(retirePicks(['#00f', '#0f0'], '#f0f')).toEqual(['#00f', '#0f0']);
     expect(retirePicks([], '#f00')).toEqual([]);
     // Out and back to the same color: the first match retires itself, the rest are still on their way.
     expect(retirePicks(['#00f', '#0f0', '#00f'], '#00f')).toEqual(['#0f0', '#00f']);

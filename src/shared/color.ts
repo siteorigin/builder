@@ -27,7 +27,10 @@ function channel(s: string, full: number): number | null {
   if (s.toLowerCase() === 'none') return 0;
   if (s.endsWith('%')) {
     const n = s.slice(0, -1);
-    return NUMBER.test(n) ? Number(n) * (full / 100) : null;
+    if (!NUMBER.test(n)) return null;
+    // Multiply first, so 50% of 255 is exactly 127.5; a huge percentage would overflow that way, so it scales the other way round.
+    const scaled = (Number(n) * full) / 100;
+    return Number.isFinite(scaled) ? scaled : Number(n) * (full / 100);
   }
   return NUMBER.test(s) ? Number(s) : null;
 }
@@ -225,10 +228,10 @@ export function paintableColor(value: string): boolean {
 
 /**
  * The picks still waiting on a save once `saved` is the value on record. Picks go out oldest first and come
- * back in that order, so the one that matches retires itself and every pick before it; a value nobody sent
- * (an undo, an edit elsewhere) retires them all.
+ * back in that order, so the one that matches retires itself and every pick before it. A value that matches
+ * none (an undo, an edit elsewhere) retires nothing: the picks are still on their way and will land after it.
  */
 export function retirePicks(inflight: string[], saved: string): string[] {
   const at = inflight.indexOf(saved);
-  return at >= 0 ? inflight.slice(at + 1) : [];
+  return at >= 0 ? inflight.slice(at + 1) : inflight;
 }
