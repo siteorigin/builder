@@ -141,6 +141,9 @@ describe('importing a picture no browser can show', () => {
     const doctype = '\ufeff<?xml version="1.0"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><!-- a --><!-- b -->';
     expect((await importFile('doctype.svg', Buffer.from(`${doctype}<svg xmlns="http://www.w3.org/2000/svg" data-x="a>b" viewBox="0 0 1 1"/>`))).record.mime).toBe('image/svg+xml');
     expect((await importFile('nested.svg', Buffer.from('<SVG xmlns="http://www.w3.org/2000/svg"><svg><rect/></svg></SVG>\n<!-- end -->'))).record.mime).toBe('image/svg+xml');
+    // What a comment or a stylesheet holds is not markup, whatever it looks like.
+    const css = '<svg xmlns="http://www.w3.org/2000/svg"><style><![CDATA[ /* <!-- old hack */ rect { fill: red } ]]></style><!-- see <?xml-stylesheet in the docs --><rect width="1"/></svg>';
+    expect((await importFile('styled.svg', Buffer.from(css))).record.mime).toBe('image/svg+xml');
     // A closing tag inside a comment, or one that closes an inner SVG, does not finish the file.
     await expect(importFile('comment.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><!-- </svg> --><rect width="1"'))).rejects.toThrow(/incomplete/);
     await expect(importFile('inner.svg', Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><svg><rect/></svg><rect'))).rejects.toThrow(/incomplete/);

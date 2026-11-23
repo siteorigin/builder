@@ -1146,7 +1146,11 @@ export class Controller {
           return { ok: true, message: `${name} is back in the project folder.` };
         }
         // Only on top of the project as it was when the files were written: a relink that landed meanwhile wins.
-        const r = await s.apply({ operations: [{ type: 'asset.relink', assetId, ...found.stored }], expectedRevision: at.revision }, { label: `Relink ${name}`, source: 'user' });
+        const relink = (expectedRevision: number) => s.apply({ operations: [{ type: 'asset.relink', assetId, ...found.stored }], expectedRevision }, { label: `Relink ${name}`, source: 'user' });
+        let r = await relink(at.revision);
+        // An unrelated change that landed meanwhile is no reason to fail, as long as the image itself is as it was.
+        const still = s.state.assets.assets[assetId];
+        if (r.error?.code === 'STALE_REVISION' && still?.file === record.file && still.hash === record.hash) r = await relink(s.revision);
         if (r.error?.code === 'STALE_REVISION') return { ok: false, message: `The project changed while ${basename(file)} was being stored, so ${name} was left as it is. Locate the file again.` };
         if (!r.ok) return { ok: false, message: r.error?.message ?? `${name} could not be given the new file.` };
         return { ok: true, message: `${basename(file)} now shows wherever ${name} is used.` };

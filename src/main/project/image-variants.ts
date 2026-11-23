@@ -46,9 +46,9 @@ export async function renderVariants(buf: Buffer, mime: string, width: number, w
  */
 export async function isReadable(buf: Buffer, mime?: string): Promise<boolean> {
   const decode = (pages?: number) => sharp(buf, { limitInputPixels: MAX_VARIANT_PIXELS, failOn: 'error', ...(pages ? { pages } : {}) }).resize(16, 16, { fit: 'inside' }).raw().toBuffer();
-  // Too many pixels to decode here says nothing about the file. Nor does an AVIF image sequence, which browsers show
-  // and this decoder does not know; any other file it does not know is not the picture its structure claimed.
-  const unknown = (e: unknown) => /pixel limit/i.test((e as Error).message) || (/unsupported image format/i.test((e as Error).message) && mime === 'image/avif' && avifBrands(buf).includes('avis'));
+  // Too many pixels to decode here says nothing about the file. Nor does an AVIF the decoder does not recognise (an
+  // image sequence, an unusual major brand); a file declaring no AVIF brand is not the picture it claimed to be.
+  const unknown = (e: unknown) => /pixel limit/i.test((e as Error).message) || (/unsupported image format/i.test((e as Error).message) && mime === 'image/avif' && avifBrands(buf).some((b) => b === 'avif' || b === 'avis'));
   // Every frame of an animation, so a damaged later frame is found too. Frames that are too many pixels together
   // are checked by the first alone.
   if (mime === 'image/gif' || mime === 'image/webp') {

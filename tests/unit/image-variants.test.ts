@@ -119,6 +119,11 @@ describe('responsive copies', () => {
     };
     expect(await isReadable(branded('zzzz'), 'image/avif')).toBe(false);
     expect(await isReadable(branded('avis'), 'image/avif')).toBe(true);
+    // A still with an unusual major brand that still declares itself AVIF.
+    const still = branded('zzzz');
+    still.write('MA1B', 8, 'latin1');
+    still.write('avif', 16, 'latin1');
+    expect(await isReadable(still, 'image/avif')).toBe(true);
   });
 
   it('makes exactly the widths asked for, never wider than the picture', async () => {

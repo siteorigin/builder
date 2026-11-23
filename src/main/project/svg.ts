@@ -204,9 +204,14 @@ export function sanitizeSvg(bytes: Buffer): string {
   const text = bytes.toString('utf8').replace(/^﻿/, '');
   if (/<!ENTITY|<!DOCTYPE[^>]*\[/i.test(text)) throw new Error('it declares XML entities');
   // A comment, instruction or CDATA section left open is a file cut short, and each opener left open would otherwise
-  // be searched to the end of the file.
-  for (const [open, close] of [['<!--', '-->'], ['<?', '?>'], ['<![CDATA[', ']]>']])
-    if (text.indexOf(open, text.lastIndexOf(close) + 1) >= 0) throw new Error(INCOMPLETE);
+  // be searched to the end of the file. Each is skipped whole, so what one holds (CSS, text) is never taken for markup.
+  for (let i = text.indexOf('<'); i >= 0; i = text.indexOf('<', i + 1)) {
+    const close = text.startsWith('<!--', i) ? '-->' : text.startsWith('<![CDATA[', i) ? ']]>' : text.startsWith('<?', i) ? '?>' : '';
+    if (!close) continue;
+    const end = text.indexOf(close, i + 2);
+    if (end < 0) throw new Error(INCOMPLETE);
+    i = end;
+  }
   const out: string[] = [];
   const stack: Array<{ name: string; kept: boolean }> = [];
   let skipDepth = 0;
