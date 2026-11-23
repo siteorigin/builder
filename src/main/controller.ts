@@ -16,7 +16,7 @@ import { basePath, generateManagedComponent, generatePage, defFile } from '@gene
 import { placeholderImageCount } from '@generator/checks';
 import { zipDirectory } from './zip';
 import { copyProjectSource, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, listFiles, omittedAssetsWarning, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, sectionLinkWarnings, uniqueChild } from './export';
-import { LOCAL_DIR, ProjectLockedError, ProjectSession } from './project/session';
+import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession } from './project/session';
 import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
 import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
@@ -185,7 +185,7 @@ export class Controller {
     let dir = join(opts.parentDir, slugify(name) || 'website');
     if (existsSync(dir) && (await fs.readdir(dir)).length) return { ok: false, message: `${dir} already exists and is not empty. Choose another name or folder.` };
     if (!(await this.mayLeave())) return { ok: false };
-    const createdDir = !existsSync(dir);
+    let createdDir = !existsSync(dir);
     this.createAbort = new AbortController();
     const signal = this.createAbort.signal;
     await this.close();
@@ -224,7 +224,12 @@ export class Controller {
       }
       if (signal.aborted) throw new Error('Cancelled');
       const session = await ProjectSession.create(dir, state);
-      await session.acquireLock(INSTANCE_ID);
+      const lockErr = await session.acquireLock(INSTANCE_ID);
+      if (lockErr) {
+        // Another app opened the new project first: it is that app's now, so nothing here may remove it.
+        createdDir = false;
+        throw lockErr;
+      }
       await trust(dir, await configHash(dir));
       this.progress({ step: 'dependencies', message: 'Setting up website tools…', detail: 'Installing the tools that build and preview your site.' });
       await prepareDependencies(dir, (line) => this.progress({ step: 'dependencies', message: 'Setting up website tools…', detail: line.slice(0, 160) }), signal);
@@ -294,7 +299,7 @@ export class Controller {
     }
   }
 
-  private async openTrusted(dir: string, opts: { force?: boolean } = {}): Promise<{ ok: boolean; message?: string }> {
+  private async openTrusted(dir: string, opts: { force?: boolean | string } = {}): Promise<{ ok: boolean; message?: string }> {
     await this.close();
     let session: ProjectSession;
     try {
@@ -308,7 +313,8 @@ export class Controller {
             reason: locked
               ? `${e.message} It is open read-only here. If that app is no longer running, unlock the project to edit it.`
               : `${e.message} It is open read-only.`,
-            canUnlock: locked
+            canUnlock: locked,
+            lockToken: locked ? e.owner.token : undefined
           });
         } catch {
           return { ok: false, message: inFolder(e.message, dir) };
@@ -338,7 +344,8 @@ export class Controller {
     if (!s?.readOnly?.canUnlock) return { ok: false, message: 'This project is not locked.' };
     // Reopening closes this read-only session: a page being added in it is settled (or kept) first.
     if (!(await this.mayLeave())) return { ok: false };
-    return this.openTrusted(s.dir, { force: true });
+    // Only the owner the user was shown is displaced: if another app took the project since, it is shown instead.
+    return this.openTrusted(s.dir, { force: s.readOnly.lockToken ?? NO_LOCK });
   }
 
   /** Settle a file conflict: keep the version changed outside the app, or restore SiteOrigin Builder's version. */

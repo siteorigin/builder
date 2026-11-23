@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { promises as fs, existsSync } from 'node:fs';
 import { hostname } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
@@ -13,8 +13,8 @@ import { EngineError } from '@engine/tree';
 import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
 import { checkSvelteSource, componentSources } from '../codecheck';
-import { atomicWrite, readIfExists, readJson, removeEmptyDirs, safeJoin, sha, toJson } from './fsutil';
-import { isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { atomicWrite, ensureDir, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
+import { CUSTOM_SOURCE_RE, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
 
 export const LOCAL_DIR = '.siteorigin';
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -27,12 +27,21 @@ export const LOCK_STALE_MS = 2 * 60_000;
 const IMPORTED_ASSET_RE = /^[a-z0-9][a-z0-9-]*-[a-f0-9]{8}(-\d+w)?\.(jpg|png|webp|gif|avif|svg|woff2?)$/;
 /** An imported file is never collected this soon after it was written (its asset may still be on its way in). */
 const ASSET_GRACE_MS = 10 * 60_000;
+const UNSETTLED = 'A save did not finish. Close and reopen the project to recover it.';
+const LOCK_UNCHECKED = 'The project lock could not be checked, so nothing was changed. Try again.';
 
 /** The project is open in another live SiteOrigin Builder (on this or another computer). */
 export class ProjectLockedError extends ProjectFormatError {
-  constructor(message: string, public readonly owner: { host: string; since?: string }) {
+  constructor(message: string, public readonly owner: LockOwner) {
     super(message);
   }
+}
+
+export interface LockOwner {
+  host: string;
+  since?: string;
+  /** Identifies this acquisition of the lock, so an unlock takes over exactly the owner that was shown. */
+  token?: string;
 }
 
 /** Why a project is open read-only. */
@@ -40,6 +49,8 @@ export interface ReadOnlyInfo {
   reason: string;
   /** The lock may belong to a crashed or unreachable app; the user can take it over. */
   canUnlock: boolean;
+  /** The owner the user is shown: unlocking takes over this owner only. */
+  lockToken?: string;
 }
 
 export interface HistoryEntry {
@@ -60,6 +71,23 @@ interface HistoryFile {
   entries: HistoryEntry[];
   /** Number of entries currently applied (entries beyond this are redoable). */
   cursor: number;
+}
+
+/**
+ * The publication journal: everything one change does, written durably before any of it is. Recovery rolls it
+ * forward, so a crash leaves the whole change or none of it. Besides the documents it carries the history the change
+ * leaves (so the undo position moves with the documents) and, for a finishing AI run, the run it finishes.
+ */
+interface Journal {
+  schemaVersion: number;
+  writes: Array<{ path: string; blob: string; before: string | null }>;
+  deletes: Array<{ path: string; before: string }>;
+  /** The history file after this change. Absent when the change leaves history as it is. */
+  history?: HistoryFile;
+  /** The project revision after this change. */
+  revision?: number;
+  /** The AI run this change completes: its marker goes once the change is done. */
+  finishRun?: string;
 }
 
 interface GeneratedManifest {
@@ -140,6 +168,8 @@ export class ProjectSession extends EventEmitter {
   /** What the editor copied most recently, newest last. Held only while this project is open; never saved. A
    *  few are kept so a paste pressed before a later copy finished still finds the copy it followed. */
   private clipboards: Clipboard[] = [];
+  /** A save failed after its journal was written: only reopening the project can finish it, so nothing else is written. */
+  private unsettled = false;
 
   constructor(public readonly dir: string) {
     super();
@@ -163,18 +193,25 @@ export class ProjectSession extends EventEmitter {
     return s;
   }
 
-  static async open(dir: string, instanceId: string, opts: { force?: boolean } = {}): Promise<ProjectSession> {
+  static async open(dir: string, instanceId: string, opts: { force?: boolean | string } = {}): Promise<ProjectSession> {
     const s = new ProjectSession(dir);
     // A project from a newer version is never written to, not even its local folders.
     await assertKnownFormat(dir);
     // The lock comes first: recovery must never touch a project another window is editing, and a project
     // that turns out to be locked is opened read-only with nothing written.
-    await fs.mkdir(s.local(), { recursive: true });
+    await ensureDir(s.local());
     const lockErr = await s.acquireLock(instanceId, opts.force);
     if (lockErr) throw lockErr;
     try {
-      await s.ensureLocalDirs();
-      await s.openLocked();
+      // Recovery writes too, so it runs fenced like any command.
+      await s.serialize(async () => {
+        if (!(await s.stillOwner())) {
+          const now = await readLock(s.local('lock.json')).catch(() => null);
+          throw new ProjectLockedError('The project was taken over while it was opening. Try again.', now ? judgeLock(s.local('lock.json'), now, instanceId, false).owner : { host: 'another computer', token: NO_LOCK });
+        }
+        await s.ensureLocalDirs();
+        await s.openLocked();
+      });
     } catch (e) {
       await s.releaseLock();
       throw e;
@@ -261,104 +298,153 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async ensureLocalDirs() {
-    for (const d of ['history/blobs', 'sessions', 'cache/dev', 'recovery']) await fs.mkdir(this.local(d), { recursive: true });
+    // Recorded durably: a journal written later relies on the blobs folder being there after a power loss. Each is
+    // flushed even when it exists, since an app that stopped part way may have created it, or a file in it, without.
+    for (const d of ['history/blobs', 'sessions', 'cache/dev', 'recovery']) await ensureDir(this.local(d));
+    for (const d of [this.local(), this.local('history'), this.local('history', 'blobs'), this.local('sessions')]) await syncDir(d);
   }
 
-  /** Acquire the per-project process lock. Returns an error message when another live process owns it. */
+  /** The instance and per-acquisition token of the lock this session holds. */
   private lockOwner: string | null = null;
+  private lockToken: string | null = null;
+  /** none: never took a lock (project creation, tests); held; released: closed or taken over, so never writes again. */
+  private lockState: 'none' | 'held' | 'released' = 'none';
+  /** While a serialized command runs: the claim on this lock's generation it holds (null: another app holds it). */
+  private fence: { claim: string | null } | null = null;
+  /** The last time written by the heartbeat; each beat writes a later one, whatever this computer's clock does. */
+  private lastBeat = 0;
 
   /**
-   * The owner refreshes the lock every 30 seconds, so a lock left by a crash, by another computer or under an old
-   * host name expires on its own; `force` takes it over at once (the user's "Unlock").
+   * Acquire the per-project process lock. Returns an error when another live app owns it.
+   *
+   * Ownership is a token, fresh for each acquisition, in lock.json. The name is only ever created exclusively, so two
+   * openers can never both create it. Each lock generation has one claim file, created exclusively: the owner holds it
+   * through every command that writes (so no takeover lands part way through one), and a taker holds it while it
+   * checks the lock is still exactly what it judged, moves it aside, verifies what it moved and creates its own.
+   * `force` takes over without the staleness check (the user's "Unlock"); given the generation the user was shown, it
+   * takes over only that owner, so two Unlocks of one owner leave one successor rather than the second displacing it.
    */
-  async acquireLock(instanceId: string, force = false): Promise<ProjectLockedError | null> {
+  async acquireLock(instanceId: string, force: boolean | string = false): Promise<ProjectLockedError | null> {
     const lockPath = this.local('lock.json');
-    const body = toJson({ pid: process.pid, host: hostname(), instance: instanceId, started: new Date().toISOString() });
-    let owner: { host: string; since?: string } = { host: 'another computer' };
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const token = randomBytes(8).toString('hex');
+    const body = toJson({ pid: process.pid, host: hostname(), instance: instanceId, token, started: new Date().toISOString() });
+    const take = async (retired?: string) => {
+      this.lockOwner = instanceId;
+      this.lockToken = token;
+      this.lockState = 'held';
+      this.startHeartbeat();
+      if (retired) await removeClaims(lockPath, retired);
+      return null;
+    };
+    // The owner holds the claim while it writes, and another taker while it takes over: both take moments. An unlock
+    // says the owner is gone, so a claim the owner itself left (it stopped part way through a command) is passed
+    // over once it has sat unchanged for longer than any command takes; a live owner's save finishes first.
+    const unlocking = force !== false;
+    const deadline = performance.now() + (unlocking ? OWNER_CLAIM_GRACE_MS + 3000 : 2000);
+    for (let attempt = 0; attempt < 6 && performance.now() < deadline; attempt++) {
+      if (await createExclusive(lockPath, body)) return take();
+      const seen = await readLock(lockPath);
+      if (!seen) continue; // released meanwhile
+      const verdict = judgeLock(lockPath, seen, instanceId, force);
+      if (!verdict.stale) return new ProjectLockedError(`This project is already open in SiteOrigin Builder on ${verdict.owner.host}.`, verdict.owner);
+      const claim = await claimLock(lockPath, verdict.generation, { holder: token, waitMs: Math.max(0, deadline - performance.now()), ownerGone: unlocking });
+      if (!claim) continue;
       try {
-        // Exclusive create: two openers cannot both win.
-        await fs.writeFile(lockPath, body, { flag: 'wx' });
-        this.lockOwner = instanceId;
-        this.startHeartbeat();
-        return null;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+        // Under the claim, the lock must still be the one judged: content, and time (a heartbeat changes only that).
+        if (!sameLock(await readLock(lockPath), seen)) continue;
+        if ((await removeIfUnchanged(lockPath, seen)) && (await createExclusive(lockPath, body))) return take(verdict.generation);
+      } finally {
+        await fs.rm(claim, { force: true }).catch(() => undefined);
       }
-      const existing = await readIfExists(lockPath);
-      const judgedAt = (await fs.stat(lockPath).catch(() => null))?.mtimeMs;
-      const age = Date.now() - ((await fs.stat(lockPath).catch(() => null))?.mtimeMs ?? 0);
-      let stale = true;
-      try {
-        const l = JSON.parse(existing ?? '{}') as { pid: number; host: string; instance: string; started?: string };
-        owner = { host: l.host === hostname() ? 'this computer' : String(l.host || 'another computer'), since: l.started };
-        if (force || l.instance === instanceId) stale = true;
-        // Not refreshed for a while: the owner crashed, is asleep or is gone. A PID alone is never trusted.
-        else if (age > LOCK_STALE_MS) stale = true;
-        else if (l.host === hostname()) {
-          try {
-            process.kill(l.pid, 0);
-            stale = false; // a live process (possibly this one, in another session) holds it
-          } catch {
-            stale = true;
-          }
-        } else stale = false;
-      } catch {
-        // Unreadable: possibly another opener between creating the file and writing it, so only an old one is stale.
-        stale = force || age > 10_000;
-      }
-      if (!stale) return new ProjectLockedError(`This project is already open in SiteOrigin Builder on ${owner.host}.`, owner);
-      // Move the stale lock aside atomically: of two openers that both judged it stale, only one can move it.
-      const aside = `${lockPath}.${randomBytes(4).toString('hex')}.stale`;
-      try {
-        await fs.rename(lockPath, aside);
-      } catch {
-        continue;
-      }
-      // If it changed after it was judged, it is another opener's fresh lock: put it back.
-      // (A heartbeat changes only the time, so that is compared too.)
-      if ((await readIfExists(aside)) !== existing || (await fs.stat(aside).catch(() => null))?.mtimeMs !== judgedAt) await fs.link(aside, lockPath).catch(() => undefined);
-      await fs.rm(aside, { force: true });
     }
+    // Report whoever holds it now, so an unlock offered from here targets that owner.
+    const now = await readLock(lockPath).catch(() => null);
+    const owner = now ? judgeLock(lockPath, now, instanceId, false).owner : { host: 'another computer', token: NO_LOCK };
     return new ProjectLockedError('The project lock could not be acquired. Try again.', owner);
   }
 
-  /** Before a write: is this session still the lock's owner? A takeover found here makes it read-only at once. */
+  /**
+   * Before a write: is this session still the lock's owner? Only a lock positively read back as this session's own
+   * says yes. A takeover found here makes the session read-only at once; anything inconclusive says no.
+   *
+   * Inside a command (or while one runs), that command's claim on the lock generation covers the check. Called from
+   * outside one (the preview, an export, the closing workspace save), it holds the claim just for the check.
+   */
   async stillOwner(): Promise<boolean> {
     if (this.readOnly) return false;
-    if (!this.lockOwner) return true; // a session that never took a lock (project creation, tests)
-    await this.refreshLock();
-    return !this.readOnly;
+    if (this.lockState === 'none') return true;
+    if (this.fence) return (await this.checkLock(!!this.fence.claim)) === 'mine';
+    if (this.lockState !== 'held') return false;
+    const claim = await claimLock(this.local('lock.json'), this.lockToken!, { holder: this.lockToken!, waitMs: 1000 });
+    try {
+      return (await this.checkLock(!!claim)) === 'mine';
+    } finally {
+      if (claim) await fs.rm(claim, { force: true }).catch(() => undefined);
+    }
+  }
+
+  /** Run `fn` holding this lock generation's claim, so no takeover can land part way through it. */
+  private async fenced<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.lockState !== 'held' || this.fence) return fn();
+    const claim = await claimLock(this.local('lock.json'), this.lockToken!, { holder: this.lockToken!, waitMs: 1000 });
+    this.fence = { claim };
+    try {
+      return await fn();
+    } finally {
+      this.fence = null;
+      if (claim) await fs.rm(claim, { force: true }).catch(() => undefined);
+    }
   }
 
   /** Keep the lock fresh, and notice when another app has taken it over (it was unlocked from elsewhere). */
   private startHeartbeat() {
     this.stopHeartbeat();
-    this.heartbeat = setInterval(() => void this.refreshLock(), LOCK_HEARTBEAT_MS);
+    this.heartbeat = setInterval(() => void this.refreshLock().catch(() => undefined), LOCK_HEARTBEAT_MS);
     this.heartbeat.unref?.();
   }
 
-  /** Refresh the lock's timestamp; if another app now owns it, stop writing and become read-only. */
-  async refreshLock() {
-    if (!this.lockOwner) return;
+  /** Refresh the lock's time; if another app now owns it, stop writing and become read-only. */
+  refreshLock(): Promise<'mine' | 'lost' | 'unknown'> {
+    return this.serialize(() => this.checkLock());
+  }
+
+  /** `claimed`: this generation's claim is held here, so no takeover can be part way through. */
+  private async checkLock(claimed = !!this.fence?.claim): Promise<'mine' | 'lost' | 'unknown'> {
+    if (this.lockState !== 'held') return 'unknown';
+    // Another app holds this generation's claim: it is taking the lock over right now.
+    if (!claimed) return 'unknown';
     const lockPath = this.local('lock.json');
-    const existing = await readIfExists(lockPath);
-    let mine = false;
+    let seen: LockSeen | null;
     try {
-      mine = !!existing && JSON.parse(existing).instance === this.lockOwner;
+      seen = await readLock(lockPath);
     } catch {
-      mine = false;
+      return 'unknown';
     }
-    if (!mine) {
+    const l = seen && parseLock(seen.text);
+    // Unreadable is most likely a lock being written: not proof of another owner, and not proof of this one.
+    if (seen && !l) return 'unknown';
+    // Another owner, or none: with this generation's claim held here no takeover can be part way through, so a
+    // missing lock was released by a successor (or deleted). Either way this session must not write again, and is
+    // never the one to re-create it.
+    if (!seen || l!.token !== this.lockToken) {
       this.stopHeartbeat();
-      this.lockOwner = null;
-      this.readOnly = { reason: 'Another SiteOrigin Builder took over this project, so it is read-only here. Close and reopen it to edit.', canUnlock: true };
+      this.lockState = 'released';
+      this.lockToken = null;
+      this.readOnly = {
+        reason: seen ? 'Another SiteOrigin Builder took over this project, so it is read-only here. Close and reopen it to edit.' : 'This project’s lock was removed, so it is read-only here. Unlock it to edit.',
+        canUnlock: true,
+        lockToken: seen ? lockGeneration(seen) : NO_LOCK
+      };
       this.emit('lock-lost');
       this.emit('history');
-      return;
+      return 'lost';
     }
-    const now = new Date();
-    await fs.utimes(lockPath, now, now).catch(() => undefined);
+    // Only the time changes, never the content, and only under the claim, so a heartbeat never touches a lock that
+    // replaced this one. Each beat is later than the last even if this computer's clock steps back.
+    this.lastBeat = Math.max(Date.now(), this.lastBeat + 1000);
+    const t = new Date(this.lastBeat);
+    await fs.utimes(lockPath, t, t).catch(() => undefined);
+    return 'mine';
   }
 
   private stopHeartbeat() {
@@ -368,16 +454,17 @@ export class ProjectSession extends EventEmitter {
 
   async releaseLock() {
     this.stopHeartbeat();
-    if (!this.lockOwner) return;
-    const lockPath = this.local('lock.json');
-    const existing = await readIfExists(lockPath);
-    try {
-      if (existing && JSON.parse(existing).instance !== this.lockOwner) return;
-    } catch {
-      /* unreadable: ours to remove */
-    }
-    await fs.rm(lockPath, { force: true });
-    this.lockOwner = null;
+    await this.serialize(async () => {
+      if (this.lockState !== 'held') return;
+      // Nothing after this may refresh or re-create the lock: a closed session never writes again.
+      this.lockState = 'released';
+      // Without the claim, a takeover is part way through: it replaces the lock itself.
+      if (!this.fence?.claim) return;
+      const lockPath = this.local('lock.json');
+      const seen = await readLock(lockPath).catch(() => null);
+      if (seen && parseLock(seen.text)?.token === this.lockToken) await removeIfUnchanged(lockPath, seen);
+    });
+    this.lockToken = null;
   }
 
   // -------------------------------------------------------------------------
@@ -398,13 +485,24 @@ export class ProjectSession extends EventEmitter {
     return content;
   }
 
+  /** The authored source a stored component definition names, if any. */
+  private async sourcePathOf(blob: string | null | undefined): Promise<string | null> {
+    if (!blob) return null;
+    try {
+      const def = JSON.parse(await this.getBlob(blob)) as { sourcePath?: unknown };
+      return typeof def.sourcePath === 'string' && CUSTOM_SOURCE_RE.test(def.sourcePath) ? def.sourcePath : null;
+    } catch {
+      return null;
+    }
+  }
+
   private async diskContent(path: string): Promise<string | null> {
     return readIfExists(safeJoin(this.dir, path));
   }
 
   private async removeCanonical(path: string) {
     const abs = safeJoin(this.dir, path);
-    await fs.rm(abs, { force: true });
+    await removeDurable(abs);
     await removeEmptyDirs(dirname(abs), join(this.dir, path.startsWith('src/') ? 'src' : 'siteorigin'));
   }
 
@@ -468,9 +566,10 @@ export class ProjectSession extends EventEmitter {
    */
   resolveConflict(path: string, choice: 'keep' | 'restore'): Promise<{ ok: boolean; message?: string }> {
     return this.serialize(async () => {
-      if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? 'This project is read-only.' };
+      if (!(await this.stillOwner())) return { ok: false, message: this.readOnly?.reason ?? LOCK_UNCHECKED };
       if (this.activeRun) return { ok: false, message: 'Stop the AI before resolving conflicts.' };
       if (this.migrationFailed) return { ok: false, message: 'This project could not be updated to the current format. Close and reopen it.' };
+      if (this.unsettled) return { ok: false, message: UNSETTLED };
       const conflict = this.conflicts.find((c) => c.path === path);
       if (!conflict) return { ok: true };
       if (conflict.kind === 'generated') {
@@ -542,10 +641,10 @@ export class ProjectSession extends EventEmitter {
     if (!j) return;
     const keepAside = async (why: string) => {
       await atomicWrite(this.local('recovery', `journal-${Date.now()}.json`), j);
-      await fs.rm(this.local('journal.json'), { force: true });
+      await removeDurable(this.local('journal.json'));
       this.recoveryNotes.push(why);
     };
-    let journal: { schemaVersion?: number; writes: Array<{ path: string; blob: string; before: string | null }>; deletes: Array<{ path: string; before: string }> };
+    let journal: Partial<Journal> & Pick<Journal, 'writes' | 'deletes'>;
     try {
       journal = JSON.parse(j);
     } catch {
@@ -558,13 +657,37 @@ export class ProjectSession extends EventEmitter {
       throw new ProjectFormatError(`This project has an unfinished save from a newer version of SiteOrigin Builder (format ${journal.schemaVersion}). Update the app to edit it.`, true);
     const allPaths = [...journal.writes, ...journal.deletes].map((e) => e?.path);
     const bad = allPaths.some((p) => typeof p !== 'string' || !isCanonicalPath(p)) || new Set(allPaths).size !== allPaths.length;
+    if (bad) return keepAside('An interrupted save referred to files it should not touch, so it was set aside.');
     const contents = new Map<string, string>();
     for (const w of journal.writes) {
       const c = await this.getBlob(w.blob).catch(() => null);
       if (c === null) return keepAside('An interrupted save was missing data, so it was set aside. Your files were not changed.');
       contents.set(w.path, c);
     }
-    if (bad) return keepAside('An interrupted save referred to files it should not touch, so it was set aside.');
+    const marker = this.local('sessions', 'active-run.json');
+    let markerText: string | null;
+    try {
+      markerText = await fs.readFile(marker, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      markerText = null;
+    }
+    if (typeof journal.finishRun === 'string') {
+      // Finishing a run only records its step: the journal is only acted on when that step is whole and applied,
+      // and belongs to the run still marked. Otherwise it is set aside and the marked run is rolled back.
+      let id: unknown;
+      try {
+        id = markerText === null ? undefined : (JSON.parse(markerText) as { id?: unknown }).id;
+      } catch {
+        id = null; // unreadable: not known to be this run
+      }
+      const h = usableJournalHistory(journal.history) ? journal.history : null;
+      const at = h ? h.entries.findIndex((e) => e?.runId === journal.finishRun) : -1;
+      const docs = at >= 0 ? h!.entries[at].docs : null;
+      const blobs = docs && typeof docs === 'object' && Object.keys(docs).length ? Object.values(docs).flatMap((d) => (d && typeof d === 'object' ? [d.before, d.after] : [undefined])) : null;
+      const whole = at >= 0 && at < h!.cursor && !!blobs && (await Promise.all(blobs.map((b) => (b === null ? true : this.getBlob(String(b)).then(() => true, () => false))))).every(Boolean);
+      if ((id !== undefined && id !== journal.finishRun) || !whole) return keepAside('An interrupted AI change could not be finished, so it was undone instead.');
+    }
     let conflicts = 0;
     for (const w of journal.writes) {
       // An earlier recovery of this journal already held this file for the user to choose.
@@ -584,6 +707,25 @@ export class ProjectSession extends EventEmitter {
       }
       await atomicWrite(safeJoin(this.dir, w.path), contents.get(w.path)!);
     }
+    // Sources are deleted before the definitions that name them, so a definition already gone while its source is
+    // still here was deleted outside the app. Before this save deletes the source too, that is recorded in the marker
+    // of the AI run it belongs to (if any), durably: rolling the run back then reports the deletion rather than
+    // bringing the definition back, however many times recovery is interrupted.
+    const deletedOutside: string[] = [];
+    for (const d of journal.deletes) {
+      if (!COMPONENT_DOC_RE.test(d.path) || (await this.diskContent(d.path)) !== null) continue;
+      const source = await this.sourcePathOf(d.before);
+      if (source && journal.deletes.some((x) => x.path === source) && (await this.diskContent(source)) !== null) deletedOutside.push(d.path);
+    }
+    if (deletedOutside.length && markerText !== null) {
+      try {
+        const run = JSON.parse(markerText) as { deletedOutside?: unknown };
+        const known = Array.isArray(run.deletedOutside) ? run.deletedOutside : [];
+        await atomicWrite(marker, toJson({ ...run, deletedOutside: [...new Set([...known, ...deletedOutside])] }));
+      } catch {
+        /* an unreadable marker is discarded by run recovery anyway */
+      }
+    }
     for (const d of journal.deletes) {
       if (this.loadedHolds.has(d.path)) {
         conflicts++;
@@ -598,13 +740,22 @@ export class ProjectSession extends EventEmitter {
       }
       await this.removeCanonical(d.path);
     }
+    // A file the interrupted save had already replaced or removed may not have reached the disk for good yet.
+    await this.syncFoldersOf(allPaths as string[]);
     // Held versions are recorded before the journal goes, so a second crash cannot lose them.
     await this.saveConflicts();
-    await fs.rm(this.local('journal.json'), { force: true });
+    // The undo position and revision the change left, then the run it finished: all before the journal goes.
+    if (usableJournalHistory(journal.history)) await atomicWrite(this.local('history', 'history.json'), toJson(journal.history));
+    if (Number.isInteger(journal.revision)) await this.writeRevision(journal.revision!);
+    const finished = typeof journal.finishRun === 'string';
+    if (finished) await removeDurable(marker);
+    await removeDurable(this.local('journal.json'));
     this.recoveryNotes.push(
       conflicts
         ? `Finished an interrupted save. ${conflicts} file(s) had been changed outside the app and were kept as they are; choose which version to keep in Project health.`
-        : `Finished an interrupted save (${journal.writes.length + journal.deletes.length} file(s)).`
+        : finished && !journal.writes.length && !journal.deletes.length
+          ? 'Finished saving an AI change that was interrupted. It can be undone in one step.'
+          : `Finished an interrupted save (${journal.writes.length + journal.deletes.length} file(s)).`
     );
   }
 
@@ -615,11 +766,11 @@ export class ProjectSession extends EventEmitter {
   private async recoverInterruptedRun() {
     const marker = await readIfExists(this.local('sessions', 'active-run.json'));
     if (!marker) return;
-    let run: { id: string; paths: Record<string, { before: string | null; after: string | null; written?: Array<string | null> }> };
+    let run: { id: string; paths: Record<string, { before: string | null; after: string | null; written?: Array<string | null> }>; deletedOutside?: unknown };
     try {
       run = JSON.parse(marker);
     } catch {
-      await fs.rm(this.local('sessions', 'active-run.json'), { force: true });
+      await removeDurable(this.local('sessions', 'active-run.json'));
       return;
     }
     const conflicts: string[] = [];
@@ -635,9 +786,16 @@ export class ProjectSession extends EventEmitter {
         continue;
       }
       const before = d.before === null ? null : await this.getBlob(d.before).catch(() => undefined);
+      // A code component's definition and source are only ever published together (and a delete removes the source
+      // first), so a definition missing beside its source was deleted outside the app. A source recovery is itself
+      // holding for the user is not evidence of that: the save that held it may have removed the definition.
+      // An interrupted save of the run that went on to delete the source records what it found in the marker.
+      const source = h === null && COMPONENT_DOC_RE.test(path) ? await this.sourcePathOf(d.before) : null;
+      const deletedOutside =
+        (Array.isArray(run.deletedOutside) && run.deletedOutside.includes(path)) || (!!source && !this.pending.has(source) && (await this.diskContent(source)) !== null);
       // Any version the run itself wrote (an earlier batch, if it stopped between batches) is the run's to undo.
       // A hold saved by an earlier session is the user's pending choice: never decided for them here.
-      const runWrote = !this.loadedHolds.has(path) && (h === d.after || (Array.isArray(d.written) && d.written.includes(h)));
+      const runWrote = !deletedOutside && !this.loadedHolds.has(path) && (h === d.after || (Array.isArray(d.written) && d.written.includes(h)));
       if (!runWrote || before === undefined) {
         conflicts.push(path);
         // The pre-run version is what the project is restored to, so it is the version held for the user.
@@ -655,7 +813,14 @@ export class ProjectSession extends EventEmitter {
     } else if (restored) {
       this.recoveryNotes.push('An AI change was interrupted before it finished. The project was restored to how it was before that request.');
     }
-    await fs.rm(this.local('sessions', 'active-run.json'), { force: true });
+    // A file restored by an earlier, interrupted attempt may not have reached the disk for good yet.
+    await this.syncFoldersOf(Object.keys(run.paths ?? {}).filter(isCanonicalPath));
+    await removeDurable(this.local('sessions', 'active-run.json'));
+  }
+
+  /** Flush the folders of these project files, so changes already made to them survive a power loss. */
+  private async syncFoldersOf(paths: string[]) {
+    for (const dir of new Set(paths.map((p) => dirname(safeJoin(this.dir, p))))) if (existsSync(dir)) await syncDir(dir);
   }
 
   // -------------------------------------------------------------------------
@@ -667,8 +832,11 @@ export class ProjectSession extends EventEmitter {
     for (const [path, content] of this.docs) await atomicWrite(safeJoin(this.dir, path), content);
   }
 
-  /** Persist a new canonical state, regenerate derived files and record history. */
-  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string }): Promise<SessionEvent> {
+  /**
+   * Persist a new canonical state, regenerate derived files and record history. `cursor` moves the undo position
+   * instead of recording a new step (undo and redo).
+   */
+  private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number }): Promise<SessionEvent> {
     // Generate first: a generator failure must not leave canonical documents half-published.
     const generated = { clean: generateProject(next, { instrument: false }), dev: generateProject(next, { instrument: true }) };
     const nextDocs = stateToDocs(next);
@@ -686,27 +854,48 @@ export class ProjectSession extends EventEmitter {
       changed[path] = { before: await this.putBlob(prev), after: null };
       deletes.push({ path, before: changed[path].before! });
     }
+    // Authored sources go before the definitions that name them, so a component's definition is never missing
+    // beside its source part way through a delete: recovery can then tell that from a definition deleted outside.
+    deletes.sort((a, b) => Number(!CUSTOM_SOURCE_RE.test(a.path)) - Number(!CUSTOM_SOURCE_RE.test(b.path)));
     // Never overwrite a newer version on disk (for example an edit the file watcher has not delivered yet).
     for (const path of Object.keys(changed)) {
       if (!sameContent(path, await this.diskContent(path), this.docs.get(path) ?? null)) throw new DiskConflictError(path);
     }
     if (this.activeRun) await this.writeRunMarker(nextDocs);
-    // Journal first, then replace files.
-    if (writes.length || deletes.length) {
-      await atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes }));
+    // The undo position is part of the change: planned now, journaled with the documents, installed with them.
+    const planned =
+      opts.history !== false && Object.keys(changed).length
+        ? this.planHistory(changed, opts, this.revision + 1)
+        : opts.cursor !== undefined
+          ? { history: { ...this.history, cursor: opts.cursor }, pruned: false }
+          : null;
+    const journaled = !!(writes.length || deletes.length || planned);
+    let changedFiles: string[];
+    try {
+      // Journal first, then replace files.
+      if (journaled) await this.writeJournal({ writes: writes.map(({ path, blob, before }) => ({ path, blob, before })), deletes, history: planned?.history, revision: this.revision + 1 });
       for (const w of writes) await atomicWrite(safeJoin(this.dir, w.path), w.content);
       for (const d of deletes) await this.removeCanonical(d.path);
+      this.state = next;
+      this.docs = nextDocs;
+      changedFiles = await this.publishGenerated(false, generated);
+      if (planned) await this.installHistory(planned.history);
+      this.revision++;
+      await this.saveLocalState();
+      if (journaled) await removeDurable(this.local('journal.json'));
+    } catch (e) {
+      // The journal on disk may now describe this change; a later save would replace it. Reopening finishes it.
+      if (journaled) this.unsettled = true;
+      throw e;
     }
-    this.state = next;
-    this.docs = nextDocs;
-    const changedFiles = await this.publishGenerated(false, generated);
-    await fs.rm(this.local('journal.json'), { force: true });
-    this.revision++;
-    if (opts.history !== false && Object.keys(changed).length) await this.recordHistory(changed, opts);
-    await this.saveLocalState();
+    if (planned && (planned.pruned || --this.gcCountdown <= 0)) await this.sweep();
     const event: SessionEvent = { revision: this.revision, changedDocs: Object.keys(changed), changedFiles, label: opts.label, source: opts.source ?? 'user' };
     this.emit('changed', event);
     return event;
+  }
+
+  private async writeJournal(j: Omit<Journal, 'schemaVersion'>) {
+    await atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal));
   }
 
   /** Regenerate derived files. Files edited externally since the last generation are preserved and reported. */
@@ -760,18 +949,19 @@ export class ProjectSession extends EventEmitter {
         continue;
       }
       const disk = await readIfExists(abs);
-      if (disk !== content) await atomicWrite(abs, content);
+      // Rebuilt from the documents on every publication, so a power loss costs nothing here.
+      if (disk !== content) await atomicWrite(abs, content, { durable: false });
     }
     // The preview serves a variant only while the project file is the one generated here; written before the
     // project files, so a file mid-publication is never mistaken for an edit made outside the app.
     const cleanHashes: Record<string, string> = {};
     for (const [path, content] of clean) if (!authored.has(path)) cleanHashes[path] = sha(content);
-    await atomicWrite(join(devRoot, CLEAN_HASHES), JSON.stringify(cleanHashes));
+    await atomicWrite(join(devRoot, CLEAN_HASHES), JSON.stringify(cleanHashes), { durable: false });
     for (const { path, content, abs } of plan) {
       await atomicWrite(abs, content);
       changedFiles.push(path);
     }
-    // Remove files that are no longer generated.
+    // Remove files that are no longer generated, for good before the manifest stops claiming them.
     for (const path of Object.keys(prev)) {
       if (path in nextFiles) continue;
       const abs = safeJoin(this.dir, path);
@@ -779,7 +969,7 @@ export class ProjectSession extends EventEmitter {
       await fs.rm(safeJoin(devRoot, path), { force: true });
       // An obsolete file that was edited outside the app is left alone and no longer owned.
       if (disk !== null && sha(disk) === prev[path]) {
-        await fs.rm(abs, { force: true });
+        await removeDurable(abs);
         await removeEmptyDirs(dirname(abs), join(this.dir, 'src'));
         changedFiles.push(path);
       }
@@ -792,18 +982,21 @@ export class ProjectSession extends EventEmitter {
   /** Restore a generated file from the managed documents, discarding the external edit. */
   restoreGeneratedFile(path: string): Promise<void> {
     return this.serialize(async () => {
-      if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? 'This project is read-only.');
+      if (!(await this.stillOwner())) throw new Error(this.readOnly?.reason ?? LOCK_UNCHECKED);
       await this.restoreGeneratedLocked(path);
     });
   }
 
   /** Writes are refused while the project is read-only or a project document is in conflict. */
   private async writeBlocked(): Promise<ApplyResult | null> {
-    await this.stillOwner();
-    if (this.readOnly) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: this.readOnly.reason, recoverable: false } };
+    if (!(await this.stillOwner())) {
+      if (this.readOnly) return { ok: false, revision: this.revision, error: { code: 'SCOPE_MISMATCH', message: this.readOnly.reason, recoverable: false } };
+      return { ok: false, revision: this.revision, error: { code: 'BUSY', message: LOCK_UNCHECKED, recoverable: true } };
+    }
     if (this.pending.size) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'Resolve the file conflicts in Project health before making more changes.', recoverable: false } };
     // A new save would replace the journal the failed update left.
     if (this.migrationFailed) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: 'This project could not be updated to the current format. Close and reopen it.', recoverable: false } };
+    if (this.unsettled) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: UNSETTLED, recoverable: false } };
     return null;
   }
 
@@ -822,7 +1015,11 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async saveLocalState() {
-    await atomicWrite(this.local('state.json'), toJson({ revision: this.revision }));
+    await this.writeRevision(this.revision);
+  }
+
+  private async writeRevision(revision: number) {
+    await atomicWrite(this.local('state.json'), toJson({ revision }));
   }
 
   // -------------------------------------------------------------------------
@@ -831,11 +1028,13 @@ export class ProjectSession extends EventEmitter {
 
   /** Run `fn` while holding the writer lock, so no edit or regeneration lands while it reads the project. */
   exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    return this.serialize(fn);
+    return this.serialize(fn, false);
   }
 
-  private serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const p = this.writing.then(fn, fn);
+  /** Commands run one at a time, each (unless it only reads) holding the lock generation's claim throughout. */
+  private serialize<T>(fn: () => Promise<T>, writes = true): Promise<T> {
+    const run = writes ? () => this.fenced(fn) : fn;
+    const p = this.writing.then(run, run);
     this.writing = p.catch(() => undefined);
     return p;
   }
@@ -940,8 +1139,12 @@ export class ProjectSession extends EventEmitter {
   // History
   // -------------------------------------------------------------------------
 
-  private async recordHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string }) {
-    const h = this.history;
+  /**
+   * The history after recording `docs` as one step at `revision`, built on a copy: nothing changes until it is
+   * installed, so it can be journaled with the change it records.
+   */
+  private planHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string }, revision: number): { history: HistoryFile; pruned: boolean } {
+    const h = structuredClone(this.history);
     h.entries = h.entries.slice(0, h.cursor);
     const last = h.entries[h.entries.length - 1];
     if (opts.coalesceKey && last?.coalesceKey === opts.coalesceKey && Date.now() - Date.parse(last.time) < 4000) {
@@ -950,14 +1153,14 @@ export class ProjectSession extends EventEmitter {
         else last.docs[path] = d;
       }
       last.time = new Date().toISOString();
-      last.revision = this.revision;
+      last.revision = revision;
     } else {
       h.entries.push({
         id: `h${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         label: opts.label,
         source: opts.source ?? 'user',
         time: new Date().toISOString(),
-        revision: this.revision,
+        revision,
         docs,
         coalesceKey: opts.coalesceKey,
         runId: opts.runId
@@ -966,9 +1169,20 @@ export class ProjectSession extends EventEmitter {
     const pruned = h.entries.length > HISTORY_LIMIT;
     if (pruned) h.entries = h.entries.slice(h.entries.length - HISTORY_LIMIT);
     h.cursor = h.entries.length;
-    await atomicWrite(this.local('history', 'history.json'), toJson(h));
+    return { history: h, pruned };
+  }
+
+  private async installHistory(history: HistoryFile) {
+    this.history = history;
+    await atomicWrite(this.local('history', 'history.json'), toJson(history));
+  }
+
+  /** Record a step for a change already on disk (one made outside the app, or a settled conflict). */
+  private async recordHistory(docs: HistoryEntry['docs'], opts: CommitOptions & { runId?: string }) {
+    const planned = this.planHistory(docs, opts, this.revision);
+    await this.installHistory(planned.history);
     // Collect when history was pruned, and every so often for blobs left by provisional AI batches and undo.
-    if (pruned || --this.gcCountdown <= 0) await this.sweep();
+    if (planned.pruned || --this.gcCountdown <= 0) await this.sweep();
   }
 
   /** Asset imports in progress: their files are written before their asset records, so no sweep runs meanwhile. */
@@ -993,7 +1207,8 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async sweep(): Promise<void> {
-    if (!(await this.stillOwner())) return;
+    // A save waiting for reopening may need files only its journal names.
+    if (this.unsettled || !(await this.stillOwner())) return;
     this.gcCountdown = 25;
     try {
       await this.collectGarbageNow();
@@ -1135,14 +1350,14 @@ export class ProjectSession extends EventEmitter {
       else docs.set(path, await this.getBlob(h));
     }
     const next = docsToState(docs, this.state);
+    const cursor = this.history.cursor + (direction === 'undo' ? -1 : 1);
     try {
-      await this.persist(next, { label: `${direction === 'undo' ? 'Undo' : 'Redo'} ${entry.label}`, history: false, source: 'user' });
+      // The cursor moves in the same journaled change as the documents, so a crash never separates them.
+      await this.persist(next, { label: `${direction === 'undo' ? 'Undo' : 'Redo'} ${entry.label}`, history: false, cursor, source: 'user' });
     } catch (e) {
       if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: e.message, recoverable: true } };
       throw e;
     }
-    this.history.cursor += direction === 'undo' ? -1 : 1;
-    await atomicWrite(this.local('history', 'history.json'), toJson(this.history));
     this.emit('history');
     return { ok: true, revision: this.revision };
   }
@@ -1189,7 +1404,8 @@ export class ProjectSession extends EventEmitter {
   beginRun(runId: string): Promise<string | null> {
     return this.serialize(async () => {
       if (this.activeRun) return 'Another AI request is already running.';
-      if (!(await this.stillOwner())) return this.readOnly?.reason ?? 'This project is read-only.';
+      if (!(await this.stillOwner())) return this.readOnly?.reason ?? LOCK_UNCHECKED;
+      if (this.unsettled) return UNSETTLED;
       if (this.pending.size) return 'A project file was changed outside SiteOrigin Builder. Resolve it in Project health first.';
       const before = new Map(this.docs);
       this.activeRun = { id: runId, before, beforeState: structuredClone(this.state), startRevision: this.revision, written: new Map() };
@@ -1234,10 +1450,12 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(async () => {
       const run = this.activeRun;
       if (!run) return false;
-      // Another app took the project over: its own recovery decides what happens to this run's files.
-      if (!(await this.stillOwner())) {
+      // Another app took the project over, the lock could not be checked, or a save of the run did not finish:
+      // reopening decides what happens to this run's files (its marker is still on disk), so nothing more is written.
+      if (this.unsettled || !(await this.stillOwner())) {
         this.activeRun = null;
-        return false;
+        if (!this.readOnly) this.unsettled = true;
+        throw new Error(this.readOnly?.reason ?? UNSETTLED);
       }
       const changed: HistoryEntry['docs'] = {};
       const paths = new Set([...run.before.keys(), ...this.docs.keys()]);
@@ -1247,12 +1465,37 @@ export class ProjectSession extends EventEmitter {
         if (b === a) continue;
         changed[p] = { before: b === undefined ? null : await this.putBlob(b), after: a === undefined ? null : await this.putBlob(a) };
       }
+      const planned = Object.keys(changed).length ? this.planHistory(changed, { label, source: 'ai', runId: run.id }, this.revision) : null;
+      // From here a failure is settled by reopening: recovery either finishes the run or restores its checkpoint.
       this.activeRun = null;
-      // Clear the marker first: a crash after this point keeps the finished work rather than reverting it.
-      await fs.rm(this.local('sessions', 'active-run.json'), { force: true });
-      if (Object.keys(changed).length) await this.recordHistory(changed, { label, source: 'ai', runId: run.id });
+      try {
+        if (planned) {
+          // The journal is the decision. Before it is on disk, a crash restores the checkpoint (the marker is still
+          // there); once it is, recovery records the run's step and clears the marker, so the finished work is kept.
+          await this.writeJournal({ writes: [], deletes: [], history: planned.history, revision: this.revision, finishRun: run.id });
+        } else {
+          // Nothing changed: restoring the checkpoint and keeping the run are the same thing.
+          await removeDurable(this.local('sessions', 'active-run.json'));
+        }
+      } catch (e) {
+        this.unsettled = true;
+        throw e;
+      }
+      if (planned) {
+        try {
+          await this.installHistory(planned.history);
+          await removeDurable(this.local('sessions', 'active-run.json'));
+          await removeDurable(this.local('journal.json'));
+        } catch {
+          // The run is decided and kept: reopening finishes recording it. Until then nothing else is written.
+          this.unsettled = true;
+          this.emit('history');
+          return true;
+        }
+      }
+      if (planned && (planned.pruned || --this.gcCountdown <= 0)) await this.sweep();
       this.emit('history');
-      return Object.keys(changed).length > 0;
+      return !!planned;
     });
   }
 
@@ -1261,8 +1504,12 @@ export class ProjectSession extends EventEmitter {
     return this.serialize(async () => {
       const run = this.activeRun;
       if (!run) return { restored: false };
-      if (!(await this.stillOwner())) {
+      // As in completeRun: when this session cannot write, the marker stays and reopening restores the checkpoint.
+      // A save of the run that failed part way leaves a journal that reopening rolls forward before that, so the
+      // marker must survive it too.
+      if (this.unsettled || !(await this.stillOwner())) {
         this.activeRun = null;
+        if (!this.readOnly) this.unsettled = true;
         return { restored: false };
       }
       // Verify, byte for byte, that every file the run touched still holds what the run wrote.
@@ -1270,16 +1517,22 @@ export class ProjectSession extends EventEmitter {
       const changedOutside: string[] = [];
       for (const p of touched) if ((await this.diskContent(p)) !== (this.docs.get(p) ?? null)) changedOutside.push(p);
       this.activeRun = null;
-      if (touched.length && !changedOutside.length) {
-        try {
-          await this.persist(run.beforeState, { label: 'Revert AI changes', history: false, source: 'system' });
-        } catch (e) {
-          if (!(e instanceof DiskConflictError)) throw e;
-          changedOutside.push(e.path);
+      try {
+        if (touched.length && !changedOutside.length) {
+          try {
+            await this.persist(run.beforeState, { label: 'Revert AI changes', history: false, source: 'system' });
+          } catch (e) {
+            if (!(e instanceof DiskConflictError)) throw e;
+            changedOutside.push(e.path);
+          }
         }
+        if (changedOutside.length) await this.revertAroundConflicts(run, touched, changedOutside);
+        await removeDurable(this.local('sessions', 'active-run.json'));
+      } catch (e) {
+        // The marker may still be on disk: reopening restores the checkpoint, and nothing is written until then.
+        this.unsettled = true;
+        throw e;
       }
-      if (changedOutside.length) await this.revertAroundConflicts(run, touched, changedOutside);
-      await fs.rm(this.local('sessions', 'active-run.json'), { force: true });
       this.emit('history');
       return changedOutside.length ? { restored: false, conflict: changedOutside[0] } : { restored: true };
     });
@@ -1320,7 +1573,9 @@ export class ProjectSession extends EventEmitter {
   async reloadFromDisk(): Promise<{ ok: boolean; message?: string }> {
     return this.serialize(async () => {
       if (this.activeRun) return { ok: false, message: 'Busy' };
-      if (this.readOnly || !(await this.stillOwner())) return this.reloadReadOnly();
+      if (this.readOnly) return this.reloadReadOnly();
+      if (!(await this.stillOwner())) return this.readOnly ? this.reloadReadOnly() : { ok: false, message: LOCK_UNCHECKED };
+      if (this.unsettled) return { ok: false, message: UNSETTLED };
       // A held conflict is settled outside the app when its file is put back to SiteOrigin Builder's version.
       let settled = false;
       for (const [p, builder] of [...this.pending]) {
@@ -1406,6 +1661,178 @@ export class ProjectSession extends EventEmitter {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Project lock
+// ---------------------------------------------------------------------------
+
+interface LockFile {
+  pid?: number;
+  host?: string;
+  instance?: string;
+  token?: string;
+  started?: string;
+}
+interface LockSeen {
+  text: string;
+  mtimeMs: number;
+}
+
+/** An unreadable lock is most likely one being written; it is only stale once it has stayed that way this long. */
+const UNREADABLE_LOCK_STALE_MS = 10_000;
+/** How long an unlock waits for the owner's own claim before taking it as left by a crash part way through a command. */
+const OWNER_CLAIM_GRACE_MS = 5_000;
+/** The generation shown for a project with no lock at all: an unlock then only creates one, never replaces one. */
+export const NO_LOCK = 'none';
+
+/**
+ * What this app has seen of locks it could not judge by its own clock, with when it first saw each unchanged
+ * (on this process's monotonic clock). Another computer's clock may be minutes or hours away from this one, so its
+ * lock times are never compared with this clock; only whether they change.
+ */
+const sightings = new Map<string, { key: string; since: number }>();
+function unchangedFor(path: string, seen: LockSeen): number {
+  const key = `${seen.mtimeMs}\0${seen.text}`;
+  const now = performance.now();
+  const prior = sightings.get(path);
+  if (prior?.key === key) return now - prior.since;
+  sightings.set(path, { key, since: now });
+  return 0;
+}
+
+function parseLock(text: string): LockFile | null {
+  try {
+    const l = JSON.parse(text) as unknown;
+    return l && typeof l === 'object' && !Array.isArray(l) ? (l as LockFile) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The lock's content and time, read through one handle so they belong to the same file. */
+async function readLock(path: string): Promise<LockSeen | null> {
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(path, 'r');
+    const st = await handle.stat();
+    return { text: await handle.readFile('utf8'), mtimeMs: st.mtimeMs };
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw e;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+const sameLock = (a: LockSeen | null, b: LockSeen) => !!a && a.text === b.text && a.mtimeMs === b.mtimeMs;
+
+async function createExclusive(path: string, body: string): Promise<boolean> {
+  try {
+    await fs.writeFile(path, body, { flag: 'wx' });
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    throw e;
+  }
+}
+
+/** Which acquisition of the lock this is: its token, or for a lock without one, its exact content. */
+function lockGeneration(seen: LockSeen): string {
+  const token = parseLock(seen.text)?.token;
+  return typeof token === 'string' && /^[a-f0-9]{1,64}$/.test(token) ? token : sha(seen.text).slice(0, 16);
+}
+
+/** Is a process on this computer alive? Only "no such process" says it is gone; a refusal (another user's) is alive. */
+function processAlive(pid: unknown): boolean {
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+function judgeLock(path: string, seen: LockSeen, instanceId: string, force: boolean | string): { stale: boolean; owner: LockOwner; generation: string } {
+  const l = parseLock(seen.text);
+  const generation = lockGeneration(seen);
+  const owner: LockOwner = l
+    ? { host: l.host === hostname() ? 'this computer' : String(l.host || 'another computer'), since: l.started, token: generation }
+    : { host: 'another computer', token: generation };
+  // An unlock takes over the generation the user was shown, and nothing else: not a newer owner, not this app's own.
+  if (typeof force === 'string') return { stale: generation === force, owner, generation };
+  if (force === true) return { stale: true, owner, generation };
+  // Unreadable: possibly another opener between creating the file and writing it.
+  if (!l) return { stale: unchangedFor(path, seen) > UNREADABLE_LOCK_STALE_MS, owner, generation };
+  if (l.instance === instanceId) return { stale: true, owner, generation };
+  // A process on this computer that is gone holds nothing. Otherwise (a live process, perhaps a reused PID, or
+  // another computer, or this one under an old name) the lock is stale only once it has stopped changing for long
+  // enough on this app's own clock: lock times are never compared with it.
+  if (l.host === hostname() && !processAlive(l.pid)) return { stale: true, owner, generation };
+  return { stale: unchangedFor(path, seen) > LOCK_STALE_MS, owner, generation };
+}
+
+/**
+ * Remove a lock or claim file only if it is still exactly what was seen: it is moved aside first, and anything else
+ * found there (created exclusively since) goes straight back.
+ */
+async function removeIfUnchanged(path: string, seen: LockSeen): Promise<boolean> {
+  const aside = `${path}.${randomBytes(4).toString('hex')}.stale`;
+  try {
+    await fs.rename(path, aside);
+  } catch {
+    return false;
+  }
+  const moved = sameLock(await readLock(aside).catch(() => null), seen);
+  if (!moved) await fs.link(aside, path).catch(() => undefined);
+  await fs.rm(aside, { force: true });
+  return moved;
+}
+
+/**
+ * Claim one generation of the lock: its owner holds the claim while it writes, a taker while it takes over, and only
+ * one claim can be live. Claims are numbered files (lock.json.<generation>.claim.<n>), each created exclusively; the
+ * highest is the live one. A claim left by an app that stopped part way is never moved or deleted by anyone else:
+ * once it is judged dead it is passed over by exclusively creating the next number, so two claimants can never both
+ * win, and each claimant only ever removes its own file. `holder` is the claimant's own lock token. Waits up to
+ * `waitMs` for a live claim. A claim is dead once its process is provably gone, once it has not changed for the stale
+ * period, or (`ownerGone`, an unlock) once a claim the owner of that generation left has sat unchanged for longer
+ * than any command takes.
+ */
+async function claimLock(lockPath: string, generation: string, opts: { holder: string; waitMs?: number; ownerGone?: boolean }): Promise<string | null> {
+  const dir = dirname(lockPath);
+  const prefix = `${basename(lockPath)}.${generation}.claim.`;
+  const body = toJson({ pid: process.pid, host: hostname(), holder: opts.holder, started: new Date().toISOString() });
+  const until = performance.now() + (opts.waitMs ?? 0);
+  for (;;) {
+    const taken = (await fs.readdir(dir).catch(() => [] as string[]))
+      .filter((f) => f.startsWith(prefix))
+      .map((f) => Number(f.slice(prefix.length)))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    const top = taken.length ? Math.max(...taken) : 0;
+    let next = top + 1;
+    if (top) {
+      const path = join(dir, `${prefix}${top}`);
+      const seen = await readLock(path).catch(() => null);
+      if (!seen) next = top; // released just now: that number is free again
+      else {
+        const l = parseLock(seen.text) as (LockFile & { holder?: unknown }) | null;
+        const quiet = unchangedFor(path, seen);
+        const dead = (l?.host === hostname() && !processAlive(l.pid)) || (opts.ownerGone && l?.holder === generation && quiet > OWNER_CLAIM_GRACE_MS) || quiet > LOCK_STALE_MS;
+        if (!dead) next = 0;
+      }
+    }
+    if (next && (await createExclusive(join(dir, `${prefix}${next}`), body))) return join(dir, `${prefix}${next}`);
+    if (performance.now() >= until) return null;
+    await new Promise((r) => setTimeout(r, 15));
+  }
+}
+
+/** Claims on a generation that has just been replaced are of no further use to anyone. */
+async function removeClaims(lockPath: string, generation: string) {
+  const dir = dirname(lockPath);
+  const prefix = `${basename(lockPath)}.${generation}.claim.`;
+  for (const f of await fs.readdir(dir).catch(() => [] as string[])) if (f.startsWith(prefix)) await fs.rm(join(dir, f), { force: true }).catch(() => undefined);
+}
+
 /** A held conflict is settled when the file on disk is Builder's version again: present or absent alike. */
 function settledOnDisk(path: string, disk: string | null, builder: string | null): boolean {
   return (disk === null) === (builder === null) && sameContent(path, disk, builder);
@@ -1433,6 +1860,15 @@ async function assertKnownFormat(dir: string) {
   }
   if (typeof version === 'number' && version > SCHEMA_VERSION)
     throw new ProjectFormatError(`This project has an unfinished save from a newer version of SiteOrigin Builder (format ${version}). Update the app to edit it.`, true);
+}
+
+const COMPONENT_DOC_RE = /^siteorigin\/components\/[^/]+\/component\.json$/;
+
+/** A history file from a journal is installed only when it is well formed and in this format. */
+function usableJournalHistory(h: unknown): h is HistoryFile {
+  if (!h || typeof h !== 'object') return false;
+  const { entries, cursor, schemaVersion } = h as Partial<HistoryFile>;
+  return schemaVersion === SCHEMA_VERSION && Array.isArray(entries) && Number.isInteger(cursor) && cursor! >= 0 && cursor! <= entries.length;
 }
 
 function emptyHistory(): HistoryFile {
