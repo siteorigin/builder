@@ -402,6 +402,11 @@ export function textStyleValue(tokens: TokenDef[], id: string, fallback?: unknow
 /** Font weights written as words in a hand-edited document, as the numbers they stand for. */
 const WEIGHT_WORDS: Record<string, number> = { normal: 400, bold: 700 };
 
+/** A text style's weight as a number: a number, a numeric string, or normal / bold; NaN for anything else. */
+export function textWeight(w: unknown): number {
+  return typeof w === 'number' ? w : typeof w === 'string' && w.trim() ? (WEIGHT_WORDS[w.trim().toLowerCase()] ?? Number(w)) : NaN;
+}
+
 /**
  * A text style's metrics as the editor shows them (see textStyleValue). Null when they cannot be read: a size,
  * line height, letter spacing, weight or font that is missing.
@@ -413,7 +418,7 @@ export function textMetrics(tokens: TokenDef[], id: string, fallback?: unknown):
   const lineHeight = metricText(v.lineHeight);
   const tracking = metricText(v.tracking);
   const w = v.weight;
-  const weight = typeof w === 'number' ? w : typeof w === 'string' && w.trim() ? (WEIGHT_WORDS[w.trim().toLowerCase()] ?? Number(w)) : NaN;
+  const weight = textWeight(w);
   const family = v.family;
   const familyOk = (typeof family === 'string' && family.trim()) || linkOf(family);
   if (size === null || lineHeight === null || tracking === null || !(weight >= 100 && weight <= 900) || !familyOk) return null;

@@ -1467,6 +1467,8 @@ describe('older text links read the same in the editor, an edit and the export (
     s.tokens.overrides['text.h2'] = { ...h2, weight: 'bold' } as never;
     s.tokens.overrides['text.h1'] = { token: 'text.h2' } as never;
     expect(textMetrics(effectiveTokens(s), 'text.h1')).toMatchObject({ size: h2.size, weight: 700 });
+    // A change that leaves the weight alone keeps it, as the number it stands for.
+    expect(set(s, 'text.h1', { size: '3rem' }).tokens.overrides['text.h1']).toEqual({ ...h2, size: '3rem', weight: 700 });
     s = set(s, 'text.h1', { weight: 600 });
     expect(s.tokens.overrides['text.h1']).toEqual({ ...h2, weight: 600 });
   });

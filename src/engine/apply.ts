@@ -19,7 +19,7 @@ import type {
 import type { Binding } from '@shared/types';
 import { ICON_POSITIONS, SCHEMA_VERSION, isBinding, isComparison, type IconPosition, type TextTag } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
-import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { findVariant, variantOptions } from '@shared/variants';
@@ -1353,7 +1353,7 @@ function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
       const s = typeof x === 'number' && Number.isFinite(x) ? String(x) : typeof x === 'string' ? x : '';
       if (!s.trim() || !/^[0-9a-z.,%+\-*/ ()]+$/i.test(s) || !isSafeCssValue(s)) fail(`Invalid ${k} "${x === undefined ? '' : String(x)}".`);
     }
-    const w = Number(merged.weight);
+    const w = textWeight(merged.weight);
     if (!Number.isFinite(w) || w < 100 || w > 900) fail('Weight must be between 100 and 900.');
     merged.weight = w;
     const fam = merged.family as unknown;
