@@ -6,12 +6,15 @@ import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
 import { api, setState, useStore } from '../store';
 import { insert, selectPage, askAiAbout, setMode, openSiteStyles } from '../lib/actions';
+import { pageChoices, matchesWords, commandText } from '../lib/page-switch';
 import { VIEWPORT_PRESETS } from '@shared/styles';
 import { LucideIcon } from './InsertPanel';
 
 interface Cmd {
   id: string;
   label: string;
+  /** What tells entries with the same label apart, such as a page's address. Shown, spoken and searched with the label. */
+  detail?: string;
   group: string;
   icon: React.ReactNode;
   /** The keyboard shortcut, shown so the menu teaches it. */
@@ -27,7 +30,7 @@ export function CommandMenu() {
     if (!snap) return [];
     const st = snap.state;
     return [
-      ...st.site.pageOrder.map((id) => ({ id: `page:${id}`, label: `Go to ${st.pages[id].title}`, group: 'Page', icon: id === st.site.homePageId ? <House /> : <FileText />, run: () => selectPage(id) })),
+      ...pageChoices(st).map((p) => ({ id: `page:${p.id}`, label: `Go to ${p.title}`, detail: p.address, group: 'Page', icon: p.home ? <House /> : <FileText />, run: () => selectPage(p.id) })),
       ...catalogueEntries(st.site.themeId).map((e) => ({ id: `ins:${e.componentId}`, label: `Insert ${e.name}`, group: 'Insert', icon: <LucideIcon name={e.icon} />, run: () => void insert({ componentId: e.componentId }, e.name) })),
       { id: 'newpage', label: 'Add page…', group: 'Page', icon: <Plus />, run: () => (setState({ leftTab: 'pages' }), setTimeout(() => window.dispatchEvent(new Event('builder-add-page')), 0)) },
       { id: 'ai', kbd: '⌘J', label: 'Ask AI…', group: 'AI', icon: <Sparkles />, run: () => askAiAbout(null) },
@@ -48,7 +51,7 @@ export function CommandMenu() {
       { id: 'close', kbd: '⇧⌘W', label: 'Close project', group: 'Project', icon: <LogOut />, run: () => void closeProject() }
     ];
   }, [snap]);
-  const filtered = cmds.filter((c) => q.trim().toLowerCase().split(/\s+/).every((w) => c.label.toLowerCase().includes(w))).slice(0, 40);
+  const filtered = cmds.filter((c) => matchesWords(q, commandText(c.label, c.detail))).slice(0, 40);
   const pick = (c: Cmd | undefined) => {
     if (!c) return;
     if (useStore.getState().modal?.kind === 'cmdk') setState({ modal: null });
@@ -87,9 +90,10 @@ export function CommandMenu() {
         </div>
         <div className="cmdk-list" role="listbox" id={listId} aria-label="Commands">
           {filtered.map((c, i) => (
-            <div key={c.id} id={`${listId}-${i}`} data-index={i} role="option" aria-selected={i === active} className={`menu-item${i === active ? ' focused' : ''}`} onMouseMove={() => i !== active && setActive(i)} onClick={() => pick(c)}>
+            <div key={c.id} id={`${listId}-${i}`} data-index={i} role="option" aria-selected={i === active} aria-label={c.detail ? `${c.label}, ${c.detail}` : undefined} className={`menu-item${i === active ? ' focused' : ''}`} onMouseMove={() => i !== active && setActive(i)} onClick={() => pick(c)}>
               {c.icon}
               <span className="grow">{c.label}</span>
+              {c.detail && <span className="hint cmdk-detail">{c.detail}</span>}
               {c.kbd && <kbd className="kbd">{c.kbd}</kbd>}
               <span className="hint">{c.group}</span>
             </div>
