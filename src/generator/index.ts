@@ -928,10 +928,10 @@ function sizingBoxes(walk: SizingWalk, tree: NodeTree, nodeId: string, placement
     const inner = walk.state.components[n.definitionId];
     const slots = inner?.kind === 'managed' && inner.tree ? Object.values(inner.tree.nodes).filter((x) => x.kind === 'slot' && x.slot === at.slot) : [];
     if (slots.length !== 1 || path.split('/').length > 16) return void (walk.unknown = true);
-    const before = out.length;
     sizingBoxes(walk, inner!.tree!, slots[0].id, n, `${path}/${n.id}`, out);
-    // What this tree gives the placement (its class, variant styles and overrides) lands on the definition's root.
-    if (out.length > before && inner!.tree!.nodes[inner!.tree!.rootIds[0]]?.kind === 'element') out[out.length - 1].push(...layers(at.id, n));
+    // What this tree gives the placement (its class, variant styles and overrides) lands on the definition's root,
+    // competing with that definition's own rules from another stylesheet: sizing styles there are not read.
+    if (layers(at.id, n).some((l) => Object.values(l.styles).some((st) => st && SIZING_PROPS.some((k) => st[k] !== undefined)))) return void (walk.unknown = true);
   }
 }
 
@@ -958,14 +958,17 @@ function trackShare(grid: SizingBox, item: SizingBox | undefined, range: SizeRan
   return shares.length ? Math.max(...shares) : 1;
 }
 
-/** Custom CSS that can change how wide an element is, or how its children are laid out. */
-const SIZING_CSS = /\b(width|grid|display|flex|columns?|margin|position|inset|left|right|transform|zoom|scale|float|contain)\b/i;
+/** Custom CSS properties that only paint: they never change how wide anything is laid out. */
+const PAINT_ONLY_CSS = /^(filter|backdrop-filter|opacity|color|background(-[a-z]+)*|border(-[a-z]+)*|box-shadow|outline(-[a-z]+)*|mix-blend-mode|isolation|transition(-[a-z]+)*|cursor|text-[a-z-]+|font(-[a-z]+)*|letter-spacing|word-spacing|line-height|object-position|image-rendering|pointer-events|user-select|visibility|z-index|caret-color|accent-color|clip-path)$/;
+/** The styles that decide how wide an element, or the elements inside it, can be. */
+const SIZING_PROPS = ['layout', 'columns', 'gridTemplate', 'columnSpan', 'width', 'minWidth', 'maxWidth', 'flexGrow', 'position', 'inset', 'marginInlineStart', 'marginInlineEnd', 'customCss'];
 
 /**
  * A realistic `sizes` hint for an image: in each range, its share of the grids around it (through the
  * placements whose slots hold it), capped by the narrowest fixed width or container among them, and widened for a
  * cropped picture. Each value is an upper estimate, so the browser never picks a copy smaller than the image shows;
- * gaps and padding are left out. Null keeps the runtime default (100vw), as does anything the estimate cannot read.
+ * gaps and padding are left out. It reads only plain layouts: anything else on the way (a minimum width, a
+ * percentage, positioning, custom CSS that lays out) leaves the runtime default (100vw), as does null.
  * An image in a definition stops at the definition's root: a placement can widen any container there, so only a
  * grid's share or the image's own width counts.
  */
@@ -978,6 +981,7 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
     const m = typeof raw === 'string' ? raw.trim().match(/^(\d+(?:\.\d+)?)(px|vw|%)$/) : null;
     return m ? { n: Number(m[1]), unit: m[2] } : null;
   };
+  const px = (v: unknown) => (length(v)?.unit === 'px' ? length(v)!.n : null);
   const walk: SizingWalk = { state: ctx.state, parents: (ctx.sizingParents ??= new Map()), seen: new Set(), unknown: false };
   const boxes: SizingBox[] = [[{ styles: node.styles ?? {}, tier: 0 }]];
   sizingBoxes(walk, ctx.tree, node.id, null, '', boxes);
@@ -988,72 +992,79 @@ function imageSizes(ctx: EmitCtx, node: GraphNode): string | null {
   let gridded = false;
   let ownBound = false;
   const at = (['desktop', 'tablet', 'phone'] as const).map((range): string | null => {
-    // `share` of the viewport the image can take, `cap` the most it can take in pixels, `floor` the least.
+    // `share` of the viewport the image can take and `cap` the most it can take in pixels; `frozen` once a box's
+    // own width decides it, after which outer boxes are only checked.
     let share = 1;
     let cap = Infinity;
-    let floor = 0;
-    let held = false;
+    let frozen = false;
     for (let i = 0; i < boxes.length; i++) {
       const box = boxes[i];
-      if (i > 0 && boxStyle(box, 'layout', range) === 'grid') {
+      const get = (prop: string) => boxStyle(box, prop, range);
+      if (!['static', 'relative', 'sticky', undefined].includes(get('position') as string | undefined)) return null;
+      for (const l of box)
+        for (const css of [l.styles.base?.customCss, l.styles[range]?.customCss])
+          if (typeof css === 'string' && css.split(';').some((d) => d.trim() && !PAINT_ONLY_CSS.test(d.split(':')[0].trim().toLowerCase()))) return null;
+      for (const side of ['marginInlineStart', 'marginInlineEnd']) if (get(side) !== undefined && get(side) !== 'auto' && px(get(side)) === null) return null;
+      const minWidth = get('minWidth');
+      if (minWidth !== undefined && minWidth !== 'auto' && px(minWidth) !== 0) return null;
+      const rawWidth = get('width');
+      const width = length(rawWidth);
+      const maxPx = px(get('maxWidth'));
+      const flexParent = ['row', 'stack'].includes(String(boxes[i + 1] ? boxStyle(boxes[i + 1], 'layout', range) : ''));
+      if (width?.unit === 'px' && flexParent && Number(get('flexGrow')) > 0) return null;
+      const sized = rawWidth === undefined || rawWidth === 'fill' || (width?.unit === '%' && width.n === 100);
+      // An image sized by its own picture stays inside its parent only through the theme's max-width: 100%, which a
+      // max width of its own replaces.
+      const intrinsic = i === 0 && (rawWidth === 'auto' || rawWidth === 'fit');
+      if (!sized && !intrinsic && width?.unit !== 'px' && width?.unit !== 'vw' && !(i > 0 && (rawWidth === 'auto' || rawWidth === 'fit'))) return null;
+      if (intrinsic && get('maxWidth') !== undefined && maxPx === null && !(length(get('maxWidth'))?.unit === '%' && length(get('maxWidth'))!.n <= 100)) return null;
+      if (frozen) continue;
+      if (i > 0 && get('layout') === 'grid') {
         const t = trackShare(box, boxes[i - 1], range);
         if (t < 1) gridded = true;
         share *= t;
       }
-      if (['absolute', 'fixed'].includes(String(boxStyle(box, 'position', range)))) return null;
-      if (box.some((l) => [l.styles.base?.customCss, l.styles[range]?.customCss].some((c) => typeof c === 'string' && SIZING_CSS.test(c)))) return null;
-      const rawWidth = boxStyle(box, 'width', range);
-      const rawMax = boxStyle(box, 'maxWidth', range);
-      const rawMin = boxStyle(box, 'minWidth', range);
-      const [width, max, min] = [rawWidth, rawMax, rawMin].map(length);
-      // A minimum in a unit this cannot measure could hold the box wider than anything here.
-      if (rawMin !== undefined && rawMin !== 'auto' && (!min || min.unit === 'vw')) return null;
-      const minPx = min?.unit === 'px' ? min.n : 0;
-      const maxPx = max?.unit === 'px' ? max.n : null;
-      if (i === 0 && (width?.unit === 'px' || width?.unit === 'vw' || maxPx !== null || minPx > 0)) ownBound = true;
-      const flexParent = ['row', 'stack'].includes(String(boxes[i + 1] ? boxStyle(boxes[i + 1], 'layout', range) : ''));
-      const grows = flexParent && Number(boxStyle(box, 'flexGrow', range)) > 0;
-      if (width?.unit === 'px' && !grows) {
-        // A fixed width holds whatever its parent's track is (it can overflow it), so nothing further out counts.
-        cap = Math.min(cap, share * Math.max(minPx, Math.min(width.n, maxPx ?? Infinity)));
-        held = true;
-        break;
-      }
-      // Growing from a fixed basis, a box can be wider than its parent's share but no narrower than the basis.
-      if (width?.unit === 'px') floor = Math.max(floor, share * width.n);
-      if (maxPx !== null) cap = Math.min(cap, share * Math.max(minPx, maxPx));
-      floor = Math.max(floor, share * minPx);
-      if (width?.unit === 'vw') {
+      if (i === 0 && (width?.unit === 'px' || width?.unit === 'vw' || maxPx !== null)) ownBound = true;
+      if (maxPx !== null) cap = Math.min(cap, share * maxPx);
+      if (width?.unit === 'px') {
+        // A fixed width holds whatever its parent's track is (it can overflow it).
+        cap = Math.min(cap, share * width.n);
+        share = Infinity;
+        frozen = true;
+      } else if (width?.unit === 'vw') {
         // A viewport width is measured from the screen, not the parent.
         share *= width.n / 100;
-        break;
+        frozen = true;
+      } else if (intrinsic && maxPx !== null) {
+        share = Infinity;
+        frozen = true;
       }
-      let fraction = width?.unit === '%' ? width.n / 100 : 1;
-      if (min?.unit === '%') fraction = Math.max(fraction, min.n / 100);
-      if (!width && rawWidth !== undefined && !['fill', 'auto', 'fit'].includes(String(rawWidth))) return null;
-      // An image sized by its own picture stays inside its parent only through the theme's max-width: 100%, which
-      // a max width of its own replaces.
-      if (i === 0 && (rawWidth === 'auto' || rawWidth === 'fit') && rawMax !== undefined && !(max?.unit === '%' && max.n <= 100)) {
-        if (maxPx === null) return null;
-        held = true;
-        break;
-      }
-      share *= fraction;
     }
-    const ratio = String(boxStyle(boxes[0], 'aspectRatio', range) ?? '').match(/^\s*(\d+(?:\.\d+)?)\s*(?:\/\s*(\d+(?:\.\d+)?))?\s*$/);
-    const box = ratio ? Number(ratio[1]) / Number(ratio[2] ?? 1) : null;
-    const height = length(boxStyle(boxes[0], 'height', range));
-    if (aspect && (boxStyle(boxes[0], 'objectFit', range) ?? 'cover') === 'cover') {
-      const crop = box ? Math.max(1, aspect / box) : 1;
-      [share, cap, floor] = [share * crop, cap * crop, floor * crop];
-      if (height?.unit === 'px') floor = Math.max(floor, aspect * height.n);
+    // A cropped picture: a fixed height needs the width that height gives the picture; otherwise the aspect ratio
+    // its box is cut to does.
+    let floor = 0;
+    const fit = boxStyle(boxes[0], 'objectFit', range) ?? 'cover';
+    const height = boxStyle(boxes[0], 'height', range);
+    const minHeight = boxStyle(boxes[0], 'minHeight', range);
+    if (fit === 'cover' && aspect) {
+      for (const h of [height, minHeight]) {
+        if (h === undefined || h === 'auto' || px(h) === 0) continue;
+        if (px(h) === null) return null;
+        floor = Math.max(floor, aspect * px(h)!);
+      }
+      const ratio = String(boxStyle(boxes[0], 'aspectRatio', range) ?? '').match(/^\s*(\d+(?:\.\d+)?)\s*(?:\/\s*(\d+(?:\.\d+)?))?\s*$/);
+      if (ratio && height === undefined) {
+        const crop = Math.max(1, aspect / (Number(ratio[1]) / Number(ratio[2] ?? 1)));
+        [share, cap] = [share * crop, cap * crop];
+      }
     }
     // Both are upper estimates; a fixed cap is the closer one when it is narrower than the range's widest screen.
-    // A minimum wider than the share on the range's narrowest screen is covered by the share on its widest, or on
+    // A floor wider than the share on the range's narrowest screen is covered by the share on its widest, or on
     // desktops (which have no widest) by a larger share. Rounded up, never down, past float noise.
-    const px = (v: number) => `${Math.ceil(v - 1e-6)}px`;
-    if (held || (cap < Infinity && cap <= share * RANGE_MAX[range])) return px(Math.max(cap, floor));
-    if (floor > share * RANGE_MIN[range] && RANGE_MAX[range] < Infinity) return px(Math.max(floor, Math.min(cap, share * RANGE_MAX[range])));
+    const toPx = (v: number) => `${Math.ceil(v - 1e-6)}px`;
+    if (cap < Infinity && cap <= share * RANGE_MAX[range]) return toPx(Math.max(cap, floor));
+    if (!Number.isFinite(share)) return null;
+    if (floor > share * RANGE_MIN[range] && RANGE_MAX[range] < Infinity) return toPx(Math.max(floor, Math.min(cap, share * RANGE_MAX[range])));
     return `${Math.ceil(Math.max(share, floor / RANGE_MIN[range]) * 10000 - 1e-6) / 100}vw`;
   });
   if (at.includes(null) || (ctx.def && !gridded && !ownBound)) return null;

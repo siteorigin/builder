@@ -366,7 +366,7 @@ describe('SEO and performance', () => {
   /** A Section on the home page holding a Grid of three photos, built the way the editor builds it (issue #170). */
   function manualGrid(s: ProjectState) {
     const owner = { kind: 'page' as const, id: s.site.homePageId };
-    const photo: AssetRecord = { id: 'a_photo', name: 'Photo', file: 'static/assets/photo-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 2400, height: 1600, hash: 'h', kind: 'image', createdAt: 'now', variants: [480, 960, 1440].map((w) => ({ width: w, file: `static/assets/photo-1a2b3c4d-${w}w.jpg` })) };
+    const photo: AssetRecord = { id: 'a_photo', name: 'Photo', file: 'static/assets/photo-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 2400, height: 1600, hash: 'h', kind: 'image', createdAt: 'now', variants: [160, 480, 960, 1440].map((w) => ({ width: w, file: `static/assets/photo-1a2b3c4d-${w}w.jpg` })) };
     let r = applyOperations(s, [{ type: 'asset.add', asset: photo }, { type: 'node.insert', owner, parentId: null, index: 1, componentId: 'layout.section' }]);
     const section = r.results[1].nodeId as string;
     r = applyOperations(r.state, [{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'grid' }]);
@@ -441,18 +441,12 @@ describe('SEO and performance', () => {
     expect(only({ width: '600px', maxWidth: '500px' })).toEqual(['500px']);
     // Growing only means something in a row or stack: in the grid, 200px holds.
     expect(only({ width: '200px', flexGrow: 1 })).toEqual(['200px']);
-    expect(only({ width: '200%' })).toEqual(['(min-width: 1024px) 800px, (min-width: 768px) 200vw, 200vw']);
     // A viewport width is the viewport's, not the column's: the runtime default.
     expect(only({ width: '100vw' })).toEqual([null]);
-    // A minimum wider than the column wins over the column's share.
-    expect(only({ minWidth: '500px' })).toEqual(['(min-width: 1024px) 500px, (min-width: 768px) 100vw, 768px']);
     expect(only({ maxWidth: '300px' })).toEqual(['300px']);
     // Sized by its own picture, with its own max width in place of the theme's 100%: as wide as that max width.
     expect(only({ width: 'auto', maxWidth: '900px' })).toEqual(['900px']);
     expect(only({ width: 'auto' })).toEqual([DEFAULT]);
-    // In a row, growing from a 200px basis it can take the whole container.
-    home(s).nodes[grid].styles = { base: { layout: 'row' } };
-    expect(only({ width: '200px', flexGrow: 1 })).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
   });
 
   it('gives up where it cannot read the width, rather than guess too small', () => {
@@ -466,8 +460,17 @@ describe('SEO and performance', () => {
     g.styles = { ...g.styles, base: { ...base, customCss: 'filter: saturate(1.2)' } };
     expect(gridSizes(s)).toEqual([DEFAULT]);
     g.styles = { ...g.styles, base };
-    for (const id of photosOf(s, grid)) home(s).nodes[id].styles = { base: { minWidth: '40rem' } };
-    expect(gridSizes(s)).toEqual([null]);
+    // Widths that can leave their column: a minimum, a percentage, growing in a row.
+    const only = (styles: StyleProps) => {
+      for (const id of photosOf(s, grid)) home(s).nodes[id].styles = { base: styles };
+      return gridSizes(s);
+    };
+    for (const styles of [{ minWidth: '500px' }, { minWidth: '40rem' }, { width: '200%' }, { marginInlineStart: '-100%' }] as StyleProps[]) expect(only(styles)).toEqual([null]);
+    g.styles = { base: { layout: 'row' } };
+    for (const styles of [{ width: '200px', flexGrow: 1 }, { width: '25%', flexGrow: 1 }] as StyleProps[]) expect(only(styles)).toEqual([null]);
+    // A fixed width further in does not hide what an outer box does to it.
+    g.styles = { base: { ...base, customCss: 'transform: scale(2)' } };
+    expect(only({ width: '300px' })).toEqual([null]);
   });
 
   it('widens the estimate for a picture cropped to a narrower shape', () => {
@@ -477,9 +480,12 @@ describe('SEO and performance', () => {
     expect(gridSizes(s)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 150vw, 150vw']);
     for (const id of photosOf(s, grid)) home(s).nodes[id].styles = { base: { aspectRatio: '1/1', objectFit: 'contain' } };
     expect(gridSizes(s)).toEqual([DEFAULT]);
-    // A fixed height needs the width that height gives the photo.
-    for (const id of photosOf(s, grid)) home(s).nodes[id].styles = { base: { height: '500px' } };
-    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 750px, (min-width: 768px) 100vw, 768px']);
+    // A fixed height, or a minimum one, needs the width that height gives the photo; with a fixed height the aspect
+    // ratio no longer shapes the box.
+    for (const styles of [{ height: '500px' }, { minHeight: '500px' }, { height: '500px', aspectRatio: '1/1' }] as StyleProps[]) {
+      for (const id of photosOf(s, grid)) home(s).nodes[id].styles = { base: styles };
+      expect(gridSizes(s)).toEqual(['(min-width: 1024px) 750px, (min-width: 768px) 100vw, 768px']);
+    }
   });
 
   it('sizes a grid outside any container by its share of the viewport, per range', () => {
@@ -500,6 +506,18 @@ describe('SEO and performance', () => {
     let t = style(s, section, 'layout', 'grid', { partId: 'container' });
     t = style(t, section, 'columns', 2, { partId: 'container' });
     expect(gridSizes(t)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 50vw, 100vw']);
+  });
+
+  it('gives up when the page styles a placement nested in another, whose own rules it competes with', () => {
+    const { s, section } = manualGrid(fresh());
+    const page = home(s);
+    // The Section holding the grid moves into another Section's slot, and the page narrows it there.
+    const outer = addToHome(s, 'layout.section');
+    page.rootIds = page.rootIds.filter((id) => id !== section);
+    outer.slots = { content: [section] };
+    expect(gridSizes(s)).toEqual([DEFAULT]);
+    page.nodes[section].styles = { base: { maxWidth: '300px' } };
+    expect(gridSizes(s)).toEqual([null]);
   });
 
   it('settles variant options the way the stylesheet does: a range value beats a later option\'s base value', () => {
@@ -534,7 +552,7 @@ describe('SEO and performance', () => {
     const header = Object.values(s.site.shell.header.nodes).find((n) => n.kind === 'instance') as InstanceNode;
     header.props = { ...header.props, logo: { assetId: 'a_photo', alt: 'Logo' } };
     const layout = generateProject(s).get('src/routes/+layout.svelte')!;
-    expect(layout).toContain('/assets/photo-1a2b3c4d-480w.jpg 480w');
+    expect(layout).toContain('/assets/photo-1a2b3c4d-160w.jpg 160w, /assets/photo-1a2b3c4d-480w.jpg 480w');
     expect(layout).toMatch(/"width":2400,"height":1600/);
   });
 });

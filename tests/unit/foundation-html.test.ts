@@ -387,6 +387,8 @@ describe('shell.header', () => {
     expect(sizes(photo(2400, 200))).toBe('160px');
     expect(sizes(photo())).toBe('160px');
     expect(sizes(photo(500, 1000))).toBe('17px');
+    // Rounded up, never down: 34 × 10/7 is 48.6.
+    expect(sizes(photo(1000, 700))).toBe('49px');
     // The slot itself holds the logo to that width, letterboxed rather than cropped.
     const rule = bundle.defs['shell.header'].source!.match(/\.so-header__brand :global\(\.so-header__logo\)\s*\{([^}]*)\}/)![1];
     expect(rule).toMatch(/max-width:\s*160px/);
