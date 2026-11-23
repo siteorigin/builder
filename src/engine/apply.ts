@@ -1019,8 +1019,7 @@ function createCode(state: ProjectState, op: Op<'component.createCode'>): OpResu
     const defaults: Record<string, unknown> = { string: '', richtext: [], number: 0, boolean: false, link: { type: 'none', target: '' }, image: { assetId: null, alt: '' }, icon: 'sparkles' };
     properties[k] = { type: p.type, label: String(p.label ?? k), default: p.default ?? defaults[p.type as string] } as PropSchema;
   }
-  if (/<script[^>]*context=|import\s+[^'"]*['"](?!\.\.?\/|svelte|\$app)/.test(op.source))
-    fail('Code components may only import svelte, $app modules and relative project files.');
+  // Source safety (imports, module scripts, raw HTML) is checked from the syntax tree when the session saves it.
   const id = projectDefId(op.name, 'code');
   const def: ComponentDefinition = {
     schemaVersion: SCHEMA_VERSION,

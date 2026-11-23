@@ -54,7 +54,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     if (!r.ok) return setErrors(r.problems);
     if (r.source !== draft) setDraft(r.source);
     if (await applyOps([{ type: 'component.updateSource', definitionId, source: r.source, expectedHash: src!.hash }], `Edit ${def.name} source`))
-      toast(r.fixed ? `Fixed and saved: ${r.fixed}` : 'Saved. Every page using this component is updated.');
+      toast(r.fixed ? `Fixed and saved: ${r.fixed}` : r.warnings?.length ? `Saved with ${r.warnings.length} warning${r.warnings.length === 1 ? '' : 's'}. ${r.warnings[0]}` : 'Saved. Every page using this component is updated.');
   };
   return (
     <Modal
