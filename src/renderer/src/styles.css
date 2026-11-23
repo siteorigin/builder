@@ -637,6 +637,16 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .asset-size { position: absolute; top: 5px; right: 5px; display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 6px 0 4px; border-radius: var(--r-xs); background: rgb(20 28 48 / 0.78); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16); color: #fff; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; }
 .asset-size svg { width: 11px; height: 11px; }
 .asset-drop-hint { margin: -4px 14px 18px; font-size: 12px; color: var(--text-3); }
+.font-list { margin: 4px 10px 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.font-list h4 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
+.font-list-note { margin: 0 0 8px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+.font-list ul { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.font-face { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: var(--r-sm); background: var(--panel-2); }
+.font-face-head { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.font-face-head b { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.font-face-meta { font-size: 11px; color: var(--text-2); }
+.font-face-edit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 4px; align-items: center; }
+.font-face-edit > :first-child { grid-column: 1 / -1; }
 .asset-host > .panel-body.asset-body-empty { scrollbar-gutter: auto; }
 .asset-empty { display: flex; flex-direction: column; gap: 12px; padding: 6px 10px 16px; }
 .asset-empty > p { margin: 0 4px; font-size: 12px; line-height: 1.5; color: var(--text-2); }

@@ -42,6 +42,89 @@ function shortName(name: string): string {
   return `${head.trimEnd()} … ${tail.trimStart()}`;
 }
 
+const WEIGHTS: Array<[string, string]> = [
+  ['100', 'Thin'], ['200', 'Extra light'], ['300', 'Light'], ['400', 'Regular'], ['500', 'Medium'], ['600', 'Semibold'], ['700', 'Bold'], ['800', 'Extra bold'], ['900', 'Black']
+];
+/** "Bold italic", "Variable (100–900)". */
+function faceLabel(a: AssetRecord): string {
+  const w = a.font?.weight ?? '400';
+  const weight = w.includes(' ') ? `Variable (${w.replace(' ', '–')})` : (WEIGHTS.find(([v]) => v === w)?.[1] ?? w);
+  return a.font?.style === 'italic' ? `${weight} italic` : weight;
+}
+const fontLabel = (a: AssetRecord) => `${a.font?.family ?? a.name} ${a.font?.weight ?? ''} ${a.font?.style ?? ''}`;
+
+/** Imported web fonts: each file is one face (weight and style) of a family that Site styles can use. */
+function FontList({ fonts, usage }: { fonts: AssetRecord[]; usage: Record<string, number> }) {
+  const faceOf = (a: AssetRecord) => ({ family: a.font?.family ?? a.name, weight: a.font?.weight ?? '400', style: a.font?.style ?? ('normal' as const) });
+  const update = (a: AssetRecord, patch: Partial<NonNullable<AssetRecord['font']>>, label: string) => void applyOps([{ type: 'asset.update', assetId: a.id, font: { ...faceOf(a), ...patch } }], label);
+  /** A family is renamed as a whole, so its files stay together and the styles using it follow. */
+  const renameFamily = (a: AssetRecord, family: string) =>
+    void applyOps(
+      fonts.filter((x) => x.font?.family === a.font?.family).map((x) => ({ type: 'asset.update' as const, assetId: x.id, font: { ...faceOf(x), family } })),
+      `Rename font family to ${family}`
+    );
+  const remove = async (a: AssetRecord) => {
+    const label = `Remove ${a.name}`;
+    if (await applyOps([{ type: 'asset.remove', assetId: a.id }], label)) toast(`Removed ${a.name}.`, 'info', { label: 'Undo', run: undoIfLatest(label) });
+  };
+  return (
+    <section className="font-list" aria-labelledby="font-list-title">
+      <h4 id="font-list-title">Fonts</h4>
+      <p className="font-list-note">
+        Imported fonts are part of your site. Choose one for headings or body text in{' '}
+        <button className="link-btn" onClick={() => openSiteStyles()}>
+          Site styles
+        </button>
+        .
+      </p>
+      <ul>
+        {fonts.map((a) => {
+          const used = usage[a.id] ?? 0;
+          const variable = !!a.font?.weight.includes(' ');
+          // Another file of the same family keeps the styles using it working, so this one can go.
+          const locked = !!used && fonts.filter((x) => x.font?.family === a.font?.family).length === 1;
+          return (
+            <li key={a.id} className="font-face">
+              <div className="font-face-head">
+                <b title={a.name}>{a.font?.family ?? a.name}</b>
+                <span className="font-face-meta">
+                  {faceLabel(a)} · {formatBytes(a.bytes)} · {used ? 'In use' : 'Not used'}
+                </span>
+              </div>
+              <div className="font-face-edit">
+                <DraftInput
+                  className="input sm"
+                  value={a.font?.family ?? ''}
+                  ariaLabel={`Font family name for ${a.name}`}
+                  onCommit={(v) => {
+                    const family = v.replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 60);
+                    if (family && family !== a.font?.family) renameFamily(a, family);
+                  }}
+                />
+                <select className="select sm" value={variable ? a.font!.weight : a.font?.weight ?? '400'} disabled={variable} aria-label={`Weight of ${a.name}`} title={variable ? 'A variable font covers a range of weights.' : undefined} onChange={(e) => update(a, { weight: e.target.value }, `Set ${a.name} weight`)}>
+                  {variable && <option value={a.font!.weight}>Variable</option>}
+                  {WEIGHTS.map(([v, l]) => (
+                    <option key={v} value={v}>
+                      {v} {l}
+                    </option>
+                  ))}
+                </select>
+                <select className="select sm" value={a.font?.style ?? 'normal'} aria-label={`Style of ${a.name}`} onChange={(e) => update(a, { style: e.target.value as 'normal' | 'italic' }, `Set ${a.name} style`)}>
+                  <option value="normal">Upright</option>
+                  <option value="italic">Italic</option>
+                </select>
+                <button className="btn btn-sm btn-ghost" disabled={locked} title={locked ? 'In use by your site styles. Choose another font there first.' : `Remove ${a.name}`} aria-label={`Remove ${a.name}`} onClick={() => void remove(a)}>
+                  <Trash2 />
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 /** An Undo on a toast only undoes the edit it describes: once anything else has happened, History is the way back. */
 const undoIfLatest = (label: string) => () => {
   if (getState().snapshot?.history.undoLabel === label) void api.project.undo();
@@ -143,7 +226,9 @@ export function AssetsPanel() {
   const [allPlaces, setAllPlaces] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const assetsDoc = snap?.state.assets.assets;
-  const assets = useMemo(() => Object.values(assetsDoc ?? {}).sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [assetsDoc]);
+  // Images and fonts are listed apart: a font is never shown, picked or replaced as a picture.
+  const assets = useMemo(() => Object.values(assetsDoc ?? {}).filter((a) => a.kind === 'image').sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [assetsDoc]);
+  const fonts = useMemo(() => Object.values(assetsDoc ?? {}).filter((a) => a.kind === 'font').sort((a, b) => fontLabel(a).localeCompare(fontLabel(b))), [assetsDoc]);
   const sel = selected && assetsDoc ? (assetsDoc[selected] ?? null) : null;
   const places = useMemo(() => (snap && sel ? placesOf(snap.state, sel.id) : []), [snap, sel]);
   useEffect(() => {
@@ -198,14 +283,22 @@ export function AssetsPanel() {
   };
 
   /** Import through the app's picker (no paths) or dropped files, and say exactly what arrived. */
-  const importFiles = async (paths?: string[]) => {
+  const importFiles = async (paths?: string[], only?: 'image') => {
     const before = new Set(Object.keys(getState().snapshot?.state.assets.assets ?? {}));
     setImporting(true);
     try {
-      const r = await api.project.importAssets(paths).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The images couldn’t be added: ${e.message}` }));
+      const r = await api.project.importAssets(paths, only).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The images couldn’t be added: ${e.message}` }));
       const added = r.assetIds.filter((id) => !before.has(id));
       const already = r.assetIds.length - added.length;
-      const parts = [added.length ? `Added ${plural(added.length, 'image', 'images')}.` : '', already ? `${plural(already, 'image was', 'images were')} already here.` : '', r.message ?? ''].filter(Boolean);
+      const doc = getState().snapshot?.state.assets.assets ?? {};
+      const addedFonts = added.filter((id) => doc[id]?.kind === 'font').length;
+      const addedImages = added.length - addedFonts;
+      const parts = [
+        addedImages ? `Added ${plural(addedImages, 'image', 'images')}.` : '',
+        addedFonts ? `Added ${plural(addedFonts, 'font', 'fonts')}. Use ${addedFonts === 1 ? 'it' : 'them'} in Site styles.` : '',
+        already ? `${plural(already, 'file was', 'files were')} already here.` : '',
+        r.message ?? ''
+      ].filter(Boolean);
       if (parts.length) toast(parts.join(' '), r.message && !added.length ? 'error' : 'info');
       return { ids: r.assetIds, added, failed: !!r.message };
     } finally {
@@ -217,7 +310,8 @@ export function AssetsPanel() {
     if (importing) return;
     const wasEmpty = assets.length === 0;
     const session = replaceSession.current;
-    const { added } = await importFiles(paths);
+    // While choosing a replacement picture, only pictures come in.
+    const { added } = await importFiles(paths, replacing ? 'image' : undefined);
     if (!added.length) return;
     if (replacing && replaceSession.current === session) {
       setPickQ('');
@@ -394,7 +488,7 @@ export function AssetsPanel() {
             title="Choose one file to use straight away, or several to pick from here"
             onClick={async () => {
               const session = replaceSession.current;
-              const r = await importFiles();
+              const r = await importFiles(undefined, 'image');
               if (replaceSession.current !== session) return;
               // Applied only while the picker is still open for this image, and only for one file that came in cleanly.
               if (r.ids.length === 1 && !r.failed) void replaceWith(r.ids[0]);
@@ -527,7 +621,7 @@ export function AssetsPanel() {
           </span>
           <b>Add images</b>
           <span>Drop files here, or click to choose</span>
-          <small>JPEG, PNG, WebP, GIF, AVIF or SVG</small>
+          <small>JPEG, PNG, WebP, GIF, AVIF or SVG, and WOFF2 or WOFF fonts</small>
         </button>
         <p>Images you add are copied into this project, so the site keeps working wherever it goes.</p>
       </div>
@@ -569,7 +663,10 @@ export function AssetsPanel() {
           </p>
         )}
         {tools}
-        <div className={`panel-body${assets.length ? '' : ' asset-body-empty'}`}>{body}</div>
+        <div className={`panel-body${assets.length ? '' : ' asset-body-empty'}`}>
+          {body}
+          {!sel && !replacing && fonts.length > 0 && <FontList fonts={fonts} usage={usage} />}
+        </div>
         {over && assets.length > 0 && (
           <div className="asset-drop-overlay" aria-hidden="true">
             <div>

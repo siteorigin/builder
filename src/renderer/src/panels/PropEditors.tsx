@@ -228,7 +228,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
     setImporting(true);
     const before = JSON.stringify(latest.current);
     try {
-      const r = await api.project.importAssets(paths).catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
+      const r = await api.project.importAssets(paths, 'image').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The image couldn’t be added: ${e.message}` }));
       if (r.message) toast(r.message, r.assetIds.length ? 'info' : 'error');
       // Fonts can arrive in the same drop; only an image can fill an image field.
       const all = useStore.getState().snapshot?.state.assets.assets ?? {};

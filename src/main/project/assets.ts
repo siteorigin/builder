@@ -6,6 +6,9 @@ import { newId } from '@shared/ids';
 import { slugify } from '@shared/routes';
 import { atomicWrite, sha } from './fsutil';
 import { sanitizeSvg } from './svg';
+import { fontInfo, imageInfo, orientPixels } from './media';
+
+export { imageSize } from './media';
 
 const MIME: Record<string, string> = {
   '.jpg': 'image/jpeg',
@@ -19,41 +22,10 @@ const MIME: Record<string, string> = {
   '.woff': 'font/woff'
 };
 const MAX_BYTES = 25 * 1024 * 1024;
-
-/** Read pixel dimensions from common raster headers without decoding the image. */
-export function imageSize(buf: Buffer, mime: string): { width: number; height: number } | null {
-  try {
-    if (mime === 'image/png' && buf.readUInt32BE(12) === 0x49484452) return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
-    if (mime === 'image/gif') return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8) };
-    if (mime === 'image/jpeg') {
-      let i = 2;
-      while (i < buf.length) {
-        if (buf[i] !== 0xff) return null;
-        const marker = buf[i + 1];
-        const len = buf.readUInt16BE(i + 2);
-        if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
-        i += 2 + len;
-      }
-    }
-    if (mime === 'image/webp' && buf.toString('ascii', 0, 4) === 'RIFF') {
-      const chunk = buf.toString('ascii', 12, 16);
-      if (chunk === 'VP8X') return { width: 1 + buf.readUIntLE(24, 3), height: 1 + buf.readUIntLE(27, 3) };
-      if (chunk === 'VP8 ') return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
-      if (chunk === 'VP8L') {
-        const b = buf.readUInt32LE(21);
-        return { width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1 };
-      }
-    }
-    if (mime === 'image/svg+xml') {
-      const t = buf.toString('utf8', 0, 2000);
-      const vb = t.match(/viewBox=["']\s*[\d.-]+[\s,]+[\d.-]+[\s,]+([\d.]+)[\s,]+([\d.]+)/);
-      if (vb) return { width: Math.round(Number(vb[1])), height: Math.round(Number(vb[2])) };
-    }
-  } catch {
-    return null;
-  }
-  return null;
-}
+const MAX_VARIANT_PIXELS = 100_000_000;
+/** File extensions the importer accepts (for file pickers). */
+export const IMAGE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'svg'];
+export const FONT_EXTENSIONS = ['woff2', 'woff'];
 
 /** Conservative SVG check: reject anything executable or externally referenced. */
 export function svgProblem(text: string): string | null {
@@ -66,10 +38,16 @@ export function svgProblem(text: string): string | null {
   return null;
 }
 
-export async function importAsset(projectDir: string, sourcePath: string, existing: AssetRecord[]): Promise<{ record: AssetRecord; existing: boolean }> {
+/** Is this a file of the given kind, going by its extension? */
+export function isAssetOfKind(path: string, kind: 'image' | 'font'): boolean {
+  const mime = MIME[extname(path).toLowerCase()];
+  return !!mime && mime.startsWith('font/') === (kind === 'font');
+}
+
+export async function importAsset(projectDir: string, sourcePath: string, existing: AssetRecord[]): Promise<{ record: AssetRecord; existing: boolean; font?: AssetRecord['font'] }> {
   const ext = extname(sourcePath).toLowerCase();
   const mime = MIME[ext];
-  if (!mime) throw new Error(`${basename(sourcePath)}: only JPEG, PNG, WebP, GIF, AVIF and SVG images can be imported.`);
+  if (!mime) throw new Error(`${basename(sourcePath)}: only JPEG, PNG, WebP, GIF, AVIF and SVG images, and WOFF2 or WOFF fonts, can be imported.`);
   const stat = await fs.stat(sourcePath);
   if (stat.size > MAX_BYTES) throw new Error(`${basename(sourcePath)} is larger than 25 MB.`);
   let buf = await fs.readFile(sourcePath);
@@ -81,40 +59,74 @@ export async function importAsset(projectDir: string, sourcePath: string, existi
       throw new Error(`${basename(sourcePath)} was not imported because ${(e as Error).message}. Export a plain SVG or use a PNG instead.`);
     }
   }
+  const isFont = mime.startsWith('font/');
+  // A font is only useful with its family, weight and style, so a file that does not declare them is refused.
+  let font: AssetRecord['font'];
+  if (isFont) {
+    try {
+      font = fontInfo(buf);
+    } catch (e) {
+      throw new Error(`${basename(sourcePath)} was not imported because ${(e as Error).message}. Use a WOFF2 or WOFF web font.`);
+    }
+  }
   const hash = sha(buf);
   const dup = existing.find((a) => a.hash === hash);
-  if (dup) return { record: dup, existing: true };
-  const base = slugify(basename(sourcePath, ext)) || 'image';
+  // A font imported before metadata was recorded gets it now.
+  if (dup) return { record: dup, existing: true, ...(font && !dup.font ? { font } : {}) };
+  const base = slugify(basename(sourcePath, ext)) || (isFont ? 'font' : 'image');
   const file = `static/assets/${base}-${hash.slice(0, 8)}${ext === '.jpeg' ? '.jpg' : ext}`;
   await atomicWrite(join(projectDir, file), buf);
-  const size = imageSize(buf, mime);
-  const variants = size ? await makeVariants(projectDir, buf, mime, size.width, `static/assets/${base}-${hash.slice(0, 8)}`) : [];
+  const info = isFont ? null : imageInfo(buf, mime);
+  // Decoding allocates by pixel count, which a small file can inflate: very large pictures keep only the original.
+  const decodable = !!info && info.width * info.height <= MAX_VARIANT_PIXELS;
+  const variants = decodable ? await makeVariants(projectDir, buf, mime, info.width, info.orientation, `static/assets/${base}-${hash.slice(0, 8)}`) : [];
   const record: AssetRecord = {
     id: newId('a'),
-    name: basename(sourcePath, ext).replace(/[-_]+/g, ' ').trim() || 'Image',
+    name: isFont ? fontName(font!) : basename(sourcePath, ext).replace(/[-_]+/g, ' ').trim() || 'Image',
     file,
     mime,
     bytes: buf.length,
     hash,
-    kind: mime.startsWith('font/') ? 'font' : 'image',
+    kind: isFont ? 'font' : 'image',
     createdAt: new Date().toISOString(),
-    ...(size ? { width: size.width, height: size.height } : {}),
-    ...(variants.length ? { variants } : {})
+    ...(info ? { width: info.width, height: info.height } : {}),
+    ...(variants.length ? { variants } : {}),
+    ...(font ? { font } : {})
   };
   return { record, existing: false };
 }
 
-const VARIANT_WIDTHS = [480, 960, 1440];
+const WEIGHT_NAMES: Record<string, string> = { '100': 'Thin', '200': 'Extra Light', '300': 'Light', '400': 'Regular', '500': 'Medium', '600': 'Semibold', '700': 'Bold', '800': 'Extra Bold', '900': 'Black' };
+/** "Inter Bold Italic", "Inter Variable". */
+function fontName(f: NonNullable<AssetRecord['font']>): string {
+  const weight = f.weight.includes(' ') ? 'Variable' : WEIGHT_NAMES[f.weight] ?? f.weight;
+  return [f.family, weight === 'Regular' && f.style === 'italic' ? '' : weight, f.style === 'italic' ? 'Italic' : ''].filter(Boolean).join(' ');
+}
 
-/** Deterministic smaller copies for responsive images (JPEG and PNG); originals are preserved. */
-async function makeVariants(projectDir: string, buf: Buffer, mime: string, width: number, stem: string): Promise<Array<{ width: number; file: string }>> {
+const VARIANT_WIDTHS = [480, 960, 1440];
+/** Let the event loop breathe between resizes, so a large import does not freeze the editor in one block. */
+const yieldToLoop = () => new Promise<void>((r) => setImmediate(r));
+
+/**
+ * Deterministic smaller copies for responsive images (JPEG and PNG); originals are preserved. `width` is the
+ * displayed width; a JPEG's EXIF orientation is applied to the copies, which are written without EXIF.
+ */
+async function makeVariants(projectDir: string, buf: Buffer, mime: string, width: number, orientation: number, stem: string): Promise<Array<{ width: number; file: string }>> {
   if (mime !== 'image/jpeg' && mime !== 'image/png') return [];
   const img = nativeImage.createFromBuffer(buf);
   if (img.isEmpty()) return [];
+  const turned = orientation >= 5;
   const out: Array<{ width: number; file: string }> = [];
   for (const w of VARIANT_WIDTHS) {
     if (w >= width * 0.9) continue;
-    const resized = img.resize({ width: w, quality: 'best' });
+    await yieldToLoop();
+    // A turned image is stored on its side: its displayed width is its stored height.
+    let resized = img.resize(turned ? { height: w, quality: 'best' } : { width: w, quality: 'best' });
+    if (orientation > 1) {
+      const size = resized.getSize();
+      const o = orientPixels(resized.toBitmap(), size.width, size.height, orientation);
+      resized = nativeImage.createFromBitmap(o.data, { width: o.width, height: o.height });
+    }
     const ext = mime === 'image/png' ? 'png' : 'jpg';
     const file = `${stem}-${w}w.${ext}`;
     await atomicWrite(join(projectDir, file), ext === 'png' ? resized.toPNG() : resized.toJPEG(82));

@@ -5,10 +5,13 @@ import { tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
 import { allTrees, instancesOf } from '@engine/tree';
-import { api, applyOps, useStore } from '../store';
+import { importedFontStack, projectFontFamilies } from '@shared/fonts';
+import { api, applyOps, getState, toast, useStore } from '../store';
 import { DraftInput, Field, Section, openSection } from '../components/ui';
 import { CustomTokens } from './CustomTokens';
 
+/** The font menu's "Import a font…" entry; never saved as a value. */
+const IMPORT_FONT = '__import-font';
 const FONT_CHOICES = [
   { label: 'Inter (sans-serif)', value: "'Inter Variable', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif" },
   { label: 'Fraunces (serif)', value: "'Fraunces Variable', 'Fraunces', Georgia, 'Times New Roman', serif" },
@@ -543,9 +546,19 @@ export function SiteStyles() {
     );
   };
 
+  const importedFonts = projectFontFamilies(st).map((f) => ({ label: f.family, value: importedFontStack(f.family) }));
+  /** Bring in a web font and use it for this style straight away. */
+  const importFontFor = async (t: TokenDef) => {
+    const r = await api.project.importAssets(undefined, 'font').catch((e: Error) => ({ ok: false, assetIds: [] as string[], message: `The font couldn’t be added: ${e.message}` }));
+    if (r.message) toast(r.message, r.assetIds.length ? 'info' : 'error');
+    const doc = getState().snapshot?.state.assets.assets ?? {};
+    const font = r.assetIds.map((id) => doc[id]).find((a) => a?.kind === 'font' && a.font);
+    if (font?.font) set(t.id, importedFontStack(font.font.family));
+    else if (r.assetIds.length) toast('That file is not a font. Choose a WOFF2 or WOFF file.', 'error');
+  };
   const fontRow = (t: TokenDef) => {
     const stack = String(t.value);
-    const known = FONT_CHOICES.some((f) => f.value === stack);
+    const known = FONT_CHOICES.some((f) => f.value === stack) || importedFonts.some((f) => f.value === stack);
     const selectId = `${uid}-font-${t.id}`;
     return (
       <div className={`ss-font${changed(t.id) ? ' set' : ''}`} key={t.id} data-ss-row>
@@ -562,13 +575,33 @@ export function SiteStyles() {
               </>
             )}
           </div>
-          <select id={selectId} className="select sm" value={known ? stack : ''} onChange={(e) => set(t.id, e.target.value)}>
+          <select
+            id={selectId}
+            className="select sm"
+            value={known ? stack : ''}
+            onChange={(e) => {
+              if (e.target.value === IMPORT_FONT) void importFontFor(t);
+              else set(t.id, e.target.value);
+            }}
+          >
             {!known && <option value="">Custom: {familyName(stack)}</option>}
-            {FONT_CHOICES.map((f) => (
-              <option key={f.label} value={f.value}>
-                {f.label}
-              </option>
-            ))}
+            {importedFonts.length > 0 && (
+              <optgroup label="Imported fonts">
+                {importedFonts.map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+            <optgroup label="Built-in fonts">
+              {FONT_CHOICES.map((f) => (
+                <option key={f.label} value={f.value}>
+                  {f.label}
+                </option>
+              ))}
+            </optgroup>
+            <option value={IMPORT_FONT}>Import a font…</option>
           </select>
         </div>
       </div>
@@ -910,7 +943,7 @@ export function SiteStyles() {
         <Field label="Favicon">
           <select className="select" value={site.favicon ?? ''} onChange={(e) => updSite({ favicon: e.target.value || null })}>
             <option value="">None</option>
-            {Object.values(st.assets.assets).map((a) => (
+            {Object.values(st.assets.assets).filter((a) => a.kind === 'image').map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
               </option>
@@ -920,7 +953,7 @@ export function SiteStyles() {
         <Field label="Social sharing image">
           <select className="select" value={site.socialImage ?? ''} onChange={(e) => updSite({ socialImage: e.target.value || null })}>
             <option value="">None</option>
-            {Object.values(st.assets.assets).map((a) => (
+            {Object.values(st.assets.assets).filter((a) => a.kind === 'image').map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
               </option>

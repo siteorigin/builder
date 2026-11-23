@@ -206,7 +206,7 @@ export interface BuilderApi {
     apply(batch: EditBatch, opts?: { label?: string; coalesceKey?: string }): Promise<ApplyResult>;
     undo(): Promise<ApplyResult>;
     redo(): Promise<ApplyResult>;
-    importAssets(paths?: string[]): Promise<{ ok: boolean; assetIds: string[]; message?: string }>;
+    importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }>;
     exportSource(format?: ExportFormat): Promise<ExportResult>;
     exportStatic(format?: ExportFormat): Promise<ExportResult>;
     retryPreview(): Promise<void>;

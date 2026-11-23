@@ -1,0 +1,348 @@
+/**
+ * Reading what an imported file is without decoding it: image dimensions and orientation, and the family,
+ * weight and style a web font declares. Pure functions over bytes, so they are tested without Electron.
+ */
+import { brotliDecompressSync, inflateSync } from 'node:zlib';
+
+export interface ImageInfo {
+  /** Dimensions as the image is displayed (after EXIF orientation or AVIF rotation). */
+  width: number;
+  height: number;
+  /** EXIF orientation (1–8) of a JPEG; 1 when absent. Orientations 5–8 swap width and height. */
+  orientation: number;
+}
+
+/** Read pixel dimensions from common raster headers without decoding the image. */
+export function imageInfo(buf: Buffer, mime: string): ImageInfo | null {
+  try {
+    if (mime === 'image/png' && buf.readUInt32BE(12) === 0x49484452) return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20), orientation: 1 };
+    if (mime === 'image/gif') return { width: buf.readUInt16LE(6), height: buf.readUInt16LE(8), orientation: 1 };
+    if (mime === 'image/jpeg') return jpegInfo(buf);
+    if (mime === 'image/webp' && buf.toString('ascii', 0, 4) === 'RIFF') {
+      const chunk = buf.toString('ascii', 12, 16);
+      if (chunk === 'VP8X') return { width: 1 + buf.readUIntLE(24, 3), height: 1 + buf.readUIntLE(27, 3), orientation: 1 };
+      if (chunk === 'VP8 ') return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff, orientation: 1 };
+      if (chunk === 'VP8L') {
+        const b = buf.readUInt32LE(21);
+        return { width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1, orientation: 1 };
+      }
+    }
+    if (mime === 'image/avif') return avifInfo(buf);
+    if (mime === 'image/svg+xml') {
+      const t = buf.toString('utf8', 0, 2000);
+      const vb = t.match(/viewBox=["']\s*[\d.-]+[\s,]+[\d.-]+[\s,]+([\d.]+)[\s,]+([\d.]+)/);
+      if (vb) return { width: Math.round(Number(vb[1])), height: Math.round(Number(vb[2])), orientation: 1 };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/** Back-compatible dimensions only. */
+export function imageSize(buf: Buffer, mime: string): { width: number; height: number } | null {
+  const info = imageInfo(buf, mime);
+  return info ? { width: info.width, height: info.height } : null;
+}
+
+function jpegInfo(buf: Buffer): ImageInfo | null {
+  let i = 2;
+  let orientation = 1;
+  while (i + 4 <= buf.length) {
+    if (buf[i] !== 0xff) return null;
+    // A marker may be padded with any number of 0xff fill bytes.
+    while (buf[i + 1] === 0xff && i + 4 < buf.length) i++;
+    const marker = buf[i + 1];
+    const len = buf.readUInt16BE(i + 2);
+    if (len < 2) return null;
+    // APP1 "Exif\0\0": a TIFF block whose first directory may hold the orientation tag (0x0112).
+    if (marker === 0xe1 && buf.toString('ascii', i + 4, i + 10) === 'Exif\0\0') {
+      try {
+        orientation = exifOrientation(buf.subarray(i + 10, i + 2 + len)) ?? orientation;
+      } catch {
+        // Damaged metadata does not make the picture unreadable.
+      }
+    }
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      const height = buf.readUInt16BE(i + 5);
+      const width = buf.readUInt16BE(i + 7);
+      return orientation >= 5 ? { width: height, height: width, orientation } : { width, height, orientation };
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+
+function exifOrientation(tiff: Buffer): number | null {
+  const le = tiff.toString('ascii', 0, 2) === 'II';
+  if (!le && tiff.toString('ascii', 0, 2) !== 'MM') return null;
+  const u16 = (o: number) => (le ? tiff.readUInt16LE(o) : tiff.readUInt16BE(o));
+  const u32 = (o: number) => (le ? tiff.readUInt32LE(o) : tiff.readUInt32BE(o));
+  const ifd = u32(4);
+  const count = u16(ifd);
+  for (let k = 0; k < count; k++) {
+    const e = ifd + 2 + k * 12;
+    if (u16(e) === 0x0112) {
+      const v = u16(e + 8);
+      return v >= 1 && v <= 8 ? v : null;
+    }
+  }
+  return null;
+}
+
+/** ISO-BMFF boxes between `start` and `end`. */
+function* boxes(buf: Buffer, start: number, end: number): Generator<{ type: string; body: number; end: number }> {
+  let p = start;
+  while (p + 8 <= end) {
+    let size = buf.readUInt32BE(p);
+    const type = buf.toString('ascii', p + 4, p + 8);
+    let body = p + 8;
+    if (size === 1) {
+      size = Number(buf.readBigUInt64BE(p + 8));
+      body = p + 16;
+    } else if (size === 0) size = end - p;
+    if (size < 8 || p + size > end) return;
+    yield { type, body, end: p + size };
+    p += size;
+  }
+}
+
+/** AVIF: the primary item's image spatial extent ('ispe'), turned by its rotation ('irot') if it has one. */
+function avifInfo(buf: Buffer): ImageInfo | null {
+  const meta = [...boxes(buf, 0, buf.length)].find((b) => b.type === 'meta');
+  if (!meta) return null;
+  let primary: number | null = null;
+  const props: Array<{ type: string; body: number; end: number }> = [];
+  const assoc = new Map<number, number[]>();
+  for (const b of boxes(buf, meta.body + 4, meta.end)) {
+    if (b.type === 'pitm') primary = buf[b.body] === 0 ? buf.readUInt16BE(b.body + 4) : buf.readUInt32BE(b.body + 4);
+    if (b.type !== 'iprp') continue;
+    for (const c of boxes(buf, b.body, b.end)) {
+      if (c.type === 'ipco')
+        for (const p of boxes(buf, c.body, c.end)) {
+          // Real files have a few dozen properties; a file claiming far more is not worth walking.
+          if (props.length >= 4096) return null;
+          props.push({ type: p.type, body: p.body, end: p.end });
+        }
+      if (c.type === 'ipma') {
+        const version = buf[c.body];
+        const flags = buf.readUIntBE(c.body + 1, 3);
+        let p = c.body + 4;
+        const entries = buf.readUInt32BE(p);
+        p += 4;
+        for (let e = 0; e < entries; e++) {
+          if (p + (version < 1 ? 3 : 5) > c.end) return null;
+          const item = version < 1 ? buf.readUInt16BE(p) : buf.readUInt32BE(p);
+          p += version < 1 ? 2 : 4;
+          const n = buf[p++];
+          if (p + n * (flags & 1 ? 2 : 1) > c.end) return null;
+          const list: number[] = [];
+          for (let k = 0; k < n; k++) {
+            const index = flags & 1 ? buf.readUInt16BE(p) & 0x7fff : buf[p] & 0x7f;
+            p += flags & 1 ? 2 : 1;
+            list.push(index);
+          }
+          assoc.set(item, list);
+        }
+      }
+    }
+  }
+  // Only the primary item's own properties count: another item's extent may be a thumbnail.
+  if (primary === null || !assoc.has(primary)) return null;
+  const mine = assoc.get(primary)!.map((i) => props[i - 1]).filter(Boolean);
+  const ispe = mine.find((p) => p.type === 'ispe');
+  if (!ispe || ispe.body + 12 > ispe.end) return null;
+  const width = buf.readUInt32BE(ispe.body + 4);
+  const height = buf.readUInt32BE(ispe.body + 8);
+  if (!width || !height) return null;
+  const irot = mine.find((p) => p.type === 'irot' && p.body < p.end);
+  const quarterTurns = irot ? buf[irot.body] & 3 : 0;
+  return quarterTurns % 2 ? { width: height, height: width, orientation: 1 } : { width, height, orientation: 1 };
+}
+
+/**
+ * Apply an EXIF orientation to raw 4-byte pixels (the stored image), returning pixels as the image is meant to
+ * be seen. Used for responsive copies, which are re-encoded without the EXIF tag.
+ */
+export function orientPixels(data: Buffer, width: number, height: number, orientation: number): { data: Buffer; width: number; height: number } {
+  if (orientation <= 1 || orientation > 8) return { data, width, height };
+  const swap = orientation >= 5;
+  const w = swap ? height : width;
+  const h = swap ? width : height;
+  const out = Buffer.alloc(data.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      // Where stored pixel (x, y) appears in the displayed image.
+      let dx: number;
+      let dy: number;
+      switch (orientation) {
+        case 2: [dx, dy] = [width - 1 - x, y]; break;
+        case 3: [dx, dy] = [width - 1 - x, height - 1 - y]; break;
+        case 4: [dx, dy] = [x, height - 1 - y]; break;
+        case 5: [dx, dy] = [y, x]; break;
+        case 6: [dx, dy] = [height - 1 - y, x]; break;
+        case 7: [dx, dy] = [height - 1 - y, width - 1 - x]; break;
+        default: [dx, dy] = [y, width - 1 - x]; break; // 8
+      }
+      data.copy(out, (dy * w + dx) * 4, (y * width + x) * 4, (y * width + x) * 4 + 4);
+    }
+  }
+  return { data: out, width: w, height: h };
+}
+
+// ---------------------------------------------------------------------------
+// Web fonts
+// ---------------------------------------------------------------------------
+
+export interface FontInfo {
+  family: string;
+  /** A CSS font-weight: one weight ("700") or a variable font's range ("100 900"). */
+  weight: string;
+  style: 'normal' | 'italic';
+}
+
+const WOFF2_TAGS = [
+  'cmap', 'head', 'hhea', 'hmtx', 'maxp', 'name', 'OS/2', 'post', 'cvt ', 'fpgm', 'glyf', 'loca', 'prep', 'CFF ', 'VORG', 'EBDT',
+  'EBLC', 'gasp', 'hdmx', 'kern', 'LTSH', 'PCLT', 'VDMX', 'vhea', 'vmtx', 'BASE', 'GDEF', 'GPOS', 'GSUB', 'EBSC', 'JSTF', 'MATH',
+  'CBDT', 'CBLC', 'COLR', 'CPAL', 'SVG ', 'sbix', 'acnt', 'avar', 'bdat', 'bloc', 'bsln', 'cvar', 'fdsc', 'feat', 'fmtx', 'fvar',
+  'gvar', 'hsty', 'just', 'lcar', 'mort', 'morx', 'opbd', 'prop', 'trak', 'Zapf', 'Silf', 'Glat', 'Gloc', 'Feat', 'Sill'
+];
+
+/** The metadata tables are small; anything larger is not a real font's. */
+const MAX_META_TABLE = 2 * 1024 * 1024;
+/** What a WOFF2 stream may expand to. It holds the whole font, and real web fonts are far smaller. */
+const MAX_WOFF2_OUTPUT = 64 * 1024 * 1024;
+
+/** A message the import dialog can show. Anything else thrown while parsing means the file is damaged. */
+class FontFileError extends Error {}
+
+/** The sfnt tables a font's metadata comes from, out of a WOFF or WOFF2 file. */
+function fontTables(buf: Buffer): Map<string, Buffer> {
+  const want = new Set(['name', 'OS/2', 'fvar']);
+  const tables = new Map<string, Buffer>();
+  const sig = buf.toString('ascii', 0, 4);
+  if (sig === 'wOFF') {
+    const n = buf.readUInt16BE(12);
+    if (44 + n * 20 > buf.length) throw new FontFileError('it is damaged');
+    for (let k = 0; k < n; k++) {
+      const e = 44 + k * 20;
+      const tag = buf.toString('ascii', e, e + 4);
+      if (!want.has(tag)) continue;
+      if (tables.has(tag)) throw new FontFileError('it is damaged');
+      const offset = buf.readUInt32BE(e + 4);
+      const comp = buf.readUInt32BE(e + 8);
+      const orig = buf.readUInt32BE(e + 12);
+      if (orig > MAX_META_TABLE || comp > orig || offset + comp > buf.length) throw new FontFileError('it is damaged');
+      const raw = buf.subarray(offset, offset + comp);
+      const table = comp < orig ? inflateSync(raw, { maxOutputLength: orig }) : raw;
+      if (table.length !== orig) throw new FontFileError('it is damaged');
+      tables.set(tag, table);
+    }
+    return tables;
+  }
+  if (sig !== 'wOF2') throw new FontFileError('it is not a WOFF or WOFF2 font');
+  if (buf.length < 48) throw new FontFileError('it is damaged');
+  if (buf.toString('latin1', 4, 8) === 'ttcf') throw new FontFileError('it is a font collection; use a single font file');
+  const n = buf.readUInt16BE(12);
+  const compressed = buf.readUInt32BE(20);
+  let p = 48;
+  const base128 = () => {
+    let v = 0;
+    for (let k = 0; k < 5; k++) {
+      const b = buf[p++];
+      v = v * 128 + (b & 0x7f);
+      if (!(b & 0x80)) return v;
+    }
+    throw new FontFileError('it is damaged');
+  };
+  const dir: Array<{ tag: string; length: number }> = [];
+  for (let k = 0; k < n; k++) {
+    const flags = buf[p++];
+    let tag = WOFF2_TAGS[flags & 0x3f];
+    if ((flags & 0x3f) === 63) {
+      tag = buf.toString('ascii', p, p + 4);
+      p += 4;
+    }
+    const version = flags >> 6;
+    const orig = base128();
+    // glyf and loca are transformed unless marked 3; any other table is transformed when marked non-zero.
+    const transformed = tag === 'glyf' || tag === 'loca' ? version !== 3 : version !== 0;
+    const length = transformed ? base128() : orig;
+    dir.push({ tag, length });
+  }
+  if (p + compressed > buf.length) throw new FontFileError('it is damaged');
+  const data = brotliDecompressSync(buf.subarray(p, p + compressed), { maxOutputLength: MAX_WOFF2_OUTPUT });
+  let at = 0;
+  for (const t of dir) {
+    if (at + t.length > data.length) throw new FontFileError('it is damaged');
+    if (want.has(t.tag)) {
+      if (tables.has(t.tag) || t.length > MAX_META_TABLE) throw new FontFileError('it is damaged');
+      tables.set(t.tag, data.subarray(at, at + t.length));
+    }
+    at += t.length;
+  }
+  return tables;
+}
+
+function nameString(name: Buffer, ids: number[]): string | null {
+  const count = name.readUInt16BE(2);
+  const strings = name.readUInt16BE(4);
+  for (const id of ids) {
+    let mac: string | null = null;
+    for (let k = 0; k < count; k++) {
+      const r = 6 + k * 12;
+      const platform = name.readUInt16BE(r);
+      const nameId = name.readUInt16BE(r + 6);
+      if (nameId !== id) continue;
+      const length = name.readUInt16BE(r + 8);
+      const offset = strings + name.readUInt16BE(r + 10);
+      const raw = name.subarray(offset, offset + length);
+      if (platform === 3 || platform === 0) {
+        const swapped = Buffer.from(raw);
+        swapped.swap16();
+        return swapped.toString('utf16le').trim();
+      }
+      if (platform === 1) mac = raw.toString('latin1').trim();
+    }
+    if (mac) return mac;
+  }
+  return null;
+}
+
+/** Family, weight and style declared by a WOFF or WOFF2 font. Throws with a user-facing reason. */
+export function fontInfo(buf: Buffer): FontInfo {
+  try {
+    return readFontInfo(buf);
+  } catch (e) {
+    if (e instanceof FontFileError) throw e;
+    if ((e as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') throw new FontFileError('it is too large once unpacked');
+    // Out-of-range reads and failed decompression: the file is not what its header claims.
+    throw new FontFileError('it is damaged');
+  }
+}
+
+function readFontInfo(buf: Buffer): FontInfo {
+  const tables = fontTables(buf);
+  const name = tables.get('name');
+  // Typographic family (16) first: "Inter", not "Inter Bold".
+  const family = name ? nameString(name, [16, 1]) : null;
+  if (!family) throw new FontFileError('it does not name its font family');
+  const os2 = tables.get('OS/2');
+  let weight = os2 && os2.length >= 6 ? String(os2.readUInt16BE(4) || 400) : '400';
+  const italic = os2 && os2.length >= 64 ? (os2.readUInt16BE(62) & 0x201) !== 0 : /italic|oblique/i.test(name ? nameString(name, [17, 2]) ?? '' : '');
+  // A variable font with a weight axis covers a range of weights.
+  const fvar = tables.get('fvar');
+  if (fvar && fvar.length >= 16) {
+    const axes = fvar.readUInt16BE(4);
+    const count = fvar.readUInt16BE(8);
+    const size = fvar.readUInt16BE(10);
+    for (let k = 0; k < count; k++) {
+      const a = axes + k * size;
+      if (fvar.toString('ascii', a, a + 4) !== 'wght') continue;
+      const min = Math.round(fvar.readInt32BE(a + 4) / 65536);
+      const max = Math.round(fvar.readInt32BE(a + 12) / 65536);
+      if (min > 0 && max >= min) weight = min === max ? String(min) : `${min} ${max}`;
+    }
+  }
+  return { family: family.replace(/[^\p{L}\p{N} _-]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Custom font', weight, style: italic ? 'italic' : 'normal' };
+}

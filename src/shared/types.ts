@@ -335,7 +335,15 @@ export interface AssetRecord {
   variants?: Array<{ width: number; file: string }>;
   description?: string;
   altSuggestion?: string;
+  /** For a font: the family it provides and the weight (or variable range, "100 900") and style of this file. */
+  font?: FontFace;
   createdAt: string;
+}
+
+export interface FontFace {
+  family: string;
+  weight: string;
+  style: 'normal' | 'italic';
 }
 
 export interface AssetsDoc {

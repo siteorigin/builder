@@ -29,6 +29,7 @@ import { getTheme } from '@catalogue/index';
 import { IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs } from './runtime-files';
 import { routeDir } from '@shared/routes';
 import { stableHash } from '@shared/ids';
+import { fontFaceCss } from '@shared/fonts';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -231,7 +232,8 @@ function tokenCssValue(v: TokenValue | unknown): string {
 }
 
 export function generateTokensCss(state: ProjectState): string {
-  const lines: string[] = ['/* Site tokens. Generated from the theme defaults and siteorigin/tokens.json. */', ':root {'];
+  // Imported web fonts come first, so the tokens below can name their families.
+  const lines: string[] = [fontFaceCss(state) + '/* Site tokens. Generated from the theme defaults and siteorigin/tokens.json. */', ':root {'];
   for (const t of effectiveTokens(state)) {
     const name = tokenVar(t.id);
     if (t.group === 'text' && typeof t.value === 'object' && !('token' in t.value)) {

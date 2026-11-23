@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -14,6 +15,12 @@ const owner = z
   .describe('Owner document of the node.');
 
 const scope = z.enum(['base', 'phone', 'tablet', 'desktop']).describe('Responsive scope. "base" applies at all sizes.');
+/** A web font's face. The family becomes a CSS font-family name, so only plain characters are allowed. */
+const FONT_FACE = z.object({
+  family: z.string().regex(FONT_FAMILY_RE),
+  weight: z.string().regex(FONT_WEIGHT_RE),
+  style: z.enum(['normal', 'italic'])
+});
 const styleValue = z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() })]);
 const binding = z.union([z.object({ $prop: z.string() }), z.object({ $item: z.string() })]);
 const link = z.object({
@@ -232,10 +239,11 @@ export const OPERATION_SCHEMAS = {
       id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,60}$/), name: z.string().max(200),
       // Only files written by the importer, inside static/assets/.
       file: z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png|webp|gif|avif|svg|woff2?)$/), mime: z.string(), bytes: z.number(), width: z.number().optional(), height: z.number().optional(),
-      hash: z.string(), kind: z.enum(['image', 'font']), createdAt: z.string(), variants: z.array(z.object({ width: z.number(), file: z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png)$/) })).optional(), description: z.string().optional(), altSuggestion: z.string().optional()
+      hash: z.string(), kind: z.enum(['image', 'font']), createdAt: z.string(), variants: z.array(z.object({ width: z.number(), file: z.string().regex(/^static\/assets\/[a-z0-9][a-z0-9-]*\.(jpg|png)$/) })).optional(), description: z.string().optional(), altSuggestion: z.string().optional(),
+      font: FONT_FACE.optional()
     })
   }),
-  'asset.update': z.object({ type: z.literal('asset.update'), assetId: z.string(), name: z.string().max(120).optional(), description: z.string().max(500).optional(), altSuggestion: z.string().max(300).optional() }),
+  'asset.update': z.object({ type: z.literal('asset.update'), assetId: z.string(), name: z.string().max(120).optional(), description: z.string().max(500).optional(), altSuggestion: z.string().max(300).optional(), font: FONT_FACE.optional() }),
   'asset.remove': z.object({ type: z.literal('asset.remove'), assetId: z.string() }),
   'asset.replace': z.object({ type: z.literal('asset.replace'), assetId: z.string(), withAssetId: z.string() })
 } as const;

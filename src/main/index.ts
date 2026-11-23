@@ -165,7 +165,7 @@ function registerIpc() {
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
   handle('project:undo', () => controller.session?.undo());
   handle('project:redo', () => controller.session?.redo());
-  handle('project:importAssets', (paths?: string[]) => controller.importAssets(paths));
+  handle('project:importAssets', (paths?: string[], only?: 'image' | 'font') => controller.importAssets(paths, only === 'image' || only === 'font' ? only : undefined));
   // Export builds from the project folder and needs the writer lock (spec 20).
   handle('project:exportSource', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportSource(format === 'zip' ? 'zip' : 'folder')));
   handle('project:exportStatic', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportStatic(format === 'zip' ? 'zip' : 'folder')));

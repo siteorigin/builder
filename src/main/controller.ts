@@ -17,7 +17,7 @@ import { zipDirectory } from './zip';
 import { copyProjectSource, editedGeneratedFile, exportedAssetFilter, finishExportedSource, listFiles, projectFingerprint, projectReadme, publishFolder, uniqueChild } from './export';
 import { ProjectLockedError, ProjectSession } from './project/session';
 import { MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { importAsset } from './project/assets';
+import { FONT_EXTENSIONS, IMAGE_EXTENSIONS, importAsset, isAssetOfKind } from './project/assets';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies } from './runtime/manager';
 import { addRecent, isTrusted, loadSettings, trust } from './settings';
@@ -399,28 +399,36 @@ export class Controller {
     return this.session.apply(batch, { label: opts.label ?? batch.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user' });
   }
 
-  async importAssets(paths?: string[]): Promise<{ ok: boolean; assetIds: string[]; message?: string }> {
+  /** Import files. `only` limits a picker that can only use one kind, before anything is written to the project. */
+  async importAssets(paths?: string[], only?: 'image' | 'font'): Promise<{ ok: boolean; assetIds: string[]; message?: string }> {
     const s = this.session;
     if (!s) return { ok: false, assetIds: [] };
     if (s.readOnly) return { ok: false, assetIds: [], message: s.readOnly.reason };
     let files = paths;
     if (!files?.length) {
-      const r = await dialog.showOpenDialog(this.getWindow()!, { title: 'Import images', properties: ['openFile', 'multiSelections'], filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'svg'] }] });
+      const r = await dialog.showOpenDialog(this.getWindow()!, {
+        title: only === 'font' ? 'Import fonts' : only === 'image' ? 'Import images' : 'Import images or fonts',
+        properties: ['openFile', 'multiSelections'],
+        filters: only === 'font' ? [{ name: 'Fonts', extensions: FONT_EXTENSIONS }] : only === 'image' ? [{ name: 'Images', extensions: IMAGE_EXTENSIONS }] : [{ name: 'Images and fonts', extensions: [...IMAGE_EXTENSIONS, ...FONT_EXTENSIONS] }, { name: 'Images', extensions: IMAGE_EXTENSIONS }, { name: 'Fonts', extensions: FONT_EXTENSIONS }]
+      });
       if (r.canceled) return { ok: false, assetIds: [] };
       files = r.filePaths;
     }
-    const picked = files;
+    const picked = only ? files.filter((f) => isAssetOfKind(f, only)) : files;
+    const refused = files.length - picked.length;
     // Files are written before their asset records exist, so the session holds off sweeping assets meanwhile.
     return s.withImport(async () => {
       const ids: string[] = [];
-      const errors: string[] = [];
+      const errors: string[] = refused ? [`${refused} file${refused === 1 ? ' was' : 's were'} skipped because ${refused === 1 ? 'it is' : 'they are'} not ${only === 'font' ? 'a font' : 'an image'}.`] : [];
       const ops = [];
+      const backfills = [];
       // Files imported earlier in this batch count as existing too: the same picture dropped twice is one asset.
       const known = Object.values(s.state.assets.assets);
       for (const f of picked) {
         try {
-          const { record, existing } = await importAsset(s.dir, f, known);
+          const { record, existing, font } = await importAsset(s.dir, f, known);
           if (!ids.includes(record.id)) ids.push(record.id);
+          if (font) backfills.push({ type: 'asset.update' as const, assetId: record.id, font });
           if (!existing) {
             ops.push({ type: 'asset.add' as const, asset: record });
             known.push(record);
@@ -429,8 +437,13 @@ export class Controller {
           errors.push((e as Error).message);
         }
       }
+      if (backfills.length) {
+        const r = await s.apply({ operations: backfills }, { label: 'Update font details', source: 'user' });
+        if (!r.ok) errors.push(r.error?.message ?? 'The font details could not be updated.');
+      }
       if (ops.length) {
-        const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? 'Import image' : `Import ${ops.length} images`, source: 'user' });
+        const noun = ops.every((o) => o.asset.kind === 'font') ? ['font', 'fonts'] : ops.every((o) => o.asset.kind === 'image') ? ['image', 'images'] : ['file', 'files'];
+        const r = await s.apply({ operations: ops }, { label: ops.length === 1 ? `Import ${noun[0]}` : `Import ${ops.length} ${noun[1]}`, source: 'user' });
         if (!r.ok) return { ok: false, assetIds: [], message: r.error?.message };
       }
       return { ok: errors.length === 0, assetIds: ids, message: errors.join(' ') || undefined };

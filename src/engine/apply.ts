@@ -19,6 +19,7 @@ import type { EditOperation, Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, styleSetFor, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
+import { fontAssetUsages, projectFontFamilies, renameFontFamily } from '@shared/fonts';
 import { getTheme, listThemes } from '@catalogue/index';
 import { effectiveTokens, generateStandaloneComponent, CUSTOM_DIR } from '@generator/index';
 import { EngineError, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, subtreeIds, allTrees } from './tree';
@@ -216,17 +217,28 @@ export function applyOperation(state: ProjectState, op: EditOperation): OpResult
       if (op.name !== undefined) a.name = op.name;
       if (op.description !== undefined) a.description = op.description;
       if (op.altSuggestion !== undefined) a.altSuggestion = op.altSuggestion;
+      if (op.font !== undefined) {
+        if (a.kind !== 'font') fail(`"${a.name}" is not a font.`);
+        const from = a.font?.family;
+        a.font = { ...op.font };
+        // Once no file provides the old family name, styles that named it follow the rename.
+        if (from && from !== op.font.family && !projectFontFamilies(state).some((f) => f.family === from)) renameFontFamily(state, from, op.font.family);
+      }
       return {};
     }
     case 'asset.remove': {
-      if (!own(state.assets.assets, op.assetId)) fail(`Asset "${op.assetId}" does not exist.`);
-      const uses = assetUsages(state)[op.assetId] ?? 0;
-      if (uses) fail(`This image is used ${uses} time${uses === 1 ? '' : 's'}. Replace or remove those uses first.`);
+      const removing = own(state.assets.assets, op.assetId);
+      if (!removing) fail(`Asset "${op.assetId}" does not exist.`);
+      // One face of a family can go while another still provides the family its styles name.
+      const otherFace = removing!.kind === 'font' && Object.values(state.assets.assets).some((x) => x.id !== op.assetId && x.kind === 'font' && x.font?.family === removing!.font?.family);
+      const uses = otherFace ? 0 : (assetUsages(state)[op.assetId] ?? 0);
+      if (uses) fail(`This ${state.assets.assets[op.assetId].kind === 'font' ? 'font' : 'image'} is used ${uses} time${uses === 1 ? '' : 's'}. Replace or remove those uses first.`);
       delete state.assets.assets[op.assetId];
       return {};
     }
     case 'asset.replace': {
       if (!own(state.assets.assets, op.assetId) || !own(state.assets.assets, op.withAssetId)) fail('Both assets must exist.');
+      if (state.assets.assets[op.assetId].kind !== 'image' || state.assets.assets[op.withAssetId].kind !== 'image') fail('Only an image can replace an image.');
       walkValues(state, (v) => {
         if (v && typeof v === 'object' && (v as { assetId?: string }).assetId === op.assetId) (v as { assetId: string }).assetId = op.withAssetId;
       });
@@ -311,6 +323,8 @@ export function assetUsages(state: ProjectState): Record<string, number> {
   });
   for (const k of [state.site.favicon, state.site.socialImage]) if (k) out[k] = (out[k] ?? 0) + 1;
   for (const p of Object.values(state.pages)) if (p.seo.socialImage) out[p.seo.socialImage] = (out[p.seo.socialImage] ?? 0) + 1;
+  // An imported font is in use while a token or style names its family.
+  for (const [id, n] of Object.entries(fontAssetUsages(state))) out[id] = (out[id] ?? 0) + n;
   return out;
 }
 
@@ -964,13 +978,13 @@ function tokenSetInner(state: ProjectState, op: Op<'token.set'>): OpResult {
     if (fam && typeof fam === 'object') {
       const ref = String((fam as { token?: string }).token ?? '');
       if (!ref.startsWith('font.') || !effectiveTokens(state).some((t) => t.id === ref)) fail('A text style font must reference an existing font token.');
-    } else if (!/^[\w\s'",.-]{1,200}$/.test(String(fam))) fail('Font names may contain letters, numbers, spaces, quotes, commas and hyphens only.');
+    } else if (!/^[\p{L}\p{N}_\s'",.-]{1,200}$/u.test(String(fam))) fail('Font names may contain letters, numbers, spaces, quotes, commas and hyphens only.');
     if (merged.transform !== undefined && !['none', 'uppercase', 'lowercase', 'capitalize'].includes(String(merged.transform))) fail('Text transform must be none, uppercase, lowercase or capitalize.');
     state.tokens.overrides[op.tokenId] = merged as unknown as TokenValue;
     return {};
   } else if (tdef.group === 'font') {
     const s = String(v);
-    if (!/^[\w\s'",.-]+$/.test(s) || s.length > 200) fail('Font stacks may contain names, quotes, commas and hyphens only.');
+    if (!/^[\p{L}\p{N}_\s'",.-]+$/u.test(s) || s.length > 200) fail('Font stacks may contain names, quotes, commas and hyphens only.');
   } else {
     const s = String(v);
     if (!/^[0-9a-z.,%+\-*/ ()#]+$/i.test(s) || s.length > 200 || !isSafeCssValue(s)) fail(`Invalid value "${s}".`);
