@@ -19,7 +19,7 @@ import type {
 import type { Binding } from '@shared/types';
 import { ICON_POSITIONS, SCHEMA_VERSION, isBinding, isComparison, type IconPosition, type TextTag } from '@shared/types';
 import type { EditOperation, Op } from '@shared/ops';
-import { STYLE_PROP_MAP, cssVarNames, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textMetrics, tokenVar, validateStyleValue } from '@shared/styles';
+import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { findVariant, variantOptions } from '@shared/variants';
@@ -1284,18 +1284,14 @@ function listInsert(state: ProjectState, op: Op<'instance.listInsert'>): OpResul
 // Tokens and site
 // ---------------------------------------------------------------------------
 
-/**
- * Refuse a change that makes site styles refer to each other in a loop. A loop the project already had (from a
- * hand-edited document) does not block other changes, including the ones that undo it.
- */
-function assertNoTokenCycles(state: ProjectState, before: Set<string>) {
-  for (const id of loopingTokens(state)) if (!before.has(id)) fail('That change would make site styles refer to each other in a loop.');
+function assertNoTokenCycles(state: ProjectState) {
+  if (findTokenCycle(state)) fail('That change would make site styles refer to each other in a loop.');
 }
 
 /** What each kind of site style is called in messages. */
 const TOKEN_KIND: Record<TokenGroup, string> = { color: 'color', font: 'font', text: 'text', space: 'spacing', container: 'page width', radius: 'corner', shadow: 'shadow', border: 'border' };
 
-function tokenSet(state: ProjectState, op: Op<'token.set'>, loopsBefore = loopingTokens(state)): OpResult {
+function tokenSet(state: ProjectState, op: Op<'token.set'>): OpResult {
   const tdef = declaredTokens(state).find((t) => t.id === op.tokenId) ?? fail(`Token "${op.tokenId}" does not exist.`);
   const custom = state.tokens.custom.find((t) => t.id === op.tokenId);
   if (op.value === null) {
@@ -1303,7 +1299,7 @@ function tokenSet(state: ProjectState, op: Op<'token.set'>, loopsBefore = loopin
     if (custom) fail(`"${custom.label}" is one of your own site styles, so it has no theme default to go back to. Give it a new value, or remove it.`);
     delete state.tokens.overrides[op.tokenId];
     // The theme's own value can link to a style that now links back.
-    assertNoTokenCycles(state, loopsBefore);
+    assertNoTokenCycles(state);
     return {};
   }
   const v = op.value as Record<string, unknown>;
@@ -1317,11 +1313,11 @@ function tokenSet(state: ProjectState, op: Op<'token.set'>, loopsBefore = loopin
     if (target.group !== tdef.group) fail(`"${tdef.label}" can only follow another ${TOKEN_KIND[tdef.group]} style, and "${target.label}" is a ${TOKEN_KIND[target.group]} style.`);
     // The style followed must lead to a value: every style further along it exists and is the same kind.
     const seen = new Set([target.id, op.tokenId]);
-    for (let cur = linkOf(target.value); cur && !seen.has(cur); ) {
+    for (let cur = linkOf(target.value, target.group); cur && !seen.has(cur); ) {
       seen.add(cur);
       const next = tokens.find((t) => t.id === cur) ?? fail(`"${target.label}" follows "${cur}", which does not exist. Link to another style, or give "${target.label}" its own value first.`);
       if (next.group !== tdef.group) fail(`"${target.label}" follows "${next.label}", which is a ${TOKEN_KIND[next.group]} style.`);
-      cur = linkOf(next.value);
+      cur = linkOf(next.value, next.group);
     }
     state.tokens.overrides[op.tokenId] = { token: target.id };
   } else tokenSetLiteral(state, tdef, op.value);
@@ -1330,7 +1326,7 @@ function tokenSet(state: ProjectState, op: Op<'token.set'>, loopsBefore = loopin
     custom.value = state.tokens.overrides[op.tokenId];
     delete state.tokens.overrides[op.tokenId];
   }
-  assertNoTokenCycles(state, loopsBefore);
+  assertNoTokenCycles(state);
   return {};
 }
 
@@ -1345,11 +1341,10 @@ function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
     state.tokens.overrides[id] = v as TokenValue;
   } else if (tdef.group === 'text') {
     if (!v || typeof v !== 'object' || Array.isArray(v)) fail('Text styles need { family, size, lineHeight, weight, tracking }.');
-    // A text style saved as a link to another (hand-edited, or from an older version) starts from the one it
-    // follows, or from the theme's own metrics when that link leads nowhere.
-    const own = state.tokens.overrides[id] ?? tdef.value;
+    // A text style saved as a link to another (hand-edited, or from an older version) starts from what it is
+    // written out with: the text style it follows, or the theme's own metrics when the link leads nowhere.
     const declared = getTheme(state.site.themeId).tokens.find((t) => t.id === id)?.value;
-    const cur = (linkOf(own) ? (textMetrics(effectiveTokens(state), id) ?? (linkOf(declared) ? undefined : declared)) : own) as Record<string, unknown> | undefined;
+    const cur = textStyleValue(effectiveTokens(state), id, declared) ?? undefined;
     // Only the text-style keys are kept, so nothing else can change how the style is written out.
     const merged: Record<string, unknown> = Object.fromEntries(TEXT_KEYS.map((k) => [k, Object.hasOwn(v, k) ? (v as Record<string, unknown>)[k] : cur?.[k]]).filter(([, x]) => x !== undefined));
     if (merged.family === undefined || merged.family === null || merged.family === '') fail('Text styles need a font family.');
@@ -1385,10 +1380,6 @@ function tokenSetLiteral(state: ProjectState, tdef: TokenDef, v: unknown) {
     const negative = tdef.group === 'space';
     if (!isTokenLength(s, { negative }) || s.length > 200 || !isSafeCssValue(s))
       fail(`"${(s || String(v)).slice(0, 60)}" is not a valid length for ${tdef.label}. Use a ${negative ? '' : 'positive '}value such as 24px, 1.5rem, 50% or clamp(1rem, 2vw, 2rem).`);
-    // A variable in the math must be a site style's, or the length has no value in the browser.
-    const vars = new Set(effectiveTokens(state).flatMap((t) => [tokenVar(t.id), ...(t.group === 'text' ? ['family', 'size', 'line-height', 'weight', 'tracking', 'transform'].map((k) => `${tokenVar(t.id)}-${k}`) : [])]));
-    const unknown = cssVarNames(s).find((n) => !vars.has(n));
-    if (unknown) fail(`"${s.slice(0, 60)}" uses ${unknown}, which is not a site style.`);
     state.tokens.overrides[id] = s;
   } else {
     const s = String(v);
@@ -1420,13 +1411,11 @@ function tokenCreate(state: ProjectState, op: Op<'token.create'>): OpResult {
   const taken = new Set(effectiveTokens(state).map((t) => t.id));
   let id = base;
   for (let i = 2; taken.has(id); i++) id = `${base}-${i}`;
-  // Loops are measured before the new style exists, so one its own value would make is refused.
-  const loopsBefore = loopingTokens(state);
   const def: TokenDef = { id, label: op.label.trim(), group: op.group, value: op.value as TokenValue };
   if (op.description?.trim()) def.description = op.description.trim();
   state.tokens.custom.push(def);
   // The value passes the same checks as token.set, which keeps it as the style's own value.
-  tokenSet(state, { type: 'token.set', tokenId: id, value: op.value }, loopsBefore);
+  tokenSet(state, { type: 'token.set', tokenId: id, value: op.value });
   return { tokenId: id };
 }
 
@@ -1485,14 +1474,13 @@ function tokenReplace(state: ProjectState, fromId: string, toId: string): OpResu
   const to = tokens.find((t) => t.id === toId) ?? fail(`Token "${toId}" does not exist.`);
   if (from.id === to.id) fail('Choose a different site style to replace it with.');
   if (from.group !== to.group) fail(`"${from.label}" is a ${from.group} style and "${to.label}" is a ${to.group} style; replace it with a ${from.group} style.`);
-  const loopsBefore = loopingTokens(state);
   let replaced = 0;
   forEachTokenRef(state, (id, site) => {
     if (id !== from.id) return;
     site.replace({ token: to.id });
     replaced++;
   });
-  assertNoTokenCycles(state, loopsBefore);
+  assertNoTokenCycles(state);
   return { replaced };
 }
 

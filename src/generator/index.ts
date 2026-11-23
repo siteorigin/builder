@@ -25,7 +25,7 @@ import type {
   TokenValue
 } from '@shared/types';
 import { ELEMENT_TAGS, GENERATOR_VERSION, TEXT_TAGS, isBinding, isComparison, type Condition } from '@shared/types';
-import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar, linkOf, textMetrics, textLinkLeadsToText } from '@shared/styles';
+import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar, linkOf, textMetrics, textLinkLeadsToText, textStyleValue } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
 import { DRAFTS_JS, IMAGE_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
@@ -271,12 +271,12 @@ export function generateTokensCss(state: ProjectState): string {
   for (const t of tokens) {
     const name = tokenVar(t.id);
     let value = t.value;
-    let link = t.group === 'text' ? linkOf(value) : null;
+    let link = t.group === 'text' ? linkOf(value, 'text') : null;
     // A text style linked to another (by hand, or by an older version) that leads nowhere keeps the theme's metrics.
     if (link && !textLinkLeadsToText(tokens, t.id)) {
-      const own = theme.tokens.find((x) => x.id === t.id)?.value;
-      if (!own || linkOf(own)) continue;
-      (value = own), (link = null);
+      const own = textStyleValue(tokens, t.id, theme.tokens.find((x) => x.id === t.id)?.value);
+      if (!own) continue;
+      (value = own as unknown as TokenValue), (link = null);
     }
     if (link) {
       // Text styles are read metric by metric, so one that follows another follows each metric.

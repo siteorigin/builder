@@ -785,14 +785,10 @@ describe('site styles that follow other styles (#201)', () => {
     const extra = fresh();
     extra.tokens.overrides['color.accent'] = { token: 'color.missing', extra: 1 } as never;
     expect(() => set(extra, 'color.brand', { token: 'color.accent' })).toThrow(/does not exist/);
-    // Borders can name another style's variable in their CSS; a link that closes that loop is refused.
-    let b = applyOperations(fresh(), [
-      { type: 'token.create', group: 'border', label: 'First', value: '1px solid black' },
-      { type: 'token.create', group: 'border', label: 'Second', value: '2px solid var(--so-border-custom-first)' }
-    ]).state;
-    expect(() => set(b, 'border.custom-first', { token: 'border.custom-second' })).toThrow(/loop/);
-    b = set(b, 'border.custom-first', { token: 'border.default' });
-    expect(errors(b)).toEqual([]);
+    // Keys an older document left beside a color's link do not hide it: tokens.css still writes the link.
+    const shaped = fresh();
+    shaped.tokens.overrides['color.accent'] = { token: 'color.brand', size: 'legacy' } as never;
+    expect(() => set(shaped, 'color.brand', { token: 'color.accent' })).toThrow(/loop/);
     const chain = set(made.state, 'space.md', { token: made.id });
     expect(() => set(chain, made.id, { token: 'space.md' })).toThrow(/loop/);
     expect(() => create(fresh(), 'radius', 'Bad', { token: 'radius.nope' })).toThrow(/does not exist/);
@@ -1357,10 +1353,12 @@ describe('site style lengths and older text links (#201)', () => {
       expect(() => set(fresh(), 'space.md', bad), bad).toThrow(/length/);
     for (const good of ['+12px', '0.0', '10vmin', '100lvh', '2lh', 'calc(100dvw - 2rem)', 'calc((1rem + 2px) * 1.5)', 'calc(1px + -2px)', '100dvi', 'calc(2 * 1rem)', 'calc(10px / 2)', 'max(1rem, 2vw, 10px)'])
       expect(set(fresh(), 'space.md', good).tokens.overrides['space.md'], good).toBe(good);
-    expect(() => set(fresh(), 'space.md', 'calc(var(--so-space-missing) * 2)')).toThrow(/not a site style/);
-    // Another style's variable can be part of the math, just not this style's own.
-    expect(set(fresh(), 'space.lg', 'calc(var(--so-space-md) * 2)').tokens.overrides['space.lg']).toBe('calc(var(--so-space-md) * 2)');
-    expect(() => set(fresh(), 'space.md', 'calc(var(--so-space-md) * 2)')).toThrow(/loop/);
+    // Variables are not part of a length: a style that should follow another links to it.
+    for (const bad of ['calc(var(--so-space-md) * 2)', 'calc(var(--so-space-missing) * 2)', 'calc(1 + 2 * 3px)', 'max(1px, 2)'])
+      expect(() => set(fresh(), 'space.lg', bad), bad).toThrow(/length/);
+    // * and / bind before + and -.
+    for (const good of ['calc(1px + 2 * 3px)', 'calc(100% - 2rem / 2)', 'max(1px, 2px, 3px, 4px)'])
+      expect(set(fresh(), 'space.lg', good).tokens.overrides['space.lg'], good).toBe(good);
     expect(set(fresh(), 'space.md', '-8px').tokens.overrides['space.md']).toBe('-8px');
     expect(() => set(fresh(), 'radius.md', '-4px')).toThrow(/positive/);
     expect(() => set(fresh(), 'container.content', '-10px')).toThrow(/positive/);
@@ -1458,31 +1456,32 @@ describe('site style lengths and older text links (#201)', () => {
   });
 });
 
-describe('site style loops through CSS variables (#201)', () => {
+describe('older text links read the same in the editor, an edit and the export (#201)', () => {
+  const css = (s: ProjectState) => generateProject(s).get('src/lib/siteorigin/styles/tokens.css')!;
   const set = (s: ProjectState, tokenId: string, value: unknown) => applyOperations(s, [{ type: 'token.set', tokenId, value }]).state;
 
-  it('refuses a loop through a text metric variable', () => {
-    const s = set(fresh(), 'text.h1', { size: 'var(--so-space-md)' });
-    expect(() => set(s, 'space.md', 'calc(var(--so-text-h1-size) * 2)')).toThrow(/loop/);
+  it('edits a text style linked to one with a written-out weight from the style it follows', async () => {
+    const { textMetrics } = await import('@shared/styles');
+    let s = fresh();
+    const h2 = effectiveTokens(s).find((t) => t.id === 'text.h2')!.value as Record<string, unknown>;
+    s.tokens.overrides['text.h2'] = { ...h2, weight: 'bold' } as never;
+    s.tokens.overrides['text.h1'] = { token: 'text.h2' } as never;
+    expect(textMetrics(effectiveTokens(s), 'text.h1')).toMatchObject({ size: h2.size, weight: 700 });
+    s = set(s, 'text.h1', { weight: 600 });
+    expect(s.tokens.overrides['text.h1']).toEqual({ ...h2, weight: 600 });
   });
 
-  it('refuses a new style whose own value would loop', () => {
-    expect(() => applyOperations(fresh(), [{ type: 'token.create', group: 'space', label: 'Gap', value: 'calc(var(--so-space-custom-gap) * 2)' }])).toThrow(/loop/);
-  });
-
-  it('does not let a loop an older document already has block other edits, or the edits that undo it', () => {
-    const s = fresh();
-    s.tokens.overrides['border.default'] = 'var(--so-border-default)';
-    s.tokens.overrides['shadow.sm'] = 'var(--so-shadow-sm)';
-    // A quoted font name that happens to read like a variable is not one.
-    s.tokens.overrides['font.body'] = '"var(--so-font-body)", Georgia, serif';
-    expect(set(s, 'color.brand', '#123456').tokens.overrides['color.brand']).toBe('#123456');
-    const fixed = applyOperations(s, [
-      { type: 'token.set', tokenId: 'border.default', value: null },
-      { type: 'token.set', tokenId: 'shadow.sm', value: null }
-    ]).state;
-    expect(validateState(fixed).some((d) => d.code === 'TOKEN_CYCLE')).toBe(false);
-    // A new loop is still refused beside an old one.
-    expect(() => set(s, 'radius.sm', 'calc(var(--so-radius-sm) * 2)')).toThrow(/loop/);
+  it('shows and edits the theme metrics when the link runs through another kind of style, as the export writes them', async () => {
+    const { textMetrics } = await import('@shared/styles');
+    let s = fresh();
+    const h1 = effectiveTokens(s).find((t) => t.id === 'text.h1')!.value as Record<string, unknown>;
+    s.tokens.overrides['text.h1'] = { token: 'font.body' } as never;
+    s.tokens.overrides['font.body'] = { token: 'text.h2' } as never;
+    expect(css(s)).toContain(`--so-text-h1-size: ${h1.size};`);
+    const { getTheme } = await import('@catalogue/index');
+    const theme = getTheme(s.site.themeId).tokens.find((t) => t.id === 'text.h1')!.value;
+    expect(textMetrics(effectiveTokens(s), 'text.h1', theme)?.size).toBe(h1.size);
+    s = set(s, 'text.h1', { weight: 600 });
+    expect(s.tokens.overrides['text.h1']).toEqual({ ...h1, weight: 600 });
   });
 });

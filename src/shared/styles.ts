@@ -176,12 +176,13 @@ const TEXT_METRIC_KEYS = ['family', 'size', 'lineHeight', 'weight', 'tracking'];
 
 /**
  * The site style a stored value refers to as a whole, as tokens.css writes it: `{ token }`, or null for a value
- * of its own. Text-style metrics with a stray `token` beside them (left by an older version) are the style's
- * own value, not a link. Edits only ever store exactly `{ token }`; this also reads what older documents hold.
+ * of its own. For a text style (`group` 'text'), metrics with a stray `token` beside them (left by an older
+ * version) are its own value, not a link. Edits only ever store exactly `{ token }`; this also reads what
+ * older documents hold.
  */
-export function linkOf(v: unknown): string | null {
+export function linkOf(v: unknown, group?: TokenGroup): string | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
-  if (TEXT_METRIC_KEYS.some((k) => k in v)) return null;
+  if (group === 'text' && TEXT_METRIC_KEYS.some((k) => k in v)) return null;
   const token = (v as { token?: unknown }).token;
   return typeof token === 'string' ? token : null;
 }
@@ -246,21 +247,20 @@ const CSS_NUMBER = '(?:\\d+(?:\\.\\d+)?|\\.\\d+)';
 const TOKEN_LENGTH_RE = new RegExp(`^([+-]?)${CSS_NUMBER}(?:${LENGTH_UNITS})$`, 'i');
 const TOKEN_ZERO_RE = /^[+-]?(?:0+(?:\.0+)?|\.0+)$/;
 /**
- * One piece of a math function: CSS whitespace, a function opening, a site style's variable, a number or
- * length, or punctuation. Lower case only, as the theme writes them, so every check that looks for a
- * variable by name finds it.
+ * One piece of a math function: CSS whitespace, a function opening, a number or length, or punctuation. Lower
+ * case, as the theme writes them. No variables: a style that should follow another links to it instead.
  */
-const MATH_TOKEN_RE = new RegExp(`[ \\t\\n]+|(?:calc|min|max|clamp)\\(|var\\([ \\t\\n]*--so-[a-z0-9-]+[ \\t\\n]*\\)|[+-]?${CSS_NUMBER}(?:${LENGTH_UNITS})?|[()+\\-*/,]`, 'y');
+const MATH_TOKEN_RE = new RegExp(`[ \\t\\n]+|(?:calc|min|max|clamp)\\(|[+-]?${CSS_NUMBER}(?:${LENGTH_UNITS})?|[()+\\-*/,]`, 'y');
 /** How many arguments each math function takes, at least and at most. */
 const MATH_ARITY: Record<string, [number, number]> = { calc: [1, 1], clamp: [3, 3], min: [1, Infinity], max: [1, Infinity] };
 
 type MathType = 'number' | 'length';
 
 /**
- * One calc(), min(), max() or clamp() call that works out to a length: numbers, lengths, site style variables
- * (read as lengths), nested calls and brackets joined by operators, each function given its number of
- * arguments. As in CSS, + and - join two of a kind and need a space on each side, * needs a number on one
- * side, / a number on the right, and a function's arguments are all of one kind.
+ * One calc(), min(), max() or clamp() call that works out to a length: numbers, lengths, nested calls and
+ * brackets joined by operators, each function given its number of arguments. As in CSS, * and / bind before
+ * + and -, + and - join two of a kind and need a space on each side, * needs a number on one side, / a number
+ * on the right, and a function's arguments are all of one kind.
  */
 function isMathLength(value: string): boolean {
   const toks: Array<{ t: string; spaced: boolean }> = [];
@@ -302,30 +302,31 @@ function isMathLength(value: string): boolean {
       i++;
       return k;
     }
-    if (t.startsWith('var(')) return (i++, 'length');
     if (/^[+-]?[\d.]/.test(t)) return (i++, /[a-z%]$/.test(t) ? 'length' : 'number');
     return null;
   };
-  const expr = (): MathType | null => {
+  const term = (): MathType | null => {
     let left = operand();
-    while (left && toks[i] && /^[+\-*/]$/.test(toks[i].t)) {
-      const op = toks[i];
-      if ((op.t === '+' || op.t === '-') && (!op.spaced || !toks[i + 1]?.spaced)) return null;
-      i++;
+    while (left && (toks[i]?.t === '*' || toks[i]?.t === '/')) {
+      const op = toks[i++].t;
       const right = operand();
       if (!right) return null;
-      if (op.t === '+' || op.t === '-') left = left === right ? left : null;
-      else if (op.t === '*') left = left === 'number' ? right : right === 'number' ? left : null;
-      else left = right === 'number' ? left : null;
+      left = op === '*' ? (left === 'number' ? right : right === 'number' ? left : null) : right === 'number' ? left : null;
+    }
+    return left;
+  };
+  const expr = (): MathType | null => {
+    let left = term();
+    while (left && (toks[i]?.t === '+' || toks[i]?.t === '-')) {
+      // CSS reads a + or - without a space on both sides as a sign.
+      if (!toks[i].spaced || !toks[i + 1]?.spaced) return null;
+      i++;
+      const right = term();
+      if (!right || right !== left) return null;
     }
     return left;
   };
   return call() === 'length' && i === toks.length;
-}
-
-/** The site style variables CSS text names, such as `--so-space-md` in calc(var(--so-space-md) * 2). */
-export function cssVarNames(value: string): string[] {
-  return [...value.matchAll(/var\(\s*(--so-[a-z0-9-]+)\s*[,)]/gi)].map((m) => m[1].toLowerCase());
 }
 
 /**
@@ -351,7 +352,7 @@ export function followToken(tokens: TokenDef[], id: string): TokenValue | undefi
   for (let cur: string | null = id; cur && !seen.has(cur); ) {
     seen.add(cur);
     const v = byId.get(cur)?.value;
-    const next = linkOf(v);
+    const next = linkOf(v, byId.get(cur)?.group);
     if (!next) return v;
     cur = next;
   }
@@ -371,11 +372,11 @@ export function followedText(tokens: TokenDef[], id: string): string {
 export function textLinkLeadsToText(tokens: TokenDef[], id: string): boolean {
   const byId = new Map(tokens.map((t) => [t.id, t]));
   const seen = new Set([id]);
-  for (let cur = linkOf(byId.get(id)?.value); cur; ) {
+  for (let cur = linkOf(byId.get(id)?.value, 'text'); cur; ) {
     const t = byId.get(cur);
     if (!t || t.group !== 'text' || seen.has(cur)) return false;
     seen.add(cur);
-    const next = linkOf(t.value);
+    const next = linkOf(t.value, 'text');
     if (!next) return !!t.value && typeof t.value === 'object';
     cur = next;
   }
@@ -386,17 +387,33 @@ export function textLinkLeadsToText(tokens: TokenDef[], id: string): boolean {
 const metricText = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : null);
 
 /**
- * A text style's metrics as the editor shows them, a style it is linked to (by hand, or by an older version)
- * followed. Null when they cannot be read: a broken link, or a size, line height, letter spacing, weight or
- * font that is missing.
+ * The metrics a text style is written out with, as tokens.css writes them: its own; those of the text style it
+ * links to (by hand, or from an older version) when every style along the links is a text style; otherwise the
+ * `fallback` (the theme's own value for that style), or null. The editor, an edit and the export all read this.
  */
-export function textMetrics(tokens: TokenDef[], id: string): TextStyleValue | null {
-  const v = followToken(tokens, id) as Record<string, unknown> | undefined;
-  if (!v || typeof v !== 'object') return null;
+export function textStyleValue(tokens: TokenDef[], id: string, fallback?: unknown): Record<string, unknown> | null {
+  const v = tokens.find((t) => t.id === id)?.value;
+  const isMetrics = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x) && !linkOf(x, 'text');
+  if (!linkOf(v, 'text')) return isMetrics(v) ? v : null;
+  if (textLinkLeadsToText(tokens, id)) return followToken(tokens, id) as unknown as Record<string, unknown>;
+  return isMetrics(fallback) ? fallback : null;
+}
+
+/** Font weights written as words in a hand-edited document, as the numbers they stand for. */
+const WEIGHT_WORDS: Record<string, number> = { normal: 400, bold: 700 };
+
+/**
+ * A text style's metrics as the editor shows them (see textStyleValue). Null when they cannot be read: a size,
+ * line height, letter spacing, weight or font that is missing.
+ */
+export function textMetrics(tokens: TokenDef[], id: string, fallback?: unknown): TextStyleValue | null {
+  const v = textStyleValue(tokens, id, fallback);
+  if (!v) return null;
   const size = metricText(v.size);
   const lineHeight = metricText(v.lineHeight);
   const tracking = metricText(v.tracking);
-  const weight = typeof v.weight === 'number' ? v.weight : typeof v.weight === 'string' && v.weight.trim() ? Number(v.weight) : NaN;
+  const w = v.weight;
+  const weight = typeof w === 'number' ? w : typeof w === 'string' && w.trim() ? (WEIGHT_WORDS[w.trim().toLowerCase()] ?? Number(w)) : NaN;
   const family = v.family;
   const familyOk = (typeof family === 'string' && family.trim()) || linkOf(family);
   if (size === null || lineHeight === null || tracking === null || !(weight >= 100 && weight <= 900) || !familyOk) return null;

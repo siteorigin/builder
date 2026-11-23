@@ -116,7 +116,7 @@ function StyleRow({ t, uses, tokens, state, onEditText }: { t: TokenDef; uses: n
   // What the menu shows is what Remove sends: text styles cannot keep a plain value.
   const options = [...(t.group !== 'text' ? ['__keep'] : []), ...others.map((o) => o.id)];
   const replacement = options.includes(choice) ? choice : (options[0] ?? '');
-  const ref = linkOf(t.value);
+  const ref = linkOf(t.value, t.group);
   const follows = ref ? (tokens.find((x) => x.id === ref)?.label ?? ref) : null;
   // The value in effect, a style it follows already followed: what a link shows, and what unlinking keeps.
   const literal = followedText(tokens, t.id);

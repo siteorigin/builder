@@ -477,7 +477,7 @@ export function SiteStyles() {
     const t = byId(id);
     if (!t) return [];
     if (t.group === 'text') {
-      const v = textMetrics(tokens, id) ?? undefined;
+      const v = textMetrics(tokens, id, themeValue(id)) ?? undefined;
       const b = themeValue(id) as TextStyleValue;
       return TEXT_METRICS.filter((k) => !sameValue(metricOf(v, k), metricOf(b, k))).map((k) => ({ what: METRIC_NAMES[k], now: show('text', k, metricOf(v, k)), was: show('text', k, metricOf(b, k)) }));
     }
@@ -583,7 +583,7 @@ export function SiteStyles() {
   };
 
   const textRow = (t: TokenDef) => {
-    const v = textMetrics(tokens, t.id);
+    const v = textMetrics(tokens, t.id, themeValue(t.id));
     if (!v) return null;
     const base = (themeValue(t.id) ?? v) as TextStyleValue;
     const famRef = refOf(v.family);
