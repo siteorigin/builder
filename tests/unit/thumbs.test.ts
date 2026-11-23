@@ -45,6 +45,9 @@ describe('previewFile', () => {
   it('skips a copy that failed to load for the next larger one, then the original', () => {
     expect(previewFile(photo, 110, 2, new Set(['static/images/studio-480.png']))).toBe('static/images/studio-960.png');
     expect(previewFile(photo, 110, 2, new Set(photo.variants.map((v) => v.file)))).toBe('static/images/studio.png');
+    // Only the copy that failed is skipped.
+    expect(previewFile(photo, 300, 2, new Set(['static/images/studio-480.png']))).toBe('static/images/studio-960.png');
+    expect(previewFile(photo, 110, 2, new Set(['static/images/studio-960.png']))).toBe('static/images/studio-480.png');
   });
 });
 
@@ -52,6 +55,8 @@ describe('coverWidth', () => {
   it('is the box width for a picture that is as tall as the box needs', () => {
     expect(coverWidth({ width: 100, height: 100 }, { width: 2400, height: 2400 })).toBe(100);
     expect(coverWidth({ width: 110, height: 110 }, { width: 3000, height: 2000 })).toBeCloseTo(165);
+    // A tall picture in a wide box keeps the box width.
+    expect(coverWidth({ width: 200, height: 100 }, { width: 1000, height: 2000 })).toBe(200);
   });
 
   it('grows for a wide picture cropped into a short box', () => {
@@ -61,5 +66,7 @@ describe('coverWidth', () => {
 
   it('uses the box when the shape is unknown', () => {
     expect(coverWidth({ width: 72, height: 54 }, {})).toBe(72);
+    expect(coverWidth({ width: 72, height: 54 }, { width: 4000 })).toBe(72);
+    expect(coverWidth({ width: 72, height: 54 }, { height: 500 })).toBe(72);
   });
 });

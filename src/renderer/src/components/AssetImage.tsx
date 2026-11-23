@@ -22,6 +22,8 @@ function useDevicePixelRatio(): number {
     if (typeof window === 'undefined' || !window.matchMedia) return;
     const mq = window.matchMedia(`(resolution: ${dpr}dppx)`);
     const on = () => setDpr(window.devicePixelRatio || 1);
+    // It may have changed between rendering and subscribing.
+    on();
     mq.addEventListener('change', on);
     return () => mq.removeEventListener('change', on);
   }, [dpr]);
