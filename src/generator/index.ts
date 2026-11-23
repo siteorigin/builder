@@ -24,7 +24,7 @@ import type {
   TokenValue
 } from '@shared/types';
 import { GENERATOR_VERSION, isBinding } from '@shared/types';
-import { MEDIA_QUERIES, isSafeCssValue, styleToCss, tokenVar } from '@shared/styles';
+import { MEDIA_QUERIES, isSafeCssValue, isValidGradient, styleToCss, tokenVar } from '@shared/styles';
 import { getTheme } from '@catalogue/index';
 import { usedFontPackages } from '@catalogue/fonts';
 import { IMAGE_SVELTE, LINK_SVELTE, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs } from './runtime-files';
@@ -273,11 +273,11 @@ interface RuleOpts {
   /** Link nodes: colours also set --so-btn-bg / --so-btn-fg so button hover states follow them. */
   link?: boolean;
   /**
-   * Instance overrides: a multi-column value set for all sizes applies from tablet up, so the component's
-   * own phone layout (usually one column) still applies unless a phone value is set explicitly.
+   * Variants and instance overrides: a multi-column value set for all sizes applies from tablet up, so the
+   * component's own phone layout (usually one column) still applies unless a phone value is set explicitly.
    */
   wideColumns?: boolean;
-  /** Instance overrides: the display value that shows a part the definition hides, for `hidden: false`. */
+  /** Variants and instance overrides: the display value that shows a part a weaker layer hides, for `hidden: false`. */
   unhide?: (scope: ResponsiveScope) => string | null;
 }
 
@@ -290,17 +290,33 @@ function nodeDisplay(layout: unknown): string | null {
  * variant's `display: none` at that scope, or null when nothing hides it there.
  */
 function unhider(def: ComponentDefinition, nodeId: string, variant: string | undefined, override: ResponsiveStyles) {
+  const node = def.tree?.nodes[nodeId];
+  // What the theme gives this kind of element; `revert` would fall back to the browser's default instead.
+  const natural = node?.kind === 'image' || node?.kind === 'icon' ? 'block' : node?.kind === 'link' ? (node.appearance === 'link' || node.appearance === 'plain' ? 'inline' : 'inline-flex') : 'revert';
   const layers = [def.tree?.nodes[nodeId]?.styles, variant ? def.variants?.[variant]?.styles?.[nodeId] : undefined].filter(Boolean) as ResponsiveStyles[];
   return (scope: ResponsiveScope): string | null => {
     const scopes: ResponsiveScope[] = scope === 'base' ? ['base', 'phone', 'tablet', 'desktop'] : ['base', scope];
     if (!layers.some((l) => scopes.some((s) => l[s]?.hidden === true))) return null;
     let layout: unknown;
     for (const l of [...layers, override]) for (const s of ['base', scope] as const) if (l[s]?.layout !== undefined) layout = l[s]!.layout;
-    return nodeDisplay(layout) ?? 'revert';
+    return nodeDisplay(layout) ?? natural;
   };
 }
 
-const ORDER = (k: string) => (k === 'textStyle' ? 0 : k === 'hidden' ? 2 : 1);
+/**
+ * Declaration order inside a rule. Composite values come first so the specific ones win (`gap` before `columnGap`,
+ * which would otherwise sort ahead of it); custom CSS follows the named properties and visibility has the last word.
+ */
+const ORDER = (k: string) => (k === 'textStyle' || k === 'gap' ? 0 : k === 'customCss' ? 2 : k === 'hidden' ? 3 : 1);
+
+/** A base-scope value that would break a narrower layout if it also applied on phones. */
+function wideOnly(prop: string, value: unknown, opts: RuleOpts): boolean {
+  // A span wider than a phone's single column would create extra columns, whichever layer sets it.
+  if (prop === 'columnSpan') return value !== 'full' && Number(value) > 1;
+  if (!opts.wideColumns) return false;
+  if (prop === 'columns') return Number(value) > 1;
+  return prop === 'gridTemplate';
+}
 
 /**
  * "Hidden at all sizes" plus "visible on phone" is expressed by hiding only in the other ranges,
@@ -325,8 +341,9 @@ function addRules(rules: RuleSet, selector: string, input: ResponsiveStyles | un
   if (!input) return;
   const styles = resolveVisibility(input);
   for (const scope of ['base', 'phone', 'tablet', 'desktop'] as const) {
-    // Showing a part the definition hides needs an explicit display value, decided before visibility folding.
-    const shown = input[scope]?.hidden === false && opts.unhide ? opts.unhide(scope) : null;
+    // Showing a part a weaker layer hides needs an explicit display value, decided before visibility folding, and
+    // only in the ranges where it is hidden: anywhere else the weaker layer's own layout must keep applying.
+    const shown = scope !== 'base' && input[scope]?.hidden === false && opts.unhide ? opts.unhide(scope) : null;
     const props = styles[scope] ?? (shown ? {} : undefined);
     if (!props) continue;
     const decls: string[] = shown ? [`display: ${shown}`] : [];
@@ -337,18 +354,24 @@ function addRules(rules: RuleSet, selector: string, input: ResponsiveStyles | un
       const out = styleToCss(k, props[k]);
       // Links and buttons paint from --so-btn-bg / --so-btn-fg, so a styled button keeps its hover state
       // whatever the specificity of the rule that styles it.
-      if (opts.link && k === 'background') out.splice(0, out.length, ...out.map((d) => d.replace(/^background:/, '--so-btn-bg:')), '--so-btn-bg-hover: initial');
+      // A gradient cannot go through the hover state's color-mix(), so it stays as it is on hover.
+      if (opts.link && k === 'background') {
+        const v = props[k];
+        out.splice(0, out.length, ...out.map((d) => d.replace(/^background:/, '--so-btn-bg:')), `--so-btn-bg-hover: ${typeof v === 'string' && isValidGradient(v) ? v.trim() : 'initial'}`);
+      }
       if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
-      const target = opts.wideColumns && scope === 'base' && k === 'columns' && Number(props[k]) > 1 ? wide : decls;
+      const target = scope === 'base' && wideOnly(k, props[k], opts) ? wide : decls;
       target.push(...out.filter(safeDecl));
     }
     if (decls.length) rules[scope].push(`${selector} {\n${decls.map((d) => `\t${d};`).join('\n')}\n}`);
-    // Shown at all sizes: each range keeps the display its own layout gives it.
-    if (shown && scope === 'base')
+    // Shown at all sizes: each range where it is hidden gets the display its own layout gives it.
+    if (scope === 'base' && input.base?.hidden === false && opts.unhide)
       for (const r of ['phone', 'tablet', 'desktop'] as const) {
-        const d = input[r]?.hidden === undefined ? opts.unhide!(r) : null;
-        if (d && d !== shown) rules[r].push(`${selector} {\n\tdisplay: ${d};\n}`);
+        const d = input[r]?.hidden === undefined ? opts.unhide(r) : null;
+        if (d) rules[r].push(`${selector} {\n\tdisplay: ${d};\n}`);
       }
+    // Custom CSS has the last word in the wide range too, where these values land after the base rule.
+    if (wide.length && props.customCss !== undefined) wide.push(...styleToCss('customCss', props.customCss).filter(safeDecl));
     if (wide.length) rules.wide.push(`${selector} {\n${wide.map((d) => `\t${d};`).join('\n')}\n}`);
   }
 }
@@ -395,7 +418,7 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
     for (const nid of Object.keys(v.styles ?? {}).sort()) {
       const rootId = def.tree.rootIds[0];
       const sel = nid === rootId ? `${vc}.${nodeClass(def, nid)}` : `${vc} .${nodeClass(def, nid)}`;
-      addRules(rules, wrap(sel), v.styles![nid], { link: def.tree.nodes[nid]?.kind === 'link' });
+      addRules(rules, wrap(sel), v.styles![nid], { link: def.tree.nodes[nid]?.kind === 'link', wideColumns: true, unhide: unhider(def, nid, undefined, v.styles![nid]) });
     }
   }
   return rules;
@@ -459,7 +482,10 @@ export function generateSiteCss(state: ProjectState): string {
           const cls = overrideClass(n.id, partId);
           // A code component's own styles are scoped (one class plus Svelte's hash class), so its overrides
           // take one more class to win whatever order the stylesheets load in.
-          addRules(rules, def.kind === 'code' ? `.${cls}.${cls}.${cls}` : `.${cls}.${cls}`, n.overrides![partId], overrideOpts(def, n, partId));
+          // A part that is itself a nested instance also carries its definition's three-class override rule.
+          const target = def.tree?.nodes[def.parts[partId]?.nodeId ?? def.tree.rootIds[0]];
+          const sel = target?.kind === 'instance' ? `.${cls}.${cls}.${cls}.${cls}` : def.kind === 'code' ? `.${cls}.${cls}.${cls}` : `.${cls}.${cls}`;
+          addRules(rules, sel, n.overrides![partId], overrideOpts(def, n, partId));
         }
       } else {
         addRules(rules, `.${pageNodeClass(id)}`, n.styles, { link: n.kind === 'link' });

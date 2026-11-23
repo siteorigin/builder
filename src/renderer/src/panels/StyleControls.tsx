@@ -214,28 +214,35 @@ export function StyleControls({
   const focusNext = (...selectors: string[]) => {
     if (root.current?.contains(document.activeElement)) pendingFocus.current = selectors;
   };
-  const props = allowed?.length ? allowed.map((id) => STYLE_PROP_MAP[id]).filter(Boolean) : STYLE_PROPS;
+  // A value set outside the offered controls (by the AI, say) still gets a row, so it can be seen and reset.
+  const setOutside = allowed?.length ? [...new Set(Object.values(styles ?? {}).flatMap((sc) => Object.keys(sc ?? {})))].filter((id) => !allowed.includes(id)) : [];
+  const props = allowed?.length ? [...allowed, ...setOutside].map((id) => STYLE_PROP_MAP[id]).filter(Boolean) : STYLE_PROPS;
   const groups = new Map<StylePropDef['group'], StylePropDef[]>();
   for (const p of props) groups.set(p.group, [...(groups.get(p.group) ?? []), p]);
   const own = styles?.[scope] ?? {};
   // Layout controls that only mean something for a stack or grid are shown when the layout is one.
   const effective = (id: string) => own[id] ?? styles?.base?.[id] ?? inherited?.[scope]?.[id] ?? inherited?.base?.[id];
   const layout = effective('layout');
+  const position = effective('position');
   // Set at any size: such a row always shows, so "From All sizes" and "Phone uses …" are never hidden.
   const setAnywhere = (id: string) => own[id] !== undefined || Object.values(styles ?? {}).some((sc) => sc?.[id] !== undefined);
   const relevant = (id: string) => {
     if (setAnywhere(id)) return true;
     if (id === 'order') return false;
-    if (id === 'columns') return layout === 'grid';
-    if (id === 'align' || id === 'justify' || id === 'gap' || id === 'wrap') return layout === 'stack' || layout === 'row' || layout === 'grid';
+    if (id === 'columns' || id === 'gridTemplate') return layout === 'grid';
+    if (id === 'align' || id === 'justify' || id === 'gap' || id === 'wrap' || id === 'rowGap' || id === 'columnGap') return layout === 'stack' || layout === 'row' || layout === 'grid';
+    // Offsets do nothing until the element is positioned.
+    if (id === 'inset') return position !== undefined && position !== 'static';
     return true;
   };
-  // Long lists show the first two groups plus anything already set; the rest sit behind one disclosure.
+  // Long lists show the common controls of the first two groups plus anything already set; the rest sit behind
+  // one disclosure.
   const entries = [...groups.entries()];
   const long = entries.reduce((n, [, l]) => n + l.filter((p) => relevant(p.id)).length, 0) > 10;
   const primary = new Set(entries.slice(0, 2).map(([g]) => g));
-  const isPrimary = (g: StylePropDef['group']) => !long || primary.has(g);
-  const hiddenCount = long ? entries.reduce((n, [g, l]) => n + (primary.has(g) ? 0 : l.filter((p) => relevant(p.id) && !setAnywhere(p.id)).length), 0) : 0;
+  const isPrimary = (g: StylePropDef['group'], p: StylePropDef) => !long || (primary.has(g) && !p.advanced);
+  const tucked = (g: StylePropDef['group'], p: StylePropDef) => !isPrimary(g, p) && relevant(p.id) && !setAnywhere(p.id);
+  const hiddenCount = entries.reduce((n, [g, l]) => n + l.filter((p) => tucked(g, p)).length, 0);
   const total = Object.values(styles ?? {}).reduce((n, s) => n + Object.keys(s ?? {}).length, 0);
   const here = Object.keys(own).length;
   const sizeName = (s: ResponsiveScope) => SCOPE_LABEL[s].toLowerCase();
@@ -276,7 +283,7 @@ export function StyleControls({
               title={resetName}
               aria-label={resetName}
               onClick={() => {
-                focusNext(`[data-prop="${p.id}"] :is(select, input)`, '.style-more', '[role="radio"][aria-checked="true"]');
+                focusNext(`[data-prop="${p.id}"] :is(select, input, textarea)`, '.style-more', '[role="radio"][aria-checked="true"]');
                 onSet(p.id, null);
               }}
             >
@@ -314,9 +321,9 @@ export function StyleControls({
   const shown = (pick: (g: StylePropDef['group'], p: StylePropDef) => boolean) =>
     entries.map(([g, list]) => [g, list.filter((p) => relevant(p.id) && pick(g, p))] as const).filter(([, list]) => list.length);
 
-  const before = shown((g, p) => isPrimary(g) || (!showAll && setAnywhere(p.id)));
-  const after = showAll ? shown((g) => !isPrimary(g)) : [];
-  const moreGroups = entries.filter(([g, l]) => !isPrimary(g) && l.some((p) => relevant(p.id) && !setAnywhere(p.id))).map(([g]) => STYLE_GROUP_LABELS[g]);
+  const before = shown((g, p) => isPrimary(g, p) || (!showAll && setAnywhere(p.id)));
+  const after = showAll ? shown((g, p) => !isPrimary(g, p)) : [];
+  const moreGroups = entries.filter(([g, l]) => l.some((p) => tucked(g, p))).map(([g]) => STYLE_GROUP_LABELS[g]);
   const size = sizeName(scope);
   const subject = target ? ` to ${target}` : '';
   // The reset clears the size being edited and nothing else; clearing every size is a separate, named choice.
@@ -333,7 +340,7 @@ export function StyleControls({
     <div className="style-controls" ref={root}>
       <ScopePicker styles={styles} />
       {before.map(([g, list]) => group(g, list))}
-      {long && (
+      {long && (showAll || hiddenCount > 0) && (
         <button type="button" className="style-more" aria-expanded={showAll} aria-controls={moreId} onClick={() => setShowAll(!showAll)}>
           {showAll ? <ChevronUp /> : <ChevronDown />}
           <span className="style-more-text">
@@ -491,6 +498,20 @@ function Control({
           if (t.trim() === '') onSet(null);
           else if (Number.isFinite(n)) onSet(/%$/.test(t.trim()) && def.max === 1 ? n / 100 : n);
         }}
+      />
+    );
+  }
+  if (def.kind === 'css') {
+    return (
+      <DraftInput
+        className={`textarea style-input mono${state}`}
+        multiline
+        rows={3}
+        value={set ? String(value) : ''}
+        placeholder={def.placeholder}
+        ariaLabel={label}
+        aria-describedby={describedBy}
+        onCommit={(t) => onSet(t.trim() ? t.trim() : null)}
       />
     );
   }

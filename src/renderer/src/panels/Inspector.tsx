@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, OwnerRef, PageDoc, ProjectState, ResponsiveStyles, StyleValue } from '@shared/types';
 import { isBinding } from '@shared/types';
+import { styleSetFor } from '@shared/styles';
 import type { EditOperation } from '@shared/ops';
 import { effectiveTokens } from '@generator/index';
 import { catalogueComponent } from '@catalogue/index';
@@ -705,26 +706,6 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
       </Section>
     </>
   );
-}
-
-function styleSetFor(node: GraphNode): string[] | undefined {
-  const spacing = ['marginBlockStart', 'marginBlockEnd', 'paddingBlock', 'paddingInline'];
-  const appearance = ['color', 'background', 'border', 'radius', 'shadow', 'opacity', 'hidden'];
-  switch (node.kind) {
-    case 'text':
-      return ['textStyle', 'fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'textAlign', 'maxWidth', ...spacing, ...appearance];
-    case 'image':
-      return ['width', 'maxWidth', 'aspectRatio', 'objectFit', 'radius', 'shadow', 'marginBlockStart', 'marginBlockEnd', 'opacity', 'hidden'];
-    case 'link':
-      return ['width', 'marginBlockStart', 'marginBlockEnd', 'color', 'background', 'radius', 'hidden'];
-    case 'icon':
-      return ['color', 'fontSize', 'background', 'radius', 'hidden'];
-    case 'element':
-      // Containers: layout, spacing, size and surface. Image-only and per-letter text controls do nothing here.
-      return ['layout', 'columns', 'align', 'justify', 'wrap', 'gap', 'order', ...spacing, 'width', 'maxWidth', 'minHeight', 'marginInline', 'textAlign', 'color', 'background', 'border', 'radius', 'shadow', 'opacity', 'hidden'];
-    default:
-      return undefined;
-  }
 }
 
 /** Where a component is used, in words: "Home and About", "Home, About and 3 more". */
