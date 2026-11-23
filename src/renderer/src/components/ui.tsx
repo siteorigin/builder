@@ -1,4 +1,5 @@
-import { Children, cloneElement, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { Children, cloneElement, isValidElement, useCallback, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, CircleCheck, Info, X } from 'lucide-react';
 import { getConfirm, markDraft, onConfirmChange, useStore } from '../store';
@@ -125,118 +126,227 @@ export interface MenuItem {
   heading?: string;
 }
 
-/**
- * Popup menu (WAI-ARIA APG menu pattern): focus moves to the first enabled item, arrow keys, Home/End and
- * first letters move between items, Enter/Space choose, Escape or Tab closes and returns focus.
- */
 /** Number of popup menus open; global editor shortcuts stay out of the way while one is. */
 export const openMenus = { count: 0 };
 /** The trigger of the most recently used menu, so a dialog opened from a menu item can return focus to it. */
 const menuReturn: { target: HTMLElement | null } = { target: null };
-const ITEM = '[role^="menuitem"]:not(:disabled)';
+const ITEM = '[role^="menuitem"]:not([data-disabled])';
 
-export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger }: { x: number; y: number; items: MenuItem[]; onClose: () => void; label?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; trigger?: HTMLElement }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x, y });
-  const hasChecks = items.some((it) => it.checked !== undefined);
+/** Whether the last input was a key. A keyboard-opened menu lands on its first item (its last for
+ *  `focusLast`); a pointer-opened one focuses the menu itself and waits for the arrow keys, so a click never
+ *  shows a highlight the pointer did not make. Tracked here rather than by Radix, because the menu mounts
+ *  after the key that opened it. */
+let keyboardInput = false;
+if (typeof window !== 'undefined') {
+  window.addEventListener('keydown', () => (keyboardInput = true), true);
+  window.addEventListener('pointerdown', () => (keyboardInput = false), true);
+}
+/** Pointer input this window cannot see (a click in the page preview frame) reported by whoever saw it. */
+export function notePointerInput() {
+  keyboardInput = false;
+}
+
+type Box = { left: number; top: number; width: number; height: number };
+const boxOf = (el: HTMLElement): Box => {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, top: r.top, width: r.width, height: r.height };
+};
+
+/**
+ * Popup menu, built on Radix DropdownMenu (WAI-ARIA APG menu pattern). It opens at a point (right-click) or
+ * against a trigger, flipping and shifting to stay 8px inside the window. A keyboard-opened menu focuses
+ * its first item (its last with `focusLast`); Up/Down wrap, Home/End jump, letters jump by label,
+ * Enter/Space choose, Escape or Tab close. It is modal, so the first press outside (in the page preview too)
+ * only closes it. Focus returns to the trigger (else whatever had focus when it opened) unless an action
+ * moved it somewhere, such as into a dialog.
+ */
+export function Menu({ x, y, items, onClose, label, alignEnd, returnTo, trigger, focusLast }: { x: number; y: number; items: MenuItem[]; onClose: () => void; label?: string; alignEnd?: boolean; returnTo?: HTMLElement | null; trigger?: HTMLElement; focusLast?: boolean }) {
+  const contentRef = useRef<HTMLDivElement>(null);
   // Who gets focus back when the menu closes: the trigger, else whatever had focus when it opened.
   const opener = useRef<HTMLElement | null>(returnTo ?? (document.activeElement as HTMLElement | null));
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const left = alignEnd ? x - r.width : x;
-    setPos({ x: Math.max(8, Math.min(left, window.innerWidth - r.width - 8)), y: Math.max(8, Math.min(y, window.innerHeight - r.height - 8)) });
-    (el.querySelector<HTMLElement>(`${ITEM}[aria-checked="true"]`) ?? el.querySelector<HTMLElement>(ITEM))?.focus();
-  }, [x, y, alignEnd]);
+  // If an action removes the opener (Delete removes the chip), focus stays in the same region instead.
+  const region = useRef<HTMLElement | null>(opener.current?.closest<HTMLElement>('.canvas, [role="tabpanel"], .side-panel-view, .toolbar') ?? null);
+  /** Set when Tab closed the menu: focus then continues from the opener in that direction (APG menu). */
+  const tabbed = useRef<0 | 1 | -1>(0);
+  const [anchor, setAnchor] = useState<Box>(() => (trigger ? boxOf(trigger) : { left: x, top: y, width: 0, height: 0 }));
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  const checked = items.findIndex((it) => it.checked);
+  const radios = items.some((it) => it.checked !== undefined);
+  // One leading slot holds an item's icon or its check, so every label starts in the same column.
+  const lead = radios || items.some((it) => it.icon);
+  useEffect(() => {
+    if (!keyboardInput) return;
+    requestAnimationFrame(() => {
+      const list = [...(contentRef.current?.querySelectorAll<HTMLElement>(ITEM) ?? [])];
+      (focusLast ? list[list.length - 1] : list[0])?.focus();
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     openMenus.count++;
-    // A press on the menu's own trigger is left to the trigger, which toggles the menu closed.
-    const close = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && !(trigger && trigger.contains(e.target as Node)) && onClose();
-    setTimeout(() => window.addEventListener('mousedown', close), 0);
-    window.addEventListener('blur', onClose);
+    const close = () => closeRef.current();
+    // Follow a trigger that moves with the layout; close if it goes away.
+    const follow = () => (trigger ? (trigger.isConnected ? setAnchor(boxOf(trigger)) : close()) : undefined);
+    window.addEventListener('blur', close);
+    window.addEventListener('resize', follow);
     return () => {
       openMenus.count--;
-      window.removeEventListener('mousedown', close);
-      window.removeEventListener('blur', onClose);
-      const o = opener.current;
-      if (o && document.contains(o)) setTimeout(() => (document.activeElement === document.body || !document.activeElement) && o.focus(), 0);
+      window.removeEventListener('blur', close);
+      window.removeEventListener('resize', follow);
+      const dir = tabbed.current;
+      setTimeout(() => {
+        if (document.activeElement && document.activeElement !== document.body) return;
+        const o = opener.current;
+        const back = o && o.isConnected ? o : fallbackIn(region.current);
+        back?.focus({ preventScroll: true });
+        if (dir && back) stepTab(back, dir);
+      }, 0);
     };
-  }, [onClose]);
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    const list = [...(ref.current?.querySelectorAll<HTMLElement>(ITEM) ?? [])];
-    const i = list.indexOf(document.activeElement as HTMLElement);
-    const go = (n: number) => list[(n + list.length) % list.length]?.focus();
-    if (e.key === 'ArrowDown') go(i + 1);
-    else if (e.key === 'ArrowUp') go(i - 1);
-    else if (e.key === 'Home') go(0);
-    else if (e.key === 'End') go(list.length - 1);
-    else if (e.key === 'Escape' || e.key === 'Tab') onClose();
-    else if (e.key.length === 1 && /\S/.test(e.key)) {
-      const k = e.key.toLowerCase();
-      const next = [...list.slice(i + 1), ...list.slice(0, i + 1)].find((n) => n.textContent?.trim().toLowerCase().startsWith(k));
-      next?.focus();
-    } else return;
-    e.preventDefault();
-    e.stopPropagation();
+  }, [trigger]);
+  const choose = (it: MenuItem) => {
+    menuReturn.target = opener.current;
+    it.onSelect?.();
   };
-  return createPortal(
-    <div className="menu" ref={ref} style={{ left: pos.x, top: pos.y }} role="menu" aria-label={label} onKeyDown={onKeyDown}>
-      {items.map((it, i) =>
-        it.separator ? (
-          <div key={i} className="menu-sep" role="separator" />
-        ) : it.heading ? (
-          <div key={i} className="menu-label" role="presentation">
-            {it.heading}
-          </div>
-        ) : (
-          <button
-            key={i}
-            role={it.checked !== undefined ? 'menuitemradio' : 'menuitem'}
-            aria-checked={it.checked}
-            tabIndex={-1}
-            className={`menu-item${it.danger ? ' danger' : ''}`}
-            disabled={it.disabled}
-            onClick={() => {
-              menuReturn.target = opener.current;
-              onClose();
-              it.onSelect?.();
-            }}
-          >
-            {hasChecks && <span className="check">{it.checked ? <Check size={15} /> : null}</span>}
-            {it.icon}
+  const body = items.map((it, i) =>
+    it.separator ? (
+      <DropdownMenu.Separator key={i} className="menu-sep" />
+    ) : it.heading ? (
+      <DropdownMenu.Label key={i} className="menu-label">
+        {it.heading}
+      </DropdownMenu.Label>
+    ) : (
+      (() => {
+        const radio = it.checked !== undefined;
+        const indicator = (
+          <DropdownMenu.ItemIndicator className="check">
+            <Check />
+          </DropdownMenu.ItemIndicator>
+        );
+        const props = { className: `menu-item${it.danger ? ' danger' : ''}`, disabled: it.disabled, textValue: it.label, onSelect: () => choose(it) };
+        const inner = (
+          <>
+            {lead && <span className="menu-lead">{it.icon ?? (radio ? indicator : null)}</span>}
             <span className="grow">{it.label}</span>
             {it.hint && <span className="hint">{it.hint}</span>}
             {it.shortcut && <span className="kbd">{it.shortcut}</span>}
-          </button>
-        )
+            {radio && it.icon && <span className="menu-trail">{indicator}</span>}
+          </>
+        );
+        return radio ? (
+          <DropdownMenu.RadioItem key={i} value={String(i)} {...props}>
+            {inner}
+          </DropdownMenu.RadioItem>
+        ) : (
+          <DropdownMenu.Item key={i} {...props}>
+            {inner}
+          </DropdownMenu.Item>
+        );
+      })()
+    )
+  );
+  return (
+    <DropdownMenu.Root open modal onOpenChange={(o) => !o && closeRef.current()}>
+      {createPortal(
+        <DropdownMenu.Trigger asChild>
+          <span className="menu-anchor" aria-hidden="true" tabIndex={-1} style={{ left: anchor.left, top: anchor.top, width: anchor.width, height: anchor.height }} />
+        </DropdownMenu.Trigger>,
+        document.body
       )}
-    </div>,
-    document.body
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          ref={contentRef}
+          className={`menu${lead ? ' has-lead' : ''}`}
+          // Named by its label, not by the hidden anchor Radix would otherwise point at.
+          aria-label={label}
+          aria-labelledby={undefined}
+          side="bottom"
+          align={alignEnd ? 'end' : 'start'}
+          sideOffset={trigger ? 4 : 0}
+          collisionPadding={8}
+          loop
+          // Focus goes back to the opener in the cleanup above, and only when nothing else claimed it.
+          onCloseAutoFocus={(e) => e.preventDefault()}
+          // Keys used by the menu stay in the menu: the menu closes before the event would reach the editor's
+          // shortcuts, so without this Escape would also deselect and Enter would act on the page.
+          onEscapeKeyDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key !== 'Tab') return;
+            e.preventDefault();
+            tabbed.current = e.shiftKey ? -1 : 1;
+            closeRef.current();
+          }}
+        >
+          {radioRuns(items, body, checked)}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
+/** Wrap each run of consecutive checkable items in its own radio group; everything else stays a plain item. */
+function radioRuns(items: MenuItem[], body: ReactNode[], checked: number): ReactNode[] {
+  const out: ReactNode[] = [];
+  for (let i = 0; i < items.length; ) {
+    if (items[i].checked === undefined) {
+      out.push(body[i]);
+      i++;
+      continue;
+    }
+    const start = i;
+    while (i < items.length && items[i].checked !== undefined) i++;
+    out.push(
+      <DropdownMenu.RadioGroup key={`radio-${start}`} value={checked >= start && checked < i ? String(checked) : ''}>
+        {body.slice(start, i)}
+      </DropdownMenu.RadioGroup>
+    );
+  }
+  return out;
+}
+
+const visibleEl = (n: HTMLElement) => n.isConnected && n.offsetParent !== null;
+/** The first thing to focus in a region whose own control went away: itself if it takes focus, else its first control. */
+function fallbackIn(region: HTMLElement | null): HTMLElement | null {
+  if (!region || !region.isConnected) return null;
+  if (region.tabIndex >= 0 || region.hasAttribute('tabindex')) return region;
+  return [...region.querySelectorAll<HTMLElement>(FOCUSABLE)].find(visibleEl) ?? null;
+}
+/** Move focus one Tab stop on from `from`, as the Tab that closed a menu would have. */
+function stepTab(from: HTMLElement, dir: 1 | -1) {
+  const stops = [...document.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((n) => n.tabIndex >= 0 && visibleEl(n) && !n.closest('[inert]'));
+  const i = stops.indexOf(from);
+  const next = i < 0 ? null : stops[i + dir];
+  next?.focus();
+}
+
+let menuKey = 0;
+
 /** Hook that shows a menu at a position, or below its trigger (which gets aria-expanded while open). */
 export function useMenu() {
-  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[]; label?: string; trigger?: HTMLElement; alignEnd?: boolean; returnTo?: HTMLElement | null } | null>(null);
+  const [menu, setMenu] = useState<{ key: number; x: number; y: number; items: MenuItem[]; label?: string; trigger?: HTMLElement; alignEnd?: boolean; returnTo?: HTMLElement | null; focusLast?: boolean } | null>(null);
   useEffect(() => {
     if (!menu?.trigger) return;
     const t = menu.trigger;
     t.setAttribute('aria-expanded', 'true');
     return () => t.setAttribute('aria-expanded', 'false');
   }, [menu]);
-  const node = menu ? <Menu {...menu} returnTo={menu.trigger ?? menu.returnTo} onClose={() => setMenu(null)} /> : null;
+  const close = useCallback(() => setMenu(null), []);
+  const node = menu ? (() => {
+    const { key, ...props } = menu;
+    return <Menu key={key} {...props} returnTo={menu.trigger ?? menu.returnTo} onClose={close} />;
+  })() : null;
   return {
     node,
     isOpen: !!menu,
     /** Open at a point (right-click); focus returns to `returnTo` (the row) on close. */
-    open: (x: number, y: number, items: MenuItem[], label?: string, returnTo?: HTMLElement | null) => setMenu({ x, y, items, label, returnTo }),
-    /** Open below a trigger button; small icon triggers align the menu's right edge with theirs. */
-    openAt: (el: HTMLElement, items: MenuItem[], label?: string) => {
+    open: (x: number, y: number, items: MenuItem[], label?: string, returnTo?: HTMLElement | null) => setMenu({ key: ++menuKey, x, y, items, label, returnTo }),
+    /** Open below a trigger button; small icon triggers align the menu's right edge with theirs. With
+     *  `focusLast` (Up arrow on the trigger), a keyboard-opened menu starts on its last item. */
+    openAt: (el: HTMLElement, items: MenuItem[], label?: string, opts?: { focusLast?: boolean }) => {
       if (menu?.trigger === el) return setMenu(null);
       const r = el.getBoundingClientRect();
       const narrow = r.width < 48;
-      setMenu({ x: narrow ? r.right : r.left, y: r.bottom + 4, items, label, trigger: el, alignEnd: narrow });
+      setMenu({ key: ++menuKey, x: narrow ? r.right : r.left, y: r.bottom + 4, items, label, trigger: el, alignEnd: narrow, focusLast: opts?.focusLast });
     }
   };
 }

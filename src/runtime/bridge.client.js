@@ -8,6 +8,8 @@ let mode = 'edit';
 let revision = 0;
 let selected = null; // descriptor
 let hovered = null;
+/** The innermost element under the pointer, as last reported to the editor. */
+let pointerAt = null;
 let editing = null; // { el, desc, original }
 const errors = [];
 
@@ -80,16 +82,19 @@ document.addEventListener(
     if (mode !== 'edit' || editing) return;
     const chain = chainFrom(e.target);
     const next = chain[0] ? { ctx: chain[0].ctx, node: chain[0].node, items: chain[0].items } : null;
-    if (JSON.stringify(next) !== JSON.stringify(hovered)) {
-      hovered = next;
+    // Report what is under the pointer; the editor decides what that hover means (what a click would
+    // select) and sends it back with `track`, which is what gets outlined.
+    if (JSON.stringify(next) !== JSON.stringify(pointerAt)) {
+      pointerAt = next;
       send('hover', { chain });
-      scheduleRects();
     }
   },
   true
 );
-document.addEventListener('mouseleave', () => {
+document.documentElement.addEventListener('mouseleave', () => {
+  pointerAt = null;
   hovered = null;
+  send('hover', { chain: [] });
   scheduleRects();
 });
 
@@ -262,6 +267,7 @@ window.addEventListener('message', async (e) => {
       if (editing) commitEdit();
       document.documentElement.toggleAttribute('data-so-editing', mode === 'edit');
       hovered = null;
+      pointerAt = null;
       scheduleRects();
       break;
     case 'track':

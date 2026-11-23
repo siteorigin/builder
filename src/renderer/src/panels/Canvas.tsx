@@ -1,16 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Component, Copy, Ellipsis, Eye, GripVertical, MousePointerClick, PanelRight, Pencil, RefreshCcw, Sparkles, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, Box, Component, Copy, Ellipsis, Eye, GripVertical, Image, Link2, PanelRight, Pencil, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { applyOps } from '../store';
 import { treeFor } from '../lib/model';
-import type { ElementRef } from '@shared/types';
+import type { ElementRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { api, confirmDialog, getState, markDraft, setState, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { boundaryOf, descOf, refLabel, resolveRef, selectionFromChain, type BridgeDesc } from '../lib/model';
 import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateSelection, moveSelection, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
-import { Spinner, useMenu } from '../components/ui';
+import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 
 /** True while an inline text edit is open in the preview; shortcuts must not act on the selection then. */
@@ -49,7 +49,21 @@ export function Canvas() {
   /** The route the editor last asked the page to show; its acknowledgement is the one that counts. */
   const pendingNav = useRef<string | null>(null);
   const measureWaiters = useRef(new Map<string, (rects: Array<Rect | null>) => void>());
+  /** The element chain under the pointer in the page, so hover can be re-resolved when the selection changes. */
+  const hoverChain = useRef<BridgeDesc[] | null>(null);
+  const canvasHover = useRef<ElementRef | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  /** The canvas itself: where focus goes when the chip control that had it goes away. */
+  const canvasRef = useRef<HTMLElement>(null);
+  const [chipW, setChipW] = useState(0);
+  /** Escape hides the hover tag (WCAG 1.4.13) until the pointer moves to another element. */
+  const [tagHidden, setTagHidden] = useState(false);
+  useEffect(() => setTagHidden(false), [hover && refKey(hover)]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && getState().hover && setTagHidden(true);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, []);
   const [reorder, setReorder] = useState<{ rects: Rect[]; from: number; to: number } | null>(null);
   const url = runtime.state === 'ready' ? runtime.url : null;
   const origin = url ? new URL(url).origin : null;
@@ -110,11 +124,16 @@ export function Canvas() {
           syncPage(path);
           break;
         }
+        case 'hover':
+          hoverChain.current = (p.chain as BridgeDesc[]) ?? null;
+          resolveHover();
+          break;
         case 'rects':
           setState({ rects: { selected: (p.selected as Rect[]) ?? [], hovered: (p.hovered as Rect[]) ?? [] } });
           break;
         case 'select': {
           if (!st) return;
+          pagePick();
           const chain = p.chain as BridgeDesc[];
           const next = withinDefinition(chain.length ? selectionFromChain(st, chain, s.selection, !!p.alt || !!p.meta || !!s.definitionMode) : null);
           setState({ selection: next });
@@ -161,12 +180,13 @@ export function Canvas() {
           break;
         case 'contextmenu': {
           if (!st) return;
+          pagePick();
           const ref = withinDefinition(selectionFromChain(st, p.chain as BridgeDesc[], s.selection, false));
           if (!ref && s.definitionMode) {
             setState({ selection: null });
             break;
           }
-          if (ref) setState({ selection: ref });
+          if (ref) setState({ selection: ref, ...(s.rightTab === 'styles' ? { rightTab: 'inspect' as const } : {}) });
           const fr = frameRef.current!.getBoundingClientRect();
           const z = currentZoom();
           openContextMenu(fr.left + Number(p.x) * z, fr.top + Number(p.y) * z, ref);
@@ -209,12 +229,52 @@ export function Canvas() {
     if (match && match.id !== getState().pageId) setState({ pageId: match.id, selection: null });
   }
 
+  /** A click in the page is pointer input this window never sees: menus opened from it should not jump to
+   *  an item, and a chip button that kept focus from an earlier keyboard visit should not keep its ring. */
+  function pagePick() {
+    notePointerInput();
+    // Blur rather than move focus: the window's last input was a key, so a moved focus would draw a ring.
+    // The editor's shortcuts (Delete, ⌘D) still act on the selection from the page body.
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.closest('.ov-chip')) active.blur();
+  }
+
+  /** Hover previews what a click would select: the same resolution as a click, against the current
+   *  selection. Nothing while previewing, editing text, reordering or with a menu open. */
+  function resolveHover() {
+    const s = getState();
+    const st = s.snapshot?.state;
+    const chain = hoverChain.current;
+    const next = st && chain?.length && s.mode === 'edit' && !inlineEdit.active && !openMenus.count ? withinDefinition(selectionFromChain(st, chain, s.selection, false)) : null;
+    if (!sameRef(next, s.hover)) setState({ hover: next });
+    canvasHover.current = next;
+  }
+
+  // Pointer events inside the page never reach this window, so any move seen here (the pasteboard, the chip,
+  // a panel) means the pointer has left the page and the page's hover ends. A hover a Layers row set stays.
+  useEffect(() => {
+    const leave = () => {
+      if (!hoverChain.current) return;
+      hoverChain.current = null;
+      const s = getState();
+      if (s.hover && sameRef(s.hover, canvasHover.current)) setState({ hover: null });
+      canvasHover.current = null;
+    };
+    window.addEventListener('pointermove', leave, true);
+    return () => window.removeEventListener('pointermove', leave, true);
+  }, []);
+
   function syncTrack() {
     const s = getState();
     const st = s.snapshot?.state;
     if (!st) return;
-    post('track', { selected: s.selection ? descOf(st, s.selection) : null, hovered: s.hover ? descOf(st, s.hover) : undefined });
+    post('track', { selected: s.selection ? descOf(st, s.selection) : null, hovered: s.hover ? descOf(st, s.hover) : null });
   }
+
+  // A click changes what the next click would select, even if the pointer has not moved.
+  useEffect(() => {
+    if (hoverChain.current) resolveHover();
+  }, [selection && refKey(selection), mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep the bridge in sync with selection, hover and document revisions.
   useEffect(() => {
@@ -249,30 +309,47 @@ export function Canvas() {
     return inst?.kind === 'instance' && inst.definitionId === dm.definitionId ? (ref.instancePath.length ? ref : { ...ref, instancePath: [ref.nodeId], nodeId: st.components[dm.definitionId]?.tree?.rootIds[0] ?? ref.nodeId }) : null;
   }
 
-  function openContextMenu(x: number, y: number, ref: ElementRef | null, trigger?: HTMLElement) {
+  function openContextMenu(x: number, y: number, ref: ElementRef | null, trigger?: HTMLElement, focusLast?: boolean) {
     if (!ref || !state) return;
     const t = structuralTarget(ref);
     const r = resolveRef(state, boundaryOf(state, ref));
     const isInstance = r.node?.kind === 'instance';
     const parent = ref.instancePath.length ? { owner: ref.owner, instancePath: ref.instancePath.slice(0, -1), nodeId: ref.instancePath[ref.instancePath.length - 1] } : null;
     const locked = !t || t.owner.kind === 'shell';
+    const sib = siblings(state, t);
+    const reorderable = !!sib && sib.count > 1;
+    const name = chromeLabel(state, ref);
+    // Commands act on the element the menu names, even if the selection moved on while it was open (a
+    // Duplicate that finished selects its copy); one that no longer exists does nothing.
+    const on = (fn: () => unknown) => () => {
+      const now = getState().snapshot?.state;
+      if (!now || !resolveRef(now, ref).node) return;
+      if (!sameRef(getState().selection, ref)) setState({ selection: ref });
+      void fn();
+    };
     const items = [
-        { heading: refLabel(state, ref) },
-        ...(parent ? [{ label: `Select ${refLabel(state, parent)}`, icon: <Component />, shortcut: 'Esc', onSelect: () => setState({ selection: withinDefinition(parent) }) }] : []),
+        { heading: name },
+        ...(parent ? [{ label: `Select ${chromeLabel(state, parent)}`, icon: <Component />, onSelect: () => setState({ selection: withinDefinition(parent) }) }] : []),
         { label: 'Ask AI about this', icon: <Sparkles />, shortcut: '⌘J', onSelect: () => askAiAbout(ref) },
         ...(t
           ? [
-              { separator: true },
-              { label: 'Move up', icon: <ArrowUp />, shortcut: '⇧⌘↑', onSelect: () => void moveSelection(-1) },
-              { label: 'Move down', icon: <ArrowDown />, shortcut: '⇧⌘↓', onSelect: () => void moveSelection(1) },
-              ...(locked ? [] : [{ label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() }]),
+              ...(reorderable || !locked || !isInstance ? [{ separator: true }] : []),
+              ...(reorderable
+                ? [
+                    { label: 'Move up', icon: <ArrowUp />, shortcut: '⇧⌘↑', disabled: sib!.index === 0, onSelect: on(() => moveSelection(-1)) },
+                    { label: 'Move down', icon: <ArrowDown />, shortcut: '⇧⌘↓', disabled: sib!.index >= sib!.count - 1, onSelect: on(() => moveSelection(1)) }
+                  ]
+                : []),
+              ...(locked ? [] : [{ label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: on(duplicateSelection) }]),
               ...(!isInstance ? [{ label: 'Create component…', icon: <Component />, onSelect: () => setState({ modal: { kind: 'create-component' as const, ref: t } }) }] : []),
-              ...(locked ? [] : [{ separator: true }, { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }])
+              ...(locked ? [] : [{ separator: true }, { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: on(deleteSelection) }])
             ]
           : [])
       ];
-    if (trigger) menu.openAt(trigger, items, refLabel(state, ref));
-    else menu.open(x, y, items, refLabel(state, ref));
+    if (trigger) return menu.openAt(trigger, items, `${name} actions`, { focusLast });
+    // A right-click on the page: once the chip for the new selection has rendered, its More actions button
+    // is where focus returns, so the keyboard picks up in the toolbar rather than inside the page.
+    requestAnimationFrame(() => menu.open(x, y, items, `${name} actions`, wrapRef.current?.querySelector<HTMLElement>('.ov-chip [aria-haspopup="menu"]') ?? canvasRef.current));
   }
 
   /** Drag a selected element to reorder it among its siblings, with a live insertion indicator. */
@@ -285,13 +362,18 @@ export function Canvas() {
     const tree = treeFor(st, t.owner);
     const info = tree && findParent(tree, t.nodeId);
     if (!info || info.list.length < 2) return;
+    // A quick press can be released before the siblings are measured: catch it, so the drag never starts.
+    let released = false;
+    const early = () => (released = true);
+    window.addEventListener('pointerup', early, { once: true });
     const requestId = Math.random().toString(36).slice(2);
     const rects = await new Promise<Array<Rect | null>>((resolve) => {
       measureWaiters.current.set(requestId, resolve);
       post('measure', { requestId, descs: info.list.map((id) => descOf(st, { owner: t.owner, instancePath: [], nodeId: id })) });
       setTimeout(() => resolve([]), 1500);
     });
-    if (rects.length !== info.list.length || rects.some((r) => !r)) return;
+    window.removeEventListener('pointerup', early);
+    if (released || rects.length !== info.list.length || rects.some((r) => !r)) return;
     const list = rects as Rect[];
     const horizontal = list.length > 1 && Math.abs(list[1].y - list[0].y) < 4;
     const from = info.index;
@@ -390,12 +472,14 @@ export function Canvas() {
   const selBoxes = mode === 'edit' && !stylesOpen ? rects.selected.map(toBox).map((b) => ({ left: b.left - pad, top: b.top - pad, width: b.width + pad * 2, height: b.height + pad * 2 })) : [];
   const hovBoxes = mode === 'edit' ? rects.hovered.map(toBox) : [];
   const isPart = !!selection?.instancePath.length;
-  const selLabel = selection && state ? refLabel(state, selection) : '';
-  const hovering = hover && !sameRef(hover, selection);
+  const selLabel = selection && state ? chromeLabel(state, selection) : '';
+  const hovering = hover && !sameRef(hover, selection) && !reorder && !dragging && !menu.isOpen;
   const firstSel = selBoxes[0];
+  const defRoot = !!definitionMode && !!selection && selection.instancePath.length === 1 && state?.components[definitionMode.definitionId]?.tree?.rootIds[0] === selection.nodeId;
+  const placement = firstSel && selection ? chipPlacement(firstSel, !selection.instancePath.length || defRoot) : null;
 
   return (
-    <main className={`canvas${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}`} aria-label="Website preview">
+    <main ref={canvasRef} tabIndex={-1} className={`canvas${selection?.owner.kind === 'shell' && !definitionMode ? ' sel-shared' : ''}`} aria-label="Website preview">
       {runtimeCard && <div className="canvas-state">{runtimeCard}</div>}
       {!runtimeCard && url && !frameReady && !frameError && (
         <div className="canvas-state soft" role="status">
@@ -431,10 +515,14 @@ export function Canvas() {
           </button>
         </div>
       )}
-      <div className="canvas-scroll" ref={scrollRef} onMouseDown={(e) => e.target === e.currentTarget && setState({ selection: null })}>
+      <div
+        className="canvas-scroll"
+        ref={scrollRef}
+        onMouseDown={(e) => e.target === e.currentTarget && setState({ selection: null })}
+      >
         {url && initialSrc && (
           <div className="frame-wrap" ref={wrapRef} style={{ width: viewport * z, height: frameH * z, marginTop: 14 }}>
-            <div className={`frame-width-label${firstSel && isPart && !definitionMode ? (firstSel.left + 360 > viewport * z - 190 ? ' gone' : ' aside') : ''}`}>
+            <div className={`frame-width-label${placement === 'strip' && !reorder ? (Math.min(firstSel.left, viewport * z - chipW) + chipW + 12 > viewport * z - 190 ? ' gone' : ' aside') : ''}`}>
               <b>{viewport}</b> px {viewport < 768 ? '· Phone range' : viewport < 1024 ? '· Tablet range' : '· Desktop range'}
             </div>
             <div className="frame-box" style={{ width: viewport, height: frameH, transform: `scale(${z})` }}>
@@ -453,9 +541,10 @@ export function Canvas() {
                 {hovering &&
                   hovBoxes.map((b, i) => (
                     <div key={`h${i}`} className="ov-box ov-hover" style={b}>
-                      {i === 0 && b.top > 22 && !selBoxes.some((sb) => Math.abs(sb.top - b.top) < 30 && Math.abs(sb.left - b.left) < 160) && (
-                        <span className="ov-label" style={{ left: -1, top: 0 }}>
-                          {state && hover ? refLabel(state, hover) : ''}
+                      {i === 0 && !tagHidden && b.height >= 40 && b.top + b.height > 30 && !(placement === 'inside' && firstSel && Math.abs(firstSel.top - b.top) < 34 && Math.abs(firstSel.left - b.left) < chipW + 8) && (
+                        // Kept in view when the element's top has scrolled out of the page.
+                        <span className="ov-label" style={b.top < 0 ? { top: 3 - b.top } : undefined}>
+                          {state && hover ? chromeLabel(state, hover) : ''}
                         </span>
                       )}
                     </div>
@@ -465,19 +554,21 @@ export function Canvas() {
                 ))}
                 {reorder && <ReorderIndicator rects={reorder.rects.map(toBox)} to={reorder.to} />}
               </div>
-              {firstSel && selection && !reorder && (
+              {firstSel && selection && state && placement && !reorder && (
                 <SelectionChip
                   box={firstSel}
                   frameWidth={viewport * z}
-                  frameHeight={frameH * z}
-                  name={definitionMode && selection.instancePath.length === 1 && state?.components[definitionMode.definitionId]?.tree?.rootIds[0] === selection.nodeId ? state.components[definitionMode.definitionId].name : selLabel}
-                  parent={isPart && state && !definitionMode ? refLabel(state, { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] }) : null}
-                  everywhere={!!definitionMode}
-                  topLevel={!selection.instancePath.length}
+                  placement={placement}
+                  name={defRoot ? state.components[definitionMode!.definitionId].name : selLabel}
+                  icon={kindIcon(state, selection)}
+                  parent={isPart && !definitionMode ? chromeLabel(state, { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] }) : null}
                   repeats={selBoxes.length}
-                  single={!!selection.itemPath?.length}
+                  item={itemOf(state, selection)}
                   repeatsLabel={selLabel ? `${selLabel.toLowerCase()}${/s$/.test(selLabel) ? '' : 's'}` : 'items'}
-                  onMore={(x, y, el) => openContextMenu(x, y, selection, el)}
+                  sib={siblings(state, structuralTarget(selection))}
+                  onWidth={setChipW}
+                  onLostFocus={() => canvasRef.current?.focus({ preventScroll: true })}
+                  onMore={(el, focusLast) => openContextMenu(0, 0, selection, el, focusLast)}
                   onGrip={startReorder}
                 />
               )}
@@ -517,92 +608,220 @@ function ReorderIndicator({ rects, to }: { rects: Array<{ left: number; top: num
   return <div className="ov-drop" style={style} role="presentation" />;
 }
 
+/** Where a structural target sits among its siblings, for the move controls and the drag handle. */
+function siblings(state: ProjectState, t: ElementRef | null): { index: number; count: number } | null {
+  if (!t) return null;
+  const tree = treeFor(state, t.owner);
+  const info = tree && findParent(tree, t.nodeId);
+  return info ? { index: info.index, count: info.list.length } : null;
+}
+
+/** The name the canvas chrome uses: the shared header and footer say so, since the green alone cannot. */
+function chromeLabel(state: ProjectState, ref: ElementRef): string {
+  if (ref.owner.kind === 'shell' && !ref.instancePath.length && boundaryOf(state, ref).nodeId === ref.nodeId) return ref.owner.id === 'header' ? 'Shared header' : 'Shared footer';
+  return refLabel(state, ref);
+}
+
+/** The same glyphs Layers uses for each kind of part. */
+function kindIcon(state: ProjectState, ref: ElementRef) {
+  if (ref.owner.kind === 'shell' && !ref.instancePath.length) return <Users />;
+  switch (resolveRef(state, ref).node?.kind) {
+    case 'instance':
+      return <Component />;
+    case 'text':
+      return <Type />;
+    case 'image':
+      return <Image />;
+    case 'link':
+      return <Link2 />;
+    case 'element':
+      return <Rows3 />;
+    default:
+      return <Box />;
+  }
+}
+
+/** For a part picked in one repeated item (one card of three), which item it is: "2 of 3". */
+function itemOf(state: ProjectState, ref: ElementRef): { n: number; count: number } | null {
+  const itemId = ref.itemPath?.[0];
+  if (!itemId || !ref.instancePath.length) return null;
+  const inst = resolveRef(state, { owner: ref.owner, instancePath: [], nodeId: ref.instancePath[0] }).node;
+  if (inst?.kind !== 'instance') return null;
+  for (const [key, prop] of Object.entries(state.components[inst.definitionId]?.properties ?? {})) {
+    const list = prop.type === 'list' ? (inst.props as Record<string, unknown> | undefined)?.[key] : null;
+    const n = Array.isArray(list) ? list.findIndex((it) => !!it && typeof it === 'object' && (it as { id?: unknown }).id === itemId) : -1;
+    if (n >= 0) return { n: n + 1, count: (list as unknown[]).length };
+  }
+  return null;
+}
+
+const CHIP_H = 28;
+const CHIP_GAP = 4;
+
 /**
- * The selection chip: the selection's name and its actions in one bar, placed outside the selection so it
- * never covers neighbouring content: above it when there is room, else inside its top edge for a tall
- * selection, else below it. It is kept inside the page frame horizontally and vertically.
+ * Where the chip goes. A tall section (with its top on screen) carries it inside its top edge, where its own
+ * padding is. A smaller element gets it above, when there is room inside the page. Everything else (parts,
+ * which sit among other content, and anything at or scrolled past the top of the page) parks it in the strip
+ * above the page frame, lined up with the selection, so it never covers the page.
  */
-function SelectionChip({ box, frameWidth, frameHeight, name, parent, repeats, repeatsLabel, single, everywhere, topLevel, onMore, onGrip }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; frameHeight: number; name: string; parent: string | null; repeats: number; repeatsLabel: string; single: boolean; everywhere: boolean; topLevel: boolean; onMore: (x: number, y: number, el?: HTMLElement) => void; onGrip: (e: React.PointerEvent) => void }) {
+function chipPlacement(box: { top: number; height: number }, topLevel: boolean): 'inside' | 'above' | 'strip' {
+  if (!topLevel) return 'strip';
+  if (box.top >= 0 && box.height > 120) return 'inside';
+  if (box.top >= CHIP_H + CHIP_GAP + 2) return 'above';
+  return 'strip';
+}
+
+/**
+ * The selection chip: a toolbar of the selection's name and actions. Its place comes from chipPlacement and
+ * it stays inside the page frame horizontally. One Tab stop: Left/Right/Home/End move between its buttons
+ * (WAI-ARIA APG toolbar); the drag handle is pointer-only, with Move up and Move down as its keyboard
+ * equivalent. Delete is not here: it lives at the end of More actions, in red, and on the Delete key.
+ */
+function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, onMore, onGrip, onWidth, onLostFocus }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: { n: number; count: number } | null; sib: { index: number; count: number } | null; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void }) {
   const selection = useStore((s) => s.selection);
   // With the inspector out of sight (dock closed, or AI / Site styles showing), the chip offers the way back.
   const inspectorHidden = useStore((s) => !s.dockOpen || s.rightTab !== 'inspect');
   const ref = useRef<HTMLDivElement>(null);
+  const current = useRef(0);
+  /** Whether focus is in the chip, so a control that disappears under it (the parent link, after its
+   *  click) hands focus to a neighbour rather than dropping it on the page body. */
+  const focusIn = useRef(false);
+  const lastFocused = useRef<HTMLElement | null>(null);
+  /** Focus fell to the page body because the chip control holding it was removed (not because it was blurred). */
+  const orphaned = () => focusIn.current && !!lastFocused.current && !lastFocused.current.isConnected && (!document.activeElement || document.activeElement === document.body);
   const [w, setW] = useState(200);
+  const buttons = () => [...(ref.current?.querySelectorAll<HTMLElement>('button') ?? [])];
+  // A new selection starts the toolbar's Tab stop at its first control.
+  const key = selection ? refKey(selection) : '';
   useLayoutEffect(() => {
-    if (ref.current) setW(ref.current.offsetWidth);
+    current.current = 0;
+  }, [key]);
+  useLayoutEffect(() => {
+    const width = ref.current?.offsetWidth ?? 0;
+    if (width && width !== w) (setW(width), onWidth(width));
+    // Roving tab stop: exactly one button is in the Tab order, the last one used.
+    const list = buttons();
+    const keep = Math.min(current.current, list.length - 1);
+    list.forEach((b, i) => (b.tabIndex = i === keep ? 0 : -1));
+    if (orphaned()) list[keep]?.focus();
+    // The menu button starts closed; useMenu owns aria-expanded from then on.
+    const more = ref.current?.querySelector('[aria-haspopup="menu"]');
+    if (more && !more.hasAttribute('aria-expanded')) more.setAttribute('aria-expanded', 'false');
   });
+  // When the chip itself goes (the selection was deleted or cleared) while it had focus, the canvas keeps it.
+  useEffect(
+    () => () => {
+      if (focusIn.current) requestAnimationFrame(() => orphaned() && onLostFocus());
+    },
+    [] // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const t = structuralTarget(selection);
-  const H = 26;
-  const GAP = 4;
-  // A section is tall and starts with its own padding, so its chip sits inside its top edge, where it
-  // covers nothing; outside-above would cover the header or the section before it. Smaller elements
-  // get the chip above them, or below when there is no room above.
-  // Parts (text, images and buttons inside a section) sit among other content, so their chip parks in the
-  // strip above the page frame, lined up with the part; the outline marks the part itself.
-  const parked = !topLevel && !everywhere;
-  const inside = !parked && box.height > 120;
-  const top = parked ? -H - 6 : inside ? box.top + GAP + 2 : box.top >= H + GAP + 2 ? box.top - H - GAP : Math.min(box.top + box.height + GAP, frameHeight - H - GAP);
-  const left = Math.max(0, Math.min(inside ? box.left + GAP + 2 : box.left, frameWidth - w));
+  const top = placement === 'strip' ? -CHIP_H - 6 : placement === 'inside' ? box.top + CHIP_GAP + 2 : box.top - CHIP_H - CHIP_GAP;
+  const left = Math.max(0, Math.min(placement === 'inside' ? box.left + CHIP_GAP + 2 : box.left, frameWidth - w));
   const parentRef = selection?.instancePath.length ? { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] } : null;
-  const canEdit = !!t && t.owner.kind !== 'shell';
+  const structural = !!t && !selection?.instancePath.length;
+  const canEdit = structural && t!.owner.kind !== 'shell';
+  const canReorder = structural && !!sib && sib.count > 1;
+  const canUp = !!sib && sib.index > 0;
+  const canDown = !!sib && sib.index < sib.count - 1;
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const list = buttons();
+    const i = list.indexOf(document.activeElement as HTMLElement);
+    if (i < 0) return;
+    const n = e.key === 'ArrowRight' ? (i + 1) % list.length : e.key === 'ArrowLeft' ? (i - 1 + list.length) % list.length : e.key === 'Home' ? 0 : e.key === 'End' ? list.length - 1 : null;
+    if (n === null) return;
+    e.preventDefault();
+    e.stopPropagation();
+    current.current = n;
+    list.forEach((b, j) => (b.tabIndex = j === n ? 0 : -1));
+    list[n].focus();
+  };
+  // A disabled move stays focusable (APG toolbar), so it is marked aria-disabled and ignores the press.
+  const guard = (ok: boolean, fn: () => void) => () => ok && fn();
   return (
-    <div ref={ref} className="ov-chip" style={{ left, top }} role="toolbar" aria-label={`${name} actions`}>
-      {t && !selection?.instancePath.length && (
-        <button className="icon-btn grip" title="Drag to move" aria-label="Drag to move" onPointerDown={onGrip} style={{ cursor: 'grab' }}>
+    <div
+      ref={ref}
+      className={`ov-chip ${placement}`}
+      style={{ left, top, maxWidth: frameWidth }}
+      role="toolbar"
+      aria-label={`${name} actions`}
+      onKeyDown={onKeyDown}
+      onFocus={(e) => {
+        focusIn.current = true;
+        lastFocused.current = e.target as HTMLElement;
+        const i = buttons().indexOf(e.target as HTMLElement);
+        if (i >= 0) current.current = i;
+      }}
+      onBlur={(e) => {
+        // Focus moving to nothing may mean its control was removed; orphaned() tells that from a plain blur.
+        if (e.relatedTarget && !ref.current?.contains(e.relatedTarget as Node)) focusIn.current = false;
+      }}
+    >
+      {canReorder && (
+        // Pointer-only, so it is hidden from assistive tech: Move up and Move down are its equivalent.
+        <span className="icon-btn grip" aria-hidden="true" title="Drag to move" aria-label="Drag to move" onPointerDown={onGrip}>
           <GripVertical />
-        </button>
+        </span>
       )}
       <span className="name">
-        {parent ? <MousePointerClick /> : <Component />}
-        {name}
+        {icon}
+        <span className="label">{name}</span>
         {parent && parentRef && (
           <button className="of link" title={`Select ${parent} (Esc)`} onClick={() => setState({ selection: parentRef })}>
-            in {parent}
+            <span className="ellipsis">in {parent}</span>
           </button>
         )}
         {/* One card picked on the page vs the part in every card (picked in Layers): say which. */}
-        {repeats > 1 && <span className="of">· {single ? `one of ${repeats}` : `all ${repeats} ${repeatsLabel}`}</span>}
+        {item ? <span className="of">· {item.n} of {item.count}</span> : repeats > 1 && <span className="of">· all {repeats} {repeatsLabel}</span>}
       </span>
-      <button className="icon-btn" title="Ask AI about this (⌘J)" aria-label="Ask AI about this" onClick={() => askAiAbout(selection)}>
+      <span className="chip-sep" aria-hidden="true" />
+      <button className="icon-btn" title="Ask AI about this (⌘J)" aria-label="Ask AI about this" aria-keyshortcuts="Meta+J" onClick={() => askAiAbout(selection)}>
         <Sparkles />
       </button>
       {inspectorHidden && (
-        <button className="chip-text" title="Show this in the inspector" onClick={() => {
+        <button
+          className="chip-text"
+          title="Show this in the inspector"
+          onClick={() => {
             setState({ dockOpen: true, rightTab: 'inspect' });
             // Focus follows into the inspector, landing on the selection's first control.
             setTimeout(() => document.querySelector<HTMLElement>('#dock-panel-inspect :is(input, textarea, select, button.link, .insp-jump button)')?.focus(), 120);
-          }}>
+          }}
+        >
           <PanelRight /> Edit
         </button>
       )}
-      {t && !selection?.instancePath.length && (
+      {(canReorder || canEdit) && <span className="chip-sep" aria-hidden="true" />}
+      {canReorder && (
         <>
-          <button className="icon-btn" title="Move up (⇧⌘↑)" aria-label="Move up" onClick={() => void moveSelection(-1)}>
+          <button className="icon-btn" title="Move up (⇧⌘↑)" aria-label="Move up" aria-keyshortcuts="Shift+Meta+ArrowUp" aria-disabled={!canUp || undefined} onClick={guard(canUp, () => void moveSelection(-1))}>
             <ArrowUp />
           </button>
-          <button className="icon-btn" title="Move down (⇧⌘↓)" aria-label="Move down" onClick={() => void moveSelection(1)}>
+          <button className="icon-btn" title="Move down (⇧⌘↓)" aria-label="Move down" aria-keyshortcuts="Shift+Meta+ArrowDown" aria-disabled={!canDown || undefined} onClick={guard(canDown, () => void moveSelection(1))}>
             <ArrowDown />
           </button>
-          {canEdit && (
-            <button className="icon-btn" title="Duplicate (⌘D)" aria-label="Duplicate" onClick={() => void duplicateSelection()}>
-              <Copy />
-            </button>
-          )}
-          {canEdit && (
-            <button className="icon-btn" title="Delete (⌫)" aria-label="Delete" onClick={() => void deleteSelection()}>
-              <Trash2 />
-            </button>
-          )}
         </>
       )}
+      {canEdit && (
+        <button className="icon-btn" title="Duplicate (⌘D)" aria-label="Duplicate" aria-keyshortcuts="Meta+D" onClick={() => void duplicateSelection()}>
+          <Copy />
+        </button>
+      )}
+      <span className="chip-sep" aria-hidden="true" />
       <button
-        className="icon-btn"
+        className="icon-btn more"
         title="More actions"
         aria-label="More actions"
-        aria-haspopup="menu" aria-expanded="false"
-        onClick={(e) => {
-          const r = e.currentTarget.getBoundingClientRect();
-          onMore(r.left, r.bottom + 4, e.currentTarget);
+        aria-haspopup="menu"
+        onClick={(e) => onMore(e.currentTarget)}
+        onKeyDown={(e) => {
+          // APG menu button: Down opens on the first item, Up on the last. Modified arrows stay shortcuts
+          // (⇧⌘↑/↓ moves the section).
+          if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+          e.preventDefault();
+          e.stopPropagation();
+          onMore(e.currentTarget, e.key === 'ArrowUp');
         }}
       >
         <Ellipsis />

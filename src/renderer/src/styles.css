@@ -239,24 +239,45 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 @keyframes pulse { 50% { opacity: 0.45; } }
 
 /* ---------- Menus, popovers, modals, toasts ---------- */
-.menu { position: fixed; z-index: 1000; min-width: 200px; max-height: calc(100vh - 16px); overflow-y: auto; padding: 5px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); animation: pop-in 120ms ease-out; }
-.menu-item { display: flex; align-items: center; gap: 9px; width: 100%; height: 30px; padding: 0 9px; border: 0; border-radius: var(--r-sm); background: transparent; text-align: left; font-size: 13px; color: var(--text); outline-offset: -2px; }
+/* Menus (Menu in ui.tsx, on Radix DropdownMenu). Radix positions the popup; the shell is a --r-md card
+   with a full hairline and a popover-strength shadow (dialogs keep the deeper --shadow-lg). Rows are 30px.
+   One leading slot holds an item's icon or its check so every label starts in one column; shortcuts are
+   quiet text in a right-aligned column. Pointer and keyboard both highlight with the accent tint; only
+   keyboard focus adds the ring. */
+.menu-anchor { position: fixed; pointer-events: none; visibility: hidden; }
+.menu { z-index: 1000; min-width: 208px; max-width: min(360px, var(--radix-dropdown-menu-content-available-width, 360px)); max-height: min(calc(100vh - 16px), var(--radix-dropdown-menu-content-available-height, 100vh)); overflow-y: auto; padding: 4px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); transform-origin: var(--radix-dropdown-menu-content-transform-origin); outline: none; }
+.menu[data-state='open'] { animation: menu-in 120ms ease-out; }
+.menu[data-side='top'][data-state='open'] { animation-name: menu-in-up; }
+@keyframes menu-in { from { opacity: 0; transform: translateY(-3px) scale(0.98); } }
+@keyframes menu-in-up { from { opacity: 0; transform: translateY(3px) scale(0.98); } }
+@media (prefers-reduced-motion: reduce) { .menu[data-state='open'] { animation: fade-in 80ms ease-out; } }
+.menu-item { display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0; height: 30px; padding: 0 10px 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; text-align: left; font-size: 13px; color: var(--text); outline: none; cursor: default; user-select: none; }
+.menu-item .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The highlight is a quiet accent tint, so icons, shortcuts and group labels stay readable on it. */
-.menu-item:hover:not(:disabled), .menu-item.focused, .menu-item:focus-visible { background: var(--accent-soft); color: var(--text); }
-.menu-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.menu-item[data-highlighted], .menu-item:hover:not(:disabled, [data-disabled]), .menu-item.focused { background: var(--accent-soft); color: var(--text); }
+.menu-item:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .cmdk .menu-item.focused { box-shadow: inset 0 0 0 1px var(--accent); }
-.menu-item:is(:hover, .focused, :focus-visible) :is(.hint, .kbd) { color: var(--text-2); }
-.menu-item:hover:not(:disabled) svg, .menu-item.focused svg, .menu-item:focus-visible svg { color: var(--accent-text); }
-.menu-item .check { width: 15px; flex: none; color: var(--accent-text); }
-.menu-item .hint { font-size: 12px; color: var(--text-3); }
-.menu-item:disabled { opacity: 0.45; }
-.menu-item svg { width: 15px; height: 15px; color: var(--text-2); }
+.menu-item:is([data-highlighted], :hover, .focused) .hint, .menu .menu-item:is([data-highlighted], :hover) .kbd { color: var(--text-2); }
+.menu-item:is([data-highlighted], .focused) svg, .menu-item:hover:not(:disabled, [data-disabled]) svg { color: var(--accent-text); }
+.menu-lead, .menu-trail { display: grid; place-items: center; width: 16px; height: 16px; flex: none; }
+.menu-item .check { display: grid; place-items: center; color: var(--accent-text); }
+.menu-item .check svg { color: inherit; }
+.menu-item .hint { flex: none; font-size: 12px; color: var(--text-3); }
+.menu-item:is(:disabled, [data-disabled]) { opacity: 0.45; }
+@media (prefers-color-scheme: dark) { .menu-item:is(:disabled, [data-disabled]) { opacity: 0.58; } }
+.menu-item svg { width: 16px; height: 16px; flex: none; color: var(--text-2); }
+/* Shortcuts read as quiet text, not keycaps: a keycap's border fights the highlight and the focus ring. */
+.menu .menu-item:not([data-highlighted], :hover) .kbd { color: var(--text-3); }
+.menu .menu-item .kbd { flex: none; margin-left: 12px; padding: 0; border: 0; font-size: 12px; letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
 .menu-item.danger { color: var(--red); }
 .menu-item.danger svg { color: var(--red); }
-.menu-item.danger:hover:not(:disabled), .menu-item.danger.focused, .menu-item.danger:focus-visible { background: var(--red-soft); color: var(--red); }
-.menu-item.danger:hover:not(:disabled) svg, .menu-item.danger:focus-visible svg { color: var(--red); }
-.menu-sep { height: 1px; margin: 5px 4px; background: var(--border); }
-.menu-label { padding: 6px 9px 3px; font-size: 12px; font-weight: 600; color: var(--text-3); }
+.menu-item.danger:is([data-highlighted], :hover:not(:disabled, [data-disabled]), .focused) { background: var(--red-soft); color: var(--red); }
+.menu-item.danger:is([data-highlighted], :hover, .focused) svg, .menu .menu-item.danger:is([data-highlighted], :hover) .kbd { color: var(--red); }
+.menu-item.danger:focus-visible { box-shadow: inset 0 0 0 2px var(--red); }
+.menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
+.menu-label { padding: 6px 8px 4px; font-size: 12px; font-weight: 600; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* With a leading slot, group labels line up with the item labels below them. */
+.menu.has-lead .menu-label { padding-left: 33px; }
 
 .overlay-backdrop { position: fixed; inset: 0; z-index: 900; background: var(--scrim); display: grid; place-items: start center; padding-top: 11vh; animation: fade-in 140ms; }
 .modal { width: min(560px, calc(100vw - 48px)); max-height: calc(89vh - 32px); display: flex; flex-direction: column; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg); animation: pop-in 160ms ease-out; overflow: hidden; outline: none; }
@@ -418,6 +439,9 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 
 /* ---------- Canvas ---------- */
 .canvas { flex: 1; min-width: 0; position: relative; overflow: hidden; background-color: var(--canvas); background-image: radial-gradient(var(--canvas-dots) 1px, transparent 1px); background-size: 16px 16px; }
+/* The canvas takes focus when the chip control that had it goes away; a keyboard user sees where it went. */
+.canvas:focus { outline: none; }
+.canvas:focus-visible { box-shadow: inset 0 0 0 2px var(--focus); }
 .canvas-scroll { position: absolute; inset: 0; overflow: auto; display: flex; justify-content: safe center; padding: 28px 28px 28px; scrollbar-width: thin; }
 .frame-wrap { position: relative; flex: none; }
 .frame-box { position: absolute; top: 0; left: 0; transform-origin: 0 0; border-radius: 6px; overflow: hidden; background: white; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), var(--shadow-md); }
@@ -433,22 +457,49 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 /* Outlines are clipped to the page so they never spill onto the pasteboard. */
 .overlay-clip { position: absolute; inset: 0; overflow: hidden; border-radius: 6px; }
 .ov-box { position: absolute; pointer-events: none; border-radius: 2px; }
-/* One selection colour (--select). A white keyline keeps it visible on pages that use the same blue.
-   Related repeated items get a dashed outline; hover gets a thin one. */
-.ov-hover { box-shadow: inset 0 0 0 1px var(--select); }
-.ov-selected { box-shadow: inset 0 0 0 2px var(--select), inset 0 0 0 3px rgb(255 255 255 / 0.7); }
-.ov-selected.dim { box-shadow: none; outline: 1.5px dashed var(--select); outline-offset: -1.5px; }
-/* The selection chip: name plus actions in one compact bar, placed outside the selection (above, or
-   below when there is no room) so it never covers the content next to what is selected. */
-.ov-chip { position: absolute; display: flex; align-items: center; gap: 2px; height: 26px; padding: 0 2px 0 0; border-radius: var(--r-sm); background: var(--select); color: #fff; box-shadow: var(--shadow-md); pointer-events: auto; white-space: nowrap; }
-.ov-chip .name { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; font-size: 12px; font-weight: 600; border-right: 1px solid rgb(255 255 255 / 0.25); }
-.ov-chip .name svg { width: 12px; height: 12px; }
-.ov-chip .name .of { font-weight: 400; opacity: 0.85; }
-.ov-chip .icon-btn { width: 24px; height: 24px; color: #fff; border-radius: var(--r-xs); }
-.ov-chip .icon-btn:hover:not(:disabled) { background: rgb(255 255 255 / 0.18); color: #fff; }
-.ov-chip .icon-btn svg { width: 14px; height: 14px; }
-.ov-chip .icon-btn:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
-.ov-label { position: absolute; transform: translateY(-100%); margin-top: -2px; display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: var(--r-xs); font-size: 12px; font-weight: 500; color: #fff; background: var(--select); white-space: nowrap; pointer-events: none; opacity: 0.92; }
+/* One selection colour (--select), drawn between opaque keylines (white inside, ink outside) so the outline
+   holds at 3:1 on any page, including one that uses the same blue. Hover is thinner than selection;
+   related repeated items get a dashed outline. */
+.ov-hover { --hover-c: #1766c0; box-shadow: inset 0 0 0 1px var(--hover-c), inset 0 0 0 2px #fff, 0 0 0 1px rgb(16 24 40 / 0.6); }
+.editor.defining .ov-hover { --hover-c: var(--select); }
+.ov-selected { box-shadow: inset 0 0 0 2px var(--select), inset 0 0 0 3px #fff, 0 0 0 1px #101828; }
+.ov-selected.dim { box-shadow: inset 0 0 0 1px #fff, 0 0 0 1px rgb(16 24 40 / 0.6); outline: 1.5px dashed var(--select); outline-offset: -1.5px; }
+/* The hover label names what a click would select. It sits inside the hovered element's top-left corner, so
+   the pointer can rest on it without leaving that element, and it is a light tag (solid fill is the
+   selection's). It is the editor's blue (plum while defining), never the selection's scope colour. */
+.ov-label { position: absolute; top: 3px; left: 3px; display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-xs); font-size: 12px; font-weight: 600; color: var(--hover-c); background: #fff; box-shadow: inset 0 0 0 1px var(--hover-c), 0 1px 3px rgb(16 24 40 / 0.18); white-space: nowrap; pointer-events: none; }
+/* The selection chip: name, then grouped actions, as one toolbar. It is app chrome on the user's page, so
+   it carries a complete white rim that separates it from any page colour, and its own shadow. Inner
+   buttons are 24px targets with --r-xs corners, concentric with the chip's --r-sm. */
+.ov-chip { position: absolute; display: flex; align-items: center; gap: 1px; height: 28px; padding: 2px; border-radius: var(--r-sm); background: var(--select); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.9), 0 4px 14px -4px rgb(16 24 40 / 0.45), 0 1px 3px rgb(16 24 40 / 0.25); pointer-events: auto; white-space: nowrap; z-index: 1; }
+.ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 2px 6px -2px rgb(16 24 40 / 0.35); }
+/* Parked on the dark pasteboard, not the user's page, the chip needs no bright rim to separate it. */
+@media (prefers-color-scheme: dark) { .ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.2), 0 2px 8px -2px rgb(0 0 0 / 0.5); } }
+.ov-chip .name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; overflow: hidden; height: 24px; padding: 0 6px 0 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.005em; }
+.ov-chip .grip + .name { padding-left: 0; }
+.ov-chip .name > svg { width: 14px; height: 14px; flex: none; opacity: 0.9; }
+.ov-chip .name .label { max-width: 220px; min-width: 24px; overflow: hidden; text-overflow: ellipsis; }
+.ov-chip .name .ellipsis { overflow: hidden; text-overflow: ellipsis; }
+.ov-chip .name .of { flex: 0 1 auto; min-width: 0; font-weight: 400; opacity: 0.88; }
+.ov-chip .name .of.link { display: inline-flex; align-items: center; height: 24px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; margin-left: -2px; padding: 0 4px; border: 0; border-radius: var(--r-sm); background: none; color: inherit; font: inherit; font-weight: 400; opacity: 0.9; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(255 255 255 / 0.6); }
+.ov-chip .name .of.link:hover { opacity: 1; background: rgb(16 24 40 / 0.22); text-decoration-color: #fff; }
+.ov-chip .chip-sep { width: 1px; height: 14px; margin: 0 3px; flex: none; background: rgb(255 255 255 / 0.3); }
+.ov-chip .icon-btn { width: 24px; height: 24px; flex: none; color: #fff; border-radius: var(--r-sm); }
+.ov-chip .icon-btn svg { width: 15px; height: 15px; }
+.ov-chip .icon-btn:hover:not([aria-disabled='true']) { background: rgb(255 255 255 / 0.18); color: #fff; }
+/* A disabled move dims its glyph only, so its keyboard focus ring keeps full strength. */
+.ov-chip .icon-btn[aria-disabled='true'] { cursor: default; }
+.ov-chip .icon-btn[aria-disabled='true'] svg { opacity: 0.45; }
+.ov-chip .icon-btn.grip { width: 20px; cursor: grab; }
+.ov-chip .icon-btn.grip svg { opacity: 0.85; }
+.ov-chip .icon-btn.grip:active { cursor: grabbing; }
+/* The open state of More actions: a dark well with a full white ring while its menu is showing. */
+.ov-chip .icon-btn[aria-expanded='true'] { background: rgb(16 24 40 / 0.32); box-shadow: inset 0 0 0 1.5px #fff; }
+.ov-chip .chip-text { display: inline-flex; flex: none; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 7px; border: 0; border-radius: var(--r-sm); background: rgb(16 24 40 / 0.24); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.4); color: #fff; font-size: 12px; font-weight: 600; }
+.ov-chip .chip-text svg { width: 14px; height: 14px; }
+.ov-chip .chip-text:hover { background: rgb(16 24 40 / 0.36); }
+/* Focus on the filled chip: a white ring inside each control. */
+.ov-chip button:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
 .canvas-state { position: absolute; inset: 0; display: grid; place-items: center; z-index: 6; }
 .canvas-card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 28px; text-align: center; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
 .canvas-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
@@ -969,8 +1020,6 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .ai-veil.issue { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
 .ai-veil.issue > svg { color: var(--red); }
 .status-bar > button.row { height: 24px; }
-.ov-chip .name .of.link { border: 0; background: none; padding: 0; color: inherit; font: inherit; font-weight: 400; opacity: 0.9; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: rgb(255 255 255 / 0.5); }
-.ov-chip .name .of.link:hover { opacity: 1; text-decoration-color: #fff; }
 
 /* ---------- Insert panel ---------- */
 /* A pinned search and a "where it goes" line, then the palette: section tiles with layout sketches, compact
@@ -1083,9 +1132,8 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .row.wrap { flex-wrap: wrap; }
 
 /* Focus on filled dark surfaces (selection chip, toasts, preview pill): a white ring that reads on the fill. */
-.ov-chip button:focus-visible, .toast button:focus-visible, .preview-pill button:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+.toast button:focus-visible, .preview-pill button:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
 @media (prefers-color-scheme: dark) { .toast button:focus-visible { outline-color: var(--ink); } }
-.ov-chip .name .of.link { min-height: 24px; }
 /* Shared header and footer: the canvas selection and selected layer turn green, matching the shared scope note. */
 .canvas.sel-shared { --select: #0b6b45; }
 .list-item.selected.shared { background: var(--green-soft); color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
@@ -1108,13 +1156,13 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .toolbar-group { min-width: 0; }
 .insp-jump button { background: transparent; color: var(--accent-text); padding: 0 6px; }
 .insp-jump button:hover { background: var(--accent-soft); }
-.ov-hover { box-shadow: inset 0 0 0 1px #1766c0; }
-.editor.defining .ov-hover { box-shadow: inset 0 0 0 1px var(--select); }
 @media (prefers-color-scheme: dark) { .icon-btn:disabled, .btn:disabled { opacity: 0.6; } }
 /* Keep keyboard-focused fields clear of the sticky inspector header. */
 .panel-body :is(input, select, textarea, button) { scroll-margin-top: 150px; scroll-margin-bottom: 24px; }
 .menu-item .menu-thumb { width: 32px; height: 24px; flex: none; border-radius: var(--r-xs); object-fit: cover; box-shadow: 0 0 0 1px var(--border); }
 .menu-item:has(.menu-thumb) { height: 34px; }
+.menu-lead:has(.menu-thumb) { width: 32px; height: 24px; }
+.menu.has-lead:has(.menu-thumb) .menu-label { padding-left: 49px; }
 .uses-toggle { align-self: flex-start; display: inline-flex; align-items: center; gap: 3px; min-height: 22px; border: 0; border-radius: var(--r-xs); background: none; padding: 0 4px 0 0; font-size: 11px; color: var(--text-2); text-align: left; }
 .uses-toggle:hover { color: var(--text); }
 .uses-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
@@ -1186,9 +1234,6 @@ body.dialog-open .toast .btn { visibility: hidden; }
 .asset-back { align-self: flex-start; margin: -4px 0 0 -6px; }
 .asset-preview { display: grid; place-items: center; height: 160px; border-radius: var(--r-sm); background: var(--canvas); overflow: hidden; }
 .asset-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.ov-chip .chip-text { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; margin: 0 2px; border: 0; border-radius: var(--r-xs); background: #fff; color: var(--select); font-size: 12px; font-weight: 600; }
-.ov-chip .chip-text svg { width: 13px; height: 13px; }
-.ov-chip .chip-text:hover { background: color-mix(in srgb, #fff 88%, var(--select)); }
 .token-title { display: flex; align-items: center; gap: 4px; min-height: 20px; }
 .token-row.set .token-title { color: var(--text); font-weight: 500; }
 /* The safe default in a dialog is visibly focused from the start, even when it was focused by the app. */
