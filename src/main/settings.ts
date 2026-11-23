@@ -103,8 +103,8 @@ export async function setKey(provider: ProviderId, key: string | null) {
   const keys = await readStoredKeys();
   if (key) keys[provider] = key.trim();
   else delete keys[provider];
-  await atomicWrite(credFile(), JSON.stringify(keys));
-  await fs.chmod(credFile(), 0o600).catch(() => undefined);
+  // Created with 0600 before the rename, so the keys are never briefly readable by other accounts.
+  await atomicWrite(credFile(), JSON.stringify(keys), { mode: 0o600 });
 }
 
 /** Development builds may use provider keys from the environment as a documented override. */

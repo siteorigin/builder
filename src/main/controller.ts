@@ -205,7 +205,16 @@ export class Controller {
     await this.startRuntime();
   }
 
-  async startRuntime() {
+  private runtimeQueue: Promise<unknown> = Promise.resolve();
+
+  /** Start (or restart) the preview. Calls run one at a time, so overlapping retries never leave a second worker running. */
+  startRuntime(): Promise<void> {
+    const run = this.runtimeQueue.then(() => this.startRuntimeNow());
+    this.runtimeQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async startRuntimeNow() {
     const session = this.session;
     if (!session) return;
     await this.dev?.stop();
@@ -276,6 +285,9 @@ export class Controller {
   async close() {
     for (const w of this.watchers) w.close();
     this.watchers = [];
+    // The exported-site preview belongs to the project that exported it.
+    this.staticServer?.close();
+    this.staticServer = null;
     if (!this.session) return;
     await this.onSessionClosing?.();
     await this.dev?.stop();

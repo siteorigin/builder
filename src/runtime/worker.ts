@@ -8,9 +8,10 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import bridgeSource from './bridge.client.js?raw';
+import { frameAncestorsCsp, framePolicyPlugin, previewFsPolicy } from './policy';
 
 type Msg =
-  | { type: 'start'; dir: string; port: number }
+  | { type: 'start'; dir: string; port?: number; packaged?: boolean }
   | { type: 'revision'; revision: number }
   | { type: 'build'; dir: string }
   | { type: 'stop' };
@@ -49,16 +50,17 @@ function devPlugin(dir: string) {
   };
 }
 
-async function start(dir: string, wantedPort: number) {
+async function start(dir: string, wantedPort = 0, packaged = true) {
   const vite = await loadVite(dir);
   const s = await vite.createServer({
     root: dir,
     configFile: join(dir, 'vite.config.js'),
     logLevel: 'warn',
     clearScreen: false,
-    plugins: [devPlugin(dir)],
+    plugins: [devPlugin(dir), framePolicyPlugin(frameAncestorsCsp(packaged))],
     server: {
       host: '127.0.0.1',
+      // Port 0: the operating system picks a free port when the server binds, so nothing can take it in between.
       port: wantedPort,
       strictPort: true,
       cors: false,
@@ -70,7 +72,7 @@ async function start(dir: string, wantedPort: number) {
           ['.siteorigin', 'siteorigin', 'build', 'node_modules', '.svelte-kit/output'].some((d) => p === join(dir, d) || p.startsWith(join(dir, d) + sep)) ||
           ['vite.config.js', 'vite.config.ts', 'svelte.config.js', 'package.json', 'package-lock.json'].some((f) => p === join(dir, f))
       },
-      fs: { strict: true }
+      fs: previewFsPolicy(dir)
     },
     customLogger: {
       info: (m: string) => post({ type: 'log', level: 'info', message: m }),
@@ -84,7 +86,9 @@ async function start(dir: string, wantedPort: number) {
   } as never);
   await s.listen();
   server = s as never;
-  post({ type: 'ready', url: `http://127.0.0.1:${wantedPort}` });
+  const addr = (s.httpServer as { address(): { port: number } | string | null } | null)?.address();
+  const bound = addr && typeof addr === 'object' ? addr.port : wantedPort;
+  post({ type: 'ready', url: `http://127.0.0.1:${bound}` });
 }
 
 async function build(dir: string) {
@@ -117,7 +121,7 @@ async function build(dir: string) {
 port.on('message', async (ev) => {
   const m = ev.data;
   try {
-    if (m.type === 'start') await start(m.dir, m.port);
+    if (m.type === 'start') await start(m.dir, m.port, m.packaged !== false);
     else if (m.type === 'revision') server?.ws.send({ type: 'custom', event: 'siteorigin:revision', data: { revision: m.revision } });
     else if (m.type === 'build') {
       await build(m.dir);

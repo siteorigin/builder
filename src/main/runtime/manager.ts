@@ -147,7 +147,6 @@ export class DevServer {
   async start(): Promise<void> {
     this.stopped = false;
     this.set({ state: 'starting' });
-    const port = await freePort();
     const proc = utilityProcess.fork(workerPath(), [], {
       cwd: this.dir,
       env: projectEnv(),
@@ -163,6 +162,8 @@ export class DevServer {
         resolve();
       }, 60000);
       proc.on('message', (m: { type: string; url?: string; message?: string; level?: string }) => {
+        // A process that has been stopped or replaced no longer speaks for this server.
+        if (this.proc !== proc) return;
         if (m.type === 'ready') {
           clearTimeout(timer);
           this.restarts = 0;
@@ -180,7 +181,7 @@ export class DevServer {
       });
       proc.on('exit', (code) => {
         clearTimeout(timer);
-        if (this.proc !== proc) return;
+        if (this.proc !== proc) return resolve();
         this.proc = null;
         if (this.stopped) return;
         if (this.restarts < 1) {
@@ -192,7 +193,8 @@ export class DevServer {
         }
         resolve();
       });
-      proc.postMessage({ type: 'start', dir: this.dir, port });
+      // No port: the worker binds port 0 and reports the one it got.
+      proc.postMessage({ type: 'start', dir: this.dir, packaged: app.isPackaged });
     });
   }
 
@@ -200,15 +202,22 @@ export class DevServer {
     this.proc?.postMessage({ type: 'revision', revision });
   }
 
-  async stop() {
+  private stopping: Promise<void> | null = null;
+
+  /** Stop the server and wait for its process to exit, so a restart never overlaps the old one. */
+  stop(): Promise<void> {
     this.stopped = true;
     const p = this.proc;
     this.proc = null;
     if (p) {
+      const exited = new Promise<void>((resolve) => p.once('exit', () => resolve()));
       p.postMessage({ type: 'stop' });
-      setTimeout(() => p.kill(), 1500);
+      const timer = setTimeout(() => p.kill(), 1500);
+      // Every caller waits for the same exit, including one that arrives after this.proc was cleared.
+      this.stopping = Promise.race([exited, new Promise<void>((r) => setTimeout(r, 3000))]).finally(() => clearTimeout(timer));
     }
-    this.set({ state: 'idle' });
+    const done = (this.stopping ?? Promise.resolve()).then(() => this.set({ state: 'idle' }));
+    return done;
   }
 }
 

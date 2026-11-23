@@ -92,6 +92,15 @@ function isEditorUrl(url: string): boolean {
   }
 }
 
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    const ua = new URL(a);
+    return (ua.protocol === 'http:' || ua.protocol === 'https:') && ua.origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
+}
+
 function handle(channel: string, fn: (...args: never[]) => unknown) {
   ipcMain.handle(channel, (event, ...args) => {
     if (!win || event.sender !== win.webContents) throw new Error('Unauthorized sender');
@@ -171,7 +180,8 @@ function registerIpc() {
   handle('ai:fixCode', async (source: string) => {
     const ad = await orchestratorAdapter();
     if ('error' in ad) return { ok: false, message: ad.error };
-    return fixComponentSource(ad.adapter, ad.model, String(source), checkSvelteSource, new AbortController().signal);
+    // The repaired code is written by the assistant, so it must pass the assistant's stricter policy.
+    return fixComponentSource(ad.adapter, ad.model, String(source), (src) => checkSvelteSource(src, { strict: true }), new AbortController().signal);
   });
   ipcMain.on('inspect:result', (event, requestId: string, report: unknown) => {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) return;
@@ -225,13 +235,18 @@ async function createWindow() {
   });
   // The preview iframe must not navigate away from the project origin or open popups.
   win.webContents.on('did-attach-webview', (e) => e.preventDefault());
+  const previewNavigationAllowed = (target: string) => {
+    const devUrl = controller.dev?.status.state === 'ready' ? (controller.dev.status as { url: string }).url : null;
+    // Compare origins, not string prefixes: http://127.0.0.1:5173 must not admit http://127.0.0.1:51730.
+    return (!!devUrl && sameOrigin(target, devUrl)) || target.startsWith('about:');
+  };
   win.webContents.on('will-frame-navigate', (e) => {
     if (e.isMainFrame) return;
-    const target = e.url;
-    const devUrl = controller.dev?.status.state === 'ready' ? (controller.dev.status as { url: string }).url : null;
-    if (devUrl && target.startsWith(devUrl)) return;
-    if (target.startsWith('about:')) return;
-    e.preventDefault();
+    if (!previewNavigationAllowed(e.url)) e.preventDefault();
+  });
+  // A server-side redirect is a navigation too: the preview cannot bounce a frame to another origin.
+  win.webContents.on('will-redirect', (e) => {
+    if (e.isMainFrame ? !isEditorUrl(e.url) : !previewNavigationAllowed(e.url)) e.preventDefault();
   });
   // Editor shortcuts come from real keyboard input (including while the preview frame has focus),
   // so content inside the previewed site cannot fake them.
@@ -275,12 +290,28 @@ function buildMenu() {
   );
 }
 
+// One app instance at a time: a second one would race this one's settings, recents and project locks.
+// Launching the app again focuses the existing window instead.
+if (!app.requestSingleInstanceLock()) app.exit(0);
+app.on('second-instance', () => {
+  // On macOS the app can be running with no window; launching it again opens one.
+  if (!win) {
+    if (app.isReady()) void createWindow();
+    return;
+  }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+});
+
 app.whenReady().then(async () => {
   // Packaged builds carry the icon in the bundle; in development the dock would otherwise show Electron's.
   if (!app.isPackaged && process.platform === 'darwin') app.dock?.setIcon(join(here, '../../build/icon.png'));
   // Serve the packaged editor from an app-controlled secure origin.
   protocol.handle('app', (req) => {
     const url = new URL(req.url);
+    // Only the editor's own host is served; app://anything-else is not part of the app.
+    if (url.host !== 'editor') return new Response('Not found', { status: 404 });
     const root = rendererRoot();
     const file = normalize(join(root, decodeURIComponent(url.pathname)));
     const rel = relative(root, file);

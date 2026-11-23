@@ -19,12 +19,22 @@ export function safeJoin(root: string, rel: string): string {
   return abs;
 }
 
-/** Write via a temporary file and rename, so readers never see a partial file. */
-export async function atomicWrite(path: string, data: string | Buffer): Promise<void> {
+/**
+ * Write via a temporary file and rename, so readers never see a partial file. A `mode` is applied when the
+ * temporary file is created, so a private file is never readable by others, even briefly.
+ */
+export async function atomicWrite(path: string, data: string | Buffer, opts: { mode?: number } = {}): Promise<void> {
   await fs.mkdir(dirname(path), { recursive: true });
   const tmp = join(dirname(path), `.${randomBytes(6).toString('hex')}.tmp`);
-  await fs.writeFile(tmp, data);
-  await fs.rename(tmp, path);
+  try {
+    await fs.writeFile(tmp, data, opts.mode === undefined ? undefined : { mode: opts.mode });
+    // The umask can only remove bits from the requested mode, never add them; chmod makes it exact.
+    if (opts.mode !== undefined) await fs.chmod(tmp, opts.mode);
+    await fs.rename(tmp, path);
+  } catch (e) {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+    throw e;
+  }
 }
 
 export async function readJson<T>(path: string): Promise<T> {
