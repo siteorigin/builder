@@ -14,7 +14,7 @@ import type { ComponentDefinition, ProjectState } from '@shared/types';
 import { isBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { getTheme } from '@catalogue/index';
-import { definitionHash } from '@shared/migrations';
+import { definitionHash, matchesLock } from '@shared/migrations';
 import { variantOptions } from '@shared/variants';
 import { clone } from './install';
 import { EngineError, fail, instancesOf, subtreeIds } from './tree';
@@ -150,7 +150,7 @@ export function themeUpdates(state: ProjectState): ThemeUpdates {
   for (const def of outdated) {
     const next = catalogue.get(def.id)!;
     const keep = (reason: string) => out.kept.push({ id: def.id, name: def.name, reason });
-    if (state.themeLock.components[def.id]?.hash !== definitionHash(def)) {
+    if (!matchesLock(state.themeLock.components[def.id]?.hash, def)) {
       keep('Its stored definition was changed outside the theme.');
       continue;
     }

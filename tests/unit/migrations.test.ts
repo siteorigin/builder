@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import type { InstanceNode, ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
-import { definitionHash, migrateProject, MIGRATIONS, type Migration } from '@shared/migrations';
+import { definitionHash, matchesLock, migrateProject, MIGRATIONS, type Migration } from '@shared/migrations';
+import { sha256Hex } from '@shared/sha256';
+import { createHash } from 'node:crypto';
 import { applyOperations } from '@engine/apply';
 import { themeUpdates } from '@engine/theme-updates';
 import { validateState } from '@engine/validate';
@@ -152,7 +154,12 @@ describe('the migration pipeline', () => {
 
   it('keeps unmodified theme definitions recognised as theme data', async () => {
     const { state } = migrateProject((await readProject(copyFixture())).stored)!;
-    for (const def of Object.values(state.components)) if (def.owner === 'theme') expect(state.themeLock.components[def.id].hash).toBe(definitionHash(def));
+    for (const def of Object.values(state.components)) {
+      if (def.owner !== 'theme') continue;
+      expect(matchesLock(state.themeLock.components[def.id].hash, def)).toBe(true);
+      // Vouched for by the old 32-bit hash only, so re-stamped in it: never upgraded to a SHA-256 entry.
+      expect(state.themeLock.components[def.id].hash).not.toMatch(/^sha256:/);
+    }
   });
 
   it('does not bless a definition edited by hand', async () => {
@@ -160,6 +167,7 @@ describe('the migration pipeline', () => {
     stored.components['foundation.hero.split'].description = 'Edited by hand';
     const { state } = migrateProject(stored)!;
     expect(state.themeLock.components['foundation.hero.split'].hash).not.toBe(definitionHash(state.components['foundation.hero.split']));
+    expect(matchesLock(state.themeLock.components['foundation.hero.split'].hash, state.components['foundation.hero.split'])).toBe(false);
   });
 });
 
@@ -538,6 +546,62 @@ describe('theme component updates', () => {
     expect(themeUpdates(state).kept.find((k) => k.id === 'foundation.faq.list')?.reason).toMatch(/could not be checked/);
   });
 
+  it('treats a definition whose old 32-bit hash collides with its lock as edited', async () => {
+    // The hero as installed from an older theme release, and a hand edit that the old 32-bit FNV-1a lock hash
+    // cannot tell apart from it.
+    const [installedName, editedName] = fnvCollidingValues(structuredClone((await readProject(copyFixture())).state.components['foundation.hero.centered']), 'description');
+    expect(installedName).not.toBe(editedName);
+    const state = await outdated((s) => {
+      const hero = s.components['foundation.hero.centered'];
+      hero.description = installedName;
+      s.themeLock.components[hero.id].hash = definitionHash(hero);
+      hero.description = editedName;
+    });
+    const hero = state.components['foundation.hero.centered'];
+    expect(legacyHash({ ...hero, description: installedName })).toBe(legacyHash(hero));
+    expect(definitionHash({ ...hero, description: installedName })).not.toBe(definitionHash(hero));
+    expect(themeUpdates(state).available.map((u) => u.id)).not.toContain(hero.id);
+    expect(themeUpdates(state).kept.find((k) => k.id === hero.id)?.reason).toMatch(/changed outside the theme/);
+    const { state: next } = applyOperations(state, [{ type: 'theme.refresh' }]);
+    expect(next.components[hero.id].description).toBe(editedName);
+  });
+
+  it('still reads a lock entry written with the old 32-bit hash, and replaces it with SHA-256 on refresh', async () => {
+    const state = await outdated((s) => {
+      const hero = s.components['foundation.hero.centered'];
+      s.themeLock.components[hero.id].hash = legacyHash(hero);
+    });
+    const hero = state.components['foundation.hero.centered'];
+    expect(themeUpdates(state).available.map((u) => u.id)).toContain(hero.id);
+    const { state: next } = applyOperations(state, [{ type: 'theme.refresh' }]);
+    expect(next.themeLock.components[hero.id].hash).toBe(definitionHash(current(hero.id)));
+    expect(next.themeLock.components[hero.id].hash).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('treats a definition that no longer matches its old 32-bit lock entry as edited', async () => {
+    const state = await outdated((s) => {
+      const hero = s.components['foundation.hero.centered'];
+      s.themeLock.components[hero.id].hash = legacyHash(hero);
+      hero.description = 'Edited by hand';
+    });
+    const hero = state.components['foundation.hero.centered'];
+    expect(themeUpdates(state).available.map((u) => u.id)).not.toContain(hero.id);
+    expect(themeUpdates(state).kept.find((k) => k.id === hero.id)?.reason).toMatch(/changed outside the theme/);
+  });
+
+  it('hashes the whole definition', async () => {
+    const hero = structuredClone((await readProject(copyFixture())).state.components['foundation.hero.centered']);
+    const base = definitionHash(hero);
+    expect(definitionHash({ ...hero, name: `${hero.name} ` })).not.toBe(base);
+    expect(definitionHash({ ...hero, description: `${hero.description ?? ''} ` })).not.toBe(base);
+    expect(definitionHash({ ...hero, tree: { ...hero.tree!, rootIds: [...hero.tree!.rootIds].reverse().concat('x') } })).not.toBe(base);
+    expect(definitionHash(structuredClone(hero))).toBe(base);
+  });
+
+  it('hashes definitions with SHA-256 exactly as node:crypto does', () => {
+    for (const text of ['', 'abc', 'a'.repeat(55), 'a'.repeat(56), 'a'.repeat(64), 'é漢字🙂'.repeat(100), 'x'.repeat(100_000)]) expect(sha256Hex(text)).toBe(createHash('sha256').update(text).digest('hex'));
+  });
+
   it('moves the locked pack version only when the whole set is current', async () => {
     const state = await outdated((s) => {
       s.themeLock.theme.version = '0.0.1';
@@ -604,3 +668,33 @@ describe('theme component updates', () => {
     expect(read(dir, rel).description).toBe('An older description');
   });
 });
+
+/** The theme lock's original hash: FNV-1a 32-bit over the definition's JSON. */
+function fnv(h: number, text: string): number {
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+const legacyHash = (def: object) => fnv(0x811c9dc5, JSON.stringify(def)).toString(36);
+
+/**
+ * Two values for a string field that give the definition the same 32-bit FNV-1a hash. The hash runs left to right,
+ * so values that leave it in the same state collide whatever follows; a birthday search finds a pair in about 2^16
+ * tries.
+ */
+function fnvCollidingValues(def: object, field: string): [string, string] {
+  const marker = 'FNV_COLLISION_MARKER';
+  const [prefix] = JSON.stringify({ ...def, [field]: marker }).split(marker);
+  const start = fnv(0x811c9dc5, prefix);
+  const seen = new Map<number, string>();
+  for (let i = 0; i < 2_000_000; i++) {
+    const value = `Hero ${i.toString(36)}`;
+    const h = fnv(start, value);
+    const other = seen.get(h);
+    if (other !== undefined) return [other, value];
+    seen.set(h, value);
+  }
+  throw new Error('No collision found.');
+}

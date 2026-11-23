@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, promises as fsp, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
@@ -10,6 +10,7 @@ import { sha, toJson } from '../../src/main/project/fsutil';
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const s of open.splice(0)) await s.close().catch(() => undefined);
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
 });
@@ -19,7 +20,7 @@ async function make() {
   const s = await ProjectSession.create(dir, createStarterState('business', 'Persist', false));
   return { dir, s };
 }
-async function reopen(dir: string, id = 'test', opts: { force?: boolean } = {}) {
+async function reopen(dir: string, id = 'test', opts: { force?: boolean | string } = {}) {
   const s = await ProjectSession.open(dir, id, opts);
   open.push(s);
   return s;
@@ -66,6 +67,18 @@ describe('canonical conflicts (spec 18.5)', () => {
     expect(readdirSync(join(dir, '.siteorigin/recovery')).some((f) => f.endsWith('.external'))).toBe(true);
     expect(s.conflicts).toEqual([]);
     expect((await s.apply({ operations: [{ type: 'site.update', name: 'After' }] }, { label: 'x' })).ok).toBe(true);
+  });
+
+  it('treats an external save of exactly what an AI change would write as a conflict, so cancelling cannot erase it', async () => {
+    const { dir, s } = await make();
+    await s.beginRun('run_e');
+    const site = read(dir, SITE);
+    site.name = 'Same name';
+    write(dir, SITE, site);
+    const r = await s.apply({ operations: [{ type: 'site.update', name: 'Same name' }] }, { label: 'AI', source: 'ai', runId: 'run_e', history: false });
+    expect(r.error?.code).toBe('CONFLICT');
+    await s.abortRun();
+    expect(read(dir, SITE).name).toBe('Same name');
   });
 
   it('keeps the external version when the project stays valid, as an undoable change', async () => {
@@ -228,27 +241,259 @@ describe('project lock', () => {
     expect(forced.readOnly).toBeNull();
   });
 
-  it('expires a lock that has not been refreshed, whatever host or PID it names', async () => {
+  /** Move this process's monotonic clock on, as if it had been watching the lock for `ms`. */
+  const later = (ms: number) => {
+    const t = performance.now() + ms;
+    vi.spyOn(performance, 'now').mockReturnValue(t);
+  };
+
+  it('expires a lock that has stopped changing, whatever host or PID it names', async () => {
     const { dir, s } = await make();
     await s.close();
     writeFileSync(lockFile(dir), JSON.stringify({ pid: process.pid, host: 'old-hostname.local', instance: 'gone' }));
     age(dir, LOCK_STALE_MS + 1000);
+    // Another computer's lock time says nothing on this clock: it is stale once it has been seen unchanged for long enough.
+    expect(await ProjectSession.open(dir, 'me').catch((e) => e)).toBeInstanceOf(ProjectLockedError);
+    later(LOCK_STALE_MS + 1000);
     await reopen(dir, 'me');
-    // Same host, a live PID (pid reuse), but no heartbeat for minutes: also stale.
+    // Same host, a live PID (pid reuse), but no heartbeat: also stale once it has stopped changing.
     const { dir: dir2, s: s2 } = await make();
     await s2.close();
     writeFileSync(lockFile(dir2), JSON.stringify({ pid: process.pid, host: hostname(), instance: 'gone' }));
-    age(dir2, LOCK_STALE_MS + 1000);
+    expect(await ProjectSession.open(dir2, 'me').catch((e) => e)).toBeInstanceOf(ProjectLockedError);
+    later(2 * LOCK_STALE_MS + 2000);
     await reopen(dir2, 'me');
+    // Same host, a process that is gone: stale at once.
+    const { dir: dir3, s: s3 } = await make();
+    await s3.close();
+    writeFileSync(lockFile(dir3), JSON.stringify({ pid: 2 ** 22 + 4321, host: hostname(), instance: 'gone' }));
+    await reopen(dir3, 'me');
   });
 
-  it('treats a lock still being written as live, and an old unreadable one as stale', async () => {
+  it('treats a lock still being written as live, and one unreadable for a while as stale', async () => {
     const { dir, s } = await make();
     await s.close();
     writeFileSync(lockFile(dir), '');
     expect(await ProjectSession.open(dir, 'me').catch((e) => e)).toBeInstanceOf(ProjectLockedError);
-    age(dir, 60_000);
+    later(11_000);
     await reopen(dir, 'me');
+  });
+
+  it('never compares another computer’s lock time with its own clock', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    // The owner's clock is hours behind this one: by its own reckoning it refreshed the lock just now.
+    writeFileSync(lockFile(dir), JSON.stringify({ pid: 1, host: 'studio-imac.local', instance: 'other', token: 'abc123', started: new Date().toISOString() }));
+    age(dir, 3 * 3600_000);
+    expect(await ProjectSession.open(dir, 'me').catch((e) => e)).toBeInstanceOf(ProjectLockedError);
+    // Its heartbeat keeps changing the time (still hours behind): it stays live however long this app waits.
+    later(LOCK_STALE_MS + 1000);
+    age(dir, 3 * 3600_000 - 30_000);
+    expect(await ProjectSession.open(dir, 'me').catch((e) => e)).toBeInstanceOf(ProjectLockedError);
+    // This app's clock is hours ahead of a lock refreshed a moment ago: still live.
+    const { dir: dir2, s: s2 } = await make();
+    await s2.close();
+    writeFileSync(lockFile(dir2), JSON.stringify({ pid: 1, host: 'studio-imac.local', instance: 'other', token: 'def456' }));
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 3 * 3600_000);
+    expect(await ProjectSession.open(dir2, 'me').catch((e) => e)).toBeInstanceOf(ProjectLockedError);
+    // Once it stops changing for the stale period on this app's own clock, the owner is gone.
+    later(2 * LOCK_STALE_MS + 2000);
+    await reopen(dir2, 'me');
+  });
+
+  it('leaves exactly one writer when several apps take over a stale lock at once', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    // Left by a process on this computer that no longer exists.
+    writeFileSync(lockFile(dir), JSON.stringify({ pid: 2 ** 22 + 4321, host: hostname(), instance: 'crashed', token: 'aaaa' }));
+    const results = await Promise.all(['a', 'b', 'c', 'd', 'e'].map((id) => ProjectSession.open(dir, id).catch((e) => e)));
+    const winners = results.filter((r): r is ProjectSession => r instanceof ProjectSession);
+    open.push(...winners);
+    expect(winners).toHaveLength(1);
+    for (const r of results) if (!(r instanceof ProjectSession)) expect(r).toBeInstanceOf(ProjectLockedError);
+    const [winner] = winners;
+    expect(JSON.parse(readFileSync(lockFile(dir), 'utf8')).instance).toBe((winner as unknown as { lockOwner: string }).lockOwner);
+    expect((await winner.apply({ operations: [{ type: 'site.update', name: 'Only writer' }] }, { label: 'x' })).ok).toBe(true);
+    expect(readdirSync(join(dir, '.siteorigin')).filter((f) => f.startsWith('lock.json.'))).toEqual([]);
+  });
+
+  it('leaves one successor when two apps unlock the same owner at once', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const a = await reopen(dir, 'a');
+    const shown = await ProjectSession.open(dir, 'b').catch((e) => e);
+    expect(shown).toBeInstanceOf(ProjectLockedError);
+    const token = (shown as ProjectLockedError).owner.token!;
+    expect(token).toBeTruthy();
+    // Both confirmed "Unlock" for the owner they were shown.
+    const results = await Promise.all(['b', 'c'].map((id) => ProjectSession.open(dir, id, { force: token }).catch((e) => e)));
+    const winners = results.filter((r): r is ProjectSession => r instanceof ProjectSession);
+    open.push(...winners);
+    expect(winners).toHaveLength(1);
+    const loser = results.find((r) => !(r instanceof ProjectSession)) as ProjectLockedError;
+    expect(loser).toBeInstanceOf(ProjectLockedError);
+    // The loser is shown the new owner, not told it took over.
+    expect(loser.owner.token).toBe(JSON.parse(readFileSync(lockFile(dir), 'utf8')).token);
+    await a.refreshLock();
+    expect(a.readOnly?.canUnlock).toBe(true);
+    expect((await a.apply({ operations: [{ type: 'site.update', name: 'a' }] }, { label: 'x' })).ok).toBe(false);
+    expect((await winners[0].apply({ operations: [{ type: 'site.update', name: 'winner' }] }, { label: 'x' })).ok).toBe(true);
+  });
+
+  it('never brings back a lock it no longer holds, and offers to unlock instead', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const a = await reopen(dir, 'a');
+    const token = JSON.parse(readFileSync(lockFile(dir), 'utf8')).token;
+    // Another app takes over, saves and closes before this one looks again.
+    const b = await ProjectSession.open(dir, 'b', { force: token });
+    expect((await b.apply({ operations: [{ type: 'site.update', name: 'From b' }] }, { label: 'x' })).ok).toBe(true);
+    await b.close();
+    expect(existsSync(lockFile(dir))).toBe(false);
+    expect((await a.apply({ operations: [{ type: 'site.update', name: 'From a' }] }, { label: 'x' })).ok).toBe(false);
+    expect(existsSync(lockFile(dir))).toBe(false);
+    expect(a.readOnly?.canUnlock).toBe(true);
+    expect(read(dir, SITE).name).toBe('From b');
+    // Unlocking with what it was shown creates a lock; it can never replace one that appeared since.
+    await reopen(dir, 'a2', { force: a.readOnly!.lockToken });
+    expect(await ProjectSession.open(dir, 'a3', { force: a.readOnly!.lockToken }).catch((e) => e)).toBeInstanceOf(ProjectLockedError);
+  });
+
+  it('passes over a claim left by a process that is gone', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    writeFileSync(lockFile(dir), JSON.stringify({ pid: 2 ** 22 + 4321, host: hostname(), instance: 'crashed', token: 'cccc' }));
+    // It crashed part way through taking over, or through a save.
+    writeFileSync(`${lockFile(dir)}.cccc.claim.1`, JSON.stringify({ pid: 2 ** 22 + 4321, host: hostname(), holder: 'cccc' }));
+    const results = await Promise.all(['a', 'b', 'c'].map((id) => ProjectSession.open(dir, id).catch((e) => e)));
+    const winners = results.filter((r): r is ProjectSession => r instanceof ProjectSession);
+    open.push(...winners);
+    expect(winners).toHaveLength(1);
+    expect(readdirSync(join(dir, '.siteorigin')).filter((f) => f.startsWith('lock.json.'))).toEqual([]);
+  });
+
+  it('moves its lock time only from the heartbeat, which a long read never holds up', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const a = await reopen(dir, 'a');
+    const t0 = statSync(lockFile(dir)).mtimeMs;
+    expect(await a.stillOwner()).toBe(true);
+    expect(statSync(lockFile(dir)).mtimeMs).toBe(t0);
+    // An export reads the project under exclusive(); the heartbeat still runs meanwhile.
+    let finish!: () => void;
+    const reading = a.exclusive(() => new Promise<void>((r) => (finish = r)));
+    expect(await a.refreshLock()).toBe('mine');
+    expect(statSync(lockFile(dir)).mtimeMs).toBeGreaterThan(t0);
+    finish();
+    await reading;
+  });
+
+  it('keeps moving its lock time forward when its clock steps back', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const a = await reopen(dir, 'a');
+    await a.refreshLock();
+    const first = statSync(lockFile(dir)).mtimeMs;
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 120_000);
+    await a.refreshLock();
+    expect(statSync(lockFile(dir)).mtimeMs).toBeGreaterThan(first);
+  });
+
+  it('lets no takeover land part way through a save', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const a = await reopen(dir, 'a');
+    const token = JSON.parse(readFileSync(lockFile(dir), 'utf8')).token;
+    const events: string[] = [];
+    let resume!: () => void;
+    const gate = new Promise<void>((r) => (resume = r));
+    let reached!: () => void;
+    const atWrite = new Promise<void>((r) => (reached = r));
+    const rename = fsp.rename.bind(fsp);
+    vi.spyOn(fsp, 'rename').mockImplementation(async (from, to) => {
+      if (String(to).endsWith(SITE)) {
+        reached();
+        await gate;
+        await rename(from, to);
+        events.push('a wrote');
+        return;
+      }
+      return rename(from, to);
+    });
+    const saving = a.apply({ operations: [{ type: 'site.update', name: 'From a' }] }, { label: 'x' });
+    await atWrite;
+    // Another app is told the owner is gone and takes over while the save is paused before its document is written.
+    const taking = ProjectSession.open(dir, 'b', { force: token }).then((b) => {
+      events.push('b took over');
+      open.push(b);
+      return b;
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    events.push('a resumed');
+    resume();
+    expect((await saving).ok).toBe(true);
+    const b = await taking;
+    expect(events).toEqual(['a resumed', 'a wrote', 'b took over']);
+    expect(b.state.site.name).toBe('From a');
+    expect((await a.apply({ operations: [{ type: 'site.update', name: 'a again' }] }, { label: 'x' })).ok).toBe(false);
+    expect(a.readOnly).not.toBeNull();
+  });
+
+  it('refuses a write when its lock cannot be read back, without giving up the project', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const a = await reopen(dir, 'a');
+    const body = readFileSync(lockFile(dir), 'utf8');
+    writeFileSync(lockFile(dir), '');
+    const r = await a.apply({ operations: [{ type: 'site.update', name: 'x' }] }, { label: 'x' });
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('BUSY');
+    expect(a.readOnly).toBeNull();
+    writeFileSync(lockFile(dir), body);
+    expect((await a.apply({ operations: [{ type: 'site.update', name: 'x' }] }, { label: 'x' })).ok).toBe(true);
+  });
+
+  it('never writes again once closed', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    const a = await reopen(dir, 'a');
+    await a.close();
+    const b = await reopen(dir, 'b');
+    expect((await a.apply({ operations: [{ type: 'site.update', name: 'late' }] }, { label: 'x' })).ok).toBe(false);
+    expect((await b.apply({ operations: [{ type: 'site.update', name: 'b' }] }, { label: 'x' })).ok).toBe(true);
+    expect(read(dir, SITE).name).toBe('b');
+  });
+
+  it('unlocks only the generation the user was shown, even from the same app', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    await reopen(dir, 'a');
+    const shown = ((await ProjectSession.open(dir, 'me').catch((e) => e)) as ProjectLockedError).owner.token!;
+    await reopen(dir, 'me', { force: shown });
+    // A second confirmation of the same Unlock, from this same app, must not displace the successor.
+    const again = await ProjectSession.open(dir, 'me', { force: shown }).catch((e) => e);
+    expect(again).toBeInstanceOf(ProjectLockedError);
+    expect((again as ProjectLockedError).owner.token).toBe(JSON.parse(readFileSync(lockFile(dir), 'utf8')).token);
+    // A lock without a token (an older app) is identified by its content.
+    const { dir: dir2, s: s2 } = await make();
+    await s2.close();
+    writeFileSync(lockFile(dir2), JSON.stringify({ pid: 1, host: 'studio-imac.local', instance: 'old' }));
+    const old = ((await ProjectSession.open(dir2, 'me').catch((e) => e)) as ProjectLockedError).owner.token!;
+    writeFileSync(lockFile(dir2), JSON.stringify({ pid: 2, host: 'studio-imac.local', instance: 'newer' }));
+    expect(await ProjectSession.open(dir2, 'me', { force: old }).catch((e) => e)).toBeInstanceOf(ProjectLockedError);
+    const newer = ((await ProjectSession.open(dir2, 'me').catch((e) => e)) as ProjectLockedError).owner.token!;
+    await reopen(dir2, 'me', { force: newer });
+  });
+
+  it('treats a process it may not signal as alive', async () => {
+    const { dir, s } = await make();
+    await s.close();
+    writeFileSync(lockFile(dir), JSON.stringify({ pid: 4242, host: hostname(), instance: 'other-user', token: 'b0b0' }));
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('Operation not permitted'), { code: 'EPERM' });
+    });
+    expect(await ProjectSession.open(dir, 'me').catch((e) => e)).toBeInstanceOf(ProjectLockedError);
   });
 
   it('becomes read-only when another app takes the lock over', async () => {

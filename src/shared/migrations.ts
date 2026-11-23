@@ -17,6 +17,7 @@
  */
 import type { ComponentDefinition, GraphNode, NodeTree, ProjectState, VariantAxis, VariantDef } from './types';
 import { stableHash } from './ids';
+import { sha256Hex } from './sha256';
 
 export interface Migration {
   /** Stable name, recorded in test expectations and notes. */
@@ -271,7 +272,17 @@ export const LATEST_SCHEMA_VERSION = MIGRATIONS.length + 1;
 
 /** The identity of a definition's content, as recorded in the theme lock. */
 export function definitionHash(def: ComponentDefinition): string {
-  return stableHash(JSON.stringify(def));
+  return `sha256:${sha256Hex(JSON.stringify(def))}`;
+}
+
+/**
+ * Does a theme lock entry say this definition is unmodified theme data? Locks written before SHA-256 hold a 32-bit
+ * FNV-1a hash, which a hand edit can collide with; such an entry is read with that hash, the only evidence there is,
+ * and is replaced by a SHA-256 one when the entry is next written from the theme itself (an install or a refresh).
+ */
+export function matchesLock(hash: string | undefined, def: ComponentDefinition): boolean {
+  if (typeof hash !== 'string' || !hash) return false;
+  return hash.startsWith('sha256:') ? hash === definitionHash(def) : hash === stableHash(JSON.stringify(def));
 }
 
 /** Every document of a project, which each carry their own `schemaVersion`. */
@@ -307,7 +318,7 @@ export function migrateProject(project: ProjectState, migrations: Migration[] = 
   const state = structuredClone(project);
   // A theme definition still matching its lock is unmodified theme data. Migrating it must not make it look edited.
   const pristine = Object.values(state.components)
-    .filter((d) => d.owner === 'theme' && state.themeLock.components?.[d.id]?.hash === definitionHash(d))
+    .filter((d) => d.owner === 'theme' && matchesLock(state.themeLock.components?.[d.id]?.hash, d))
     .map((d) => d.id);
   for (const doc of documents(state)) doc.schemaVersion = versionOf(doc);
   const pending = migrations.slice(from - 1);
@@ -318,6 +329,11 @@ export function migrateProject(project: ProjectState, migrations: Migration[] = 
     // Read back from the project: a step may have replaced a document object rather than changed it.
     for (const doc of documents(state)) if (doc.schemaVersion === source || !Number.isInteger(doc.schemaVersion)) doc.schemaVersion = source + 1;
   });
-  for (const id of pristine) if (state.components[id] && state.themeLock.components[id]) state.themeLock.components[id].hash = definitionHash(state.components[id]);
+  // Re-stamped in the hash the entry already had: a 32-bit match is weak evidence, and is never turned into a
+  // SHA-256 entry that would vouch for the definition more strongly than the original lock did.
+  for (const id of pristine) {
+    const entry = state.themeLock.components[id];
+    if (state.components[id] && entry) entry.hash = entry.hash.startsWith('sha256:') ? definitionHash(state.components[id]) : stableHash(JSON.stringify(state.components[id]));
+  }
   return { state, from, to, applied: pending.map((m) => m.id) };
 }
