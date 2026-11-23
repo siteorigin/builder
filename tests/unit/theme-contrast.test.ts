@@ -191,6 +191,23 @@ describe('offers', () => {
     expect(suggestForeground(tokens, PAIRS, failing as never)).toMatchObject({ value: '#000000' });
   });
 
+  it('breaks a tie by the failures a choice makes measurable on a ground that follows it', () => {
+    // The page is unreadable and Alternate background follows Text on brand. Text is white, so white on a white alternate ground fails; black passes.
+    const tokens = business({
+      'color.background': 'currentcolor',
+      'color.brand': '#757575',
+      'color.brand-strong': '#757575',
+      'color.on-brand': 'rgb(0 0 0 / 90%)',
+      'color.surface-alt': { token: 'color.on-brand' },
+      'color.text': '#ffffff',
+      'color.muted': '#ffffff'
+    });
+    const offer = suggestForeground(tokens, PAIRS, byId(evaluatePairs(tokens, PAIRS), 'button') as never)!;
+    expect(offer.value).toBe('#000000');
+    // What black makes measurable and failing is said (the light button's hover), not hidden.
+    expect(offer.breaks.map((r) => r.pair.id)).toEqual(['light-button-hover']);
+  });
+
   it('offers a choice for a brand linked to an independent color', () => {
     const tokens = business({ 'color.brand': { token: 'color.surface' } });
     const failing = byId(evaluatePairs(tokens, PAIRS), 'button');
@@ -277,6 +294,18 @@ describe('what a ratio says', () => {
     const grey = business({ 'color.text': '#666666', 'color.background': '#ffffff' });
     expect(byId(evaluatePairs(grey, [pair]), 'p').status).toBe('fail');
     expect(byId(evaluatePairs(grey, [{ ...pair, min: undefined }]), 'p').status).toBe('pass');
+    // A lower minimum is honoured too: 3.54:1 passes at 3.
+    expect(byId(evaluatePairs(business({ 'color.text': '#888888', 'color.background': '#ffffff' }), [{ ...pair, min: 3 }]), 'p').status).toBe('pass');
+  });
+
+  it('leaves a translucent color unknown on a ground that differs from place to place, and measures an opaque one', () => {
+    // The light button sits on brand panels and dark panels alike: its translucent background has no one ground to be measured on.
+    const translucent = business({ 'color.on-brand': 'rgb(255 255 255 / 55%)' });
+    const results = evaluatePairs(translucent, PAIRS);
+    expect(byId(results, 'light-button').status).toBe('unknown');
+    expect(byId(results, 'light-button-hover').status).toBe('unknown');
+    expect(byId(results, 'button').status).not.toBe('unknown');
+    expect(ratioOf(byId(evaluatePairs(business({}), PAIRS), 'light-button'))).toBeCloseTo(10.925771, 5);
   });
 
   it('reads a light button on its hover mix of the two colors', () => {
@@ -407,6 +436,10 @@ describe('what the status region says', () => {
     expect(sayContrast(key([]), key(['Button text', 'Text on the page']))).toBe('Low contrast: Button text, Text on the page');
     expect(sayContrast(key(['Button text']), key([]))).toBe('Colors are readable again');
     expect(sayContrast(key([], true), key([]))).toBeNull();
+    expect(sayContrast(key(['Button text']), key(['Text on the page']))).toBe('Low contrast: Text on the page');
+  });
+  it('clears an all-clear that is no longer true once some pair cannot be checked', () => {
+    expect(sayContrast(key([]), key([], true))).toBe('');
   });
   it('stays quiet when only the could-not-be-checked flag moved, and never claims readable while some cannot be checked', () => {
     expect(sayContrast(key(['Button text']), key(['Button text'], true))).toBeNull();

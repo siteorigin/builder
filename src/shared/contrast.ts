@@ -66,6 +66,8 @@ export interface ContrastPair {
   bg: PairColor;
   /** A hover state is only fixed by a colour that keeps its resting state readable too. */
   state: 'rest' | 'hover';
+  /** The background sits on grounds that differ from place to place (a light button on a brand panel or a dark one), so a translucent colour in it cannot be measured. */
+  varyingGround?: boolean;
   /** Pairs that colour one thing in its different states, or one text colour on its different grounds. */
   group: string;
   /** False when the foreground is itself the colour the author is choosing (brand text on the page), so changing it is no fix. */
@@ -126,9 +128,10 @@ export function evaluatePairs(tokens: TokenDef[], pairs: readonly ContrastPair[]
     return !c ? null : c.a >= 1 ? c : under ? compositeOver(c, under) : null;
   };
   return pairs.map((pair): PairResult => {
+    const under = pair.varyingGround ? null : page;
     const colorOf = (c: PairColor): Rgba | null => {
-      if (typeof c === 'string') return solid(c, page);
-      const [a, pa, b] = [solid(c.mix[0], page), c.mix[1] / 100, solid(c.mix[2], page)];
+      if (typeof c === 'string') return solid(c, under);
+      const [a, pa, b] = [solid(c.mix[0], under), c.mix[1] / 100, solid(c.mix[2], under)];
       // The two ends are opaque once painted over the page, so the mix is a plain weighted average.
       return a && b ? { r: a.r * pa + b.r * (1 - pa), g: a.g * pa + b.g * (1 - pa), b: a.b * pa + b.b * (1 - pa), a: 1 } : null;
     };
@@ -153,7 +156,7 @@ export interface ForegroundSuggestion {
   after: PairResult[];
   /** True when every pair of the group is readable with it; false when a resting state is fixed at the cost of another (a hover colour). */
   everyState: boolean;
-  /** Pairs that read well now and would not with it, anywhere in the theme (a light button on the same colour), worst first. */
+  /** Pairs that fail with it and did not before, anywhere in the theme (a light button on the same colour, a ground that follows it), worst first. */
   breaks: FailingPair[];
 }
 
@@ -175,11 +178,14 @@ export function suggestForeground(tokens: TokenDef[], pairs: readonly ContrastPa
     const after = evaluatePairs(tokens, group, read, overrides);
     const breaks = evaluatePairs(tokens, pairs, read, overrides)
       .filter(isFailing)
-      .filter((r) => before.get(r.pair.id) === 'pass')
+      .filter((r) => before.get(r.pair.id) !== 'fail')
       .sort((a, b) => a.ratio - b.ratio);
-    return { value, after, breaks, fixed: after.find((r) => r.pair.id === pair.id)?.status === 'pass', everyState: after.every((r) => r.status === 'pass') };
+    // What read well and would not weighs most; a pair that only becomes measurable, and fails, breaks a tie.
+    const spoiled = breaks.filter((r) => before.get(r.pair.id) === 'pass').length;
+    return { value, after, breaks, spoiled, fixed: after.find((r) => r.pair.id === pair.id)?.status === 'pass', everyState: after.every((r) => r.status === 'pass') };
   });
-  const fewest = <T extends { breaks: unknown[] }>(list: T[]): T | undefined => list.reduce<T | undefined>((best, t) => (!best || t.breaks.length < best.breaks.length ? t : best), undefined);
+  const fewest = <T extends { breaks: unknown[]; spoiled: number }>(list: T[]): T | undefined =>
+    list.reduce<T | undefined>((best, t) => (!best || t.spoiled < best.spoiled || (t.spoiled === best.spoiled && t.breaks.length < best.breaks.length) ? t : best), undefined);
   const lone = pair.state === 'rest' && group.filter((p) => p.state === 'rest').length === 1;
   const best = fewest(tries.filter((t) => t.everyState)) ?? (lone ? fewest(tries.filter((t) => t.fixed)) : undefined);
   return best ? { token: pair.fg, value: best.value, after: best.after, everyState: best.everyState, breaks: best.breaks } : null;

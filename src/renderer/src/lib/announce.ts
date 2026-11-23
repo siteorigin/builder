@@ -88,7 +88,8 @@ export function saveStatusAnnouncement(prev: SaveStatus, next: SaveStatus, endin
  */
 export function sayContrast(prev: string, next: string): string | null {
   const [failing, unknown] = next.split('\n');
-  if (failing === prev.split('\n')[0]) return null;
+  // Only the "could not be checked" flag moved: nothing new to say, unless an all-clear said earlier would now be stale.
+  if (failing === prev.split('\n')[0]) return !failing && unknown ? '' : null;
   if (failing) return `Low contrast: ${failing.split('|').join(', ')}`;
   return unknown ? '' : 'Colors are readable again';
 }
