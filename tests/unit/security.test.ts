@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { resolveConfig } from 'vite';
+import { createServer, resolveConfig } from 'vite';
 import { atomicWrite } from '../../src/main/project/fsutil';
 import { canonicalDir, frameAncestorsCsp, framePolicyPlugin, previewFsPolicy, realFileInside } from '../../src/runtime/policy';
 import { projectSrcPath } from '../../src/runtime/paths';
@@ -97,13 +97,56 @@ describe('preview server policy', () => {
     expect(frameAncestorsCsp(false).split(' ').slice(1)).toEqual(['app://editor', 'http://127.0.0.1:*', 'http://localhost:*']);
   });
 
-  it('sends the frame policy on every response, before SvelteKit handles it', () => {
-    let mw: ((req: unknown, res: { setHeader(k: string, v: string): void }, next: () => void) => void) | null = null;
-    framePolicyPlugin('frame-ancestors app://editor').configureServer({ middlewares: { use: (fn) => (mw = fn) } });
-    const headers: Record<string, string> = {};
-    let nexted = false;
-    mw!({}, { setHeader: (k, v) => (headers[k] = v) }, () => (nexted = true));
-    expect(headers['Content-Security-Policy']).toBe('frame-ancestors app://editor');
-    expect(nexted).toBe(true);
+  it('sends the frame policy on every response, including those answered before any other middleware', async () => {
+    const root = tmp();
+    mkdirSync(join(root, 'public'));
+    writeFileSync(join(root, 'public', 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    writeFileSync(join(root, 'index.html'), '<!doctype html><title>x</title>');
+    type Res = { setHeader(k: string, v: string): void; removeHeader(k: string): void; writeHead(s: number, h?: Record<string, string>): void; end(b: string): void };
+    // Like SvelteKit's asset server: registered first, answers static files itself and never calls next().
+    // And pages that set a content policy of their own, the two ways a response can.
+    const project = {
+      name: 'project-responses',
+      configureServer(server: { middlewares: { use: (fn: (req: { url?: string }, res: Res, next: () => void) => void) => void } }) {
+        server.middlewares.use((req, res, next) => {
+          if (req.url === '/early.txt') return res.end('early');
+          if (req.url === '/own-set') {
+            res.setHeader('Content-Security-Policy', "script-src 'self'");
+            return res.end('own');
+          }
+          if (req.url === '/own-head') {
+            res.writeHead(200, { 'Content-Security-Policy': "img-src 'self'" });
+            return res.end('own');
+          }
+          if (req.url === '/removed') {
+            res.setHeader('content-security-policy', "script-src 'self'");
+            res.removeHeader('Content-Security-Policy');
+            return res.end('removed');
+          }
+          next();
+        });
+      }
+    };
+    const server = await createServer({ root, configFile: false, logLevel: 'silent', appType: 'mpa', publicDir: 'public', plugins: [project, framePolicyPlugin('frame-ancestors app://editor')], server: { host: '127.0.0.1', port: 0, ws: false } });
+    try {
+      await server.listen();
+      const { port } = server.httpServer!.address() as { port: number };
+      const get = async (path: string) => {
+        const res = await fetch(`http://127.0.0.1:${port}${path}`);
+        return { status: res.status, body: await res.text(), csp: res.headers.get('content-security-policy') };
+      };
+      const expected: Array<[string, number, string]> = [['/early.txt', 200, 'early'], ['/logo.svg', 200, '<svg'], ['/index.html', 200, '<title>x</title>'], ['/missing', 404, '']];
+      for (const [path, status, body] of expected) {
+        const r = await get(path);
+        expect([r.status, r.body.includes(body), r.csp], path).toEqual([status, true, 'frame-ancestors app://editor']);
+      }
+      // A project's own policy is sent alongside the frame policy, never instead of it.
+      expect((await get('/own-set')).csp).toBe("frame-ancestors app://editor, script-src 'self'");
+      expect((await get('/own-head')).csp).toBe("frame-ancestors app://editor, img-src 'self'");
+      // Removing the project's policy leaves the frame policy.
+      expect((await get('/removed')).csp).toBe('frame-ancestors app://editor');
+    } finally {
+      await server.close();
+    }
   });
 });

@@ -105,6 +105,49 @@ describe('project session', () => {
   });
 });
 
+describe('assistant code that imports project components', () => {
+  const FETCHES = `<script>\n\timport { onMount } from 'svelte';\n\tonMount(() => { fetch('/api'); });\n</script>\n<p>map</p>\n`;
+  const importer = (path: string) => `<script>\n\timport Map from './${path.split('/').pop()}';\n</script>\n<Map />\n`;
+
+  it('refuses an import that reaches code the assistant may not write', async () => {
+    const { s } = await make();
+    // A developer may write a component that fetches; the assistant may not reach it.
+    const made = await s.apply({ operations: [{ type: 'component.createCode', name: 'Map', source: FETCHES }] }, { label: 'Create' });
+    expect(made.ok).toBe(true);
+    const path = s.state.components[made.results![0].definitionId as string].sourcePath!;
+    const r = await s.apply({ operations: [{ type: 'component.createCode', name: 'Hero', source: importer(path) }] }, { label: 'AI', source: 'ai' });
+    expect(r.error?.code).toBe('VALIDATION_FAILED');
+    expect(r.error?.message).toMatch(/may not import ".*", which uses network requests/);
+    expect(Object.values(s.state.components).some((d) => d.name === 'Hero')).toBe(false);
+  });
+
+  it('refuses the import in an edit to existing code, and an import of a component the same batch removes', async () => {
+    const { s } = await make();
+    const map = await s.apply({ operations: [{ type: 'component.createCode', name: 'Map', source: FETCHES }] }, { label: 'Create' });
+    const mapId = map.results![0].definitionId as string;
+    const path = s.state.components[mapId].sourcePath!;
+    const hero = await s.apply({ operations: [{ type: 'component.createCode', name: 'Hero', source: '<p>hero</p>\n' }] }, { label: 'AI', source: 'ai' });
+    const heroId = hero.results![0].definitionId as string;
+    const edit = await s.apply({ operations: [{ type: 'component.updateSource', definitionId: heroId, source: importer(path) }] }, { label: 'AI', source: 'ai' });
+    expect(edit.error?.code).toBe('VALIDATION_FAILED');
+    expect(s.state.components[heroId].source).toBe('<p>hero</p>\n');
+    const gone = await s.apply({ operations: [{ type: 'component.remove', definitionId: mapId }, { type: 'component.createCode', name: 'After', source: importer(path) }] }, { label: 'AI', source: 'ai' });
+    expect(gone.error?.message).toMatch(/not a component in this project/);
+  });
+
+  it('checks the imported component as the batch leaves it, whichever order the batch changes it in', async () => {
+    const { s } = await make();
+    const made = await s.apply({ operations: [{ type: 'component.createCode', name: 'Map', source: FETCHES }] }, { label: 'Create' });
+    const id = made.results![0].definitionId as string;
+    const path = s.state.components[id].sourcePath!;
+    const fixed = { type: 'component.updateSource' as const, definitionId: id, source: '<p>map</p>\n' };
+    const create = (name: string) => ({ type: 'component.createCode' as const, name, source: importer(path) });
+    expect((await s.apply({ operations: [create('Before'), fixed] }, { label: 'AI', source: 'ai' })).ok).toBe(true);
+    await s.apply({ operations: [{ ...fixed, source: FETCHES }] }, { label: 'Developer' });
+    expect((await s.apply({ operations: [fixed, create('After')] }, { label: 'AI', source: 'ai' })).ok).toBe(true);
+  });
+});
+
 describe('code component history', () => {
   it('undoes and redoes edits to authored code component source', async () => {
     const { dir, s } = await make();

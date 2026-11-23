@@ -19,7 +19,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
-          'runtime-worker': resolve('src/runtime/worker.ts')
+          'runtime-worker': resolve('src/runtime/worker.ts'),
+          'media-worker': resolve('src/main/project/media-worker.ts')
         }
       }
     }

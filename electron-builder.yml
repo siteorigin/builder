@@ -7,6 +7,10 @@ files:
   - out/**
   - package.json
   - "!**/*.map"
+# The media worker's image library loads native code, which cannot be loaded from inside the archive.
+asarUnpack:
+  - "**/node_modules/sharp/**/*"
+  - "**/node_modules/@img/**/*"
 # A complete, unmodified npm is copied into Resources/npm by build/after-pack.cjs.
 afterPack: build/after-pack.cjs
 extraResources:

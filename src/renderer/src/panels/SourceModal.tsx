@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Code, Lock } from 'lucide-react';
 import { applyOps, api, setState, toast, useStore, confirmDialog } from '../store';
-import { Field, Modal, TabPanel, Tabs } from '../components/ui';
+import { Field, Modal, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
 import { prepareCodeForSave } from '../lib/code';
 import { CodeEditor } from '../components/CodeEditor';
@@ -122,22 +122,31 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       }
     >
       <div className="col" style={{ gap: 10 }}>
-        <Tabs value={tab} onChange={setTab} label="Source views" idBase="source" options={[{ value: 'source', label: 'Svelte source' }, { value: 'manifest', label: 'Properties' }]} />
-        <TabPanel idBase="source" value={tab}>
-          {tab === 'manifest' && src?.editable ? (
-            <div style={{ maxHeight: '60vh', overflow: 'auto' }}>
-              <PropSchemaEditor rows={rows} onChange={setRows} readOnly={!!status} />
-            </div>
-          ) : tab === 'manifest' ? (
-            <pre className="code-view" tabIndex={0}>{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.fromEntries(Object.entries(def.variantAxes ?? {}).map(([axis, a]) => [axis, Object.keys(a.options)])) }, null, 2)}</pre>
-          ) : src?.editable ? (
-            <CodeEditor value={draft} onChange={setDraft} />
-          ) : src ? (
-            <CodeEditor value={src.source} readOnly />
-          ) : (
-            <pre className="code-view">Loading…</pre>
-          )}
-        </TabPanel>
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          label="Source views"
+          idBase="source"
+          options={[
+            {
+              value: 'source',
+              label: 'Svelte source',
+              panel: () => (src?.editable ? <CodeEditor value={draft} onChange={setDraft} /> : src ? <CodeEditor value={src.source} readOnly /> : <pre className="code-view">Loading…</pre>)
+            },
+            {
+              value: 'manifest',
+              label: 'Properties',
+              panel: () =>
+                src?.editable ? (
+                  <div style={{ maxHeight: '60vh', overflow: 'auto' }}>
+                    <PropSchemaEditor rows={rows} onChange={setRows} readOnly={!!status} />
+                  </div>
+                ) : (
+                  <pre className="code-view" tabIndex={0}>{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.fromEntries(Object.entries(def.variantAxes ?? {}).map(([axis, a]) => [axis, Object.keys(a.options)])) }, null, 2)}</pre>
+                )
+            }
+          ]}
+        />
         {errors.map((e, i) => (
           <div key={i} className="scope-note danger mono">
             {e}
@@ -261,16 +270,24 @@ export function NewCodeComponentModal() {
         <Field label="Name">
           <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Booking widget" />
         </Field>
-        <Tabs value={tab} onChange={setTab} label="New component views" idBase="new-code" options={[{ value: 'source', label: 'Svelte source' }, { value: 'manifest', label: `Properties (${rows.length})` }]} />
-        <TabPanel idBase="new-code" value={tab}>
-          {tab === 'source' ? (
-            <CodeEditor value={source} onChange={setSource} height="46vh" />
-          ) : (
-            <div style={{ height: '46vh', overflow: 'auto' }}>
-              <PropSchemaEditor rows={rows} onChange={setRows} readOnly={!!status} />
-            </div>
-          )}
-        </TabPanel>
+        <Tabs
+          value={tab}
+          onChange={setTab}
+          label="New component views"
+          idBase="new-code"
+          options={[
+            { value: 'source', label: 'Svelte source', panel: () => <CodeEditor value={source} onChange={setSource} height="46vh" /> },
+            {
+              value: 'manifest',
+              label: `Properties (${rows.length})`,
+              panel: () => (
+                <div style={{ height: '46vh', overflow: 'auto' }}>
+                  <PropSchemaEditor rows={rows} onChange={setRows} readOnly={!!status} />
+                </div>
+              )
+            }
+          ]}
+        />
         {errors.map((e, i) => (
           <div key={i} className="scope-note danger mono">
             {e}

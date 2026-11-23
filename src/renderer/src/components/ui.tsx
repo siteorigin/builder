@@ -363,10 +363,35 @@ export function useMenu() {
 }
 
 /**
- * Tabs (WAI-ARIA APG tabs pattern): one tab stop, Left/Right/Home/End move and activate, each tab
- * controls a tabpanel whose id is `${idBase}-panel-${value}`.
+ * Tabs (WAI-ARIA APG tabs pattern): one tab stop, Left/Right/Home/End move and activate. Tabs renders the
+ * panels as well as the tabs, every one of them, so each tab's aria-controls always names an element on the
+ * page. A panel's content is rendered only while it is shown, unless `keepMounted` keeps it (and its state)
+ * while hidden.
  */
-export function Tabs<T extends string>({ value, options, onChange, label, idBase, className = 'tabs' }: { value: T; options: Array<{ value: T; label: ReactNode; icon?: ReactNode; extra?: ReactNode }>; onChange: (v: T) => void; label: string; idBase: string; className?: string }) {
+export function Tabs<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+  idBase,
+  className = 'tabs',
+  keepMounted = false,
+  panelClassName,
+  panelStyle,
+  panelsStyle
+}: {
+  value: T;
+  options: Array<{ value: T; label: ReactNode; icon?: ReactNode; extra?: ReactNode; panel: () => ReactNode }>;
+  onChange: (v: T) => void;
+  label: string;
+  idBase: string;
+  className?: string;
+  keepMounted?: boolean;
+  panelClassName?: string;
+  panelStyle?: React.CSSProperties;
+  /** When set, the panels are wrapped in one element with this style. */
+  panelsStyle?: React.CSSProperties;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const move = (e: React.KeyboardEvent) => {
     const i = options.findIndex((o) => o.value === value);
@@ -377,16 +402,24 @@ export function Tabs<T extends string>({ value, options, onChange, label, idBase
     onChange(next.value);
     requestAnimationFrame(() => ref.current?.querySelector<HTMLElement>(`#${CSS.escape(`${idBase}-tab-${next.value}`)}`)?.focus());
   };
-  return (
-    <div ref={ref} className={className} role="tablist" aria-label={label} onKeyDown={move}>
-      {options.map((o) => (
-        <button key={o.value} id={`${idBase}-tab-${o.value}`} role="tab" className={className === 'tabs' ? 'tab' : 'dock-tab'} aria-selected={value === o.value} aria-controls={`${idBase}-panel-${o.value}`} tabIndex={value === o.value ? 0 : -1} onClick={() => onChange(o.value)}>
-          {o.icon}
-          {o.label}
-          {o.extra}
-        </button>
-      ))}
+  const panels = options.map((o) => (
+    <div key={o.value} role="tabpanel" id={`${idBase}-panel-${o.value}`} aria-labelledby={`${idBase}-tab-${o.value}`} className={panelClassName} style={panelStyle} hidden={o.value !== value}>
+      {keepMounted || o.value === value ? o.panel() : null}
     </div>
+  ));
+  return (
+    <>
+      <div ref={ref} className={className} role="tablist" aria-label={label} onKeyDown={move}>
+        {options.map((o) => (
+          <button key={o.value} id={`${idBase}-tab-${o.value}`} role="tab" className={className === 'tabs' ? 'tab' : 'dock-tab'} aria-selected={value === o.value} aria-controls={`${idBase}-panel-${o.value}`} tabIndex={value === o.value ? 0 : -1} onClick={() => onChange(o.value)}>
+            {o.icon}
+            {o.label}
+            {o.extra}
+          </button>
+        ))}
+      </div>
+      {panelsStyle ? <div style={panelsStyle}>{panels}</div> : panels}
+    </>
   );
 }
 
@@ -744,15 +777,6 @@ export function useGridTabStops(ref: React.RefObject<HTMLElement | null>) {
       for (const c of cells) c.tabIndex = c === keep ? 0 : -1;
     }
   });
-}
-
-/** The panel half of Tabs: give it the same idBase and the value it shows. */
-export function TabPanel({ idBase, value, children, className, style }: { idBase: string; value: string; children: ReactNode; className?: string; style?: React.CSSProperties }) {
-  return (
-    <div role="tabpanel" id={`${idBase}-panel-${value}`} aria-labelledby={`${idBase}-tab-${value}`} className={className} style={style}>
-      {children}
-    </div>
-  );
 }
 
 /** Hosts confirmDialog(): the app's own confirmation, styled and themed like every other dialog. */

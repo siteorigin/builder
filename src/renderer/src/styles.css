@@ -1261,6 +1261,8 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 .recent-item.missing .where, .recent-item.missing .where span { color: var(--amber); }
 .dock-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .dock-panel[hidden] { display: none; }
+/* Tabs renders every panel; an inactive one stays hidden whatever its class sets display to. */
+[role="tabpanel"][hidden] { display: none; }
 .crumbs button.def { color: var(--plum) !important; font-weight: 600; }
 .token-name { display: flex; flex-direction: column; gap: 1px; }
 .token-name small { font-size: 11px; color: var(--text-3); line-height: 1.3; }

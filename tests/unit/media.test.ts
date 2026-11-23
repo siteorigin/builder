@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { brotliCompressSync, deflateSync } from 'node:zlib';
-import { fontInfo, imageInfo, orientPixels } from '../../src/main/project/media';
+import { brotliCompressSync, constants as zlib, deflateSync } from 'node:zlib';
+import { fontInfo, imageInfo } from '../../src/main/project/media';
 
 const u16 = (n: number) => Buffer.from([n >> 8, n & 255]);
 const u32 = (n: number) => Buffer.from([n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255]);
@@ -43,6 +43,14 @@ describe('image dimensions', () => {
     expect(imageInfo(avif(1), 'image/avif')).toMatchObject({ width: 800, height: 1200 });
   });
 
+  it('turns a PNG by the orientation in its eXIf chunk', async () => {
+    const sharp = (await import('sharp')).default;
+    const turned = await sharp({ create: { width: 1200, height: 600, channels: 3, background: '#c00' } }).withMetadata({ orientation: 6 }).png().toBuffer();
+    expect(imageInfo(turned, 'image/png')).toEqual({ width: 600, height: 1200, orientation: 6 });
+    const plain = await sharp({ create: { width: 1200, height: 600, channels: 3, background: '#c00' } }).png().toBuffer();
+    expect(imageInfo(plain, 'image/png')).toEqual({ width: 1200, height: 600, orientation: 1 });
+  });
+
   it('reads past fill bytes and damaged EXIF to the frame header', () => {
     const j = jpeg(800, 600);
     const padded = Buffer.concat([j.subarray(0, 2), Buffer.from([0xff, 0xff, 0xff]), j.subarray(2)]);
@@ -79,19 +87,6 @@ describe('image dimensions', () => {
       full('meta', full('pitm', u16(1)), box('iprp', box('ipco', full('ispe', u32(1200), u32(800)), box('irot'), box('pixi', Buffer.from([1]))), full('ipma', u32(1), Buffer.concat([u16(1), Buffer.from([2, 1, 2])]))))
     ]);
     expect(imageInfo(emptyIrot, 'image/avif')).toMatchObject({ width: 1200, height: 800 });
-  });
-
-  it('turns pixels the way EXIF orientations describe', () => {
-    // 2x1 image: red, green. Orientation 6 (rotate 90° clockwise) gives a 1x2 image: red on top.
-    const px = Buffer.from([255, 0, 0, 255, 0, 255, 0, 255]);
-    const six = orientPixels(px, 2, 1, 6);
-    expect([six.width, six.height]).toEqual([1, 2]);
-    expect([...six.data.subarray(0, 4)]).toEqual([255, 0, 0, 255]);
-    const eight = orientPixels(px, 2, 1, 8);
-    expect([...eight.data.subarray(0, 4)]).toEqual([0, 255, 0, 255]);
-    const mirrored = orientPixels(px, 2, 1, 2);
-    expect([...mirrored.data.subarray(0, 4)]).toEqual([0, 255, 0, 255]);
-    expect(orientPixels(px, 2, 1, 1).data).toBe(px);
   });
 });
 
@@ -142,9 +137,17 @@ function woff(tables: Array<[string, Buffer]>): Buffer {
   return Buffer.concat([header, ...dir, ...data]);
 }
 
+/** WOFF2's UIntBase128: seven bits a byte, most significant first, the high bit set on all but the last. */
+function base128(n: number): number[] {
+  const out = [n & 127];
+  for (let rest = Math.floor(n / 128); rest > 0; rest = Math.floor(rest / 128)) out.unshift(0x80 | (rest & 127));
+  return out;
+}
+
 function woff2(tables: Array<[number, Buffer]>): Buffer {
-  const dir = Buffer.concat(tables.map(([index, raw]) => Buffer.from([index, ...(raw.length < 128 ? [raw.length] : [0x80 | (raw.length >> 7), raw.length & 127])])));
-  const packed = brotliCompressSync(Buffer.concat(tables.map(([, raw]) => raw)));
+  const dir = Buffer.concat(tables.map(([index, raw]) => Buffer.from([index, ...base128(raw.length)])));
+  // Quality 1: the fixtures only need a valid stream, and the default (11) takes seconds on the bomb's 70 MB.
+  const packed = brotliCompressSync(Buffer.concat(tables.map(([, raw]) => raw)), { params: { [zlib.BROTLI_PARAM_QUALITY]: 1 } });
   const header = Buffer.alloc(48);
   header.write('wOF2', 0, 'ascii');
   header.writeUInt16BE(tables.length, 12);
@@ -152,39 +155,41 @@ function woff2(tables: Array<[number, Buffer]>): Buffer {
   return Buffer.concat([header, dir, packed]);
 }
 
-describe('web font metadata', () => {
-  it('reads family, weight and style from a WOFF font', () => {
-    expect(fontInfo(woff([['name', nameTable('Brand Sans')], ['OS/2', os2Table(700, true)]]))).toEqual({ family: 'Brand Sans', weight: '700', style: 'italic' });
+describe('web font metadata', async () => {
+  it('reads family, weight and style from a WOFF font', async () => {
+    await expect(fontInfo(woff([['name', nameTable('Brand Sans')], ['OS/2', os2Table(700, true)]]))).resolves.toEqual({ family: 'Brand Sans', weight: '700', style: 'italic' });
   });
 
-  it('reads a variable WOFF2 font’s weight range', () => {
+  it('reads a variable WOFF2 font’s weight range', async () => {
     // Table indexes from the WOFF2 known-tag list: name 5, OS/2 6, fvar 47.
-    expect(fontInfo(woff2([[5, nameTable('Brand Serif')], [6, os2Table(400, false)], [47, fvarTable(100, 900)]]))).toEqual({ family: 'Brand Serif', weight: '100 900', style: 'normal' });
+    await expect(fontInfo(woff2([[5, nameTable('Brand Serif')], [6, os2Table(400, false)], [47, fvarTable(100, 900)]]))).resolves.toEqual({ family: 'Brand Serif', weight: '100 900', style: 'normal' });
   });
 
-  it('refuses files that are not web fonts or do not name a family', () => {
-    expect(() => fontInfo(Buffer.from('OTTO not a web font'))).toThrow(/WOFF/);
-    expect(() => fontInfo(woff([['OS/2', os2Table(400, false)]]))).toThrow(/family/);
+  it('refuses files that are not web fonts or do not name a family', async () => {
+    await expect(fontInfo(Buffer.from('OTTO not a web font'))).rejects.toThrow(/WOFF/);
+    await expect(fontInfo(woff([['OS/2', os2Table(400, false)]]))).rejects.toThrow(/family/);
   });
 
-  it('refuses decompression bombs, collections and damaged files with a readable reason', () => {
+  it('refuses decompression bombs, collections and damaged files with a readable reason', async () => {
     // A WOFF table claiming far more than a metadata table can be.
     const big = Buffer.alloc(8 * 1024 * 1024);
-    expect(() => fontInfo(woff([['name', big]]))).toThrow(/damaged/);
-    // A WOFF2 stream that unpacks past the budget.
-    expect(() => fontInfo(woff2([[5, Buffer.alloc(70 * 1024 * 1024)]]))).toThrow(/too large|damaged/);
+    await expect(fontInfo(woff([['name', big]]))).rejects.toThrow(/damaged/);
+    // A WOFF2 stream that unpacks past the budget is stopped by the output limit, not read to the end.
+    await expect(fontInfo(woff2([[5, Buffer.alloc(70 * 1024 * 1024)]]))).rejects.toThrow(/too large/);
+    // A real font's tables fit well within it: a 3 MB layout table (GSUB, index 28) reads fine.
+    await expect(fontInfo(woff2([[5, nameTable('Brand')], [6, os2Table(400, false)], [28, Buffer.alloc(3 * 1024 * 1024)]]))).resolves.toMatchObject({ family: 'Brand' });
     const collection = woff2([[5, nameTable('X')]]);
     collection.write('ttcf', 4, 'latin1');
-    expect(() => fontInfo(collection)).toThrow(/collection/);
+    await expect(fontInfo(collection)).rejects.toThrow(/collection/);
     const good = woff2([[5, nameTable('Brand')], [6, os2Table(400, false)]]);
-    for (const cut of [10, 40, 52, good.length - 3]) expect(() => fontInfo(good.subarray(0, cut))).toThrow(/damaged/);
+    for (const cut of [10, 40, 52, good.length - 3]) await expect(fontInfo(good.subarray(0, cut))).rejects.toThrow(/damaged/);
     // A name table whose record points past its end is damaged, not a crash with a raw Node error.
     const badName = nameTable('Brand');
     badName.writeUInt16BE(0xfff0, 16);
-    expect(() => fontInfo(woff([['name', badName]]))).toThrow(/damaged|family/);
+    await expect(fontInfo(woff([['name', badName]]))).rejects.toThrow(/damaged|family/);
   });
 
-  it('keeps only characters that are safe in a CSS family name', () => {
-    expect(fontInfo(woff([['name', nameTable("Evil'; } body{x")]]))).toMatchObject({ family: 'Evil bodyx' });
+  it('keeps only characters that are safe in a CSS family name', async () => {
+    await expect(fontInfo(woff([['name', nameTable("Evil'; } body{x")]]))).resolves.toMatchObject({ family: 'Evil bodyx' });
   });
 });
