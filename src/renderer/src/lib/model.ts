@@ -2,6 +2,7 @@
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { isBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
+import { layerLabel } from './layers';
 
 export interface BridgeDesc {
   ctx: string;
@@ -172,14 +173,78 @@ export function ownerLabel(state: ProjectState, owner: OwnerRef): string {
   return state.components[owner.id]?.name ?? 'Component';
 }
 
-/** Breadcrumb from owner to the selection. */
-export function breadcrumb(state: ProjectState, ref: ElementRef): Array<{ label: string; ref: ElementRef | null }> {
-  const out: Array<{ label: string; ref: ElementRef | null }> = [{ label: ownerLabel(state, ref.owner), ref: null }];
+export interface Crumb {
+  /** The short name shown. */
+  label: string;
+  /** The whole description, for the tooltip and the accessible name. */
+  full: string;
+  /** What selecting the crumb selects; null for the page (or component) the path starts at. */
+  ref: ElementRef | null;
+  /** A placed component: one from the theme, or one made in this project. */
+  component?: 'theme' | 'custom';
+}
+
+/** The nodes above `nodeId` in a tree, outermost first (the tree's roots included, `nodeId` not). */
+function ancestorsIn(tree: NodeTree, nodeId: string): Array<{ id: string; inRepeat: boolean }> {
+  const out: string[] = [];
+  const seen = new Set([nodeId]);
+  for (let p = findParent(tree, nodeId); p?.parentId && !seen.has(p.parentId); p = findParent(tree, p.parentId)) (seen.add(p.parentId), out.push(p.parentId));
+  // Going up, everything below the first repeat is inside the repeated item the selection is in.
+  let inRepeat = true;
+  return out
+    .map((id) => {
+      const r = { id, inRepeat };
+      if (tree.nodes[id]?.kind === 'repeat') inRepeat = false;
+      return r;
+    })
+    .reverse();
+}
+
+/**
+ * Breadcrumb from the page (or the component being edited) to the selection: every selectable layer it sits
+ * in, outermost first. That is each container and component above it in the page's own tree, then for a
+ * selection inside a placed component, the component and the parts of it that hold the selection.
+ */
+export function breadcrumb(state: ProjectState, ref: ElementRef): Crumb[] {
+  const out: Crumb[] = [];
+  const ownerName = ownerLabel(state, ref.owner);
+  out.push({ label: ownerName, full: ownerName, ref: null });
+  const crumb = (r: ElementRef): Crumb => {
+    const res = resolveRef(state, r);
+    if (res.def && r.partId) {
+      const label = res.def.parts[r.partId]?.label ?? 'Part';
+      return { label, full: `${label}, part of ${res.def.name}`, ref: r };
+    }
+    if (!res.node) return { label: 'Element', full: 'Element', ref: r };
+    const l = layerLabel(state, res.node, res.def);
+    const def = res.node.kind === 'instance' ? own(state.components, res.node.definitionId) : undefined;
+    if (!def) return { label: l.label, full: l.full, ref: r };
+    const custom = def.owner === 'project';
+    return { label: l.label, full: `${l.full}, ${custom ? 'component made in this project' : 'component'}`, ref: r, component: custom ? 'custom' : 'theme' };
+  };
+  const ownerTree = treeFor(state, ref.owner);
+  // The root of a component being edited is the component itself, the path's first crumb.
+  const defRoot = ref.owner.kind === 'component' ? ownerTree?.rootIds[0] : undefined;
+  const anchor = ref.instancePath[0] ?? ref.nodeId;
+  if (ownerTree)
+    for (const a of ancestorsIn(ownerTree, anchor))
+      if (a.id !== defRoot) out.push(crumb({ owner: ref.owner, instancePath: [], nodeId: a.id, ...(!ref.instancePath.length && a.inRepeat && ref.itemPath?.length ? { itemPath: ref.itemPath } : {}) }));
   for (let i = 0; i < ref.instancePath.length; i++) {
-    const b: ElementRef = { owner: ref.owner, instancePath: ref.instancePath.slice(0, i), nodeId: ref.instancePath[i] };
-    out.push({ label: refLabel(state, b), ref: b });
+    out.push(crumb({ owner: ref.owner, instancePath: ref.instancePath.slice(0, i), nodeId: ref.instancePath[i] }));
+    // Inside the component: the parts that hold the next component or the selection (other nodes there are
+    // not selectable on their own; the component's root is the placement itself).
+    const res = resolveRef(state, { owner: ref.owner, instancePath: ref.instancePath.slice(0, i + 1), nodeId: ref.nodeId });
+    const inner = res.def?.tree;
+    if (!res.def || !inner) continue;
+    const next = ref.instancePath[i + 1] ?? ref.nodeId;
+    const last = i === ref.instancePath.length - 1;
+    for (const a of ancestorsIn(inner, next)) {
+      const partId = partIdFor(res.def, a.id);
+      if (!partId || a.id === inner.rootIds[0]) continue;
+      out.push(crumb({ owner: ref.owner, instancePath: ref.instancePath.slice(0, i + 1), nodeId: a.id, partId, ...(last && a.inRepeat && ref.itemPath?.length ? { itemPath: ref.itemPath } : {}) }));
+    }
   }
-  out.push({ label: refLabel(state, ref), ref });
+  if (ref.nodeId !== defRoot || ref.instancePath.length) out.push(crumb(ref));
   return out;
 }
 
