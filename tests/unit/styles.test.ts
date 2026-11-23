@@ -326,6 +326,18 @@ describe('style precedence', () => {
     expect(section(out, null)).not.toMatch(/--layout-two-columns \.so-foundation-features-grid__heading \{[^}]*display/);
   });
 
+  it('keeps a layer hidden at every size where one size arranges it its own way', () => {
+    const s = fresh();
+    const page = home(s);
+    const id = page.rootIds[0];
+    page.nodes[id] = { id, kind: 'element', tag: 'div', children: [], styles: { base: { layout: 'stack', hidden: true }, phone: { layout: 'row' } } };
+    const rule = ruleOf(section(css(s, 'site'), PHONE), `.so-n-${id}`);
+    // The phone rule's own display comes first; the hide has the last word.
+    expect(rule).toContain('display: flex');
+    expect(rule.indexOf('display: none')).toBeGreaterThan(rule.indexOf('display: flex'));
+    for (const q of [TABLET, '(min-width: 1024px)']) expect(ruleOf(section(css(s, 'site'), q), `.so-n-${id}`)).toContain('display: none');
+  });
+
   it('restores display only where a part is hidden, leaving other ranges their own layout', () => {
     const s = fresh();
     const def = defOf(s, 'features.grid');

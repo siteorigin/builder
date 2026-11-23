@@ -346,11 +346,13 @@ function wideOnly(prop: string, value: unknown, opts: RuleOpts): boolean {
 
 /**
  * "Hidden at all sizes" plus "visible on phone" is expressed by hiding only in the other ranges,
- * so the element keeps whatever display mode its own styles give it.
+ * so the element keeps whatever display mode its own styles give it. So is "hidden at all sizes" when a range
+ * arranges the element its own way: that range's rule writes its own display, which would undo the base hide.
  */
 function resolveVisibility(styles: ResponsiveStyles): ResponsiveStyles {
   const ranges = ['phone', 'tablet', 'desktop'] as const;
-  if (!ranges.some((r) => styles[r]?.hidden === false)) return styles;
+  const relaid = styles.base?.hidden === true && ranges.some((r) => styles[r]?.layout !== undefined && styles[r]?.hidden === undefined);
+  if (!relaid && !ranges.some((r) => styles[r]?.hidden === false)) return styles;
   const out: ResponsiveStyles = structuredClone(styles);
   const hiddenBase = out.base?.hidden === true;
   if (out.base) delete out.base.hidden;

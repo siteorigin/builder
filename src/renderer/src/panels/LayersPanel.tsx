@@ -80,7 +80,12 @@ const sentence = (text: string) => (text ? `${text[0].toUpperCase()}${text.slice
 /** Select the layer that hides another one in this preview, and move keyboard focus to its row once shown. */
 function selectHider(owner: OwnerRef, by: HiddenBy) {
   setState({ selection: by.part ? { owner, instancePath: [by.id], nodeId: by.part.nodeId, partId: by.part.id } : { owner, instancePath: [], nodeId: by.id } });
-  setTimeout(() => document.querySelector<HTMLElement>('.layers-tree [role="treeitem"][aria-selected="true"]')?.focus(), 80);
+  // Only while focus is still in Layers (or nowhere): a Tab away meanwhile keeps its place.
+  setTimeout(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && !active.closest('.layers-tree')) return;
+    document.querySelector<HTMLElement>('.layers-tree [role="treeitem"][aria-selected="true"]')?.focus();
+  }, 80);
 }
 
 /** The visibility a row describes in the preview being shown (a part of the placement with `partId`). */

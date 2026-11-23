@@ -70,7 +70,7 @@ export function layerLabel(state: ProjectState, n: GraphNode, def?: ComponentDef
   const words = contentText(n);
   if (words === null) {
     const prop = boundTo(n, def);
-    return prop ? { label: `${kind} · ${prop}`, kind, excerpt: prop, full: `${kind}, shows ${prop}` } : { label: kind, kind, full: kind };
+    return prop ? { label: `${kind} · ${prop}`, kind, excerpt: prop, full: `${kind} · ${prop}` } : { label: kind, kind, full: kind };
   }
   if (!words) return { label: `${kind} · empty`, kind, excerpt: 'empty', empty: true, full: `${kind}, empty` };
   const excerpt = clip(words, EXCERPT_MAX);
@@ -84,43 +84,75 @@ export function layerLabel(state: ProjectState, n: GraphNode, def?: ComponentDef
 export type Size = 'phone' | 'tablet' | 'desktop';
 export const SIZES: Size[] = ['phone', 'tablet', 'desktop'];
 
-/** One record of styles that can hide a layer; `partId` is the placement override a change writes, null when
- *  the record is the component's own design, which a placement does not edit. */
-type Layer = { styles?: ResponsiveStyles; partId?: string | null };
+/**
+ * One record of styles that can hide a layer. `tier` is how strongly its rules apply, as the generated CSS
+ * orders them: a component's design (0), the options a placement chose (1), the placement's override (2).
+ * `partId` is the placement override a change writes; null for a record a placement does not edit.
+ */
+type Layer = { styles?: ResponsiveStyles; tier: number; partId?: string | null };
 
 const partOf = (def: ComponentDefinition | undefined, nodeId: string) => (def ? Object.entries(def.parts).find(([, p]) => p.nodeId === nodeId)?.[0] : undefined);
+const defOf = (state: ProjectState, n: InstanceNode) => (Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined);
 
-/** A node of a placed component's design as that placement shows it: the design's styles, then the options the
- *  placement chose (a variant can show what the design hides), weakest first. */
-const designStyles = (def: ComponentDefinition, n: InstanceNode, nodeId: string): Layer[] => [
-  { styles: def.tree?.nodes[nodeId]?.styles, partId: null },
-  ...selectedVariantStyles(def, n.variants, nodeId).map((styles) => ({ styles, partId: null }))
-];
-
-/**
- * The styles that decide whether a layer shows, weakest first: a primitive's own; for a placed component, its
- * design's root (with its chosen options) and the placement's override of it ("root", what Layers' eye and the
- * inspector write); for a part of a placement (`partId`), the same for that part.
- */
-function visibilityStyles(state: ProjectState, n: GraphNode, partId?: string): Layer[] {
-  if (n.kind !== 'instance') return partId ? [] : [{ styles: n.styles }];
-  const def = Object.hasOwn(state.components, n.definitionId) ? state.components[n.definitionId] : undefined;
-  const pid = partId ?? 'root';
-  const nodeId = def?.parts[pid]?.nodeId ?? (pid === 'root' ? def?.tree?.rootIds[0] : undefined);
-  return [...(def && nodeId ? designStyles(def, n, nodeId) : []), { styles: n.overrides?.[pid], partId: pid }];
+/** A node of a placed component's design as that placement shows it: the design's styles, the options the
+ *  placement chose (a variant can show what the design hides), and the placement's override of that part. */
+function placedStyles(def: ComponentDefinition, n: InstanceNode, nodeId: string, partId: string | undefined): Layer[] {
+  return [
+    { styles: def.tree?.nodes[nodeId]?.styles, tier: 0, partId: null },
+    ...selectedVariantStyles(def, n.variants, nodeId).map((styles) => ({ styles, tier: 1, partId: null })),
+    ...(partId ? [{ styles: n.overrides?.[partId], tier: 2, partId }] : [])
+  ];
 }
 
-/** Whether a set of records hides at one size, and whether every size's value or that size's own decides it.
- *  Within one record a size's own value wins; across records the stronger one that says anything wins. */
-function decide(layers: Layer[], size: Size): { hidden: boolean; by: 'base' | 'size' } | null {
-  let d: { hidden: boolean; by: 'base' | 'size' } | null = null;
-  for (const l of layers) {
-    const own = l.styles?.[size]?.hidden;
-    const all = l.styles?.base?.hidden;
-    if (typeof own === 'boolean') d = { hidden: own, by: 'size' };
-    else if (typeof all === 'boolean') d = { hidden: all, by: 'base' };
+/**
+ * The styles that decide whether a layer shows: a primitive's own; for a placed component, its design's root
+ * with its chosen options and the placement's override of it ("root", what Layers' eye and the inspector
+ * write); for a part of a placement (`partId`), the same for that part.
+ */
+function visibilityStyles(state: ProjectState, n: GraphNode, partId?: string): Layer[] {
+  // A repeat or a slot renders no element of its own, so nothing on it hides anything.
+  if (n.kind === 'repeat' || n.kind === 'slot') return [];
+  if (n.kind !== 'instance') return partId ? [] : [{ styles: n.styles, tier: 0 }];
+  const def = defOf(state, n);
+  const pid = partId ?? 'root';
+  const nodeId = def?.parts[pid]?.nodeId ?? (pid === 'root' ? def?.tree?.rootIds[0] : undefined);
+  return def && nodeId ? placedStyles(def, n, nodeId, pid) : [{ styles: n.overrides?.[pid], tier: 2, partId: pid }];
+}
+
+type Decision = { hidden: boolean; by: 'base' | 'size' | 'layout' };
+
+/**
+ * What one record says about a size. Its own `hidden` for the size wins, then its every-size `hidden`. Without
+ * either, arranging the layer (a layout) gives it a display of its own, which shows it over a weaker hide.
+ * `media` is whether the rule that says it sits in the size's media block (after every rule outside one).
+ */
+function said(styles: ResponsiveStyles | undefined, size: Size): (Decision & { media: boolean }) | null {
+  const own = styles?.[size]?.hidden;
+  if (typeof own === 'boolean') return { hidden: own, by: 'size', media: true };
+  const all = styles?.base?.hidden;
+  if (typeof all === 'boolean') {
+    // The generator writes an every-size hide into each size's block when any size shows it or arranges it.
+    const split = SIZES.some((z) => styles?.[z]?.hidden === false || (styles?.[z]?.layout !== undefined && styles?.[z]?.hidden === undefined));
+    return { hidden: all, by: 'base', media: split };
   }
-  return d;
+  if (styles?.[size]?.layout !== undefined) return { hidden: false, by: 'layout', media: true };
+  if (styles?.base?.layout !== undefined) return { hidden: false, by: 'layout', media: false };
+  return null;
+}
+
+/** Whether the records hide the layer at one size. The strongest tier that says anything decides; inside a tier
+ *  a rule in the size's media block beats one outside it, and a later rule beats an earlier one. */
+function decide(layers: Layer[], size: Size): Decision | null {
+  for (let tier = 2; tier >= 0; tier--) {
+    let best: (Decision & { media: boolean }) | null = null;
+    for (const l of layers) {
+      if (l.tier !== tier) continue;
+      const d = said(l.styles, size);
+      if (d && (!best || d.media || !best.media)) best = d;
+    }
+    if (best) return { hidden: best.hidden, by: best.by };
+  }
+  return null;
 }
 
 export interface OwnVisibility {
@@ -134,7 +166,7 @@ function visibilityOf(layers: Layer[]): OwnVisibility {
   const out: OwnVisibility = { hiddenAt: [], by: {} };
   for (const size of SIZES) {
     const d = decide(layers, size);
-    if (d?.hidden) (out.hiddenAt.push(size), (out.by[size] = d.by));
+    if (d?.hidden) (out.hiddenAt.push(size), (out.by[size] = d.by === 'size' ? 'size' : 'base'));
   }
   return out;
 }
@@ -151,46 +183,76 @@ export interface VisibilityEdit {
   value: boolean | null;
 }
 
-function editable(state: ProjectState, n: GraphNode, partId?: string) {
-  const layers = visibilityStyles(state, n, partId);
-  let i = layers.length - 1;
-  while (i >= 0 && layers[i].partId === null) i--;
-  return i < 0 ? null : { layers, edit: layers[i], weaker: layers.slice(0, i), target: layers[i].partId ? { partId: layers[i].partId! } : {} };
+/** The record a change writes, or null when the layer has none (a repeat, or a part with no override). */
+function writable(state: ProjectState, n: GraphNode, partId?: string) {
+  const l = visibilityStyles(state, n, partId).find((x) => x.partId !== null);
+  return l ? { styles: l.styles ?? {}, target: l.partId ? { partId: l.partId } : {} } : null;
 }
 
-/**
- * Show a layer again at one size only, leaving every other size as it is: a hide set for just that size is
- * taken away, and a hide every size shares is answered by that size showing it. Empty when it shows there.
- */
+/** A copy of the node with the edits made, to see what they leave. */
+function withEdits(n: GraphNode, edits: VisibilityEdit[]): GraphNode {
+  const out = structuredClone(n);
+  for (const e of edits) {
+    let styles: ResponsiveStyles;
+    if (e.partId && out.kind === 'instance') styles = (out.overrides ??= {})[e.partId] ??= {};
+    else styles = out.styles ??= {};
+    const props = (styles[e.scope] ??= {});
+    if (e.value === null) delete props.hidden;
+    else props.hidden = e.value;
+  }
+  return out;
+}
+
+/** Edits that make one size (or every size) hidden or shown, each trying the smallest change first: taking a
+ *  setting away before adding one. Empty when the layer is already that way, or cannot be changed. */
+function plan(state: ProjectState, n: GraphNode, partId: string | undefined, sizes: Size[], hide: boolean, everySize: boolean): VisibilityEdit[] {
+  const w = writable(state, n, partId);
+  if (!w) return [];
+  const done = (edits: VisibilityEdit[]) => {
+    const v = ownVisibility(state, withEdits(n, edits), partId).hiddenAt;
+    return sizes.every((z) => v.includes(z) === hide);
+  };
+  if (done([])) return [];
+  const edits: VisibilityEdit[] = [];
+  const set = (scope: 'base' | Size, value: boolean | null) => {
+    const at = edits.findIndex((e) => e.scope === scope);
+    if (at >= 0) edits.splice(at, 1);
+    if ((w.styles[scope]?.hidden ?? null) !== value) edits.push({ ...w.target, scope, value });
+  };
+  // Settings of this record that work against the goal go first.
+  for (const z of sizes) if (w.styles[z]?.hidden === !hide) set(z, null);
+  if (everySize) {
+    if (w.styles.base?.hidden === !hide) set('base', null);
+    if (hide) set('base', true);
+  }
+  if (done(edits)) return edits;
+  if (everySize && !hide) {
+    // Something weaker hides it everywhere (the component's design): the placement shows it at every size.
+    set('base', false);
+    if (done(edits)) return edits;
+  }
+  // Whatever still disagrees gets a setting of its own for that size.
+  const now = ownVisibility(state, withEdits(n, edits), partId).hiddenAt;
+  for (const z of sizes) if (now.includes(z) !== hide) set(z, hide);
+  return edits;
+}
+
+/** Show a layer again at one size only, leaving every other size as it is. */
 export function showHereEdits(state: ProjectState, n: GraphNode, size: Size, partId?: string): VisibilityEdit[] {
-  const e = editable(state, n, partId);
-  if (!e || !visibilityOf(e.layers).hiddenAt.includes(size)) return [];
-  // Taking the size's own hide away is enough when nothing else would hide it there then.
-  const without = [...e.weaker, { styles: { ...e.edit.styles, [size]: { ...e.edit.styles?.[size], hidden: undefined } } }];
-  return [{ ...e.target, scope: size, value: e.edit.styles?.[size]?.hidden === true && !decide(without, size)?.hidden ? null : false }];
+  return plan(state, n, partId, [size], false, false);
 }
 
-/** Hide a layer at one size only. Empty when it already hides there. */
+/** Hide a layer at one size only. */
 export function hideHereEdits(state: ProjectState, n: GraphNode, size: Size, partId?: string): VisibilityEdit[] {
-  const e = editable(state, n, partId);
-  if (!e || visibilityOf(e.layers).hiddenAt.includes(size)) return [];
-  // Shown here only as an exception to a hide every size shares: taking the exception away hides it.
-  const without = [...e.weaker, { styles: { ...e.edit.styles, [size]: { ...e.edit.styles?.[size], hidden: undefined } } }];
-  return [{ ...e.target, scope: size, value: e.edit.styles?.[size]?.hidden === false && decide(without, size)?.hidden ? null : true }];
+  return plan(state, n, partId, [size], true, false);
 }
 
-/** Hide a layer at every size (sizes with their own visibility keep it), or show it again there. */
+/** Hide a layer at every size, or show it at every size: what each size said of its own goes too. */
 export function everySizeEdits(state: ProjectState, n: GraphNode, hide: boolean): VisibilityEdit[] {
-  const e = editable(state, n);
-  if (!e) return [];
-  if (hide) return e.edit.styles?.base?.hidden === true ? [] : [{ ...e.target, scope: 'base', value: true }];
-  // The component's own design may hide it too: the placement then says to show it.
-  const designHides = e.weaker.some((l) => l.styles?.base?.hidden === true);
-  if (designHides) return e.edit.styles?.base?.hidden === false ? [] : [{ ...e.target, scope: 'base', value: false }];
-  return e.edit.styles?.base?.hidden === true ? [{ ...e.target, scope: 'base', value: null }] : [];
+  return plan(state, n, undefined, SIZES, hide, true);
 }
 
-/** What hides a layer from above: the container, or the part of a component holding it in a slot. */
+/** What hides a layer from above: a container, or a part of the component placement that holds it. */
 export interface HiddenBy {
   /** The node of the layer's own tree that holds it (a container, or the placement whose part hides it). */
   id: string;
@@ -198,6 +260,31 @@ export interface HiddenBy {
   part?: { id: string; nodeId: string };
   name: string;
   sizes: Size[];
+}
+
+/**
+ * The nearest layer of a placement's design above `nodeId` (a node of that design) that hides at this size:
+ * the design's own wrappers, with the placement's choices and overrides. The design's root is the placement
+ * itself, which the caller checks.
+ */
+function hiddenInPlacement(state: ProjectState, n: InstanceNode, nodeId: string, size: Size): HiddenBy | null {
+  const def = defOf(state, n);
+  const design = def?.tree;
+  if (!def || !design) return null;
+  const seen = new Set<string>([nodeId]);
+  for (let q = findParent(design, nodeId); q?.parentId && !seen.has(q.parentId); q = findParent(design, q.parentId)) {
+    seen.add(q.parentId);
+    if (q.parentId === design.rootIds[0]) break;
+    const node = design.nodes[q.parentId];
+    if (!node || node.kind === 'repeat' || node.kind === 'slot') continue;
+    const pid = partOf(def, q.parentId);
+    const v = visibilityOf(placedStyles(def, n, q.parentId, pid));
+    if (v.hiddenAt.includes(size)) {
+      const label = pid ? def.parts[pid].label : layerLabel(state, node, def).label;
+      return { id: n.id, ...(pid ? { part: { id: pid, nodeId: q.parentId } } : {}), name: `${layerLabel(state, n).label} › ${label}`, sizes: v.hiddenAt };
+    }
+  }
+  return null;
 }
 
 /**
@@ -212,21 +299,9 @@ export function hiddenAncestor(state: ProjectState, tree: NodeTree, nodeId: stri
     const up = tree.nodes[p.parentId];
     if (!up) break;
     if (up.kind === 'instance' && p.slot) {
-      const def = Object.hasOwn(state.components, up.definitionId) ? state.components[up.definitionId] : undefined;
-      const design = def?.tree;
-      const slotNode = design && Object.values(design.nodes).find((x) => x.kind === 'slot' && x.slot === p!.slot);
-      const wrappers = new Set<string>();
-      for (let q = slotNode ? findParent(design, slotNode.id) : null; q?.parentId && !wrappers.has(q.parentId); q = findParent(design!, q.parentId)) {
-        wrappers.add(q.parentId);
-        // The design's root is the placement itself, checked below.
-        if (q.parentId === design!.rootIds[0]) break;
-        const pid = partOf(def, q.parentId);
-        const v = visibilityOf([...designStyles(def!, up, q.parentId), ...(pid ? [{ styles: up.overrides?.[pid] }] : [])]);
-        if (v.hiddenAt.includes(size)) {
-          const label = pid ? def!.parts[pid].label : layerLabel(state, design!.nodes[q.parentId], def).label;
-          return { id: up.id, ...(pid ? { part: { id: pid, nodeId: q.parentId } } : {}), name: `${layerLabel(state, up).label} › ${label}`, sizes: v.hiddenAt };
-        }
-      }
+      const slotNode = Object.values(defOf(state, up)?.tree?.nodes ?? {}).find((x) => x.kind === 'slot' && x.slot === p!.slot);
+      const inside = slotNode && hiddenInPlacement(state, up, slotNode.id, size);
+      if (inside) return inside;
     }
     const v = ownVisibility(state, up);
     if (v.hiddenAt.includes(size)) return { id: up.id, name: layerLabel(state, up).label, sizes: v.hiddenAt };
@@ -257,28 +332,19 @@ export function rowVisibility(state: ProjectState, tree: NodeTree, n: GraphNode,
   const hiddenHere = own.hiddenAt.includes(size);
   let hiddenBy: HiddenBy | null = null;
   if (!hiddenHere) {
-    // A part sits inside its placement: the placement's own hide is its container's.
-    const placement = partId ? ownVisibility(state, n) : null;
-    hiddenBy = placement?.hiddenAt.includes(size) ? { id: n.id, name: layerLabel(state, n).label, sizes: placement.hiddenAt } : hiddenAncestor(state, tree, n.id, size);
+    if (partId && n.kind === 'instance') {
+      // A part sits inside its placement: first the design's wrappers around it, then the placement itself.
+      const nodeId = defOf(state, n)?.parts[partId]?.nodeId;
+      const placement = ownVisibility(state, n);
+      hiddenBy =
+        (nodeId ? hiddenInPlacement(state, n, nodeId, size) : null) ??
+        (placement.hiddenAt.includes(size) ? { id: n.id, name: layerLabel(state, n).label, sizes: placement.hiddenAt } : hiddenAncestor(state, tree, n.id, size));
+    } else hiddenBy = hiddenAncestor(state, tree, n.id, size);
   }
   const notes: string[] = [];
   if (own.hiddenAt.length) notes.push(`hidden ${sizesText(own.hiddenAt)}`);
   if (hiddenBy) notes.push(`hidden ${sizesText([size])} because ${hiddenBy.name} is hidden ${sizesText(hiddenBy.sizes)}`);
   return { own, hiddenHere, hiddenBy, note: notes.join('; ') };
-}
-
-/** A copy of the node with the edits made, to see what they leave. */
-function withEdits(n: GraphNode, edits: VisibilityEdit[]): GraphNode {
-  const out = structuredClone(n);
-  for (const e of edits) {
-    let styles: ResponsiveStyles;
-    if (e.partId && out.kind === 'instance') styles = ((out.overrides ??= {})[e.partId] ??= {});
-    else styles = out.styles ??= {};
-    const props = (styles[e.scope] ??= {});
-    if (e.value === null) delete props.hidden;
-    else props.hidden = e.value;
-  }
-  return out;
 }
 
 export interface EyeAction {
@@ -290,21 +356,15 @@ export interface EyeAction {
 }
 
 /**
- * What a row's eye does in the preview being shown. It is pressed when the layer hides itself there. Showing
- * undoes what hides it there: a hide set for just this size is taken away on this size alone, and a hide set
- * for every size is taken away everywhere (sizes with their own hide keep it). Hiding hides at every size, as
- * the eye always has, unless the layer shows here only as an exception to such a hide: then the exception goes.
+ * What a row's eye does in the preview being shown. It is pressed when the layer hides itself there. A click
+ * on a pressed eye shows it again: on this size alone when this size's own setting hides it, otherwise at every
+ * size. A click on an open eye hides it at every size, as the eye always has.
  */
 export function eyeAction(state: ProjectState, n: GraphNode, size: Size): EyeAction {
   const own = ownVisibility(state, n);
   if (own.hiddenAt.includes(size)) {
     if (own.by[size] === 'size') return { pressed: true, action: `Show on ${size}`, edits: showHereEdits(state, n, size) };
-    const all = everySizeEdits(state, n, false);
-    // Whatever still hides it here once every size shows it (the design's own hide for this size, say).
-    return { pressed: true, action: 'Show at every size', edits: [...all, ...showHereEdits(state, withEdits(n, all), size)] };
+    return { pressed: true, action: 'Show at every size', edits: everySizeEdits(state, n, false) };
   }
-  const all = everySizeEdits(state, n, true);
-  const rest = hideHereEdits(state, withEdits(n, all), size);
-  if (!all.length) return { pressed: false, action: `Hide on ${size}`, edits: rest };
-  return { pressed: false, action: 'Hide at every size', edits: [...all, ...rest] };
+  return { pressed: false, action: 'Hide at every size', edits: everySizeEdits(state, n, true) };
 }

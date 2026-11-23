@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ChevronRight, CircleAlert, CircleCheck, Component, Ellipsis, Lock, RefreshCw, Stethoscope, TriangleAlert, Wrench } from 'lucide-react';
 import type { RuntimeState } from '@shared/api';
 import { api, applyOps, confirmDialog, setState, toast, useStore } from '../store';
+import { refKey } from '@shared/types';
 import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
 import { openAsset } from '../lib/actions';
 import { Modal, useMenu } from '../components/ui';
@@ -62,12 +63,14 @@ export function StatusBar() {
   // collapse into one menu button.
   const hidden = crumbs.length > 4 ? crumbs.slice(1, -2) : [];
   const shown = hidden.length ? [crumbs[0], null, ...crumbs.slice(-2)] : crumbs;
-  // Selecting a crumb can shorten the path under the focused button: keep focus on the path's current item.
+  // Selecting a crumb can shorten the path under the focused button: keep focus on the path's current item,
+  // or, when the page itself was chosen and the path is gone, on the page preview.
   const select = (ref: Crumb['ref'], nav: HTMLElement | null) => {
     setState({ selection: ref });
     requestAnimationFrame(() => {
       const active = document.activeElement;
-      if (nav && (nav.contains(active) || !active || active === document.body)) nav.querySelector<HTMLElement>('[aria-current]')?.focus();
+      if (!nav || !(nav.contains(active) || !active || active === document.body)) return;
+      (nav.querySelector<HTMLElement>('[aria-current]') ?? document.querySelector<HTMLElement>('main.canvas'))?.focus();
     });
   };
   const problemText = errors ? `${errors} problem${errors === 1 ? '' : 's'}` : warnings ? `${warnings} warning${warnings === 1 ? '' : 's'}` : 'No problems';
@@ -91,7 +94,8 @@ export function StatusBar() {
         {crumbs.length > 0 && (
           <ol>
             {shown.map((c, i) => (
-              <li key={i}>
+              // Keyed by what each item selects, so the overflow button is never reused as a crumb.
+              <li key={c ? (c.ref ? refKey(c.ref) : 'start') : 'more'}>
                 {i > 0 && <ChevronRight aria-hidden="true" />}
                 {c ? (
                   <button
@@ -114,7 +118,7 @@ export function StatusBar() {
                     title={hidden.map((h) => h.label).join(' › ')}
                     onClick={(e) => {
                       const nav = e.currentTarget.closest('nav');
-                      menu.openAt(e.currentTarget, hidden.map((h) => ({ label: h.label, icon: h.component ? <Component /> : undefined, onSelect: () => select(h.ref, nav) })), 'Parent elements');
+                      menu.openAt(e.currentTarget, hidden.map((h) => ({ label: h.label, icon: h.component ? <Component /> : undefined, hint: h.component === 'custom' ? 'Custom' : undefined, onSelect: () => select(h.ref, nav) })), 'Parent elements');
                     }}
                   >
                     <Ellipsis />

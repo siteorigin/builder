@@ -232,7 +232,11 @@ export function breadcrumb(state: ProjectState, ref: ElementRef): Crumb[] {
   // While a component is edited everywhere, its first crumb is the component's overview and the next its root.
   if (ownerTree) for (const a of ancestorsIn(ownerTree, anchor)) out.push(crumb({ owner: ref.owner, instancePath: [], nodeId: a.id, ...(ref.instancePath.length ? {} : itemsFor(ref.itemPath, a.outside)) }));
   for (let i = 0; i < ref.instancePath.length; i++) {
-    out.push(crumb({ owner: ref.owner, instancePath: ref.instancePath.slice(0, i), nodeId: ref.instancePath[i] }));
+    // A component placed inside another is reachable as that one's part, and only when it is one.
+    const boundary: ElementRef = { owner: ref.owner, instancePath: ref.instancePath.slice(0, i), nodeId: ref.instancePath[i] };
+    const outerPart = i > 0 ? partIdFor(resolveRef(state, boundary).def, boundary.nodeId) : undefined;
+    if (outerPart) boundary.partId = outerPart;
+    if (selectable(state, boundary)) out.push(crumb(boundary));
     // Inside the component: the parts that hold the next component or the selection (other nodes there are
     // not selectable on their own; the component's root is the placement itself).
     const res = resolveRef(state, { owner: ref.owner, instancePath: ref.instancePath.slice(0, i + 1), nodeId: ref.nodeId });

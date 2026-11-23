@@ -1516,6 +1516,8 @@ button.asset-use:hover svg.go { color: var(--text); }
   .layers-tree .layer-badge { display: none; }
   .layers-tree .layer-row .actions { display: none; }
   .layers-tree .layer-row:is(:hover, .selected, :focus-within):not(.drop-inside) :is(.actions, .layer-badge) { display: inline-flex; }
+  /* The sizes a layer hides at give way to its name too (they stay in its tooltip and accessible name). */
+  .layers-tree .layer-sizes:not(.here) { display: none; }
   /* At rest a project-made component keeps a small neutral dot on its glyph (the tooltip and label say what it is). */
   .layers-tree .layer-row.is-custom:not(:hover, .selected, :focus-within) .layer-kind { position: relative; }
   .layers-tree .layer-row.is-custom:not(:hover, .selected, :focus-within) .layer-kind::after { content: ''; position: absolute; right: -1px; top: -1px; width: 6px; height: 6px; border-radius: 50%; background: var(--text-2); box-shadow: 0 0 0 1.5px var(--panel); }
