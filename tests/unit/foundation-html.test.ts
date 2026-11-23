@@ -485,6 +485,9 @@ describe('data.table', () => {
     const blank = rendered({ table, caption: '   ', heading: 'Timetable' });
     expect(blank).not.toContain('<caption');
     expect(blank.match(/<div class="[^"]*so-table__scroll[^"]*"([^>]*)>/)![1]).toContain('aria-label="Timetable"');
+    const spaces = rendered({ table, caption: '', heading: '   ' });
+    expect(spaces).not.toMatch(EMPTY_HEADING);
+    expect(spaces.match(/<div class="[^"]*so-table__scroll[^"]*"([^>]*)>/)![1]).toContain('aria-label="Table"');
     const nameless = rendered({ table, caption: '', heading: '' });
     expect(nameless.match(/<div class="[^"]*so-table__scroll[^"]*"([^>]*)>/)![1]).toContain('aria-label="Table"');
     expect(nameless).not.toMatch(EMPTY_HEADING);

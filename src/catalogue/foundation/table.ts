@@ -35,15 +35,16 @@ const TABLE_SOURCE = `<script>
 	const cell = (row, column) => (isEntry(row.cells) ? text(row.cells[column.id]) : '');
 	// The scrolling region is named by the caption, else the heading, so it is never an unnamed stop.
 	const captionText = $derived(text(caption).trim());
-	const regionLabel = $derived(captionText ? undefined : text(heading).trim() || 'Table');
+	const headingText = $derived(text(heading).trim());
+	const regionLabel = $derived(captionText ? undefined : headingText || 'Table');
 </script>
 
 <section class={['so-table', 'so-table--' + variant, className]}>
 	<div class="so-table__inner">
-		{#if eyebrow || heading || lead}
+		{#if eyebrow || headingText || lead}
 			<div class="so-table__intro">
 				{#if eyebrow}<p class="so-table__eyebrow">{eyebrow}</p>{/if}
-				{#if heading}<h2 class="so-table__heading">{heading}</h2>{/if}
+				{#if headingText}<h2 class="so-table__heading">{heading}</h2>{/if}
 				{#if lead}<p class="so-table__lead">{lead}</p>{/if}
 			</div>
 		{/if}

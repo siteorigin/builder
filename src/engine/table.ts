@@ -138,7 +138,10 @@ function readStored(v: unknown): unknown {
   const columns = Array.isArray(v.columns) ? v.columns.filter(isRecord).map((c) => ({ id: c.id, label: c.label })) : v.columns;
   const ids = new Set(Array.isArray(columns) ? columns.map((c) => c.id) : []);
   const rows = Array.isArray(v.rows)
-    ? v.rows.filter(isRecord).map((r) => ({ id: r.id, cells: isRecord(r.cells) ? Object.fromEntries(Object.entries(r.cells).filter(([k]) => ids.has(k))) : {} }))
+    ? v.rows.filter(isRecord).map((r) => ({
+        id: r.id,
+        cells: isRecord(r.cells) ? Object.fromEntries(Object.entries(r.cells).filter(([k]) => ids.has(k))) : Array.isArray(r.cells) ? r.cells.slice(0, ids.size) : {}
+      }))
     : v.rows;
   return { columns, rows };
 }

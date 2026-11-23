@@ -91,10 +91,11 @@ export function TableEditor({ name, schema, value, onTable }: { name: string; sc
   useEffect(() => {
     const want = wantFocus.current;
     if (!want) return;
+    if (Date.now() >= want.until) return void (wantFocus.current = null);
     const el = find(want.key);
-    if (!el && Date.now() < want.until) return;
+    if (!el) return;
     wantFocus.current = null;
-    el?.focus();
+    el.focus();
     if (want.key.startsWith('colname-') && el instanceof HTMLInputElement) el.select();
   });
   /** Send a step, remembering it until it lands; a step the project refuses is forgotten at once. */

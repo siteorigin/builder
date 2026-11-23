@@ -209,6 +209,10 @@ describe('table edits by ID', () => {
     const s = applyOperations(s0, [edit(nodeId, owner, { action: 'setCell', rowId: 'row_2', columnId: 'col_time', value: '19:00' })]).state;
     expect(tableOf(s, owner, nodeId)).toEqual({ columns: TIMETABLE.columns, rows: [TIMETABLE.rows[0], { ...TIMETABLE.rows[1], cells: { ...TIMETABLE.rows[1].cells, col_time: '19:00' } }] });
     expect(validateState(s).filter((d) => d.code === 'TABLE_DAMAGED')).toEqual([]);
+    // A row saved with its cells in column order keeps them when another step is applied.
+    node.props.table = { columns: TIMETABLE.columns, rows: [{ id: 'row_1', cells: ['Monday', 'Clay', '10:00'] }] };
+    const renamed = applyOperations(s0, [edit(nodeId, owner, { action: 'renameColumn', columnId: 'col_time', value: 'Starts' })]).state;
+    expect(tableOf(renamed, owner, nodeId).rows).toEqual([{ id: 'row_1', cells: { col_day: 'Monday', col_workshop: 'Clay', col_time: '10:00' } }]);
   });
 
   it('refuses a table step on a property that is not a table', () => {
@@ -335,6 +339,12 @@ describe('the AI’s view of a table', () => {
     const full = agentProps(s.components[(s.pages[owner.id].nodes[nodeId] as InstanceNode).definitionId], (s.pages[owner.id].nodes[nodeId] as InstanceNode).props, s.pages, true);
     expect((full.table as Summary).rows).toHaveLength(TABLE_LIMITS.rows);
     expect(refused(() => applyOperations(s, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: full.table }]))).toContain('shortened view');
+    // Full props keep a table whole while it fits in a tool result.
+    const node0 = s0.pages[owner.id].nodes[nodeId] as InstanceNode;
+    const longCells = applyOperations(s0, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: { columns: ['Notes'], rows: Array.from({ length: TABLE_LIMITS.rows }, (_, i) => [`${i} ${'y'.repeat(230)}`]) } }]).state;
+    const longNode = longCells.pages[owner.id].nodes[nodeId] as InstanceNode;
+    expect(agentProps(longCells.components[longNode.definitionId], longNode.props, longCells.pages, true).table).toEqual(longNode.props.table);
+    expect(agentProps(s0.components[node0.definitionId], node0.props, s0.pages, true).table).toEqual(TIMETABLE);
     // A table shown whole reads back as exactly the stored table.
     const small = compactNode(s0, s0.pages[owner.id], nodeId).props as { table: Summary };
     expect(small.table).not.toHaveProperty('note');
@@ -370,14 +380,14 @@ describe('typed table edits held while the AI works', () => {
     expect(fieldKey([cell])).toBe(fieldKey([{ ...cell, value: '20:00' } as EditOperation]));
   });
 
-  it('notices a row given other content under the same ID, even when the edited cell reads the same', () => {
-    const { s, owner, nodeId } = withTable();
-    const cell = edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_time', value: '11:00' });
-    const base = [(readField(s, cell) as { value: unknown }).value];
-    const replaced = { ...TIMETABLE, rows: [{ id: 'row_1', cells: { col_day: 'Sunday', col_workshop: 'Raku', col_time: '10:00' } }, ...TIMETABLE.rows.slice(1)] };
-    const after = applyOperations(s, [{ type: 'instance.setProp', owner, nodeId, prop: 'table', value: replaced }]).state;
-    expect(checkHeld(after, [cell], base).kind).toBe('changed');
-    expect(checkHeld(s, [cell], base).kind).toBe('apply');
+  it('applies two held edits to cells of the same row, one after the other', () => {
+    const { s: s0, owner, nodeId } = withTable();
+    const time = edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_time', value: '11:00' });
+    const day = edit(nodeId, owner, { action: 'setCell', rowId: 'row_1', columnId: 'col_day', value: 'Tuesday' });
+    const base = [time, day].map((op) => [(readField(s0, op) as { value: unknown }).value]);
+    const s = applyOperations(s0, [time]).state;
+    expect(checkHeld(s, [day], base[1]).kind).toBe('apply');
+    expect(checkHeld(s, [time], base[0]).kind).toBe('changed');
   });
 
   it('reports a removed row or column as gone', () => {

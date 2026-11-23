@@ -11,10 +11,10 @@ import { teaserFields } from '@shared/page-teasers';
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
 const isEntry = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
-/** Characters of cell text a table summary shows in all; each cell is cut to its share (16 to 220). */
+/** Characters of cell text a table summary shows in all; each cell is cut to its share (10 to 220). */
 const TABLE_TEXT_BUDGET = 9000;
-/** A table at most this long (as JSON) is shown whole, IDs and all, wherever full props are shown. */
-const TABLE_FULL_CHARS = 8000;
+/** A table at most this long (as JSON) is shown whole, IDs and all, wherever full props are shown: within a tool result. */
+const TABLE_FULL_CHARS = 18000;
 
 /**
  * A table as its column IDs and names, then every row's ID and texts in column order, so any row or column can be
@@ -25,7 +25,7 @@ export function summarizeTable(t: unknown) {
   if (!isEntry(t)) return t;
   const columns = (Array.isArray(t.columns) ? t.columns : []).filter(isEntry).map((c) => ({ id: c.id, label: String(c.label ?? '') }));
   const rowsIn = (Array.isArray(t.rows) ? t.rows : []).filter(isEntry);
-  const share = Math.max(16, Math.min(220, Math.floor(TABLE_TEXT_BUDGET / Math.max(1, rowsIn.length * columns.length))));
+  const share = Math.max(10, Math.min(220, Math.floor(TABLE_TEXT_BUDGET / Math.max(1, rowsIn.length * columns.length))));
   let clipped = false;
   const text = (v: unknown) => {
     const s = v === undefined || v === null ? '' : String(v);
