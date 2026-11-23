@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronRight, Folder, FolderOpen, LayoutTemplate, MousePointerClick, Plus, Settings, ShieldAlert, Upload, X } from 'lucide-react';
 import type { ProgressEvent, RecentProject } from '@shared/api';
+import { isImeComposing } from './lib/ime';
 import { api, errorText, setState, toast, useStore } from './store';
 import { Field, Modal, openDialogs, Spinner, SwitchRow } from './components/ui';
 import { SettingsModal } from './panels/SettingsModal';
@@ -333,7 +334,7 @@ function NewProjectModal({ onClose }: { onClose: () => void }) {
     >
       <div className="col" style={{ gap: 16 }}>
         <Field label="Project name">
-          <input className="input" autoFocus placeholder="For example, Harbour Lane Studio" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && name.trim() && void create()} />
+          <input className="input" autoFocus placeholder="For example, Harbour Lane Studio" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && name.trim() && void create()} />
         </Field>
         <Field label="Location" hint={parent ? `Saved in ${shortPath(parent)}/${slug}` : undefined}>
           <div className="row">
