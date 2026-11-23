@@ -116,17 +116,22 @@ async function pasteCopied(latest: Copied) {
     setState({ selection: { owner: at.owner, instancePath: [], nodeId: id }, rightTab: 'inspect' });
 }
 
+/** Undo or redo the project, from a shortcut or the Edit menu. */
+export function projectHistory(action: 'undo' | 'redo') {
+  void (action === 'redo' ? api.project.redo() : api.project.undo()).then((r) => r && !r.ok && r.error && toast(r.error.message, 'error'));
+}
+
 /** Global editor shortcuts. Also called for keys forwarded from the preview frame. */
 export function handleShortcut(key: string, mod: boolean, shift: boolean): boolean {
   const s = getState();
   // While the project is being left, nothing may change it any more (the editor itself is inert then).
   if (s.leaving) return true;
   if (mod && key.toLowerCase() === 'z') {
-    void (shift ? api.project.redo() : api.project.undo()).then((r) => r && !r.ok && r.error && toast(r.error.message, 'error'));
+    projectHistory(shift ? 'redo' : 'undo');
     return true;
   }
   if (mod && key.toLowerCase() === 'y') {
-    void api.project.redo();
+    projectHistory('redo');
     return true;
   }
   if (mod && key.toLowerCase() === 'k') {
@@ -297,6 +302,10 @@ export function Editor() {
       // An open dialog owns the keyboard. Cmd/Ctrl+K only toggles the command menu itself; it never
       // replaces another dialog (which could hold an unsaved draft).
       if (openMenus.count) return;
+      // While a frame has focus, its keys are the page's, and editor shortcuts come from the main process's
+      // forwarded copy (see App). A key that still reaches this document then (injected input, a page still
+      // loading) must not run a second time, or in Preview at all.
+      if (document.activeElement instanceof HTMLIFrameElement) return;
       if (openDialogs.length && !(mod && e.key.toLowerCase() === 'k' && getState().modal?.kind === 'cmdk')) return;
       if (isTyping(e) && !(mod && ['k', 'e', 'j', 's'].includes(e.key.toLowerCase()))) return;
       // Delete removes the canvas selection only when the canvas or Layers has the focus, never from a

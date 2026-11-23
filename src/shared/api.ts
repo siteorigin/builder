@@ -217,6 +217,11 @@ export interface BuilderApi {
     setSettings(patch: SettingsPatch): Promise<AppSettings>;
     openExternal(url: string): Promise<void>;
   };
+  /** The focused text field's own history (the browser's Undo and Redo), never the project's. */
+  edit: {
+    undo(): Promise<void>;
+    redo(): Promise<void>;
+  };
   dialogs: {
     chooseFolder(title: string, defaultPath?: string): Promise<string | null>;
     chooseImages(): Promise<string[]>;
@@ -288,6 +293,8 @@ export interface BuilderApi {
   on(channel: 'menu:command', cb: (cmd: string) => void): () => void;
   /** The app is about to leave the project (close, switch, close the window, quit): settle edits, then answer with leaveResult. */
   on(channel: 'lifecycle:request', cb: (req: { requestId: string }) => void): () => void;
+  /** Edit → Undo or Redo, chosen from the menu or reached by its key (`fromKey`) when nothing on the page took the key. */
+  on(channel: 'menu:history', cb: (e: { action: 'undo' | 'redo'; fromKey: boolean }) => void): () => void;
   on(channel: 'input:key', cb: (k: { key: string; meta: boolean; ctrl: boolean; shift: boolean; alt: boolean }) => void): () => void;
   inspectResult(requestId: string, report: unknown): void;
   /** 'asking' while the author decides about a change that cannot be saved; then 'leave' or 'stay'. */

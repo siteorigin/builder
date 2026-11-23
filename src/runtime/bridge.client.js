@@ -171,6 +171,23 @@ document.addEventListener('keydown', (e) => {
   }
 }, true);
 
+// Whether a form field that takes typing has focus: a visitor's in Preview, or one reached with Tab while
+// editing. The editor uses this only to leave Undo, Delete and paste to the field; it never runs a command
+// because of it. (Site copy being edited inline is tracked by the editor itself.)
+const TEXT_INPUT_TYPES = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'time', 'week']);
+let textFocused = false;
+function reportTextFocus() {
+  const el = document.activeElement;
+  const on = el instanceof HTMLTextAreaElement || (el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type));
+  if (on === textFocused) return;
+  textFocused = on;
+  send('textFocus', { on });
+}
+document.addEventListener('focusin', reportTextFocus, true);
+// Focus has not moved on yet while focusout runs. A field removed while focused may not report leaving, so a
+// press anywhere checks again.
+for (const t of ['focusout', 'pointerdown']) document.addEventListener(t, () => setTimeout(reportTextFocus), true);
+
 // ---------------------------------------------------------------------------
 // Inline text editing
 // ---------------------------------------------------------------------------
