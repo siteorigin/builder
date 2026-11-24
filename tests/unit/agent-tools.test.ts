@@ -2663,9 +2663,14 @@ describe('inspect_component (#362)', () => {
       { status: 'pass', text: 'Quote has no layout or readability problems in its variants or with long and empty content.' },
       { status: 'unverified', text: "Couldn't check a component in its variants and with long and empty content." }
     ]);
-    // An edit of one page leaves them; one that reaches every page (a component's design) does not.
+    // An edit of one page leaves them, unless the sample was a placement on it; one that reaches every page (a
+    // component's design) does not.
+    log.recordComponent('e', true, { name: 'Banner', placement: { owner: { kind: 'page', id: 'pg_a' }, nodeId: 'n_1' } });
+    log.invalidate(new Set(['pg_b']));
+    expect(log.checks(state).map((c) => c.status)).toEqual(['issue', 'unverified', 'pass', 'unverified', 'pass']);
     log.invalidate(new Set(['pg_a']));
     expect(log.checks(state)[2].status).toBe('pass');
+    expect(log.checks(state)[4].text).toMatch(/, before later changes\.$/);
     log.invalidate('all');
     expect(log.checks(state)[2]).toEqual({ status: 'unverified', text: 'Quote has no layout or readability problems in its variants or with long and empty content, before later changes.' });
   });

@@ -549,8 +549,8 @@ export function pagesTouched(ops: EditOperation[], state?: ProjectState): Set<st
  */
 export class InspectionLog {
   private latest = new Map<string, { pageId: string; ok: boolean; content: unknown; stale: boolean }>();
-  /** Component checks (inspect_component), by component, sample and window of cases. */
-  private components = new Map<string, { ok: boolean; content: unknown; stale: boolean }>();
+  /** Component checks (inspect_component), by component, sample and window of cases; `pageId`: the page of the placement whose content was the sample. */
+  private components = new Map<string, { ok: boolean; content: unknown; stale: boolean; pageId?: string }>();
 
   record(pageId: string, viewport: string, ok: boolean, content: unknown) {
     // Setting an existing key keeps the order of first inspection while the result is the latest one.
@@ -559,14 +559,16 @@ export class InspectionLog {
 
   /** A check of one component on its own; `key` names the component, its sample and the window of cases. */
   recordComponent(key: string, ok: boolean, content: unknown) {
-    this.components.set(key, { ok, content, stale: false });
+    const owner = (content as { placement?: { owner?: { kind?: unknown; id?: unknown } } } | null)?.placement?.owner;
+    this.components.set(key, { ok, content, stale: false, ...(owner?.kind === 'page' && typeof owner.id === 'string' ? { pageId: owner.id } : {}) });
   }
 
   /** An edit landed on these pages (or on what every page shares) after their checks ran. */
   invalidate(pages: Set<string> | 'all') {
     for (const e of this.latest.values()) if (pages === 'all' || pages.has(e.pageId)) e.stale = true;
-    // A component's design, the site's styles and the theme reach every page; an edit of one page's content does not.
-    if (pages === 'all') for (const e of this.components.values()) e.stale = true;
+    // A component's design, the site's styles and the theme reach every page; an edit of one page's content reaches
+    // only a check whose sample was a placement on it.
+    for (const e of this.components.values()) if (pages === 'all' || (e.pageId && pages.has(e.pageId))) e.stale = true;
   }
 
   /** Each check names its page, so a check is never read as being about another page the run changed. */
