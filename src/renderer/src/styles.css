@@ -2682,66 +2682,130 @@ button.asset-use:hover svg.go { color: var(--text); }
 .contact-mismatch-pair dd + dt { margin-top: 4px; }
 .contact-mismatch .btn { max-width: 100%; height: auto; min-height: 26px; padding-block: 4px; white-space: normal; text-align: left; }
 
-/* Find and replace */
-.modal-body:has(> .find-body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 14px; }
-.find-body { flex: 1; min-height: 0; gap: 10px; }
-.find-fields { display: flex; flex-direction: column; gap: 8px; flex: none; }
-.find-row { display: flex; align-items: center; gap: 10px; }
-.find-row > label:first-child { width: 88px; flex: none; font-weight: 500; }
-.find-case { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; white-space: nowrap; color: var(--text-2); }
-.find-hint { margin: 0 0 0 98px; font-size: 12px; }
-.find-hint .link-btn, .find-status .link-btn { min-height: 24px; flex: none; }
-.find-status .link-btn { color: var(--text-2); }
-.find-row .input[aria-invalid='true'] { border-color: var(--red); }
-.find-error { display: flex; align-items: center; gap: 6px; margin-left: 98px; font-size: 12px; color: var(--red); }
+/* Find and replace: a steady frame once there is a search, so the footer never moves under the pointer. */
+.modal:has(> .modal-body > .find-body.filled) { height: min(760px, calc(89vh - 32px)); }
+.modal-body:has(> .find-body) { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.find-body { flex: 1; min-height: 0; gap: 12px; }
+.find-body:not(.filled) { padding-bottom: 16px; }
+.find-fields { display: grid; grid-template-columns: minmax(84px, max-content) minmax(0, 1fr) max-content; align-items: center; gap: 8px 12px; flex: none; }
+.find-label { grid-column: 1; font-weight: 500; }
+.find-input { grid-column: 2; width: 100%; }
+.find-case { grid-column: 3; display: inline-flex; align-items: center; gap: 6px; min-height: 24px; white-space: nowrap; color: var(--text-2); }
+.find-case:has(input:disabled) { color: var(--text-3); }
+.find-hint { grid-column: 2 / -1; margin: -2px 0 0; font-size: 12px; color: var(--text-2); }
+.find-hint .link-btn { min-height: 24px; }
+.find-fields .input[aria-invalid='true'] { border-color: var(--red); }
+.find-fields .input[aria-invalid='true']:focus, .find-fields .input[aria-invalid='true']:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; box-shadow: none; }
+.find-error:empty { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.find-error { grid-column: 2 / -1; display: flex; align-items: center; gap: 8px; margin-top: 0; font-size: 12px; color: var(--red); }
 .find-error > svg { width: 14px; height: 14px; flex: none; }
 .find-error .btn { flex: none; color: var(--text); }
-.find-status { display: flex; align-items: center; gap: 12px; min-height: 26px; flex: none; }
+
 .find-result:not(.on) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-.find-result.on { display: flex; align-items: center; gap: 8px; flex: none; min-height: 42px; padding: 6px 8px 6px 12px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--panel-2); }
-.find-result > svg { width: 16px; height: 16px; flex: none; }
-.find-result p { flex: 1; min-width: 0; margin: 0; font-weight: 500; }
+.find-result.on { display: flex; align-items: center; gap: 10px; flex: none; padding: 10px 10px 10px 12px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--panel-2); }
+.find-result > svg { width: 18px; height: 18px; flex: none; color: var(--text-2); }
+.find-result-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.find-result p { margin: 0; font-weight: 600; }
+.find-result-change { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 12px; color: var(--text-2); }
+.find-result-left { color: var(--text-2); }
 .find-result.failed { border-color: var(--red); }
 .find-result.failed > svg, .find-result.failed p { color: var(--red); }
-.find-summary { flex: 1; min-width: 0; margin: 0; }
-.find-results { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; scroll-padding-top: 40px; }
-.find-group { flex-shrink: 0; border: 1px solid var(--border); border-radius: var(--r-md); overflow: clip; }
-.find-group-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; min-height: 34px; margin: 0; padding: 4px 10px; font-size: 12px; font-weight: 600; background: var(--panel-2); }
-.find-group-head > svg { width: 14px; height: 14px; flex: none; }
+
+.find-status { display: flex; align-items: flex-start; gap: 4px; min-height: 28px; margin-bottom: -2px; flex: none; }
+.find-status .btn { margin-top: 1px; }
+.find-summary { flex: 1; min-width: 0; margin: 0; padding-top: 5px; line-height: 1.4; color: var(--text-2); }
+.find-summary strong { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.find-fact { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.find-fact-chosen { color: var(--text); font-weight: 500; }
+/* While the results pane speaks for an empty search, the status line stays for screen readers only. */
+.find-status.quiet { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.find-status .btn { flex: none; color: var(--text-2); }
+.find-status .btn:hover:not(:disabled) { color: var(--text); }
+.find-status .btn svg { width: 14px; height: 14px; }
+.find-jump { display: flex; flex-wrap: wrap; gap: 6px; flex: none; max-height: 64px; margin: -3px -3px -5px; padding: 3px; overflow-y: auto; scroll-padding-block: 3px; scrollbar-width: thin; scrollbar-color: var(--border-control) transparent; }
+.find-jump-item { display: inline-flex; align-items: center; gap: 6px; max-width: 260px; height: 26px; padding: 0 9px 0 8px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); color: var(--text-2); font: inherit; font-size: 12px; font-weight: 500; }
+.find-jump-item:hover:not(:disabled) { color: var(--text); background: var(--panel-2); }
+.find-jump-item svg { width: 13px; height: 13px; flex: none; }
+.find-jump-item.shared { border-color: var(--green); background: var(--green-soft); color: var(--green); }
+.find-jump-item.shared:hover:not(:disabled) { color: var(--green); background: color-mix(in srgb, var(--green) 18%, var(--raised)); }
+.find-jump-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.find-jump-count { flex: none; font-weight: 600; font-variant-numeric: tabular-nums; }
+.find-jump-item:not(.shared) .find-jump-count { color: var(--text); }
+
+/* The results run to the dialog's edges, so the scrollbar sits clear of the cards. */
+.find-results { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; margin: 0 -18px; padding: 12px 18px 16px; border-top: 1px solid var(--border); overflow-y: auto; scrollbar-gutter: stable; scrollbar-color: var(--border-control) transparent; scroll-padding-top: 48px; }
+.find-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px 24px 72px; text-align: center; color: var(--text-2); }
+.find-empty > svg { width: 20px; height: 20px; padding: 11px; box-sizing: content-box; border-radius: 50%; background: var(--panel-2); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.find-empty p { max-width: 44ch; margin: 0; text-wrap: pretty; }
+.find-empty .find-empty-head { margin-top: 2px; font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.find-empty .btn { max-width: 100%; height: auto; min-height: 26px; margin-top: 4px; white-space: normal; overflow-wrap: anywhere; }
+
+.find-group { flex-shrink: 0; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--raised); overflow: clip; }
+.find-group-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; min-height: 38px; margin: 0; padding: 5px 10px 5px 12px; font-size: 13px; font-weight: 600; background: var(--panel-2); }
 .find-group-head:has(+ ul:not([hidden])) { border-bottom: 1px solid var(--border); }
-.find-toggle { display: flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 4px 0 0; border: 0; border-radius: var(--r-xs); background: none; font-weight: 600; text-align: left; }
-.find-toggle svg { width: 14px; height: 14px; flex: none; color: var(--text-3); transition: transform 120ms; }
-.find-toggle[aria-expanded='true'] svg { transform: rotate(90deg); }
-.find-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.find-count { flex: none; font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.find-group-head .badge { flex: none; }
+.find-group-head.locked .find-group-name { color: var(--text-2); }
+.find-group-icon { width: 15px; height: 15px; flex: none; color: var(--text-2); }
+.find-toggle { display: flex; align-items: center; gap: 7px; min-width: 0; min-height: 28px; padding: 0 6px 0 0; border: 0; border-radius: var(--r-xs); background: none; color: var(--text); font: inherit; text-align: left; }
+.find-chevron { width: 14px; height: 14px; flex: none; color: var(--text-3); transition: transform 120ms; }
+.find-toggle:hover .find-chevron { color: var(--text); }
+.find-toggle[aria-expanded='true'] .find-chevron { transform: rotate(90deg); }
+.find-group-name { min-width: 0; overflow-wrap: anywhere; }
+.find-count { flex: none; margin-left: 4px; font-size: 12px; font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .find-group ul { margin: 0; padding: 0; list-style: none; }
-.find-match { display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px; }
+
+.find-match { display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px 7px 12px; }
 .find-match + .find-match { border-top: 1px solid var(--border); }
-.find-match > .btn { flex: none; }
+.find-match:hover { background: var(--hover); }
+.find-match.blocked { background: color-mix(in srgb, var(--panel-2) 60%, var(--raised)); }
+.find-match.refused { background: color-mix(in srgb, var(--red) 6%, var(--raised)); }
+.find-match.recent { background: var(--accent-soft); }
+.find-match:is(:hover, .recent, .refused) :is(.find-where, .find-nth) { color: var(--text-2); }
+.find-match:is(:hover, .recent, .refused) .find-kind:not(.find-recent) { background: var(--raised); }
+.find-match:is(:hover, .recent, .refused) .find-check input:not(:checked, :indeterminate) { border-color: var(--text-2); }
+.find-match > .btn { flex: none; color: var(--text-2); }
+.find-match > .btn:hover:not(:disabled) { color: var(--text); }
 .find-check { display: inline-grid; place-items: center; width: 24px; height: 24px; flex: none; margin-left: -4px; }
-.find-lock { color: var(--text-3); }
-.find-lock svg { width: 14px; height: 14px; }
+.find-lock { color: var(--text-2); }
+.find-lock svg { width: 15px; height: 15px; }
 .find-check input, .find-case input { position: relative; appearance: none; width: 16px; height: 16px; margin: 0; flex: none; border: 1px solid var(--border-control); border-radius: var(--r-xs); background: var(--raised); }
+.find-check input:hover:not(:checked, :indeterminate), .find-case input:hover:not(:checked, :disabled) { border-color: var(--text-2); }
+.find-case input:disabled { border-color: var(--border-strong); background: var(--panel-2); }
 .find-check input:checked, .find-check input:indeterminate, .find-case input:checked { border-color: var(--accent-fill); background: var(--accent-fill); }
 .find-check input:checked::after, .find-case input:checked::after { content: ''; position: absolute; inset: 1px; background: var(--on-accent); -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.2 5 8.7l4.5-5.2'/%3E%3C/svg%3E") center / contain no-repeat; }
 .find-check input:indeterminate::after { content: ''; position: absolute; left: 3px; right: 3px; top: 6px; height: 2px; border-radius: 1px; background: var(--on-accent); }
-.find-match-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.find-where { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; }
-.find-kind { display: inline-flex; align-items: center; gap: 3px; padding: 0 5px; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); }
+.find-match-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding-top: 2px; }
+.find-where { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 8px; min-height: 20px; font-size: 12px; color: var(--text-3); overflow-wrap: anywhere; }
+.find-field { color: var(--text-2); font-weight: 600; }
+.find-nth { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.find-kind { display: inline-flex; align-items: center; gap: 3px; height: 20px; padding: 0 6px; border-radius: var(--r-sm); background: var(--active); color: var(--text-2); }
 .find-kind svg { width: 12px; height: 12px; flex: none; }
-.find-excerpt { overflow-wrap: anywhere; }
-.find-excerpt mark { background: var(--active); box-shadow: 0 0 0 1px var(--active); color: var(--text); font-weight: 600; border-radius: 2px; }
+.find-recent { background: var(--raised); box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent-text); font-weight: 600; }
+.find-excerpt { overflow-wrap: anywhere; line-height: 1.5; }
+.find-excerpt mark { padding: 1px 2px; margin: 0 -2px; border-radius: 3px; background: color-mix(in srgb, var(--text) 14%, transparent); color: var(--text); font-weight: 600; }
 .find-excerpt del { color: var(--text-2); text-decoration-thickness: 1px; }
-.find-excerpt ins { padding: 0 3px; border-radius: var(--r-xs); background: var(--active); color: var(--text); font-weight: 600; text-decoration: none; }
-.find-becomes { display: inline-block; width: 12px; height: 12px; margin: 0 4px; vertical-align: -1px; color: var(--text-3); }
-.find-match.off .find-where, .find-match.off .find-excerpt { color: var(--text-3); }
-.find-match.off .find-excerpt mark { background: none; box-shadow: none; color: inherit; font-weight: 400; }
+.find-excerpt ins { padding: 1px 4px; border-radius: var(--r-xs); background: color-mix(in srgb, var(--text) 9%, transparent); box-shadow: inset 0 0 0 1px var(--border-strong); color: var(--text); font-weight: 600; text-decoration: none; }
+.find-removed { color: var(--text-2); font-style: italic; }
+.find-becomes { display: inline-block; width: 12px; height: 12px; margin: 0 5px; vertical-align: -1px; color: var(--text-3); }
+.find-match.off .find-where, .find-match.off .find-field, .find-match.off .find-excerpt { color: var(--text-3); }
+.find-match.off .find-excerpt mark, .find-match.blocked .find-excerpt mark { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text-2); font-weight: 600; }
+.find-match.off:is(:hover, .recent) :is(.find-where, .find-field, .find-excerpt) { color: var(--text-2); }
+.find-match.recent:is(.off, .blocked) .find-excerpt mark { color: var(--text); }
+.find-follows { color: var(--text-2); }
+.find-follows .find-excerpt { color: var(--text); }
 .find-match.blocked .find-excerpt { color: var(--text-2); }
-.find-match.blocked .find-excerpt mark { background: none; box-shadow: none; color: inherit; }
-.find-note { font-size: 12px; }
+.find-note { font-size: 12px; color: var(--text-2); }
+.find-locked { display: inline-flex; align-items: flex-start; gap: 5px; }
+.find-locked svg { width: 12px; height: 12px; flex: none; margin-top: 2px; }
 .find-refused { display: inline-flex; align-items: center; gap: 4px; color: var(--red); }
 .find-refused svg { width: 12px; height: 12px; flex: none; }
-.find-foot-note { font-size: 12px; text-align: left; }
+
+.find-foot { min-width: 0; text-align: left; }
+.find-foot-note { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.find-foot-note svg { width: 14px; height: 14px; flex: none; }
+.find-foot-shared { color: var(--green); }
+.find-foot-refused svg { color: var(--red); }
+@media (prefers-reduced-motion: reduce) { .find-chevron { transition: none; } }
 /* Table property editor: columns as name fields with their buttons, rows as disclosures (see TableEditor.tsx). */
 .table-editor { gap: 12px; }
 .table-editor > .field-label { font-weight: 600; color: var(--text); }

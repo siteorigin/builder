@@ -1,7 +1,7 @@
 // Design capture for Find and replace (panels/FindReplace.tsx): the empty dialog, results grouped by page and
 // shared part, match options, no matches, reviewing a replacement, matches that cannot be replaced, a replacement
-// the project refuses, the result of a replace and its Undo, coming back from a match, a dense list and a narrow
-// window. Opt-in only, never part of `npm run test:e2e`:
+// the project refuses, removing words, the result of a replace and its Undo (which reopens the review), coming back
+// from a match, a dense list and a narrow window. Opt-in only, never part of `npm run test:e2e`:
 //
 //   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/find-replace.mjs
 //
@@ -115,7 +115,13 @@ await pause(350);
 await shot('match-case', [dialog.locator('mark', { hasText: 'Studio' })]);
 
 await open('wallpaper samples');
-await shot('no-matches', [dialog.getByText(/wallpaper samples/).first()]);
+await shot('no-matches', [dialog.getByText(/wallpaper samples/).first(), dialog.locator('.find-empty')]);
+
+// No matches only because of Match case: the way out is offered where the results would be.
+await open('STUDIO');
+await dialog.getByLabel('Match case').check();
+await pause(350);
+await shot('no-matches-case', [dialog.getByRole('button', { name: 'Turn off Match case' })], { themes: ['light'] });
 
 await open('the');
 await shot('dense', [dialog.locator('mark').nth(20)]);
@@ -158,7 +164,14 @@ await open('hello@example.com');
 await dialog.locator('.modal-foot .btn-primary').click();
 await dialog.getByRole('button', { name: 'remove these words' }).click();
 await pause(400);
-await shot('refused', [dialog.getByRole('alert'), dialog.locator('.find-refused').first()]);
+await shot('refused', [dialog.locator('.find-error'), dialog.locator('.find-refused').first(), dialog.getByRole('button', { name: 'Leave out the links' })]);
+
+// Removing words: the preview says what goes, and the button says Remove.
+await open('Interior design');
+await startReplace('');
+await dialog.getByRole('button', { name: 'remove these words' }).click();
+await pause(400);
+await shot('remove', [dialog.locator('.find-leaves').first(), dialog.getByRole('button', { name: /^Remove \d+ match/ })], { themes: ['light'] });
 
 // A narrow window.
 await win.setViewportSize({ width: 900, height: 640 });
@@ -174,13 +187,14 @@ await startReplace('studio@harbourlane.example');
 await dialog.getByRole('button', { name: /^Replace \d+ match/ }).click();
 await dialog.getByRole('status').filter({ hasText: /Replaced \d+ match/ }).waitFor({ timeout: 10000 });
 await pause(300);
-await shot('replaced', [findField, dialog.getByRole('button', { name: 'Undo' })]);
+await shot('replaced', [findField, dialog.getByRole('button', { name: 'Undo' }), dialog.locator('.find-result-change ins', { hasText: 'studio@harbourlane.example' })]);
 
-// Undo from inside the dialog puts every match back.
+// Undo from inside the dialog puts every match back, and the review with them, so a typo can be fixed.
 await dialog.getByRole('button', { name: 'Undo' }).click();
 await dialog.getByRole('status').filter({ hasText: 'Undone' }).waitFor({ timeout: 10000 });
-await dialog.locator('mark', { hasText: 'hello@example.com' }).first().waitFor({ timeout: 10000 });
-await shot('undone', [dialog.locator('mark').first()], { themes: ['light'] });
+await dialog.locator('del', { hasText: 'hello@example.com' }).first().waitFor({ timeout: 10000 });
+if ((await replaceField.inputValue()) !== 'studio@harbourlane.example') throw new Error('Undo did not bring the review back');
+await shot('undone', [replaceField, dialog.locator('ins', { hasText: 'studio@harbourlane.example' }).first()], { themes: ['light'] });
 
 // Opening a match and coming back keeps the search, the replacement and the choices.
 await open('hello@example.com');
