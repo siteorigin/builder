@@ -793,6 +793,43 @@ describe('selection tools', () => {
     expect(nodeAt(session.state, 0).overrides?.media).toEqual({ phone: { aspectRatio: '16/9', objectPosition: '50% 20%' } });
   });
 
+  it('styles only the selected card, leaving its siblings on the shared style, then resets it (#81)', async () => {
+    let poetry = '';
+    let styledAfterFirst: unknown;
+    const { session, adapter, run } = await setup(
+      [
+        (req) => {
+          const params = req.tools.find((t) => t.name === 'style_selected_element')!.parameters as { properties: Record<string, { description?: string }> };
+          expect(params.properties.itemId?.description).toContain(`"${poetry}"`);
+          return [call('c1', 'style_selected_element', { itemId: poetry, scope: 'base', styles: [{ property: 'background', value: '#dbeeff' }, { property: 'radius', value: '0px' }] })];
+        },
+        () => {
+          styledAfterFirst = structuredClone(nodeAt(session.state, 2).itemOverrides);
+          return [call('c2', 'style_selected_element', { itemId: poetry, resetItem: true, scope: 'base', styles: [] })];
+        },
+        () => finish('Poetry evening is back to the shared style.')
+      ],
+      focused
+    );
+    const grid = nodeAt(session.state, 2);
+    poetry = (grid.props.items as ListItem[])[1].id;
+    const def = session.state.components[grid.definitionId];
+    const page = pageAt(session.state, '/')!;
+    const { result } = await run('Make only this card pale blue', { owner: { kind: 'page', id: page.id }, instancePath: [grid.id], nodeId: def.parts.card.nodeId, partId: 'card', itemPath: [poetry] });
+    // Styled, then reset: the run ends where it started, with no error.
+    expect(result?.error).toBeUndefined();
+    expect(styledAfterFirst).toEqual({ card: { list: 'items', items: { [poetry]: { base: { background: '#dbeeff', radius: '0px' } } } } });
+    const after = nodeAt(session.state, 2);
+    expect(after.overrides?.card).toBeUndefined();
+    // The focused tool's reset returns the card to the shared style at every size.
+    expect(after.itemOverrides).toBeUndefined();
+    // The model is told, in the selection context, which item is selected and that it can be styled on its own.
+    const context = (adapter.requests[0].items.at(-1) as { text: string }).text;
+    const reach = context.slice(context.indexOf('"styleReach":'));
+    expect(reach).toMatch(/^"styleReach":\s*\{\s*"list":\s*"items"/);
+    expect(reach).toMatch(new RegExp(`"itemId":\\s*"${poetry}",\\s*"itemOwnStyles":\\s*null`));
+  });
+
   it('edits a plain text element through the same tool', async () => {
     const { session, run } = await setup([() => [call('t1', 'update_selected_props', { props: { text: 'Hello there' } })], () => finish()], focused, 'blank');
     const home = pageAt(session.state, '/')!;

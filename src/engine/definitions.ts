@@ -52,12 +52,17 @@ export function codeNeeds(state: ProjectState, d: ComponentDefinition, defId: st
   return (d.dependencies ?? []).includes(defId) || (d.provenance?.forkedFrom === defId && !!d.source?.includes(legacyClass)) || (!!file && !!d.source?.includes(file));
 }
 
-/** Overrides of a part that no longer exists style nothing; drop them from every placement. */
+/** Overrides of a part that no longer exists style nothing; drop them, shared and per item, from every placement. */
 export function dropPartOverrides(state: ProjectState, defId: string, partId: string) {
   for (const { node } of instancesOf(state, defId)) {
-    if (!node.overrides || !Object.hasOwn(node.overrides, partId)) continue;
-    delete node.overrides[partId];
-    if (!Object.keys(node.overrides).length) delete node.overrides;
+    if (node.overrides && Object.hasOwn(node.overrides, partId)) {
+      delete node.overrides[partId];
+      if (!Object.keys(node.overrides).length) delete node.overrides;
+    }
+    if (node.itemOverrides && Object.hasOwn(node.itemOverrides, partId)) {
+      delete node.itemOverrides[partId];
+      if (!Object.keys(node.itemOverrides).length) delete node.itemOverrides;
+    }
   }
 }
 

@@ -676,3 +676,23 @@ describe('media.video (issue #73)', () => {
     expect(helper).toMatch(/\.so-video \{[^}]*width: 100%/);
   });
 });
+
+describe('styles of one repeated item (#81)', () => {
+  /** The opening tag of each element carrying the node's class, in rendered order. */
+  const opening = (out: string, componentId: string, nodeId: string) => [...out.matchAll(/<(li|div)\b[^>]*>/g)].map((m) => m[0]).filter((t) => classed(nodeClass(componentId, nodeId)).test(t));
+
+  it.each([
+    ['features.grid', 'card', 'items', 'card', { title: 'Reading group' }, { title: 'Poetry evening' }],
+    ['pricing.plans', 'plan', 'plans', 'plan', { name: 'Consultation' }, { name: 'Design' }],
+    ['testimonials.grid', 'card', 'items', 'card', { quote: 'One' }, { quote: 'Two' }]
+  ] as const)('%s puts the item class on that item’s %s only, wherever it is in the list', (componentId, partId, list, nodeId, first, second) => {
+    const items = [{ id: 'i_reading', ...first }, { id: 'i_poetry', ...second }];
+    const so_oi = { i_poetry: { [partId]: 'so-oi-test' } };
+    const shown = opening(html(componentId, { [list]: items, so_oi }), componentId, nodeId);
+    expect(shown).toHaveLength(2);
+    expect(shown.map((t) => classed('so-oi-test').test(t))).toEqual([false, true]);
+    // Reordered, the class stays with the item, not the position.
+    const moved = opening(html(componentId, { [list]: [items[1], items[0]], so_oi }), componentId, nodeId);
+    expect(moved.map((t) => classed('so-oi-test').test(t))).toEqual([true, false]);
+  });
+});

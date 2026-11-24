@@ -252,6 +252,12 @@ export const MIGRATIONS: Migration[] = [
         Object.assign(page, Object.fromEntries(entries));
       }
     }
+  },
+  {
+    id: 'item-styles',
+    description:
+      'Placements can style single list items (itemOverrides). Nothing in the documents changes; the new version only keeps an older editor, which would drop those styles from the site and from copies, from opening the project for editing.',
+    migrate() {}
   }
 ];
 

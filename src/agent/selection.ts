@@ -14,6 +14,7 @@ import { checkProps, fieldError, type FieldIssue } from './macros';
 import { propJsonSchema, propsJsonSchema, type JsonSchema } from './propschema';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
+import { repeatedPartList } from '@shared/item-styles';
 
 export const SELECTION_ARGS = {
   update_selected_props: z.object({ props: z.record(z.string(), z.unknown()).optional(), variant: z.string().optional() }),
@@ -33,11 +34,16 @@ export const SELECTION_ARGS = {
     value: z.string().optional(),
     cells: z.array(z.string()).optional()
   }),
-  style_selected_element: z.object({
-    partId: z.string().optional(),
-    scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
-    styles: z.array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() }), z.null()]) })).min(1).max(12)
-  }),
+  // Closed, so a misspelled key (itemID) is refused instead of dropped: dropping it would style every item.
+  style_selected_element: z
+    .object({
+      partId: z.string().optional(),
+      itemId: z.string().optional(),
+      resetItem: z.boolean().optional(),
+      scope: z.enum(['base', 'phone', 'tablet', 'desktop']),
+      styles: z.array(z.object({ property: z.string(), value: z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() }), z.null()]) }).strict()).max(12)
+    })
+    .strict(),
   request_wider_scope: z.object({ question: z.string().min(1).max(300) })
 } as const;
 
@@ -46,7 +52,8 @@ export const SELECTION_DESCRIPTIONS: Record<keyof typeof SELECTION_ARGS, string>
   edit_selected_list: 'Change one item of a list in the selected element: update, insert, remove or move it.',
   edit_selected_table:
     'Change one cell, row or column of a table in the selected element, by the row and column IDs in its content: set a cell, rename a column, or insert, remove or move a row or column. Other cells stay where they are.',
-  style_selected_element: 'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}. For a cropped image, objectPosition takes the focal point as "X% Y%" across and down, each 0 to 100 with at most one decimal, such as "50% 20%".',
+  style_selected_element:
+    'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}. For a cropped image, objectPosition takes the focal point as "X% Y%" across and down, each 0 to 100 with at most one decimal, such as "50% 20%". A repeated part (a card) is styled for every item unless itemId names the one item to style; that item then differs from its siblings, and null values return it to the shared style.',
   request_wider_scope: 'Ask the user for permission to change more than the selected element, when the request cannot be done inside it.'
 };
 
@@ -176,6 +183,9 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
       }
     });
   const parts = r.def ? Object.keys(r.def.parts) : [];
+  // Parts shown once per list item, which can be styled for one item alone.
+  const perItem = r.def ? parts.filter((p) => repeatedPartList(r.def!, p)) : [];
+  const selectedItem = target.itemId ? ` The selected item is "${target.itemId}".` : '';
   tools.push({
     name: 'style_selected_element',
     description: SELECTION_DESCRIPTIONS.style_selected_element,
@@ -183,10 +193,19 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
       type: 'object',
       properties: {
         ...(parts.length ? { partId: { type: 'string', enum: parts, description: `Part to style. Defaults to ${target.partId ?? 'root'}.` } } : {}),
+        ...(perItem.length
+          ? {
+              itemId: {
+                type: 'string',
+                description: `Style only this list item (its stable ID), on a repeated part (${perItem.join(', ')}); the other items keep the shared style. Omit to style every item.${selectedItem}`
+              },
+              resetItem: { type: 'boolean', description: 'With itemId: first return that item to the shared style at every size, clearing its own styles; then apply styles, which may be empty.' }
+            }
+          : {}),
         scope: { type: 'string', enum: ['base', 'phone', 'tablet', 'desktop'] },
         styles: {
           type: 'array',
-          minItems: 1,
+          minItems: perItem.length ? 0 : 1,
           maxItems: 12,
           items: { type: 'object', properties: { property: { type: 'string', enum: STYLE_PROPS.map((p) => p.id) }, value: STYLE_VALUE }, required: ['property', 'value'], additionalProperties: false }
         }
@@ -291,8 +310,14 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
   }
 
   const a = args as z.infer<(typeof SELECTION_ARGS)['style_selected_element']>;
-  const partId = r.node.kind === 'instance' ? (a.partId ?? target.partId) : undefined;
+  const perItem = r.node.kind === 'instance' && r.def ? Object.keys(r.def.parts).filter((p) => repeatedPartList(r.def!, p)) : [];
+  // One item's style needs a repeated part: the one named, the selected one, or the only one there is.
+  const partId = r.node.kind === 'instance' ? (a.partId ?? target.partId ?? (a.itemId && perItem.length === 1 ? perItem[0] : undefined)) : undefined;
   if (r.node.kind !== 'instance' && a.partId) return fieldError([{ field: 'partId', message: 'this element has no parts' }], note);
+  if (a.itemId !== undefined && (!partId || !perItem.includes(partId)))
+    return fieldError([{ field: a.partId ? 'partId' : 'itemId', message: perItem.length ? `to style one item, name a repeated part: ${perItem.join(', ')}` : 'this element has no part repeated per item' }], note);
+  if (a.resetItem && a.itemId === undefined) return fieldError([{ field: 'itemId', message: 'resetItem needs the itemId of the item to return to the shared style' }], note);
+  if (!a.styles.length && !a.resetItem) return fieldError([{ field: 'styles', message: 'send at least one style' }], note);
   if (partId && partId !== 'root' && !Object.hasOwn(r.def?.parts ?? {}, partId)) return fieldError([{ field: 'partId', message: `must be one of: ${Object.keys(r.def?.parts ?? {}).join(', ')}` }], note);
   const known = new Set(STYLE_PROPS.map((p) => p.id));
   const issues: FieldIssue[] = [];
@@ -300,6 +325,8 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     if (!known.has(s.property)) issues.push({ field: `styles[${i}].property`, message: `unknown style property "${s.property}"` });
   });
   if (issues.length) return fieldError(issues, note);
-  const ops: EditOperation[] = a.styles.map((s) => ({ type: 'node.setStyle', owner, nodeId, ...(partId ? { partId } : {}), scope: a.scope, property: s.property, value: s.value }));
-  return applySelected(ops, host, 'Style selection', callId);
+  const ops: EditOperation[] = a.styles.map((s) => ({ type: 'node.setStyle', owner, nodeId, ...(partId ? { partId } : {}), ...(a.itemId !== undefined ? { itemId: a.itemId } : {}), scope: a.scope, property: s.property, value: s.value }));
+  // The reset and any new values are one batch: one change in history.
+  if (a.resetItem) ops.unshift({ type: 'node.resetStyles', owner, nodeId, partId, itemId: a.itemId });
+  return applySelected(ops, host, a.resetItem && !a.styles.length ? 'Reset one item to the shared style' : a.itemId !== undefined ? 'Style one item' : 'Style selection', callId);
 }

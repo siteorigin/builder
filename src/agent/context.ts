@@ -9,6 +9,7 @@ import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
 import { teaserFields } from '@shared/page-teasers';
 import { notFoundCopy } from '@shared/not-found';
+import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -140,6 +141,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       if (def?.variantAxes) base.variants = selectedVariants(def, n.variants);
       base.props = agentProps(def, n.props, state.pages);
       if (n.overrides) base.styleOverrides = n.overrides;
+      if (n.itemOverrides) base.itemStyleOverrides = n.itemOverrides;
       if (n.slots && depth < 4) base.slots = Object.fromEntries(Object.entries(n.slots).map(([k, ids]) => [k, ids.map((c) => compactNode(state, tree, c, depth + 1))]));
       break;
     }
@@ -216,7 +218,13 @@ export function componentDetail(def: ComponentDefinition) {
     kind: def.kind,
     owner: def.owner,
     properties: propSchemaSummary(def.properties),
-    parts: Object.fromEntries(Object.entries(def.parts).map(([k, p]) => [k, { label: p.label, styleControls: partStyleControls(def, k) ?? [] }])),
+    parts: Object.fromEntries(
+      Object.entries(def.parts).map(([k, p]) => {
+        const list = repeatedPartList(def, k);
+        // A part shown once per list item can be styled for one item alone (node.setStyle with itemId).
+        return [k, { label: p.label, styleControls: partStyleControls(def, k) ?? [], ...(list ? { repeatsPerItemOf: list } : {}) }];
+      })
+    ),
     variantAxes: Object.fromEntries(axesOf(def).map(([axis, a]) => [axis, { label: a.label, default: a.default, options: Object.fromEntries(Object.entries(a.options).map(([k, v]) => [k, v.label])) }])),
     slots: def.slots ?? {},
     examples: def.examples ?? []
@@ -278,6 +286,20 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
   const instId = ref.instancePath[0];
   const inst = tree.nodes[instId];
   const def = inst?.kind === 'instance' ? state.components[inst.definitionId] : undefined;
+  const selectedItem = ref.itemPath?.[ref.itemPath.length - 1];
+  // When this part can be styled per item: the style every item shares, the items with styles of their own, and the
+  // selected item's own styles while it is still in the list.
+  const repeatList = inst?.kind === 'instance' && def && ref.partId && ref.instancePath.length === 1 && ref.owner.kind !== 'component' ? repeatedPartList(def, ref.partId) : undefined;
+  let itemReach: Record<string, unknown> | undefined;
+  if (repeatList && inst?.kind === 'instance' && def && ref.partId) {
+    const present = selectedItem !== undefined && placementItems(def, inst, repeatList).some((i) => i.id === selectedItem);
+    itemReach = {
+      list: repeatList,
+      sharedStyles: inst.overrides?.[ref.partId] ?? null,
+      itemStyles: liveItemStyles(def, inst, ref.partId)?.items ?? {},
+      ...(present ? { itemId: selectedItem, itemOwnStyles: itemStylesOf(def, inst, ref.partId, selectedItem!) ?? null } : {})
+    };
+  }
   const defNode: GraphNode | undefined = def?.tree?.nodes[ref.nodeId];
   let binding: unknown = null;
   if (defNode) {
@@ -295,7 +317,8 @@ export function describeSelection(state: ProjectState, ref: ElementRef | null): 
     itemId: ref.itemPath?.[ref.itemPath.length - 1] ?? null,
     boundTo: binding,
     ...(inst?.kind === 'instance' ? { currentProps: selectedProps(def, inst.props, state.pages) } : {}),
-    note: 'Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId.'
+    ...(itemReach ? { styleReach: itemReach } : {}),
+    note: `Edit bound content with instance.setProp on the instance (use itemId and field for repeated items). Style the part with node.setStyle using partId; it changes every item.${itemReach ? ' Add itemId to style one item only: the others keep the shared style. To return an item to the shared style, use style_selected_element with itemId and resetItem, or node.resetStyles with partId and itemId.' : ''}`
   };
 }
 

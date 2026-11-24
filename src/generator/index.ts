@@ -37,6 +37,7 @@ import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
 import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
+import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink } from './card-links';
 import { showsPart, type ShellPart } from '@shared/page-shell';
@@ -98,9 +99,9 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_id', 'so_eager', '__so', 'has', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'thumbnail']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_eager', '__so', 'has', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'thumbnail']);
 /** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
-const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_id', 'so_eager', '__so', 'children']);
+const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_eager', '__so', 'children']);
 
 /**
  * The key a managed component's property is passed under (instance attribute and `$props()` key). Names the
@@ -409,11 +410,11 @@ function nodeDisplay(layout: unknown): string | null {
  * For a part shown again by an instance (`hidden: false`), the display value that undoes the definition's or
  * variant's `display: none` at that scope, or null when nothing hides it there.
  */
-function unhider(def: ComponentDefinition, nodeId: string, variants: InstanceNode['variants'] | null, override: ResponsiveStyles, earlier: ResponsiveStyles[] = []) {
+function unhider(def: ComponentDefinition, nodeId: string, variants: InstanceNode['variants'] | null, override: ResponsiveStyles, earlier: ResponsiveStyles[] = [], later: ResponsiveStyles[] = []) {
   const node = def.tree?.nodes[nodeId];
   // What the theme gives this kind of element; `revert` would fall back to the browser's default instead.
   const natural = node?.kind === 'image' || node?.kind === 'icon' ? 'block' : node?.kind === 'link' ? (node.appearance === 'link' || node.appearance === 'plain' ? 'inline' : 'inline-flex') : 'revert';
-  const layers = [def.tree?.nodes[nodeId]?.styles, ...earlier, ...(variants === null ? [] : selectedVariantStyles(def, variants, nodeId))].filter(Boolean) as ResponsiveStyles[];
+  const layers = [def.tree?.nodes[nodeId]?.styles, ...earlier, ...(variants === null ? [] : selectedVariantStyles(def, variants, nodeId)), ...later].filter(Boolean) as ResponsiveStyles[];
   return (scope: ResponsiveScope): string | null => {
     const scopes: ResponsiveScope[] = scope === 'base' ? ['base', 'phone', 'tablet', 'desktop'] : ['base', scope];
     if (!layers.some((l) => scopes.some((s) => l[s]?.hidden === true))) return null;
@@ -591,6 +592,47 @@ function overrideOpts(def: ComponentDefinition, inst: InstanceNode, partId: stri
   };
 }
 
+/**
+ * An item's own rule is stronger than the part's design and shared rules, so a display it sets (its layout) would
+ * also show it where those hide every item. In each size range where a weaker layer hides the part and the item says
+ * nothing about its own visibility, the item stays hidden too.
+ */
+function keepWeakerHides(def: ComponentDefinition, inst: InstanceNode, partId: string, own: ResponsiveStyles): ResponsiveStyles {
+  const nodeId = def.parts[partId].nodeId;
+  const layers = [def.tree?.nodes[nodeId]?.styles, ...selectedVariantStyles(def, inst.variants, nodeId), inst.overrides?.[partId]].filter(Boolean) as ResponsiveStyles[];
+  // What the weaker rules end on in a range, in cascade order: a hide, or a display that shows the part. Hides are
+  // read folded, as the stylesheet writes them (see resolveVisibility); an explicit show writes a display of its own
+  // (see unhider), and so does a layout. Within one rule visibility has the last word.
+  const hiddenAt = (range: Exclude<ResponsiveScope, 'base'>) => {
+    let hidden = false;
+    for (const raw of layers) {
+      const folded = resolveVisibility(raw);
+      for (const s of ['base', range] as const) {
+        if (folded[s]?.hidden === true) hidden = true;
+        else if (raw[s]?.hidden === false || raw[s]?.layout !== undefined) hidden = false;
+      }
+    }
+    return hidden;
+  };
+  let out = own;
+  for (const range of ['phone', 'tablet', 'desktop'] as const) {
+    if (!hiddenAt(range) || own.base?.hidden !== undefined || own[range]?.hidden !== undefined) continue;
+    if (out === own) out = structuredClone(own);
+    out[range] = { ...(out[range] ?? {}), hidden: true };
+  }
+  return out;
+}
+
+/** Rule options for one item's styles: what it shows again undoes the definition, variants and shared override. */
+function itemOverrideOpts(def: ComponentDefinition, inst: InstanceNode, partId: string, own: ResponsiveStyles): RuleOpts {
+  const nodeId = def.parts[partId].nodeId;
+  return {
+    link: def.tree?.nodes[nodeId]?.kind === 'link',
+    wideColumns: true,
+    unhide: unhider(def, nodeId, inst.variants, own, [], inst.overrides?.[partId] ? [inst.overrides[partId]] : [])
+  };
+}
+
 function treeOwners(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree }> {
   const out: Array<{ owner: OwnerRef; tree: NodeTree }> = [
     { owner: { kind: 'shell', id: 'header' }, tree: state.site.shell.header },
@@ -616,6 +658,20 @@ export function generateSiteCss(state: ProjectState): string {
           const target = def.tree?.nodes[def.parts[partId]?.nodeId ?? def.tree.rootIds[0]];
           const sel = target?.kind === 'instance' ? `.${cls}.${cls}.${cls}.${cls}` : def.kind === 'code' ? `.${cls}.${cls}.${cls}` : `.${cls}.${cls}`;
           addRules(rules, sel, n.overrides![partId], overrideOpts(def, n, partId));
+        }
+        for (const partId of Object.keys(n.itemOverrides ?? {}).sort()) {
+          const entry = liveItemStyles(def, n, partId);
+          if (!entry) continue;
+          const target = def!.tree!.nodes[def!.parts[partId].nodeId];
+          // One class more than the part's shared override, so an item's own value wins over it at every size.
+          const times = target?.kind === 'instance' ? 5 : 3;
+          for (const itemId of Object.keys(entry.items).sort()) {
+            const cls = itemOverrideClass(n.id, partId, itemId);
+            const own = entry.items[itemId];
+            // A hand-edited record that holds no styles writes nothing (validation reports it).
+            if (!own || typeof own !== 'object') continue;
+            addRules(rules, `.${cls}`.repeat(times), keepWeakerHides(def!, n, partId, own), itemOverrideOpts(def!, n, partId, own));
+          }
         }
       } else {
         addRules(rules, `.${pageNodeClass(id)}`, n.styles, { link: n.kind === 'link' });
@@ -695,7 +751,9 @@ export const slotIdent = (slot: string) => `slot_${safeIdent(slot)}`;
 
 function idAttrs(ctx: EmitCtx, nodeId: string): string {
   if (!ctx.instrument) return '';
-  const items = ctx.items.length ? ` data-so-items={[${ctx.items.map((i) => `${i}.id`).join(', ')}].join(',')}` : '';
+  // Each item ID escapes "%" and ",", so an ID with a comma still reads back as one item (see model.ts itemPathOf).
+  // Plain string methods: no global a property's name could hide, and nothing that can throw on odd characters.
+  const items = ctx.items.length ? ` data-so-items={[${ctx.items.map((i) => `(${i}.id + '').replaceAll('%', '%25').replaceAll(',', '%2C')`).join(', ')}].join(',')}` : '';
   const c = ctx.def ? `data-so-ctx={__so}` : `data-so-ctx=${attrJs(ctx.ctxExpr)}`;
   return ` ${c} data-so-node="${nodeId}"${items}`;
 }
@@ -703,7 +761,12 @@ function idAttrs(ctx: EmitCtx, nodeId: string): string {
 function classExpr(ctx: EmitCtx, node: GraphNode, extra: string[] = []): string {
   if (ctx.def) {
     const parts = [js(nodeClass(ctx.def, node.id)), ...extra];
-    for (const [pid, p] of Object.entries(ctx.def.parts)) if (p.nodeId === node.id) parts.push(`so_o?.[${js(pid)}]`);
+    for (const [pid, p] of Object.entries(ctx.def.parts)) {
+      if (p.nodeId !== node.id) continue;
+      parts.push(`so_o?.[${js(pid)}]`);
+      // A part shown once per list item also takes the class of its own item's styles.
+      if (ctx.items.length && repeatedPartList(ctx.def, pid)) parts.push(`so_oi?.[${ctx.items[ctx.items.length - 1]}.id]?.[${js(pid)}]`);
+    }
     if (node.id === ctx.def.tree?.rootIds[0]) {
       for (const [axis] of axesOf(ctx.def)) parts.push(`\`so-${defKey(ctx.def.id)}--${axis}-\${${variantProp(axis)}}\``);
       parts.push('className');
@@ -1424,6 +1487,20 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     attrs.push(`so_o={${js(map)}}`);
     if (def.kind === 'code' && map.root && !Object.hasOwn(def.properties, 'class')) attrs.push(`class=${attrJs(map.root)}`);
   }
+  // Styles of single list items: each item's parts get a class of their own, looked up by the item's ID.
+  if (!ctx.def && node.itemOverrides) {
+    const byItem: Record<string, Record<string, string>> = {};
+    for (const partId of Object.keys(node.itemOverrides).sort()) {
+      const entry = liveItemStyles(def, node, partId);
+      for (const itemId of Object.keys(entry?.items ?? {}).sort()) {
+        if (!entry!.items[itemId] || typeof entry!.items[itemId] !== 'object') continue;
+        // Own keys only: an item ID can be any word, "toString" included.
+        if (!Object.hasOwn(byItem, itemId)) byItem[itemId] = {};
+        byItem[itemId][partId] = itemOverrideClass(node.id, partId, itemId);
+      }
+    }
+    if (Object.keys(byItem).length) attrs.push(`so_oi={${js(byItem)}}`);
+  }
   if (ctx.instrument && def.kind === 'managed') {
     const childCtx = ctx.def ? `__so + ${js('|' + node.id)}` : js(`${ctx.ctxExpr}|${node.id}`);
     attrs.push(`__so={${childCtx}}`);
@@ -1560,6 +1637,7 @@ export function generateManagedComponent(state: ProjectState, def: ComponentDefi
   }
   for (const slotName of Object.keys(def.slots ?? {}).sort()) propDecls.push(`\t\tslot_${safeIdent(slotName)} = undefined,`);
   propDecls.push(`\t\tso_o = undefined,`);
+  if (Object.keys(def.parts).some((pid) => repeatedPartList(def, pid))) propDecls.push(`\t\tso_oi = undefined,`);
   propDecls.push(`\t\tso_id = undefined,`);
   // A converted copy is generated before its source exists, so its markup decides, not the source.
   if (treeTakesEager(state, def, new Map(), new Set())) propDecls.push(`\t\tso_eager = false,`);

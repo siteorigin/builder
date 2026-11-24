@@ -345,6 +345,13 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
           if (!a || !Object.hasOwn(a.options, v)) out.push({ severity: 'warning', code: 'VARIANT_UNKNOWN', message: `${label}: ${target.name} has no ${axis} "${String(v)}", so it shows its default.`, owner, nodeId: n.id });
         }
         for (const o of Object.values(n.overrides ?? {})) checkStyles(o, label, owner, n.id);
+        for (const [partId, entry] of Object.entries(n.itemOverrides ?? {})) {
+          const valid = !!entry && typeof entry === 'object' && typeof entry.list === 'string' && !!entry.items && typeof entry.items === 'object' && !Array.isArray(entry.items);
+          if (!valid) out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on single items of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
+          else if (Object.values(entry.items).some((rs) => !rs || typeof rs !== 'object' || Array.isArray(rs)))
+            out.push({ severity: 'error', code: 'ITEM_STYLES_INVALID', message: `${label}: the styles set on a single item of "${partId}" are not in the expected form.`, owner, nodeId: n.id });
+          else for (const rs of Object.values(entry.items)) checkStyles(rs, label, owner, n.id);
+        }
       }
       checkStyles(n.styles, label, owner, n.id);
     }

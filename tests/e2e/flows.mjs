@@ -98,6 +98,58 @@ await eventually(() => assert.doesNotMatch(siteCss(), /padding-block: var\(--so-
 await win.locator('[aria-label^="Redo"]').first().click();
 await eventually(() => assert.match(siteCss(), phoneRule, 'redo restores the padding rule'));
 
+step('style one pricing plan without restyling the others (#81)');
+await win.getByRole('radiogroup', { name: 'Edit styles for' }).first().getByRole('radio', { name: 'All sizes', exact: true }).click();
+const plans = frame.locator('li[class*="__plan"]');
+await eventually(async () => assert.equal(await plans.count(), 3, 'three plan cards are shown'));
+const fills = () => plans.evaluateAll((els) => els.map((el) => getComputedStyle(el).backgroundColor));
+const shared = (await fills())[0];
+const reach = win.locator('#dock-panel-inspect').getByRole('group', { name: 'Style which plan cards' });
+// The preview can swap its elements while it settles after earlier edits: click again until the card is selected.
+const selectPlan = (i) =>
+  eventually(async () => {
+    await plans.nth(i).click({ position: { x: 6, y: 6 }, timeout: 3000 });
+    await reach.waitFor({ timeout: 3000 });
+  });
+await selectPlan(1);
+assert.equal(await reach.getByRole('button', { name: /^All 3 plan cards$/ }).getAttribute('aria-pressed'), 'true', 'all cards is the default');
+await reach.getByRole('button', { name: 'This plan card' }).click();
+await win.locator('#dock-panel-inspect .style-row', { hasText: 'Background' }).first().locator('select').selectOption('token:color.brand');
+const onlyDesign = async () => {
+  const [a, b, c] = await fills();
+  assert.equal(a, shared, 'the first plan keeps the shared fill');
+  assert.equal(c, shared, 'the third plan keeps the shared fill');
+  assert.notEqual(b, shared, 'the chosen plan has its own fill');
+};
+await eventually(onlyDesign);
+const pricingNode = async () =>
+  win.evaluate(async () => {
+    const s = await window.builder.project.snapshot();
+    const page = s.state.pages[s.state.site.homePageId];
+    const node = Object.values(page.nodes).find((n) => n.kind === 'instance' && s.state.components[n.definitionId].componentId === 'pricing.plans');
+    return { owner: { kind: 'page', id: page.id }, id: node.id, plans: node.props.plans.map((p) => p.id), itemOverrides: node.itemOverrides };
+  });
+const placed = await pricingNode();
+assert.deepEqual(Object.keys(placed.itemOverrides.plan.items), [placed.plans[1]], 'only the chosen plan has its own style');
+// Undo takes the one change back; redo restores it.
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(async () => assert.deepEqual(await fills(), [shared, shared, shared], 'undo returns the plan to the shared fill'));
+await win.locator('[aria-label^="Redo"]').first().click();
+await eventually(onlyDesign);
+// The style follows its plan when the plans are reordered.
+await win.evaluate((p) => window.builder.project.apply({ operations: [{ type: 'instance.listMove', owner: p.owner, nodeId: p.id, prop: 'plans', itemId: p.plans[1], index: 0 }], label: 'Move plan' }), placed);
+await eventually(async () => {
+  const [a, b, c] = await fills();
+  assert.deepEqual([b, c], [shared, shared], 'the plans now second and third keep the shared fill');
+  assert.notEqual(a, shared, 'the moved plan keeps its own fill');
+});
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(onlyDesign);
+await selectPlan(1);
+await win.locator('#dock-panel-inspect').getByRole('button', { name: /Reset to shared style/ }).first().click();
+await eventually(async () => assert.deepEqual(await fills(), [shared, shared, shared], 'reset returns the plan to the shared fill'));
+assert.equal((await pricingNode()).itemOverrides, undefined, 'nothing is left of the plan’s own style');
+
 step('copy a section, delete it, then paste it on another page');
 const sectionsOn = (title) =>
   win.evaluate(async (t) => {

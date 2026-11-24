@@ -145,23 +145,26 @@ describe('the migration pipeline', () => {
   });
 
   it('converts only the pages still in the old format, keeping a newer page’s own choices', async () => {
+    // The format this migration upgrades from, wherever it sits among later ones.
+    const before = MIGRATIONS.findIndex((m) => m.id === 'independent-header-footer') + 1;
     const current = migrateProject((await readProject(copyFixture())).stored)!.state;
     const [older, newer] = Object.values(current.pages);
     newer.showHeader = false;
     const stored = structuredClone(current);
     const old = stored.pages[older.id] as unknown as Record<string, unknown>;
-    old.schemaVersion = SCHEMA_VERSION - 1;
+    old.schemaVersion = before;
     delete old.showHeader;
     delete old.showFooter;
     old.shell = 'none';
     const { state, applied } = migrateProject(stored)!;
-    expect(applied).toEqual(['independent-header-footer']);
+    expect(applied).toEqual(MIGRATIONS.slice(before - 1).map((m) => m.id));
+    expect(applied[0]).toBe('independent-header-footer');
     expect(state.pages[older.id]).toMatchObject({ showHeader: false, showFooter: false, schemaVersion: SCHEMA_VERSION });
     expect(state.pages[newer.id]).toEqual(newer);
     // A page with only one of the two settings keeps it and takes the other from the old setting.
     const half = structuredClone(current);
     const partial = half.pages[older.id] as unknown as Record<string, unknown>;
-    partial.schemaVersion = SCHEMA_VERSION - 1;
+    partial.schemaVersion = before;
     partial.showHeader = true;
     delete partial.showFooter;
     partial.shell = 'none';

@@ -32,6 +32,7 @@ import { slotsInsideCards } from '@generator/card-links';
 import { NO_SHELL_IDS, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, subtreeIds, allTrees } from './tree';
+import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
@@ -580,11 +581,50 @@ function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: Projec
     if (n.kind === 'instance') {
       if (n.slots) for (const k of Object.keys(n.slots)) n.slots[k] = n.slots[k].map((c) => idMap.get(c) ?? c);
       const def = state.components[n.definitionId];
-      if (def) n.props = freshListIds(def.properties, n.props);
+      if (def) {
+        const before = n.props;
+        n.props = freshListIds(def.properties, n.props);
+        remapItemStyles(n, before);
+      }
     }
     to.nodes[nid] = n;
   }
   return idMap.get(nodeId)!;
+}
+
+/**
+ * A copy's list items get new IDs; its item styles move to the new IDs of the same items. A list the placement does
+ * not hold itself (the definition's defaults) keeps its IDs, and so do the styles of its items.
+ */
+function remapItemStyles(n: InstanceNode, before: Record<string, unknown>) {
+  if (!n.itemOverrides) return;
+  for (const entry of Object.values(n.itemOverrides)) {
+    const from = before[entry.list];
+    const to = n.props[entry.list];
+    if (!Array.isArray(from) || !Array.isArray(to) || from === to) continue;
+    const ids = new Map<string, string>();
+    from.forEach((it, i) => {
+      const old = (it as ListItem | undefined)?.id;
+      const next = (to[i] as ListItem | undefined)?.id;
+      if (typeof old === 'string' && typeof next === 'string' && !ids.has(old)) ids.set(old, next);
+    });
+    entry.items = Object.fromEntries(Object.entries(entry.items ?? {}).flatMap(([id, rs]) => (ids.has(id) ? [[ids.get(id)!, rs]] : [])));
+  }
+  pruneEmptyItemStyles(n);
+}
+
+/** Item styles in a subtree about to become part of a component definition, where every placement shares its items. */
+function refuseItemStylesInto(state: ProjectState, tree: NodeTree, ids: string[], what: string) {
+  for (const id of ids) {
+    const n = tree.nodes[id];
+    if (n?.kind !== 'instance' || !n.itemOverrides) continue;
+    const def = own(state.components, n.definitionId);
+    const styled = Object.keys(n.itemOverrides).find((p) => liveItemStyles(def, n, p));
+    if (!styled || !def) continue;
+    const list = def.properties[n.itemOverrides[styled].list];
+    const items = list?.type === 'list' ? list.itemLabel.toLowerCase() : 'item';
+    fail(`"${n.name ?? def.name}" has a ${items} styled on its own. Reset it to the shared style first: ${what}`);
+  }
 }
 
 function pageDuplicate(state: ProjectState, op: Op<'page.duplicate'>): OpResult {
@@ -896,7 +936,7 @@ function contentContract(def: ComponentDefinition): string {
 
 function styleTokens(n: GraphNode): string[] {
   const out: string[] = [];
-  const all = [n.styles, ...(n.kind === 'instance' ? Object.values(n.overrides ?? {}) : [])];
+  const all = [n.styles, ...(n.kind === 'instance' ? Object.values(n.overrides ?? {}) : []), ...itemStyleRecords(n)];
   for (const rs of all)
     for (const scope of Object.values(rs ?? {}))
       for (const v of Object.values(scope ?? {})) if (v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string') out.push((v as { token: string }).token);
@@ -963,6 +1003,8 @@ function nodePaste(state: ProjectState, op: Op<'node.paste'>, clip: Clipboard | 
       if (n.variants && !Object.keys(n.variants).length) delete n.variants;
       for (const part of Object.keys(n.overrides ?? {})) if (part !== 'root' && !own(def.parts, part)) delete n.overrides![part];
       if (n.overrides && !Object.keys(n.overrides).length) delete n.overrides;
+      for (const part of Object.keys(n.itemOverrides ?? {})) if (!own(def.parts, part)) delete n.itemOverrides![part];
+      if (n.itemOverrides && !Object.keys(n.itemOverrides).length) delete n.itemOverrides;
     }
     for (const t of styleTokens(n)) if (!tokens.has(t)) gone(`uses the site style "${t}"`);
   }
@@ -981,6 +1023,7 @@ function placeCopy(state: ProjectState, from: NodeTree, nodeId: string, op: { to
   }
   // A definition keeps its one designated root; a slot belongs to an instance parent.
   if (op.toOwner.kind === 'component' && !op.parentId) fail('Paste inside the component, not beside its root.');
+  if (op.toOwner.kind === 'component') refuseItemStylesInto(state, from, subtreeIds(from, nodeId), 'inside a component every placement shares its items.');
   if (op.slot && !op.parentId) fail('A slot needs the instance that has it as parentId.');
   const list = insertionList(to, op.parentId, op.slot, state);
   const taken = anchorsInUse(state, op.toOwner);
@@ -1015,10 +1058,69 @@ function variantStyles(state: ProjectState, owner: OwnerRef, nodeId: string, var
   return v;
 }
 
+/**
+ * The placement and part one repeated item is styled on (`itemId`): a part inside exactly one repeat of a managed
+ * definition, placed on a page or in the shared header or footer, and an item its list shows now.
+ */
+function itemStyleTarget(state: ProjectState, owner: OwnerRef, node: GraphNode, partId: string | undefined, itemId: string): { node: InstanceNode; partId: string; list: string } {
+  if (node.kind !== 'instance') fail('"itemId" styles one item of a repeated part of a component; this node is not a component.');
+  if (owner.kind === 'component') fail('Only a placement on a page or in the shared header or footer can style one item on its own.');
+  const def = own(state.components, node.definitionId) ?? fail(`Component definition "${node.definitionId}" is missing.`);
+  if (partId === undefined) fail('"itemId" needs a "partId": name the repeated part to style, such as the card.');
+  if (def.kind !== 'managed') fail(`"${def.name}" is a code component, so its items are styled together. Leave out itemId.`);
+  if (!own(def.parts, partId)) fail(`"${def.name}" has no part "${partId}". Parts: ${Object.keys(def.parts).join(', ')}.`);
+  const list = repeatedPartList(def, partId);
+  if (!list) fail(`"${def.parts[partId].label}" in "${def.name}" is not shown once per list item, so it has no single item to style. Leave out itemId to style it everywhere.`);
+  const items = placementItems(def, node, list);
+  if (!items.some((i) => i.id === itemId)) fail(`${def.properties[list].label} has no item "${itemId}". Items: ${items.map((i) => i.id).join(', ') || 'none'}.`);
+  return { node, partId, list };
+}
+
+/**
+ * Remove empty records left behind in a placement's item styles, then the map itself once it is empty. A record
+ * that is not an object (a hand-edited document) holds no styles and goes the same way.
+ */
+function pruneEmptyItemStyles(node: InstanceNode) {
+  const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+  for (const [partId, entry] of Object.entries(node.itemOverrides ?? {})) {
+    if (!isObject(entry) || !isObject(entry.items)) continue;
+    for (const [itemId, rs] of Object.entries(entry.items)) {
+      if (isObject(rs)) for (const scope of Object.keys(rs) as ResponsiveScope[]) if (!isObject(rs[scope]) || !Object.keys(rs[scope]!).length) delete rs[scope];
+      if (!isObject(rs) || !Object.keys(rs).length) delete entry.items[itemId];
+    }
+    if (!Object.keys(entry.items).length) delete node.itemOverrides![partId];
+  }
+  if (node.itemOverrides && !Object.keys(node.itemOverrides).length) delete node.itemOverrides;
+}
+
+/**
+ * Item styles belong to their item: once it leaves the placement's own list (removed, or the whole list replaced
+ * without it), its styles go too, so later operations in the same batch (a token removal) no longer see them. This
+ * holds whether or not the part still repeats over that list. A placement still showing the definition's default
+ * items has no list of its own to leave: a theme change can give those defaults other IDs, so their styles are kept.
+ */
+function dropDepartedItemStyles(state: ProjectState) {
+  for (const tree of [state.site.shell.header, state.site.shell.footer, ...Object.values(state.pages)]) {
+    for (const n of Object.values(tree.nodes)) {
+      if (n.kind !== 'instance' || !n.itemOverrides) continue;
+      for (const entry of Object.values(n.itemOverrides)) {
+        if (!entry || typeof entry !== 'object' || !entry.items || typeof entry.items !== 'object' || typeof entry.list !== 'string') continue;
+        const stored = Object.hasOwn(n.props, entry.list) ? n.props[entry.list] : undefined;
+        if (!Array.isArray(stored)) continue;
+        const present = new Set(stored.map((i) => (i && typeof i === 'object' ? (i as ListItem).id : undefined)));
+        for (const itemId of Object.keys(entry.items)) if (!present.has(itemId)) delete entry.items[itemId];
+      }
+      pruneEmptyItemStyles(n);
+    }
+  }
+}
+
 function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
   if (op.axis !== undefined && op.variant === undefined) fail('"axis" needs a "variant": name the option to style.');
+  if (op.itemId !== undefined && op.variant !== undefined) fail('"itemId" styles one item of a placement; variant rules belong to the component definition and apply to every item.');
   const tree = editableTree(state, op.owner);
   const node = getNode(tree, op.nodeId);
+  const itemTarget = op.itemId !== undefined ? itemStyleTarget(state, op.owner, node, op.partId, op.itemId) : undefined;
   if (!own(STYLE_PROP_MAP, op.property)) fail(`Unknown style property "${op.property}". Valid: ${Object.keys(STYLE_PROP_MAP).join(', ')}.`);
   if (op.value !== null) {
     const err = validateStyleValue(op.property, op.value);
@@ -1038,6 +1140,23 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     setStyle(v.styles![op.nodeId] as Record<string, Record<string, StyleValue>>, scope, op.property, op.value);
     if (!Object.keys(v.styles![op.nodeId]).length) delete v.styles![op.nodeId];
     if (!Object.keys(v.styles!).length) delete v.styles;
+    return {};
+  }
+  if (itemTarget) {
+    const { node: inst, partId, list } = itemTarget;
+    const itemId = op.itemId!;
+    const entry = inst.itemOverrides && Object.hasOwn(inst.itemOverrides, partId) ? inst.itemOverrides[partId] : undefined;
+    const current = entry?.list === list && entry.items && typeof entry.items === 'object';
+    // Clearing a value this item does not have changes nothing, and must not discard styles kept for another list.
+    if (op.value === null && !current) return {};
+    inst.itemOverrides ??= {};
+    // Styles kept for a list the part no longer repeats over style nothing; the item's first new value replaces them.
+    if (!current) inst.itemOverrides[partId] = { list, items: {} };
+    const items = inst.itemOverrides[partId].items;
+    // Own keys only: an item ID can be any word, "toString" included.
+    if (!Object.hasOwn(items, itemId) || !items[itemId] || typeof items[itemId] !== 'object') items[itemId] = {};
+    setStyle(items[itemId] as Record<string, Record<string, StyleValue>>, scope, op.property, op.value);
+    pruneEmptyItemStyles(inst);
     return {};
   }
   let target: { styles?: Record<string, Record<string, StyleValue>> };
@@ -1076,7 +1195,18 @@ function setStyle(styles: Record<string, Record<string, StyleValue>>, scope: str
 
 function nodeResetStyles(state: ProjectState, op: Op<'node.resetStyles'>): OpResult {
   if (op.axis !== undefined && op.variant === undefined) fail('"axis" needs a "variant": name the option to reset.');
+  if (op.itemId !== undefined && op.variant !== undefined) fail('"itemId" resets one item of a placement; variant rules belong to the component definition.');
   const node = getNode(editableTree(state, op.owner), op.nodeId);
+  if (op.itemId !== undefined) {
+    // Back to the shared style: the item's own values go, and the part's shared values show through again.
+    const { node: inst, partId, list } = itemStyleTarget(state, op.owner, node, op.partId, op.itemId);
+    const entry = inst.itemOverrides?.[partId];
+    const rs = entry?.list === list && Object.hasOwn(entry.items, op.itemId) ? entry.items[op.itemId] : undefined;
+    if (rs && op.scope) delete rs[op.scope];
+    else if (rs) delete entry!.items[op.itemId];
+    pruneEmptyItemStyles(inst);
+    return {};
+  }
   if (op.variant !== undefined) {
     const v = variantStyles(state, op.owner, op.nodeId, op.variant, op.partId, op.axis);
     const rules = v.styles![op.nodeId];
@@ -1086,6 +1216,12 @@ function nodeResetStyles(state: ProjectState, op: Op<'node.resetStyles'>): OpRes
     return {};
   }
   if (node.kind === 'instance') {
+    // Resetting every part of the placement takes its item styles with it; resetting one part keeps them.
+    if (!op.partId && node.itemOverrides) {
+      for (const entry of Object.values(node.itemOverrides))
+        for (const rs of Object.values(entry?.items ?? {})) if (rs && typeof rs === 'object') for (const sc of Object.keys(rs) as ResponsiveScope[]) if (!op.scope || sc === op.scope) delete rs[sc];
+      pruneEmptyItemStyles(node);
+    }
     if (!node.overrides) return {};
     const parts = op.partId ? [op.partId] : Object.keys(node.overrides);
     for (const p of parts) {
@@ -1489,7 +1625,7 @@ function literalTokenUses(state: ProjectState, tokenId: string): string[] {
   for (const t of allTrees(state)) {
     if (t.owner.kind === 'component' && state.components[t.owner.id]?.owner !== 'project') continue;
     const hit = (rs: unknown) => Object.values((rs ?? {}) as Record<string, Record<string, unknown>>).some((sc) => Object.values(sc ?? {}).some((x) => typeof x === 'string' && re.test(x)));
-    for (const n of Object.values(t.tree.nodes)) if (hit(n.styles) || (n.kind === 'instance' && Object.values(n.overrides ?? {}).some(hit))) out.add(t.label);
+    for (const n of Object.values(t.tree.nodes)) if (hit(n.styles) || (n.kind === 'instance' && Object.values(n.overrides ?? {}).some(hit)) || itemStyleRecords(n).some(hit)) out.add(t.label);
   }
   for (const [id, v] of [...Object.entries(state.tokens.overrides), ...state.tokens.custom.map((c) => [c.id, c.value] as const)])
     if (id !== tokenId && typeof v === 'string' && re.test(v)) out.add(`the site style "${id}"`);
@@ -1630,6 +1766,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   const root = getNode(tree, op.nodeId);
   const info = findParent(tree, op.nodeId) ?? fail('Node is not attached.');
   if (root.kind === 'slot' || root.kind === 'repeat') fail('Select an element rather than a slot or repeat to create a component.');
+  refuseItemStylesInto(state, tree, subtreeIds(tree, op.nodeId), 'every placement of a component shares its items.');
   const ownerDef = op.owner.kind === 'component' ? state.components[op.owner.id] : undefined;
   const defTree: NodeTree = { rootIds: [], nodes: {} };
   const properties: Record<string, PropSchema> = {};
@@ -1770,7 +1907,7 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
     for (const [pid, p] of Object.entries(ownerDef.parts)) {
       if (p.nodeId === op.nodeId) p.nodeId = inst.id;
       else if (removed.has(p.nodeId)) {
-        const styled = instancesOf(state, ownerDef.id).filter((u) => u.node.overrides?.[pid]);
+        const styled = instancesOf(state, ownerDef.id).filter((u) => u.node.overrides?.[pid] || u.node.itemOverrides?.[pid]);
         if (styled.length) fail(`"${p.label}" has its own styles in ${styled.length} placement${styled.length === 1 ? '' : 's'}. Reset them first, or create the component from a different element.`);
         delete ownerDef.parts[pid];
       }
@@ -1803,6 +1940,7 @@ function titleCase(s: string): string {
 function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): OpResult {
   const { node, def } = instanceTarget(state, op.owner, op.nodeId);
   if (def.kind !== 'managed' || !def.tree) fail(`"${def.name}" is already a code component.`);
+  refuseItemStylesInto(state, getTree(state, op.owner), [op.nodeId], 'a code component styles its items together.');
   // Content placed in such a slot could no longer be checked for links inside the card's own link.
   const carded = slotsInsideCards(state, def);
   if (carded.length) fail(`"${def.name}" places its ${carded.map((s) => `“${def.slots?.[s]?.label ?? s}”`).join(', ')} content inside a card that links somewhere, which a code component cannot keep free of other links. Remove the card's link first.`);
@@ -1946,6 +2084,7 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
     if (op.type !== 'asset.remove') assetUses.counts = undefined;
     try {
       results.push(applyOperation(draft, op, batch));
+      dropDepartedItemStyles(draft);
     } catch (e) {
       if (e instanceof EngineError) {
         e.message = ops.length > 1 ? `Operation ${i + 1} (${op.type}): ${e.message}` : e.message;
