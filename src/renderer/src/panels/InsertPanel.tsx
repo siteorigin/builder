@@ -71,6 +71,40 @@ export function SectionSketch({ id }: { id: string }) {
           </span>
         </span>
       );
+    case 'tabs.showcase':
+      return (
+        <span className="sketch">
+          <span className="sk-pills">
+            {bar('16%', 5, 'cta')}
+            {bar('16%', 5)}
+            {bar('16%', 5)}
+          </span>
+          <span className="sk-body">
+            <i className="img" />
+            <span className="col-s">
+              {bar('70%', 5, 'hi')}
+              {lines(2)}
+            </span>
+          </span>
+        </span>
+      );
+    case 'pricing.toggle':
+      return (
+        <span className="sketch">
+          <span className="sk-pills">
+            {bar('14%', 5, 'cta')}
+            {bar('14%', 5)}
+          </span>
+          <span className="sk-body cols">
+            {[...Array(3)].map((_, i) => (
+              <span key={i} className="col-s card">
+                {bar('50%', 6, 'hi')}
+                {lines(2)}
+              </span>
+            ))}
+          </span>
+        </span>
+      );
     case 'intro.page':
       return (
         <span className="sketch">

@@ -75,6 +75,20 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
     }
   },
   {
+    id: 'tabs-showcase-services',
+    componentId: 'tabs.showcase',
+    keywords: ['tabs', 'tabbed', 'showcase', 'services', 'process', 'stages', 'steps', 'compare', 'options', 'features', 'tour'],
+    description: 'Tabs that each open an image beside a heading, text and an optional action. tab1 and tab2 always show; tab3 to tab6 show only while their label is set (send label "" to leave one out). Each tab is an object: label, icon ("" for none), heading, copy, actionLabel, actionLink, image',
+    props: {
+      eyebrow: 'What we offer',
+      heading: 'One studio, three ways to work with us',
+      tab1: { label: 'Consult', icon: 'compass', heading: 'A clear plan in one visit', copy: 'We walk the space with you and talk through what matters.\n\nYou leave with a **written plan** and a budget range.', actionLabel: 'Book a consultation', actionLink: '/contact/', image: NO_IMAGE },
+      tab2: { label: 'Design', icon: 'pen-tool', heading: 'Drawings you can build from', copy: 'Layouts, finishes and lighting, refined over three reviews.', actionLabel: '', actionLink: '', image: NO_IMAGE },
+      tab3: { label: 'Build', icon: 'hammer', heading: 'One team on site', copy: 'Our own trades work to one schedule, with weekly updates.', actionLabel: 'See our projects', actionLink: '/about/', image: NO_IMAGE },
+      tab4: { label: '' }
+    }
+  },
+  {
     id: 'content-text-policy',
     componentId: 'content.text',
     keywords: ['text', 'article', 'policy', 'privacy', 'terms', 'legal', 'paragraphs'],
@@ -132,6 +146,24 @@ export const FOUNDATION_EXAMPLES: AiExample[] = [
         { name: 'Essential', price: '$490', period: 'per project', description: 'For a single room.', features: 'One design concept\nShopping list', actionLabel: 'Choose Essential', actionLink: '/contact/' },
         { name: 'Complete', price: '$1,450', period: 'per project', description: 'For a whole floor.', badge: 'Most popular', features: 'Three design concepts\nSourcing and orders\nTwo site visits', actionLabel: 'Choose Complete', actionLink: '/contact/' },
         { name: 'Managed', price: '$3,200', period: 'per project', description: 'We run the whole job.', features: 'Everything in Complete\nContractor management', actionLabel: 'Talk to us', actionLink: '/contact/' }
+      ]
+    }
+  },
+  {
+    id: 'pricing-billing-switch',
+    componentId: 'pricing.toggle',
+    keywords: ['monthly', 'annual', 'yearly', 'subscription', 'subscriptions', 'membership', 'memberships', 'billing', 'saas', 'toggle'],
+    description: 'Plans whose prices change with a Monthly / Annual switch. Each plan has monthlyPrice and monthlyNote, shown at first, and annualPrice and annualNote, shown when a visitor picks Annual; monthlyLabel and annualLabel are the switch buttons',
+    variant: 'muted',
+    props: {
+      eyebrow: 'Pricing',
+      heading: 'Plans that grow with your team',
+      lead: 'Pay monthly, or pay yearly and get two months free.',
+      monthlyLabel: 'Monthly',
+      annualLabel: 'Yearly, 2 months free',
+      plans: [
+        { name: 'Starter', description: 'For one person getting organised.', monthlyPrice: '$12', monthlyNote: 'per month', annualPrice: '$120', annualNote: 'per year, billed once', features: 'Unlimited projects\nEmail support', actionLabel: 'Start free trial', actionLink: '/contact/' },
+        { name: 'Team', description: 'For teams of up to twenty.', badge: 'Most popular', monthlyPrice: '$39', monthlyNote: 'per month', annualPrice: '$390', annualNote: 'per year, billed once', features: 'Everything in Starter\nShared workspaces\nPriority support', actionLabel: 'Start free trial', actionLink: '/contact/' }
       ]
     }
   },
