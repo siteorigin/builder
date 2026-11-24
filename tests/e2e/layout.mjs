@@ -282,6 +282,83 @@ assertToolbarFits(l, 'shrunk to 1100px');
 await size(1440, 900);
 assert.deepEqual(await panels(), wide, 'the panels return to the widths they were given');
 
+step('the preview width and zoom are remembered wherever they are chosen, and the frame handles share the width field’s range');
+const local = () => win.evaluate(async () => (await window.builder.project.snapshot()).localState);
+const widthField = toolbar.locator('.width-input');
+const rightEdge = win.getByRole('separator', { name: 'Preview width, right edge' });
+const leftEdge = win.getByRole('separator', { name: 'Preview width, left edge' });
+const frameWidth = async () => Number(await rightEdge.getAttribute('aria-valuenow'));
+const remembered = (what, want) =>
+  eventually(async () => {
+    const saved = await local();
+    for (const [key, value] of Object.entries(want)) assert.equal(saved[key], value, what);
+  });
+const setWidth = async (w) => {
+  await widthField.fill(String(w));
+  await widthField.press('Enter');
+  await remembered(`the width field’s ${w}px is remembered`, { viewport: w });
+};
+/** Drag a frame handle `dx` CSS pixels sideways, as the author would. */
+const dragHandle = async (handle, dx) => {
+  const b = await handle.boundingBox();
+  const x = b.x + b.width / 2;
+  const y = b.y + b.height / 2;
+  await win.mouse.move(x, y);
+  await win.mouse.down();
+  await win.mouse.move(x + dx / 2, y);
+  await win.mouse.move(x + dx, y);
+  await win.mouse.up();
+};
+assert.deepEqual([await rightEdge.getAttribute('aria-valuemin'), await rightEdge.getAttribute('aria-valuemax')], ['240', '2560'], 'the handles say the width field’s range');
+/** How far the preview is scaled on screen, and the width a drag of `dx` on the right edge should give: the
+ *  centered frame grows by twice the edge's movement, in the page's own pixels, within 240..2560. */
+const scale = () => win.evaluate(() => document.querySelector('.frame-box').getBoundingClientRect().width / Number(document.querySelector('.width-input').value));
+const expectDrag = async (from, dx) => Math.max(240, Math.min(2560, Math.round(from + (dx / (await scale())) * 2)));
+const dragTo = async (from, dx, what) => {
+  const want = await expectDrag(from, dx);
+  await dragHandle(rightEdge, dx);
+  const got = await frameWidth();
+  assert.ok(Math.abs(got - want) <= 1, `${what}: ${got}px, expected ${want}px`);
+  assert.equal(await win.locator('.frame-handle.dragging').count(), 0, `${what}: the drag has ended`);
+  await remembered(`${what}: the width is remembered`, { viewport: got });
+  return got;
+};
+await setWidth(2400);
+let dragged = await dragTo(2400, -3, 'a short drag from 2400px narrows the frame from there, not to 1920px');
+assert.ok(dragged > 1920, 'the drag kept the wide frame');
+// Well past the handle (it holds the pointer) and the limit.
+dragged = await dragTo(dragged, 60, 'a long drag outward stops at 2560px');
+assert.equal(dragged, 2560);
+await setWidth(280);
+dragged = await dragTo(280, 3, 'a short drag from 280px widens the frame from there, not to 320px');
+assert.ok(dragged < 320, 'the drag kept the narrow frame');
+const keyStep = async (edge, key, want, what) => {
+  await edge.focus();
+  await win.keyboard.press(key);
+  assert.equal(await frameWidth(), want, what);
+  await eventually(async () => assert.equal(await widthField.inputValue(), String(want), `${what}: the width field shows it`));
+  await remembered(`${what}: the width is remembered`, { viewport: want });
+};
+await keyStep(rightEdge, 'ArrowRight', dragged + 16, 'Right Arrow on the right edge widens the frame');
+await keyStep(leftEdge, 'ArrowLeft', dragged + 32, 'Left Arrow on the left edge widens it too');
+await keyStep(leftEdge, 'ArrowRight', dragged + 16, 'Right Arrow on the left edge narrows it');
+await keyStep(rightEdge, 'ArrowLeft', dragged, 'Left Arrow on the right edge narrows it');
+await setWidth(250);
+await keyStep(leftEdge, 'ArrowRight', 240, 'the keyboard stops at the narrowest width');
+await button('Phone').click();
+assert.equal(await frameWidth(), 390, 'the toolbar’s Phone width');
+await remembered('the toolbar’s Phone width is remembered', { viewport: 390 });
+await win.keyboard.press(`${MOD}+K`);
+await win.locator('.cmdk').waitFor();
+await win.keyboard.type('Preview at tablet width');
+await win.keyboard.press('Enter');
+await win.locator('.cmdk').waitFor({ state: 'detached' });
+assert.equal(await frameWidth(), 834, 'the command menu sets the tablet width');
+await remembered('the command menu’s width is remembered', { viewport: 834 });
+await toolbar.locator('.zoom-btn').click();
+await win.getByRole('menuitemradio', { name: '75%' }).click();
+await remembered('the zoom is remembered', { zoom: 0.75 });
+
 step('the project opens again in a small window with its panels fitted, then restores them');
 await press(RIGHT, 'ArrowRight');
 assert.deepEqual(await panels(), { side: 408, dock: 544 }, 'a keyboard step just before closing');
@@ -299,6 +376,12 @@ assert.ok(l.side && l.dock, 'both panels are open');
 assert.deepEqual(await panels(), { side: 200, dock: 412 }, 'the saved widths are fitted to the small window');
 assert.equal(l.canvas.width, CANVAS_MIN, 'the reopened canvas keeps its minimum');
 assertToolbarFits(l, 'reopened at 1100px');
+await eventually(async () => assert.equal(await widthField.inputValue(), '834', 'the reopened preview has the width it was given'));
+assert.equal(await toolbar.locator('.zoom-btn').innerText(), '75%', 'and the zoom');
+assert.ok(Math.abs((await win.locator('.frame-box').boundingBox()).width - 834 * 0.75) <= 1, 'the preview is drawn at 75%');
+await toolbar.locator('.zoom-btn').click();
+await win.getByRole('menuitemradio', { name: 'Fit to window' }).click();
+await remembered('Fit is remembered', { zoom: 'fit' });
 
 step('a drag ends when the layout changes under it, instead of jumping');
 {
@@ -329,6 +412,8 @@ await win.waitForSelector('.welcome');
 await createProject(win, { name: 'Second Shelf', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
 await settled(1440);
 assert.deepEqual(await panels(), { side: 260, dock: 340 });
+await eventually(async () => assert.equal(await widthField.inputValue(), '1280', 'the new project previews at the desktop width'));
+assert.equal(await toolbar.locator('.zoom-btn').innerText(), 'Fit', 'and fits the preview to the window');
 
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();

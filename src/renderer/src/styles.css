@@ -21,7 +21,8 @@
  * regions (panel edges, list rows, dialog footers) are fine, and so is a spinner's coloured arc.
  */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
+  --selection: rgb(23 102 192 / 0.22);
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
   --mono: 'SF Mono', ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
 
@@ -74,45 +75,45 @@
   --toolbar-h: 52px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #11151c;
-    --canvas: #0e1217;
-    --canvas-dots: rgb(255 255 255 / 0.05);
-    --panel: #171c25;
-    --panel-2: #1d232e;
-    --raised: #242b37;
-    --hover: rgb(231 236 244 / 0.06);
-    --active: rgb(231 236 244 / 0.1);
-    --border: rgb(231 236 244 / 0.09);
-    --border-strong: rgb(231 236 244 / 0.16);
-    --border-control: #717d96;
-    --text: #e7ecf4;
-    --text-2: #a8b2c3;
-    --text-3: #8b96a9;
-    --accent: #7cbeff;
-    --accent-hover: #a2d1ff;
-    --accent-soft: rgb(124 190 255 / 0.15);
-    --accent-text: #9fd0ff;
-    /* The dark primary is the mark's own sky tile with ink lettering. */
-    --on-accent: #10203f;
-    --accent-fill: #86c5ff;
-    --accent-fill-hover: #a2d3ff;
-    --focus: #7cbeff;
-    --green: #5ccf9c;
-    --green-soft: rgb(92 207 156 / 0.13);
-    --amber: #f0b45e;
-    --amber-soft: rgb(240 180 94 / 0.13);
-    --red: #ff8a82;
-    --red-soft: rgb(255 138 130 / 0.13);
-    --plum: #b59bff;
-    --plum-soft: rgb(181 155 255 / 0.14);
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
-    --shadow-md: 0 10px 30px -8px rgb(0 0 0 / 0.6), 0 2px 6px rgb(0 0 0 / 0.3);
-    --shadow-lg: 0 30px 70px -16px rgb(0 0 0 / 0.7), 0 6px 18px rgb(0 0 0 / 0.4);
-    --ring: 0 0 0 3px rgb(124 190 255 / 0.22);
-    --scrim: rgb(0 0 0 / 0.5);
-  }
+:root:where([data-appearance='dark']) {
+  color-scheme: dark;
+  --selection: rgb(124 190 255 / 0.3);
+  --bg: #11151c;
+  --canvas: #0e1217;
+  --canvas-dots: rgb(255 255 255 / 0.05);
+  --panel: #171c25;
+  --panel-2: #1d232e;
+  --raised: #242b37;
+  --hover: rgb(231 236 244 / 0.06);
+  --active: rgb(231 236 244 / 0.1);
+  --border: rgb(231 236 244 / 0.09);
+  --border-strong: rgb(231 236 244 / 0.16);
+  --border-control: #717d96;
+  --text: #e7ecf4;
+  --text-2: #a8b2c3;
+  --text-3: #8b96a9;
+  --accent: #7cbeff;
+  --accent-hover: #a2d1ff;
+  --accent-soft: rgb(124 190 255 / 0.15);
+  --accent-text: #9fd0ff;
+  /* The dark primary is the mark's own sky tile with ink lettering. */
+  --on-accent: #10203f;
+  --accent-fill: #86c5ff;
+  --accent-fill-hover: #a2d3ff;
+  --focus: #7cbeff;
+  --green: #5ccf9c;
+  --green-soft: rgb(92 207 156 / 0.13);
+  --amber: #f0b45e;
+  --amber-soft: rgb(240 180 94 / 0.13);
+  --red: #ff8a82;
+  --red-soft: rgb(255 138 130 / 0.13);
+  --plum: #b59bff;
+  --plum-soft: rgb(181 155 255 / 0.14);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.3);
+  --shadow-md: 0 10px 30px -8px rgb(0 0 0 / 0.6), 0 2px 6px rgb(0 0 0 / 0.3);
+  --shadow-lg: 0 30px 70px -16px rgb(0 0 0 / 0.7), 0 6px 18px rgb(0 0 0 / 0.4);
+  --ring: 0 0 0 3px rgb(124 190 255 / 0.22);
+  --scrim: rgb(0 0 0 / 0.5);
 }
 
 * { box-sizing: border-box; }
@@ -133,8 +134,7 @@ button { cursor: default; background: none; }
    containers and elements that set their own box-shadow. Inputs add the soft ring on top. */
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .input:focus-visible, .select:focus-visible, .textarea:focus-visible, .input:focus, .select:focus, .textarea:focus { outline: 2px solid var(--focus); outline-offset: -1px; }
-::selection { background: rgb(23 102 192 / 0.22); }
-@media (prefers-color-scheme: dark) { ::selection { background: rgb(124 190 255 / 0.3); } }
+::selection { background: var(--selection); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
 
 .scroll { overflow: auto; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
@@ -161,7 +161,7 @@ p { text-wrap: pretty; }
 }
 .btn:hover:not(:disabled) { background: var(--panel-2); }
 .btn:disabled { opacity: 0.5; }
-@media (prefers-color-scheme: dark) { .btn:disabled, .icon-btn:disabled { opacity: 0.6; } }
+:where(:root[data-appearance='dark']) { .btn:disabled, .icon-btn:disabled { opacity: 0.6; } }
 .btn svg { width: 15px; height: 15px; flex: none; }
 .btn .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .btn-primary { background: var(--accent-fill); border-color: transparent; color: var(--on-accent); font-weight: 600; box-shadow: 0 1px 2px rgb(17 85 159 / 0.25); }
@@ -171,7 +171,7 @@ p { text-wrap: pretty; }
 .btn-danger { color: var(--red); }
 .btn-danger-fill { background: var(--red); border-color: transparent; color: #fff; font-weight: 600; }
 .btn-danger-fill:hover:not(:disabled) { background: color-mix(in srgb, var(--red) 88%, black); }
-@media (prefers-color-scheme: dark) { .btn-danger-fill { color: #2a0b09; } }
+:where(:root[data-appearance='dark']) { .btn-danger-fill { color: #2a0b09; } }
 .btn-danger:hover:not(:disabled) { background: var(--red-soft); }
 .btn-sm { height: 26px; padding: 0 9px; font-size: 12px; }
 .btn-lg { height: 38px; padding: 0 18px; font-size: 15px; }
@@ -227,7 +227,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .switch { position: relative; width: 32px; height: 20px; border-radius: 99px; background: var(--border-control); border: 0; transition: background 150ms; flex: none; }
 .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; box-shadow: 0 1px 2px rgb(0 0 0 / 0.25); transition: transform 150ms; }
 .switch[aria-checked='true'] { background: var(--accent); }
-@media (prefers-color-scheme: dark) { .switch::after { background: #f4f7fb; } .switch[aria-checked='true']::after { background: var(--ink); } }
+:where(:root[data-appearance='dark']) { .switch::after { background: #f4f7fb; } .switch[aria-checked='true']::after { background: var(--ink); } }
 .switch[aria-checked='true']::after { transform: translateX(12px); }
 
 .badge { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 99px; font-size: 11px; font-weight: 600; background: var(--active); color: var(--text-2); white-space: nowrap; }
@@ -272,7 +272,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .menu-item .check svg { color: inherit; }
 .menu-item .hint { flex: none; font-size: 12px; color: var(--text-3); }
 .menu-item:is(:disabled, [data-disabled]) { opacity: 0.45; }
-@media (prefers-color-scheme: dark) { .menu-item:is(:disabled, [data-disabled]) { opacity: 0.58; } }
+:where(:root[data-appearance='dark']) { .menu-item:is(:disabled, [data-disabled]) { opacity: 0.58; } }
 .menu-item svg { width: 16px; height: 16px; flex: none; color: var(--text-2); }
 /* Shortcuts read as quiet text, not keycaps: a keycap's border fights the highlight and the focus ring. */
 .menu .menu-item:not([data-highlighted], :hover) .kbd { color: var(--text-3); }
@@ -327,7 +327,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .toast { pointer-events: auto; display: flex; align-items: center; gap: 10px; max-width: 520px; padding: 9px 12px 9px 14px; border-radius: var(--r-md); background: var(--ink); color: #fff; box-shadow: var(--shadow-lg); animation: pop-in 160ms ease-out; font-size: 13px; }
 .toast svg { width: 16px; height: 16px; flex: none; }
 .toast.error { background: #a32a24; color: white; }
-@media (prefers-color-scheme: dark) { .toast { background: #e7ecf4; color: var(--ink); } .toast.error { background: #ffb3ad; color: #3a0c09; } }
+:where(:root[data-appearance='dark']) { .toast { background: #e7ecf4; color: var(--ink); } .toast.error { background: #ffb3ad; color: #3a0c09; } }
 .toast button { color: inherit; opacity: 0.8; }
 /* A typed edit kept while the AI works: stays until the author applies or discards it. */
 .toasts .toast-group { display: contents; }
@@ -343,7 +343,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .welcome-side { position: relative; display: flex; flex-direction: column; gap: 24px; padding: 52px 24px 24px; background: var(--panel); border-right: 1px solid var(--border); overflow: hidden; }
 /* The one brand wash in the app: the mark's sky, fading out behind the brand block. */
 .welcome-side::before { content: ''; position: absolute; inset: 0 0 auto; height: 260px; background: radial-gradient(120% 100% at 0% 0%, rgb(134 197 255 / 0.32), transparent 70%); pointer-events: none; }
-@media (prefers-color-scheme: dark) { .welcome-side::before { background: radial-gradient(120% 100% at 0% 0%, rgb(134 197 255 / 0.12), transparent 70%); } }
+:where(:root[data-appearance='dark']) { .welcome-side::before { background: radial-gradient(120% 100% at 0% 0%, rgb(134 197 255 / 0.12), transparent 70%); } }
 .welcome-side > * { position: relative; }
 .brand { display: flex; align-items: center; gap: 11px; }
 .brand-mark { display: grid; flex: none; }
@@ -355,7 +355,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 /* Cards are identified by their icon and text, so they take a soft hairline and lift, not a hard outline. */
 .welcome-action { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px; border-radius: var(--r-md); border: 0; background: var(--raised); text-align: left; box-shadow: 0 0 0 1px var(--border), 0 1px 2px rgb(28 39 66 / 0.06); transition: box-shadow 140ms; }
 .welcome-action:hover:not(:disabled, [aria-disabled='true']) { box-shadow: 0 0 0 1px var(--border-strong), 0 8px 20px -10px rgb(28 39 66 / 0.25); }
-@media (prefers-color-scheme: dark) { .welcome-action { box-shadow: 0 0 0 1px var(--border-strong); } }
+:where(:root[data-appearance='dark']) { .welcome-action { box-shadow: 0 0 0 1px var(--border-strong); } }
 .welcome-action:disabled, .welcome-action[aria-disabled='true'] { opacity: 0.55; }
 .welcome-action[aria-disabled='true'] { cursor: default; }
 .welcome-action > .chev { width: 16px; height: 16px; flex: none; color: var(--text-3); }
@@ -372,7 +372,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .recent-card:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 0 0 1px var(--border-strong), 0 8px 20px -10px rgb(28 39 66 / 0.25); }
 .recent-card:focus-visible { outline-offset: 2px; }
 .recent-card:disabled:not([aria-busy='true']) { opacity: 0.6; }
-@media (prefers-color-scheme: dark) {
+:where(:root[data-appearance='dark']) {
   .recent-card { box-shadow: 0 0 0 1px var(--border-strong); }
   /* At rest these cards already use the strong edge, so hover steps up to the control edge. */
   .recent-card:hover:not(:disabled), .welcome-action:hover:not(:disabled, [aria-disabled='true']) { box-shadow: 0 0 0 1px var(--border-control), 0 8px 20px -10px rgb(0 0 0 / 0.65); }
@@ -586,9 +586,13 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .frame-wrap { position: relative; flex: none; }
 .frame-box { position: absolute; top: 0; left: 0; transform-origin: 0 0; border-radius: 6px; overflow: hidden; background: white; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), var(--shadow-md); }
 .frame-box iframe { display: block; border: 0; width: 100%; height: 100%; background: white; }
+/* Every frame in the editor shows the website. Chromium gives a frame's page the color scheme of its <iframe>
+   element, which would otherwise inherit the editor's Appearance: this one lets the page follow this computer's
+   setting, as a visitor's browser does. */
+iframe { color-scheme: light dark; }
 .frame-handle { position: absolute; top: 50%; width: 14px; height: 54px; margin-top: -27px; border-radius: var(--r-sm); cursor: ew-resize; display: grid; place-items: center; z-index: 4; }
 .frame-handle::after { content: ''; width: 4px; height: 34px; border-radius: var(--r-xs); background: var(--border-control); transition: background 120ms; }
-.frame-handle:hover::after, .frame-handle.dragging::after { background: var(--accent); }
+.frame-handle:hover::after, .frame-handle.dragging::after, .frame-handle:focus-visible::after { background: var(--accent); }
 .frame-handle.right { right: -20px; }
 .frame-handle.left { left: -20px; }
 .frame-width-label { position: absolute; top: -19px; left: 0; right: 0; text-align: right; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
@@ -617,7 +621,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .ov-chip { position: absolute; display: flex; align-items: center; gap: 1px; height: 28px; padding: 2px; border-radius: var(--r-sm); background: var(--select); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.9), 0 4px 14px -4px rgb(16 24 40 / 0.45), 0 1px 3px rgb(16 24 40 / 0.25); pointer-events: auto; white-space: nowrap; z-index: 1; }
 .ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 2px 6px -2px rgb(16 24 40 / 0.35); }
 /* Parked on the dark pasteboard, not the user's page, the chip needs no bright rim to separate it. */
-@media (prefers-color-scheme: dark) { .ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.2), 0 2px 8px -2px rgb(0 0 0 / 0.5); } }
+:where(:root[data-appearance='dark']) { .ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.2), 0 2px 8px -2px rgb(0 0 0 / 0.5); } }
 .ov-chip .name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; overflow: hidden; height: 24px; padding: 0 6px 0 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.005em; }
 .ov-chip .grip + .name { padding-left: 0; }
 .ov-chip .name > svg { width: 14px; height: 14px; flex: none; opacity: 0.9; }
@@ -776,7 +780,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 /* Behind a loaded picture that may be transparent: a mid-light checker in light, a mid grey in dark, so dark
    and white artwork both stay visible. It sits on the picture's own box, so opaque photos hide it. */
 .asset-thumb img.alpha, .asset-preview img.alpha { background-color: #e6e9ee; background-image: conic-gradient(#d3d8df 25%, transparent 0 50%, #d3d8df 0 75%, transparent 0); background-size: 12px 12px; background-clip: content-box; background-origin: content-box; }
-@media (prefers-color-scheme: dark) {
+:where(:root[data-appearance='dark']) {
   .asset-thumb img.alpha, .asset-preview img.alpha { background-color: #9aa2b0; background-image: conic-gradient(#8a93a2 25%, transparent 0 50%, #8a93a2 0 75%, transparent 0); }
 }
 .asset-tile:hover .asset-thumb::after { box-shadow: inset 0 0 0 1px var(--border-control); }
@@ -1071,7 +1075,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .style-select.is-set, .style-input.is-set { color: var(--text); font-weight: 500; background-color: color-mix(in srgb, var(--accent) 7%, var(--raised)); }
 .editor.defining .style-select.is-set, .editor.defining .style-input.is-set { background-color: color-mix(in srgb, var(--plum) 7%, var(--raised)); }
 /* In dark, a quieter changed fill and a lighter chevron keep the picker's arrow at 3:1 or better. */
-@media (prefers-color-scheme: dark) {
+:where(:root[data-appearance='dark']) {
   .style-select.is-set, .style-input.is-set { background-color: color-mix(in srgb, var(--accent) 4%, var(--raised)); }
   .editor.defining .style-select.is-set, .editor.defining .style-input.is-set { background-color: color-mix(in srgb, var(--plum) 4%, var(--raised)); }
   .style-select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); }
@@ -1219,7 +1223,7 @@ input::placeholder, textarea::placeholder { color: var(--text-3); opacity: 1; }
 .color-pick:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .color-pick.linked { outline: 1px dashed var(--border-control); outline-offset: 2px; }
 .color-pick.unpainted { background: repeating-linear-gradient(135deg, transparent 0 5px, var(--border-control) 5px 6px), var(--raised); }
-@media (prefers-color-scheme: dark) { .color-pick-fill { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2); } }
+:where(:root[data-appearance='dark']) { .color-pick-fill { box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.2); } }
 .ss-color-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .ss-desc { display: flex; flex-wrap: wrap; align-items: center; column-gap: 6px; font-size: 12px; line-height: 1.35; color: var(--text-3); }
 .ss-follows { display: flex; flex-wrap: wrap; align-items: center; column-gap: 4px; font-size: 12px; line-height: 1.35; color: var(--text-2); }
@@ -1570,10 +1574,10 @@ button.code-problem:hover { background: var(--active); }
 .code-foot-note.saved { color: var(--text); }
 .code-save { min-width: 104px; }
 :root { --cm-tag: #b02a6d; --cm-attr: #8a5a0c; --cm-str: #1d7347; --cm-kw: #5b46c9; --cm-num: #a94b17; --cm-fn: #2f62c9; }
-@media (prefers-color-scheme: dark) { :root { --cm-tag: #ff7ab8; --cm-attr: #f0c068; --cm-str: #6ad49a; --cm-kw: #a796ff; --cm-num: #ffa070; --cm-fn: #82aaff; } }
+:root:where([data-appearance='dark']) { --cm-tag: #ff7ab8; --cm-attr: #f0c068; --cm-str: #6ad49a; --cm-kw: #a796ff; --cm-num: #ffa070; --cm-fn: #82aaff; }
 /* Selected code keeps every syntax colour above 4.5:1. */
 .code-frame { --code-selection: rgb(23 102 192 / 0.08); }
-@media (prefers-color-scheme: dark) { .code-frame { --code-selection: rgb(124 190 255 / 0.08); } }
+:where(:root[data-appearance='dark']) { .code-frame { --code-selection: rgb(124 190 255 / 0.08); } }
 .ov-drop { position: absolute; background: var(--select); border-radius: 2px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); pointer-events: none; }
 
 /* ---------- Tabs (dialog-level view switchers) ---------- */
@@ -1599,7 +1603,7 @@ button.code-problem:hover { background: var(--active); }
 .editor.defining .list-item.selected { background: var(--plum-soft); color: var(--plum); box-shadow: inset 0 0 0 1px var(--plum); }
 .editor.defining .style-row .ovr-dot { background: var(--plum); }
 .editor.defining .input.overridden, .editor.defining .select.overridden { border-color: var(--plum); background-color: color-mix(in srgb, var(--plum) 6%, var(--raised)); }
-@media (prefers-color-scheme: dark) { .mode-band { background: color-mix(in srgb, var(--plum) 22%, var(--panel)); } }
+:where(:root[data-appearance='dark']) { .mode-band { background: color-mix(in srgb, var(--plum) 22%, var(--panel)); } }
 .link-btn { border: 0; background: none; padding: 0; color: var(--accent-text); font-weight: 500; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
 .link-btn:hover { text-decoration-color: currentColor; }
 .history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
@@ -1669,7 +1673,7 @@ button.code-problem:hover { background: var(--active); }
 .settings-rule { flex: none; width: 100%; height: 1px; margin: 0; border: 0; background: var(--border); }
 .settings-foot-note { font-size: 12px; color: var(--text-3); }
 .toast.success svg { color: #86e0b5; }
-@media (prefers-color-scheme: dark) { .toast.success svg { color: #0b6b45; } }
+:where(:root[data-appearance='dark']) { .toast.success svg { color: #0b6b45; } }
 .side-panel-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .side-panel-view[hidden] { display: none; }
 .starting-mark { position: relative; display: grid; place-items: center; width: 64px; height: 64px; }
@@ -1817,7 +1821,7 @@ button.code-problem:hover { background: var(--active); }
 
 /* Focus on filled dark surfaces (selection chip, toasts, preview pill): a white ring that reads on the fill. */
 .toast button:focus-visible, .preview-pill button:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
-@media (prefers-color-scheme: dark) { .toast button:focus-visible { outline-color: var(--ink); } }
+:where(:root[data-appearance='dark']) { .toast button:focus-visible { outline-color: var(--ink); } }
 /* Shared header and footer: the canvas selection and selected layer turn green, matching the shared scope note. */
 .canvas.sel-shared { --select: #0b6b45; }
 .list-item.selected.shared { background: var(--green-soft); color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
@@ -1849,7 +1853,7 @@ button.code-problem:hover { background: var(--active); }
 .toolbar-group { min-width: 0; }
 .insp-jump button { background: transparent; color: var(--accent-text); padding: 0 6px; }
 .insp-jump button:hover { background: var(--accent-soft); }
-@media (prefers-color-scheme: dark) { .icon-btn:disabled, .btn:disabled { opacity: 0.6; } }
+:where(:root[data-appearance='dark']) { .icon-btn:disabled, .btn:disabled { opacity: 0.6; } }
 /* Keep keyboard-focused fields clear of the sticky inspector header. */
 .panel-body :is(input, select, textarea, button) { scroll-margin-top: 150px; scroll-margin-bottom: 24px; }
 .menu-item .menu-thumb { width: 32px; height: 24px; flex: none; border-radius: var(--r-xs); object-fit: cover; box-shadow: 0 0 0 1px var(--border); }
@@ -1865,7 +1869,7 @@ button.code-problem:hover { background: var(--active); }
 .chip.add:hover { border-color: var(--accent); color: var(--accent-text); }
 .toast .btn { border: 1px solid rgb(255 255 255 / 0.45); color: inherit; background: transparent; }
 .toast .btn:hover:not(:disabled) { background: rgb(255 255 255 / 0.14); }
-@media (prefers-color-scheme: dark) { .toast .btn { border-color: rgb(35 48 79 / 0.4); } .toast .btn:hover:not(:disabled) { background: rgb(35 48 79 / 0.08); } }
+:where(:root[data-appearance='dark']) { .toast .btn { border-color: rgb(35 48 79 / 0.4); } .toast .btn:hover:not(:disabled) { background: rgb(35 48 79 / 0.08); } }
 /* Title bar: every empty stretch between controls is a window drag region, so double-clicking it does the
    system's title-bar action (Zoom on macOS: the window fills the screen without going full screen).
    Controls opt out individually. */
@@ -1876,9 +1880,9 @@ button.code-problem:hover { background: var(--active); }
 .frame-width-label.gone { visibility: hidden; }
 .toast button { opacity: 1; }
 .toast .btn { border-color: rgb(255 255 255 / 0.7); }
-@media (prefers-color-scheme: dark) { .toast .btn { border-color: rgb(35 48 79 / 0.65); } }
+:where(:root[data-appearance='dark']) { .toast .btn { border-color: rgb(35 48 79 / 0.65); } }
 
-@media (prefers-color-scheme: dark) { .select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); } }
+:where(:root[data-appearance='dark']) { .select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%23a8b2c3' stroke-width='1.5'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E"); } }
 .chip:not(:has(button)) { padding-right: 8px; }
 .list-editor-head button.title { display: flex; align-items: center; gap: 6px; align-self: stretch; padding: 0 4px; }
 .list-editor-flag { display: inline-flex; flex: none; margin-left: auto; color: var(--amber); }
@@ -2061,7 +2065,7 @@ button.asset-use:hover svg.go { color: var(--text); }
 .layers-children { position: relative; display: flex; flex-direction: column; gap: 1px; }
 .layers-children::before { content: ''; position: absolute; left: calc(var(--layers-pad) + var(--depth, 0) * var(--layers-indent) + 4px); top: 0; bottom: 6px; width: 1px; background: var(--border-strong); pointer-events: none; }
 .layers-children.on-path::before { background: color-mix(in srgb, var(--text-3) 70%, transparent); }
-@media (prefers-color-scheme: dark) { .layers-children.on-path::before { background: color-mix(in srgb, var(--text-3) 50%, transparent); } }
+:where(:root[data-appearance='dark']) { .layers-children.on-path::before { background: color-mix(in srgb, var(--text-3) 50%, transparent); } }
 .layers-sublabel { padding: 6px 8px 2px calc(var(--layers-pad) + var(--depth, 0) * var(--layers-indent) + 16px); font-size: 11px; font-weight: 600; color: var(--text-3); }
 /* The row being dragged keeps readable text; a quiet dashed ring marks it as the one moving. */
 .layers-tree .list-item.layer-row[data-dragging], .editor.defining .layers-tree .list-item.layer-row.selected[data-dragging] { background: var(--panel-2); color: var(--text-2); box-shadow: none; outline: 1px dashed var(--border-control); outline-offset: -1px; }

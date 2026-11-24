@@ -7,7 +7,7 @@ import { uniqueCopyName } from '@engine/definitions';
 import type { PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
-import { applyOps, api, getState, setState, toast, useStore } from '../store';
+import { applyOps, api, getState, projectHistory, setState, toast, useStore } from '../store';
 import { Field, Modal, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { resolveRef, treeFor } from '../lib/model';
@@ -793,10 +793,10 @@ function ChangesModal() {
       onClose={() => setState({ modal: null })}
       footer={
         <>
-          <button className="btn" disabled={!snap?.history.canUndo} onClick={() => void api.project.undo()}>
+          <button className="btn" disabled={!snap?.history.canUndo} onClick={() => projectHistory('undo')}>
             <Undo2 /> Undo
           </button>
-          <button className="btn" disabled={!snap?.history.canRedo} onClick={() => void api.project.redo()}>
+          <button className="btn" disabled={!snap?.history.canRedo} onClick={() => projectHistory('redo')}>
             <Redo2 /> Redo
           </button>
           <span className="spacer" />

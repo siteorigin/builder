@@ -655,7 +655,9 @@ export interface BuilderApi {
     /** `workspaceKey` is the opening of the project the state belongs to (from its snapshot); any other is dropped. */
     saveLocalState(state: LocalWorkspaceState, workspaceKey: string): Promise<void>;
     validateSource(source: string): Promise<{ ok: boolean; errors: string[]; diagnostics: Array<{ message: string; line?: number; column?: number; severity: 'error' | 'warning' }> }>;
-    flush(): Promise<void>;
+    /** Resolves once the writes queued for the project have finished: whether they all reached the disk, in the
+     *  opening given (its snapshot's workspaceKey). */
+    flush(opening?: string): Promise<boolean>;
   };
   ai: {
     providers(): Promise<ProviderStatus[]>;
@@ -692,7 +694,8 @@ export interface BuilderApi {
   on(channel: 'projects:unpacking', cb: (u: { name: string; dir: string } | null) => void): () => void;
   on(channel: 'runtime:status', cb: (s: RuntimeState) => void): () => void;
   on(channel: 'ai:event', cb: (e: AiEvent) => void): () => void;
-  on(channel: 'appearance', cb: (dark: boolean) => void): () => void;
+  /** The editor's Appearance, when Settings saves a new one. */
+  on(channel: 'appearance', cb: (appearance: Appearance) => void): () => void;
   on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number }) => void): () => void;
   /** Show components in isolated preview frames, step by step, and answer with componentPreviewResult. */
   on(channel: 'component-preview:request', cb: (req: { requestId: string; steps: ComponentPreviewStep[] }) => void): () => void;

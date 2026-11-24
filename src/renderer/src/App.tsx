@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, applyAiEvent, getState, persistChatState, saveLocal, setState, toast, useStore } from './store';
+import { api, applyAiEvent, getState, persistChatState, projectHistory, saveLocal, setState, toast, useStore } from './store';
 import { cleanDrafts, cleanImages, moveDraft, moveImages, restorePlan } from './lib/chatDrafts';
 import { Welcome } from './Welcome';
 import { Editor } from './Editor';
@@ -7,8 +7,8 @@ import { UnpackingModal } from './components/ProjectDialogs';
 import { Toasts, openDialogs, openMenus } from './components/ui';
 import { ConfirmHost } from './components/ConfirmDialog';
 import { runComponentPreviews, runInspection } from './lib/inspect';
-import { restorePanelWidth } from './lib/layout';
-import { handleShortcut, projectHistory } from './Editor';
+import { restorePanelWidth, restoreViewport, restoreZoom } from './lib/layout';
+import { handleShortcut } from './Editor';
 import { forgetCopy } from './lib/clipboard';
 import { frameTextFocus, inlineEdit, stepVisitor } from './panels/Canvas';
 import { focusedSurface, forwardedKeyRuns, forwardedVisitorStep, menuHistoryOwner, type HistoryContext } from './lib/history';
@@ -129,8 +129,8 @@ function openSnapshot(snap: NonNullable<ReturnType<typeof getState>['snapshot']>
     snapshot: snap,
     runtime: snap.runtime,
     pageId: local.pageId && snap.state.pages[local.pageId] ? local.pageId : snap.state.site.homePageId,
-    viewport: local.viewport ?? 1280,
-    zoom: local.zoom ?? 'fit',
+    viewport: restoreViewport(local.viewport),
+    zoom: restoreZoom(local.zoom),
     leftTab: (local.leftTab as never) ?? 'pages',
     rightTab: (local.rightTab as never) ?? 'inspect',
     // Every project opens with its own panel widths (or the defaults), never the last project's.

@@ -1,17 +1,15 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { BookmarkPlus, Check, ChevronDown, ChevronRight, CircleAlert, Component, Copy, Ellipsis, Plus, Eye, FolderOpen, History, House, LogOut, MessageCircleQuestionMark, Monitor, MousePointer2, PanelLeft, PanelRight, Pencil, Redo2, Settings, Smartphone, Tablet, Undo2, Upload, LoaderCircle } from 'lucide-react';
 import { VIEWPORT_PRESETS } from '@shared/styles';
-import { api, editRunStatus, saveLocal, setState, toast, useStore } from '../store';
+import { api, editRunStatus, projectHistory, setState, setViewport, setZoom, toast, useStore } from '../store';
 import { useMenu, sendCommand, useWindowWidth, type MenuItem } from '../components/ui';
 import { AppMark } from '../components/AppMark';
 import { selectPage, setMode } from '../lib/actions';
 import { pageChoices } from '../lib/page-switch';
 import { saveStatusAnnouncement, useTransitionAnnouncement, type SaveStatus } from '../lib/announce';
-import { toolbarTier } from '../lib/layout';
+import { VIEWPORT_LIMITS, ZOOM_LEVELS, toolbarTier } from '../lib/layout';
 import { closeProject } from '../lib/leave';
 import { runPhase, settledState } from '../lib/savestate';
-
-const ZOOMS = [0.5, 0.75, 1, 1.25];
 
 export function Toolbar() {
   const snap = useStore((s) => s.snapshot);
@@ -80,10 +78,6 @@ export function Toolbar() {
   const state = snap.state;
   const page = pageId ? state.pages[pageId] : null;
   const preset = viewport === VIEWPORT_PRESETS.desktop ? 'desktop' : viewport === VIEWPORT_PRESETS.tablet ? 'tablet' : viewport === VIEWPORT_PRESETS.phone ? 'phone' : null;
-  const setViewport = (w: number) => {
-    setState({ viewport: w });
-    saveLocal({ viewport: w });
-  };
   // Shortcut hints name the keys of this platform.
   const keys = (k: string) => (isMac ? k : k.replace('⇧⌘', 'Ctrl+Shift+').replace('⌘', 'Ctrl+'));
   const conflicts = snap.conflicts.length > 0;
@@ -116,11 +110,11 @@ export function Toolbar() {
   // keeps focus after Enter so it can be corrected, or goes back to the current width when left.
   const validWidth = (raw: string) => {
     const v = Number(raw.trim());
-    return raw.trim() !== '' && Number.isInteger(v) && v >= 240 && v <= 2560 ? v : null;
+    return raw.trim() !== '' && Number.isInteger(v) && v >= VIEWPORT_LIMITS.min && v <= VIEWPORT_LIMITS.max ? v : null;
   };
   const zoomItems: MenuItem[] = [
-    { label: 'Fit to window', checked: zoom === 'fit', onSelect: () => setState({ zoom: 'fit' }) },
-    ...ZOOMS.map((z) => ({ label: `${Math.round(z * 100)}%`, checked: zoom === z, onSelect: () => setState({ zoom: z }) }))
+    { label: 'Fit to window', checked: zoom === 'fit', onSelect: () => setZoom('fit') },
+    ...ZOOM_LEVELS.map((z) => ({ label: `${Math.round(z * 100)}%`, checked: zoom === z, onSelect: () => setZoom(z) }))
   ];
   const openSettings = () => setState({ modal: { kind: 'settings' } });
   const commitWidth = (fromEnter: boolean, el: HTMLInputElement) => {
@@ -135,7 +129,7 @@ export function Toolbar() {
     }
     if (reported.current !== widthDraft) {
       reported.current = widthDraft;
-      toast('Enter a whole number from 240 to 2560 px.', 'error');
+      toast(`Enter a whole number from ${VIEWPORT_LIMITS.min} to ${VIEWPORT_LIMITS.max} px.`, 'error');
     }
     if (fromEnter) {
       setWidthError(true);
@@ -236,13 +230,13 @@ export function Toolbar() {
             <Smartphone />
           </button>
         </div>
-        <label className="width-field" title="Preview width, from 240 to 2560 pixels">
+        <label className="width-field" title={`Preview width, from ${VIEWPORT_LIMITS.min} to ${VIEWPORT_LIMITS.max} pixels`}>
           <input
             className="width-input"
             aria-label="Preview width in pixels"
             type="number"
-            min={240}
-            max={2560}
+            min={VIEWPORT_LIMITS.min}
+            max={VIEWPORT_LIMITS.max}
             value={widthDraft}
             aria-invalid={widthError || undefined}
             aria-describedby={widthError ? 'width-error' : undefined}
@@ -267,7 +261,7 @@ export function Toolbar() {
           </span>
           {widthError && (
             <span id="width-error" className="sr-only">
-              Enter a whole number from 240 to 2560 px.
+              Enter a whole number from {VIEWPORT_LIMITS.min} to {VIEWPORT_LIMITS.max} px.
             </span>
           )}
         </label>
@@ -299,10 +293,10 @@ export function Toolbar() {
       </div>
 
       <div className="toolbar-end">
-        <button className="icon-btn" disabled={!snap.history.canUndo} title={`${snap.history.undoLabel ? `Undo ${snap.history.undoLabel}` : 'Undo'} (${keys('⌘Z')})`} aria-label={snap.history.undoLabel ? `Undo ${snap.history.undoLabel}` : 'Undo'} onClick={() => void api.project.undo().then((r) => !r.ok && r.error && toast(r.error.message, 'error'))}>
+        <button className="icon-btn" disabled={!snap.history.canUndo} title={`${snap.history.undoLabel ? `Undo ${snap.history.undoLabel}` : 'Undo'} (${keys('⌘Z')})`} aria-label={snap.history.undoLabel ? `Undo ${snap.history.undoLabel}` : 'Undo'} onClick={() => projectHistory('undo')}>
           <Undo2 />
         </button>
-        <button className="icon-btn" disabled={!snap.history.canRedo} title={`${snap.history.redoLabel ? `Redo ${snap.history.redoLabel}` : 'Redo'} (${keys('⇧⌘Z')})`} aria-label={snap.history.redoLabel ? `Redo ${snap.history.redoLabel}` : 'Redo'} onClick={() => void api.project.redo().then((r) => !r.ok && r.error && toast(r.error.message, 'error'))}>
+        <button className="icon-btn" disabled={!snap.history.canRedo} title={`${snap.history.redoLabel ? `Redo ${snap.history.redoLabel}` : 'Redo'} (${keys('⇧⌘Z')})`} aria-label={snap.history.redoLabel ? `Redo ${snap.history.redoLabel}` : 'Redo'} onClick={() => projectHistory('redo')}>
           <Redo2 />
         </button>
         <div className="toolbar-divider" role="presentation" />

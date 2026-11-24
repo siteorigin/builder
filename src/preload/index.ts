@@ -1,5 +1,28 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { BuilderApi } from '@shared/api';
+import { editorScheme } from '@shared/appearance';
+
+// The editor's first paint is in its Appearance: its root element is marked as soon as it exists, before any style
+// is computed, with the Appearance saved now (asked for on every page load, so a reload is not left with an older
+// one). The renderer keeps it up to date from then on (lib/appearance.ts). The preload is compiled with the main
+// process code, without the DOM's types: the little it uses of the page is typed here.
+interface Page {
+  document: { documentElement: { dataset: Record<string, string | undefined> } | null };
+  matchMedia(query: string): { matches: boolean };
+  MutationObserver: new (cb: () => void) => { observe(target: unknown, opts: { childList: boolean }): void; disconnect(): void };
+}
+const page = globalThis as unknown as Page;
+const appearance: unknown = ipcRenderer.sendSync('app:appearance');
+const markAppearance = () => {
+  const root = page.document.documentElement;
+  if (!root) return false;
+  if (!root.dataset.appearance) root.dataset.appearance = editorScheme(appearance, page.matchMedia('(prefers-color-scheme: dark)').matches);
+  return true;
+};
+if (!markAppearance()) {
+  const watch = new page.MutationObserver(() => markAppearance() && watch.disconnect());
+  watch.observe(page.document, { childList: true });
+}
 
 const invoke = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(channel, ...args);
 const ALLOWED_EVENTS = new Set(['project:changed', 'project:closed', 'create:progress', 'runtime:status', 'ai:event', 'appearance', 'inspect:request', 'component-preview:request', 'menu:command', 'menu:history', 'input:key', 'lifecycle:request', 'projects:unpacking']);

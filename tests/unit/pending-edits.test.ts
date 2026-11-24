@@ -201,6 +201,122 @@ describe('settling pending edits', () => {
   });
 });
 
+describe('the save barrier', () => {
+  it('waits, after every tracked change has landed, for the barrier (the project’s queued writes) before it settles', async () => {
+    const apply = deferred();
+    trackApply(apply.promise);
+    const order: string[] = [];
+    let release!: (saved: boolean) => void;
+    const queued = new Promise<boolean>((r) => (release = r));
+    let settled = false;
+    const run = settle({
+      blur: () => undefined,
+      wait,
+      barrier: () => {
+        order.push('barrier');
+        return queued;
+      }
+    });
+    void run.then(() => (settled = true));
+    await wait(40);
+    // Not before the tracked change: an edit still on its way would enter the queue after the barrier.
+    expect(order).toEqual([]);
+    apply.resolve({ ok: true });
+    await wait(40);
+    expect(order).toEqual(['barrier']);
+    expect(settled).toBe(false);
+    release(true);
+    const { problems, finish } = await run;
+    finish();
+    expect(problems).toEqual([]);
+  });
+
+  it('skips the barrier when a change never landed in the time given', async () => {
+    trackApply(new Promise<ApplyOutcome>(() => undefined));
+    let called = 0;
+    const { problems, finish } = await settle({ blur: () => undefined, wait, saveTimeoutMs: 60, barrier: async () => (called++, true) });
+    finish();
+    expect(called).toBe(0);
+    expect(problems).toEqual(['A change is still being saved.']);
+  });
+
+  it('reports writes the barrier could not confirm, and a refusal heard while waiting for it', async () => {
+    const run = settle({
+      blur: () => undefined,
+      wait,
+      barrier: async () => {
+        await wait(30);
+        reportRefused('That anchor is already used on this page.');
+        await wait(30);
+        throw new Error('The project was closed.');
+      }
+    });
+    const { problems, finish } = await run;
+    finish();
+    expect(problems).toEqual(['That anchor is already used on this page.', 'A change could not be confirmed as saved.']);
+    const unsaved = await settle({ blur: () => undefined, wait, barrier: async () => false });
+    unsaved.finish();
+    expect(unsaved.problems).toEqual(['A change could not be confirmed as saved.']);
+  });
+
+  it('keeps its answer to itself: a Close running meanwhile is not told about Save’s confirmation', async () => {
+    const save = settle({ blur: () => undefined, wait, barrier: () => new Promise<boolean>(() => undefined), barrierTimeoutMs: 80 });
+    await wait(20);
+    const close = settle({ blur: () => undefined, wait });
+    const closed = await close;
+    const saved = await save;
+    closed.finish();
+    saved.finish();
+    expect(saved.problems).toEqual(['A change is still being saved.']);
+    expect(closed.problems).toEqual([]);
+  });
+
+  it('keeps its answer to itself even from a Close that starts once the answer is in', async () => {
+    let answered = false;
+    let close: Promise<Awaited<ReturnType<typeof settle>>> | null = null;
+    const save = settle({
+      blur: () => undefined,
+      // Close is chosen in the turn after Save heard that its writes could not be confirmed.
+      wait: async (ms) => {
+        if (answered && !close) close = settle({ blur: () => undefined, wait });
+        await wait(ms);
+      },
+      barrier: async () => {
+        answered = true;
+        return false;
+      }
+    });
+    const saved = await save;
+    const closed = await close!;
+    saved.finish();
+    closed.finish();
+    expect(saved.problems).toEqual(['A change could not be confirmed as saved.']);
+    expect(closed.problems).toEqual([]);
+  });
+
+  it('treats a barrier that throws at once like one that fails', async () => {
+    const { problems, finish } = await settle({
+      blur: () => undefined,
+      wait,
+      barrier: () => {
+        throw new Error('No project is open.');
+      }
+    });
+    finish();
+    expect(problems).toEqual(['A change could not be confirmed as saved.']);
+    expect(isSettling()).toBe(false);
+  });
+
+  it('stops waiting for writes held up past its time, without confirming them', async () => {
+    const started = Date.now();
+    const { problems, finish } = await settle({ blur: () => undefined, wait, barrier: () => new Promise<boolean>(() => undefined), barrierTimeoutMs: 80 });
+    finish();
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(problems).toEqual(['A change is still being saved.']);
+    expect(isSettling()).toBe(false);
+  });
+});
+
 describe('save status announcements', () => {
   it('clears the saved message while a change is unsaved or saving, rather than keeping it', () => {
     expect(saveStatusAnnouncement('saved', 'busy')).toBe('');

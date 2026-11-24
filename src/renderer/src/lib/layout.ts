@@ -1,6 +1,8 @@
 // How the editor's width is shared between the rail, the left panel, the canvas and the right dock, and how
 // much of the toolbar shows. Pure and DOM-free, so the unit tests compile it with the main process code.
 
+import { VIEWPORT_PRESETS } from '@shared/styles';
+
 export type PanelSide = 'left' | 'right';
 
 /** The icon rail at the window's left edge. */
@@ -70,4 +72,35 @@ export const MAC_TRAFFIC_LIGHTS = 70;
 export function toolbarTier(windowWidth: number, mac: boolean): ToolbarTier {
   const w = windowWidth + (mac ? 0 : MAC_TRAFFIC_LIGHTS);
   return w >= TOOLBAR_FULL_MIN ? 'full' : w >= TOOLBAR_COMPACT_MIN ? 'compact' : 'overflow';
+}
+
+/** The widths the preview can be set to, by the width field and the frame's resize handles alike. */
+export const VIEWPORT_LIMITS = { min: 240, max: 2560 };
+export const DEFAULT_VIEWPORT: number = VIEWPORT_PRESETS.desktop;
+/** The zoom levels the Zoom menu offers besides Fit. */
+export const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25] as const;
+export type Zoom = number | 'fit';
+
+export const clampViewport = (w: number) => Math.round(Math.max(VIEWPORT_LIMITS.min, Math.min(VIEWPORT_LIMITS.max, w)));
+
+/** A saved preview width: a whole number within the limits, or the default when it is anything else. */
+export const restoreViewport = (saved: unknown) =>
+  typeof saved === 'number' && Number.isInteger(saved) && saved >= VIEWPORT_LIMITS.min && saved <= VIEWPORT_LIMITS.max ? saved : DEFAULT_VIEWPORT;
+
+/** A saved zoom: Fit or one of the menu's levels; Fit when it is anything else (the canvas divides by it). */
+export const restoreZoom = (saved: unknown): Zoom => (typeof saved === 'number' && (ZOOM_LEVELS as readonly number[]).includes(saved) ? saved : 'fit');
+
+/** An arrow key on a frame handle changes the preview width this much, the step of the panel splitters. */
+export const FRAME_KEY_STEP = 16;
+
+/**
+ * The preview width after an arrow key on one of the frame's resize handles: moving the right handle right
+ * widens the frame and moving the left handle right narrows it, as dragging them does. Null for any other key,
+ * and when the width is already at the limit the key pushes against.
+ */
+export function frameKeyResize(side: PanelSide, key: string, width: number): number | null {
+  if (key !== 'ArrowLeft' && key !== 'ArrowRight') return null;
+  const outward = (key === 'ArrowRight') === (side === 'right') ? 1 : -1;
+  const next = clampViewport(width + FRAME_KEY_STEP * outward);
+  return next === width ? null : next;
 }

@@ -166,6 +166,74 @@ describe('workspace state per project', () => {
     expect(onDisk(a).chatDrafts).toEqual({});
   });
 
+  it('restores the preview width and zoom chosen in a project when it reopens', async () => {
+    const { c, parent } = setup();
+    const a = await create(c, parent, 'Alpha');
+    c.saveLocalState({ viewport: 2400 }, opening(c));
+    c.saveLocalState({ zoom: 0.75 }, opening(c));
+    await c.close();
+    expect(await c.open(a)).toEqual({ ok: true });
+    expect(c.snapshot()!.localState).toMatchObject({ viewport: 2400, zoom: 0.75 });
+  });
+
+  it('a flush resolves only once the writes queued before it are on disk, and only for the opening it was asked in', async () => {
+    const { c, parent } = setup();
+    const a = await create(c, parent, 'Alpha');
+    const first = opening(c);
+    // Hold the project's queue, as a slow write would, with an edit waiting behind it.
+    let release!: () => void;
+    const entered = new Promise<void>((started) => {
+      void c.session!.exclusive(() => {
+        started();
+        return new Promise<void>((r) => (release = r));
+      });
+    });
+    await entered;
+    try {
+      const edit = c.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename site' });
+      // The edit joins the queue once the controller has read the settings (Save waits for the edit itself first).
+      await new Promise((r) => setTimeout(r, 30));
+      let flushed = false;
+      const flush = c.flush(first).then((saved) => {
+        flushed = true;
+        // The edit is written by the time the flush says so.
+        return { saved, site: JSON.parse(readFileSync(join(a, 'siteorigin', 'site.json'), 'utf8')) };
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(flushed).toBe(false);
+      release();
+      expect(await flush).toEqual({ saved: true, site: expect.objectContaining({ name: 'Renamed' }) });
+      expect((await edit).ok).toBe(true);
+    } finally {
+      release();
+    }
+    // Nothing is confirmed while the AI is still making changes: Stop would take them back.
+    c.aiBusy = () => true;
+    expect(await c.flush(first)).toBe(false);
+    c.aiBusy = () => false;
+    // Nor for an opening that starts closing while the flush waits.
+    let reopen!: () => void;
+    await new Promise<void>((started) => {
+      void c.session!.exclusive(() => {
+        started();
+        return new Promise<void>((r) => (reopen = r));
+      });
+    });
+    const closingFlush = c.flush(first);
+    const closing = c.close();
+    reopen();
+    expect(await closingFlush).toBe(false);
+    await closing;
+    // A Save from an earlier opening of the same project, or with none open, confirms nothing.
+    expect(await c.open(a)).toEqual({ ok: true });
+    await c.close();
+    expect(await c.flush(first)).toBe(false);
+    expect(await c.flush()).toBe(false);
+    expect(await c.open(a)).toEqual({ ok: true });
+    expect(await c.flush(first)).toBe(false);
+    expect(await c.flush(opening(c))).toBe(true);
+  });
+
   it('an Undo offered in an earlier opening of a project never acts on a later one', async () => {
     const { c, parent } = setup();
     const a = await create(c, parent, 'Alpha');

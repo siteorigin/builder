@@ -6,7 +6,7 @@ import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
 import type { ElementRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
-import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, toast, useStore, type Rect } from '../store';
+import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
@@ -21,6 +21,7 @@ import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui'
 import { AppMark } from '../components/AppMark';
 import { runPhase } from '../lib/savestate';
 import { focusInspector } from '../lib/inspector-focus';
+import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '../lib/layout';
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
 import { isShellPart, showsPart } from '@shared/page-shell';
@@ -100,6 +101,8 @@ export function Canvas() {
     setJourneyState(h);
   };
   const [dragging, setDragging] = useState(false);
+  /** A frame resize in progress: the pointer, where it started, and the opening its width belongs to. */
+  const resizeDrag = useRef<{ el: HTMLDivElement; pointer: number; x: number; from: number; zoom: number; opening: string | undefined; changed: boolean } | null>(null);
   const menu = useMenu();
   /** The inline edit the editor started; the preview cannot commit text on its own. */
   /** Inline text edits in progress, with the project and the AI's activity when each began. */
@@ -789,26 +792,68 @@ export function Canvas() {
     window.addEventListener('pointerup', up);
   }
 
-  // Drag-to-resize viewport
-  const startResize = (e: React.PointerEvent, side: 'left' | 'right') => {
+  // Drag-to-resize viewport. The frame stays centered, so both edges follow the pointer, within the widths the
+  // toolbar's width field accepts. The handle captures the pointer (as the panel splitters do), so the drag always
+  // hears its release; the width is remembered once, for the opening it was made in. One drag at a time: a second
+  // pointer, or one pressed during a block reorder, is ignored.
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || resizeDrag.current || dragging) return;
     e.preventDefault();
-    const startX = e.clientX;
-    const start = getState().viewport;
-    const z = zoom;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    resizeDrag.current = { el: e.currentTarget, pointer: e.pointerId, x: e.clientX, from: getState().viewport, zoom, opening: getState().snapshot?.workspaceKey, changed: false };
     setDragging(true);
-    const move = (ev: PointerEvent) => {
-      const d = ((ev.clientX - startX) / z) * 2 * (side === 'right' ? 1 : -1);
-      setState({ viewport: Math.round(Math.max(320, Math.min(1920, start + d))) });
-    };
-    const up = () => {
-      setDragging(false);
-      saveLocal({ viewport: getState().viewport });
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
   };
+  const moveResize = (e: React.PointerEvent<HTMLDivElement>, side: PanelSide) => {
+    const d = resizeDrag.current;
+    if (d?.pointer !== e.pointerId) return;
+    // Another project opened under the drag: it is not this one's to resize.
+    if (getState().snapshot?.workspaceKey !== d.opening) return endResize();
+    const w = clampViewport(d.from + ((e.clientX - d.x) / d.zoom) * 2 * (side === 'right' ? 1 : -1));
+    if (w === getState().viewport) return;
+    setState({ viewport: w });
+    d.changed = true;
+  };
+  /** End the resize in progress, if any (only `pointer`'s, when given): on release, or when its handle goes away. */
+  const endResize = (pointer?: number) => {
+    const d = resizeDrag.current;
+    if (!d || (pointer !== undefined && d.pointer !== pointer)) return;
+    resizeDrag.current = null;
+    setDragging(false);
+    if (d.el.isConnected && d.el.hasPointerCapture(d.pointer)) d.el.releasePointerCapture(d.pointer);
+    if (d.changed && getState().snapshot?.workspaceKey === d.opening) saveLocal({ viewport: getState().viewport });
+  };
+  // The handles go with the frame (the preview restarting, the project closing) and the canvas: a drag they held
+  // ends where it is, so the frame never stays unclickable behind a drag nobody can release.
+  const frameShown = !!(url && initialSrc);
+  useEffect(() => {
+    if (!frameShown) endResize();
+  }, [frameShown]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => endResize(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const frameHandle = (side: PanelSide) => (
+    <div
+      className={`frame-handle ${side}${dragging ? ' dragging' : ''}`}
+      tabIndex={0}
+      role="separator"
+      aria-orientation="vertical"
+      aria-valuenow={viewport}
+      aria-valuemin={VIEWPORT_LIMITS.min}
+      aria-valuemax={VIEWPORT_LIMITS.max}
+      aria-valuetext={`${viewport} pixels`}
+      aria-label={`Preview width, ${side} edge`}
+      title="Drag to resize, or use the arrow keys"
+      onPointerDown={startResize}
+      onPointerMove={(e) => moveResize(e, side)}
+      onPointerUp={(e) => endResize(e.pointerId)}
+      onPointerCancel={(e) => endResize(e.pointerId)}
+      onLostPointerCapture={(e) => endResize(e.pointerId)}
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const w = frameKeyResize(side, e.key, getState().viewport);
+        if (w !== null) setViewport(w);
+      }}
+    />
+  );
 
   if (!snapshot) return <div className="canvas" />;
 
@@ -1083,8 +1128,8 @@ export function Canvas() {
                 />
               )}
             </div>
-            <div className={`frame-handle left${dragging ? ' dragging' : ''}`} onPointerDown={(e) => startResize(e, 'left')} title="Drag to resize" />
-            <div className={`frame-handle right${dragging ? ' dragging' : ''}`} onPointerDown={(e) => startResize(e, 'right')} title="Drag to resize" />
+            {frameHandle('left')}
+            {frameHandle('right')}
           </div>
         )}
       </div>

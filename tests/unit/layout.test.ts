@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CANVAS_MIN, PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, fitPanels, panelMax, resizePanel, restorePanelWidth, toolbarTier } from '../../src/renderer/src/lib/layout';
+import { CANVAS_MIN, DEFAULT_VIEWPORT, FRAME_KEY_STEP, PANEL_DEFAULTS, PANEL_LIMITS, RAIL_WIDTH, VIEWPORT_LIMITS, ZOOM_LEVELS, clampViewport, fitPanels, frameKeyResize, panelMax, resizePanel, restorePanelWidth, restoreViewport, restoreZoom, toolbarTier } from '../../src/renderer/src/lib/layout';
 
 const canvas = (win: number, w: { left: number; right: number }) => win - RAIL_WIDTH - w.left - w.right;
 
@@ -154,5 +154,49 @@ describe('toolbar tiers', () => {
     expect(toolbarTier(1100, false)).toBe('compact');
     expect(toolbarTier(1010, false)).toBe('compact');
     expect(toolbarTier(1009, false)).toBe('overflow');
+  });
+});
+
+describe('preview width and zoom', () => {
+  it('gives the frame handles the width field’s range, so a drag moves on from any width the field allows', () => {
+    expect(VIEWPORT_LIMITS).toEqual({ min: 240, max: 2560 });
+    // The reported jumps: a few pixels of drag from 2400 or 280 snapped the frame to 1920 or 320.
+    expect(clampViewport(2400 + 3)).toBe(2403);
+    expect(clampViewport(280 - 3)).toBe(277);
+    expect(clampViewport(2600)).toBe(2560);
+    expect(clampViewport(100)).toBe(240);
+    expect(clampViewport(1280.4)).toBe(1280);
+    expect(clampViewport(1280.6)).toBe(1281);
+    expect(clampViewport(1280.5)).toBe(1281);
+  });
+
+  it('resizes the frame from the keyboard, each handle in the direction it is dragged', () => {
+    // Each press changes the width by the splitters' 16px step.
+    expect(FRAME_KEY_STEP).toBe(16);
+    expect(frameKeyResize('right', 'ArrowRight', 1280)).toBe(1296);
+    expect(frameKeyResize('right', 'ArrowLeft', 1280)).toBe(1264);
+    expect(frameKeyResize('left', 'ArrowLeft', 1280)).toBe(1296);
+    expect(frameKeyResize('left', 'ArrowRight', 1280)).toBe(1264);
+    // Up to each limit, then no further.
+    expect(frameKeyResize('right', 'ArrowRight', 2550)).toBe(2560);
+    expect(frameKeyResize('right', 'ArrowRight', 2560)).toBeNull();
+    expect(frameKeyResize('right', 'ArrowLeft', 245)).toBe(240);
+    expect(frameKeyResize('left', 'ArrowLeft', 2550)).toBe(2560);
+    expect(frameKeyResize('left', 'ArrowRight', 245)).toBe(240);
+    expect(frameKeyResize('left', 'ArrowRight', 240)).toBeNull();
+    expect(frameKeyResize('right', 'ArrowUp', 1280)).toBeNull();
+  });
+
+  it('restores a saved width and zoom only when the editor could have chosen them', () => {
+    expect(restoreViewport(2400)).toBe(2400);
+    expect(restoreViewport(240)).toBe(240);
+    expect(restoreViewport(2560)).toBe(2560);
+    for (const bad of [undefined, null, '834', 239, 2561, 834.5, Number.NaN]) expect(restoreViewport(bad)).toBe(DEFAULT_VIEWPORT);
+    expect(DEFAULT_VIEWPORT).toBe(1280);
+    expect(restoreZoom('fit')).toBe('fit');
+    expect(ZOOM_LEVELS).toEqual([0.5, 0.75, 1, 1.25]);
+    for (const z of [0.5, 0.75, 1, 1.25]) expect(restoreZoom(z)).toBe(z);
+    // The canvas divides by the zoom: nothing else is restored, not even a level between the menu's.
+    for (const bad of [undefined, 0, -1, 0.6, 1.5, 3, '0.5', Number.NaN]) expect(restoreZoom(bad)).toBe('fit');
   });
 });

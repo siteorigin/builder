@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, Component, FileText, Images, Layers, Plus, Sparkles, SlidersHorizontal, Palette } from 'lucide-react';
 import { instancesOf } from '@engine/tree';
 import { openDialogs, openMenus, Tabs, useWindowWidth } from './components/ui';
-import { api, applyOps, errorText, getState, saveLocal, setState, toast, useStore } from './store';
+import { api, applyOps, errorText, getState, projectHistory, saveLocal, setState, toast, useStore } from './store';
 import { Toolbar } from './panels/Toolbar';
 import { Canvas, stepVisitor } from './panels/Canvas';
 import { HealthModal, StatusBar } from './panels/StatusBar';
@@ -57,11 +57,6 @@ const textSelected = () => {
   const sel = window.getSelection();
   return !!sel && !sel.isCollapsed;
 };
-
-/** Undo or redo the project, from a shortcut or the Edit menu. */
-export function projectHistory(action: 'undo' | 'redo') {
-  void (action === 'redo' ? api.project.redo() : api.project.undo()).then((r) => r && !r.ok && r.error && toast(r.error.message, 'error'));
-}
 
 /** Global editor shortcuts. Also called for keys forwarded from the preview frame. */
 export function handleShortcut(key: string, mod: boolean, shift: boolean): boolean {

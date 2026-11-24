@@ -272,6 +272,33 @@ export function saveLocal(state: LocalWorkspaceState) {
   if (key) void api.project.saveLocalState(state, key);
 }
 
+/** Show the preview at `width` and remember it for this project, wherever the width was chosen. */
+export function setViewport(width: number) {
+  setState({ viewport: width });
+  saveLocal({ viewport: width });
+}
+
+/** Follow an Undo or Redo like an edit, so Save (and leaving) waits for it and hears if it failed. One refused
+ *  before writing anything (nothing left to undo) is no failure. */
+export function trackHistory<T extends ApplyResult | null | undefined>(run: Promise<T>): Promise<T> {
+  trackApply(run.then((r) => ({ ok: !r || r.ok || r.error?.code === 'INVALID_ARGUMENT', message: r?.error?.message })));
+  return run;
+}
+
+/** Undo or redo the project, from any button, shortcut or menu. A failure is said at once. */
+export function projectHistory(action: 'undo' | 'redo') {
+  void trackHistory(action === 'redo' ? api.project.redo() : api.project.undo()).then(
+    (r) => r && !r.ok && r.error && toast(r.error.message, 'error'),
+    (e: unknown) => toast(errorText(e), 'error')
+  );
+}
+
+/** Zoom the preview and remember it for this project. */
+export function setZoom(zoom: number | 'fit') {
+  setState({ zoom });
+  saveLocal({ zoom });
+}
+
 /** The unsent message of the open conversation. */
 export const selectChatDraft = (s: State) => draftFor(s.chatDrafts, s.conversation?.id);
 
@@ -712,7 +739,7 @@ export function undoAction(r: { entryId?: string; revision: number; workspaceKey
     label: 'Undo',
     undoes: { entryId, workspaceKey, revision: r.revision },
     run: () =>
-      void api.project.undoEntry(entryId, workspaceKey).then(
+      void trackHistory(api.project.undoEntry(entryId, workspaceKey)).then(
         (res) => {
           if (!res.ok) toast(res.error?.message ?? 'That change could not be undone.', 'error', res.error?.code === 'CONFLICT' ? history : undefined);
         },

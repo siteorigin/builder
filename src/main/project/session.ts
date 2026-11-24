@@ -1684,6 +1684,11 @@ export class ProjectSession extends EventEmitter {
   // Commands
   // -------------------------------------------------------------------------
 
+  /** A save did not finish (see persist): nothing more is written until the project is reopened. */
+  get saveUnfinished(): boolean {
+    return this.unsettled;
+  }
+
   /** Run `fn` while holding the writer lock, so no edit or regeneration lands while it reads the project. */
   exclusive<T>(fn: () => Promise<T>): Promise<T> {
     return this.serialize(fn, false);

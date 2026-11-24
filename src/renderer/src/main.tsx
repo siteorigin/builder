@@ -3,7 +3,10 @@ import './styles.css';
 import { App } from './App';
 import { registerPacks } from '@catalogue/index';
 import { api, setState } from './store';
+import { followAppearance } from './lib/appearance';
 
+// For the app's lifetime: the editor follows its Appearance from before anything renders.
+followAppearance();
 const root = createRoot(document.getElementById('root')!);
 // The theme packs main loaded at startup are registered before anything reads the catalogue.
 api.app

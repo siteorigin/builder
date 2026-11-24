@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useId, useMemo, useRef, useState, type InputHTMLAttributes } from 'react';
 import { ArrowRight, ChevronRight, CircleAlert, CircleCheck, Link2, Lock, PanelBottom, PanelRightOpen, PanelTop, Replace, Undo2 } from 'lucide-react';
 import { Modal, openSection } from '../components/ui';
-import { api, commitOps, getState, setState, toast, undoAction, undoAvailable, useStore } from '../store';
+import { api, commitOps, getState, setState, toast, trackHistory, undoAction, undoAvailable, useStore } from '../store';
 import { selectPage } from '../lib/actions';
 import { contentFields, contentTarget, findContent, planReplace, sampleContactMatches, type ContentChange, type ContentField, type ContentMatch } from '../lib/find-content';
 import type { SampleContactKind } from '@shared/sample-contact';
@@ -383,7 +383,7 @@ export function FindReplaceModal({ initial, sample: forSample }: { initial?: str
     setFinished({ ...finished, phase: 'undoing' });
     let ok = false;
     try {
-      ok = (await api.project.undoEntry(entryId, finished.result.workspaceKey)).ok;
+      ok = (await trackHistory(api.project.undoEntry(entryId, finished.result.workspaceKey))).ok;
     } catch {
       ok = false;
     }
