@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { CircleAlert, CircleCheck, Info, KeyRound, Monitor, Moon, Server, Settings, Shield, Sun, Trash2 } from 'lucide-react';
+import { TriangleAlert, Check, CircleAlert, CircleDashed, Cloud, ExternalLink, History, Info, KeyRound, Laptop, Monitor, Moon, Server, Settings, Shield, SlidersHorizontal, Sparkles, Sun, Trash2 } from 'lucide-react';
 import type { AppSettings, SettingsPatch, ProviderId } from '@shared/api';
 import { api, setState, useStore, confirmDialog } from '../store';
-import { Field, Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
-import { LocalModelSettings, type LocalServerStatus } from './LocalModelSettings';
-import { localKeyProblem } from '@shared/local';
+import { Modal, Segmented, Spinner, SwitchRow, Tabs } from '../components/ui';
+import { InlineRow, LocalModelSettings, StackedRow, type LocalServerStatus } from './LocalModelSettings';
+import { checkLocalBaseURL, localKeyProblem } from '@shared/local';
 
 /** A connection test's outcome, shown only while what it tested is still what is on screen. */
 type TestResult = { signature: string; provider: ProviderId; edits: number; ok: boolean; message: string; draft: boolean };
 type KeyNotice = { provider: ProviderId; kind: 'saved' | 'removed' | 'failed'; message?: string };
-type ConnectionView = { tone: 'neutral' | 'ready' | 'problem'; icon: ReactNode; title: string; detail?: string };
+type ConnectionView = { tone: 'neutral' | 'ready' | 'problem' | 'busy'; icon: ReactNode; title: string; detail?: string };
 
 const errorText = (e: unknown) => (e instanceof Error && e.message ? e.message : 'Something went wrong.');
 const withArticle = (word: string) => `${/^[aeiou]/i.test(word) ? 'an' : 'a'} ${word}`;
@@ -22,23 +22,6 @@ const hostOf = (url: string) => {
 };
 const focusById = (id: string) => requestAnimationFrame(() => document.getElementById(id)?.focus());
 
-/** A single choice with a visible label, exposed as one named radio group. */
-function ChoiceField({ id, label, hint, children }: { id: string; label: string; hint?: string; children: ReactNode }) {
-  return (
-    <div className="field">
-      <div className="field-label" id={`${id}-label`}>
-        {label}
-      </div>
-      {children}
-      {hint && (
-        <div className="field-hint" id={`${id}-note`}>
-          {hint}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function SettingsModal() {
   const settings = useStore((s) => s.settings);
   const providers = useStore((s) => s.providers);
@@ -46,10 +29,29 @@ export function SettingsModal() {
   const [tab, setTab] = useState<string>(modal?.kind === 'settings' && modal.tab ? modal.tab : 'general');
   const [keys, setKeys] = useState<Record<ProviderId, string>>({ openai: '', anthropic: '', local: '' });
   const [testing, setTesting] = useState<ProviderId | null>(null);
+  // What the running test was started with, so editing the key or model mid-test shows the new draft as untested.
+  const [testingWith, setTestingWith] = useState('');
+  // Whether the local server is unreachable or empty, which a typed server key cannot fix.
+  const [localBlocked, setLocalBlocked] = useState(false);
   const [test, setTest] = useState<TestResult | null>(null);
   const [keyRevision, setKeyRevision] = useState(0);
-  // Counts edits to a typed key, so a test result never outlives the text it tested (the key itself is not kept).
-  const [keyEdits, setKeyEdits] = useState(0);
+  // Counts edits to each provider's typed key, so a test result never outlives the text it tested (the key itself
+  // is not kept), and the edit count at which each provider's typed key last failed a test.
+  const [keyEdits, setKeyEdits] = useState<Record<ProviderId, number>>({ openai: 0, anthropic: 0, local: 0 });
+  const [failedDrafts, setFailedDrafts] = useState<Partial<Record<ProviderId, number>>>({});
+  // Bumped when the provider or model changes, so a result is never shown again for a setup it no longer describes
+  // and a test still running for the old one is dropped when it answers.
+  const testRun = useRef(0);
+  // For a local server, the address and its saved key are part of the setup too.
+  const testedSetup = [settings?.ai.provider ?? 'openai', settings?.ai.models[settings?.ai.provider ?? 'openai'] ?? '', settings?.ai.provider === 'local' ? `${settings.ai.local.baseURL}\n${keyRevision}` : ''].join('\n');
+  const lastSetup = useRef(testedSetup);
+  useEffect(() => {
+    if (lastSetup.current === testedSetup) return;
+    lastSetup.current = testedSetup;
+    testRun.current += 1;
+    setTest(null);
+    setTesting(null);
+  }, [testedSetup]);
   const [keyNotice, setKeyNotice] = useState<KeyNotice | null>(null);
   // One key write at a time, so a second press cannot race the first or clear a newer draft.
   const [keyBusy, setKeyBusy] = useState(false);
@@ -69,7 +71,11 @@ export function SettingsModal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded]);
   if (!settings) return null;
-  const unsavedProviders = (Object.keys(keys) as ProviderId[]).filter((p) => keys[p].trim());
+  // A cloud key typed for a local server is refused anyway, so it is never offered for saving on close.
+  const unsavedProviders = (Object.keys(keys) as ProviderId[]).filter((p) => keys[p].trim() && !(p === 'local' && localKeyProblem(keys.local)));
+  const nameOf = (p: ProviderId) => providers.find((x) => x.id === p)?.label ?? p;
+  // Typed keys that failed their last test, for whichever provider they were typed under.
+  const failedUnsaved = unsavedProviders.filter((p) => failedDrafts[p] === keyEdits[p]);
   // A pasted key is never dropped silently: closing with one typed asks first. Save keeps every typed key
   // (for each provider), Discard drops them, and dismissing the question keeps Settings open.
   const close = () => {
@@ -84,8 +90,10 @@ export function SettingsModal() {
           title: unsavedProviders.length > 1 ? 'Save the API keys you entered?' : 'Save the API key you entered?',
           body: `You typed ${unsavedProviders.length > 1 ? 'keys' : 'a key'} for ${unsavedProviders.map((p) => providers.find((x) => x.id === p)?.label ?? p).join(' and ')} but didn’t save ${unsavedProviders.length > 1 ? 'them' : 'it'}.`,
           // The overwrite is named from the providers whose saved key would be replaced, not from how many were typed.
-          details: ((replaced: string[]) =>
-            replaced.length
+          details: ((replaced: string[]) => [
+            // A key that just failed its test is still the user's to keep, but never without saying so.
+            ...(failedUnsaved.length ? [{ kind: 'risk' as const, text: `The ${failedUnsaved.map(nameOf).join(' and ')} ${failedUnsaved.length > 1 ? 'keys' : 'key'} you typed failed ${failedUnsaved.length > 1 ? 'their' : 'its'} connection test, so the assistant may not work with ${failedUnsaved.length > 1 ? 'them' : 'it'}.` }] : []),
+            ...(replaced.length
               ? [
                   { kind: 'risk' as const, text: `Save and close replaces the ${replaced.length > 1 ? 'keys' : 'key'} saved now for ${replaced.join(' and ')}. Using ${replaced.length > 1 ? 'an old one' : 'the old one'} again takes a copy of it.` },
                   { kind: 'keep' as const, text: 'Discard closes Settings and drops what you typed. Saved keys stay as they are.' }
@@ -93,7 +101,8 @@ export function SettingsModal() {
               : [
                   { kind: 'note' as const, text: `Save and close keeps ${unsavedProviders.length > 1 ? 'them' : 'it'} on this computer.` },
                   { kind: 'lose' as const, text: 'Discard closes Settings and drops what you typed.' }
-                ])(unsavedProviders.filter((p) => providers.find((x) => x.id === p)?.source === 'stored').map((p) => providers.find((x) => x.id === p)?.label ?? p)),
+                ])
+          ])(unsavedProviders.filter((p) => providers.find((x) => x.id === p)?.source === 'stored').map((p) => providers.find((x) => x.id === p)?.label ?? p)),
           confirmLabel: 'Save and close',
           cancelLabel: 'Discard',
           stayLabel: 'Keep editing',
@@ -101,19 +110,28 @@ export function SettingsModal() {
         }).then(async (ok) => {
           if (ok === null) return;
           if (ok) {
-            for (const p of unsavedProviders) {
-              const submitted = keys[p].trim();
-              try {
-                setState({ providers: await api.ai.setKey(p, submitted) });
-                setKeys((k) => (k[p].trim() === submitted ? { ...k, [p]: '' } : k));
-              } catch (e) {
-                // Settings stays open on the key that failed, still typed, and says why.
-                setKeyNotice({ provider: p, kind: 'failed', message: errorText(e) });
-                setTab('ai');
-                if (p !== provider) await update({ ai: { provider: p } });
-                focusById('settings-api-key');
-                return;
+            // The same one-write-at-a-time guard as Save key, held until every typed key is saved.
+            if (keyWrite.current) return;
+            keyWrite.current = true;
+            setKeyBusy(true);
+            try {
+              for (const p of unsavedProviders) {
+                const submitted = keys[p].trim();
+                try {
+                  setState({ providers: await api.ai.setKey(p, submitted) });
+                  setKeys((k) => (k[p].trim() === submitted ? { ...k, [p]: '' } : k));
+                } catch (e) {
+                  // Settings stays open on the key that failed, still typed, and says why.
+                  setKeyNotice({ provider: p, kind: 'failed', message: errorText(e) });
+                  setTab('ai');
+                  if (p !== provider) await update({ ai: { provider: p } });
+                  focusById('settings-api-key');
+                  return;
+                }
               }
+            } finally {
+              keyWrite.current = false;
+              setKeyBusy(false);
             }
           }
           setState({ modal: null });
@@ -145,8 +163,8 @@ export function SettingsModal() {
   const saveKey = async () => {
     if (keyWrite.current) return;
     const submitted = keys[provider].trim();
-    // A test that passed on exactly this typed key still holds once it is saved.
-    const passed = test?.ok && test.draft && test.signature === signatureFor() ? test : null;
+    // A test of exactly this typed key, passed or failed, still describes it once it is saved.
+    const tested = test?.draft && test.signature === signatureFor() ? test : null;
     keyWrite.current = true;
     setKeyBusy(true);
     try {
@@ -163,9 +181,16 @@ export function SettingsModal() {
     setReplacing({ ...replacing, [provider]: false });
     setKeyRevision((n) => n + 1);
     setKeyNotice({ provider, kind: 'saved' });
-    if (passed) setTest({ ...passed, draft: false, signature: signatureFor(undefined, 0, 'saved', keyRevision + 1) });
+    if (tested) setTest({ ...tested, draft: false, signature: signatureFor(undefined, 0, 'saved', keyRevision + 1) });
     void update({ ai: { setupAcknowledged: true } });
-    focusById('settings-key-replace');
+    // The field and Save key are gone, so focus moves on to the next step: testing the key, or (when it is already
+    // tested) the saved key's own row. Focus the user has already moved elsewhere stays where it is.
+    requestAnimationFrame(() => {
+      const at = document.activeElement;
+      if (at && at !== document.body && at.isConnected) return;
+      // A local save starts a new check, so its status action can be busy: the saved key's row is next in line.
+      ((tested ? null : document.querySelector<HTMLElement>('.settings-status .btn:not([aria-disabled])')) ?? document.getElementById('settings-key-replace'))?.focus();
+    });
   };
   const removeKey = async () => {
     if (keyWrite.current) return;
@@ -208,26 +233,47 @@ export function SettingsModal() {
   const testedModel = custom && !isLocal ? modelDraft.trim() : model;
   const modelLabelFor = (id: string) => status?.models.find((m) => m.id === id)?.label ?? id;
   const modelLabel = modelLabelFor(model);
-  const signatureFor = (server?: LocalServerStatus, revision = server?.revision ?? 0, keyState: string | number = unsavedKey ? keyEdits : 'saved', savedKey = keyRevision) =>
+  const signatureFor = (server?: LocalServerStatus, revision = server?.revision ?? 0, keyState: string | number = unsavedKey ? keyEdits[provider] : 'saved', savedKey = keyRevision) =>
     [provider, server?.url ?? '', testedModel, revision, savedKey, keyState].join('\n');
+
+  const testingNow = testing === provider && testingWith === [provider, keyEdits[provider], testedModel, keyRevision].join('\n');
+  // A provider's own words for a key it refused outright, as opposed to a network or model failure.
+  const keyRejected = (message: string) => /incorrect api key|invalid[ _-](x-)?api[ _-]key|invalid authentication|unauthori[sz]ed|\b401\b|rejected the api key/i.test(message);
 
   const runTest = async (server?: LocalServerStatus) => {
     setTesting(provider);
+    setTestingWith([provider, keyEdits[provider], testedModel, keyRevision].join('\n'));
     setKeyNotice(null);
+    const run = ++testRun.current;
     const draft = unsavedKey;
-    const outcome = { provider, edits: keyEdits, draft };
+    const edits = keyEdits[provider];
+    const outcome = { provider, edits, draft };
+    // A result for a setup that changed while it ran describes nothing on screen.
+    const settle = (ok: boolean, message: string) => {
+      if (run !== testRun.current) return;
+      setTest({ ...outcome, signature, ok, message });
+      if (draft) setFailedDrafts((f) => ({ ...f, [provider]: ok ? undefined : edits }));
+    };
     let signature = signatureFor(server);
+    // A key this app refuses is never sent anywhere; the test says why instead.
+    if (keyProblem) {
+      settle(false, keyProblem);
+      setTesting(null);
+      return;
+    }
     try {
       // A local test reads the server's list first, so its result and the model menu agree. A typed key skips
       // that: the list is fetched with the saved key, which may be the one the server just rejected.
       if (server && !draft) signature = signatureFor(server, await server.refresh());
+      // The setup changed while the list was read: nothing on screen is waiting for this test any more.
+      if (run !== testRun.current) return;
       // What is on screen is what gets tested: a typed but unsaved key, and a typed model ID.
       const r = await api.ai.testProvider(provider, keys[provider].trim() || undefined, custom && !isLocal ? modelDraft.trim() || undefined : undefined);
-      setTest({ ...outcome, signature, ok: r.ok, message: r.message });
+      settle(r.ok, r.message);
     } catch (e) {
-      setTest({ ...outcome, signature, ok: false, message: errorText(e) });
+      settle(false, errorText(e));
     } finally {
-      setTesting(null);
+      if (run === testRun.current) setTesting(null);
     }
   };
 
@@ -239,49 +285,81 @@ export function SettingsModal() {
   const connectionView = (server?: LocalServerStatus): ConnectionView => {
     const notice = keyNotice?.provider === provider ? keyNotice : null;
     const result = test?.signature === signatureFor(server) ? test : null;
-    const busy = (title: string, detail?: string): ConnectionView => ({ tone: 'neutral', icon: <Spinner decorative />, title, detail });
+    const busy = (title: string, detail?: string): ConnectionView => ({ tone: 'busy', icon: <Spinner decorative />, title, detail });
     const problem = (title: string, detail?: string): ConnectionView => ({ tone: 'problem', icon: <CircleAlert />, title, detail });
-    const passed = (title: string, detail?: string): ConnectionView => ({ tone: 'ready', icon: <CircleCheck />, title, detail });
+    const passed = (title: string, detail?: string): ConnectionView => ({ tone: 'ready', icon: <Check />, title, detail });
     const neutral = (title: string, detail?: string, icon: ReactNode = <Info />): ConnectionView => ({ tone: 'neutral', icon, title, detail });
+    const untested = (detail: string) => neutral('Not tested yet', detail, <CircleDashed />);
 
-    if (testing === provider) return busy('Testing the connection…', isLocal ? server?.url : modelLabelFor(testedModel));
+    // A long custom ID is in its own field below; the status names it in words.
+    const testedName = status?.models.some((m) => m.id === testedModel) ? modelLabelFor(testedModel) : 'Your custom model';
+    if (testingNow) return busy('Testing the connection…', isLocal ? server?.url : testedName);
     if (notice?.kind === 'failed') return problem('Could not update the key', notice.message);
     if (server?.phase === 'invalid') return neutral(server.url ? 'Still using the saved server' : 'No server in use yet', server.url || 'Enter a valid address to connect.');
-    if (server?.phase === 'pending') return neutral('New address not applied yet', server.url ? `Still using ${server.url}.` : 'Apply it to connect.');
+    if (server?.phase === 'pending')
+      return neutral(
+        server.proposedHost ? `Switch to ${server.proposedHost}?` : 'New address not applied yet',
+        server.proposedHost ? `Current server: ${server.url ? hostOf(server.url) : 'none'}. Using the new server sends your requests and page content there.` : server.url ? `Still using ${server.url}.` : 'Apply it to connect.',
+        server.proposedHost ? <TriangleAlert /> : undefined
+      );
     if (server?.phase === 'checking') return busy('Checking the server…', server.url);
     if (replacing[provider] && !unsavedKey && !server) return neutral(`Replacing your ${label} key`, `Chat keeps using ${currentKey} until you save a new one.`, <KeyRound />);
-    if (result && !result.ok) return problem('Connection failed', result.draft ? `${result.message} This key is not saved yet.` : result.message);
-    if (result?.ok && result.draft) return passed('This key works', 'Press Save key to use it in chat.');
-    if (result?.ok) return passed('Connection test passed', server ? result.message.replace(/^Connected\.\s*/, '') : `${modelLabelFor(testedModel)} responded.`);
+    // What happened, in the provider's words; what to do about the key is said at the key.
+    if (result && !result.ok) return problem(result.draft ? (keyRejected(result.message) ? `${isLocal ? 'The server' : label} didn’t accept this key` : 'This key didn’t pass the test') : 'Connection failed', result.message);
+    if (result?.ok && result.draft) return passed('This key works', 'Save it to use it in chat.');
+    if (result?.ok) return passed('Connection test passed', server ? result.message.replace(/^Connected\.\s*/, '') : `${testedName} responded.`);
     if (keyProblem) return problem('This key cannot be used here', keyProblem);
-    if (unsavedKey) return neutral('Key not saved yet', keySaved ? `Chat keeps using ${currentKey} until you save this one.` : 'Press Save key or Enter to use it in chat.', <KeyRound />);
+    // A server that is not there, or has nothing loaded, outranks a typed key: the key cannot help with either.
+    const serverBlocked = server?.phase === 'empty' || (server?.phase === 'unreachable' && server.reason !== 'auth');
+    if (unsavedKey && !serverBlocked) return neutral('Key not saved yet', keySaved ? `Chat keeps using ${currentKey} until you save this one.` : 'Press Save key or Enter to use it in chat.', <KeyRound />);
     // A local server's own state says more than its key does, so only hosted providers report the save here.
-    if (notice?.kind === 'saved' && !server) return neutral(`${label} key saved`, `${modelLabel}. Test the connection to make sure it works.`, <KeyRound />);
+    if (notice?.kind === 'saved' && !server) return neutral('Key saved, not tested yet', `Test the connection to check ${known ? modelLabel : 'your custom model'} responds.`, <KeyRound />);
     if (server?.phase === 'unreachable') {
       if (server.reason === 'auth') return problem('The server needs an API key', 'Add or check it under Advanced server options.');
-      if (server.reason === 'offline') return problem("Can't reach the server", server.remote ? `Nothing answered at ${server.url}. Check that the server is running and that this computer can reach it.` : `Nothing answered at ${server.url}. Start the server in your model app, load a model, then try again.`);
-      return problem("Can't use the server", server.message);
+      // Nothing set up yet is not a fault: the usual first visit, before the model app is running.
+      if (server.reason === 'offline' && server.firstRun) return neutral('Start your model server', `Nothing is answering at ${hostOf(server.url)} yet. Open your model app, start its server and load a model.`, <Server />);
+      if (server.reason === 'offline') return problem('Can’t reach the server', server.remote ? `Nothing answered at ${server.url}. Check that the server is running and that this computer can reach it.` : `Nothing answered at ${server.url}. Start the server in your model app, load a model, then try again.`);
+      return problem('Can’t use the server', server.message);
     }
     if (server?.phase === 'empty') return problem('No models loaded', 'Load a model in your server app, then refresh.');
     if (server?.phase === 'ready') {
       if (server.missing) return problem(`${model} is not on this server`, 'Choose one of its models.');
-      return neutral('Server reachable', `${hostOf(server.url)} · ${server.models} ${server.models === 1 ? 'model' : 'models'}. Test it to make sure it works.`, <Server />);
+      return neutral('Server reachable, not tested yet', `${hostOf(server.url)} has ${server.models} ${server.models === 1 ? 'model' : 'models'}. Test it to check the model responds.`, <Server />);
     }
     if (notice?.kind === 'removed' && !status?.configured) return neutral(`${label} key removed`, 'Add a key to use the assistant.', <KeyRound />);
-    if (status?.configured && keyFromEnvironment) return neutral(`Using your environment's ${label} key`, `${modelLabel}. Test the connection to make sure it works.`);
-    if (status?.configured) return neutral(`${label} is set up`, `${modelLabel}. Test the connection to make sure it works.`);
-    return neutral(`Add ${withArticle(label)} API key`, 'The assistant needs a key to work. The rest of the editor works without one.', <KeyRound />);
+    if (status?.configured) return untested(`${known ? modelLabel : 'Your custom model'}, using ${currentKey}.`);
+    return neutral(`Add ${withArticle(label)} API key`, 'Already have one? Paste it below. Everything else in the editor works without a key.', <KeyRound />);
   };
 
   const connection = (server?: LocalServerStatus) => {
     const view = connectionView(server);
-    const testAction = { label: unsavedKey && keySaved ? 'Test new key' : unsavedKey ? 'Test this key' : 'Test connection', run: () => void runTest(server) };
+    const testAction = { label: unsavedKey ? 'Test this key' : 'Test connection', run: () => void runTest(server) };
+    // A key the provider refused outright: testing it again cannot help, a different key can.
+    const pasteNew = {
+      label: 'Paste a new key',
+      run: () =>
+        requestAnimationFrame(() => {
+          const field = document.getElementById('settings-api-key') as HTMLInputElement | null;
+          field?.focus();
+          field?.select();
+        })
+    };
+    const refused = draftFailed && !!test && keyRejected(test.message);
+    // With no key yet, the next step is getting one.
+    const getKey = { label: `Get ${withArticle(label)} key`, run: () => void api.app.openExternal(keyUrl), external: true };
     // The one action that moves this state forward, if there is one.
-    const action: { label: string; run?: () => void } | null = !server
-      ? (replacing[provider] && !unsavedKey) || !(status?.configured || unsavedKey)
+    const action: { label: string; run?: () => void; external?: boolean } | null = !server
+      ? replacing[provider] && !unsavedKey
         ? null
-        : testAction
-      : unsavedKey && (server.phase === 'ready' || server.phase === 'unreachable' || server.phase === 'empty')
+        : !(status?.configured || unsavedKey)
+          ? getKey
+          : refused
+            ? pasteNew
+            : testAction
+      : refused && !keyProblem
+        ? pasteNew
+        : // A typed key can only answer a server that is there, or one that asked for a key.
+        unsavedKey && (server.phase === 'ready' || (server.phase === 'unreachable' && server.reason === 'auth') || !!keyProblem)
         ? testAction
         : server.phase === 'invalid'
           ? server.url
@@ -294,26 +372,31 @@ export function SettingsModal() {
               : server.phase === 'unreachable'
                 ? server.reason === 'auth'
                   ? { label: keySaved ? 'Edit server key' : 'Add server key', run: server.openKey }
-                  : { label: 'Try again', run: () => void server.refresh() }
+                  : { label: server.firstRun ? 'Check again' : 'Try again', run: () => void server.refresh() }
                 : server.phase === 'empty'
                   ? { label: 'Refresh models', run: () => void server.refresh() }
                   : server.phase === 'ready' && server.missing
                     ? { label: 'Choose a model', run: () => focusById('settings-local-model') }
                     : testAction;
     // Stays mounted and focusable while busy, so a keyboard user keeps their place through a retry.
-    const busy = !!testing || !action?.run;
+    const busy = testingNow || !action?.run;
+    // The status action is the one primary on the page when it is the next step: not after a pass (a retest is
+    // optional), and not while a typed key waits to be saved (Save key is), unless the server itself is the blocker.
+    const blocked = !!server && (server.phase === 'empty' || (server.phase === 'unreachable' && server.reason !== 'auth'));
+    const primary = !busy && view.tone !== 'ready' && (!unsavedKey || blocked);
     return (
       <div className={`settings-status ${view.tone}`}>
-        <div className="settings-status-text" role="status" id="settings-connection">
+        <span className="settings-status-icon" aria-hidden="true">
           {view.icon}
-          <div className="grow">
-            <div className="settings-status-title">{view.title}</div>
-            {view.detail && <div className="settings-status-detail">{view.detail}</div>}
-          </div>
+        </span>
+        <div className="settings-status-text" role="status" id="settings-connection">
+          <div className="settings-status-title">{view.title}</div>
+          {view.detail && <div className="settings-status-detail">{view.detail}</div>}
         </div>
         {action && (
-          <button className="btn btn-sm" aria-disabled={busy || undefined} title={unsavedKey ? 'Tests the key you typed. Press Save key to keep it.' : undefined} onClick={busy ? undefined : action.run}>
-            {testing ? 'Testing…' : action.label}
+          <button className={`btn${primary ? ' btn-primary' : ''}`} aria-disabled={busy || undefined} title={action.external ? 'Opens in your browser' : unsavedKey ? 'Tests the key you typed. Press Save key to keep it.' : undefined} onClick={busy ? undefined : action.run}>
+            {testingNow ? 'Testing…' : action.label}
+            {action.external && <ExternalLink aria-hidden="true" />}
           </button>
         )}
       </div>
@@ -321,65 +404,76 @@ export function SettingsModal() {
   };
 
   // A key that just failed its test can still be saved, but is no longer the suggested next step.
-  const draftFailed = unsavedKey && !!test && !test.ok && test.draft && test.provider === provider && test.edits === keyEdits;
+  // The field note follows the result on screen: a failure for an earlier model or provider no longer advises here
+  // (the close prompt still remembers it).
+  const draftFailed = unsavedKey && failedDrafts[provider] === keyEdits[provider] && !!test && !test.ok && test.draft && test.provider === provider;
   const keyField = status && (
-    <Field
+    <StackedRow
       controlId={enteringKey ? 'settings-api-key' : undefined}
-      label={isLocal ? 'API key (optional)' : `${status.label} API key`}
+      groupId="settings-key"
+      label={isLocal ? 'API key (optional)' : 'API key'}
+      side={
+        !isLocal && enteringKey && (keySaved || unsavedKey) ? (
+          <button className="link-btn settings-row-link" title="Opens in your browser" onClick={() => void api.app.openExternal(keyUrl)}>
+            Get {withArticle(status.label)} key <ExternalLink aria-hidden="true" />
+          </button>
+        ) : undefined
+      }
       error={keyProblem}
       hint={
-        isLocal
+        // A failed test is not proof the key is wrong (the network or the model can fail too), so this is a note.
+        draftFailed ? (
+          <>
+            <span className="settings-note-strong">{keyRejected(test.message) ? 'Paste a new key, then test it.' : 'Paste a corrected key, or test again if the problem was the connection.'}</span>
+            {replacing[provider] && status.source === 'stored' && ' Saving replaces the key stored now, which can’t be recovered.'}
+          </>
+        ) : isLocal
           ? 'Only needed if your server asks for one.'
           : keyFromEnvironment && !enteringKey
-          ? 'This development build is reading the key from your environment.'
-          : 'Kept on this computer where only your user account can read it. It is never put in your projects, exports or logs.'
+            ? 'This development build is reading the key from your environment.'
+            : replacing[provider] && status.source === 'stored'
+              ? 'Saving replaces the key stored now, which can’t be recovered. Keep a copy if you may need it again.'
+            : 'Stored on this computer, readable only by your user account. Never put in your projects, exports or logs.'
       }
     >
       {enteringKey ? (
-        <>
-          <div className="row">
-            <input
-              id="settings-api-key"
-              aria-describedby="settings-api-key-note settings-connection"
-              aria-invalid={keyProblem ? true : undefined}
-              className="input grow mono"
-              type="password"
-              autoComplete="off"
-              placeholder={isLocal ? 'Paste a key' : provider === 'openai' ? 'sk-…' : 'sk-ant-…'}
-              value={keys[provider]}
-              onChange={(e) => {
-                setKeys({ ...keys, [provider]: e.target.value });
-                setKeyEdits((n) => n + 1);
-                setKeyNotice(null);
+        <div className="row">
+          <input
+            id="settings-api-key"
+            aria-describedby="settings-api-key-note settings-connection"
+            aria-invalid={keyProblem ? true : undefined}
+            className="input grow mono"
+            type="password"
+            autoComplete="off"
+            placeholder={isLocal ? 'Paste a key' : provider === 'openai' ? 'Paste your key, starting sk-' : 'Paste your key, starting sk-ant-'}
+            value={keys[provider]}
+            onChange={(e) => {
+              setKeys({ ...keys, [provider]: e.target.value });
+              setKeyEdits((n) => ({ ...n, [provider]: n[provider] + 1 }));
+              setKeyNotice(null);
+            }}
+            onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && !keyProblem && void saveKey()}
+          />
+          {replacing[provider] && (
+            <button
+              className="btn"
+              onClick={() => {
+                setKeys({ ...keys, [provider]: '' });
+                setReplacing({ ...replacing, [provider]: false });
+                focusById('settings-key-replace');
               }}
-              onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && keys[provider].trim() && !keyProblem && void saveKey()}
-            />
-            {replacing[provider] && (
-              <button
-                className="btn"
-                onClick={() => {
-                  setKeys({ ...keys, [provider]: '' });
-                  setReplacing({ ...replacing, [provider]: false });
-                  focusById('settings-key-replace');
-                }}
-              >
-                Cancel
-              </button>
-            )}
-            <button className={`btn${unsavedKey && !draftFailed && !keyProblem ? ' btn-primary' : ''}`} disabled={!unsavedKey || !!keyProblem} aria-disabled={keyBusy || undefined} onClick={() => void saveKey()}>
-              {keyBusy ? 'Saving key…' : 'Save key'}
-            </button>
-          </div>
-          {!isLocal && (
-            <button className="link-btn settings-key-help" onClick={() => void api.app.openExternal(keyUrl)}>
-              Where do I get {withArticle(status.label)} key?
+            >
+              Cancel
             </button>
           )}
-        </>
+          <button className={`btn${unsavedKey && !draftFailed && !keyProblem && !keyBusy && !(isLocal && localBlocked) ? ' btn-primary' : ''}`} disabled={!unsavedKey || !!keyProblem} aria-disabled={keyBusy || undefined} onClick={() => void saveKey()}>
+            {keyBusy ? 'Saving key…' : 'Save key'}
+          </button>
+        </div>
       ) : (
         <div className="settings-key-saved">
           <KeyRound aria-hidden="true" />
-          <span className="grow">{keyFromEnvironment ? 'From your environment' : 'Saved on this computer'}</span>
+          <span className="grow">{keyFromEnvironment ? 'From your environment' : `${isLocal ? 'Server key' : `${label} key`} saved`}</span>
           <button
             id="settings-key-replace"
             className="btn btn-sm"
@@ -402,7 +496,79 @@ export function SettingsModal() {
           {keyNotice?.provider === 'local' && keyNotice.kind === 'saved' ? 'Server key saved.' : keyNotice?.provider === 'local' && keyNotice.kind === 'removed' ? 'Server key removed.' : ''}
         </span>
       )}
-    </Field>
+    </StackedRow>
+  );
+
+  // What choosing this provider means, said where it is chosen.
+  const savedLocal = checkLocalBaseURL(settings.ai.local.baseURL, settings.ai.local.allowRemote);
+  const localRemoteHost = savedLocal.ok && savedLocal.remote ? new URL(savedLocal.url).host : null;
+  const providerNote = (
+    <div className="settings-provider-note" id="settings-provider-note">
+      <Shield aria-hidden="true" />
+      <span>
+        {!isLocal ? (
+          `Your request and the relevant page text go to ${label}, which bills your account for usage. Images and screenshots are never sent.`
+        ) : localRemoteHost ? (
+          <>
+            When you use the assistant, your requests and page content go to <strong className="settings-host">{localRemoteHost}</strong>.
+          </>
+        ) : (
+          'Your requests and page content stay on this computer.'
+        )}
+      </span>
+    </div>
+  );
+
+  const modelRow = (
+    <StackedRow
+      controlId="settings-model"
+      label={custom ? 'Custom model ID' : 'Model'}
+      side={
+        (settings.developerMode || custom || !known) && (
+          <button
+            id="settings-model-mode"
+            className="link-btn settings-row-link"
+            // Keep focus in the model field so its blur does not save the typed ID on the way to the list.
+            onMouseDown={(e) => custom && e.preventDefault()}
+            onClick={() => {
+              if (custom) chooseFromList();
+              else {
+                setCustomMode({ ...customMode, [provider]: true });
+                focusById('settings-model');
+              }
+            }}
+          >
+            {custom ? 'Choose from list' : 'Use another model ID'}
+          </button>
+        )
+      }
+      hint={custom ? 'Saved when you press Enter or leave the field.' : undefined}
+    >
+      {custom ? (
+        <input
+          id="settings-model"
+          key={provider}
+          className="input mono"
+          value={modelDraft}
+          onChange={(e) => setModelDrafts({ ...modelDrafts, [provider]: e.target.value })}
+          // Moving to "Choose from list" leaves the typed ID unsaved, by pointer or by Tab.
+          onBlur={(e) => e.relatedTarget?.id !== 'settings-model-mode' && commitModelDraft()}
+          onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commitModelDraft()}
+          aria-describedby="settings-model-note"
+          spellCheck={false}
+        />
+      ) : (
+        <select id="settings-model" key={provider} className="select" value={model} onChange={(e) => void setModel(e.target.value)}>
+          {!known && status && <option value={model}>{model} (custom)</option>}
+          {status?.models.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+              {m.note ? ` — ${m.note}` : ''}
+            </option>
+          ))}
+        </select>
+      )}
+    </StackedRow>
   );
 
   return (
@@ -412,7 +578,7 @@ export function SettingsModal() {
       onClose={close}
       footer={
         <>
-          <span className="settings-foot-note">Most changes apply right away. API keys are saved separately.</span>
+          <span className="settings-foot-note">{unsavedProviders.length ? `${unsavedProviders.length > 1 ? 'Typed keys aren’t' : `Your ${nameOf(unsavedProviders[0])} key isn’t`} saved yet.` : 'Changes apply as you make them.'}</span>
           <span className="spacer" />
           <button className="btn" onClick={close}>
             Close
@@ -431,26 +597,31 @@ export function SettingsModal() {
             {
               value: 'general',
               label: 'General',
+              icon: <SlidersHorizontal aria-hidden="true" />,
               panel: () => (
                 <>
-                  <ChoiceField id="settings-appearance" label="Appearance" hint="Changes how SiteOrigin Builder looks. Your website's colors are set in Site styles.">
-                    <Segmented<AppSettings['appearance']>
-                      radio
-                      labelledBy="settings-appearance-label"
-                      describedBy="settings-appearance-note"
-                      value={settings.appearance}
-                      onChange={(appearance) => void update({ appearance })}
-                      options={[
-                        { value: 'system', label: 'System', icon: <Monitor /> },
-                        { value: 'light', label: 'Light', icon: <Sun /> },
-                        { value: 'dark', label: 'Dark', icon: <Moon /> }
-                      ]}
-                    />
-                  </ChoiceField>
-                  <SwitchRow checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte code. Code is checked before it is saved." />
-                  <div className="scope-note info">
-                    <Info />
-                    <span>Each project keeps your last 100 changes, so you can undo even after reopening it. This history stays on your computer and is never exported.</span>
+                  <div className="settings-group">
+                    <InlineRow id="settings-appearance" label="Appearance" hint="How SiteOrigin Builder looks. Your website’s colors are set in Site styles.">
+                      <Segmented<AppSettings['appearance']>
+                        radio
+                        labelledBy="settings-appearance-label"
+                        describedBy="settings-appearance-note"
+                        value={settings.appearance}
+                        onChange={(appearance) => void update({ appearance })}
+                        options={[
+                          { value: 'system', label: 'System', icon: <Monitor /> },
+                          { value: 'light', label: 'Light', icon: <Sun /> },
+                          { value: 'dark', label: 'Dark', icon: <Moon /> }
+                        ]}
+                      />
+                    </InlineRow>
+                    <div className="settings-row">
+                      <SwitchRow checked={settings.developerMode} onChange={(v) => void update({ developerMode: v })} label="Developer mode" hint="Shows code components and source views, for people comfortable editing Svelte. Code is checked before it’s saved." />
+                    </div>
+                  </div>
+                  <div className="settings-aside">
+                    <History aria-hidden="true" />
+                    <span>Each project keeps its last 100 changes, so Undo works even after you reopen it. This history stays on your computer and is never exported.</span>
                   </div>
                 </>
               )
@@ -458,74 +629,39 @@ export function SettingsModal() {
             {
               value: 'ai',
               label: 'AI assistant',
+              icon: <Sparkles aria-hidden="true" />,
               panel: () => (
                 <>
-                  <ChoiceField id="settings-provider" label="Provider">
-                    <Segmented<ProviderId> radio labelledBy="settings-provider-label" value={provider} onChange={(p) => void update({ ai: { provider: p } })} options={providers.map((p) => ({ value: p.id, label: p.label }))} />
-                  </ChoiceField>
+                  <div className="settings-provider">
+                    <div className="settings-group-title" id="settings-provider-label">
+                      Provider
+                    </div>
+                    <Segmented<ProviderId>
+                      radio
+                      full
+                      labelledBy="settings-provider-label"
+                      describedBy="settings-provider-note"
+                      value={provider}
+                      onChange={(p) => void update({ ai: { provider: p } })}
+                      options={providers.map((p) => ({ value: p.id, label: p.label, icon: p.id === 'local' ? <Laptop /> : <Cloud /> }))}
+                    />
+                    {providerNote}
+                  </div>
                   {isLocal ? (
-                    <LocalModelSettings settings={settings} update={update} keyRevision={keyRevision} keySaved={keySaved} revealKey={keyNotice?.provider === 'local' && keyNotice.kind === 'failed'} status={connection} keyField={keyField} />
+                    <LocalModelSettings settings={settings} update={update} keyRevision={keyRevision} keySaved={keySaved} revealKey={(keyNotice?.provider === 'local' && keyNotice.kind === 'failed') || !!keys.local.trim()} status={connection} keyField={keyField} onBlocked={setLocalBlocked} />
                   ) : (
-                    <>
+                    <section className="settings-card" aria-label={`${label} connection`}>
                       {connection()}
                       {keyField}
-                      <Field label="Model" controlId="settings-model">
-                        <div className="row">
-                          {custom ? (
-                            <input
-                              id="settings-model"
-                              key={provider}
-                              className="input grow mono"
-                              value={modelDraft}
-                              onChange={(e) => setModelDrafts({ ...modelDrafts, [provider]: e.target.value })}
-                              // Moving to "Choose from list" leaves the typed ID unsaved, by pointer or by Tab.
-                              onBlur={(e) => e.relatedTarget?.id !== 'settings-model-mode' && commitModelDraft()}
-                              onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commitModelDraft()}
-                              aria-label="Custom model ID"
-                              spellCheck={false}
-                            />
-                          ) : (
-                            <select id="settings-model" key={provider} className="select grow" value={model} onChange={(e) => void setModel(e.target.value)}>
-                              {!known && status && <option value={model}>{model} (custom)</option>}
-                              {status?.models.map((m) => (
-                                <option key={m.id} value={m.id}>
-                                  {m.label}
-                                  {m.note ? ` — ${m.note}` : ''}
-                                </option>
-                              ))}
-                            </select>
-                          )}
-                          {(settings.developerMode || custom || !known) && (
-                            <button
-                              id="settings-model-mode"
-                              className="btn"
-                              // Keep focus in the model field so its blur does not save the typed ID on the way to the list.
-                              onMouseDown={(e) => custom && e.preventDefault()}
-                              onClick={() => {
-                                if (custom) chooseFromList();
-                                else {
-                                  setCustomMode({ ...customMode, [provider]: true });
-                                  focusById('settings-model');
-                                }
-                              }}
-                            >
-                              {custom ? 'Choose from list' : 'Other model…'}
-                            </button>
-                          )}
-                        </div>
-                      </Field>
-                    </>
+                      {modelRow}
+                    </section>
                   )}
-                  {!isLocal && (
-                    <div className="scope-note info">
-                      <Shield />
-                      <span>
-                        When you use the assistant, your request and the relevant page text and structure are sent to {status?.label ?? 'the provider'}. Images and screenshots are never sent. The provider may charge your account for usage.
-                      </span>
+                  <div className="settings-group-title">Chat</div>
+                  <div className="settings-group">
+                    <div className="settings-row">
+                      <SwitchRow checked={settings.ai.sendOnEnter} onChange={(v) => void update({ ai: { sendOnEnter: v } })} label="Press Enter to send messages" hint="When off, ⌘ Enter sends and Enter starts a new line." />
                     </div>
-                  )}
-                  <hr className="settings-rule" />
-                  <SwitchRow checked={settings.ai.sendOnEnter} onChange={(v) => void update({ ai: { sendOnEnter: v } })} label="Press Enter to send messages" hint="When off, use ⌘ Enter to send and Enter for a new line." />
+                  </div>
                 </>
               )
             }

@@ -1,23 +1,118 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ChevronRight, RefreshCw, Shield, TriangleAlert } from 'lucide-react';
+import { ChevronRight, RefreshCw, TriangleAlert } from 'lucide-react';
 import type { AppSettings, SettingsPatch } from '@shared/api';
 import { checkLocalBaseURL, LOCAL_CONTEXT_MAX, LOCAL_CONTEXT_MIN, LOCAL_PRESETS, parseContextSize, type LocalToolMode } from '@shared/local';
 import { api, setState } from '../store';
-import { Field, SwitchRow } from '../components/ui';
+import { SwitchRow } from '../components/ui';
 
 /**
  * The server in use, for the connection status. `url` is the saved address (empty when it cannot be used),
  * which is the only one ever contacted, whatever is being typed. `revision` identifies the latest answer
  * from it, so a test result never outlives a newer check.
  */
-export type LocalServerStatus = { url: string; remote: boolean; revision: number; refresh: () => Promise<number>; apply: () => void; revert: () => void; openKey: () => void } & (
+export type LocalServerStatus = { url: string; remote: boolean; proposedHost?: string; revision: number; refresh: () => Promise<number>; apply: () => void; revert: () => void; openKey: () => void } & (
   | { phase: 'invalid' | 'pending' | 'checking' | 'empty' }
-  | { phase: 'unreachable'; reason: 'offline' | 'auth' | 'other'; message: string }
+  // `firstRun`: nothing has answered yet at an untouched default address, the usual first visit, not a fault.
+  | { phase: 'unreachable'; reason: 'offline' | 'auth' | 'other'; message: string; firstRun: boolean }
   | { phase: 'ready'; models: number; missing: boolean }
 );
 
 // Unique across this panel's mounts, so a result kept by the dialog can never match a later discovery.
 let discoveries = 0;
+
+/**
+ * One row of a settings group with its label and note on the left and a compact control on the right. The
+ * label is `${id}-label` (a real label when `controlId` names the control) and the note `${id}-note`, which an
+ * error replaces.
+ */
+export function InlineRow({ id, controlId, label, hint, error, children }: { id: string; controlId?: string; label: string; hint?: ReactNode; error?: string | null; children: ReactNode }) {
+  return (
+    <div className="settings-row settings-row-inline">
+      <div className="settings-row-text">
+        {controlId ? (
+          <label className="settings-row-label" id={`${id}-label`} htmlFor={controlId}>
+            {label}
+          </label>
+        ) : (
+          <div className="settings-row-label" id={`${id}-label`}>
+            {label}
+          </div>
+        )}
+        {error ? (
+          <div className="field-error" id={`${id}-note`}>
+            {error}
+          </div>
+        ) : (
+          hint && (
+            <div className="field-hint" id={`${id}-note`}>
+              {hint}
+            </div>
+          )
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * A row whose control takes the full width under its label: a key, an address, a model. `side` sits at the
+ * end of the label line, outside the label so it never becomes part of the control's name. With no
+ * `controlId` (a saved key has no field) the label names the row as a group instead. The note is
+ * `${controlId}-note`; an error takes the note's place.
+ */
+export function StackedRow({
+  controlId,
+  groupId,
+  label,
+  side,
+  hint,
+  error,
+  children
+}: {
+  controlId?: string;
+  groupId?: string;
+  label: ReactNode;
+  side?: ReactNode;
+  hint?: ReactNode;
+  error?: string | null;
+  children: ReactNode;
+}) {
+  const noteId = `${controlId ?? groupId}-note`;
+  const note = error ? (
+    <div className="field-error" id={noteId}>
+      {error}
+    </div>
+  ) : hint ? (
+    <div className="field-hint" id={noteId}>
+      {hint}
+    </div>
+  ) : null;
+  return (
+    <div className="settings-row settings-row-stacked">
+      <div className="settings-row-head">
+        {controlId ? (
+          <label className="settings-row-label" htmlFor={controlId}>
+            {label}
+          </label>
+        ) : (
+          <div className="settings-row-label" id={`${groupId}-label`}>
+            {label}
+          </div>
+        )}
+        {side}
+      </div>
+      {controlId ? (
+        children
+      ) : (
+        <div role="group" aria-labelledby={`${groupId}-label`} aria-describedby={note ? noteId : undefined}>
+          {children}
+        </div>
+      )}
+      {note}
+    </div>
+  );
+}
 
 const failureReason = (message: string) => (/rejected the API key/i.test(message) ? 'auth' : /^Could not connect|did not answer/i.test(message) ? 'offline' : 'other');
 
@@ -29,7 +124,8 @@ export function LocalModelSettings({
   keySaved,
   revealKey,
   status,
-  keyField
+  keyField,
+  onBlocked
 }: {
   settings: AppSettings;
   update: (patch: SettingsPatch) => Promise<void>;
@@ -41,6 +137,8 @@ export function LocalModelSettings({
   status: (server: LocalServerStatus) => ReactNode;
   /** The optional server key, shown with the advanced options. */
   keyField: ReactNode;
+  /** Told whether the server is unreachable or has nothing loaded, which a typed key cannot fix. */
+  onBlocked?: (blocked: boolean) => void;
 }) {
   const local = settings.ai.local;
   const model = settings.ai.models.local;
@@ -52,6 +150,9 @@ export function LocalModelSettings({
   // Open when something in it is already in use, so a customized setting is never hidden.
   const [advanced, setAdvanced] = useState(local.toolMode !== 'auto' || keySaved || local.contextWindow !== null);
   const request = useRef(0);
+  // Whether any server has answered while this panel was open, or the user has asked for a check: after either,
+  // a failure is a failure, never a first visit.
+  const answered = useRef(false);
   const statusRequest = useRef(0);
   // Whether the field holds something the user typed, as opposed to the saved address.
   const edited = useRef(false);
@@ -66,7 +167,12 @@ export function LocalModelSettings({
   const savedRemoteHost = saved.ok && saved.remote ? new URL(saved.url).host : null;
   const typedHost = offMachine.ok && offMachine.remote ? new URL(offMachine.url).host : savedRemoteHost;
 
+  // The address a discovery asked, so an answer is only ever shown for the address it describes.
+  const asking = useRef(local.baseURL);
+  asking.current = local.baseURL;
+  const [reachedFor, setReachedFor] = useState<string | null>(null);
   const refresh = useCallback(async () => {
+    const forURL = asking.current;
     const id = ++discoveries;
     request.current = id;
     setLoading(true);
@@ -77,6 +183,8 @@ export function LocalModelSettings({
     setLoading(false);
     setModels(r.models);
     setReach({ ok: r.ok, message: r.message ?? 'Could not reach the server.' });
+    setReachedFor(forURL);
+    if (r.ok) answered.current = true;
     setRevision(id);
     return id;
   }, []);
@@ -98,9 +206,13 @@ export function LocalModelSettings({
     if (keySaved || revealKey || authProblem) setAdvanced(true);
   }, [keySaved, revealKey, authProblem]);
 
+  // Another machine that is not the one in use now: leaving the field or closing Settings never sends content
+  // there, only Enter or Use this address does.
+  const newRemoteHost = (next: ReturnType<typeof checkLocalBaseURL>, current = savedRemoteHost) => (next.ok && next.remote && new URL(next.url).host !== current ? new URL(next.url).host : null);
   // Half-typed addresses are never contacted: a URL is saved, and so used, only when it is committed.
-  const commit = (value = draft) => {
+  const commit = (value = draft, explicit = true) => {
     const next = checkLocalBaseURL(value, local.allowRemote);
+    if (!explicit && newRemoteHost(next)) return;
     if (next.ok && next.url !== submitted.current) {
       submitted.current = next.url;
       void update({ ai: { local: { baseURL: next.url } } });
@@ -110,15 +222,17 @@ export function LocalModelSettings({
       setDraft(next.url);
     }
   };
-  const pending = useRef({ draft, saved: local.baseURL, allowRemote: local.allowRemote });
-  pending.current = { draft, saved: local.baseURL, allowRemote: local.allowRemote };
+  // The latest of each, for the unmount below: comparing with what was saved when the panel opened could let a
+  // close switch back to a machine the user has since moved away from.
+  const pending = useRef({ draft, saved: local.baseURL, allowRemote: local.allowRemote, remoteHost: savedRemoteHost });
+  pending.current = { draft, saved: local.baseURL, allowRemote: local.allowRemote, remoteHost: savedRemoteHost };
   // Closing Settings with Escape skips the field's blur.
   useEffect(
     () => () => {
       const p = pending.current;
       if (!edited.current) return;
       const next = checkLocalBaseURL(p.draft, p.allowRemote);
-      if (!next.ok || next.url === submitted.current) return;
+      if (!next.ok || next.url === submitted.current || newRemoteHost(next, p.remoteHost)) return;
       submitted.current = next.url;
       // Chat shows the privacy note from the provider status, and this panel is gone once Settings closes.
       void update({ ai: { local: { baseURL: next.url } } }).then(() => api.ai.providers().then((providers) => setState({ providers })));
@@ -134,7 +248,9 @@ export function LocalModelSettings({
       void update({ ai: { local: { baseURL } } });
     }
   };
+  const [justAllowed, setJustAllowed] = useState(false);
   const allowRemote = (allow: boolean) => {
+    setJustAllowed(allow);
     const next = checkLocalBaseURL(draft, allow);
     if (allow && next.ok) {
       edited.current = false;
@@ -185,79 +301,146 @@ export function LocalModelSettings({
     setAdvanced(true);
     requestAnimationFrame(() => (document.getElementById('settings-api-key') ?? document.getElementById('settings-key-replace'))?.focus());
   };
-  const base = { url, remote: !!savedRemoteHost, revision, refresh, apply: () => commit(), revert, openKey };
+  // Nothing chosen yet: the address is still one of the defaults, no model is picked, and nothing has answered.
+  const firstRun = !answered.current && !model && !savedRemoteHost && LOCAL_PRESETS.some((p) => p.baseURL === local.baseURL);
+  const customized = local.toolMode !== 'auto' || local.contextWindow !== null || keySaved;
+  const userRefresh = () => {
+    answered.current = true;
+    return refresh();
+  };
+  const proposedHost = check.ok && check.url !== local.baseURL ? newRemoteHost(check) : null;
+  const base = { url, remote: !!savedRemoteHost, proposedHost: proposedHost ?? undefined, revision, refresh: userRefresh, apply: () => commit(), revert, openKey };
   const server: LocalServerStatus = !check.ok
     ? { ...base, phase: 'invalid' }
     : check.url !== local.baseURL
       ? { ...base, phase: 'pending' }
-      : loading || !reach
+      : loading || !reach || reachedFor !== local.baseURL
         ? { ...base, phase: 'checking' }
         : !reach.ok
-          ? { ...base, phase: 'unreachable', reason: failureReason(reach.message ?? ''), message: reach.message ?? 'Could not reach the server.' }
+          ? { ...base, phase: 'unreachable', reason: failureReason(reach.message ?? ''), message: reach.message ?? 'Could not reach the server.', firstRun }
           : !models.length
             ? { ...base, phase: 'empty' }
             : { ...base, phase: 'ready', models: models.length, missing };
   const settled = server.phase !== 'invalid' && server.phase !== 'pending';
+  const blocked = server.phase === 'empty' || (server.phase === 'unreachable' && server.reason !== 'auth');
+  useEffect(() => {
+    onBlocked?.(blocked);
+  }, [blocked, onBlocked]);
+  useEffect(() => () => onBlocked?.(false), [onBlocked]);
+  const ready = server.phase === 'ready';
+  // The list only ever describes the server that returned it, so anything else says what it is waiting for.
+  // While a new address is typed, the saved server (and its saved model) is still the one in use.
+  const placeholder = ready || !settled ? "Use the server's model" : server.phase === 'checking' ? 'Checking for models…' : server.phase === 'empty' ? 'No models on this server' : 'Connect to a server to see its models';
+  const showSaved = !!model && (!ready || missing);
+  // About the address only: what to do about the server itself is the status's job.
+  const addressHint = proposedHost
+    ? 'Press Enter or Use this address to switch, or Escape to keep the current server.'
+    : local.allowRemote
+    ? 'Press Enter to use a typed address. A server on another machine is only used once you confirm it.'
+    : ready
+      ? 'A typed address is used when you press Enter, leave the field or close Settings.'
+      : 'Pick your model app to use its usual address, or type the one its server shows.';
 
   return (
-    <>
+    <section className="settings-card" aria-label="Local model connection">
       {status(server)}
-      {savedRemoteHost && (
-        <div className="scope-note danger" role="alert">
-          <TriangleAlert />
-          <span>
-            Project content will leave this computer and go to <strong className="settings-host">{savedRemoteHost}</strong>. Only use a server you trust.
-          </span>
-        </div>
-      )}
-      <Field label="Server" controlId="settings-local-url" error={check.ok ? null : check.message} hint={savedRemoteHost ? "Type your server's address and press Enter." : 'Start the server in your model app and load a model, then pick the app here or type the address it shows.'}>
-        <div className="col" style={{ gap: 8 }}>
-          <div className="row settings-presets" role="group" aria-label="Common server apps">
+      <StackedRow
+        controlId="settings-local-url"
+        label="Server address"
+        side={
+          <div className="settings-presets" role="group" aria-label="Common server apps">
             {LOCAL_PRESETS.map((p) => (
-              <button key={p.id} className="btn btn-sm" aria-current={local.baseURL === p.baseURL ? 'true' : undefined} onClick={() => choosePreset(p.baseURL)}>
+              <button
+                key={p.id}
+                className="btn btn-sm"
+                aria-current={local.baseURL === p.baseURL ? 'true' : undefined}
+                title={`Use ${p.label}’s usual address, ${p.baseURL}`}
+                // Keeps a half-typed address from being applied by the blur on the way to the preset.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => choosePreset(p.baseURL)}
+              >
                 {p.label}
               </button>
             ))}
           </div>
+        }
+        error={check.ok ? null : check.message}
+        hint={addressHint}
+      >
+        <div className="row">
           <input
             id="settings-local-url"
             aria-describedby="settings-local-url-note"
             aria-invalid={check.ok ? undefined : true}
-            className="input mono"
+            className="input grow mono"
             value={draft}
             spellCheck={false}
             onChange={(e) => {
               edited.current = true;
               setDraft(e.target.value);
             }}
-            onBlur={() => commit()}
-            onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commit()}
+            // Moving to the presets is still choosing an address, so it commits nothing on the way.
+            onBlur={(e) => !(e.relatedTarget instanceof HTMLElement && e.relatedTarget.closest('.settings-presets')) && commit(draft, false)}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return;
+              if (e.key === 'Enter') commit();
+              // A switch to another machine waiting to be confirmed: Escape backs out of it rather than closing.
+              else if (e.key === 'Escape' && proposedHost) {
+                e.preventDefault();
+                e.stopPropagation();
+                revert();
+              }
+            }}
           />
+          {proposedHost && (
+            <button
+              className="btn"
+              onClick={() => {
+                revert();
+                // The button goes with the question, so the keyboard picks up at the address again.
+                requestAnimationFrame(() => document.getElementById('settings-local-url')?.focus());
+              }}
+            >
+              Keep current server
+            </button>
+          )}
         </div>
-      </Field>
+      </StackedRow>
       {(isRemote || local.allowRemote) && (
-        <SwitchRow
-          checked={local.allowRemote}
-          onChange={allowRemote}
-          label="Allow a server on another machine"
-          hint={local.allowRemote ? (savedRemoteHost ? 'Turn this off to allow only servers on this computer.' : 'Allowed, but the server in use is on this computer.') : <>Turning this on sends your requests and page content to <span className="settings-host">{typedHost ?? 'that server'}</span>.</>}
-        />
+        <div className="settings-row">
+          <SwitchRow
+            checked={local.allowRemote}
+            onChange={allowRemote}
+            label="Allow a server on another machine"
+            hint={local.allowRemote ? (savedRemoteHost ? 'Turn this off to allow only servers on this computer.' : 'Allowed, but the server in use is on this computer.') : <>Turning this on uses <span className="settings-host">{typedHost ?? 'that server'}</span>, and the assistant then sends your requests and page content there.</>}
+          />
+          {savedRemoteHost && (
+            // Assertive only when it appears because the user just allowed it, not every time Settings opens.
+            <div className="scope-note danger settings-remote-warning" role={justAllowed ? 'alert' : undefined}>
+              <TriangleAlert />
+              <span>
+                When you use the assistant, project content leaves this computer for <strong className="settings-host">{savedRemoteHost}</strong>. Only use a server you trust.
+              </span>
+            </div>
+          )}
+        </div>
       )}
-      <Field label="Model" controlId="settings-local-model">
+      <StackedRow controlId="settings-local-model" label="Model">
         <div className="row">
-          <select id="settings-local-model" className="select grow" disabled={!settled || (!models.length && !missing)} value={model} onChange={(e) => void update({ ai: { models: { ...settings.ai.models, local: e.target.value } } })}>
-            <option value="">{settled && reach?.ok && !models.length ? 'No models on this server' : "Use the server's model"}</option>
-            {missing && (
+          <select id="settings-local-model" className="select grow" disabled={!ready} value={ready || showSaved ? model : ''} onChange={(e) => void update({ ai: { models: { ...settings.ai.models, local: e.target.value } } })}>
+            <option value="">{placeholder}</option>
+            {showSaved && (
               <option value={model}>
                 {model}
-                {reach?.ok ? ' (not on this server)' : ''}
+                {ready ? ' (not on this server)' : ' (saved)'}
               </option>
             )}
-            {models.map((id) => (
-              <option key={id} value={id}>
-                {id}
-              </option>
-            ))}
+            {ready &&
+              models.map((id) => (
+                <option key={id} value={id}>
+                  {id}
+                </option>
+              ))}
           </select>
           {/* Only with a list to refresh: otherwise the status above already offers the retry. */}
           {models.length > 0 && (
@@ -278,32 +461,28 @@ export function LocalModelSettings({
             </button>
           )}
         </div>
-      </Field>
+      </StackedRow>
       <details className="settings-advanced" open={advanced} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
         <summary>
           <ChevronRight aria-hidden="true" /> Advanced server options
+          {!advanced && customized && <span className="settings-advanced-flag">Customized</span>}
         </summary>
         <div className="settings-advanced-body">
-          <Field label="Tool calling" hint="How the assistant asks your model to make edits. Automatic suits most models.">
-            <select className="select" value={local.toolMode} onChange={(e) => void update({ ai: { local: { toolMode: e.target.value as LocalToolMode } } })}>
+          <InlineRow id="settings-local-tools" controlId="settings-local-tools-select" label="Tool calling" hint="How the assistant asks your model to make edits. Automatic suits most models.">
+            <select id="settings-local-tools-select" className="select settings-inline-control" aria-describedby="settings-local-tools-note" value={local.toolMode} onChange={(e) => void update({ ai: { local: { toolMode: e.target.value as LocalToolMode } } })}>
               <option value="auto">Automatic</option>
               <option value="constrained-json">Constrained JSON</option>
               <option value="native">Native tool calls</option>
             </select>
-          </Field>
-          <Field
-            label="Context size"
-            controlId="settings-local-context"
-            error={windowError}
-            hint="The context size, in tokens, your model is loaded with. Leave it empty to read it from the server. Set it when the server does not report it, or to use less than it reports. Changing it here does not change the server."
-          >
+          </InlineRow>
+          <InlineRow id="settings-local-context" controlId="settings-local-context" label="Context size" error={windowError} hint="Tokens your model is loaded with. Leave empty to use what the server reports. This doesn’t change the server.">
             <input
               id="settings-local-context"
               aria-describedby="settings-local-context-note"
               aria-invalid={windowError ? true : undefined}
-              className="input mono"
+              className="input settings-inline-control"
               inputMode="numeric"
-              placeholder="Automatic"
+              placeholder="From the server"
               value={windowDraft}
               spellCheck={false}
               onChange={(e) => {
@@ -313,16 +492,10 @@ export function LocalModelSettings({
               onBlur={commitWindow}
               onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && commitWindow()}
             />
-          </Field>
+          </InlineRow>
           {keyField}
         </div>
       </details>
-      {!savedRemoteHost && (
-        <div className="scope-note info">
-          <Shield />
-          <span>Your requests and page content stay on this computer.</span>
-        </div>
-      )}
-    </>
+    </section>
   );
 }

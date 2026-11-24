@@ -1920,40 +1920,98 @@ button.code-problem:hover { background: var(--active); }
 .switch-row label { font-weight: 400; color: var(--text); }
 .switch-row .switch { margin-top: 1px; }
 
-/* Settings dialog. The title, section tabs and Close stay put and only the open section scrolls; its 8px
-   scrollbar sits in a reserved gutter, so the content's right edge lines up with Close in every state. */
+/* Settings dialog. The title, section tabs and Close stay put and only the open section scrolls; its 10px
+   scrollbar sits in a reserved gutter, so the content's right edge lines up with Close in every state.
+   Settings are grouped into cards (a soft hairline and a lift) whose rows are split by straight dividers: an
+   inline row puts a compact control beside its label, a stacked row puts a full-width field under it. The AI
+   assistant's card leads with the connection status, whose action is the page's one primary when it is the
+   next step. */
+.modal:has(.settings-body) { width: min(600px, calc(100vw - 48px)); }
 .modal:has(.settings-body) .modal-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; padding: 0; overflow: hidden; }
 .settings-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
-.settings-body > .tabs { flex: none; margin: 0; }
-.settings-body .tab:focus-visible { outline-offset: -5px; border-radius: var(--r-sm); }
+.settings-body > .tabs { flex: none; margin: 0; padding: 0 12px; }
+.settings-body .tab:focus-visible { outline-offset: -7px; border-radius: var(--r-sm); }
+.settings-body .tab[aria-selected='true'] svg { color: var(--accent-text); }
 .settings-panel[hidden] { display: none; }
-.settings-panel:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 auto; gap: 16px; min-height: 0; padding: 16px 10px 18px 18px; overflow-y: auto; scrollbar-gutter: stable; }
-.settings-panel::-webkit-scrollbar { width: 8px; }
-.settings-panel::-webkit-scrollbar-thumb { border-radius: 99px; background: var(--border-control); }
-.settings-status { display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 12px; border-radius: var(--r-sm); background: var(--panel-2); }
-.settings-status-text { display: flex; flex: 1; align-items: flex-start; gap: 9px; min-width: 0; }
-.settings-status-text > svg, .settings-status-text > .spinner { flex: none; width: 16px; height: 16px; margin-top: 1px; color: var(--text-2); }
-.settings-status-title { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
-.settings-status-detail { font-size: 12px; color: var(--text-2); overflow-wrap: anywhere; user-select: text; }
-.settings-status.ready { background: var(--raised); box-shadow: inset 0 0 0 1px var(--border-control); }
-.settings-status.ready .settings-status-text > svg { color: var(--text); }
+.settings-panel:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 auto; gap: 12px; min-height: 0; padding: 18px 10px 20px 20px; overflow-y: auto; scrollbar-gutter: stable; scroll-padding-block: 16px; background: var(--panel); }
+.settings-panel::-webkit-scrollbar { width: 10px; }
+/* A slim thumb inset from the dialog's edge, at the control edge's 3:1 so it reliably says there is more below. */
+.settings-panel::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 99px; background: var(--border-control) content-box; }
+.settings-panel::-webkit-scrollbar-thumb:hover, .settings-panel::-webkit-scrollbar-thumb:active { background-color: var(--text-3); }
+
+.settings-group, .settings-card { display: flex; flex-direction: column; flex: none; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-sm); }
+:is(.settings-group, .settings-card) > * + *, .settings-advanced-body > * + * { border-top: 1px solid var(--border); }
+.settings-group-title { margin: 8px 2px -4px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.settings-row { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; min-width: 0; }
+.settings-row-inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
+.settings-row-text { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
+.settings-row-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
+.settings-row-head:has(> :nth-child(2)) { min-height: 26px; }
+.settings-row-label, .settings-row .switch-row label { font-size: 13px; font-weight: 500; color: var(--text); }
+.settings-row .field-hint { line-height: 1.45; text-wrap: pretty; }
+.settings-row-link { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; font-size: 12px; }
+.settings-row-link > svg { width: 12px; height: 12px; flex: none; }
+.settings-note-strong { color: var(--text); }
+.settings-row .segmented { flex: none; }
+.settings-inline-control { flex: none; width: 190px; }
+.settings-aside, .settings-provider-note { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+.settings-aside { padding: 0 4px; }
+:is(.settings-aside, .settings-provider-note) > svg { flex: none; width: 14px; height: 14px; margin-top: 1px; color: var(--text-3); }
+.settings-provider-note strong { font-weight: 600; color: var(--text); }
+.settings-provider { display: flex; flex-direction: column; gap: 8px; }
+.settings-provider .settings-group-title { margin: 0 2px; }
+.settings-provider .segmented button { height: 28px; }
+
+
+/* The connection status: an icon well, what is true now, and the next step. A pass is the only filled well. */
+.settings-status { display: flex; align-items: center; gap: 12px; padding: 14px; border-radius: calc(var(--r-md) - 1px) calc(var(--r-md) - 1px) 0 0; background: var(--panel-2); }
+.settings-status-icon { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--raised); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border); }
+.settings-status-icon > svg { width: 16px; height: 16px; }
+.settings-status-icon > .spinner { width: 16px; height: 16px; }
+.settings-status-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.settings-status-title { font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.settings-status-detail { font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; text-wrap: pretty; user-select: text; }
+.settings-status > .btn { flex: none; }
+.settings-status.ready .settings-status-icon { background: var(--text); color: var(--raised); box-shadow: none; }
+.settings-status.ready .settings-status-icon > svg { stroke-width: 3; width: 15px; height: 15px; }
 .settings-status.problem { background: var(--red-soft); }
-.settings-status.problem .settings-status-text > svg { color: var(--red); }
+.settings-status.problem .settings-status-icon { background: var(--raised); color: var(--red); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 35%, transparent); }
 .settings-status.problem .settings-status-detail { color: var(--text); }
-.settings-key-saved { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 5px 6px 5px 10px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--raised); }
+
+.settings-key-saved { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 6px 6px 12px; border-radius: var(--r-sm); background: var(--panel-2); }
 .settings-key-saved > svg { flex: none; width: 15px; height: 15px; color: var(--text-2); }
-.settings-key-help { align-self: flex-start; min-height: 24px; font-size: 12px; }
-.settings-presets { flex-wrap: wrap; gap: 6px; }
+.settings-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+.settings-presets .btn { height: 24px; padding: 0 8px; box-shadow: none; }
 .settings-presets .btn[aria-current='true'] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 .settings-host { display: inline-block; max-width: 100%; overflow-wrap: anywhere; }
-.settings-advanced > summary { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; padding: 0 6px 0 2px; border-radius: var(--r-sm); font-size: 12px; font-weight: 500; color: var(--text-2); list-style: none; }
+/* A caution about where content goes, not a failure: a red ring and icon, without the problem fill. */
+.settings-remote-warning.scope-note.danger { margin-top: 6px; font-size: 12px; background: transparent; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 55%, transparent); }
+
+/* Advanced server options: the card's last row, a full-width disclosure. */
+.settings-advanced > summary { display: flex; align-items: center; gap: 6px; min-height: 42px; padding: 0 14px; border-radius: 0 0 calc(var(--r-md) - 1px) calc(var(--r-md) - 1px); font-size: 13px; font-weight: 500; color: var(--text-2); list-style: none; cursor: default; }
+.settings-advanced[open] > summary { border-radius: 0; }
 .settings-advanced > summary::-webkit-details-marker { display: none; }
-.settings-advanced > summary:hover { color: var(--text); }
+.settings-advanced > summary:hover { color: var(--text); background: var(--hover); }
+.settings-advanced > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
 .settings-advanced > summary svg { width: 14px; height: 14px; transition: transform 120ms; }
 .settings-advanced[open] > summary svg { transform: rotate(90deg); }
-.settings-advanced-body { display: flex; flex-direction: column; gap: 16px; padding-top: 10px; }
-.settings-rule { flex: none; width: 100%; height: 1px; margin: 0; border: 0; background: var(--border); }
+.settings-advanced-flag { margin-left: auto; font-size: 12px; font-weight: 500; color: var(--text-3); }
+.settings-advanced-body { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+@media (prefers-reduced-motion: reduce) { .settings-advanced > summary svg { transition: none; } }
+
 .settings-foot-note { font-size: 12px; color: var(--text-3); }
+/* A short window keeps more of the open section in view. */
+@media (max-height: 680px) {
+  .overlay-backdrop:has(> .modal .settings-body) { padding-top: 24px; }
+  .modal:has(.settings-body) { max-height: calc(100vh - 48px); }
+  .modal:has(.settings-body) .modal-head { padding-block: 12px 8px; }
+  .modal:has(.settings-body) .modal-foot { padding-block: 8px; }
+  .settings-panel:not([hidden]) { gap: 10px; padding-block: 12px 14px; }
+  .settings-provider { gap: 6px; }
+  .settings-status { padding: 10px 14px; }
+  .settings-row { padding: 9px 14px; }
+  .settings-advanced > summary { min-height: 36px; }
+}
 .side-panel-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .side-panel-view[hidden] { display: none; }
 .starting-mark { position: relative; display: grid; place-items: center; width: 64px; height: 64px; }

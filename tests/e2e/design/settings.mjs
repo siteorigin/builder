@@ -173,7 +173,7 @@ await shot('openai-typed', '#settings-api-key');
 // Testing the typed key, and what a rejected key says.
 await testAnswers({ ok: false, message: 'Incorrect API key provided. Check it and try again.' });
 await testButton.click();
-await statusSays('Connection failed');
+await statusSays('didn’t accept this key');
 await pause(250);
 await shot('openai-test-failed', PROBLEM, LIGHT, { full: true });
 
@@ -185,7 +185,8 @@ await shot('unsaved-confirm', '.modal >> text=Keep editing', BOTH, { full: true 
 await win.getByRole('button', { name: 'Keep editing' }).click();
 await pause(250);
 
-// Saved.
+// Saved, after pasting the key again (the failed test above stays with the key it tested, even once saved).
+await keyInput.fill('');
 await keyInput.fill(PLACEHOLDER_KEY);
 await keyInput.press('Enter');
 await win.locator('.modal button', { hasText: 'Remove' }).first().waitFor();
@@ -213,12 +214,12 @@ await pause(200);
 await shot('general-developer', '.modal [role="switch"][aria-checked="true"]', LIGHT);
 await tab('AI assistant').click();
 await win.locator('.settings-key-saved').waitFor();
-await win.locator('.modal button', { hasText: 'Other model' }).click();
+await win.locator('.modal button', { hasText: 'Use another model ID' }).click();
 const customModel = win.getByLabel('Custom model ID');
 await customModel.fill(LONG_MODEL_ID);
 await customModel.press('Enter');
 await pause(300);
-await shot('openai-custom-model', '.modal input[aria-label="Custom model ID"]', LIGHT);
+await shot('openai-custom-model', '.modal input#settings-model', LIGHT);
 await win.locator('.modal button', { hasText: 'Choose from list' }).click();
 await pause(250);
 await tab('General').click();
@@ -238,7 +239,7 @@ await win.locator('.settings-status:not(:has-text("Checking"))').first().waitFor
 await pause(300);
 await shot('local-first-run', '.settings-presets [aria-current="true"]', LIGHT);
 await typeServer('http://127.0.0.1:9/v1');
-await statusSays("Can't reach the server");
+await statusSays('Can’t reach the server');
 await pause(300);
 await shot('local-unreachable', PROBLEM);
 
@@ -290,9 +291,19 @@ await urlInput.fill('http://models.harbour-lane.invalid:11434/v1');
 await pause(250);
 await shot('local-remote-blocked', '.modal [role="switch"]', LIGHT);
 await win.getByRole('switch', { name: 'Allow a server on another machine' }).click();
-await win.locator('.modal [role="alert"]').first().waitFor();
+await win.locator('.modal .settings-remote-warning').first().waitFor();
 await pause(600);
-await shot('local-remote-allowed', '.modal [role="alert"]');
+await shot('local-remote-allowed', '.modal .settings-remote-warning');
+// A different machine typed while one is allowed: leaving the field does not switch to it, the status asks first.
+await urlInput.fill('http://gpu-box.harbour-lane.invalid:8080/v1');
+await urlInput.press('Tab');
+await win.locator(STATUS, { hasText: 'Switch to' }).first().waitFor();
+await pause(300);
+await shot('local-remote-switch', STATUS, LIGHT);
+await win.locator('.modal button', { hasText: 'Keep current server' }).waitFor();
+await urlInput.fill('http://models.harbour-lane.invalid:11434/v1');
+await urlInput.press('Enter');
+await pause(300);
 await win.getByRole('switch', { name: 'Allow a server on another machine' }).click();
 await pause(300);
 await typeServer(FIXTURE_URL);
