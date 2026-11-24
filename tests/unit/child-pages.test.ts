@@ -232,3 +232,27 @@ describe('a page inside another in the header menu', () => {
     expect(menu(s)).toHaveLength(10);
   });
 });
+
+describe('what else reads a page’s place', () => {
+  it('tells the AI which page a child page is inside', async () => {
+    const { projectSummary } = await import('@agent/context');
+    const pages = projectSummary(lookbook(), 1).pages;
+    expect(pages.find((p) => p.id === 'pg_kitchens')).toMatchObject({ parentPageId: 'pg_lookbook' });
+    expect(pages.find((p) => p.id === 'pg_spring01')).toMatchObject({ parentPageId: 'pg_kitchens' });
+    expect(pages.find((p) => p.id === 'pg_lookbook')).not.toHaveProperty('parentPageId');
+  });
+
+  it('holds a new address against the pages inside the page as well as its own address', async () => {
+    const { checkHeld, readFields } = await import('../../src/renderer/src/lib/held');
+    const s = lookbook();
+    const ops = [{ type: 'page.update' as const, pageId: 'pg_lookbook', route: '/work/lookbook/' }];
+    const base = readFields(s, ops)!.map((r) => (r.found ? r.value : undefined));
+    expect(checkHeld(s, ops, base).kind).toBe('apply');
+    // A page added inside Lookbook meanwhile would move too: the author is asked again.
+    const added = applyOperations(s, [{ type: 'page.create', title: 'Baths', route: '/lookbook/baths/' }]).state;
+    expect(checkHeld(added, ops, base).kind).toBe('changed');
+    // A page elsewhere does not matter.
+    const elsewhere = applyOperations(s, [{ type: 'page.create', title: 'Baths', route: '/baths/' }]).state;
+    expect(checkHeld(elsewhere, ops, base).kind).toBe('apply');
+  });
+});

@@ -732,7 +732,7 @@ export const header: ComponentDefinition = {
     links: P.list('Navigation', 'Link', {
       label: P.str('Label', 'Page'),
       link: P.link('Destination'),
-      sub: { ...P.bool('Show under the link above', false), description: 'Puts this link in a submenu under the nearest link above it that is not in one. Where the page itself is kept does not change.' }
+      sub: { ...P.bool('Show under the link above', false), description: 'In the submenu of the nearest top-level link above.' }
     }, [], { titleField: 'label', max: 10 }),
     ...P.group('Action', {
       ctaLabel: P.str('Action label', ''),

@@ -1,5 +1,5 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, CornerDownRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -31,6 +31,7 @@ import { selectPage } from '../lib/actions';
 import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@shared/fields';
 import type { TableEdit } from '@engine/table';
 import { TableEditor } from './TableEditor';
+import { isSubItem, menuGroups } from '@engine/tree';
 import { ImagesPicker, missingKey, pickGridKeys } from './ImagesPicker';
 import { isShellPart, type ShellPart } from '@shared/page-shell';
 import { documentDetails, documentLabels, isLibraryDocument, libraryDocuments } from '../lib/documents';
@@ -1740,6 +1741,20 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
     const t = schema.titleField ? x[schema.titleField] : Object.values(x).find((v) => typeof v === 'string' && v && v !== x.id);
     return typeof t === 'string' ? t.trim() : '';
   };
+  // In a menu with submenus, the link each item shows under (null for a top-level one), so the rows show the
+  // grouping the website will: moving or removing a link can regroup the ones after it.
+  const underOf: Array<string | null> = [];
+  if (menuGroups(schema)) {
+    let top: string | null = null;
+    items.forEach((it, i) => {
+      if (isSubItem(it) && top !== null) {
+        underOf[i] = top;
+      } else {
+        underOf[i] = null;
+        top = titleOf(it, i);
+      }
+    });
+  }
   const runtime = useStore((st) => st.runtime);
   const snapshot = useStore((st) => st.snapshot);
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
@@ -1844,7 +1859,7 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
           // A contact link that opens something other than its text is flagged on the closed row too.
           const flag = note?.error ?? (linkPairs?.some((p) => contactMismatch(it[p.text], it[p.link])) ? 'The link doesn’t open what visitors see.' : undefined);
           return (
-          <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}`}>
+          <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}${underOf[i] ? ' nested' : ''}`}>
             <div className="list-editor-head">
               {/* The chevron and title are one disclosure button, so the whole leading area opens the item. */}
               <button className="title" id={`list-head-${it.id}`} aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} aria-describedby={flag ? `list-flag-${it.id}` : undefined} onClick={() => setOpen(openId === it.id ? null : it.id)}>
@@ -1854,11 +1869,13 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
                     <AssetImage key={missingKey(snapshot, thumb.id)} asset={thumb} devUrl={devUrl} cover alt="" loading="lazy" />
                   </span>
                 )}
+                {underOf[i] && <CornerDownRight size={12} className="faint list-editor-under" aria-hidden="true" />}
                 <span className={`list-editor-name${untitled ? ' untitled' : ''}`}>
                   {untitled ? `Untitled ${schema.itemLabel.toLowerCase()}` : title}
                   {/* Its place in the list, which its move and remove buttons are named by. */}
                   {untitled && <span className="sr-only">, {title}</span>}
                 </span>
+                {underOf[i] && <span className="sr-only">, under {underOf[i]}</span>}
                 {/* A closed item still shows it needs attention. */}
                 {flag && (
                   <span className="list-editor-flag" title={flag} aria-hidden="true">

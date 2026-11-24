@@ -1,13 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Copy, CornerDownRight, FilePen, FilePlus, FileText, Globe, House, Menu, MoreHorizontal, Newspaper, Pencil, Plus, Search, Settings2, Trash2, ArrowUp, ArrowDown, Code, X } from 'lucide-react';
-import { slugify, validateRoute } from '@shared/routes';
+import { suggestRoute } from '@shared/routes';
 import type { ProjectState } from '@shared/types';
 import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
 import { PAGE_ADD_DRAFT } from '../lib/pending';
 import { openSection, rovingKeys, useMenu } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { goToShellPart, selectPage } from '../lib/actions';
-import { headerMenu as findHeaderMenu } from '@engine/tree';
+import { headerMenu as findHeaderMenu, headerMenuSlotUnder } from '@engine/tree';
 import { isDraftPage } from '@generator/index';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 
@@ -18,22 +18,15 @@ const FIND_FROM = 8;
 
 /**
  * The address a new page with this title gets inside `parent` (an address such as "/services/", or "/" for the top
- * level): its slug (made valid when it is a reserved name), with a numbered suffix when another page already has it,
- * kept within the 60-character segment limit. The same route is sent with the create request, so the preview is
- * exactly what the page gets.
+ * level): its slug (made valid when it is a reserved name, which only a top-level name can be), with a numbered
+ * suffix when another page already has it, kept within the 60-character segment limit. The same route is sent with
+ * the create request, so the preview is exactly what the page gets.
  */
 function newPageRoute(st: ProjectState, title: string, parent = '/'): { route: string; base: string; reserved?: string } {
-  let slug = slugify(title) || 'page';
-  // Only a top-level name can be reserved (/api/, /_app/); inside a section any name is free.
-  const reserved = parent === '/' && validateRoute(`/${slug}/`) ? `/${slug}/` : undefined;
-  if (reserved) slug = `${slug.slice(0, 55)}-page`;
-  const base = `${parent}${slug}/`;
   // Old addresses kept working count as taken: a new page is never given one without asking.
   const kept: unknown[] = Array.isArray(st.site.redirects) ? st.site.redirects : [];
   const taken = (r: string) => [...Object.values(st.pages).map((p) => p.route), ...kept.map((x) => (x as { from?: unknown })?.from)].some((u) => typeof u === 'string' && u.toLowerCase() === r.toLowerCase());
-  let route = base;
-  for (let i = 2; taken(route); i++) route = `${parent}${slug.slice(0, 60 - `-${i}`.length).replace(/-+$/, '')}-${i}/`;
-  return { route, base, reserved };
+  return suggestRoute(title, taken, 'page', parent);
 }
 
 const levels = (route: string) => route.split('/').filter(Boolean).length;
@@ -439,6 +432,9 @@ export function PagesPanel() {
   // The shared header's menu: its instance, when it has a navigation list a page link can join.
   const menuOf = findHeaderMenu(st);
   const headerMenu = menuOf ? { id: menuOf.node.id } : null;
+  // A page inside another joins the menu under that page's link, when the menu groups links and has one.
+  const menuItems = (menuOf?.node.props.links ?? menuOf?.schema.default ?? []) as Array<Record<string, unknown>>;
+  const navUnder = parent && menuOf && headerMenuSlotUnder(st, menuItems, parent.id).sub ? parent : null;
   /** Select the shared header and land on its navigation list, ready to edit. */
   const editMenu = () => {
     if (!headerMenu) return;
@@ -776,7 +772,7 @@ export function PagesPanel() {
                     setAddToNav(e.target.checked);
                   }}
                 />
-                Add to header menu
+                {navUnder ? `Add to header menu, under ${navUnder.navLabel || navUnder.title}` : 'Add to header menu'}
               </label>
             )}
             <div className="pages-add-actions">

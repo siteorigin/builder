@@ -194,11 +194,14 @@ export const isSubItem = (item: unknown): boolean => (item as { sub?: unknown } 
  * otherwise at the end, at the top level.
  */
 export function headerMenuSlot(state: ProjectState, items: ReadonlyArray<Record<string, unknown>>, pageId: string): { index: number; sub: boolean } {
+  return headerMenuSlotUnder(state, items, pageParents(Object.values(state.pages)).get(pageId) ?? null);
+}
+
+/** Where a new link goes in the header menu `items` for a page inside `parentId` (null: at the top level). */
+export function headerMenuSlotUnder(state: ProjectState, items: ReadonlyArray<Record<string, unknown>>, parentId: string | null): { index: number; sub: boolean } {
   const end = { index: items.length, sub: false };
   const menu = headerMenu(state);
-  if (!menu || !menuGroups(menu.schema)) return end;
-  const parentId = pageParents(Object.values(state.pages)).get(pageId);
-  if (!parentId) return end;
+  if (!menu || !menuGroups(menu.schema) || !parentId) return end;
   const at = items.findIndex((it) => {
     const link = it?.link as { type?: unknown; target?: unknown; anchor?: unknown } | undefined;
     return !isSubItem(it) && link?.type === 'page' && link.target === parentId && !link.anchor;
