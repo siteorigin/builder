@@ -67,9 +67,9 @@ async function beginEdit(node: string) {
 /** Keys reach the frame as they do once the author has double-clicked into it (focused before the edit begins,
  *  as there: focusing it later would move the selection the edit made). */
 const focusFrame = () => page.evaluate(`document.querySelector('iframe').focus()`);
-/** Right-click the middle of the third letter of `word` inside the element with this node id, with real mouse input. */
-async function rightClickWord(node: string, word: string) {
-  const at = await frame.evaluate<{ x: number; y: number }>(`(() => {
+/** The middle of the third letter of `word` inside the element with this node id. */
+async function wordPoint(node: string, word: string) {
+  return frame.evaluate<{ x: number; y: number }>(`(() => {
     const el = document.querySelector('[data-so-node="${node}"]');
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     for (let n = walker.nextNode(); n; n = walker.nextNode()) {
@@ -83,13 +83,17 @@ async function rightClickWord(node: string, word: string) {
     }
     throw new Error('word not found');
   })()`);
+}
+/** Right-click the middle of the third letter of `word` inside the element with this node id, with real mouse input. */
+async function rightClickWord(node: string, word: string) {
+  const at = await wordPoint(node, word);
   await page.mouse.click(at.x, at.y, { button: 'right' });
 }
-/** A caret inside `word` (not at either end of it), in the text node that holds it. */
-function expectCaretInWord(s: Selected | null, node: string, word: string) {
+/** The selection is on `word`, in the text node that holds it: the word itself, or a caret inside it. */
+function expectInWord(s: Selected | null, node: string, word: string) {
   expect(s).not.toBeNull();
-  expect(s!.collapsed).toBe(true);
   expect(s!.node).toBe(node);
+  if (!s!.collapsed) return expect(s!.text).toBe(word);
   const start = node.indexOf(word);
   expect(s!.offset).toBeGreaterThan(start);
   expect(s!.offset).toBeLessThan(start + word.length);
@@ -121,39 +125,44 @@ describe.skipIf(!browserInstalled)('right-clicking site copy while it is being e
 
   it('leaves a right-click on the edited text to the page, at the word under the pointer, and keeps the edit', async () => {
     await beginEdit('h');
-    // The edit starts with the whole heading selected, ready to be typed over.
-    expect((await selection()).text).toBe(HEADING);
+    // The edit starts with a caret, not the whole heading: whole text is for Select All.
+    expect((await selection()).collapsed).toBe(true);
     await rightClickWord('h', 'recieve');
-    // The whole selection gives way to a caret in the word clicked, where its spelling marker is.
-    expectCaretInWord(await atPress(), HEADING, 'recieve');
     const s = await flushed();
     expect(s.prevented).toEqual([false]);
     expect(s.messages.map((m) => m.type)).not.toContain('contextmenu');
     expect(s.messages.map((m) => m.type)).not.toContain('select');
-    expect((await selection()).text).not.toBe(HEADING);
+    // The browser puts the selection on the word under the pointer, where its spelling marker is.
+    expectInWord(await selection(), HEADING, 'recieve');
     expect(await frame.getAttribute('[data-so-node="h"]', 'contenteditable')).toBe('plaintext-only');
   });
 
   it('targets a word inside formatted rich text without leaving the edit', async () => {
     await beginEdit('r');
     await rightClickWord('r', 'recieve');
-    expectCaretInWord(await atPress(), 'recieve', 'recieve');
     const s = await flushed();
     expect(s.prevented).toEqual([false]);
     expect(s.messages.map((m) => m.type)).not.toContain('contextmenu');
     expect(s.messages.map((m) => m.type)).not.toContain('select');
+    expectInWord(await selection(), 'recieve', 'recieve');
     expect(await frame.innerHTML('[data-so-node="r"]')).toBe('<p>One <strong>recieve</strong> two</p>');
     expect(await frame.getAttribute('[data-so-node="r"]', 'contenteditable')).toBe('true');
   });
 
-  it('still goes to the word after Control is pressed and let go, as before a Control-click', async () => {
+  it('keeps the word a double-click selected for its spelling suggestions', async () => {
     await focusFrame();
-    await beginEdit('h');
-    expect((await selection()).text).toBe(HEADING);
-    await page.keyboard.down('Control');
-    await page.keyboard.up('Control');
+    await reset();
+    const at = await wordPoint('h', 'recieve');
+    await page.mouse.dblclick(at.x, at.y);
+    await expect.poll(async () => (await page.evaluate<Seen['messages']>(`window.seen`)).some((m) => m.type === 'dblclick')).toBe(true);
+    const dbl = (await page.evaluate<Array<Seen['messages'][number] & { payload: { hit?: string } }>>(`window.seen`)).find((m) => m.type === 'dblclick')!;
+    await page.evaluate(`document.querySelector('iframe').contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'beginTextEdit', payload: { desc: { ctx: 'page:p', node: 'h', items: '' }, editId: 'e-dbl', hit: ${JSON.stringify(dbl.payload.hit)} } }, '*')`);
+    await expect.poll(() => frame.getAttribute('[data-so-node="h"]', 'contenteditable')).toBe('plaintext-only');
+    expect((await selection()).text).toBe('recieve');
     await rightClickWord('h', 'recieve');
-    expectCaretInWord(await atPress(), HEADING, 'recieve');
+    expect((await atPress())?.text).toBe('recieve');
+    expect((await flushed()).prevented).toEqual([false]);
+    expect((await selection()).text).toBe('recieve');
   });
 
   it('keeps a selection the author made with the mouse for Cut and Copy', async () => {
