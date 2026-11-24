@@ -153,6 +153,11 @@ html:has(.so-viewer[open]) { overflow: hidden; }
   background: var(--so-btn-bg, transparent); color: var(--so-btn-fg, currentColor);
   transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
 }
+/* A button is as wide as its label and padding. Left to stretch, a button placed straight into a stack, a section or a
+   grid fills the whole row. Only the width is set, so a parent's centring or end alignment still places it. Zero
+   specificity: any Width the page sets, at any size, wins wherever it sits in the cascade. The header's call to
+   action is left to its own menu layout, which stretches it across the phone menu. */
+:where(.so-btn:not(.so-header__cta)) { width: fit-content; }
 /* Colours come from --so-btn-bg / --so-btn-fg, which the generator sets wherever a button's colours are styled
    (resetting --so-btn-bg-hover), so the hover state follows the colour actually shown. */
 :is(a, button).so-btn:active { transform: translateY(1px); }
