@@ -16,7 +16,7 @@ import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, buildSearchIndex, pag
 import { readField } from '../../src/renderer/src/lib/held';
 import { describeOps } from '@agent/report';
 import type { EditOperation } from '@shared/ops';
-import type { InstanceNode, ProjectState } from '@shared/types';
+import type { GraphNode, InstanceNode, ProjectState } from '@shared/types';
 
 const HELPER = `${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`;
 const INDEX = `${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`;
@@ -251,9 +251,19 @@ describe('site search index', () => {
     expect(text('pg_project1')).toContain('Shown everywhere.');
     expect(text('pg_project2')).not.toContain('secret');
     expect(text('pg_project3')).toContain('Hidden on phones only.');
-    // Shown again at one size, it is shown text.
+    // Shown again at one size, it is shown text: by its own setting, or by an arrangement that size gives it.
     section('pg_project2').overrides = { root: { base: { hidden: true }, desktop: { hidden: false } } };
     expect(text('pg_project2')).toContain('A secret kept on every screen.');
+    section('pg_project2').overrides = { root: { base: { hidden: true }, desktop: { layout: 'stack' } } };
+    expect(text('pg_project2')).toContain('A secret kept on every screen.');
+    // A hidden container hides what is inside it.
+    const page = s.pages.pg_project1;
+    page.nodes.n_box = { id: 'n_box', kind: 'element', tag: 'div', children: ['n_tucked'], styles: { base: { hidden: true } } } as GraphNode;
+    page.nodes.n_tucked = { id: 'n_tucked', kind: 'text', tag: 'p', text: 'Tucked away inside.' } as GraphNode;
+    page.rootIds.push('n_box');
+    expect(text('pg_project1')).not.toContain('Tucked away');
+    (page.nodes.n_box as GraphNode).styles = { base: { hidden: true }, tablet: { customCss: 'display: block;' } };
+    expect(text('pg_project1')).toContain('Tucked away inside.');
   });
 
   it('names a page with no title by its browser title or address, and survives hand-edited values', () => {
@@ -264,7 +274,8 @@ describe('site search index', () => {
     s.pages.pg_project1.title = '';
     s.pages.pg_project1.seo.title = 'Bench';
     s.pages.pg_project2.title = '';
-    (s.pages.pg_project3.seo as Record<string, unknown>).title = 123;
+    (s.pages.pg_project2.seo as Record<string, unknown>).title = 123;
+    (s.pages.pg_project2.seo as Record<string, unknown>).description = { text: 'not text' };
     (s.pages.pg_project3.seo as Record<string, unknown>).searchHidden = 'true';
     const index = buildSearchIndex(s);
     expect(index.find((e) => e.route === '/portfolio/workshop-commission-1/')).toMatchObject({ title: 'Bench' });
@@ -346,6 +357,7 @@ describe('site search as the website runs it', () => {
     expect(title('Cafe\u0301 menu', 'cafe')).toEqual(['Cafe\u0301']);
     expect(title('Banana', 'ana')).toEqual(['anana']);
     expect(title('\ufb01ne café', 'cafe')).toEqual(['café']);
+    expect(title('👍🏽 guide', '👍')).toEqual(['👍🏽']);
     expect(searchPages([{ route: '/a/', title: 'ΟΔΟΣ', text: '' }], 'οδός').total).toBe(1);
     expect(searchPages([{ route: '/a/', title: 'οδός', text: '' }], 'ΟΔΟΣ').total).toBe(1);
   });
@@ -356,6 +368,10 @@ describe('site search as the website runs it', () => {
     const found = searchPages([{ route: '/a/', title: 'Guide', text: 'x'.repeat(179) + '😀tail' }], 'guide');
     expect(read(found.results[0].excerpt)).not.toMatch(lone);
     expect(read(found.results[0].excerpt).endsWith('…')).toBe(true);
+    // A match deep in text that folds unevenly is still the one shown.
+    const deep = searchPages([{ route: '/a/', title: 'A', text: 'Ça ﬁt é. '.repeat(80) + 'The needle is here.' }], 'needle');
+    expect(marked(deep.results[0].excerpt)).toEqual(['needle']);
+    expect(read(deep.results[0].excerpt)).toMatch(/needle is here\.$/);
     // Writing without spaces keeps the words before the match, so two pages stay apart.
     const kyoto = searchPages(
       [

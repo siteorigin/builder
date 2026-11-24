@@ -44,10 +44,18 @@ export function searchHidden(page: PageDoc): boolean {
 
 const SIZES = ['phone', 'tablet', 'desktop'] as const;
 
-/** Whether a layer's own styles hide it at every size: the "Hide at every size" choice, or each size hidden. */
+/** Whether a size's own rule shows the layer again after an every-size hide: an arrangement, or a display in custom CSS. */
+function reshown(props: ResponsiveStyles['base']): boolean {
+  return props?.layout !== undefined || (typeof props?.customCss === 'string' && /(?:^|[;\s{])display\s*:\s*(?!none\b)/i.test(props.customCss));
+}
+
+/**
+ * Whether a layer's own styles hide it at every size: each size hides it in its own rule (where the hide comes last),
+ * or the every-size rule does and no size shows it again.
+ */
 function hiddenEverywhere(styles: ResponsiveStyles | undefined): boolean {
   if (!styles) return false;
-  return SIZES.every((size) => styles[size]?.hidden === true || (styles.base?.hidden === true && styles[size]?.hidden !== false));
+  return SIZES.every((size) => styles[size]?.hidden === true || (styles.base?.hidden === true && styles[size]?.hidden !== false && !reshown(styles[size])));
 }
 
 /**
@@ -145,10 +153,12 @@ const EXCERPT = 180;
 const LEAD = 60;
 
 const ASCII = /^[\\x00-\\x7f]*$/;
-const MARK = /^\\p{M}/u;
+/** What belongs to the character before it: an accent or other mark, or an emoji's skin tone. */
+const JOINS = /^[\\p{M}\\p{Emoji_Modifier}]/u;
 
 /** One character as search compares it: lower case, without accents, and a final sigma like any other. */
 function foldChar(c) {
+	if (c.charCodeAt(0) < 0x80) return c.toLowerCase();
 	return c.normalize('NFKD').replace(/\\p{M}/gu, '').toLowerCase().replace(/\\u03c2/g, '\\u03c3');
 }
 
@@ -194,7 +204,7 @@ function settle(text, i) {
 		const code = text.charCodeAt(i);
 		const before = text.charCodeAt(i - 1);
 		if (code >= 0xdc00 && code <= 0xdfff && before >= 0xd800 && before <= 0xdbff) i++;
-		else if (code === 0x200d || before === 0x200d || MARK.test(text.slice(i, i + 2))) i += text.codePointAt(i) > 0xffff ? 2 : 1;
+		else if (code === 0x200d || before === 0x200d || JOINS.test(text.slice(i, i + 2))) i += text.codePointAt(i) > 0xffff ? 2 : 1;
 		else break;
 	}
 	return i;
@@ -248,9 +258,22 @@ function highlight(text, words) {
 	return out;
 }
 
+/** Where the character a place in the folded text came from starts in the text. Reads no further than that place. */
+function originalAt(text, at) {
+	if (ASCII.test(text)) return at;
+	let folded = 0;
+	let i = 0;
+	for (const c of text) {
+		folded += foldChar(c).length;
+		if (folded > at) return i;
+		i += c.length;
+	}
+	return i;
+}
+
 /** A passage of the text around a place in its folded form (its start, without one), cut at spaces where it can. */
 function passage(text, words, at) {
-	const center = at >= 0 ? startOf(foldMap(text), at) : 0;
+	const center = at >= 0 ? originalAt(text, at) : 0;
 	let start = Math.max(0, center - LEAD);
 	if (start > 0) {
 		// From the first space before the match; in writing without spaces, from where the passage would start.
