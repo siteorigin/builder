@@ -61,6 +61,9 @@ await app.evaluate(({ ipcMain }) => {
   };
   swap('projects:recents', () => c.recents);
   swap('projects:removeRecent', () => undefined);
+  swap('projects:pinRecent', (_e, dir, pinned) => {
+    c.recents = c.recents.map((r) => (r.dir === dir ? { ...r, pinned } : r));
+  });
   swap('projects:websiteTools', () => (c.tools === 'hold' ? hold() : c.tools));
   swap('projects:open', () => (c.open === 'hold' ? hold() : c.open));
   swap('projects:create', (_e, opts) => {
@@ -143,12 +146,17 @@ await win.locator('.recent-filter input').fill('bakery');
 await pause(150);
 await shot('welcome-filter-none', '.recent-none', LIGHT, 'Clear filter');
 
+// Recurring clients pinned above the rest (#259), one of them missing; the newest project still leads the rest.
+await fresh({ recents: [...DENSE.slice(0, 18), { ...RECENTS[5], pinned: true }, { ...RECENTS[3], pinned: true }] });
+await shot('welcome-pinned', '.recent-group', BOTH, 'Pinned');
+
 await fresh({ recents: RECENTS }, SMALLEST);
 await shot('welcome-smallest', '.recent-grid', LIGHT);
 
-// Keyboard: Tab from the first card reaches its Remove button, then the second card.
+// Keyboard: Tab from the first card reaches its Remove button, its Pin button, then the second card.
 await fresh({ recents: RECENTS });
 await win.locator('.recent-card').first().focus();
+await win.keyboard.press('Tab');
 await win.keyboard.press('Tab');
 await win.keyboard.press('Tab');
 await shot('welcome-focus', '.recent-card:focus-visible', LIGHT);
