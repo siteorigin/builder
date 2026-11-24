@@ -142,6 +142,8 @@ describe('collections', () => {
     expect(() => apply(s, [{ type: 'collection.create', collectionId: 'news', route: '/blog/' }])).toThrow(/the Posts collection/);
     expect(() => apply(s, [{ type: 'entry.create', collectionId: 'posts', title: 'Team', slug: 'team' }])).toThrow(/the page “Team”/);
     expect(() => apply(s, [{ type: 'collection.update', collectionId: 'posts', route: '/about/' }])).toThrow(/\/about\/ is already the address of the page “About/);
+    // A new collection never takes an entry's address.
+    expect(() => apply(s, [{ type: 'collection.create', collectionId: 'spring', route: '/blog/spring-open-studio/' }])).toThrow(/the entry “Spring open studio”/);
     // An entry keeps its own slug, and a collection its own address.
     expect(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', slug: 'winter-hours' }).collections.posts.entries.en_winter.slug).toBe('winter-hours');
     expect(run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' }).collections.posts.settings.route).toBe('/blog/');
@@ -166,6 +168,10 @@ describe('collections', () => {
     let s = run(blog(), { type: 'page.create', title: 'Winter', route: '/news/winter-hours/' });
     expect(() => apply(s, [{ type: 'collection.update', collectionId: 'posts', route: '/news/' }])).toThrow(/would give “Winter hours” the address \/news\/winter-hours\/, which is the page “Winter”/);
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', slug: 'winter' });
+    // An old page address on a new entry address stops the move too.
+    const kept = structuredClone(s);
+    kept.site.redirects = [{ from: '/news/winter/', pageId: pageAt(s, '/about/').id }];
+    expect(() => apply(kept, [{ type: 'collection.update', collectionId: 'posts', route: '/news/' }])).toThrow(/old address of “About/);
     s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/news/', name: 'News' });
     expect(s.collections.posts.settings).toMatchObject({ route: '/news/', name: 'News' });
     expect(routeOwners(s).filter((o) => o.kind === 'entry').map((o) => o.route).sort()).toEqual(['/news/spring-open-studio/', '/news/winter/']);
@@ -416,6 +422,9 @@ describe('collections', () => {
     expect(s.collections.projects.entries.en_hall.values.hero).toEqual({ assetId: 'img_b', alt: 'New view' });
     expect(s.collections.projects.entries.en_park.values.hero).toEqual({ assetId: 'img_b', alt: 'The park at dusk' });
     expect(s.assets.assets).not.toHaveProperty('img_a');
+    // A copy of the same picture keeps every description.
+    const copy = run(base, { type: 'collection.create', collectionId: 'projects', fields: { hero: { type: 'image', label: 'Hero', default: { assetId: 'img_a', alt: 'Old view' } } } }, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b', keepAlt: true });
+    expect(copy.collections.projects.settings.fields.hero.default).toEqual({ assetId: 'img_b', alt: 'Old view' });
     // Removing a featured image is one use fewer.
     const before = assetUsages(s).img_b;
     expect(assetUsages(run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_park', featuredImage: null })).img_b).toBe(before - 1);
@@ -468,6 +477,10 @@ describe('collections', () => {
     const choice = run(s, { type: 'collection.update', collectionId: 'posts', fields: { mood: { type: 'enum', label: 'Mood', options: ['calm'] } } }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', values: { mood: 'calm' } });
     (choice.collections.posts.settings.fields.mood as { options: unknown }).options = 'calm';
     expect(codes(choice)).toContain('COLLECTION_INVALID');
+    for (const options of [[], [{}]]) {
+      (choice.collections.posts.settings.fields.mood as { options: unknown }).options = options;
+      expect(codes(choice), JSON.stringify(options)).toContain('COLLECTION_INVALID');
+    }
   });
 
   it('accepts every operation through the shared validator', () => {

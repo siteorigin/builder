@@ -167,6 +167,11 @@ describe('collections on disk', () => {
     expect(existsSync(join(dir, `${POSTS}/entries/en_spring.json`))).toBe(true);
     // An edit that reads no other entry goes ahead.
     await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', excerpt: 'Short' }] }, { label: 'Excerpt' }));
+    // So does a new page's address, which must be free of the unloaded entry's: it waits for it.
+    writeFileSync(join(dir, `${POSTS}/entries/en_launch.json`), JSON.stringify({ ...late, id: 'en_launch', slug: 'launch', body: [] }));
+    const page = await s.apply({ operations: [{ type: 'page.create', title: 'Launch', route: '/blog/launch/' }] }, { label: 'Add page' });
+    expect(page.error?.code).toBe('CONFLICT');
+    expect(Object.values(s.state.pages).some((p) => p.route === '/blog/launch/')).toBe(false);
   });
 
   it('refuses an undo that would leave an entry without its collection or beside another with its ID', async () => {

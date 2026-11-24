@@ -203,8 +203,9 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     const route = prefixRoute(op.route);
     // The collection and every entry move together: each new address must be free of everything else.
     const except = { collectionId: c.settings.id };
-    refuseTaken(state, route, except, 'address for the collection');
     const held = routeIndex(state);
+    const taken = held(route, except);
+    if (taken) fail(`${route} is already the address of ${taken.label}. Choose another address for the collection.`);
     for (const e of Object.values(c.entries)) {
       const holder = held(`${route}${e.slug}/`, except);
       if (holder) fail(`Moving the collection to ${route} would give “${e.title}” the address ${route}${e.slug}/, which is ${holder.label}'s. Change that entry's slug first, or choose another address.`);
@@ -408,7 +409,7 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
     if (taxonomies !== s.taxonomies || Object.entries(taxonomies).some(([id, t]) => !isTermId(id) || typeof t?.label !== 'string' || !t.terms || typeof t.terms !== 'object'))
       out.push({ severity: 'error', code: 'COLLECTION_INVALID', message: `${name}: its groupings are damaged.`, owner });
     const damaged = (f: CollectionFieldSchema | undefined) =>
-      !(COLLECTION_FIELD_TYPES as readonly unknown[]).includes(f?.type) || (f!.type === 'enum' && (!Array.isArray(f!.options) || !f!.options.every((o) => o && typeof o === 'object')));
+      !(COLLECTION_FIELD_TYPES as readonly unknown[]).includes(f?.type) || (f!.type === 'enum' && (!Array.isArray(f!.options) || !f!.options.length || !f!.options.every((o) => typeof o?.value === 'string')));
     const fieldsDamaged = fields !== s.fields || Object.values(fields).some(damaged);
     if (fieldsDamaged) out.push({ severity: 'error', code: 'COLLECTION_INVALID', message: `${name}: its custom fields are damaged.`, owner });
     for (const [k, f] of Object.entries(fields)) {

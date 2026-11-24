@@ -323,8 +323,15 @@ const isCollectionOperation = (o: EditOperation) => o.type.startsWith('collectio
  * hold, and a new address must be free of every page's and entry's. One changed outside the app since it was read
  * makes that check stale, so the change waits for it (see `wholeProject`).
  */
-function readsWholeProject(o: EditOperation): boolean {
+function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
   switch (o.type) {
+    // A page's new address must be free of every entry's too, once the project has any.
+    case 'page.create':
+    case 'page.duplicate':
+    case 'page.setHome':
+      return Object.keys(state.collections).length > 0;
+    case 'page.update':
+      return o.route !== undefined && Object.keys(state.collections).length > 0;
     case 'collection.create':
     case 'collection.remove':
     case 'entry.create':
@@ -1842,7 +1849,7 @@ export class ProjectSession extends EventEmitter {
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
       try {
-        ev = await this.persist(next, { ...opts, wholeProject: ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o)) });
+        ev = await this.persist(next, { ...opts, wholeProject: ops.some((o) => o.type === 'theme.refresh' || o.type === 'theme.apply' || readsWholeProject(o, this.state)) });
       } catch (e) {
         if (e instanceof DiskConflictError) return { ok: false, revision: this.revision, error: this.diskConflict(e) };
         throw e;
