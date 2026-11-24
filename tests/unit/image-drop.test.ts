@@ -475,14 +475,21 @@ describe('an image first, then between content (#506)', () => {
     expect(asked).toBe(0);
     // Taken by an image that can't be outlined (shown more than once): not dropped between content either.
     expect(assetAim(off, null, true, insert)).toEqual({ kind: 'none' });
+    expect(assetAim(onImage, null, true, insert)).toEqual({ kind: 'none' });
+    expect(assetAim(onImage, null, false, insert)).toEqual({ kind: 'none' });
+    expect(asked).toBe(0);
+    // An empty image off the pointer, not yet measured where it shows, is not yet known to take it.
+    expect(assetAim(off, rect, false, insert)).toEqual({ kind: 'pending' });
     expect(asked).toBe(0);
   });
 
   it('goes between content only once no image is targeted, and waits while what finds one is being measured', () => {
     const s = site();
-    const insert = () => between(s);
+    let asked = 0;
+    const insert = () => (asked++, between(s));
     // Nothing measured yet: an empty image off the pointer can't be counted, so nothing is known.
     expect(assetAim(null, null, false, insert)).toEqual({ kind: 'pending' });
+    expect(asked).toBe(0);
     expect(assetAim(null, null, true, insert)).toEqual({ kind: 'insert', aim: between(s) });
     // Where nothing can go, the place says why, with nowhere to drop.
     const refused: InsertAim = { at: null, refused: 'It has more than one place for content.', line: null, outline: rect, where: null };
@@ -499,6 +506,13 @@ describe('an image first, then between content (#506)', () => {
     expect(aimKey({ kind: 'pending' })).toBeNull();
     expect(aimKey(onImage)).toBe(aimKey({ ...onImage, outline: { ...rect, y: 50 } }));
     expect(aimKey(gap)).toBe(aimKey({ kind: 'insert', aim: { ...between(s), line: { ...line, y: 10 } } }));
-    expect(new Set([aimKey(onImage), aimKey(gap), aimKey({ kind: 'insert', aim: { ...between(s), at: { owner: s.owner, parentId: null, index: 2 } } }), aimKey({ kind: 'none' })]).size).toBe(4);
+    const at = (parentId: string | null, slot: string | undefined, index: number) => aimKey({ kind: 'insert', aim: { ...between(s), at: { owner: s.owner, parentId, ...(slot ? { slot } : {}), index } } });
+    // Each part of the place counts: the index, the list, the slot, the page.
+    const keys = [at(null, undefined, 1), at(null, undefined, 2), at(s.hero, 'content', 1), at(s.hero, 'other', 1), at(s.team, 'content', 1), aimKey({ kind: 'insert', aim: { ...between(s), at: { owner: { kind: 'page', id: 'about' }, parentId: null, index: 1 } } })];
+    expect(new Set(keys).size).toBe(keys.length);
+    // As does which image: the hero's own, or another.
+    const other = targets.find((t) => t !== media && t.field)!;
+    expect(aimKey({ kind: 'image', target: other, outline: rect })).not.toBe(aimKey(onImage));
+    expect(new Set([aimKey(onImage), aimKey(gap), aimKey({ kind: 'insert', aim: { ...between(s), at: null, refused: 'No.' } }), aimKey({ kind: 'none' })]).size).toBe(4);
   });
 });

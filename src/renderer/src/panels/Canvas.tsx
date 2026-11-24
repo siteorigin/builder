@@ -15,7 +15,7 @@ import { chainOf, descOrNull, measuredRects, pointedAt, rectList, spaceSizes, sp
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
 import { insertOps, insertRole, whereText, type InsertAt } from '../lib/insert-at';
-import { dropRefusal, incomingOrder, insertDestination, measuredLists, measureIds, savingProblems, type DropList, type Measured } from '../lib/insert-drop';
+import { dropRefusal, incomingOrder, insertDestination, measureIds, savingProblems, type DropList, type Measured } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { setAssetDropTarget, type AssetDrag } from '../lib/asset-drag';
 import { aimKey, assetAim, descKey, imageDropTargets, imageInsertOps, resolveImageDrop, type AssetAim, type ImageTarget } from '../lib/image-drop';
@@ -1659,7 +1659,7 @@ export function Canvas() {
         if (done) return;
         if (again) return measure();
         clearTimeout(timer);
-        lists = measuredLists(specs, new Map(ids.map((id, i) => [id, rects[i]])));
+        lists = dest.lists(new Map(ids.map((id, i) => [id, rects[i]])));
         show();
         if (released) end(true);
       });
@@ -1786,9 +1786,9 @@ export function Canvas() {
    * the component or list item the pointer is in. Where no image is targeted, the drop goes between content as a new
    * Image element, shown by the line and container outline an Insert tile shows there (the destination they share,
    * lib/insert-drop); a place that can't hold one shows no line. The release does what the page says is at the release
-   * point, as one change planned on the project as the drag found it; when that is not what the drag showed there as it
-   * was let go (the page moved under the pointer), nothing changes. Escape, leaving the window, or releasing off the
-   * page cancels. Only the pointer that started it moves or drops it. Returns false when the canvas can't take a drag
+   * point, measured again there, as one change planned on the project as the drag found it; when that is not what the
+   * drag showed as it was let go (the pointer outran the page's answers, or the page moved under it), nothing changes.
+   * Escape, leaving the window, or releasing off the page cancels. Only the pointer that started it moves or drops it. Returns false when the canvas can't take a drag
    * now.
    */
   function startAssetDrag(drag: AssetDrag, start: { x: number; y: number; pointerId: number }): boolean {
@@ -1801,7 +1801,7 @@ export function Canvas() {
     const owner: OwnerRef = { kind: 'page', id: s.pageId };
     const targets = imageDropTargets(st, s.pageId);
     // Between content, a new Image element holding the image, where an Insert tile's Image would go (it has no Order).
-    const dest = insertDestination(st, owner, 'element', 0, (at) => imageInsertOps(at, drag.assetId, newId('n')));
+    const dest = insertDestination(st, owner, 'element', 0, (at) => imageInsertOps(at, drag.assetId, newId('n')), 'use Place on page');
     const listIds = measureIds(dest.specs);
     // What is outlined for an empty image the pointer is not on (its own box, or the card that will show it); an empty
     // image whose box the page does not show now (in a tab not chosen) is not counted.
@@ -1827,8 +1827,11 @@ export function Canvas() {
     // What a release now does, and whether the pointer is on the page.
     let aim: AssetAim = { kind: 'none' };
     let over = false;
-    // What the drag showed a release would do as it was let go (null: it was not yet known there).
-    let shown: string | null = null;
+    // What the drag showed a release would do as it was let go.
+    let shown: AssetAim = { kind: 'pending' };
+    // Counts the wheel steps: the page's answer to a question asked before the latest one says what was there before it
+    // scrolled.
+    let scrolls = 0;
     const requests: string[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     let asking = false;
@@ -1854,6 +1857,8 @@ export function Canvas() {
       return { x: (point.x - wrap.left) / z, y: (point.y - wrap.top) / z, z };
     };
     const show = () => {
+      // A drag that has ended (an answer it was waiting on found the pointer off the page) shows nothing again.
+      if (done) return;
       const page = onPage();
       over = !!page;
       aim = { kind: over ? 'pending' : 'none' };
@@ -1881,7 +1886,9 @@ export function Canvas() {
       const idle = over && aim.kind !== 'image' && !ins?.at && !ins?.refused;
       setImageDrop({ name: word, x: point.x, y: point.y, over, idle, outline: aim.kind === 'image' ? aim.outline : null, line: ins?.line ?? null, list: ins?.outline ?? null, label, refused: ins?.refused ?? null });
     };
-    const ready = () => released && fresh && !!pointed && pointed.at.x === point.x && pointed.at.y === point.y && !!measured && !!lists && !asking;
+    // An image the page says is at the release point needs nothing measured; anywhere else, what was measured after the
+    // release (see `up`).
+    const ready = () => released && fresh && !!pointed && pointed.at.x === point.x && pointed.at.y === point.y && !asking && (aim.kind === 'image' || (!!measured && !!lists));
     /** Ask the page what is under the pointer; one question on its way at a time, the latest place asked after it. */
     const ask = () => {
       if (done) return;
@@ -1900,6 +1907,7 @@ export function Canvas() {
       askAgain = false;
       const asked = { ...point };
       const late = released;
+      const step = scrolls;
       const requestId = Math.random().toString(36).slice(2);
       requests.push(requestId);
       measureWaiters.current.set(requestId, (raw) => {
@@ -1907,13 +1915,15 @@ export function Canvas() {
         asking = false;
         if (done) return;
         // An answer from a page still showing an older version of the project than the drag found counts for nothing
-        // (its elements may show other fields): the page is asked again once it shows that version (see `applied`).
-        const p = shownRevision.current >= revision ? pointedAt(raw) : null;
+        // (its elements may show other fields): the page is asked again once it shows that version (see `applied`). Nor
+        // does one asked before the page last scrolled, which is asked again (see `wheel`).
+        const p = shownRevision.current >= revision && step === scrolls ? pointedAt(raw) : null;
         pointed = p ? { ...p, at: asked } : null;
         if (late && p) fresh = true;
         if (p) scrolled = p.scroll;
         if (p && p.scroll !== measuredAt) measure();
         if (askAgain) ask();
+        if (done) return;
         show();
         if (ready()) end(true);
       });
@@ -1936,7 +1946,7 @@ export function Canvas() {
         if (done) return;
         if (measureAgain) return measure();
         measured = new Map(boxes.map((d, i) => [descKey(d), rects[i]]));
-        lists = measuredLists(dest.specs, new Map(listIds.map((id, i) => [id, rects[boxes.length + i]])));
+        lists = dest.lists(new Map(listIds.map((id, i) => [id, rects[boxes.length + i]])));
         show();
         if (ready()) end(true);
       });
@@ -1967,9 +1977,12 @@ export function Canvas() {
       setImageDrop(null);
       if (!commit || !over || getState().snapshot?.workspaceKey !== opening) return;
       const at = aim.kind === 'insert' ? aim.aim.at : null;
-      // The page moved under the pointer after the drag showed what a release there does: neither is done.
-      if (shown !== null && aimKey(aim) !== shown) {
-        if (aim.kind === 'image' || at) toast(`The page moved under the pointer, so ${word} wasn’t placed. Drag it again.`, 'info');
+      // What is at the release point is not what the drag showed there as it was let go (the pointer outran the page's
+      // answers, or the page moved under it): neither is done. Nothing shown yet promised nothing, so it is done.
+      const promised = aimKey(shown);
+      if (promised !== null && promised !== aimKey(aim)) {
+        const acts = (a: AssetAim) => a.kind === 'image' || (a.kind === 'insert' && !!a.aim.at);
+        if (acts(shown) || acts(aim)) toast(`Where ${word} would go changed as it was let go, so it wasn’t placed. Drag it again.`, 'info');
         return;
       }
       if (aim.kind === 'image') void dropAsset(drag.assetId, aim.target, revision);
@@ -1985,19 +1998,21 @@ export function Canvas() {
     };
     const up = (ev: PointerEvent) => {
       if (!mine(ev)) return;
-      // What the drag shows now counts only where the page has answered for the release point itself.
-      shown = pointed && pointed.at.x === ev.clientX && pointed.at.y === ev.clientY ? aimKey(aim) : null;
+      // What the drag shows as it is let go: a release does that, or nothing.
+      shown = aim;
       point = { x: ev.clientX, y: ev.clientY };
       released = true;
       listen(false);
       // Let go off the page (or over the editor's own menus and notes): nothing changes.
       if (!onPage()) return end(false);
-      // The drop goes where it was let go, once the page has said what is there now.
+      // The drop goes where it was let go, once the page has said what is there now, measured where it now lays out (a
+      // picture or font that loaded meanwhile can move it without a scroll).
       timer = setTimeout(() => {
         if (done) return;
         end(false);
         toast(`The page didn’t answer, so ${word} wasn’t placed. Drag it again.`, 'info');
       }, 3000);
+      measure();
       ask();
     };
     const cancel = (ev?: Event) => {
@@ -2017,6 +2032,7 @@ export function Canvas() {
       if (released || !onPage() || !ev.deltaY) return;
       ev.preventDefault();
       post('scrollBy', { y: ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY });
+      scrolls++;
       pointed = null;
       measuredAt = null;
       show();

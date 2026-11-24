@@ -61,8 +61,12 @@ function shownSlots(state: ProjectState, definitionId: string): string[] {
   return names.filter((n) => placed.has(n));
 }
 
-/** Every list on a page that a drop can go into: its top level first, then each container and component slot. */
-export function dropListSpecs(state: ProjectState, owner: OwnerRef): ListSpec[] {
+/** How a refusal says to put something in a place a drop can't reach: for a tile from Insert, by clicking it. */
+const BY_CLICK = 'click the tile';
+
+/** Every list on a page that a drop can go into: its top level first, then each container and component slot. `how`
+ *  says how a refusal tells the author to put it in a place a drop can't reach. */
+export function dropListSpecs(state: ProjectState, owner: OwnerRef, how = BY_CLICK): ListSpec[] {
   const tree = treeFor(state, owner);
   // A page, or a collection's layout, which is laid out like one.
   if (!tree || (owner.kind !== 'page' && owner.kind !== 'template')) return [];
@@ -84,7 +88,7 @@ export function dropListSpecs(state: ProjectState, owner: OwnerRef): ListSpec[] 
       else if (slots.length > 1) {
         // Each slot is found by what is in it; the rest of the component names no one slot.
         for (const slot of slots) if (filled(slot).length) lists.push({ parentId: id, slot, childIds: filled(slot), byChildren: true, depth: d + 0.5 });
-        lists.push({ parentId: id, childIds: [], refused: 'It has more than one place for content. Drop it onto what is already in one, or select a place and click the tile.', depth: d });
+        lists.push({ parentId: id, childIds: [], refused: `It has more than one place for content. Drop it onto what is already in one, or select a place and ${how}.`, depth: d });
       }
     }
   }
@@ -109,7 +113,7 @@ const union = (boxes: Box[]): Box | null => {
 };
 
 /** The lists with their measures. A nested list that does not show (its holder hidden at this width) is left out. */
-export function measuredLists(specs: ListSpec[], measured: Map<string, Measured | null>): DropList[] {
+export function measuredLists(specs: ListSpec[], measured: Map<string, Measured | null>, how = BY_CLICK): DropList[] {
   const at = (id: string) => measured.get(id) ?? null;
   // The list each node sits in, for whether a holder shares a row with a sibling.
   const inList = new Map<string, ListSpec>();
@@ -132,7 +136,7 @@ export function measuredLists(specs: ListSpec[], measured: Map<string, Measured 
         box,
         children,
         ...(l.parentId && holder && besideSibling(l.parentId, holder) ? { sideways: true } : {}),
-        ...(many && !l.refused ? { refused: 'This content shows more than once on the page. Select a place inside it and click the tile instead.' } : {})
+        ...(many && !l.refused ? { refused: `This content shows more than once on the page. Select a place inside it and ${how} instead.` } : {})
       }
     ];
   });
@@ -267,13 +271,14 @@ export interface InsertAim {
 /**
  * The canvas drop destination every drag of something new shares, so an Insert tile (#52) and an Assets image dropped
  * between content (#506) go to the same place and show it the same way. For something placed as `role` on `owner`
- * (`own`: its CSS order, see incomingOrder): the lists that can take it, for the canvas to measure, and once they are
- * measured, what a drop at a point in page pixels does, the page drawn at `scale`. Whether the project takes it in a
- * list (`ops` there, the change the drop would make) is tried once per list, on a copy, against the problems the
- * project already has.
+ * (`own`: its CSS order, see incomingOrder): the lists that can take it, for the canvas to measure (`specs`, then
+ * `lists` with their measures), and what a drop at a point in page pixels does, the page drawn at `scale`. Whether the
+ * project takes it in a list (`ops` there, the change the drop would make) is tried once per list, on a copy, against
+ * the problems the project already has. `how` says how to put it where a drop can't reach (see dropListSpecs).
  */
-export function insertDestination(state: ProjectState, owner: OwnerRef, role: InsertRole, own: number | null, ops: (at: InsertAt) => EditOperation[]) {
-  const specs = dropListSpecs(state, owner);
+export function insertDestination(state: ProjectState, owner: OwnerRef, role: InsertRole, own: number | null, ops: (at: InsertAt) => EditOperation[], how = BY_CLICK) {
+  const specs = dropListSpecs(state, owner, how);
+  const lists = (measured: Map<string, Measured | null>) => measuredLists(specs, measured, how);
   const checked = new Map<string, string | null>();
   let problems: Diagnostic[] | null = null;
   const refusal = (at: InsertAt) => {
@@ -292,5 +297,5 @@ export function insertDestination(state: ProjectState, owner: OwnerRef, role: In
     if (refused || t.index === null) return { at: null, refused, line: null, outline, where: null };
     return { at, refused: null, line: t.line, outline, where: whereFor(state, at, role) };
   };
-  return { specs, aim };
+  return { specs, lists, aim };
 }

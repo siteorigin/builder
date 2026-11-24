@@ -332,10 +332,13 @@ describe('an Assets image dropped between content (#506)', () => {
     const p = withPortrait();
     const { aim, after } = p.drop(500, 396);
     expect(aim).toMatchObject({ at: { owner: p.owner, parentId: null, index: 1 }, refused: null, where: { lead: 'in a new section after' } });
+    expect(aim.line).toEqual(dropTarget(p.lists, 'element', 500, 396, 10, 0)!.line);
+    expect(aim.line!.width).toBeGreaterThan(aim.line!.height);
     expect(aim.line).toMatchObject({ y: 399 });
     expect(after!.rootIds).toHaveLength(3);
     expect([after!.rootIds[0], after!.rootIds[2]]).toEqual([p.first, p.second]);
     const made = after!.nodes[after!.rootIds[1]] as InstanceNode;
+    expect(p.state.components[made.definitionId].componentId).toBe('layout.section');
     expect(made.slots!.content).toEqual(['n_portrait']);
     expect(after!.nodes.n_portrait).toMatchObject(image);
   });
@@ -351,14 +354,27 @@ describe('an Assets image dropped between content (#506)', () => {
     // Over the second card's left half: between the two cards.
     const inGrid = p.drop(600, 150);
     expect(inGrid.aim).toMatchObject({ at: { parentId: p.grid, index: 1 }, where: { lead: 'after' } });
+    // A vertical line between the two cards.
+    expect(inGrid.aim.line!.height).toBeGreaterThan(inGrid.aim.line!.width);
     expect((inGrid.after!.nodes[p.grid] as ElementNode).children).toEqual([p.a, 'n_portrait', p.b]);
   });
 
-  it('inside an empty column, shown by the column’s outline alone', () => {
+  it('inside an empty column, shown by the column’s outline alone, drawn at least 4 screen pixels tall', () => {
     const p = withPortrait();
     const { aim, after } = p.drop(300, 320);
     expect(aim).toMatchObject({ at: { parentId: p.stack, index: 0 }, line: null, outline: box(100, 280, 400, 80), where: { lead: 'inside' } });
     expect((after!.nodes[p.stack] as ElementNode).children).toEqual(['n_portrait']);
+    // A column with nothing in it yet measures as a line: still the column, outlined 4px tall around it at half scale.
+    const flat = p.dest.lists(new Map(p.measured).set(p.stack, box(100, 300, 400, 0)));
+    expect(p.dest.aim(flat, 300, 300, 0.5)).toMatchObject({ at: { parentId: p.stack, index: 0 }, line: null, outline: { x: 100, y: 296, width: 400, height: 8 } });
+  });
+
+  it('says to use Place on page where a drop can’t reach, not to click a tile', () => {
+    const p = withPortrait();
+    const many = new Map(p.measured).set(p.a, { ...box(100, 50, 390, 200), many: true });
+    const assets = insertDestination(p.state, p.owner, 'element', 0, (at) => imageInsertOps(at, photo.id, 'n_portrait'), 'use Place on page');
+    expect(assets.aim(assets.lists(many), 600, 150, 1)!.refused).toBe('This content shows more than once on the page. Select a place inside it and use Place on page instead.');
+    expect(p.dest.aim(p.dest.lists(many), 600, 150, 1)!.refused).toBe('This content shows more than once on the page. Select a place inside it and click the tile instead.');
   });
 
   it('shows no line where an Image can’t go, and has no place to drop it', () => {
@@ -367,13 +383,20 @@ describe('an Assets image dropped between content (#506)', () => {
     const def = p.state.components[(p.state.pages[p.owner.id].nodes[p.second] as InstanceNode).definitionId];
     def.slots!.content = { ...def.slots!.content, primitives: ['text'] };
     const dest = insertDestination(p.state, p.owner, 'element', 0, (at: InsertAt) => imageInsertOps(at, photo.id, 'n_portrait'));
+    const lists = dest.lists(new Map(p.measured).set(p.stack, box(100, 280, 400, 80)));
     for (const [x, y] of [
       [500, 550],
       [500, 396]
     ]) {
-      const aim = dest.aim(measuredLists(dest.specs, new Map(p.measured)), x, y, 1)!;
+      const aim = dest.aim(lists, x, y, 1)!;
       expect(aim).toMatchObject({ at: null, line: null, where: null });
       expect(aim.refused).toMatch(/takes text, not an image/);
     }
+    // Each place is checked for itself: the column, which no slot holds, still takes it, before and after a refused one.
+    const fresh = insertDestination(p.state, p.owner, 'element', 0, (at: InsertAt) => imageInsertOps(at, photo.id, 'n_portrait'));
+    const freshLists = fresh.lists(new Map(p.measured).set(p.stack, box(100, 280, 400, 80)));
+    expect(fresh.aim(freshLists, 300, 320, 1)).toMatchObject({ at: { parentId: p.stack }, refused: null });
+    expect(fresh.aim(freshLists, 500, 550, 1)).toMatchObject({ at: null });
+    expect(lists && dest.aim(lists, 300, 320, 1)).toMatchObject({ at: { parentId: p.stack }, refused: null });
   });
 });

@@ -1200,9 +1200,11 @@ describe('placing a library image from Assets (issue #13)', () => {
     }
 
     it('between two sections, puts a new Image in a Section of its own there, as one change one Undo takes back, selected with its inspector open', async () => {
-      const { owner, page, section, revision, entries, uses } = await onHome();
+      const { owner, page, section, intro, revision, entries, uses } = await onHome();
       const next = page().rootIds[1];
       const history = entries();
+      // The AI tab is open, the dock closed: the new image's inspector opens all the same.
+      store.setState({ rightTab: 'chat', dockOpen: false });
       expect(await actions.dropAssetAt(photo.id, { owner, parentId: null, index: 1 }, revision())).toBe(true);
       expect(page().rootIds[0]).toBe(section);
       expect(page().rootIds[2]).toBe(next);
@@ -1219,6 +1221,16 @@ describe('placing a library image from Assets (issue #13)', () => {
       await vi.waitFor(() => expect(page().rootIds).not.toContain(made.id));
       expect(page().nodes[img.id]).toBeUndefined();
       expect(uses(photo.id)).toBe(0);
+      // Its Undo is for that change alone: with an edit made since, it takes neither away.
+      expect(await actions.dropAssetAt(photo.id, { owner, parentId: null, index: 0 }, revision())).toBe(true);
+      expect(session!.state.components[(page().nodes[page().rootIds[0]] as InstanceNode).definitionId].componentId).toBe('layout.section');
+      expect(page().rootIds[1]).toBe(section);
+      const again = lastToast()!;
+      await write([{ type: 'node.setContent', owner, nodeId: intro, field: 'text', value: 'Welcome' }]);
+      again.action!.run();
+      await vi.waitFor(() => expect(lastToast()).toMatchObject({ kind: 'error' }));
+      expect(page().nodes[intro]).toMatchObject({ text: 'Welcome' });
+      expect(uses(photo.id)).toBe(1);
     });
 
     it('between two elements inside a section, and inside a column of a grid', async () => {
@@ -1267,15 +1279,51 @@ describe('placing a library image from Assets (issue #13)', () => {
 
     it('writes nothing when the project changed while the image was dragged, or on a page the author has left', async () => {
       const { owner, page, section, intro, revision } = await onHome();
+      const at = { owner, parentId: section, slot: 'content', index: 1 };
       const rev = revision();
       await write([{ type: 'node.setContent', owner, nodeId: intro, field: 'text', value: 'Hello' }]);
-      expect(await actions.dropAssetAt(photo.id, { owner, parentId: section, slot: 'content', index: 1 }, rev)).toBe(false);
+      expect(await actions.dropAssetAt(photo.id, at, rev)).toBe(false);
       expect(lastToast()).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
       expect(placed(page(), photo.id)).toEqual([]);
+      // Changed where this window has not heard of it yet: the project itself refuses it, once, without trying again.
       const calls = applyCalls;
-      store.setState({ pageId: 'elsewhere' });
-      expect(await actions.dropAssetAt(photo.id, { owner, parentId: section, slot: 'content', index: 1 }, revision())).toBe(false);
-      expect(applyCalls).toBe(calls);
+      beforeApply = () => write([{ type: 'node.setContent', owner, nodeId: intro, field: 'text', value: 'Hi' }]);
+      expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(false);
+      expect(applyCalls).toBe(calls + 1);
+      expect(lastToast()).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
+      expect(placed(page(), photo.id)).toEqual([]);
+      publish();
+      // Another page is open now (About): the place on Home is not where the author is.
+      const about = Object.keys(session!.state.pages).find((id) => id !== owner.id)!;
+      store.setState({ pageId: about });
+      expect(actions.assetDropRefusal(photo.id)).toBeNull();
+      const toasts = store.getState().toasts.length;
+      expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(false);
+      // Nor is a place that is on no page.
+      expect(await actions.dropAssetAt(photo.id, { owner: { kind: 'shell', id: 'header' }, parentId: null }, revision())).toBe(false);
+      expect(applyCalls).toBe(calls + 1);
+      expect(store.getState().toasts).toHaveLength(toasts);
+      expect(placed(page(), photo.id)).toEqual([]);
+    });
+
+    it('leaves a selection, tab or dock the author changed while it saved', async () => {
+      const { owner, page, section, intro, revision } = await onHome();
+      const at = { owner, parentId: section, slot: 'content', index: 0 };
+      store.setState({ rightTab: 'inspect', dockOpen: true });
+      const picked = { owner, instancePath: [], nodeId: intro };
+      beforeApply = async () => store.setState({ selection: picked });
+      expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(true);
+      expect(store.getState().selection).toBe(picked);
+      beforeApply = async () => store.setState({ rightTab: 'chat' });
+      expect(await actions.dropAssetAt(nook.id, at, revision())).toBe(true);
+      expect(store.getState()).toMatchObject({ rightTab: 'chat', dockOpen: true });
+      store.setState({ rightTab: 'inspect' });
+      beforeApply = async () => store.setState({ dockOpen: false });
+      expect(await actions.dropAssetAt(photo.id, at, revision())).toBe(true);
+      expect(store.getState()).toMatchObject({ rightTab: 'inspect', dockOpen: false });
+      // Each was placed all the same.
+      expect(placed(page(), photo.id)).toHaveLength(2);
+      expect(placed(page(), nook.id)).toHaveLength(1);
     });
   });
 });
