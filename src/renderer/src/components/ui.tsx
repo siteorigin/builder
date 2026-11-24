@@ -558,11 +558,27 @@ export function Field({ label, children, hint, error, extra, controlId: explicit
   );
 }
 
-export function Segmented<T extends string>({ value, options, onChange, full, label }: { value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string }>; onChange: (v: T) => void; full?: boolean; label?: string }) {
+/**
+ * A row of mutually exclusive options. With `radio` it is exposed as a radio group (WAI-ARIA APG): one tab
+ * stop, and the arrow keys move and select. `labelledBy` and `describedBy` name it from visible text.
+ */
+export function Segmented<T extends string>({ value, options, onChange, full, label, radio, labelledBy, describedBy }: { value: T; options: Array<{ value: T; label?: ReactNode; icon?: ReactNode; title?: string }>; onChange: (v: T) => void; full?: boolean; label?: string; radio?: boolean; labelledBy?: string; describedBy?: string }) {
+  const current = Math.max(0, options.findIndex((o) => o.value === value));
+  const move = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
+    if (!step || !options.length) return;
+    e.preventDefault();
+    // From the focused option, since a saved value can lag behind quick presses.
+    const buttons = [...e.currentTarget.querySelectorAll('button')];
+    const from = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const next = ((from < 0 ? current : from) + step + options.length) % options.length;
+    onChange(options[next].value);
+    buttons[next]?.focus();
+  };
   return (
-    <div className={`segmented${full ? ' full' : ''}`} role="group" aria-label={label}>
-      {options.map((o) => (
-        <button key={o.value} aria-pressed={value === o.value} onClick={() => onChange(o.value)} title={o.title} aria-label={o.title}>
+    <div className={`segmented${full ? ' full' : ''}`} role={radio ? 'radiogroup' : 'group'} aria-label={labelledBy ? undefined : label} aria-labelledby={labelledBy} aria-describedby={describedBy} onKeyDown={radio ? move : undefined}>
+      {options.map((o, i) => (
+        <button key={o.value} {...(radio ? { role: 'radio', 'aria-checked': value === o.value, tabIndex: i === current ? 0 : -1 } : { 'aria-pressed': value === o.value })} onClick={() => onChange(o.value)} title={o.title} aria-label={o.title}>
           {o.icon}
           {o.label}
         </button>

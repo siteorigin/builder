@@ -1,18 +1,56 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { RefreshCw, TriangleAlert } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ChevronRight, RefreshCw, Shield, TriangleAlert } from 'lucide-react';
 import type { AppSettings, SettingsPatch } from '@shared/api';
 import { checkLocalBaseURL, LOCAL_PRESETS, type LocalToolMode } from '@shared/local';
 import { api, setState } from '../store';
 import { Field, SwitchRow } from '../components/ui';
 
+/**
+ * The server in use, for the connection status. `url` is the saved address (empty when it cannot be used),
+ * which is the only one ever contacted, whatever is being typed. `revision` identifies the latest answer
+ * from it, so a test result never outlives a newer check.
+ */
+export type LocalServerStatus = { url: string; remote: boolean; revision: number; refresh: () => Promise<number>; apply: () => void; revert: () => void; openKey: () => void } & (
+  | { phase: 'invalid' | 'pending' | 'checking' | 'empty' }
+  | { phase: 'unreachable'; reason: 'offline' | 'auth' | 'other'; message: string }
+  | { phase: 'ready'; models: number; missing: boolean }
+);
+
+// Unique across this panel's mounts, so a result kept by the dialog can never match a later discovery.
+let discoveries = 0;
+
+const failureReason = (message: string) => (/rejected the API key/i.test(message) ? 'auth' : /^Could not connect|did not answer/i.test(message) ? 'offline' : 'other');
+
 /** Where the local model is served, which model to use, and how it calls tools. */
-export function LocalModelSettings({ settings, update, keyRevision }: { settings: AppSettings; update: (patch: SettingsPatch) => Promise<void>; keyRevision: number }) {
+export function LocalModelSettings({
+  settings,
+  update,
+  keyRevision,
+  keySaved,
+  revealKey,
+  status,
+  keyField
+}: {
+  settings: AppSettings;
+  update: (patch: SettingsPatch) => Promise<void>;
+  keyRevision: number;
+  keySaved: boolean;
+  /** Opens the advanced options because the key field there needs attention. */
+  revealKey: boolean;
+  /** Renders the connection status for the server's current state. */
+  status: (server: LocalServerStatus) => ReactNode;
+  /** The optional server key, shown with the advanced options. */
+  keyField: ReactNode;
+}) {
   const local = settings.ai.local;
   const model = settings.ai.models.local;
   const [draft, setDraft] = useState(local.baseURL);
   const [models, setModels] = useState<string[]>([]);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [reach, setReach] = useState<{ ok: boolean; message?: string } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [revision, setRevision] = useState(0);
+  // Open when something in it is already in use, so a customized setting is never hidden.
+  const [advanced, setAdvanced] = useState(local.toolMode !== 'auto' || keySaved);
   const request = useRef(0);
   const statusRequest = useRef(0);
   // Whether the field holds something the user typed, as opposed to the saved address.
@@ -26,16 +64,21 @@ export function LocalModelSettings({ settings, update, keyRevision }: { settings
   // The warning describes the server actually in use, whatever is being typed.
   const saved = checkLocalBaseURL(local.baseURL, local.allowRemote);
   const savedRemoteHost = saved.ok && saved.remote ? new URL(saved.url).host : null;
+  const typedHost = offMachine.ok && offMachine.remote ? new URL(offMachine.url).host : savedRemoteHost;
 
   const refresh = useCallback(async () => {
-    const id = ++request.current;
+    const id = ++discoveries;
+    request.current = id;
     setLoading(true);
-    const r = await api.ai.localModels();
+    // A failed request settles like any other answer, so the panel never stays on "Checking".
+    const r = await api.ai.localModels().catch((e: unknown) => ({ ok: false, models: [] as string[], message: e instanceof Error ? e.message : 'Could not reach the server.' }));
     // A slower answer from the previous address must not replace this one.
-    if (id !== request.current) return;
+    if (id !== request.current) return id;
     setLoading(false);
     setModels(r.models);
-    setProblem(r.ok ? (r.models.length ? null : 'The server has no models loaded.') : (r.message ?? 'Could not reach the server.'));
+    setReach({ ok: r.ok, message: r.message ?? 'Could not reach the server.' });
+    setRevision(id);
+    return id;
   }, []);
 
   useEffect(() => {
@@ -49,6 +92,11 @@ export function LocalModelSettings({ settings, update, keyRevision }: { settings
   useEffect(() => {
     if (!edited.current) setDraft(local.baseURL);
   }, [local.baseURL]);
+
+  const authProblem = !!reach && !reach.ok && failureReason(reach.message ?? '') === 'auth';
+  useEffect(() => {
+    if (keySaved || revealKey || authProblem) setAdvanced(true);
+  }, [keySaved, revealKey, authProblem]);
 
   // Half-typed addresses are never contacted: a URL is saved, and so used, only when it is committed.
   const commit = (value = draft) => {
@@ -94,15 +142,48 @@ export function LocalModelSettings({ settings, update, keyRevision }: { settings
     }
     void update({ ai: { local: { allowRemote: allow, ...(allow && next.ok ? { baseURL: next.url } : {}) } } });
   };
-  const options = model && !models.includes(model) ? [model, ...models] : models;
+  const missing = !!model && !models.includes(model);
+  const url = saved.ok ? saved.url : '';
+  // Results only ever describe the saved address, so a different one in the field holds them back.
+  const revert = () => {
+    edited.current = false;
+    submitted.current = local.baseURL;
+    setDraft(local.baseURL);
+  };
+  const openKey = () => {
+    setAdvanced(true);
+    requestAnimationFrame(() => (document.getElementById('settings-api-key') ?? document.getElementById('settings-key-replace'))?.focus());
+  };
+  const base = { url, remote: !!savedRemoteHost, revision, refresh, apply: () => commit(), revert, openKey };
+  const server: LocalServerStatus = !check.ok
+    ? { ...base, phase: 'invalid' }
+    : check.url !== local.baseURL
+      ? { ...base, phase: 'pending' }
+      : loading || !reach
+        ? { ...base, phase: 'checking' }
+        : !reach.ok
+          ? { ...base, phase: 'unreachable', reason: failureReason(reach.message ?? ''), message: reach.message ?? 'Could not reach the server.' }
+          : !models.length
+            ? { ...base, phase: 'empty' }
+            : { ...base, phase: 'ready', models: models.length, missing };
+  const settled = server.phase !== 'invalid' && server.phase !== 'pending';
 
   return (
     <>
-      <Field label="Server" controlId="settings-local-url" error={check.ok ? null : check.message} hint={savedRemoteHost ? 'The address of your model server.' : 'The address of a model server running on this computer.'}>
+      {status(server)}
+      {savedRemoteHost && (
+        <div className="scope-note danger" role="alert">
+          <TriangleAlert />
+          <span>
+            Project content will leave this computer and go to <strong className="settings-host">{savedRemoteHost}</strong>. Only use a server you trust.
+          </span>
+        </div>
+      )}
+      <Field label="Server" controlId="settings-local-url" error={check.ok ? null : check.message} hint={savedRemoteHost ? "Type your server's address and press Enter." : 'Start the server in your model app and load a model, then pick the app here or type the address it shows.'}>
         <div className="col" style={{ gap: 8 }}>
-          <div className="row" role="group" aria-label="Server presets" style={{ flexWrap: 'wrap', gap: 6 }}>
+          <div className="row settings-presets" role="group" aria-label="Common server apps">
             {LOCAL_PRESETS.map((p) => (
-              <button key={p.id} className={`btn btn-sm${local.baseURL === p.baseURL ? ' active' : ''}`} aria-pressed={local.baseURL === p.baseURL} onClick={() => choosePreset(p.baseURL)}>
+              <button key={p.id} className="btn btn-sm" aria-current={local.baseURL === p.baseURL ? 'true' : undefined} onClick={() => choosePreset(p.baseURL)}>
                 {p.label}
               </button>
             ))}
@@ -124,38 +205,70 @@ export function LocalModelSettings({ settings, update, keyRevision }: { settings
         </div>
       </Field>
       {(isRemote || local.allowRemote) && (
-        <>
-          <SwitchRow checked={local.allowRemote} onChange={allowRemote} label="Allow a server on another machine" hint="Your requests and page content are sent to that server." />
-        </>
+        <SwitchRow
+          checked={local.allowRemote}
+          onChange={allowRemote}
+          label="Allow a server on another machine"
+          hint={local.allowRemote ? (savedRemoteHost ? 'Turn this off to allow only servers on this computer.' : 'Allowed, but the server in use is on this computer.') : <>Turning this on sends your requests and page content to <span className="settings-host">{typedHost ?? 'that server'}</span>.</>}
+        />
       )}
-      {savedRemoteHost && (
-        <div className="scope-note danger" role="alert">
-          <TriangleAlert />
-          <span>Project content will leave this computer and go to {savedRemoteHost}. Only use a server you trust.</span>
-        </div>
-      )}
-      <Field label="Model" controlId="settings-local-model" error={problem}>
+      <Field label="Model" controlId="settings-local-model">
         <div className="row">
-          <select id="settings-local-model" aria-describedby="settings-local-model-note" className="select grow" value={model} onChange={(e) => void update({ ai: { models: { ...settings.ai.models, local: e.target.value } } })}>
-            <option value="">Use the server's model</option>
-            {options.map((id) => (
+          <select id="settings-local-model" className="select grow" disabled={!settled || (!models.length && !missing)} value={model} onChange={(e) => void update({ ai: { models: { ...settings.ai.models, local: e.target.value } } })}>
+            <option value="">{settled && reach?.ok && !models.length ? 'No models on this server' : "Use the server's model"}</option>
+            {missing && (
+              <option value={model}>
+                {model}
+                {reach?.ok ? ' (not on this server)' : ''}
+              </option>
+            )}
+            {models.map((id) => (
               <option key={id} value={id}>
                 {id}
               </option>
             ))}
           </select>
-          <button className="btn" disabled={loading} onClick={() => void refresh()}>
-            <RefreshCw /> {loading ? 'Checking…' : 'Refresh'}
-          </button>
+          {/* Only with a list to refresh: otherwise the status above already offers the retry. */}
+          {models.length > 0 && (
+            <button
+              className="btn"
+              disabled={!settled}
+              aria-disabled={loading || undefined}
+              onClick={async () => {
+                if (loading) return;
+                await refresh();
+                // The list can come back empty and take this button with it.
+                requestAnimationFrame(() => {
+                  if (document.activeElement === document.body) document.querySelector<HTMLElement>('.settings-status button')?.focus();
+                });
+              }}
+            >
+              <RefreshCw /> {loading ? 'Checking…' : 'Refresh'}
+            </button>
+          )}
         </div>
       </Field>
-      <Field label="Tool calling" hint="Automatic uses constrained JSON unless the model is known to handle native tools well.">
-        <select className="select" value={local.toolMode} onChange={(e) => void update({ ai: { local: { toolMode: e.target.value as LocalToolMode } } })}>
-          <option value="auto">Automatic</option>
-          <option value="constrained-json">Constrained JSON</option>
-          <option value="native">Native tool calls</option>
-        </select>
-      </Field>
+      <details className="settings-advanced" open={advanced} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
+        <summary>
+          <ChevronRight aria-hidden="true" /> Advanced server options
+        </summary>
+        <div className="settings-advanced-body">
+          <Field label="Tool calling" hint="How the assistant asks your model to make edits. Automatic suits most models.">
+            <select className="select" value={local.toolMode} onChange={(e) => void update({ ai: { local: { toolMode: e.target.value as LocalToolMode } } })}>
+              <option value="auto">Automatic</option>
+              <option value="constrained-json">Constrained JSON</option>
+              <option value="native">Native tool calls</option>
+            </select>
+          </Field>
+          {keyField}
+        </div>
+      </details>
+      {!savedRemoteHost && (
+        <div className="scope-note info">
+          <Shield />
+          <span>Your requests and page content stay on this computer.</span>
+        </div>
+      )}
     </>
   );
 }
