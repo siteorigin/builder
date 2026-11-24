@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import { checkCanonicalUrl } from '@shared/seo';
 import { isArticleDate } from '@shared/articles';
 import { DraftInput, Field, type DraftProblem } from './ui';
@@ -36,22 +36,34 @@ export function CanonicalUrlField({ id, value: saved, ownUrl, what, onCommit }: 
 }
 
 /**
- * A revision date (YYYY-MM-DD) that can be cleared. A date control left half typed reads as empty too, so only an
- * empty control holding no partial date clears it; a partial or impossible date is refused and the saved one stays.
+ * A revision date (YYYY-MM-DD) that can be cleared, with its label and hint. A date control left half typed reads as
+ * empty too, so only an empty control holding no partial date clears it; a partial or impossible date is refused and
+ * the saved one stays. Whether the control holds a partial date is noted as the author types, so a commit replayed
+ * after the field has gone (a held edit) is judged as it was left.
  */
-export function RevisionDateInput({ id, value, onSet, onClear, refuse = () => false }: { id?: string; value: string | undefined; onSet: (date: string) => unknown; onClear: () => unknown; refuse?: () => unknown }) {
+export function RevisionDateField({ id: explicitId, label, hint, value, onSet, onClear, refuse = () => false }: { id?: string; label: string; hint: string; value: string | undefined; onSet: (date: string) => unknown; onClear: () => unknown; refuse?: () => unknown }) {
+  const generated = useId();
+  const id = explicitId ?? generated;
   const input = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
+  const partial = useRef(false);
+  const badInput = () => (input.current ? !!(input.current as HTMLInputElement).validity?.badInput : partial.current);
   return (
-    <DraftInput
-      id={id}
-      type="date"
-      value={value ?? ''}
-      inputRef={input}
-      onCommit={(v) => {
-        if (!v) return (input.current as HTMLInputElement | null)?.validity?.badInput ? refuse() : value ? onClear() : undefined;
-        if (!isArticleDate(v)) return refuse();
-        return v !== value ? onSet(v) : undefined;
-      }}
-    />
+    <Field label={label} hint={hint} controlId={id}>
+      <DraftInput
+        id={id}
+        type="date"
+        aria-describedby={`${id}-note`}
+        value={value ?? ''}
+        inputRef={input}
+        onLive={() => {
+          partial.current = badInput();
+        }}
+        onCommit={(v) => {
+          if (!v) return badInput() ? refuse() : value ? onClear() : undefined;
+          if (!isArticleDate(v)) return refuse();
+          return v !== value ? onSet(v) : undefined;
+        }}
+      />
+    </Field>
   );
 }

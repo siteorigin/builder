@@ -114,6 +114,8 @@ describe('an entry’s search settings', () => {
     // Turning one switch off removes that one alone.
     const { noindex: _off, ...rest } = entryOf(s).seo!;
     expect(entryOf(run(s, updatePost({ noindex: false }))).seo).toEqual(rest);
+    const { searchHidden: _hidden, ...kept } = entryOf(s).seo!;
+    expect(entryOf(run(s, updatePost({ searchHidden: false }))).seo).toEqual(kept);
     const cleared = run(s, updatePost({ seoTitle: '', description: '  ', socialImage: null, canonical: '', noindex: false, searchHidden: false }));
     expect(entryOf(cleared)).not.toHaveProperty('seo');
     // A new entry can be made with them.
@@ -186,6 +188,9 @@ describe('an entry’s search settings', () => {
       value: { seoTitle: 'T', description: 'D', socialImage: 'img_bowls', canonical: 'https://a.example/', noindex: true, searchHidden: true, updatedAt: '2027-01-02' }
     });
     expect(read({ type: 'page.update', pageId: services, canonical: 'x', updatedAt: null })).toEqual({ found: true, value: { canonical: 'https://b.example/', updatedAt: '2027-01-03' } });
+    // One field at a time, as the writer sends them.
+    for (const [key, value] of Object.entries({ description: 'D', socialImage: 'img_bowls', canonical: 'https://a.example/', noindex: true, searchHidden: true }))
+      expect(read(updatePost({ [key]: key === 'socialImage' ? null : key === 'noindex' || key === 'searchHidden' ? false : '' }))).toEqual({ found: true, value: { [key]: value } });
   });
 
   it('carries a post’s search description, sharing image and switches to its copy, but not what names the original', () => {
@@ -194,6 +199,11 @@ describe('an entry’s search settings', () => {
     const plan = duplicatePostOps(s, POST)!;
     const copied = run(s, ...plan.ops);
     expect(copied.collections.posts.entries[plan.ref.entryId].seo).toEqual({ description: 'Six weeks.', socialImage: 'img_bowls', noindex: true, searchHidden: true });
+    // What the copy could not be made with (written by hand) is left out, rather than refusing the copy.
+    const odd = copy(s);
+    entryOf(odd).seo = { ...entryOf(odd).seo, socialImage: 'img_gone', description: 'x'.repeat(400) };
+    const oddPlan = duplicatePostOps(odd, POST)!;
+    expect(run(odd, ...oddPlan.ops).collections.posts.entries[oddPlan.ref.entryId].seo).toEqual({ noindex: true, searchHidden: true });
     // A post without settings is copied without any.
     const plain = duplicatePostOps(state, POST)!;
     expect(run(state, ...plain.ops).collections.posts.entries[plain.ref.entryId]).not.toHaveProperty('seo');
@@ -253,8 +263,10 @@ describe('an entry’s generated page', () => {
     // stays published, and the graph may still describe it.
     expect(sitemapUrls(set)).not.toContain(SPRING);
     expect(meta.visibility).toMatchObject({ website: true, indexable: true, sitemap: false, jsonLd: true });
-    // A canonical URL that names the post's own address is no copy.
-    expect(sitemapUrls(run(set, updatePost({ canonical: SPRING })))).toContain(SPRING);
+    // A canonical URL that names the post's own address is no copy, however it is spelled.
+    for (const own of [SPRING, SPRING.slice(0, -1), SPRING.replace('spring', '%73pring')]) expect(sitemapUrls(run(set, updatePost({ canonical: own }))), own).toContain(SPRING);
+    // Another address on the same site is one.
+    expect(sitemapUrls(run(set, updatePost({ canonical: 'https://example.com/studio/blog/' })))).not.toContain(SPRING);
     // Cleared, each falls back again: the entry's title, its excerpt, its featured image before the site's.
     const back = run(set, updatePost({ seoTitle: '', description: '', socialImage: null, canonical: '', featuredImage: 'img_bowls' }));
     expect(post(back)).toMatchObject({ title: 'Spring pottery classes · Riverside Studio', socialTitle: 'Spring pottery classes', description: entryOf(state).excerpt, imageId: 'img_bowls', imageSource: 'featured', canonical: SPRING });

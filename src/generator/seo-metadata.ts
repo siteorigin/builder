@@ -46,6 +46,22 @@ const imageAlt = (image: AssetRecord | undefined) => (image ? text(image.altSugg
 /** A document's public URL, written as its generated page writes it (its canonical link and og:url). */
 const urlOf = (base: string | null, route: string) => (base ? base + routeUrl(route) : null);
 
+/**
+ * Whether two absolute URLs name the same page of the site: the same origin and query, and the same path once escapes
+ * are decoded and a trailing slash is let go ("/%73ervices" is "/services/"), since the site answers both at one page.
+ */
+function sameAddress(a: string | null, b: string | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  try {
+    const [x, y] = [new URL(a), new URL(b)];
+    const path = (u: URL) => decodeURIComponent(u.pathname).replace(/\/+$/, '');
+    return x.origin === y.origin && x.search === y.search && path(x) === path(y);
+  } catch {
+    return false;
+  }
+}
+
 /** The taxonomy an entry's section is read from, and the one its tags are. */
 const SECTION_TAXONOMY = 'categories';
 const TAG_TAXONOMY = 'tags';
@@ -173,7 +189,7 @@ export function createSeoResolver(state: ProjectState): SeoResolver {
     // Listed at its public URL, so only once the site has one.
     const listed = indexable && !!base;
     // A copy whose canonical URL names another address leaves the sitemap to that one, as search engines ask.
-    return { website: on, indexable, sitemap: listed && meta.canonical === meta.url, siteSearch: on && !meta.searchHidden, jsonLd: listed, news: on && news };
+    return { website: on, indexable, sitemap: listed && sameAddress(meta.canonical, meta.url), siteSearch: on && !meta.searchHidden, jsonLd: listed, news: on && news };
   };
 
   const resolvePage = (pageId: string): EffectiveSeo | null => {

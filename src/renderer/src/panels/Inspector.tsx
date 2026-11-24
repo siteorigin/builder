@@ -60,7 +60,7 @@ import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
 import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
-import { CanonicalUrlField, RevisionDateInput } from '../components/SeoFields';
+import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
@@ -2659,9 +2659,14 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
         />
         <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint={draft ? 'Once published, leaves this page out of the site’s own Site search results.' : 'Leaves this page out of the site’s own Site search results.'} />
         <CanonicalUrlField id="page-seo-canonical" value={page.seo.canonical} ownUrl={ownUrl} what="page" onCommit={(url) => upd({ canonical: url }, url ? 'Change canonical URL' : 'Clear canonical URL')} />
-        <Field label="Last revised" hint="When the page’s content last changed, for the sitemap. Leave empty to give no date.">
-          <RevisionDateInput id="page-seo-updated" value={page.updatedAt} onSet={(v) => upd({ updatedAt: v }, 'Change revision date')} onClear={() => upd({ updatedAt: null }, 'Clear revision date')} />
-        </Field>
+        <RevisionDateField
+          id="page-seo-updated"
+          label="Last revised"
+          hint="When the page’s content last changed, for the sitemap. Leave empty to give no date."
+          value={page.updatedAt}
+          onSet={(v) => upd({ updatedAt: v }, 'Change revision date')}
+          onClear={() => upd({ updatedAt: null }, 'Clear revision date')}
+        />
       </Section>
       {dev && (
         <Section title="Advanced" id="page-adv" defaultOpen={false} level={LEVEL}>

@@ -11,7 +11,7 @@ import { EngineError } from '@engine/tree';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
 import { DraftInput, Field, Modal, SwitchRow } from '../components/ui';
-import { CanonicalUrlField, RevisionDateInput } from '../components/SeoFields';
+import { CanonicalUrlField, RevisionDateField } from '../components/SeoFields';
 import { seoSummary } from '../lib/sharing';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
@@ -571,9 +571,14 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
                 <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? update({ publishedAt: v }, 'Change post date') : undefined) : refuse())} />
               </Field>
               <div data-entry-field="updatedAt" style={{ display: 'contents' }}>
-                <Field label="Last updated" hint="When the post was last revised, for search engines. Leave empty when it hasn’t been.">
-                  <RevisionDateInput value={entry.updatedAt} onSet={(v) => update({ updatedAt: v }, 'Change post revision date')} onClear={() => update({ updatedAt: null }, 'Clear post revision date')} refuse={refuse} />
-                </Field>
+                <RevisionDateField
+                  label="Last updated"
+                  hint="When the post was last revised, for search engines. Leave empty when it hasn’t been."
+                  value={entry.updatedAt}
+                  onSet={(v) => update({ updatedAt: v }, 'Change post revision date')}
+                  onClear={() => update({ updatedAt: null }, 'Clear post revision date')}
+                  refuse={refuse}
+                />
               </div>
               <Field label="Address" hint={`The last part of ${route}`}>
                 <DraftInput value={entry.slug} onCommit={(v) => (v.trim() ? (v.trim() !== entry.slug ? update({ slug: v.trim() }, 'Change post address') : undefined) : refuse())} />

@@ -2,6 +2,7 @@
  * The Posts workspace: a collection's entries listed for finding and sorting, and the operations its buttons send.
  * Plain functions over the project, tested without a renderer; the panel and the writer call them.
  */
+import { TEXT_LIMITS } from '@shared/text-limits';
 import type { Collection, EntryDoc, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, entryRoute, orderedEntries, siteEntries } from '@shared/collections';
@@ -141,8 +142,10 @@ export function duplicatePostOps(state: ProjectState, ref: PostRef): { ops: Edit
     ...(e.author ? { author: e.author } : {}),
     ...(e.excerpt ? { excerpt: e.excerpt } : {}),
     ...(e.featuredImage ? { featuredImage: e.featuredImage } : {}),
-    ...(seo.description ? { description: seo.description } : {}),
-    ...(seo.socialImage ? { socialImage: seo.socialImage } : {}),
+    // Only what the copy can be made with: a description over the limit or an image gone from the library (written
+    // by hand) would refuse the whole copy, so it starts without them.
+    ...(typeof seo.description === 'string' && seo.description.trim() && seo.description.length <= TEXT_LIMITS.pageDescription ? { description: seo.description } : {}),
+    ...(typeof seo.socialImage === 'string' && Object.hasOwn(state.assets.assets, seo.socialImage) && state.assets.assets[seo.socialImage].kind === 'image' ? { socialImage: seo.socialImage } : {}),
     ...(seo.noindex === true ? { noindex: true } : {}),
     ...(seo.searchHidden === true ? { searchHidden: true } : {})
   };
