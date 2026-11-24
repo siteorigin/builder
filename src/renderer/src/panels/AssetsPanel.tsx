@@ -973,7 +973,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
                       ) : (
                         <span className="asset-use static">{inner}</span>
                       )}
-                      <span className="asset-alt-text">{c.reason === 'custom' ? `Kept its own: “${c.alt}”` : 'No alt text: the new image has no suggestion'}</span>
+                      <span className="asset-alt-text">{c.reason === 'custom' ? `Kept its own: “${c.alt}”` : 'No alt text'}</span>
                     </li>
                   );
                 })}

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { describeOps } from '@agent/report';
+import { executeTool, toolDefinitions, type ToolHost } from '@agent/tools';
 import type { EditOperation } from '@shared/ops';
 import type { AltReview, AssetRecord, ImageNode, ImageValue, InstanceNode, ListItem, ListProp, OwnerRef, ProjectState } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
@@ -91,10 +92,12 @@ describe('replacing a library image everywhere', () => {
     const images = next.components[definitionId].properties.images as ListProp;
     expect(images.default[0].image).toEqual({ assetId: 'a_person1', alt: PORTRAIT });
     expect(images.fields.image.default).toEqual({ assetId: 'a_person1', alt: 'Our kitchen' });
-    // Only the descriptions of the uses' own are left to check: by row ID, so a row already showing the portrait,
-    // or the rows moving, never confuses which one. One that already reads as the portrait's suggestion needs none.
+    // Only descriptions of the uses' own, and uses with none, are left to check: by row ID, so a row already showing
+    // the portrait, or the rows moving, never confuses which one. One that already reads as the portrait's suggestion
+    // needs no check.
     expect(r.results[0].altReview).toEqual([
       { owner, nodeId: galleryId, path: ['props', 'images', 'g2', 'image'], reason: 'custom', alt: 'Our kitchen after the refit' },
+      { owner, nodeId: galleryId, path: ['props', 'images', 'g5', 'image'], reason: 'missing', alt: '' },
       { definitionId, path: ['images', 'fields', 'image', 'default'], reason: 'custom', alt: 'Our kitchen' }
     ]);
     expect(r.results[0].altReview).not.toContainEqual(expect.objectContaining({ nodeId: imageId }));
@@ -110,9 +113,18 @@ describe('replacing a library image everywhere', () => {
       { owner, nodeId: imageId, path: ['image'], reason: 'missing', alt: '' },
       { owner, nodeId: galleryId, path: ['props', 'images', 'g1', 'image'], reason: 'missing', alt: '' },
       { owner, nodeId: galleryId, path: ['props', 'images', 'g4', 'image'], reason: 'missing', alt: '' },
+      { owner, nodeId: galleryId, path: ['props', 'images', 'g5', 'image'], reason: 'missing', alt: '' },
       { definitionId, path: ['images', 'default', 'd1', 'image'], reason: 'missing', alt: '' }
     ]);
     expect(review.filter((x) => x.reason === 'custom').map((x) => x.alt)).toEqual(['Our kitchen after the refit', PORTRAIT, 'Our kitchen']);
+    // Replaced again with another image that suggests nothing: the uses still have none, and are listed again.
+    const again = applyOperations(r.state, [replace('a_plain', 'a_blank')]);
+    expect((again.results[0].altReview as AltReview[]).filter((x) => x.reason === 'missing')).toEqual(review.filter((x) => x.reason === 'missing'));
+    const ops = [replace('a_kitchen', 'a_plain'), replace('a_plain', 'a_blank')];
+    expect(describeOps(ops, state, again.state, [...r.results, ...again.results]).map((c) => c.label)).toEqual([
+      'Replaced “Kitchen” with “Plain” wherever it was used',
+      'Replaced “Plain” with “Blank” wherever it was used; check the alt text in 8 places'
+    ]);
   });
 
   it('fills an image with no description from an image that had no suggestion either', () => {
@@ -121,10 +133,10 @@ describe('replacing a library image everywhere', () => {
     const r = applyOperations(plain, [replace('a_plain', 'a_person1')]);
     expect((r.state.pages[owner.id].nodes[imageId] as ImageNode).image).toEqual({ assetId: 'a_person1', alt: PORTRAIT });
     expect(r.results[0].altReview).toEqual([]);
-    // From one image with none to another with none: still none, and nothing new to check.
+    // From one image with none to another with none: still none, so it is listed to check.
     const blank = applyOperations(plain, [replace('a_plain', 'a_blank')]);
     expect((blank.state.pages[owner.id].nodes[imageId] as ImageNode).image).toEqual({ assetId: 'a_blank', alt: '' });
-    expect(blank.results[0].altReview).toEqual([]);
+    expect(blank.results[0].altReview).toEqual([{ owner, nodeId: imageId, path: ['image'], reason: 'missing', alt: '' }]);
   });
 
   it('leaves every description as it is for a copy of the same picture', () => {
@@ -151,6 +163,7 @@ describe('the uses left to check', () => {
     const listed = altChecks(r.state, 'a_person1', review);
     expect(listed.map(({ icon, where, what, reason, alt, at }) => ({ icon, where, what, reason, alt, at }))).toEqual([
       { icon: 'page', where: 'Home', what: 'Gallery · Image 3: Custom', reason: 'custom', alt: 'Our kitchen after the refit', at: { owner, nodeId: galleryId } },
+      { icon: 'page', where: 'Home', what: 'Gallery · Image 6: Cleared', reason: 'missing', alt: '', at: { owner, nodeId: galleryId } },
       { icon: 'component', where: 'Gallery default', what: 'Images: starting image for new copies', reason: 'custom', alt: 'Our kitchen', at: undefined }
     ]);
     const moved = applyOperations(r.state, [{ type: 'instance.listMove', owner, nodeId: galleryId, prop: 'images', itemId: 'g2', index: 0 }]).state;
@@ -161,7 +174,7 @@ describe('the uses left to check', () => {
   it('drops a use once its alt text is edited, it is made decorative, given another image or removed', () => {
     const { state, owner, galleryId } = lookbook();
     const r = applyOperations(state, [replace('a_kitchen', 'a_person1')]);
-    const review = (r.results[0].altReview as AltReview[]).filter((x) => 'nodeId' in x);
+    const review = (r.results[0].altReview as AltReview[]).filter((x) => x.path.includes('g2'));
     const set = (value: ImageValue): EditOperation => ({ type: 'instance.setProp', owner, nodeId: galleryId, prop: 'images', itemId: 'g2', field: 'image', value });
     expect(altChecks(r.state, 'a_person1', review)).toHaveLength(1);
     for (const op of [
@@ -181,15 +194,29 @@ describe('the AI’s report of a replacement', () => {
     const { state } = lookbook();
     const ops = [replace('a_kitchen', 'a_person1')];
     const r = applyOperations(state, ops);
-    expect(describeOps(ops, state, r.state, r.results).map((c) => c.label)).toEqual(['Replaced “Kitchen” with “Portrait 1” wherever it was used; check the alt text in 2 places']);
+    expect(describeOps(ops, state, r.state, r.results).map((c) => c.label)).toEqual(['Replaced “Kitchen” with “Portrait 1” wherever it was used; check the alt text in 3 places']);
     // A description the run changed since, or a use it removed, is no longer one to check.
     const fix: EditOperation = { type: 'instance.setProp', owner: lookbookOwner(r.state), nodeId: galleryOf(r.state), prop: 'images', itemId: 'g2', field: 'image', value: { assetId: 'a_person1', alt: 'Hannah in the kitchen' } };
     const fixed = applyOperations(r.state, [fix]);
-    expect(describeOps([...ops, fix], state, fixed.state, [...r.results, ...fixed.results])[0].label).toBe('Replaced “Kitchen” with “Portrait 1” wherever it was used; check the alt text in one place');
+    expect(describeOps([...ops, fix], state, fixed.state, [...r.results, ...fixed.results])[0].label).toBe('Replaced “Kitchen” with “Portrait 1” wherever it was used; check the alt text in 2 places');
     // Nothing to check, nothing said about it.
     const plain = applyOperations(r.state, [replace('a_plain', 'a_kitchen')]);
     expect(plain.results[0].altReview).toEqual([]);
     expect(describeOps([replace('a_plain', 'a_kitchen')], r.state, plain.state, plain.results)[0].label).toBe('Replaced “Plain” with “Kitchen” wherever it was used');
+  });
+});
+
+describe('the AI replacing an image', () => {
+  it('is never offered keepAlt, and is refused it', async () => {
+    const apply = toolDefinitions().find((t) => t.name === 'apply_operations');
+    expect(JSON.stringify(apply)).toContain('asset.replace');
+    expect(JSON.stringify(apply)).not.toContain('keepAlt');
+    const { state } = lookbook();
+    let applied = false;
+    const host = { state: () => state, revision: () => 0, apply: async () => ((applied = true), { ok: true, revision: 1 }) } as unknown as ToolHost;
+    const r = await executeTool('apply_operations', JSON.stringify({ expectedRevision: 0, operations: [{ type: 'asset.replace', assetId: 'a_kitchen', withAssetId: 'a_person1', keepAlt: true }] }), host, 'c1');
+    expect(r).toMatchObject({ ok: false, content: { error: 'INVALID_ARGUMENT', message: expect.stringContaining('does not take keepAlt') } });
+    expect(applied).toBe(false);
   });
 });
 
@@ -205,7 +232,7 @@ describe('replacing a library image everywhere in the editor', () => {
     const before = { one: standalone(session.state), rows: gallery(session.state) };
     const applied = await session.apply({ operations: [replace('a_kitchen', 'a_person1')] }, { label: 'Replace Kitchen', source: 'user' });
     expect(applied.ok).toBe(true);
-    expect((applied.results?.[0].altReview as AltReview[]).map((x) => x.alt)).toEqual(['Our kitchen after the refit', 'Our kitchen']);
+    expect((applied.results?.[0].altReview as AltReview[]).map((x) => x.alt)).toEqual(['Our kitchen after the refit', '', 'Our kitchen']);
     const after = { one: standalone(session.state), rows: gallery(session.state) };
     expect(after.one.alt).toBe(PORTRAIT);
     expect(after.rows.map((i) => i.alt)).toEqual(['Hannah at her desk', PORTRAIT, 'Our kitchen after the refit', KITCHEN, PORTRAIT, '', PORTRAIT]);

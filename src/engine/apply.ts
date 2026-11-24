@@ -340,10 +340,10 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         v.assetId = op.withAssetId;
         if (op.keepAlt || v.decorative) return;
         const alt = typeof v.alt === 'string' ? v.alt.trim() : '';
-        if (alt === was) {
-          v.alt = now;
-          if (was && !now) altReview.push({ ...at(), reason: 'missing', alt: '' });
-        } else if (alt && alt !== now) altReview.push({ ...at(), reason: 'custom', alt: v.alt });
+        if (alt === was) v.alt = now;
+        // A use left with no description at all is listed too, however it came to have none.
+        if (!(alt === was ? now : alt)) altReview.push({ ...at(), reason: 'missing', alt: typeof v.alt === 'string' ? v.alt : '' });
+        else if (alt !== was && alt !== now) altReview.push({ ...at(), reason: 'custom', alt: v.alt });
       });
       if (state.site.favicon === op.assetId) state.site.favicon = op.withAssetId;
       for (const pg of Object.values(state.pages)) if (pg.seo.socialImage === op.assetId) pg.seo.socialImage = op.withAssetId;

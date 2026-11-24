@@ -45,8 +45,8 @@ export type ValuePlace = ({ owner: OwnerRef; nodeId: string } | { definitionId: 
 
 /**
  * A use of a library image whose alternative text a replacement left for the author to check: one that keeps a
- * description of its own (`custom`), or one whose inherited description went because the new image suggests none
- * (`missing`). `alt` is the text it was left with.
+ * description of its own (`custom`), or one left with none (`missing`), such as an inherited description that went
+ * because the new image suggests none. `alt` is the text it was left with.
  */
 export type AltReview = ValuePlace & { reason: 'custom' | 'missing'; alt: string };
 
