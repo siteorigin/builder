@@ -123,6 +123,7 @@ export function UnpackingModal() {
       icon={<FileArchive />}
       onClose={cancel}
       busy={cancelling}
+      dismissOnBackdrop={false}
       footer={
         <button className="btn busy-cancel" data-autofocus disabled={cancelling} onClick={cancel}>
           {cancelling ? 'Cancelling…' : 'Cancel'}
