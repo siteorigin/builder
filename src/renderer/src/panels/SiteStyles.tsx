@@ -416,7 +416,7 @@ function publicUrlProblem(text: string): DraftProblem | null {
  */
 function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder }: { label: string; hint: string; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string }) {
   // A value of another kind (written by hand into the project's files) is shown as text, to be corrected.
-  const value = typeof saved === 'string' ? saved : saved == null ? '' : String(saved);
+  const value = typeof saved === 'string' ? saved : saved == null ? '' : JSON.stringify(saved);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
   const [dirty, setDirty] = useState(false);
   const handle = useRef<DraftHandle | null>(null);

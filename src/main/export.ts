@@ -784,7 +784,7 @@ export async function rivalHookStop(dir: string, state: ProjectState): Promise<s
 export function publicUrlWarning(state: ProjectState): string | null {
   // A value of another kind (a number written by hand) is a URL that can't be used, not a missing one.
   const raw: unknown = state.site.baseUrl;
-  const saved = typeof raw === 'string' ? raw.trim() : raw == null ? '' : String(raw);
+  const saved = typeof raw === 'string' ? raw.trim() : raw == null ? '' : JSON.stringify(raw);
   const check = checkPublicUrl(saved);
   if (!check.ok) return `The public site URL “${saved}” can’t be used, so canonical links, social image URLs and the sitemap were omitted. ${check.message} Correct it in Site settings.`;
   return check.url ? null : 'No public site URL is set, so canonical links, social image URLs and the sitemap were omitted. Add one in Site settings.';

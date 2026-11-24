@@ -788,22 +788,25 @@ export function DraftInput({
         mark(false);
         return;
       }
-      // The saved value it was refused against is gone, and the field now says what is saved instead: the edit
-      // that corrects it starts from what is saved now, never from a value the project no longer holds.
-      startedAt.current = { base: useStore.getState().snapshot, value, commit: onCommit, ai: aiActivity() };
+      // The saved value it was refused against is gone, and the refusal beside the field says what is saved
+      // instead: the edit that corrects it starts from that. Text already corrected shows no saved value, so it
+      // keeps its start, and a change made meanwhile is still caught as one.
+      if (shown.current) startedAt.current = { base: useStore.getState().snapshot, value, commit: onCommit, ai: aiActivity() };
       return;
     }
     if (!focused.current) forget();
     if (!startedAt.current) setDraft(value);
   }, [value]);
   useEffect(() => onDirty?.(draft !== value), [draft, value, onDirty]);
-  // A kept refusal follows the project too: fixed somewhere else (the translations it named unlinked), its
-  // reason goes, and the text is only an unsaved change.
+  // Text once refused is checked again as it is corrected and as the project changes (the translations it named
+  // unlinked, or linked again): its reason comes and goes with it.
   useEffect(() => {
-    if (!kept.current || !shown.current || !check) return;
-    const p = check(draftRef.current);
+    const el = input.current;
+    if (!kept.current || !check || !el) return;
+    const p = draftRef.current === valueRef.current ? null : check(draftRef.current);
     showProblem(p);
-    if (!p) retainRefused(draftKey, null);
+    if (p) retainRefused(draftKey, named(el), revealable(el, reveal));
+    else retainRefused(draftKey, null);
   });
   const aiRan = (from: { ai: number }) => !!useStore.getState().snapshot?.aiBusy || aiActivity() !== from.ai;
   /** Commit what was typed; returns what the commit returned (false: the project refused it). */
@@ -925,12 +928,6 @@ export function DraftInput({
       setDraft(e.target.value);
       mark(e.target.value !== value);
       onLive?.(e.target.value);
-      // Refused text is checked again as it is corrected; the reason goes once it can be saved.
-      if (shown.current) {
-        const p = e.target.value === valueRef.current ? null : (check?.(e.target.value) ?? null);
-        showProblem(p);
-        if (!p) retainRefused(draftKey, null);
-      }
     },
     onKeyDown: (e: React.KeyboardEvent) => {
       if (isImeComposing(e)) return;

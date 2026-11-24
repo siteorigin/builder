@@ -159,6 +159,10 @@ describe('the export warning about the public URL', () => {
     // A value of another kind, written by hand, is one that can't be used rather than none.
     (s.site as unknown as Record<string, unknown>).baseUrl = 65536;
     expect(publicUrlWarning(s)).toMatch(/^The public site URL “65536” can’t be used/);
+    (s.site as unknown as Record<string, unknown>).baseUrl = ['https://studio.example'];
+    expect(publicUrlWarning(s)).toMatch(/^The public site URL “\["https:\/\/studio\.example"\]” can’t be used/);
+    (s.site as unknown as Record<string, unknown>).baseUrl = { toString: null };
+    expect(publicUrlWarning(s)).toMatch(/can’t be used/);
     s.site.baseUrl = 'https://studio.example/';
     expect(publicUrlWarning(s)).toBeNull();
   });
