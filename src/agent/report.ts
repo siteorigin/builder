@@ -293,8 +293,10 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         return plain(op, `Converted ${name(op.owner, op.nodeId)} on ${where(op.owner)} to a code component`, linkTo(op.owner, res.nodeId ?? op.nodeId));
       case 'component.createCode':
         return plain(op, `Created the code component ${quoted(op.name)}`);
-      case 'component.updateSource':
-        return plain(op, `Updated the code of the ${quoted(componentName(op.definitionId))} component`);
+      case 'component.updateSource': {
+        const renamed = op.renames?.length ? ` and renamed ${joinWords(op.renames.map((r) => `${quoted(r.from)} to ${quoted(r.to)}`))}` : '';
+        return plain(op, `Updated the code of the ${quoted(componentName(op.definitionId))} component${renamed}`);
+      }
       case 'component.remove':
         return plain(op, `Removed the ${quoted(before.components[op.definitionId]?.name ?? 'component')} component`);
       case 'component.setPropSchema':

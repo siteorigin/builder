@@ -6,7 +6,7 @@ import { Field, Modal, Spinner, Tabs } from '../components/ui';
 import { insert } from '../lib/actions';
 import { prepareCodeForSave } from '../lib/code';
 import { CodeEditor, type CodeEditorHandle } from '../components/CodeEditor';
-import { PropSchemaEditor, propertiesFromRows, rowsFromProperties, schemaProblems, type SchemaRow } from './PropSchemaEditor';
+import { PropSchemaEditor, hiddenEdits, propertiesFromRows, renamesFromRows, rowsFromProperties, schemaProblems, type SchemaRow } from './PropSchemaEditor';
 
 /** False once the modal has closed; closing also cancels an automatic code fix still running. */
 function useAlive(): () => boolean {
@@ -25,6 +25,8 @@ function useAlive(): () => boolean {
 const isAdvice = (p: string) => /^(Connect an AI provider|The automatic fix did not work|Your code could not be checked|The save did not finish)/.test(p);
 const CHECK_FAILED = 'Your code could not be checked, so it was not saved. Try again.';
 const WRITE_FAILED = 'The save did not finish. Your edits are still here, so you can try again.';
+/** Said when the project changed under unsaved edits to the properties: saving those would undo that change. */
+const STALE_PROPERTIES = 'The project changed while you were editing these properties (an undo or the AI). Saving them would undo that: Revert to start again from the saved ones.';
 
 /** Properties fields commit on blur: commit one still being typed in, and return it so it can have focus back. */
 const commitField = () => {
@@ -173,7 +175,10 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
   // Closing the editor cancels an automatic fix that is still running, and a save in progress.
   const alive = useAlive();
   const [rows, setRows] = useState<SchemaRow[]>(() => rowsFromProperties(def?.properties ?? {}));
+  // The stored properties the rows were made from: what their edits are measured, and saved, against.
   const [savedProps, setSavedProps] = useState(() => JSON.stringify(def?.properties ?? {}));
+  // A Properties field being typed in: its text commits when Save is pressed, so Save is ready already.
+  const [typing, setTyping] = useState(false);
   // Re-read when the stored source changes; unsaved edits are kept.
   useEffect(() => {
     let current = true;
@@ -190,17 +195,30 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       current = false;
     };
   }, [definitionId, def?.source, reload]);
-  // A saved (or undone) manifest replaces the rows, unless there are unsaved edits to them.
+  // A saved (or undone) manifest replaces the rows, unless there are unsaved edits to them or one is being typed.
   const propsKey = JSON.stringify(def?.properties ?? {});
-  const propsDirty = JSON.stringify(propertiesFromRows(rows)) !== savedProps;
+  // A rename is an edit even when the schemas read the same, and so are two rows with one name.
+  const propsDirty = JSON.stringify(propertiesFromRows(rows)) !== savedProps || renamesFromRows(rows).length > 0 || hiddenEdits(rows);
+  // The stored properties last taken into account: only a change since then refreshes the rows, so a snapshot that
+  // arrives after a save never puts back the properties from before it.
+  const seenKey = useRef(propsKey);
+  // The project revision while the rows were last clean: a rename moves placement content by name, so it is saved
+  // only onto the project its edits were made against.
+  const revision = useStore((s) => s.snapshot?.revision);
+  const cleanAt = useRef(revision);
   useEffect(() => {
+    if (propsDirty || typing) return;
+    // Only ever forward: a push the store has yet to receive must not undo what a save already recorded.
+    cleanAt.current = Math.max(cleanAt.current ?? 0, revision ?? 0);
+    if (propsKey === seenKey.current) return;
+    seenKey.current = propsKey;
     if (propsKey === savedProps) return;
-    if (!propsDirty) setRows(rowsFromProperties(def?.properties ?? {}));
+    setRows(rowsFromProperties(def?.properties ?? {}));
     setSavedProps(propsKey);
-  }, [propsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [propsKey, propsDirty, typing, revision]); // eslint-disable-line react-hooks/exhaustive-deps
   const code = edit ?? src?.source ?? '';
   const codeDirty = !!src && edit !== null && edit !== src.source;
-  const dirty = !!src && (codeDirty || propsDirty);
+  const dirty = !!src && (codeDirty || propsDirty || typing);
   // Leaving the project (closing the window, quitting) asks about unsaved code, as closing this editor does.
   const unsavedCode = !!src?.editable && dirty;
   useEffect(() => {
@@ -240,6 +258,8 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
     if (ok !== true) return;
     setEdit(null);
     setRows(rowsFromProperties(def.properties));
+    setSavedProps(propsKey);
+    seenKey.current = propsKey;
     setErrors([]);
   };
   const save = async () => {
@@ -256,29 +276,36 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
       while (discarding.current) if ((await discarding.current) === true) return;
       if (!alive()) return;
       const properties = propsDirty ? propertiesFromRows(rows) : undefined;
-      // A renamed property is a new property: placements lose what they set for the old name.
-      const renamed = properties ? rows.filter((row) => row.orig && row.orig !== row.name && !rows.some((x) => x.name === row.orig)) : [];
-      if (
-        renamed.length &&
-        (await confirmDialog({
-          title: 'Rename properties?',
-          body: `Placements lose the content they set for ${renamed.map((x) => `"${x.orig}"`).join(', ')}, and the source must use the new name${renamed.length === 1 ? '' : 's'}.`,
-          confirmLabel: 'Rename',
-          cancelLabel: 'Keep editing'
-        })) !== true
-      )
-        return;
-      if (!alive()) return;
+      // A renamed property takes every placement's content with it.
+      const renames = properties ? renamesFromRows(rows) : [];
+      // Edits to properties that changed since the rows were made would undo that change, whatever it was.
+      const snap = useStore.getState().snapshot;
+      const storedKey = JSON.stringify(snap?.state.components[definitionId]?.properties ?? {});
+      if (properties && (storedKey !== savedProps || (renames.length && snap?.revision !== cleanAt.current))) return (setErrors([STALE_PROPERTIES]), setTab('manifest'));
       wrote = true;
       setWriting(true);
-      if (!(await applyOps([{ type: 'component.updateSource', definitionId, source: r.source, expectedHash: src.hash, ...(properties ? { properties } : {}) }], `Edit ${def.name} source`))) return setErrors([WRITE_FAILED]);
+      if (
+        !(await applyOps(
+          [{ type: 'component.updateSource', definitionId, source: r.source, expectedHash: src.hash, ...(properties ? { properties } : {}), ...(renames.length ? { renames } : {}) }],
+          `Edit ${def.name} source`,
+          undefined,
+          properties ? snap?.revision : undefined
+        ))
+      )
+        return setErrors([WRITE_FAILED]);
       // A repaired save shows the code that was stored; undo in the editor still reaches what was typed.
       if (r.source !== code) setEdit(r.source);
       if (properties) {
         // Show the schema as the engine stored it (filled defaults, trimmed labels), even when nothing changed.
         // The write has landed. If this refresh fails, the next project update brings the stored schema.
-        const stored = (await api.project.snapshot().catch(() => null))?.state.components[definitionId]?.properties;
+        const fresh = await api.project.snapshot().catch(() => null);
+        const stored = fresh?.state.components[definitionId]?.properties;
         if (stored) {
+          cleanAt.current = Math.max(cleanAt.current ?? 0, fresh.revision);
+          // The store still showing the properties from before the save is behind: its next push is this save, not
+          // a change to show. Anything else it shows by now is newer, and refreshes the rows.
+          const now = JSON.stringify(useStore.getState().snapshot?.state.components[definitionId]?.properties ?? {});
+          seenKey.current = now === storedKey ? now : JSON.stringify(stored);
           setRows(rowsFromProperties(stored));
           setSavedProps(JSON.stringify(stored));
         }
@@ -405,7 +432,7 @@ export function SourceModal({ definitionId }: { definitionId: string }) {
               panel: () =>
                 src?.editable ? (
                   <div className="code-props" onKeyDown={keepDialogOnFieldEscape}>
-                    <PropSchemaEditor rows={rows} onChange={changeRows} readOnly={saving} />
+                    <PropSchemaEditor rows={rows} onChange={changeRows} readOnly={saving} onTyping={setTyping} />
                   </div>
                 ) : (
                   <pre className="code-view" tabIndex={0}>{JSON.stringify({ properties: def.properties, parts: def.parts, variants: Object.fromEntries(Object.entries(def.variantAxes ?? {}).map(([axis, a]) => [axis, Object.keys(a.options)])) }, null, 2)}</pre>
@@ -496,7 +523,8 @@ export function NewCodeComponentModal() {
   const [name, setName] = useState('');
   const [source, setSource] = useState(STARTER);
   const [tab, setTab] = useState<'source' | 'manifest'>('source');
-  const [rows, setRows] = useState<SchemaRow[]>(() => rowsFromProperties(structuredClone(STARTER_PROPERTIES) as never));
+  // Never saved, so a changed name is a new name, not a rename.
+  const [rows, setRows] = useState<SchemaRow[]>(() => rowsFromProperties(structuredClone(STARTER_PROPERTIES), false));
   const [initialProps] = useState(() => JSON.stringify(STARTER_PROPERTIES));
   const [errors, setErrors] = useState<string[]>([]);
   const [status, setStatus] = useState<string | null>(null);
@@ -509,7 +537,7 @@ export function NewCodeComponentModal() {
   const canFix = useStore((s) => !!s.providers.find((p) => p.id === s.settings?.ai.provider)?.configured);
   const [liveErrors, setLiveErrors] = useState(0);
   const alive = useAlive();
-  const unsaved = source !== STARTER || !!name.trim() || JSON.stringify(propertiesFromRows(rows)) !== initialProps;
+  const unsaved = source !== STARTER || !!name.trim() || hiddenEdits(rows) || JSON.stringify(propertiesFromRows(rows)) !== initialProps;
   // Leaving the project (closing the window, quitting) asks about it too.
   useEffect(() => {
     markDraft(CODE_DRAFT, unsaved);

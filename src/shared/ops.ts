@@ -305,7 +305,12 @@ export const OPERATION_SCHEMAS = {
     definitionId: z.string(),
     source: z.string().max(60000),
     expectedHash: z.string().optional(),
-    properties: z.record(z.string(), z.unknown()).optional().describe('Replaces the whole property schema.')
+    properties: z.record(z.string(), z.unknown()).optional().describe('Replaces the whole property schema.'),
+    renames: z
+      .array(z.object({ from: z.string(), to: z.string() }))
+      .max(60)
+      .optional()
+      .describe('With properties: stored properties that properties keeps under a new name (from the stored name, to its name in properties). Every placement keeps its value for them. All pairs apply at once, so two names can swap.')
   }),
   'component.remove': z.object({ type: z.literal('component.remove'), definitionId: z.string() }),
   'component.setPropSchema': z.object({

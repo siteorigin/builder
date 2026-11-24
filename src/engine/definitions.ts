@@ -225,10 +225,61 @@ export function removePropSchema(state: ProjectState, op: Op<'component.removePr
   return {};
 }
 
-/** Replace a definition's whole property schema (used when saving a code component's manifest). */
-export function replaceProperties(state: ProjectState, def: ComponentDefinition, raw: Record<string, unknown>) {
+/** A stored property that goes by another name in a replaced schema. */
+export interface PropRename {
+  from: string;
+  to: string;
+}
+
+/** Renames that each move one stored property to one property of the new schema. */
+function checkRenames(def: ComponentDefinition, next: Record<string, PropSchema>, renames: PropRename[]) {
+  if (!renames.length) return;
+  // A design binds properties by name; only code components, which have none, rename this way.
+  if (def.tree) fail(`"${def.name}" shows its properties in its design, so they cannot be renamed this way.`);
+  const from = new Set<string>();
+  const to = new Set<string>();
+  for (const r of renames) {
+    if (!own(def.properties, r.from)) fail(`"${def.name}" has no property "${r.from}" to rename.`);
+    if (!Object.hasOwn(next, r.to)) fail(`"${r.from}" is renamed to "${r.to}", which is not one of the new properties.`);
+    if (r.from === r.to) fail(`"${r.from}" is renamed to itself.`);
+    if (from.has(r.from)) fail(`"${r.from}" is renamed twice.`);
+    if (to.has(r.to)) fail(`More than one property is renamed to "${r.to}".`);
+    from.add(r.from);
+    to.add(r.to);
+  }
+}
+
+/**
+ * Move renamed properties all at once (so two names can swap): the schema, every placement's value, bound or not,
+ * and the examples. A destination that held another property's value has had it removed already.
+ */
+function moveProps(state: ProjectState, def: ComponentDefinition, renames: PropRename[]) {
+  const move = (rec: Record<string, unknown>) => {
+    const held = renames.filter((r) => Object.hasOwn(rec, r.from)).map((r) => [r.to, rec[r.from]] as const);
+    for (const r of renames) {
+      delete rec[r.from];
+      delete rec[r.to];
+    }
+    for (const [to, v] of held) rec[to] = v;
+  };
+  move(def.properties as Record<string, unknown>);
+  for (const { node } of instancesOf(state, def.id)) move(node.props);
+  for (const ex of def.examples ?? []) if (ex.props) move(ex.props);
+}
+
+/**
+ * Replace a definition's whole property schema (used when saving a code component's manifest). `renames` names the
+ * stored properties that the new schema keeps under another name, so their content moves instead of being removed.
+ */
+export function replaceProperties(state: ProjectState, def: ComponentDefinition, raw: Record<string, unknown>, renames: PropRename[] = []) {
   const next = normalizeProperties(raw, state);
-  for (const name of Object.keys(def.properties)) if (!Object.hasOwn(next, name)) removeProp(state, def, name);
+  checkRenames(def, next, renames);
+  const from = new Set(renames.map((r) => r.from));
+  const to = new Set(renames.map((r) => r.to));
+  // Removed: a stored property the new schema leaves out, or whose name a renamed one takes over.
+  for (const name of Object.keys(def.properties)) if (!from.has(name) && (!Object.hasOwn(next, name) || to.has(name))) removeProp(state, def, name);
+  if (renames.length) moveProps(state, def, renames);
+  // Each property then takes its new schema, checked against the content it moved with.
   const ordered: Record<string, PropSchema> = {};
   for (const [name, schema] of Object.entries(next)) {
     applyPropSchema(state, def, name, schema);
@@ -236,6 +287,19 @@ export function replaceProperties(state: ProjectState, def: ComponentDefinition,
   }
   // Keep the order the caller gave, so an edited manifest reads the way it was written.
   def.properties = ordered;
+  // Examples keep only the properties the component has, with values their schemas accept.
+  for (const ex of def.examples ?? []) {
+    for (const [name, v] of Object.entries(ex.props ?? {})) {
+      const schema = own(def.properties, name);
+      try {
+        if (schema) ex.props[name] = normalizeProp(schema, v, state, `${def.name} example`);
+        else delete ex.props[name];
+      } catch (e) {
+        if (!(e instanceof EngineError)) throw e;
+        delete ex.props[name];
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

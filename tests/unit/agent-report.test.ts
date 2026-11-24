@@ -183,6 +183,21 @@ describe('change descriptions', () => {
     expect(joinWords(['a', 'b'])).toBe('a and b');
     expect(joinWords(['a', 'b', 'c'])).toBe('a, b and c');
   });
+
+  it('names the properties a source update renames', () => {
+    const start = createStarterState('business', 'Test', false);
+    const created = applyOperations(start, [{ type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties: { label: { type: 'string', label: 'Label' } } }]);
+    const definitionId = created.results[0].definitionId as string;
+    const update = (renames?: Array<{ from: string; to: string }>): EditOperation => ({
+      type: 'component.updateSource',
+      definitionId,
+      source: '<p>y</p>\n',
+      properties: { caption: { type: 'string', label: 'Caption' } },
+      ...(renames ? { renames } : {})
+    });
+    expect(run(created.state, [() => [update([{ from: 'label', to: 'caption' }])]]).changes[0].label).toBe('Updated the code of the “Note” component and renamed “label” to “caption”');
+    expect(run(created.state, [() => [update()]]).changes[0].label).toBe('Updated the code of the “Note” component');
+  });
 });
 
 describe('check results', () => {

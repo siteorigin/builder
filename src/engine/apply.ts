@@ -243,7 +243,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       const def = projectDef(state, op.definitionId);
       if (def.kind !== 'code') fail(`"${def.name}" is a managed component. Convert a copy to code before editing source.`);
       if (op.expectedHash && op.expectedHash !== sourceHash(def.source ?? '')) throw new EngineError('CONFLICT', 'The source changed since it was read. Read it again before patching.');
-      if (op.properties) replaceProperties(state, def, op.properties);
+      if (op.renames?.length && !op.properties) fail('renames needs the whole new schema in properties.');
+      if (op.properties) replaceProperties(state, def, op.properties, op.renames);
       def.source = op.source;
       return { hash: sourceHash(op.source) };
     }
