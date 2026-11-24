@@ -856,11 +856,17 @@ describe('selection tools', () => {
     expect(localSite).toEqual(expect.arrayContaining(['upsert_page_with_sections', 'update_site_brand', 'read_page']));
     expect(localSite).not.toContain('apply_operations');
     expect(names(toolsForRun({ ...base, selection: null, capabilities: cloud }).tools)).toEqual(expect.arrayContaining(['upsert_page_with_sections', 'apply_operations']));
-    // A definition's own tree is not something the small tools can edit.
+    // A definition's own tree is not something the selection tools can edit: a small model gets its definition tools
+    // (#360), a cloud model the general ones.
     const def = Object.values(state.components).find((d) => d.tree)!;
-    const inDef = toolsForRun({ ...base, selection: { owner: { kind: 'component', id: def.id }, nodeId: def.tree!.rootIds[0] }, capabilities: local });
-    expect(inDef.mode).toBe('general');
-    expect(names(inDef.tools)).toContain('apply_operations');
+    const inside = { selection: { owner: { kind: 'component' as const, id: def.id }, nodeId: def.tree!.rootIds[0] }, definition: true, definitionTarget: { definitionId: def.id, nodeId: def.tree!.rootIds[0] } };
+    const inDef = toolsForRun({ ...base, ...inside, capabilities: local });
+    expect(inDef.mode).toBe('definition');
+    expect(names(inDef.tools)).not.toContain('apply_operations');
+    expect(names(inDef.tools)).not.toContain('update_selected_props');
+    const cloudDef = toolsForRun({ ...base, ...inside, capabilities: cloud });
+    expect(cloudDef.mode).toBe('general');
+    expect(names(cloudDef.tools)).toContain('apply_operations');
   });
 
   it('updates the selected component and reports bad values by field', async () => {

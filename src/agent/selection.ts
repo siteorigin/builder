@@ -113,7 +113,7 @@ const NODE_FIELDS: Partial<Record<GraphNode['kind'], Record<string, PropSchema>>
  * The fields this element can change. Rich text keeps its paragraph structure, and a tag or style bound to a
  * repeated item is set by the item, so neither is offered.
  */
-function nodeFields(node: GraphNode): Record<string, PropSchema> {
+export function nodeFields(node: GraphNode): Record<string, PropSchema> {
   const fields = { ...NODE_FIELDS[node.kind] };
   if (node.kind === 'text' && (node.rich || isBinding(node.tag))) delete fields.tag;
   if (node.kind === 'link' && isBinding(node.appearance)) delete fields.appearance;
@@ -155,7 +155,7 @@ function selectedPartReach(r: Resolved, target: SelectionTarget): PartReach | nu
   return r.def.tree.rootIds[0] === nodeId ? null : partReach(r.def, nodeId);
 }
 
-const STYLE_VALUE: JsonSchema = {
+export const STYLE_VALUE: JsonSchema = {
   anyOf: [
     { type: 'string' },
     { type: 'number' },
@@ -221,11 +221,9 @@ function emptiedBy(field: PropSchema, v: unknown): string | null {
 }
 
 /**
- * The tools for a selection, or null when they cannot cover it: inside a component's own definition, or on a
- * layout element whose content lives in its children. Those selections use the general tools.
- */
-/**
- * `widened`: the user has let the run change more than the selection, so a selected item no longer limits its styles.
+ * The tools for a selection, or null when they cannot cover it: inside a component's own definition (which has tools of
+ * its own, see definition.ts), or on a layout element whose content lives in its children. `widened`: the user has let
+ * the run change more than the selection, so a selected item no longer limits its styles.
  */
 export function selectionTools(state: ProjectState, target: SelectionTarget | null, opts: { widened?: boolean } = {}): ToolDefinition[] | null {
   if (!target || target.nested || target.owner.kind === 'component') return null;
@@ -346,7 +344,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
 
 const noSelection = (): ToolOutcome => ({ ok: false, content: { error: 'INVALID_ARGUMENT', message: 'Nothing is selected, or the selected element no longer exists.' } });
 
-async function applySelected(ops: EditOperation[], host: ToolHost, label: string, callId: string): Promise<ToolOutcome> {
+export async function applySelected(ops: EditOperation[], host: ToolHost, label: string, callId: string): Promise<ToolOutcome> {
   if (!ops.length) return { ok: true, content: { ok: true, revision: host.revision(), note: 'Nothing to change.' } };
   const res = await host.apply(ops, host.revision(), label, callId);
   if (!res.ok) return { ok: false, content: { ok: false, revision: res.revision, error: res.error } };

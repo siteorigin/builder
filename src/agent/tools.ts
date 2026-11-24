@@ -15,6 +15,7 @@ import { getTree, findParent, displayName } from '@engine/tree';
 import { newMacroMemory, runUpsert, UPSERT_ARGS, UPSERT_BRIEF, UPSERT_DESCRIPTION, upsertToolSchema, type MacroMemory } from './macros';
 import { BRAND_ARGS, BRAND_BRIEF, BRAND_DESCRIPTION, brandToolSchema, runBrand } from './brand';
 import { runSelectionTool, SELECTION_ARGS, SELECTION_BRIEFS, SELECTION_DESCRIPTIONS, selectionTools, type SelectionTarget } from './selection';
+import { DEFINITION_ARGS, DEFINITION_BRIEFS, DEFINITION_DESCRIPTIONS, definitionAbridged, definitionTools, runDefinitionTool, type DefinitionTarget, type DefinitionToolName } from './definition';
 import { examplesFor, exampleSection } from './examples';
 import { locateField } from '@engine/locate';
 import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
@@ -79,7 +80,8 @@ export const TOOL_ARGS = {
   }),
   upsert_page_with_sections: UPSERT_ARGS,
   update_site_brand: BRAND_ARGS,
-  ...SELECTION_ARGS
+  ...SELECTION_ARGS,
+  ...DEFINITION_ARGS
 } as const;
 
 export type ToolName = keyof typeof TOOL_ARGS;
@@ -107,7 +109,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
     'Find where the author changes one content field in the editor. Returns its current value and the exact labels the Inspector shows on the way to it (page, component, Content, then the field or the list, its item and the field), and gives the author an "Open in inspector" button for it.',
   upsert_page_with_sections: UPSERT_DESCRIPTION,
   update_site_brand: BRAND_DESCRIPTION,
-  ...SELECTION_DESCRIPTIONS
+  ...SELECTION_DESCRIPTIONS,
+  ...DEFINITION_DESCRIPTIONS
 };
 
 /**
@@ -130,7 +133,8 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   locate_field: 'Where the author changes one content field: its value and the exact Inspector labels on the way to it, with an "Open in inspector" button.',
   upsert_page_with_sections: UPSERT_BRIEF,
   update_site_brand: BRAND_BRIEF,
-  ...SELECTION_BRIEFS
+  ...SELECTION_BRIEFS,
+  ...DEFINITION_BRIEFS
 };
 
 /** A tool's description, with its brief when it has one. */
@@ -268,23 +272,24 @@ export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: b
 export const REVISION_BOUND_TOOLS = new Set<ToolName>(['apply_operations', 'apply_source_patch']);
 const MACRO_TOOLS: ToolName[] = ['upsert_page_with_sections', 'update_site_brand'];
 const SELECTION_TOOLS = Object.keys(SELECTION_ARGS) as ToolName[];
+const DEFINITION_TOOLS = Object.keys(DEFINITION_ARGS) as DefinitionToolName[];
 /** Offered by task mode (see toolsForRun), never as part of the general set. */
-const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...SELECTION_TOOLS, 'locate_field']);
+const TASK_TOOLS = new Set<ToolName>([...MACRO_TOOLS, ...SELECTION_TOOLS, ...DEFINITION_TOOLS, 'locate_field']);
 /**
  * Everything a read-only question may use: reads of the project, the catalogue and images, finding a field, and a
  * plain question to the author. Nothing that changes the site, measures the live preview or builds the project.
  */
 export const ASK_TOOLS: readonly ToolName[] = ['read_project', 'read_page', 'inspect_element', 'read_component', 'search_components', 'search_assets', 'locate_field', 'request_clarification'];
-export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element']);
+export const MUTATING_TOOLS = new Set<ToolName>([...REVISION_BOUND_TOOLS, ...MACRO_TOOLS, 'update_selected_props', 'edit_selected_list', 'edit_selected_table', 'style_selected_element', ...DEFINITION_TOOLS]);
 
 /** Below this window a model only gets the focused tools: the general operation schema alone would crowd it out. */
 export const FOCUSED_WINDOW_TOKENS = 64_000;
 
-export type ToolMode = 'selection' | 'page' | 'site' | 'general' | 'ask';
+export type ToolMode = 'selection' | 'page' | 'site' | 'definition' | 'general' | 'ask';
 
 export interface RunTools {
   tools: ToolDefinition[];
-  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. general: a selection they cannot cover. ask: reading only. */
+  /** selection: the selected element's tools. page: the page tool for one page. site: page and brand tools. definition: a component's own design, on a small model. general: a selection they cannot cover, or a design on a larger model. ask: reading only. */
   mode: ToolMode;
   /** Only the small tool set is offered. */
   focused: boolean;
@@ -312,7 +317,8 @@ function askTools(codeEnabled: boolean): ToolDefinition[] {
 /**
  * The tools for this step of a run, chosen by task. The small sets are the design target: every model gets
  * them. A cloud model with room to spare also keeps the general tools for anything they cannot express, and a
- * selection they cannot cover (a layout element, a component's own definition) always uses the general tools.
+ * selection they cannot cover (a layout element, say) always uses the general tools. A component's own design gets
+ * its definition tools on a small model, and the general tools on a larger one.
  */
 export function toolsForRun(opts: {
   state: ProjectState;
@@ -320,9 +326,12 @@ export function toolsForRun(opts: {
   capabilities: Pick<ModelCapabilities, 'toolCalling' | 'contextWindowTokens'>;
   codeEnabled: boolean;
   definitionOps: boolean;
-  /** The run is about a component's own design (edited everywhere): the general tools, which the small sets cannot
-   *  replace, for its whole life, also once the user lets it change more. */
+  /** The run is about a component's own design (edited everywhere): the general tools for a larger model, and for any
+   *  model once the user lets it change more. */
   definition?: boolean;
+  /** The design a run is still limited to (the component, or a node selected in it): a small model gets its definition
+   *  tools instead of the general ones. Null once the user lets the run change more. */
+  definitionTarget?: DefinitionTarget | null;
   attachedImages?: boolean;
   ask?: boolean;
   /** The small set whatever the window: the request would not fit beside the general tools. */
@@ -342,6 +351,17 @@ export function toolsForRun(opts: {
   if (opts.task === 'component') {
     const tools = focused ? toolDefinitions({ codeEnabled, definitionOps, operations: COMPONENT_BUILD_OPERATIONS }).filter((t) => COMPONENT_BUILD_TOOLS.has(t.name as ToolName)) : toolDefinitions({ codeEnabled, definitionOps });
     return { tools, mode: 'general', focused, task: 'component' };
+  }
+  // A component's own design on a small model: tools built from that design as it is now, beside its contract and
+  // design to read and the author to ask, so the general operations never crowd out the request (#360).
+  // A design or selected node that is gone (removed by the run itself, say) keeps the small set's reads and question: the
+  // run may change nothing more, and the general tools would only crowd out its answer.
+  if (focused && opts.definitionTarget) {
+    const micro = definitionTools(state, opts.definitionTarget) ?? [];
+    // Text too long to show whole can still be read whole, a part at a time, before it is rewritten. Images are always
+    // looked up: any design can take an image property, whose default is an assetId.
+    const reads = definitionAbridged(state, opts.definitionTarget) ? [plainTool('inspect_element')] : [];
+    return { tools: [...micro, definitionRead(opts.definitionTarget.definitionId), ...reads, plainTool('search_assets'), plainTool('request_clarification')], mode: 'definition', focused };
   }
   const general = toolDefinitions({ codeEnabled, definitionOps });
   if (selection) {
@@ -411,6 +431,23 @@ function contractRead(t: ToolDefinition): ToolDefinition {
   return { ...t, description: CONTRACT_READ, parameters: schema };
 }
 
+/** A tool as its arguments describe it, for a small set that offers it unchanged. */
+function plainTool(name: ToolName): ToolDefinition {
+  const schema = z.toJSONSchema(TOOL_ARGS[name], { unrepresentable: 'any', io: 'input' }) as Record<string, unknown>;
+  delete schema.$schema;
+  return { name, ...describe(name), parameters: schema };
+}
+
+/** read_component for the one design a run edits, with its structure read a part at a time. */
+function definitionRead(definitionId: string): ToolDefinition {
+  const schema = z.toJSONSchema(TOOL_ARGS.read_component.omit({ componentId: true }), { unrepresentable: 'any', io: 'input' }) as { properties: Record<string, unknown> };
+  return {
+    name: 'read_component',
+    ...describe('read_component'),
+    parameters: { type: 'object', properties: { ...schema.properties, definitionId: { type: 'string', enum: [definitionId] } }, required: ['definitionId'], additionalProperties: false }
+  };
+}
+
 /** An image in the project's library, or null for an unknown ID or a font. */
 export function libraryImage(state: ProjectState, assetId: unknown): AssetRecord | null {
   if (typeof assetId !== 'string' || !Object.hasOwn(state.assets.assets, assetId)) return null;
@@ -447,6 +484,8 @@ export interface ToolHost {
   macros?: MacroMemory;
   /** The element a selection-scoped run is working on. */
   selection?(): SelectionTarget | null;
+  /** The component design a run started limited to (see definition.ts), for its definition tools. */
+  definitionTarget?(): DefinitionTarget | null;
   /** Whether the run is still limited to its selection: the user has not let it change more. */
   selectionLimited?(): boolean;
   /** The page the run is still limited to, and how it is named, or null once it may change more. */
@@ -756,6 +795,14 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
     case 'style_selected_element':
     case 'request_wider_scope':
       return runSelectionTool(name as keyof typeof SELECTION_ARGS, args, host, callId);
+    case 'edit_definition_node':
+    case 'bind_definition_field':
+    case 'manage_component_prop':
+    case 'style_definition_element':
+    case 'add_definition_variant':
+    case 'insert_definition_node':
+    case 'remove_definition_node':
+      return runDefinitionTool(name as DefinitionToolName, args, host, callId);
   }
 }
 

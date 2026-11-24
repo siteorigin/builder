@@ -85,8 +85,8 @@ describe('orchestrator with constrained JSON', () => {
   });
 
   it('applies a structured value sent in the encoded form', async () => {
-    const { session, run } = await setup();
-    // A component edited everywhere is a run the small tools cannot cover, so the general edit tool is offered.
+    const { session, events, orch } = await setup();
+    // A component edited everywhere gets the general edit tool on a small model once the author lets it change more.
     const home = session.state.pages[session.state.site.homePageId];
     const grid = home.rootIds.map((id) => home.nodes[id] as unknown as { id: string; definitionId: string }).find((n) => session.state.components[n.definitionId]?.componentId === 'features.grid')!;
     const made = await session.apply({ operations: [{ type: 'component.makeUnique', owner: { kind: 'page', id: home.id }, nodeId: grid.id, name: 'Studio cards' }] }, { label: 'Make unique', source: 'user' });
@@ -94,11 +94,16 @@ describe('orchestrator with constrained JSON', () => {
     const id = (made.results?.[0] as { definitionId: string }).definitionId;
     const items = [{ id: 'i_one', icon: 'leaf', title: 'Services', description: 'What we do.' }];
     const args = { expectedRevision: session.revision, operations: [{ type: 'component.setPropDefault', definitionId: id, prop: 'items', value: { $json: JSON.stringify(items) } }] };
-    server.script(envelopeReply('apply_operations', args), envelopeReply('finish', { message: 'Set the default cards.' }));
-    const { result } = await run('Start every placement with a Services card', null, null, undefined, { id, name: 'Studio cards' });
+    server.script(envelopeReply('request_clarification', { question: 'Setting the cards every placement starts with needs more. Go ahead?', widenScope: true }), envelopeReply('apply_operations', args), envelopeReply('finish', { message: 'Set the default cards.' }));
+    const sent = await orch.send('Start every placement with a Services card', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, viewport: 1280, component: { id, name: 'Studio cards' } });
+    await expect.poll(() => events.some((e) => e.message?.questions?.length), { timeout: 5000, interval: 5 }).toBe(true);
+    const q = events.find((e) => e.message?.questions?.length)!.message!.questions![0];
+    expect(orch.answer(sent.runId!, q.id!, q.choices![0])).toBe(true);
+    await expect.poll(() => orch.busy, { timeout: 5000, interval: 5 }).toBe(false);
+    const result = [...events].reverse().find((e) => e.kind === 'message' && e.message?.result)?.message?.result;
     expect(result?.status).toBe('completed');
-    const def = session.state.components[id].properties.items as unknown as { default: Array<{ title: string }> };
-    expect(def.default.map((i) => i.title)).toEqual(['Services']);
+    const def = session.state.components[id].properties.items as unknown as { default: Array<Record<string, unknown>> };
+    expect(def.default).toEqual([expect.objectContaining({ icon: 'leaf', title: 'Services', description: 'What we do.' })]);
   });
 
   it('still enforces the selection scope', async () => {
@@ -636,6 +641,102 @@ describe('what a constrained local run sends first (#364)', () => {
     }
     expect(results[0]).toEqual({ heading: 'Sharper', image: { assetId: null, alt: 'A calm room' }, tone: 'muted' });
     expect(results[1]).toEqual(results[0]);
+  });
+});
+
+describe("a component's design on a small model (#360)", () => {
+  const posts = () => server.requests.filter((r) => r.method === 'POST').map((r) => r.body);
+  const grammar = (body: Record<string, any>) => JSON.stringify(body.response_format.json_schema.schema);
+
+  /** The Split hero copied for editing everywhere, as the editor makes one. */
+  async function editEverywhere(session: ProjectSession) {
+    const home = session.state.pages[session.state.site.homePageId];
+    const made = await session.apply({ operations: [{ type: 'component.fork', definitionId: (home.nodes[home.rootIds[0]] as unknown as { definitionId: string }).definitionId }] }, { label: 'Edit everywhere', source: 'user' });
+    const id = (made.results?.[0] as { definitionId: string }).definitionId;
+    return { id, owner: { kind: 'component' as const, id } };
+  }
+
+  it('adds a property, binds a condition to it, exposes a part and styles a variant option, without apply_operations', async () => {
+    const { session, run } = await setup({}, {}, false);
+    const { id } = await editEverywhere(session);
+    const before = structuredClone(session.state.components[id]);
+    server.script(
+      envelopeReply('manage_component_prop', { change: { action: 'add', prop: 'showButtons', label: 'Show buttons', type: 'boolean', default: true } }),
+      envelopeReply('bind_definition_field', { nodeId: 'actions', field: 'when', binding: { $prop: 'showButtons' } }),
+      envelopeReply('edit_definition_node', { nodeId: 'content', exposeAsPart: { partId: 'copy', label: 'Copy' } }),
+      envelopeReply('style_definition_element', { partId: 'copy', variant: { axis: 'tone', option: 'muted' }, scope: 'phone', styles: [{ property: 'gap', value: { token: 'space.lg' } }] }),
+      envelopeReply('finish', { message: 'Added a Show buttons switch, a Copy part and a muted phone gap.' })
+    );
+    const { runId, result } = await run('Let authors hide the buttons, and tighten the copy on muted phones', null, null, undefined, { id, name: 'Split hero' });
+    expect(result?.status).toBe('completed');
+    expect(toolResults().some((m) => m.content.includes('Error from'))).toBe(false);
+    // Every step was held to the small, closed grammar of the design's own tools, rebuilt from the design as it changed.
+    const bodies = posts();
+    expect(bodies).toHaveLength(5);
+    for (const b of bodies) {
+      expect(findForbiddenShapes(b.response_format.json_schema.schema)).toEqual([]);
+      expect(grammar(b)).not.toContain('apply_operations');
+      expect(grammar(b)).toContain('style_definition_element');
+    }
+    expect(grammar(bodies[0])).not.toContain('"showButtons"');
+    expect(grammar(bodies[1])).toContain('"showButtons"');
+    expect(grammar(bodies[3])).toContain('"copy"');
+    const def = session.state.components[id];
+    expect(def.properties.showButtons).toMatchObject({ type: 'boolean', label: 'Show buttons', default: true });
+    expect(def.tree!.nodes.actions.when).toEqual({ $prop: 'showButtons' });
+    expect(def.parts.copy).toMatchObject({ nodeId: 'content', label: 'Copy' });
+    expect(def.variantAxes!.tone.options.muted.styles).toMatchObject({ content: { phone: { gap: { token: 'space.lg' } } } });
+    // Only the muted option's rule: the base style and the other options are as they were.
+    expect(def.tree!.nodes.content.styles).toEqual(before.tree!.nodes.content.styles);
+    expect(def.variantAxes!.tone.options.inverse).toEqual(before.variantAxes!.tone.options.inverse);
+    // One undo takes the whole request back.
+    expect((await session.undoGroup(runId)).ok).toBe(true);
+    expect(session.state.components[id]).toEqual(before);
+  });
+
+  it('tells a small model to read shortened text whole before it rewrites it', async () => {
+    const { session, run } = await setup({}, {}, false);
+    const { id, owner } = await editEverywhere(session);
+    const long = `${'Every room is made by hand from local timber and finished with natural oils. '.repeat(5)}The end.`;
+    expect((await session.apply({ operations: [{ type: 'node.setBinding', owner, nodeId: 'lead', field: 'text', binding: null }, { type: 'node.setContent', owner, nodeId: 'lead', field: 'text', value: long }] }, { label: 'Long lead', source: 'user' })).ok).toBe(true);
+    server.script(envelopeReply('finish', { message: 'Nothing to change.' }));
+    await run('Fix the typo at the end of the intro', { owner, instancePath: [], nodeId: 'content' }, 'Content', undefined, { id, name: 'Split hero' });
+    const first = posts()[0];
+    expect(grammar(first)).toContain('inspect_element');
+    expect(first.messages[0].content).toContain('read text shown shortened (ending in …) whole with inspect_element');
+  });
+
+  it('keeps a node selected in the design to what is inside it', async () => {
+    const { session, run } = await setup({}, {}, false);
+    const { id, owner } = await editEverywhere(session);
+    server.script(
+      envelopeReply('manage_component_prop', { change: { action: 'add', prop: 'headline', label: 'Headline', type: 'string', default: 'Made by hand' } }),
+      envelopeReply('bind_definition_field', { nodeId: 'heading', field: 'text', binding: { $prop: 'headline' } }),
+      // The text of a bound heading is the default every placement without its own value shows: more than the selection.
+      envelopeReply('edit_definition_node', { nodeId: 'heading', content: { text: 'Hello' } }),
+      envelopeReply('edit_definition_node', { nodeId: 'content', exposeAsPart: { partId: 'copy', label: 'Copy' } }),
+      envelopeReply('style_definition_element', { variant: { axis: 'layout', option: 'media-start' }, scope: 'base', styles: [{ property: 'gap', value: { token: 'space.lg' } }] }),
+      envelopeReply('finish', { message: 'Bound the heading to a new Headline field.' })
+    );
+    const { result } = await run('Give the heading its own field', { owner, instancePath: [], nodeId: 'content' }, 'Content', undefined, { id, name: 'Split hero' });
+    expect(result?.status).toBe('completed');
+    const first = posts()[0];
+    // The node selected and what is inside it: nothing beside it is offered, and the contract only grows.
+    expect(grammar(first)).not.toContain('"media"');
+    // The binding is held to the grammar sent after the property was added, which offers it.
+    expect(grammar(first)).not.toContain('"headline"');
+    expect(grammar(posts()[1])).toContain('"headline"');
+    expect(grammar(first)).not.toContain('"remove"');
+    expect(grammar(first)).not.toContain('apply_operations');
+    // Each later request replays the conversation, so the one refusal is counted once.
+    const refused = [...new Set(toolResults().filter((m) => m.content.includes('Error from')).map((m) => m.content))];
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatch(/edit_definition_node[\s\S]*SCOPE_MISMATCH[\s\S]*every placement of this component without its own value/);
+    const def = session.state.components[id];
+    expect((def.tree!.nodes.heading as { text?: unknown }).text).toEqual({ $prop: 'headline' });
+    expect(def.properties.headline.default).toBe('Made by hand');
+    expect(def.parts.copy.nodeId).toBe('content');
+    expect(def.variantAxes!.layout.options['media-start'].styles).toMatchObject({ content: { base: { gap: { token: 'space.lg' } } } });
   });
 });
 
