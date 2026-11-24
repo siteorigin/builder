@@ -22,7 +22,7 @@ export const api = window.builder;
 export type LeftTab = 'pages' | 'posts' | 'layers' | 'insert' | 'assets';
 export type { PostRef };
 export type RightTab = 'inspect' | 'chat' | 'styles';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health'; section?: 'seo' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'post-import'; opening: string; preview: PostImportPreview } | { kind: 'paste-style'; ref: ElementRef; opening: string };
+export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string; sample?: SampleContactKind } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions'; review?: boolean } | { kind: 'new-code' } | { kind: 'new-component' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health'; section?: 'seo' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] } | { kind: 'post-import'; opening: string; preview: PostImportPreview } | { kind: 'paste-style'; ref: ElementRef; opening: string };
 
 export interface Rect {
   x: number;
@@ -429,6 +429,14 @@ export function projectHistory(action: 'undo' | 'redo') {
  */
 export function stepHistory(entryId: string, direction: 'undo' | 'redo', count: number, snap: ProjectSnapshot): Promise<ApplyResult> {
   return trackHistory(api.project.stepHistory(entryId, direction, { revision: snap.revision, count }, snap.workspaceKey));
+}
+
+/**
+ * Undo an AI turn on its own as reviewed in History (issue 164), followed like an Undo. Refused once the project has
+ * moved on from the revision the review was worked out at, for the author to look again.
+ */
+export function revertAiTurn(entryId: string, revision: number, snap: ProjectSnapshot): Promise<ApplyResult> {
+  return trackHistory(api.project.revertAiTurn(entryId, { revision }, snap.workspaceKey));
 }
 
 /** Zoom the preview and remember it for this project. */

@@ -12,7 +12,10 @@ import { createStarterState } from '@catalogue/starters';
 import { headerMenu } from '@engine/tree';
 import { runStanding } from '@shared/turns';
 import type { InstanceNode } from '@shared/types';
+import type { ChatMessage } from '@shared/api';
 import { ProjectSession } from '../../src/main/project/session';
+import { reviewEntryId, reviewNote, standingNote, undoableId } from '../../src/renderer/src/lib/result';
+import { reviewPlan, stepChangeText, turnName } from '../../src/renderer/src/lib/turn-review';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -257,5 +260,60 @@ describe('where a turn taken back on its own stands once History lets steps go (
     expect(s.historyInfo().entries.some((e) => e.revertsRunId)).toBe(false);
     expect(standing(s)).toBe('applied');
     expect(s.state.pages[PICKS]).toBeDefined();
+  });
+});
+
+describe('the chat card and History’s words for an earlier AI turn (issue 164)', () => {
+  const reply = (runId: string, canUndo = true): ChatMessage => ({ id: `m_${runId}`, role: 'assistant', text: '', runId, result: { status: 'completed', summary: 'Added Staff picks.', changes: [], validation: [], canUndo } });
+
+  it('offers Review in history on the card once Undo turn has gone, and says why on the latest card', async () => {
+    const { s } = await make();
+    const entryId = await addStaffPicks(s);
+    const card = reply('run_picks');
+    // While it is the newest step, the card offers Undo turn and nothing to review.
+    expect(undoableId([card], s.historyInfo())).toBe(card.id);
+    expect(reviewEntryId(card, s.historyInfo(), true)).toBeUndefined();
+    await setHomeTitle(s, 'November client proof');
+    expect(undoableId([card], s.historyInfo())).toBeUndefined();
+    expect(reviewEntryId(card, s.historyInfo(), false)).toBe(entryId);
+    expect(reviewNote(card, s.historyInfo(), true, true)).toMatch(/^Changes were made after this turn, so it can no longer be undone from here\. Review it in History/);
+    // An older card just offers the review, and a turn that changed nothing has none.
+    expect(reviewNote(card, s.historyInfo(), false, true)).toBeUndefined();
+    expect(reviewEntryId(reply('run_picks', false), s.historyInfo(), false)).toBeUndefined();
+    expect(reviewEntryId(reply('run_gone'), s.historyInfo(), false)).toBeUndefined();
+
+    // Once taken back on its own, the card reads as undone, still offers the review, and an unfinished one says how
+    // to bring it back.
+    await ok(s.revertAiEntry(entryId, { revision: s.revision }));
+    expect(reviewEntryId(card, s.historyInfo(), false)).toBe(entryId);
+    expect(reviewNote(card, s.historyInfo(), true, true)).toBeUndefined();
+    const unfinished: ChatMessage = { ...card, result: { ...card.result!, incomplete: true } };
+    expect(standingNote(unfinished, s.historyInfo(), true)).toBe('These changes were reverted, so this request can only be continued once that revert is undone.');
+  });
+
+  it('says what each way back takes and keeps', async () => {
+    const { s } = await make();
+    const entryId = await addStaffPicks(s);
+    await setHomeTitle(s, 'November client proof');
+    const { review } = await s.reviewAiEntry(entryId);
+    const plan = reviewPlan(review!, s.historyInfo().entries);
+    expect(plan.revert).toEqual({ ok: true, text: 'Takes back what this turn changed and keeps the 1 change made after it.', keeps: ['Change browser title (Home)'] });
+    expect(plan.step).toMatchObject({ direction: 'undo', count: 2, text: 'Undo 2 changes', takes: ['Change browser title (Home)', 'AI: Add a Staff picks page'], note: 'Undoes this turn and the 1 change after it, newest first. You can redo them until you make a new change.' });
+    expect(turnName(review!.label)).toBe('Add a Staff picks page');
+    expect(review!.later[0].changes.map(stepChangeText)).toEqual(['Home · Browser title: added “November client proof”']);
+    expect(review!.changes.map(stepChangeText)).toEqual(expect.arrayContaining(['Staff picks · Page: added “/staff-picks/”', 'Header · Link: added “Staff picks”']));
+
+    // With an undone change waiting to be redone, undoing the turn on its own says that change can no longer be.
+    await setHomeTitle(s, 'Undone');
+    await ok(s.undo());
+    const withRedo = reviewPlan((await s.reviewAiEntry(entryId)).review!, s.historyInfo().entries);
+    expect(withRedo.revert).toMatchObject({ ok: true, lost: '1 change you undid can no longer be redone.' });
+  });
+
+  it('words a value changed, removed, and one with no single value', () => {
+    expect(stepChangeText({ owner: 'Site settings', property: 'Site name', change: 'changed', before: 'A', after: 'B' })).toBe('Site settings · Site name: “A” → “B”');
+    expect(stepChangeText({ owner: 'Header', property: 'Link', change: 'removed', before: 'Staff picks' })).toBe('Header · Link: removed “Staff picks”');
+    expect(stepChangeText({ owner: 'Home', property: 'Content', change: 'changed', detail: '1 element added' })).toBe('Home · Content: 1 element added');
+    expect(stepChangeText({ owner: 'Site styles', property: 'Theme', change: 'changed' })).toBe('Site styles · Theme: changed');
   });
 });
