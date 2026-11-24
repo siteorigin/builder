@@ -16,7 +16,7 @@ import { nestingChecker } from './semantic-tags';
 import { MAX_UI_STATES, bindingProblem, bindingSlots, boundSchema, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
 import { cardLinkProblems, isCarouselTrack } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
-import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, type FormNameClash } from '@generator/checks';
+import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, unlinkedMenuLinks, type FormNameClash } from '@generator/checks';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
 import { showsPart } from '@shared/page-shell';
@@ -356,9 +356,12 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
           }
         }
       }
-    if (owner.kind !== 'component')
+    if (owner.kind !== 'component') {
       for (const b of unlinkedButtons(state, tree))
         out.push({ severity: 'warning', code: 'BUTTON_UNLINKED', message: `${label}: the “${b.label}” button has no link, so visitors won’t see it. Choose where it goes, or hide the button.`, owner, nodeId: b.nodeId });
+      for (const m of unlinkedMenuLinks(state, tree))
+        out.push({ severity: 'warning', code: 'MENU_LINK_UNLINKED', message: `${label}: the “${m.label}” menu link has no destination, so it goes nowhere. Choose where it goes, or remove it from the menu.`, owner, nodeId: m.nodeId });
+    }
     // Theme definitions are fixed theme data; a project component's own forms are checked like a page's.
     const inTheme = owner.kind === 'component' && state.components[owner.id]?.owner === 'theme';
     for (const n of Object.values(tree.nodes)) {

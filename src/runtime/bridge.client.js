@@ -3201,7 +3201,8 @@ async function inspect(deadline, readableBy = deadline + 1500) {
   // A page has one h1; a component shown on its own is not a page.
   const h1 = document.querySelectorAll('h1').length;
   if (h1 !== 1 && !preview) issues.push({ kind: 'heading-structure', message: `The page has ${h1} h1 headings (expected 1).` });
-  for (const a of document.querySelectorAll('a')) if (!a.textContent.trim() && !a.getAttribute('aria-label')) issues.push({ kind: 'empty-link', ...at(a), message: 'A link has no accessible name.' });
+  // An <a> without href is a placeholder (a menu link with nowhere to go yet), not a link to name.
+  for (const a of document.querySelectorAll('a[href]')) if (!a.textContent.trim() && !a.getAttribute('aria-label')) issues.push({ kind: 'empty-link', ...at(a), message: 'A link has no accessible name.' });
   // The readability checks measure pages of the site: a component shown on its own has sample content in a
   // made-up page, with nothing there an edit could address.
   const readable = preview ? null : readability(vw, readableBy);

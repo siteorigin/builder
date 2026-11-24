@@ -200,6 +200,20 @@ describe('exporting a project with a draft', () => {
     expect(Object.keys(manifest.files)).toContain('src/routes/winter-stock-preview/+page.svelte');
   });
 
+  it('names a header menu link with nowhere to go in the website and in the editable project (#208)', async () => {
+    const { c } = await projectWithDraft();
+    const header = c.snapshot()!.state.site.shell.header;
+    const set = await c.apply({ operations: [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header.rootIds[0], prop: 'links', value: [{ label: 'Soon', link: { type: 'none', target: '' } }] }] });
+    expect(set.ok).toBe(true);
+    const named = ['A menu link has no destination, so it goes nowhere. Choose where it goes in the editor, or remove it from the menu:', 'Header: “Soon”'];
+    const built = await c.buildStaticTo(join(temp('out'), 'site'));
+    expect(built.ok).toBe(true);
+    expect(built.warnings).toEqual(expect.arrayContaining(named));
+    const source = await c.exportSourceTo(join(temp('out'), 'handoff'));
+    expect(source.ok).toBe(true);
+    expect(source.warnings).toEqual(expect.arrayContaining(named));
+  });
+
   it('refuses the website export before asking where to save it while a published page links to a draft', async () => {
     const { c } = await projectWithDraft();
     const about = Object.values(c.snapshot()!.state.pages).find((p) => p.title === 'About')!.id;

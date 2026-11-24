@@ -133,6 +133,9 @@ const EMAIL_RE = /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/;
 const TEL_RE = /^[+0-9 ().-]{3,30}$/;
 const ANCHOR_RE = /^[A-Za-z][\w-]*$/;
 
+/** A telephone number as a tel: link takes it: digits and the usual separators, with at least three digits to dial. */
+export const isTelephone = (t: string): boolean => TEL_RE.test(t) && (t.match(/\d/g)?.length ?? 0) >= 3;
+
 /**
  * A link written as text or read from an href: a full http(s) URL, mailto:, tel:, #anchor, a page route (with an
  * optional #anchor) or a page ID. Null for anything else, javascript: and other schemes included.
@@ -142,7 +145,7 @@ export function linkFromTarget(raw: string, pages: RichPages, newTab = false): L
   const tab = newTab ? { newTab: true } : {};
   if (/^https?:/i.test(t)) return URL_RE.test(t) ? { type: 'url', target: t, ...tab } : null;
   if (/^mailto:/i.test(t)) return EMAIL_RE.test(t.slice(7)) ? { type: 'email', target: t.slice(7), ...tab } : null;
-  if (/^tel:/i.test(t)) return TEL_RE.test(t.slice(4)) ? { type: 'tel', target: t.slice(4), ...tab } : null;
+  if (/^tel:/i.test(t)) return isTelephone(t.slice(4)) ? { type: 'tel', target: t.slice(4), ...tab } : null;
   if (t.startsWith('#')) return ANCHOR_RE.test(t.slice(1)) ? { type: 'anchor', target: t.slice(1), ...tab } : null;
   const hash = t.indexOf('#');
   const path = hash < 0 ? t : t.slice(0, hash);

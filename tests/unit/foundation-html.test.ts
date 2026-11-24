@@ -588,6 +588,32 @@ describe('shell.header', () => {
       expect(nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/') }] }))).toBe('<ul class="so-header__list"><li><a href="/about/">About</a></li></ul>');
     });
 
+    it('shows a link with nowhere to go as its words, which neither jump to the top nor close the menu (#208)', () => {
+      const none = { type: 'none', target: '' };
+      const links = [
+        { id: 'l1', label: 'Services', link: none },
+        { id: 'l2', label: 'Design', link: none, sub: true },
+        { id: 'l3', label: 'Home', link: link('/'), sub: true },
+        { id: 'l4', label: 'Soon', link: none }
+      ];
+      const out = authoredHtml('shell.header', { links });
+      expect(out).not.toMatch(/href="#"/);
+      // A heading with nowhere to go still opens its submenu from its button, and marks the page open under it.
+      expect(nav(out)).toBe(
+        '<ul class="so-header__list">' +
+          `<li class="so-header__group so-header__group--current"><a>Services</a>${toggle('0', 'Services')}` +
+          '<ul id="so-sub:0" class="so-header__sub" hidden=""><li><a>Design</a></li><li><a href="/" aria-current="page">Home</a></li></ul></li>' +
+          '<li><a>Soon</a></li>' +
+          '</ul>'
+      );
+      const source = bundle.defs['shell.header'].source!;
+      // Only a link that goes somewhere closes the menu when chosen, and only one brightens under the pointer.
+      expect(source).toMatch(/onclick=\{href\(item\.link\) \? chose : undefined\}/);
+      const hovers = source.match(/\.so-header__nav[^{,\n]*:hover/g)!;
+      expect(hovers).toHaveLength(3);
+      for (const h of hovers) expect(h).toMatch(/ a\[href\]:hover$/);
+    });
+
     it('names each submenu by its place in the menu, whatever its link’s item ID holds', () => {
       const links = [
         { id: 'a b', label: 'About', link: link('/about/') },

@@ -10,9 +10,9 @@ import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { generateProject } from '@generator/index';
-import { unlinkedButtons } from '@generator/checks';
+import { unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
 import { linkSvelte } from '@generator/runtime-files';
-import { unlinkedButtonWarnings } from '../../src/main/export';
+import { unlinkedButtonWarnings, unlinkedMenuLinkWarnings } from '../../src/main/export';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../../src/renderer/src/lib/unlinked';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -124,6 +124,9 @@ describe('buttons without a destination in visitor output', () => {
     button.appearance = 'link';
     const html = fromPricing(await renderHome(s));
     expect(elementWith(html, 'Call us today')).toMatch(/^<span\b/);
+    // It is not left out, so it is not reported as a button visitors won't see.
+    expect(unlinkedButtons(s, home(s)).map((b) => b.label)).not.toContain('Call us today');
+    expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED' && d.message.includes('Call us today'))).toEqual([]);
   });
 });
 
@@ -494,5 +497,96 @@ describe('reporting buttons without a destination', () => {
     expect(w[0]).toMatch(/^10 buttons/);
     expect(w).toHaveLength(8);
     expect(w[7]).toBe('…and 4 more.');
+  });
+});
+
+describe('header menu links without a destination (#208)', () => {
+  const none = { type: 'none', target: '' };
+  const headerOf = (s: ProjectState) => s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+  const about = (s: ProjectState) => ({ type: 'page', target: pageNamed(s, 'About').id });
+
+  it('finds each menu link with words and nowhere to go, but not a heading whose submenu still opens', () => {
+    const s = fresh();
+    const header = headerOf(s);
+    expect(unlinkedMenuLinks(s, s.site.shell.header)).toEqual([]);
+    header.props.links = [
+      { id: 'svc', label: 'Services', link: none },
+      { id: 'dsg', label: 'Design', link: none, sub: true },
+      { id: 'abt', label: 'About', link: about(s), sub: true },
+      { id: 'soon', label: 'Soon', link: none },
+      { id: 'blank', label: '  ', link: none },
+      { id: 'gone', label: 'Gone', link: { type: 'page', target: 'pg_missing' } }
+    ];
+    expect(unlinkedMenuLinks(s, s.site.shell.header)).toEqual([
+      { nodeId: header.id, itemId: 'dsg', label: 'Design' },
+      { nodeId: header.id, itemId: 'soon', label: 'Soon' },
+      { nodeId: header.id, itemId: 'gone', label: 'Gone' }
+    ]);
+    // A first link marked to go under the one above has none above it: it heads the next one's submenu.
+    header.props.links = [
+      { id: 'shop', label: 'Shop', link: none, sub: true },
+      { id: 'gifts', label: 'Gifts', link: none, sub: true }
+    ];
+    expect(unlinkedMenuLinks(s, s.site.shell.header)).toEqual([{ nodeId: header.id, itemId: 'gifts', label: 'Gifts' }]);
+    // An item saved without its label shows the field's default words.
+    header.props.links = [{ id: 'bare', link: none }];
+    expect(unlinkedMenuLinks(s, s.site.shell.header)).toEqual([{ nodeId: header.id, itemId: 'bare', label: 'Page' }]);
+    // A code component that is not a header is not read as one, whatever its properties are called.
+    expect(unlinkedMenuLinks(s, { ...s.site.shell.footer })).toEqual([]);
+  });
+
+  it('says so in Project health, on the header', () => {
+    const s = fresh();
+    headerOf(s).props.links = [{ id: 'i1', label: 'About', link: about(s) }, { id: 'i2', label: 'Soon', link: none }];
+    const found = validateState(s).filter((d) => d.code === 'MENU_LINK_UNLINKED');
+    expect(found).toEqual([expect.objectContaining({ severity: 'warning', owner: { kind: 'shell', id: 'header' }, nodeId: headerOf(s).id })]);
+    expect(found[0].message).toMatch(/the “Soon” menu link has no destination/);
+    // It is not a button left out of the site.
+    expect(validateState(s).filter((d) => d.code === 'BUTTON_UNLINKED')).toEqual([]);
+  });
+
+  it('warns on export about each one, and not when no page shows the header', () => {
+    const s = fresh();
+    headerOf(s).props.links = [{ id: 'i1', label: 'Soon', link: none }, { id: 'i2', label: 'Later', link: none }];
+    expect(unlinkedMenuLinkWarnings(s)).toEqual([
+      '2 menu links have no destination, so they go nowhere. Choose where each one goes in the editor, or remove it from the menu:',
+      'Header: “Soon”',
+      'Header: “Later”'
+    ]);
+    expect(unlinkedButtonWarnings(s)).toEqual([]);
+    headerOf(s).props.links = [{ id: 'i1', label: 'Soon', link: none }];
+    const one = ['A menu link has no destination, so it goes nowhere. Choose where it goes in the editor, or remove it from the menu:', 'Header: “Soon”'];
+    expect(unlinkedMenuLinkWarnings(s)).toEqual(one);
+    // One page showing the header is enough; with none, nothing visitors see goes nowhere.
+    const [first, ...rest] = s.site.pageOrder;
+    for (const id of rest) s.pages[id].showHeader = false;
+    expect(unlinkedMenuLinkWarnings(s)).toEqual(one);
+    s.pages[first].showHeader = false;
+    expect(unlinkedMenuLinkWarnings(s)).toEqual([]);
+    // A published collection entry shows the header too; a draft one does not.
+    const drafted = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_soon', title: 'Coming soon' }]).state;
+    expect(unlinkedMenuLinkWarnings(drafted)).toEqual([]);
+    const published = applyOperations(drafted, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_soon', draft: false }]).state;
+    expect(unlinkedMenuLinkWarnings(published)).toEqual(one);
+  });
+
+  it('names one menu link once, however often a design repeats the header around it', () => {
+    const s = fresh();
+    const headerDef = s.components[headerOf(s).definitionId];
+    const banner = Object.values(s.components).find((d) => d.componentId === 'cta.banner')!;
+    // The banner's design shows a header for each of its two rows.
+    banner.properties.rows = { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { label: { type: 'string', label: 'Label', default: '' } }, default: [{ id: 'r1', label: 'One' }, { id: 'r2', label: 'Two' }] } as never;
+    const inner = makeInstance(headerDef, { links: [{ id: 'soon', label: 'Soon', link: none }] });
+    banner.tree!.nodes[inner.id] = inner;
+    banner.tree!.nodes.rows = { id: 'rows', kind: 'repeat', list: { $prop: 'rows' }, children: [inner.id] } as never;
+    (banner.tree!.nodes[banner.tree!.rootIds[0]] as { children: string[] }).children.push('rows');
+    const placed = Object.values(home(s).nodes).find((n) => n.kind === 'instance' && n.definitionId === banner.id)!;
+    const soon = (inner.props.links as Array<{ id: string }>)[0].id;
+    expect(unlinkedMenuLinks(s, home(s))).toEqual([{ nodeId: placed.id, itemId: soon, label: 'Soon' }]);
+    // Each placement of the banner is its own finding.
+    const again = { ...structuredClone(placed), id: 'n_banner_again' };
+    home(s).nodes[again.id] = again;
+    home(s).rootIds.push(again.id);
+    expect(unlinkedMenuLinks(s, home(s)).map((m) => m.nodeId)).toEqual([placed.id, again.id]);
   });
 });

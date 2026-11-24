@@ -243,6 +243,9 @@ describe('what is wrong with a link destination', () => {
     expect(inlineLinkProblem('https://', pages)).toMatch(/web address/);
     expect(inlineLinkProblem('mailto:hello', pages)).toMatch(/email/);
     expect(inlineLinkProblem('tel:call me', pages)).toMatch(/phone/);
+    // A number without three digits to dial says so.
+    expect(inlineLinkProblem('tel:(1)-2', pages)).toMatch(/at least 3 digits/);
+    expect(inlineLinkProblem('tel:(1)-23', pages)).toBeNull();
     expect(inlineLinkProblem('ftp://example.com', pages)).toMatch(/page address/);
   });
 
@@ -253,6 +256,7 @@ describe('what is wrong with a link destination', () => {
     expect(linkFieldProblem('email', 'hello', s)).toMatch(/email address/);
     expect(linkFieldProblem('email', 'hello@example.com', s)).toBeNull();
     expect(linkFieldProblem('tel', 'call us', s)).toMatch(/phone number/);
+    expect(linkFieldProblem('tel', '(1)-2', s)).toMatch(/at least 3 digits/);
     expect(linkFieldProblem('tel', '+1 555 0100', s)).toBeNull();
     // Nothing typed changes nothing, and other kinds of link are chosen, not typed.
     expect(linkFieldProblem('url', '  ', s)).toBeNull();
