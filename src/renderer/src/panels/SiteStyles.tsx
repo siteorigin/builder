@@ -958,7 +958,8 @@ export function SiteStyles() {
       <div className="sr-only" role="status" aria-live="polite">
         {contrastStatus}
       </div>
-      <div className="sr-only" role="status" aria-live="polite">
+      {/* Resets and removals are said here; the status region above stays the one place contrast is reported. */}
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
         {said}
       </div>
       <div className="insp-head ss-head">
