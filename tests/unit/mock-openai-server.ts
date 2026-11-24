@@ -76,6 +76,39 @@ export { chunk as sseChunk };
 /** A reply worked out from the request it answers, for a step that needs something an earlier step returned. */
 export type MockResponder = (req: MockRequest) => MockReply;
 
+type WireMessage = { role: string; content?: unknown; tool_calls?: unknown; tool_call_id?: string };
+
+/**
+ * Renders a chat request the way a strict template does (Mistral Small 3.2's rule, written out rather than run as
+ * Jinja): after an optional system message, tool results and assistant messages that carry tool calls are set
+ * aside, and the messages left must alternate user, assistant, user... A tool result must follow its call. Anything
+ * else raises, as the template does, so a request that renders here is one the server can format.
+ */
+export function renderStrictTemplate(messages: WireMessage[]): string {
+  const rest = messages[0]?.role === 'system' ? messages.slice(1) : messages;
+  rest
+    .filter((m) => m.role !== 'tool' && m.tool_calls === undefined)
+    .forEach((m, i) => {
+      if ((m.role === 'user') !== (i % 2 === 0)) throw new Error('After the optional system message, conversation roles must alternate user/assistant/user/assistant/...');
+    });
+  let open = new Set<string>();
+  return rest
+    .map((m) => {
+      if (m.role === 'tool') {
+        if (!open.delete(String(m.tool_call_id))) throw new Error(`A tool result for ${m.tool_call_id} does not follow its call.`);
+        return `[TOOL_RESULTS]${String(m.content)}[/TOOL_RESULTS]`;
+      }
+      if (open.size) throw new Error('A tool call was left without its result.');
+      if (m.role === 'user') return `[INST]${String(m.content)}[/INST]`;
+      if (m.role !== 'assistant') throw new Error(`Only user, assistant and tool roles are supported, not ${m.role}.`);
+      if (m.tool_calls === undefined) return `${String(m.content)}</s>`;
+      const calls = m.tool_calls as Array<{ id: string }>;
+      open = new Set(calls.map((c) => c.id));
+      return `[TOOL_CALLS]${JSON.stringify(calls)}</s>`;
+    })
+    .join('');
+}
+
 export class MockOpenAIServer {
   readonly requests: MockRequest[] = [];
   /** Requests whose client went away before the reply finished. */

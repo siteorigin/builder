@@ -10,7 +10,7 @@ import { toolDefinitions } from '@agent/tools';
 import { fixComponentSource } from '@agent/fixer';
 import { checkLocalBaseURL, LOCAL_PRESETS } from '@shared/local';
 import type { CanonicalModelRequest, ModelEvent, ToolDefinition } from '@agent/types';
-import { closedPort, DONE, envelopeReply, MockOpenAIServer, sseChunk, textReply, toolCallReply } from './mock-openai-server';
+import { closedPort, DONE, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
 
 const TOOLS: ToolDefinition[] = [
   { name: 'read_page', description: 'Read a page', parameters: { type: 'object', properties: { pageId: { type: 'string' } }, required: ['pageId'] } },
@@ -247,6 +247,66 @@ describe('native tool calls', () => {
       ]
     });
     expect(doneOf(await run(native())).toolCalls.map((c) => c.arguments)).toEqual(['{"pageId":"one"}', '{"pageId":"two"}']);
+  });
+
+  describe('strict chat templates', () => {
+    const NOTE = 'Your last response reached the output limit before it finished, so nothing in it was applied.';
+    const calls = [
+      { id: 'aaaaaaaa1', name: 'read_page', arguments: '{"pageId":"one"}' },
+      { id: 'aaaaaaaa2', name: 'read_page', arguments: '{"pageId":"two"}' }
+    ];
+
+    it('renders a note that follows tool results, keeping every call and result in place', async () => {
+      // As sent before: the note right after the results breaks the alternation such a template checks.
+      const unbridged = [
+        { role: 'system', content: 'You edit websites.' },
+        { role: 'user', content: 'Read both pages' },
+        { role: 'assistant', content: '', tool_calls: calls.map((c) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.arguments } })) },
+        { role: 'tool', tool_call_id: 'aaaaaaaa1', content: '{"page":"one"}' },
+        { role: 'tool', tool_call_id: 'aaaaaaaa2', content: '{"page":"two"}' },
+        { role: 'user', content: NOTE }
+      ];
+      expect(() => renderStrictTemplate(unbridged)).toThrow(/must alternate/);
+
+      server.script(textReply('Both pages read.'));
+      await run(native(), {
+        items: [
+          { kind: 'user', text: 'Read both pages' },
+          { kind: 'assistant', text: '', toolCalls: calls },
+          { kind: 'tool_result', callId: 'aaaaaaaa1', name: 'read_page', content: '{"page":"one"}' },
+          { kind: 'tool_result', callId: 'aaaaaaaa2', name: 'read_page', content: '{"page":"two"}' },
+          { kind: 'user', text: NOTE }
+        ]
+      });
+      const messages = posts()[0].body.messages;
+      const rendered = renderStrictTemplate(messages);
+      expect(messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'tool', 'assistant', 'user']);
+      expect(messages.slice(3, 5)).toEqual([
+        { role: 'tool', tool_call_id: 'aaaaaaaa1', name: 'read_page', content: '{"page":"one"}' },
+        { role: 'tool', tool_call_id: 'aaaaaaaa2', name: 'read_page', content: '{"page":"two"}' }
+      ]);
+      expect(messages.at(-1)).toEqual({ role: 'user', content: NOTE });
+      expect(rendered.split(NOTE)).toHaveLength(2);
+      expect(rendered.indexOf(NOTE)).toBeGreaterThan(rendered.indexOf('{"page":"two"}'));
+    });
+
+    it('renders a replayed transcript that opens with a reply or has two replies in a row', async () => {
+      server.script(textReply('Done.'), envelopeReply('finish', { message: 'Done.' }));
+      const items: CanonicalModelRequest['items'] = [
+        { kind: 'assistant', text: 'Added a Pricing page.', toolCalls: [] },
+        { kind: 'assistant', text: 'Renamed the site.', toolCalls: [] },
+        { kind: 'user', text: 'Now add a Contact page' }
+      ];
+      await run(native(), { items });
+      await run(adapter(), { items });
+      for (const post of posts()) {
+        const messages = post.body.messages;
+        expect(() => renderStrictTemplate(messages)).not.toThrow();
+        expect(messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+        expect(messages[2].content).toBe('Added a Pricing page.\n\nRenamed the site.');
+        expect(messages[3].content).toBe('Now add a Contact page');
+      }
+    });
   });
 
   it('uses call IDs that strict chat templates accept', async () => {
@@ -585,6 +645,7 @@ describe('constrained JSON', () => {
     });
     const messages = posts()[1].body.messages;
     expect(messages.map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(() => renderStrictTemplate(messages)).not.toThrow();
     expect(JSON.parse(messages[2].content).action.args).toEqual({ value: { $json: '[1]' } });
     expect(messages[3].content).toContain('Result of set_value:\n{"ok":true}');
     expect(messages[3].content).toContain('Validation found new errors.');

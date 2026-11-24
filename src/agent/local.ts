@@ -260,13 +260,34 @@ class ThinkFilter {
   }
 }
 
-/** Strict templates reject two user messages in a row. */
-function mergeUsers(messages: ChatMessage[]): ChatMessage[] {
+/** Bridges for strict chat templates, said in the voice of the role that has to fill the gap. */
+const TOOL_RESULTS_READ = 'I have read the results.';
+const EARLIER_TURNS = 'Earlier in this conversation:';
+const GO_ON = 'Go on.';
+
+/**
+ * Strict chat templates (Mistral's, for one) set tool calls and their results aside, then require the messages
+ * left to alternate user, assistant, user, starting with the user, or refuse the whole request. Messages that
+ * meet are merged; a note that follows tool results, or a transcript that opens with a reply, gets a short bridge
+ * from the missing role. Tool calls and results are never changed or moved.
+ */
+function alternate(messages: ChatMessage[]): ChatMessage[] {
   const out: ChatMessage[] = [];
+  let counted: 'user' | 'assistant' | null = null;
   for (const m of messages) {
+    if (m.role === 'system' || m.role === 'tool' || (m.role === 'assistant' && m.tool_calls)) {
+      out.push({ ...m });
+      continue;
+    }
     const last = out[out.length - 1];
-    if (m.role === 'user' && last?.role === 'user') last.content += `\n\n${m.content}`;
-    else out.push({ ...m });
+    if (m.role === counted && last?.role === m.role && !last.tool_calls) {
+      last.content += `\n\n${m.content}`;
+      continue;
+    }
+    if (m.role === counted) out.push(m.role === 'user' ? { role: 'assistant', content: TOOL_RESULTS_READ } : { role: 'user', content: GO_ON });
+    else if (counted === null && m.role === 'assistant') out.push({ role: 'user', content: EARLIER_TURNS });
+    out.push({ ...m });
+    counted = m.role;
   }
   return out;
 }
@@ -333,13 +354,13 @@ export class LocalAdapter implements AgentModelAdapter {
       } else if (constrained) out.push({ role: 'user', content: `${it.isError ? 'Error from' : 'Result of'} ${it.name}:\n${it.content}` });
       else out.push({ role: 'tool', tool_call_id: it.callId, name: it.name, content: it.content });
     }
-    return mergeUsers(out);
+    return out;
   }
 
   private body(req: CanonicalModelRequest, constrained: boolean, corrections: ChatMessage[]): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: req.model,
-      messages: mergeUsers([{ role: 'system', content: constrained ? req.system + envelopeInstructions(req.tools) : req.system }, ...this.messages(req.items, constrained), ...corrections]),
+      messages: alternate([{ role: 'system', content: constrained ? req.system + envelopeInstructions(req.tools) : req.system }, ...this.messages(req.items, constrained), ...corrections]),
       max_tokens: Math.min(req.maxOutputTokens, this.profile.maxOutput),
       temperature: this.profile.temperature,
       stream: true

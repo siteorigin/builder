@@ -15,7 +15,7 @@ import { DEFAULT_LOCAL_PROFILE, type LocalModelProfile } from '@agent/models';
 import { findForbiddenShapes } from '@agent/strict-schema';
 import { FOCUSED_WINDOW_TOKENS } from '@agent/tools';
 import { ProjectSession } from '../../src/main/project/session';
-import { closedPort, envelopeReply, MockOpenAIServer, sseChunk, textReply, toolCallReply } from './mock-openai-server';
+import { closedPort, envelopeReply, MockOpenAIServer, renderStrictTemplate, sseChunk, textReply, toolCallReply } from './mock-openai-server';
 
 let server: MockOpenAIServer;
 const dirs: string[] = [];
@@ -225,6 +225,19 @@ describe('orchestrator with native tool calls', () => {
     expect(result?.status).toBe('completed');
     expect(headerName(session, header)).toBe('Second');
     expect(session.revision).toBe(2);
+  });
+
+  it('asks a strict chat template for smaller steps after a cut-off reply that followed a tool result', async () => {
+    const { session, run, header } = await setup({ toolMode: 'native' });
+    server.script(toolCallReply('update_site_brand', rename('Harbor Coffee')), textReply('Now the pages', { finish: 'length' }), textReply('Renamed the site.'));
+    const { result } = await run('Rename the site to Harbor Coffee');
+    expect(result).toMatchObject({ status: 'completed', summary: 'Renamed the site.' });
+    expect(headerName(session, header)).toBe('Harbor Coffee');
+    const sent = server.requests.filter((r) => r.method === 'POST').map((r) => r.body.messages);
+    expect(sent).toHaveLength(3);
+    for (const messages of sent) renderStrictTemplate(messages);
+    expect(sent[2].map((m: { role: string }) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant', 'user']);
+    expect(sent[2].at(-1).content).toMatch(/^Your last response reached the output limit/);
   });
 
   it('recovers from malformed fragmented arguments', async () => {
