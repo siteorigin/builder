@@ -357,6 +357,10 @@ function readsWholeProject(o: EditOperation, state: ProjectState): boolean {
     // A rebuild is checked against every placement of the component, in files it may leave as they are.
     case 'component.upsert':
       return o.definitionId !== undefined;
+    // So is what a wrap or an ungroup moves in a design: it must still nest where every placement puts it.
+    case 'node.wrap':
+    case 'node.unwrap':
+      return o.owner.kind === 'component';
     case 'entry.update':
       return o.slug !== undefined;
     default:

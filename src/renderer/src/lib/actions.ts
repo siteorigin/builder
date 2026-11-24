@@ -6,7 +6,7 @@ import { isBinding } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
-import { applyOperations } from '@engine/apply';
+import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { missingSectionLinks } from '@generator/checks';
 import { api, applyOps, commitOps, getState, inspectorFocusRequest, saveLocal, setState, toast, undoAction, useStore, type State } from '../store';
 import { postWorkspace } from './posts';
@@ -300,29 +300,13 @@ export const planOne = (ref: ElementRef | null, s: EditorPlace = getState()): La
  */
 export function wrapOffers(plan: LayersPlan | null): { wrap: boolean; ungroup: boolean } {
   const none = { wrap: false, ungroup: false };
-  if (!plan) return none;
+  if (!plan || plan.snap.readOnly) return none;
   const g = plan.group;
   const st = plan.snap.state;
   if (lockedGroup(st, g)) return none;
-  const tree = treeFor(st, g.owner);
   const wrap = g.parentId !== null || g.owner.kind === 'component';
-  const ungroup =
-    g.parentId !== null &&
-    g.ids.every((id) => {
-      const n = tree && Object.hasOwn(tree.nodes, id) ? tree.nodes[id] : undefined;
-      return n?.kind === 'element' && n.children.length > 0;
-    });
-  return { wrap, ungroup };
-}
-
-/** Why the project refuses `ops`, planned on `st`, or null: tried on a copy first, so a refusal says why at once. */
-function refusalOf(st: ProjectState, ops: EditOperation[]): string | null {
-  try {
-    applyOperations(st, ops);
-    return null;
-  } catch (e) {
-    return e instanceof Error ? e.message : 'That change could not be made.';
-  }
+  // Only containers that can go (plain ones, not a component's root): one that links, say, is never offered.
+  return { wrap, ungroup: g.parentId !== null && !ungroupRefusal(st, g.owner, g.ids) };
 }
 
 /** Why there is nothing to wrap or ungroup with the selection, when a shortcut asks: the component's own root says so. */
@@ -337,8 +321,9 @@ function nothingPlanned(verb: string) {
  * Follows whether the author stays where a change was asked for while it lands, to select what it made only then. The
  * change's own snapshot can arrive before its reply and let go of a selection it took away (an ungrouped container):
  * that is not the author moving on. Any other new selection, layers picked, page, component, layout, mode or opening is.
+ * (What is selected then is only ever what a change that landed made: one refused selects nothing.)
  */
-function followChange(revision: number, workspaceKey: string): { still: () => boolean; stop: () => void } {
+function followChange(workspaceKey: string): { still: () => boolean; stop: () => void } {
   const start = getState();
   const view = (s: State) => [s.pageId, s.definitionMode?.definitionId ?? null, s.templateMode?.collectionId ?? null, s.mode, postWorkspace(s), s.snapshot?.workspaceKey].join('\n');
   let follow = start.snapshot?.workspaceKey === workspaceKey;
@@ -346,7 +331,7 @@ function followChange(revision: number, workspaceKey: string): { still: () => bo
     if (!follow) return;
     if (view(now) !== view(start)) follow = false;
     else if (now.selection !== prev.selection || now.layerSet !== prev.layerSet)
-      follow = now.snapshot !== prev.snapshot && now.snapshot?.revision === revision + 1 && prev.selection === start.selection && prev.layerSet === start.layerSet && !now.selection && !now.layerSet;
+      follow = now.snapshot !== prev.snapshot && prev.selection === start.selection && prev.layerSet === start.layerSet && !now.selection && !now.layerSet;
   });
   return { still: () => follow, stop };
 }
@@ -361,11 +346,10 @@ export async function wrapLayers(kind: WrapKind, plan = planLayers(), follow = f
   const st = plan.snap.state;
   const why = lockedGroup(st, g);
   if (why) return (toast(why, 'error'), false);
+  // The project says why it refuses one (layers picked apart, a component's root), in the notice commitOps shows.
   const op: EditOperation = { type: 'node.wrap', owner: g.owner, nodeIds: g.ids, primitive: kind };
-  const refused = refusalOf(st, [op]);
-  if (refused) return (toast(refused, 'error'), false);
   const name = groupName(st, g);
-  const watch = followChange(plan.snap.revision, plan.snap.workspaceKey);
+  const watch = followChange(plan.snap.workspaceKey);
   const r = await commitOps([op], `Wrap ${name} in ${WRAP_NAMES[kind]} ${placeWords(st, g.owner)}`, undefined, plan.snap.revision).finally(watch.stop);
   if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return false;
   const id = r.results?.[0]?.nodeId;
@@ -388,10 +372,8 @@ export async function ungroupLayers(plan = planLayers(), follow = focusInLayers(
   const why = lockedGroup(st, g);
   if (why) return (toast(why, 'error'), false);
   const op: EditOperation = { type: 'node.unwrap', owner: g.owner, nodeIds: g.ids };
-  const refused = refusalOf(st, [op]);
-  if (refused) return (toast(refused, 'error'), false);
   const name = groupName(st, g);
-  const watch = followChange(plan.snap.revision, plan.snap.workspaceKey);
+  const watch = followChange(plan.snap.workspaceKey);
   const r = await commitOps([op], `Ungroup ${name} ${placeWords(st, g.owner)}`, undefined, plan.snap.revision).finally(watch.stop);
   if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return false;
   const ids = r.results?.[0]?.nodeIds;

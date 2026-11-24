@@ -1405,9 +1405,19 @@ function nodeWrap(state: ProjectState, op: Op<'node.wrap'>): OpResult {
   const settled = settledRoot(tree);
   const run = siblingRun(tree, op.owner, op.nodeIds, 'wrapped');
   if (def && settled && run.list === tree.rootIds) fail(ROOT_IS_COMPONENT('wrapped'));
+  const parent = run.parentId !== null && Object.hasOwn(tree.nodes, run.parentId) ? tree.nodes[run.parentId] : undefined;
+  for (const id of run.ids) {
+    const n = tree.nodes[id];
+    const name = `“${displayName(state, n, def)}”`;
+    if (choosesState(n)) fail(`${name} is one of the buttons that choose what the component shows (its tabs), which are known by the list holding them, so it can’t be wrapped.`);
+    if (parent?.kind === 'repeat' && parent.appearStagger && n.appear) fail(`${name} enters in turn with the other items of its list, which a container around it would stop, so it can’t be wrapped.`);
+  }
   const landed = slotLanding(state, op.owner, tree, run.parentId, run.list);
   const wrapper = primitiveNode(state, op.primitive)[0] as ElementNode;
   wrapper.children = run.ids;
+  // Inside a group that hides when everything in it is hidden, the new container hides with what it holds, so the group
+  // still hides (and a list's placeholder for its images moves to it).
+  if (def && parent?.kind === 'element' && parent.collapseEmpty) wrapper.collapseEmpty = true;
   tree.nodes[wrapper.id] = wrapper;
   run.list.splice(run.start, run.ids.length, wrapper.id);
   landed([wrapper.id]);
@@ -1415,6 +1425,9 @@ function nodeWrap(state: ProjectState, op: Op<'node.wrap'>): OpResult {
   if (def && !settled) followRoot(def);
   return { nodeId: wrapper.id };
 }
+
+/** A button that picks one option of the component's UI state: a tab, known by the list that holds exactly those buttons. */
+const choosesState = (n: GraphNode | undefined) => n?.kind === 'link' && n.stateAction?.op === 'set';
 
 /**
  * Why a node can't be ungrouped, or null when it is a plain container: one that only lays out what it holds, so taking
@@ -1438,8 +1451,12 @@ function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined
   if (n.ariaLabel !== undefined) return `${name} has an accessible name, so it can’t be ungrouped. Remove it first.`;
   if (n.carousel) return `${name} is a carousel, so it can’t be ungrouped.`;
   if (n.appear) return `${name} has an entrance effect, which what it holds would lose, so it can’t be ungrouped. Remove the effect first.`;
+  const held = n.children.map((c) => (Object.hasOwn(tree.nodes, c) ? tree.nodes[c] : undefined));
   // Hiding while the list inside it is empty is what shows the author where a list's images go meanwhile.
-  if (n.collapseEmpty && n.children.some((c) => tree.nodes[c]?.kind === 'repeat')) return `${name} hides while the list inside it is empty, so it can’t be ungrouped. Turn off its hiding when empty first.`;
+  if (n.collapseEmpty && held.some((c) => c?.kind === 'repeat')) return `${name} hides while the list inside it is empty, so it can’t be ungrouped. Turn off its hiding when empty first.`;
+  // A list's category pills go just above the element holding it alone.
+  if (held.some((c) => c?.kind === 'repeat' && !!c.filter)) return `${name} holds a list with category filter pills, which go just above it, so it can’t be ungrouped.`;
+  if (held.some(choosesState)) return `${name} holds the buttons that choose what the component shows (its tabs), which are known by this list, so it can’t be ungrouped.`;
   // A detached design's option classes (its tone) are what the theme's colours inside it read, as variant styles are.
   const axes = Object.keys(n.detachedFrom?.options ?? {});
   if (axes.length) return `${name} keeps the “${axes[0]}” look of the component it was detached from, which what it holds takes its colours from, so it can’t be ungrouped.`;
@@ -1452,6 +1469,33 @@ function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined
   return null;
 }
 
+/** The run of containers `nodeIds` names, when each can be ungrouped where it is (see unwrapProblem); fails otherwise. */
+function ungroupable(state: ProjectState, owner: OwnerRef, tree: NodeTree, nodeIds: readonly string[]): SiblingRun {
+  const def = owner.kind === 'component' ? state.components[owner.id] : undefined;
+  const run = siblingRun(tree, owner, nodeIds, 'ungrouped');
+  if (def && run.list === tree.rootIds) fail(settledRoot(tree) ? ROOT_IS_COMPONENT('ungrouped') : UNSETTLED);
+  for (const id of run.ids) {
+    const why = unwrapProblem(state, def, tree, tree.nodes[id]);
+    if (why) fail(why);
+  }
+  return run;
+}
+
+/**
+ * Why the containers `nodeIds` of `owner` can't be ungrouped, by what they are and where they sit, or null: what the
+ * editor's menus offer, read without copying the project. Where what they hold lands (a slot's contract, nesting) is
+ * checked by the edit itself.
+ */
+export function ungroupRefusal(state: ProjectState, owner: OwnerRef, nodeIds: readonly string[]): string | null {
+  try {
+    ungroupable(state, owner, getTree(state, owner), nodeIds);
+    return null;
+  } catch (e) {
+    if (e instanceof EngineError) return e.message;
+    throw e;
+  }
+}
+
 /**
  * Ungroup plain containers side by side: what each holds takes its place, in order, and the container goes with its
  * own layout and styles. What they hold keeps its IDs, styles, bindings and repeat (a plain container is never one).
@@ -1460,13 +1504,7 @@ function unwrapProblem(state: ProjectState, def: ComponentDefinition | undefined
  */
 function nodeUnwrap(state: ProjectState, op: Op<'node.unwrap'>): OpResult {
   const tree = editableTree(state, op.owner);
-  const def = op.owner.kind === 'component' ? state.components[op.owner.id] : undefined;
-  const run = siblingRun(tree, op.owner, op.nodeIds, 'ungrouped');
-  if (def && run.list === tree.rootIds) fail(settledRoot(tree) ? ROOT_IS_COMPONENT('ungrouped') : UNSETTLED);
-  for (const id of run.ids) {
-    const why = unwrapProblem(state, def, tree, tree.nodes[id]);
-    if (why) fail(why);
-  }
+  const run = ungroupable(state, op.owner, tree, op.nodeIds);
   const children = run.ids.flatMap((id) => (tree.nodes[id] as ElementNode).children);
   const landed = slotLanding(state, op.owner, tree, run.parentId, run.list);
   run.list.splice(run.start, run.ids.length, ...children);

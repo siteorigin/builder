@@ -530,7 +530,7 @@ export function LayersPanel() {
       ...(places.length ? [{ label: 'Move within…', icon: <ArrowUpDown />, onSelect: () => setTimeout(() => within(anchorOf()), 0) }] : []),
       ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : []),
       ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), plan, pages, count, openerOf(el, primary)), 0) }] : []),
-      ...withSeparator(wrapItems(plan, { wrap: (k) => reported(wrapLayers(k, plan, true), `Wrapped ${count} in a ${WRAP_NAMES[k]}`), ungroup: () => reported(ungroupLayers(plan, true), `Ungrouped ${count}`) })),
+      ...withSeparator(wrapItems(plan, { wrap: (k) => void wrapLayers(k, plan, true).then((ok) => ok && announce(`Wrapped ${count} in a ${WRAP_NAMES[k]}`)), ungroup: () => void ungroupLayers(plan, true).then((ok) => ok && announce(`Ungrouped ${count}`)) })),
       { separator: true },
       ...copyPasteItems({ copy: g.owner.kind === 'page' ? () => copySelection(plan) && announce(`Copied ${count}`) : null, paste: g.owner.kind === 'shell' ? null : asPlanned(plan, async () => pasteFromMenu(true)) }),
       { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => reported(duplicateLayers(plan, true), `Duplicated ${count}`) },
@@ -637,7 +637,7 @@ export function LayersPanel() {
             { label: 'Move down', icon: <ArrowDown />, shortcut: '⇧⌘↓', disabled: here.index >= here.list.length - 1, onSelect: () => void moveSelection(1) },
             ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : []),
             ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), plan, pages, name, openerOf(el, ref.nodeId)), 0) }] : []),
-            ...withSeparator(wrapItems(plan, { wrap: (k) => reported(wrapLayers(k, plan, true), `Wrapped ${name} in a ${WRAP_NAMES[k]}`), ungroup: () => reported(ungroupLayers(plan, true), `Ungrouped ${name}`) }))
+            ...withSeparator(wrapItems(plan, { wrap: (k) => void wrapLayers(k, plan, true).then((ok) => ok && announce(`Wrapped ${name} in a ${WRAP_NAMES[k]}`)), ungroup: () => void ungroupLayers(plan, true).then((ok) => ok && announce(`Ungrouped ${name}`)) }))
           ]
         : []),
       ...(visibility.length ? [{ separator: true }, ...visibility] : []),

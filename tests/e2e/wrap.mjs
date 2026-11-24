@@ -1,7 +1,7 @@
 // Wrap in Stack, Row or Grid, and Ungroup (#386), against the real app: two buttons picked together in Layers are
-// wrapped in a Row from their menu as one change, which one Undo takes back; Shift+Cmd/Ctrl+G ungroups the Row again,
-// also one change; and with the page itself holding the keyboard, Cmd/Ctrl+G and Shift+Cmd/Ctrl+G wrap and ungroup the
-// heading selected there, each once.
+// wrapped in a Row from their menu as one change, which one Undo takes back; the Row's menu ungroups it again, also one
+// change; and with the page itself holding the keyboard, Cmd/Ctrl+G and Shift+Cmd/Ctrl+G wrap and ungroup the heading
+// selected there, each once.
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { MOD, createProject, eventually, launch, scratch, step } from './harness.mjs';
@@ -109,11 +109,12 @@ await eventually(async () => assert.equal(await page(), before, 'one Undo restor
 await win.keyboard.press(`${MOD}+Shift+z`);
 await eventually(async () => assert.equal(await page(), wrapped, 'Redo wraps them again'));
 
-step('Shift+Cmd/Ctrl+G ungroups the Row from Layers, as one change, and selects both buttons');
+step('the Row’s menu in Layers ungroups it, as one change, and selects both buttons');
 await row(rowId).click();
 await eventually(async () => assert.deepEqual(await selected(), [rowId]));
 const beforeUngroup = (await history()).length;
-await win.keyboard.press(`${MOD}+Shift+g`);
+await row(rowId).click({ button: 'right' });
+await menu.getByRole('menuitem', { name: 'Ungroup' }).click();
 await eventually(async () => assert.equal(await page(), before, 'the buttons are back where the Row was, as they were'));
 await eventually(async () => assert.deepEqual(await selected(), [book, call], 'both buttons are selected'));
 assert.deepEqual((await history()).slice(beforeUngroup), ['Ungroup Row on Home'], 'one change');
@@ -141,6 +142,7 @@ assert.deepEqual((await history()).slice(beforeKeys), ['Wrap Heading 2 in Stack 
 assert.ok(await win.evaluate(() => document.activeElement instanceof HTMLIFrameElement), 'the page still has the keyboard');
 await chord('g', true);
 await eventually(async () => assert.equal(await page(), wrapped, 'ungrouped, the heading is back where it was'));
+await eventually(async () => assert.deepEqual(await selected(), [title], 'and selected again'));
 assert.deepEqual((await history()).slice(beforeKeys), ['Wrap Heading 2 in Stack on Home', 'Ungroup Stack on Home'], 'one change each');
 
 assert.deepEqual(errors, [], 'no page errors');

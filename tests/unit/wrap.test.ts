@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ElementNode, InstanceNode, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
-import { applyOperations } from '@engine/apply';
+import { applyOperations, ungroupRefusal } from '@engine/apply';
 import { validateState } from '@engine/validate';
 import { validateOperation } from '@shared/ops';
 import { checkAuthority, OP_REACH, type Authority } from '@agent/scope';
@@ -68,6 +68,18 @@ describe('Wrap and Ungroup on a page', () => {
     const r = apply(s, [{ type: 'node.unwrap', owner: page(s), nodeIds: [b.results[0].nodeId as string, a.results[0].nodeId as string] }]);
     expect(content(r.state)).toEqual(['n_heading', 'n_book', 'n_call', 'n_after']);
     expect(Object.keys(home(r.state).nodes)).not.toContain(a.results[0].nodeId);
+    expect(Object.keys(home(r.state).nodes)).not.toContain(b.results[0].nodeId);
+  });
+
+  it('says without copying the project which containers can be ungrouped, as the menus offer them', () => {
+    const s = twoButtons();
+    const w = apply(s, [{ type: 'node.wrap', owner: page(s), nodeIds: ['n_book', 'n_call'], primitive: 'row' }]);
+    const row = w.results[0].nodeId as string;
+    expect(ungroupRefusal(w.state, page(s), [row])).toBeNull();
+    expect(ungroupRefusal(w.state, page(s), ['n_heading'])).toMatch(/holds nothing to ungroup/);
+    expect(ungroupRefusal(w.state, page(s), ['n_section'])).toMatch(/Sections at the top/);
+    const named = apply(w.state, [{ type: 'node.setContent', owner: page(s), nodeId: row, field: 'anchor', value: 'go' }]).state;
+    expect(ungroupRefusal(named, page(s), [row])).toMatch(/anchor/);
   });
 
   it('refuses sections at the top of the page, elements apart or in different places, and names given twice', () => {
@@ -130,6 +142,15 @@ describe('Wrap and Ungroup on a page', () => {
     ]).state;
     expect(errors(s)).toEqual([]);
     expect(() => apply(s, [{ type: 'node.wrap', owner: o, nodeIds: ['n_li1', 'n_li2'], primitive: 'stack' }])).toThrow(/list item, so it goes directly inside a list/);
+    // Buttons in a paragraph container are inline; a Row around them would be a block inside the paragraph.
+    const para = apply(s, [
+      { type: 'node.insert', newNodeId: 'n_para', owner: o, parentId: 'n_section', slot: 'content', primitive: 'stack' },
+      { type: 'node.setContent', owner: o, nodeId: 'n_para', field: 'tag', value: 'p' },
+      { type: 'node.move', owner: o, nodeId: 'n_book', parentId: 'n_para', index: 0 },
+      { type: 'node.move', owner: o, nodeId: 'n_call', parentId: 'n_para', index: 1 }
+    ]).state;
+    expect(errors(para)).toEqual([]);
+    expect(() => apply(para, [{ type: 'node.wrap', owner: o, nodeIds: ['n_book', 'n_call'], primitive: 'row' }])).toThrow(/inside a paragraph container/);
   });
 });
 
@@ -170,6 +191,15 @@ describe('Wrap and Ungroup in a slot with a limit', () => {
     const w = apply(one.s, [{ type: 'node.wrap', owner: page(one.s), nodeIds: ['n_book', 'n_call'], primitive: 'row' }]);
     const tight = apply(w.state, [{ type: 'component.setSlot', definitionId: one.id, slot: 'content', label: 'Content', primitives: ['text', 'link', 'element'], max: 1 }]).state;
     expect(() => apply(tight, [{ type: 'node.unwrap', owner: page(one.s), nodeIds: [w.results[0].nodeId as string] }])).toThrow(/holds at most one item/);
+  });
+
+  it('refuses ungrouping what the slot does not take into it', () => {
+    const { s } = limited(['link', 'element'], 2);
+    const w = apply(s, [{ type: 'node.wrap', owner: page(s), nodeIds: ['n_book', 'n_call'], primitive: 'row' }]);
+    const row = w.results[0].nodeId as string;
+    // A heading inside the Row is the Row's own; ungrouped, it would be the slot's.
+    const held = apply(w.state, [{ type: 'node.insert', owner: page(s), parentId: row, primitive: 'heading' }]).state;
+    expect(() => apply(held, [{ type: 'node.unwrap', owner: page(s), nodeIds: [row] }])).toThrow('The “Content” slot of “Section” takes buttons and containers, not text.');
   });
 });
 
@@ -244,6 +274,36 @@ describe('Wrap and Ungroup in a component’s design', () => {
     expect(() => apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['box'] }])).toThrow(/hides while the list inside it is empty/);
   });
 
+  it('wraps what a group hiding when empty holds in a container that hides with it, so the group still hides', () => {
+    const { s, id, own } = features();
+    const w = apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['eyebrow', 'heading', 'lead'], primitive: 'stack' }]);
+    expect(tree(w.state, id).nodes[w.results[0].nodeId as string]).toMatchObject({ collapseEmpty: true, children: ['eyebrow', 'heading', 'lead'] });
+    expect(errors(w.state)).toEqual([]);
+    // On a page nothing hides when empty, and the new container is as Insert makes it.
+    const p = twoButtons();
+    const pw = apply(p, [{ type: 'node.wrap', owner: page(p), nodeIds: ['n_book'], primitive: 'stack' }]);
+    expect(home(pw.state).nodes[pw.results[0].nodeId as string]).not.toHaveProperty('collapseEmpty');
+  });
+
+  it('refuses ungrouping what holds a filtered list, or tabs, and wrapping a tab or an item entering in turn', () => {
+    const { s, id, own } = features();
+    const t = tree(s, id);
+    const inner = t.nodes.inner as ElementNode;
+    t.nodes.fbox = { id: 'fbox', kind: 'element', tag: 'div', children: ['frep'] };
+    t.nodes.frep = { id: 'frep', kind: 'repeat', list: { $prop: 'items' }, filter: { field: 'title' }, children: [] };
+    const tab = (id: string, value: string) => ({ id, kind: 'link' as const, link: { type: 'none' as const, target: '' }, label: value, stateAction: { state: 'view', op: 'set' as const, value } });
+    t.nodes.tabs = { id: 'tabs', kind: 'element', tag: 'div', children: ['t1', 't2'] };
+    t.nodes.t1 = tab('t1', 'a');
+    t.nodes.t2 = tab('t2', 'b');
+    t.nodes.srep = { id: 'srep', kind: 'repeat', list: { $prop: 'items' }, appearStagger: true, children: ['sitem'] };
+    t.nodes.sitem = { id: 'sitem', kind: 'element', tag: 'div', appear: 'fade', children: [] };
+    inner.children.push('fbox', 'tabs', 'srep');
+    expect(() => apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['fbox'] }])).toThrow(/category filter pills/);
+    expect(() => apply(s, [{ type: 'node.unwrap', owner: own, nodeIds: ['tabs'] }])).toThrow(/choose what the component shows/);
+    expect(() => apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['t1'], primitive: 'stack' }])).toThrow(/choose what the component shows/);
+    expect(() => apply(s, [{ type: 'node.wrap', owner: own, nodeIds: ['sitem'], primitive: 'stack' }])).toThrow(/enters in turn/);
+  });
+
   it('wraps an older design’s top level whole, which gives it its one root', () => {
     const { s, id, own } = features();
     const t = tree(s, id);
@@ -290,5 +350,17 @@ describe('what an assistant run may wrap and ungroup', () => {
     expect(checkAuthority(s, [{ type: 'node.unwrap', owner: o, nodeIds: ['n_book'] }], pageRun)).toBeNull();
     const elsewhere: Authority = { kind: 'page', pageId: 'pg_other', label: 'About' };
     expect(checkAuthority(s, [{ type: 'node.unwrap', owner: o, nodeIds: ['n_book'] }], elsewhere)).not.toBeNull();
+  });
+
+  it('keeps a component run inside its design, and off its root', () => {
+    const st = createStarterState('business', 'Test Studio', false);
+    const placed = home(st).rootIds.map((id) => home(st).nodes[id] as InstanceNode).find((n) => st.components[n.definitionId]?.componentId === 'features.grid')!;
+    const f = apply(st, [{ type: 'component.fork', definitionId: placed.definitionId }]);
+    const id = f.results[0].definitionId as string;
+    const own = { kind: 'component' as const, id };
+    const run: Authority = { kind: 'component', definitionId: id, label: 'the Features design' };
+    expect(checkAuthority(f.state, [{ type: 'node.wrap', owner: own, nodeIds: ['card-title', 'card-text'], primitive: 'stack' }], run)).toBeNull();
+    expect(checkAuthority(f.state, [{ type: 'node.wrap', owner: own, nodeIds: ['root'], primitive: 'stack' }], run)).toMatch(/root/);
+    expect(checkAuthority(f.state, [{ type: 'node.unwrap', owner: page(st), nodeIds: [placed.id] }], run)).toMatch(/outside the Features design/);
   });
 });

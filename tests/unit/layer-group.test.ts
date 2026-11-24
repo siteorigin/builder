@@ -558,6 +558,19 @@ describe('Wrap in Stack, Row or Grid, and Ungroup (#386)', () => {
     expect(getState().layerSet).toBeNull();
   });
 
+  it('selects nothing for an ungroup that lands after the author opened another page', async () => {
+    await twoButtons();
+    likeTheApp = true;
+    pickButtons();
+    await actions.wrapLayers('row');
+    const ungrouping = actions.ungroupLayers();
+    setState({ pageId: aboutId() });
+    expect(await ungrouping).toBe(true);
+    expect(slotIds()).toEqual(['n_title', 'n_book', 'n_call', 'n_note']);
+    expect(getState().selection).toBeNull();
+    expect(getState().layerSet).toBeNull();
+  });
+
   it('refuses layers picked apart, a button to ungroup, and sections at the top of the page, saying why and changing nothing', async () => {
     await twoButtons();
     const pages = JSON.stringify(session.state.pages);
