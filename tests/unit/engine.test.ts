@@ -1839,7 +1839,36 @@ describe('a component keeps its one root (#205)', () => {
     empty.components[id].tree!.rootIds = [];
     const first = applyOperations(empty, [{ type: 'node.insert', owner: own, primitive: 'container' }]).state;
     expect(first.components[id].tree!.rootIds).toHaveLength(1);
+    expect(first.components[id].parts.root.nodeId).toBe(first.components[id].tree!.rootIds[0]);
     expect(validateState(first).some((d) => d.code === 'COMPONENT_ROOT')).toBe(false);
+  });
+
+  it('counts a design left with nothing to carry the component as a new problem, and a repeat at the top as one to put right', () => {
+    const { s, own, id } = setup();
+    const tree = s.components[id].tree!;
+    tree.nodes.extra = { id: 'extra', kind: 'text', tag: 'p', text: 'Loose' };
+    tree.rootIds.push('extra');
+    const before = validateState(s).filter(blocksSaving);
+    const gate = (next: ProjectState) => introducedDiagnostics(before, validateState(next).filter(blocksSaving)).map((d) => d.code);
+    // No design at all, as an external edit could leave it.
+    const noTree = structuredClone(s);
+    delete noTree.components[id].tree;
+    expect(gate(noTree)).toContain('COMPONENT_ROOT');
+    // The element that renders moved into the repeat: only the repeat is left at the top.
+    const repeatFirst = structuredClone(s);
+    repeatFirst.components[id].tree!.rootIds = ['cards', 'root'];
+    (repeatFirst.components[id].tree!.nodes.grid as { children: string[] }).children = [];
+    const intoRepeat = applyOperations(repeatFirst, [{ type: 'node.move', owner: own, nodeId: 'root', parentId: 'cards', index: 0 }]);
+    expect(intoRepeat.state.components[id].tree!.rootIds).toEqual(['cards']);
+    expect(introducedDiagnostics(validateState(s).filter(blocksSaving), validateState(intoRepeat.state).filter(blocksSaving)).map((d) => d.code)).toContain('COMPONENT_ROOT');
+    // A repeat at the top is put right with a container that holds it, one step at a time.
+    const lone = structuredClone(repeatFirst);
+    lone.components[id].tree!.rootIds = ['cards'];
+    const held = applyOperations(lone, [{ type: 'node.insert', owner: own, parentId: null, primitive: 'container', newNodeId: 'n_hold' }]).state;
+    expect(introducedDiagnostics(validateState(lone).filter(blocksSaving), validateState(held).filter(blocksSaving))).toEqual([]);
+    const done = applyOperations(held, [{ type: 'node.move', owner: own, nodeId: 'cards', parentId: 'n_hold', index: 0 }]).state;
+    expect(done.components[id].tree!.rootIds).toEqual(['n_hold']);
+    expect(validateState(done).some((d) => d.code === 'COMPONENT_ROOT')).toBe(false);
   });
 });
 
@@ -2009,5 +2038,18 @@ describe('load validation (#205)', () => {
       `${page.title}: the page’s sharing image is “a_font.file”, which is a font, not a picture. Choose an image instead.`
     ]);
     expect(found.every((d) => d.severity === 'error')).toBe(true);
+  });
+
+  it('leaves the stored items of a computed list alone: the site’s pages fill it', () => {
+    const s = fresh();
+    s.assets.assets.a_doc = { id: 'a_doc', name: 'guide.pdf', file: 'static/a_doc', mime: 'application/pdf', bytes: 10, hash: 'a_doc', kind: 'document', createdAt: '2026-01-01T00:00:00.000Z' };
+    const grid = firstInstance(s, 'features.grid');
+    const def = s.components[grid.definitionId];
+    const items = def.properties.items as { type: 'list'; feed?: string; fields: Record<string, unknown> };
+    items.fields.image = { type: 'image', label: 'Image' };
+    grid.props.items = [{ id: 'x', image: { assetId: 'a_doc', alt: '' } }];
+    expect(codes(s, 'ASSET_NOT_IMAGE').map((d) => d.nodeId)).toEqual([grid.id]);
+    items.feed = 'articles';
+    expect(codes(s, 'ASSET_NOT_IMAGE')).toEqual([]);
   });
 });

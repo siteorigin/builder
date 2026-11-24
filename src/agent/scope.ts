@@ -5,7 +5,7 @@
  */
 import type { ComponentDefinition, ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import type { EditOperation, OperationType } from '@shared/ops';
-import { getTree, subtreeIds } from '@engine/tree';
+import { getTree, settledRoot, subtreeIds } from '@engine/tree';
 
 /**
  * - site: anything the request needs.
@@ -160,6 +160,14 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
   // have other top-level nodes after it).
   const root = def.tree.rootIds[0];
   const beforeRoot = (parentId: string | null | undefined, index: number | undefined) => !parentId && !!root && index === 0;
+  // A design from an older version without its one root is put right by a container that goes first and holds the
+  // others, the old first root included (see the engine's `settledRoot`).
+  const unsettled = !settledRoot(def.tree);
+  const insideRoot = new Set(root ? subtreeIds(def.tree, root) : []);
+  const repair = (op: EditOperation) =>
+    unsettled &&
+    ((op.type === 'node.insert' && !op.parentId && !!op.primitive && ['container', 'stack', 'row', 'grid'].includes(op.primitive)) ||
+      (op.type === 'node.move' && op.nodeId === root && !!op.parentId && !insideRoot.has(op.parentId)));
   const rootFirst = `The first top-level node of ${authority.label} is its root, which every placement and variant styles: keep it first, and put new content inside it.`;
   const mine = (o: OwnerRef) => o.kind === 'component' && o.id === def.id;
   /** A node of the design, or its top level (null). */
@@ -180,14 +188,14 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
         const o = op as unknown as { owner: OwnerRef; nodeId: string; parentId?: string | null; index?: number };
         if (!mine(o.owner) || !Object.hasOwn(nodes, o.nodeId)) return outside(op);
         if (op.type === 'node.move' && !inside(o.parentId)) return `node.move would move content outside ${authority.label}.`;
-        if (op.type === 'node.move' && (o.nodeId === root ? !(!o.parentId && o.index === 0) : beforeRoot(o.parentId, o.index))) return `node.move: ${rootFirst}`;
+        if (op.type === 'node.move' && !repair(op) && (o.nodeId === root ? !(!o.parentId && o.index === 0) : beforeRoot(o.parentId, o.index))) return `node.move: ${rootFirst}`;
         if (op.type === 'node.remove' && o.nodeId === root) return `node.remove: ${rootFirst}`;
         break;
       }
       case 'insert': {
         const o = op as Extract<EditOperation, { type: 'node.insert' }>;
         if (!mine(o.owner) || !inside(o.parentId)) return `node.insert adds content outside ${authority.label}.`;
-        if (beforeRoot(o.parentId, o.index)) return `node.insert: ${rootFirst}`;
+        if (!repair(op) && beforeRoot(o.parentId, o.index)) return `node.insert: ${rootFirst}`;
         break;
       }
       case 'copy': {

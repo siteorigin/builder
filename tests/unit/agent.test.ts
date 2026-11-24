@@ -97,6 +97,28 @@ async function setup(turns: Turn[], opts: SetupOptions = {}) {
 }
 
 describe('agent orchestrator', () => {
+  it('keeps a rename of a page that already had a problem, which the run did not bring in (#205)', async () => {
+    let applied: { error?: unknown } = {};
+    const { session, run } = await setup([
+      (req) => {
+        const home = session.state.pages[session.state.site.homePageId];
+        return [call('r1', 'apply_operations', { expectedRevision: 0, scope: { kind: 'site', targetIds: [] }, operations: [{ type: 'page.update', pageId: home.id, title: 'Start here' }] })];
+      },
+      (req) => {
+        applied = JSON.parse((req.items.at(-1) as { content: string }).content);
+        return finish('Renamed the home page.');
+      }
+    ]);
+    // A page node showing a component property, as an older file can hold: its message names the page.
+    const home = session.state.pages[session.state.site.homePageId];
+    home.nodes.n_bound = { id: 'n_bound', kind: 'text', tag: 'p', text: { $prop: 'heading' } };
+    home.rootIds.push('n_bound');
+    const { result } = await run('Rename the home page to Start here');
+    expect(applied.error).toBeUndefined();
+    expect(result?.status).toBe('completed');
+    expect(session.state.pages[session.state.site.homePageId].title).toBe('Start here');
+  });
+
   it('completes a multi-tool run as one history group that can be undone (A02, A09)', async () => {
     const { session, run } = await setup([
       () => [call('c1', 'read_project', {})],
@@ -1593,6 +1615,11 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     keepsRoot({ type: 'node.move', owner, nodeId: root, parentId: 'content', index: 0 });
     keepsRoot({ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'paragraph' });
     keepsRoot({ type: 'node.remove', owner, nodeId: root });
+    // A design without its one root (as this one is) is put right with a container that goes first and holds the old
+    // first root: those two steps are allowed, and nothing else changes what comes first (#205).
+    allow({ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'container' });
+    allow({ type: 'node.move', owner, nodeId: root, parentId: second, index: 0 });
+    keepsRoot({ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'heading' });
     // A placement inside the design becoming a component of its own adds to the site's components.
     const nested = applyOperations(state, [{ type: 'node.insert', owner, parentId: 'content', componentId: 'cta.banner' }]);
     const placed = (nested.results[0] as { nodeId: string }).nodeId;

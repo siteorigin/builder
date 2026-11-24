@@ -6,7 +6,7 @@ import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
 import { newId } from '@shared/ids';
 import { getTheme } from '@catalogue/index';
-import type { Diagnostic } from '@engine/validate';
+import { introducedDiagnostics, type Diagnostic } from '@engine/validate';
 import type { AgentModelAdapter, CanonicalItem, ModelEvent, ToolCall } from './types';
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { assetSummary, copiesCode, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
@@ -648,7 +648,9 @@ export class Orchestrator {
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     // Problems the project already had (including components that already fail to build) are not the run's.
-    const baseline = ask ? new Set<string>() : new Set([...session.diagnostics(), ...(await this.deps.compileAll().catch(() => []))].filter((d) => d.severity === 'error').map((d) => d.message));
+    const baseline: Diagnostic[] = ask ? [] : [...session.diagnostics(), ...(await this.deps.compileAll().catch(() => []))].filter((d) => d.severity === 'error');
+    /** Errors the run brought in: told apart from the baseline as the save gate tells them (a rename is not one). */
+    const freshErrors = (diags: Diagnostic[]) => introducedDiagnostics(baseline, diags.filter((d) => d.severity === 'error'));
 
     const codeEnabled = (await this.deps.codeEnabled?.()) ?? true;
     const selected = selectionTarget(userMsg.context?.selection);
@@ -755,11 +757,12 @@ export class Orchestrator {
     /** The final checks: each page check's latest result, then validation and the build, from `diags`. */
     const buildChecks = (diags: Diagnostic[]): ChatCheck[] => {
       // Errors that were there before the run and still are: one the run fixed is not reported as remaining.
-      const remaining = new Set(diags.filter((d) => d.severity === 'error' && baseline.has(d.message)).map((d) => d.message)).size;
+      const fresh = new Set(freshErrors(diags));
+      const remaining = new Set(diags.filter((d) => d.severity === 'error' && !fresh.has(d)).map((d) => d.message)).size;
       return [
         ...inspections.checks(session.state),
         { status: 'pass', text: 'Project structure, links and references are valid.' },
-        { status: 'pass', text: baseline.size ? 'No new build errors.' : 'All components build without errors.' },
+        { status: 'pass', text: baseline.length ? 'No new build errors.' : 'All components build without errors.' },
         ...(remaining ? [{ status: 'issue' as const, text: `${remaining} pre-existing issue${remaining === 1 ? '' : 's'} remain.` }] : [])
       ];
     };
@@ -926,7 +929,7 @@ export class Orchestrator {
       if (signal.aborted) throw new Error('Cancelled');
       const diags = [...session.diagnostics(), ...(await this.deps.compileAll())];
       if (signal.aborted) throw new Error('Cancelled');
-      const fresh = diags.filter((d) => d.severity === 'error' && !baseline.has(d.message));
+      const fresh = freshErrors(diags);
       if (fresh.length) {
         v.status = 'error';
         v.detail = fresh.map((d) => d.message).join(' ');
@@ -1117,7 +1120,7 @@ export class Orchestrator {
             if (signal.aborted) throw new Error('Cancelled');
             const diags = [...session.diagnostics(), ...(await this.deps.compileAll())];
             if (signal.aborted) throw new Error('Cancelled');
-            const fresh = diags.filter((d) => d.severity === 'error' && !baseline.has(d.message));
+            const fresh = freshErrors(diags);
             if (fresh.length) {
               v.status = 'error';
               v.detail = fresh.map((d) => d.message).join(' ');

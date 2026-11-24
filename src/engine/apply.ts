@@ -37,7 +37,7 @@ import { codeTakesBlocks, effectiveTokens, generateStandaloneComponent, CUSTOM_D
 import { slotsInsideCards } from '@generator/card-links';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, subtreeIds, allTrees } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
@@ -1016,16 +1016,11 @@ function dependsOn(state: ProjectState, defId: string, targetId: string, seen = 
  */
 const ROOT_IS_COMPONENT = (what: string) => `This is the component itself, so it cannot be ${what}. Change what is inside it instead.`;
 
-/**
- * Whether a definition has the one root it renders through. One that does not (a file from an older version, with
- * extra top-level elements, none, or a repeat at the top) can have its top level put right, and only that: an element
+/*
+ * A definition without its one root (see `settledRoot`) can have its top level put right, and only that: an element
  * that holds others inserted there, the top level reordered, and the old roots (the first included) moved into it or
  * removed.
  */
-function settledRoot(tree: NodeTree): boolean {
-  const root = tree.rootIds.length === 1 && Object.hasOwn(tree.nodes, tree.rootIds[0]) ? tree.nodes[tree.rootIds[0]] : undefined;
-  return !!root && root.kind !== 'repeat' && root.kind !== 'slot';
-}
 
 /** The elements that can hold a design's old top-level elements while it is put right. */
 const HOLDERS: ReadonlySet<string> = new Set(['container', 'stack', 'row', 'grid']);

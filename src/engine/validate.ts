@@ -135,12 +135,15 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     if (def.kind !== 'managed') continue;
     const owner = { kind: 'component', id: def.id };
     if (!def.tree) {
-      out.push({ severity: 'error', code: 'COMPONENT_ROOT', message: `${def.name}: the component has no design to show.`, owner, site: 'root' });
+      out.push({ severity: 'error', code: 'COMPONENT_ROOT', message: `${def.name}: the component has no design to show.`, owner, site: 'root:unrendered' });
       continue;
     }
     const tree = def.tree;
     const rootProblem = componentRootProblem(tree);
-    if (rootProblem) out.push({ severity: 'error', code: 'COMPONENT_ROOT', message: `${def.name}: ${rootProblem}`, owner, nodeId: tree.rootIds[1] ?? tree.rootIds[0], site: 'root' });
+    // Extra top-level elements beside one that renders are one problem however many there are, so putting them right
+    // step by step is never a new one; a design left with nothing to carry the component (no root, or a repeat or slot
+    // first) is another.
+    if (rootProblem) out.push({ severity: 'error', code: 'COMPONENT_ROOT', message: `${def.name}: ${rootProblem.message}`, owner, nodeId: tree.rootIds[1] ?? tree.rootIds[0], site: rootProblem.renders ? 'root' : 'root:unrendered' });
     for (const [pid, part] of Object.entries(def.parts)) {
       if (!tree.nodes[part.nodeId]) out.push({ severity: 'error', code: 'PART_MISSING', message: `${def.name}: part "${pid}" refers to an element that no longer exists.`, owner });
     }
@@ -237,23 +240,29 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       if (!seen.has(n.id)) out.push({ severity: 'warning', code: 'NODE_DETACHED', message: `${label}: ${displayName(state, n)} is not attached to the tree.`, owner, nodeId: n.id });
     }
     // References inside literal values
-    const walk = (v: unknown, nodeId: string) => {
-      if (Array.isArray(v)) return v.forEach((x) => walk(x, nodeId));
+    // A computed list's stored items are never shown (the site's pages fill it), so what they hold is not a picture.
+    let ignored = new Set<unknown>();
+    const walk = (v: unknown, nodeId: string, shown = true) => {
+      if (Array.isArray(v)) return v.forEach((x) => walk(x, nodeId, shown && !ignored.has(v)));
       if (!v || typeof v !== 'object' || isBinding(v)) return;
       const o = v as Record<string, unknown>;
       if (o.type === 'page' && typeof o.target === 'string' && !state.pages[o.target])
         out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a page that no longer exists.`, owner, nodeId });
       const asset = typeof o.assetId === 'string' && Object.hasOwn(state.assets.assets, o.assetId) ? state.assets.assets[o.assetId] : undefined;
       if (typeof o.assetId === 'string' && !asset) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: an image references a missing asset.`, owner, nodeId });
-      else if (asset && asset.kind !== 'image')
+      else if (asset && asset.kind !== 'image' && shown)
         out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${label}: an image shows “${asset.name}”, which is a ${asset.kind}, not a picture. Choose an image instead.`, owner, nodeId, site: `${nodeId}|${asset.id}` });
       if (o.type === 'document' && typeof o.target === 'string' && (Object.hasOwn(state.assets.assets, o.target) ? state.assets.assets[o.target] : undefined)?.kind !== 'document')
         out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to a document that is no longer in Assets. Choose another destination for it.`, owner, nodeId });
       if ('assetId' in o && o.assetId && !o.decorative && !String(o.alt ?? '').trim() && owner.kind !== 'component')
         out.push({ severity: 'warning', code: 'ALT_MISSING', message: `${label}: an image has no alternative text.`, owner, nodeId });
-      Object.values(o).forEach((x) => walk(x, nodeId));
+      Object.values(o).forEach((x) => walk(x, nodeId, shown));
     };
-    for (const n of Object.values(tree.nodes)) walk(n, n.id);
+    for (const n of Object.values(tree.nodes)) {
+      const props = n.kind === 'instance' ? state.components[n.definitionId]?.properties : undefined;
+      ignored = new Set(Object.entries(props ?? {}).flatMap(([k, sch]) => (sch.type === 'list' && sch.feed && n.kind === 'instance' && Array.isArray(n.props[k]) ? [n.props[k]] : [])));
+      walk(n, n.id);
+    }
     // A page list's card with no image of its own shows its page's sharing image, which needs a description too.
     if (owner.kind !== 'component')
       for (const n of Object.values(tree.nodes)) {
@@ -328,7 +337,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         for (const id of duplicateItemIds(schema.default))
           out.push({ severity: 'error', code: 'LIST_ITEM_DUPLICATE', message: `${def.name}: ${duplicateItemMessage('its default content', schema, id)}`, owner, site: `default|${k}|${id}` });
       if (def.owner === 'theme') continue;
-      for (const a of nonImageAssets(state, schema.type === 'image' || schema.type === 'list' ? schema.default : undefined))
+      for (const a of nonImageAssets(state, schema.type === 'image' || (schema.type === 'list' && !schema.feed) ? schema.default : undefined))
         out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${def.name}: the default of “${schema.label}” shows “${a.name}”, which is a ${a.kind}, not a picture. Choose an image instead.`, owner, site: `default|${k}|${a.id}` });
     }
   }
@@ -416,12 +425,13 @@ function conditionShapeValid(v: unknown): boolean {
  * What is wrong with a managed definition's roots, or null. The generator gives `rootIds[0]` the component's classes,
  * anchor and variant rules, so a design has exactly one root, and it renders an element of its own.
  */
-function componentRootProblem(tree: NodeTree): string | null {
-  if (!tree.rootIds.length) return 'its design has no top-level element, so nothing of it shows.';
-  if (tree.rootIds.length > 1)
-    return `its design has ${tree.rootIds.length} top-level elements, but only the first carries the component's styles, variants and anchor. Move the others inside it, or remove them.`;
+function componentRootProblem(tree: NodeTree): { message: string; renders: boolean } | null {
+  if (!tree.rootIds.length) return { message: 'its design has no top-level element, so nothing of it shows.', renders: false };
   const root = Object.hasOwn(tree.nodes, tree.rootIds[0]) ? tree.nodes[tree.rootIds[0]] : undefined;
-  if (root?.kind === 'repeat' || root?.kind === 'slot') return `its top-level element is a ${root.kind}, which shows no element of its own to carry the component's styles. Put it inside a container.`;
+  const renders = !!root && root.kind !== 'repeat' && root.kind !== 'slot';
+  if (tree.rootIds.length > 1)
+    return { message: `its design has ${tree.rootIds.length} top-level elements, but only the first carries the component's styles, variants and anchor. Move the others inside it, or remove them.`, renders };
+  if (!renders && root) return { message: `its top-level element is a ${root.kind}, which shows no element of its own to carry the component's styles. Put it inside a container.`, renders };
   return null;
 }
 

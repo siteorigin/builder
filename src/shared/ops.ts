@@ -149,7 +149,7 @@ export const OPERATION_SCHEMAS = {
       owner,
       nodeId: z.string().describe('The node to copy, in `owner`.'),
       toOwner: owner.describe('Document the copy goes into: another page, or the same one.'),
-      parentId: z.string().nullable().optional().describe('Parent element or instance in `toOwner`. Omit or null for a top-level section.'),
+      parentId: z.string().nullable().optional().describe('Parent element or instance in `toOwner`. Omit or null for a top-level section of a page.'),
       slot: z.string().optional(),
       index: z.number().int().min(0).optional().describe('Position among siblings. Defaults to the end.')
     })
