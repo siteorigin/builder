@@ -12,7 +12,7 @@ import { validateState } from '@engine/validate';
 import { entryFile, generateLayout, generateProject, generateSitemap, liveRedirects, publishedState, resolveLink } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { publicationPlan } from '@generator/checks';
-import { draftLinksStop, withheldRoutes } from '../../src/main/export';
+import { draftLinksStop, draftSourceNotes, withheldRoutes } from '../../src/main/export';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
 
@@ -262,5 +262,152 @@ describe('a renamed entry in a cached run', () => {
     // A change to its text afterwards reaches its own page alone, not its old address.
     s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['New words.'] });
     expect(made()).toEqual(['entry:posts:en_winter']);
+    // Renamed again, the cached old address is made again to go straight to the newest.
+    s = run(s, rename('en_winter', 'glaze'));
+    expect(made()).toContain('redirect:posts:en_winter:/blog/winter-workshop/');
+    expect(generateProject(s, {}, cache).get('src/routes/blog/winter-workshop/+page.svelte')).toContain('resolve("/blog/glaze/")');
+    // A change to the collection's name, which no file shows, makes nothing again.
+    s = run(s, { type: 'collection.update', collectionId: 'posts', name: 'Journal' });
+    expect(made()).toEqual([]);
+  });
+});
+
+describe('old addresses of entries, across a batch', () => {
+  const draft = (entryId: string, value: boolean): EditOperation => ({ type: 'entry.update', collectionId: 'posts', entryId, draft: value });
+
+  it('keeps the address a post was published at, whatever its draft flag in between', () => {
+    // Withdrawn, renamed and published again in one batch: the address visitors knew still works.
+    expect(kept(run(blog(), draft('en_winter', true), rename('en_winter', 'final'), draft('en_winter', false)))).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_winter' }]);
+    // Withdrawn and renamed: kept for when it is published again, and out of the website meanwhile.
+    const withdrawn = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: true, slug: 'final' });
+    expect(kept(withdrawn)).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_winter' }]);
+    expect(publishedState(withdrawn).site.redirects).toBeUndefined();
+  });
+
+  it('keeps an address an entry inherited from one removed in the same batch through a round trip', () => {
+    const s = run(blog(), rename('en_winter', 'glazing-evenings'));
+    const after = run(
+      s,
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] },
+      { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' },
+      rename('en_spring', 'winter-workshop'),
+      rename('en_spring', 'spring-open-studio')
+    );
+    expect(kept(after)).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_spring' }]);
+  });
+
+  it('keeps only the addresses visitors knew when the collection moves twice in one batch', () => {
+    const s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' }, { type: 'collection.update', collectionId: 'posts', route: '/news/' });
+    expect(kept(s)).toEqual([
+      { from: '/blog/winter-workshop/', entryId: 'en_winter' },
+      { from: '/blog/spring-open-studio/', entryId: 'en_spring' }
+    ]);
+  });
+
+  it('refuses to move a collection onto one of its entries’ addresses, or an entry onto another’s old address', () => {
+    expect(() => run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/blog/winter-workshop/' })).toThrow(/address of the entry “Winter workshop”/);
+    // Spring leaves /blog/spring/ behind; Winter takes Spring's old slug under /journal/, so moving back would put
+    // Winter on Spring's old address.
+    let s = run(blog(), rename('en_spring', 'spring'), { type: 'collection.update', collectionId: 'posts', route: '/journal/' }, rename('en_winter', 'spring-open-studio'));
+    expect(() => run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' })).toThrow(/old address of “Spring open studio”/);
+    // Moving back with no clash takes each entry's own addresses back.
+    s = run(blog(), { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
+    expect(kept(run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' })).map((r) => r.from)).toEqual(['/journal/winter-workshop/', '/journal/spring-open-studio/']);
+  });
+
+  it('gives a page made automatically a numbered address beside an entry’s old address', () => {
+    let s = run(blog(), rename('en_winter', 'glazing-evenings'), { type: 'page.create', pageId: 'pg_notes01', title: 'Notes', route: '/blog/notes/' });
+    s = run(s, { type: 'page.duplicate', pageId: 'pg_notes01', title: 'Winter workshop' });
+    const copy = Object.values(s.pages).find((p) => p.title === 'Winter workshop')!;
+    expect(copy.route).toBe('/blog/winter-workshop-2/');
+    expect(kept(s)).toEqual([{ from: '/blog/winter-workshop/', entryId: 'en_winter' }]);
+  });
+
+  it('takes back an old address kept for an entry ID that is created again', () => {
+    const s = blog();
+    s.site.redirects = [{ from: '/blog/ghost/', entryId: 'en_ghost' }];
+    const after = run(s, { type: 'entry.create', collectionId: 'posts', entryId: 'en_ghost', title: 'Ghost' });
+    expect(after.collections.posts.entries.en_ghost.slug).toBe('ghost');
+    expect(kept(after)).toEqual([]);
+    expect(validateState(after).filter((d) => d.code === 'ROUTE_DUPLICATE')).toEqual([]);
+  });
+
+  it('removes only the removed collection’s old addresses, and reports one on another address', () => {
+    let s = run(blog(), rename('en_winter', 'glazing-evenings'), { type: 'collection.create', collectionId: 'projects' }, { type: 'entry.create', collectionId: 'projects', entryId: 'en_hall01', title: 'Hall', draft: false });
+    s = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall01', slug: 'great-hall' });
+    expect(kept(s)).toContainEqual({ from: '/projects/hall/', entryId: 'en_hall01' });
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] }, { type: 'collection.remove', collectionId: 'posts' });
+    expect(kept(s)).toEqual([{ from: '/projects/hall/', entryId: 'en_hall01' }]);
+    const clash = structuredClone(s);
+    clash.site.redirects = [{ from: '/about/', entryId: 'en_hall01' }];
+    expect(validateState(clash).map((d) => d.code)).toContain('ROUTE_DUPLICATE');
+    // The page keeps its address in the website: the old address is left out.
+    expect(liveRedirects(clash)).toEqual([]);
+  });
+});
+
+describe('entry pages in more detail', () => {
+  it('writes the date as readers of the site’s language do, shows its picture and dates a same-day revision', () => {
+    let s = blog();
+    s.assets.assets.img_hall = { id: 'img_hall', name: 'Hall', file: 'static/assets/hall-1a2b3c4d.jpg', mime: 'image/jpeg', bytes: 10, width: 1600, height: 900, hash: 'h', kind: 'image', description: 'The great hall', createdAt: '2026-01-01T00:00:00.000Z' };
+    s = run(s, { type: 'site.update', language: 'fr' }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', featuredImage: 'img_hall', updatedAt: '2026-01-12' });
+    const page = generateProject(s).get('src/routes/blog/winter-workshop/+page.svelte')!;
+    expect(page).toContain('<time datetime="2026-01-12">{"12 janvier 2026"}</time>');
+    expect(page).toContain('<meta property="article:modified_time" content={"2026-01-12"} />');
+    expect(page).toContain('<SoImage image={{"src":"/assets/hall-1a2b3c4d.jpg","alt":"The great hall","width":1600,"height":900}}');
+    expect(page).toContain('<meta property="og:image" content={"https://example.com/assets/hall-1a2b3c4d.jpg"} />');
+  });
+
+  it('keeps a chosen order without its drafts, and shows a link to a draft as its words', () => {
+    let s = run(blog(), { type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_secret', 'en_winter', 'en_spring'] });
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['See [the plans](entry:en_secret).'] });
+    const live = publishedState(s);
+    expect(live.collections.posts.settings.entryOrder).toEqual(['en_winter', 'en_spring']);
+    const page = generateProject(live).get('src/routes/blog/winter-workshop/+page.svelte')!;
+    expect(page).toContain('{"text":"the plans"}');
+  });
+
+  it('links to an entry in another collection, and follows a collection that moves', () => {
+    let s = run(blog(), { type: 'collection.create', collectionId: 'case-studies', route: '/work/studies/' }, { type: 'entry.create', collectionId: 'case-studies', entryId: 'en_hall01', title: 'Hall', draft: false });
+    s = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['See [the hall](entry:en_hall01) and [hours](entry:en_winter).'] });
+    expect(generateProject(s).has('src/routes/work/studies/hall/+page.svelte')).toBe(true);
+    s = run(s, { type: 'collection.update', collectionId: 'posts', route: '/journal/' });
+    const spring = generateProject(s).get('src/routes/journal/spring-open-studio/+page.svelte')!;
+    expect(spring).toContain('"href":"/work/studies/hall/"');
+    expect(spring).toContain('"href":"/journal/winter-workshop/"');
+  });
+});
+
+describe('links in entries that the website cannot follow', () => {
+  it('reports a section an entry’s page or the linked page does not have', () => {
+    const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['See [details](#not-here), [the top](#main) and [About](/about/#not-here).'] });
+    const found = validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING');
+    expect(found.map((d) => d.owner)).toEqual([
+      { kind: 'entry', id: 'en_winter' },
+      { kind: 'entry', id: 'en_winter' }
+    ]);
+    expect(found[0].message).toMatch(/^Winter workshop \(Posts\): the “details” link in the text goes to #not-here, but its page has no section with that ID/);
+    expect(found[1].message).toMatch(/goes to #not-here on About, but that page has no section with that ID/);
+  });
+
+  it('stops the website export over a published entry’s link to a draft, naming the entry', () => {
+    const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['See [the plans](entry:en_secret) and [typed](https://example.com/blog/secret-plans/).'] });
+    expect(publicationPlan(s).draftLinks).toEqual([
+      { owner: { kind: 'entry', id: 'en_winter' }, nodeId: '', label: 'the plans', inText: true, entryId: 'en_secret' },
+      { owner: { kind: 'entry', id: 'en_winter' }, nodeId: '', label: 'typed', inText: true, entryId: 'en_secret' }
+    ]);
+    expect(draftLinksStop(s)!.warnings).toEqual(['Winter workshop (Posts): “the plans” goes to Secret plans (/blog/secret-plans/)', 'Winter workshop (Posts): “typed” goes to Secret plans (/blog/secret-plans/)']);
+    // A draft's own links are not checked.
+    expect(publicationPlan(run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_secret', body: ['[x](entry:en_secret)'] })).draftLinks).toEqual([]);
+  });
+
+  it('names a draft entry in the exported project’s notes, and catches a typed old address of one', () => {
+    let s = blog();
+    expect(draftSourceNotes(s)).toEqual(['The draft Secret plans is kept in the project to edit in SiteOrigin Builder, and left out of its website build.']);
+    s = run(s, rename('en_winter', 'glazing-evenings'), { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', draft: true });
+    const home = s.site.homePageId;
+    s.pages[home].nodes.n_typed002 = { id: 'n_typed002', kind: 'link', label: 'Workshop', appearance: 'primary', link: { type: 'url', target: 'https://example.com/blog/winter-workshop/' } } as never;
+    s.pages[home].rootIds.push('n_typed002');
+    expect(publicationPlan(s).draftLinks.filter((l) => l.nodeId === 'n_typed002')).toEqual([{ owner: { kind: 'page', id: home }, nodeId: 'n_typed002', label: 'Workshop', inText: false, entryId: 'en_winter' }]);
   });
 });

@@ -833,6 +833,12 @@ for (const f of draftFiles) assert.ok(srcFiles.includes(f), `the editable source
 assert.ok(srcFiles.includes('siteorigin/collections/posts/entries/en_secret01.json'), 'the editable source export keeps the draft post to edit');
 assert.ok(srcFiles.includes('src/routes/blog/opening-times/+page.svelte') && srcFiles.includes('src/routes/blog/opening-hours/+page.svelte'), 'the source export has the published post and its old address');
 assert.deepEqual(srcFiles.filter((f) => f.startsWith('src/') && f.includes('secret-plans')), [], 'the source export has no page for the draft post');
+const draftPost = JSON.parse(readFileSync(join(sourceOut, 'siteorigin', 'collections', 'posts', 'entries', 'en_secret01.json'), 'utf8'));
+assert.equal(draftPost.draft, true, 'the draft post is still a draft in the exported documents');
+assert.ok(JSON.stringify(draftPost.body).includes(DRAFT_MARK), 'the draft post keeps its text to edit');
+const sourceManifest = JSON.parse(readFileSync(join(sourceOut, 'siteorigin', 'generated-manifest.json'), 'utf8'));
+assert.deepEqual(Object.keys(sourceManifest.files ?? {}).filter((f) => f.includes('secret-plans')), [], 'the exported project records no generated file for the draft post');
+assert.ok(Object.hasOwn(sourceManifest.files ?? {}, 'src/routes/blog/opening-times/+page.svelte'), 'the exported project records the published post as generated');
 for (const f of ['jsconfig.json', 'NOTICE.md', 'src/lib/siteorigin/paths.json']) assert.ok(srcFiles.includes(f), `source export includes ${f}`);
 assert.ok(!srcFiles.includes('svelte.config.js'), 'no svelte.config.js: SvelteKit 3 reads its config from vite.config.js and rejects that file');
 assert.ok(!srcFiles.includes('.npmrc'), 'no engine-strict .npmrc in the export');
@@ -850,6 +856,7 @@ assert.deepEqual(staticFiles.filter((f) => draftNames.includes(basename(f))), []
 assert.ok(used.variants?.length, 'the starter image has responsive variants to check');
 for (const v of used.variants) assert.ok(staticFiles.some((f) => basename(f) === basename(v.file)), `the website keeps the responsive variants of an image it uses (${v.file})`);
 for (const f of draftFiles) assert.ok(existsSync(join(dir, f)), `the draft stays in the working project (${f})`);
+assert.ok(readFileSync(join(dir, 'src', 'routes', 'blog', 'secret-plans', '+page.svelte'), 'utf8').includes(DRAFT_MARK), 'the working project keeps the draft post’s page with its text, for the editor');
 assert.ok(staticFiles.includes('favicon.svg'), 'static export has a favicon');
 assert.ok(staticFiles.some((f) => /lora.*\.woff2$/i.test(f)), 'the chosen font is built into the site');
 assert.ok(!staticFiles.some((f) => /fraunces.*\.woff2$/i.test(f)), 'the font it replaced is not');
