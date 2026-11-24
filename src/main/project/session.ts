@@ -1250,9 +1250,12 @@ export class ProjectSession extends EventEmitter {
         // still claimed, so it is neither replaced nor removed as obsolete.
         console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
         // Only a copy that already is the pack's validated file is kept: another theme's file of the same name is not.
-        const disk = known(c.path) ? await readBytesIfExists(safeJoin(this.dir, c.path)) : null;
+        // A copy that cannot be read stays claimed, so it is never removed and a missing one is still noticed.
+        if (!known(c.path)) continue;
+        const disk = await readBytesIfExists(safeJoin(this.dir, c.path));
         const h = disk === null ? null : sha(disk);
-        if (h !== null && ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
+        if (h === null) nextFiles[c.path] = prev[c.path] ?? inflight[c.path];
+        else if (ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
       }
     }
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.

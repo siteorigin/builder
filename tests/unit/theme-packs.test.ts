@@ -365,6 +365,18 @@ describe("a site's theme fonts", () => {
     await s.close();
   });
 
+  it('keep claiming a copy that has gone missing while the pack cannot supply it, so the export notices', async () => {
+    const d = tmp();
+    const s = await ProjectSession.create(d, createStarterState('business', 'Fonts', false));
+    const path = `${FONTS_DIR}/inter-latin-wght-normal.woff2`;
+    rmSync(join(d, path));
+    registerPackFiles('foundation', changedOnDisk(d));
+    expect((await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename' })).ok).toBe(true);
+    expect(JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files[path]).toBeTruthy();
+    expect(await editedGeneratedFile(d)).toBe(path);
+    await s.close();
+  });
+
   it("never keep another theme's file under a new theme's name", async () => {
     const d = tmp();
     // Studio's Inter face shares Foundation's file name, but is not the same file, and cannot be read.
