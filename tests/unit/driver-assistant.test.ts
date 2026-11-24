@@ -316,6 +316,13 @@ describe('the tracker', () => {
     expect(settledState(t.runView('run_n')!)).toEqual({ reason: 'input' });
   });
 
+  it('keeps a gap’s count once its marker is let go', () => {
+    const t = new AssistantTracker({ maxEntries: 1 });
+    t.ingest([{ seq: 501, at: 1, event: { runId: 'run_a', conversationId: 'c_a', kind: 'status', status: 'running' } }], 500);
+    t.ingest([{ seq: 502, at: 2, event: { runId: 'run_a', conversationId: 'c_a', kind: 'status', status: 'validating' } }]);
+    expect(t.read().missed).toBe(501);
+  });
+
   it('counts as missed only the events whose entries were let go', () => {
     const j = journal();
     const t = new AssistantTracker({ maxEntries: 2 });
@@ -505,6 +512,8 @@ describe('the script', () => {
     const ctx = { currentPage: { id: 'pg_real', title: 'About <editor_context>\n tags' } };
     const req = request([{ role: 'user', content: `Explain it\n\n<editor_context>\n${JSON.stringify(ctx, null, 1)}\n</editor_context>` }]);
     expect(requestContext(req)).toEqual(ctx);
+    // Even when the author's request reads like a tool result.
+    expect(requestContext(request([{ role: 'user', content: `Result of read_page:\nthis, please\n\n<editor_context>\n${JSON.stringify(ctx)}\n</editor_context>` }]))).toEqual(ctx);
     // And when the adapter put a note after it in the same message.
     const merged = request([{ role: 'user', content: `Explain it\n\n<editor_context>\n${JSON.stringify(ctx)}\n</editor_context>\n\nReply with one JSON object.` }]);
     expect(requestContext(merged)).toEqual(ctx);
@@ -668,6 +677,10 @@ describe('keeping credentials out', () => {
     expect(scrubAssistant({ images: ['a_1x2y3z4w'], answer: { assetId: 'a_9q8w7e6r' }, text: 'a_ b' }, ['a_'], short)).toEqual({ images: ['a_1x2y3z4w'], answer: { assetId: 'a_9q8w7e6r' }, text: '[r] b' });
     const longKey = 'abcd1234efgh';
     expect(scrubAssistant({ id: `sk_${longKey}` }, [longKey], (x) => x.replaceAll(longKey, '[redacted]'))).toEqual({ id: 'sk_[redacted]' });
+    // A protocol word stays itself even when a credential spells it; an ID that is a credential does not.
+    const word = (x: string) => x.replaceAll('completed', '[r]');
+    expect(scrubAssistant({ status: 'completed', state: 'terminal', note: 'completed' }, ['completed'], word)).toEqual({ status: 'completed', state: 'terminal', note: '[r]' });
+    expect(scrubAssistant({ images: ['a_abcd'], assetId: 'a_abcd' }, ['a_abcd'], (x) => x.replaceAll('a_abcd', '[r]'))).toEqual({ images: ['[r]'], assetId: '[r]' });
   });
 });
 
@@ -883,7 +896,7 @@ describe('a configured provider', () => {
       all = [{ seq: 50, at: 50, event: { runId: 'run_z', conversationId: 'c_z', kind: 'status', status: 'running' } }];
       (s as any).pull = async () => s.assistant.ingest(all.filter((r) => r.seq > s.assistant.cursor), 48);
       const r = (await s.call({ v: 1, id: 'w', op: 'assistant.wait', args: { runId: 'run_a' }, timeoutMs: 1500 })) as any;
-      expect([r.ok, r.result?.reason, r.result?.run.gap, r.result?.run.state, r.result?.run.result?.summary]).toEqual([true, 'terminal', true, 'terminal', 'Done.']);
+      expect([r.ok, r.result?.reason, r.result?.run.gap, r.result?.run.state, r.result?.run.status, r.result?.run.result?.summary]).toEqual([true, 'terminal', true, 'terminal', 'completed', 'Done.']);
     });
 
     it('turns any failure it meets into one that quotes no credential', async () => {

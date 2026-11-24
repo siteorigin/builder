@@ -202,6 +202,8 @@ export class AssistantTracker {
   private dropped = 0;
   /** The seqs whose entries were let go, ascending (the latest 100000): a seq that never had entries is never missed. */
   private droppedSeqs: number[] = [];
+  /** Gap markers let go, with the events each stood for. */
+  private droppedGaps: Array<{ seq: number; missed: number }> = [];
   /** While a batch read after a gap is taken in: a run first seen in it may have missed its own start. */
   private afterGap = false;
   private readonly maxEntries: number;
@@ -244,9 +246,17 @@ export class AssistantTracker {
     // Entries go a whole seq at a time, so a page never holds part of one event.
     while (this.entries.length > this.maxEntries && this.entries[0].seq !== e.seq) {
       const seq = this.entries[0].seq;
-      while (this.entries[0]?.seq === seq) this.entries.shift();
+      let gap = 0;
+      let events = false;
+      while (this.entries[0]?.seq === seq) {
+        const gone = this.entries.shift()!;
+        if (gone.type === 'gap') gap += gone.missed ?? 0;
+        else events = true;
+      }
       this.dropped = seq;
-      this.droppedSeqs.push(seq);
+      if (gap) this.droppedGaps.push({ seq, missed: gap });
+      if (events) this.droppedSeqs.push(seq);
+      if (this.droppedGaps.length > 10_000) this.droppedGaps.shift();
       if (this.droppedSeqs.length > 100_000) this.droppedSeqs.splice(0, this.droppedSeqs.length - 100_000);
     }
   }
@@ -424,7 +434,7 @@ export class AssistantTracker {
     const limit = opts.limit ?? 200;
     const oldest = this.oldest;
     // Journal events after the cursor whose entries are no longer kept, and those the journal dropped unread.
-    let missed = this.droppedSeqs.filter((x) => x > after).length;
+    let missed = this.droppedSeqs.filter((x) => x > after).length + this.droppedGaps.filter((g) => g.seq > after).reduce((n, g) => n + g.missed, 0);
     const out: Entry[] = [];
     let next = after;
     for (const e of this.entries) {
@@ -578,7 +588,8 @@ export function readChat(): ShownChat {
         summary: text(card.querySelector('.result-summary')),
         ...(standing ? { standing } : {}),
         ...(changes.length ? { changes } : {}),
-        buttons: all(card, '.result-foot button').filter(visible).map(text)
+        // What the card offers, whether or not its panel is in sight.
+        buttons: all(card, '.result-foot button').map(text)
       };
     }
     messages.push(m);
@@ -798,8 +809,10 @@ function requestIndex(messages: unknown[]): { index: number; context: Record<str
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (!isRecord(m) || m.role !== 'user') continue;
+    // A tool's result is JSON, whose newlines are escaped: it never holds the block's opening line, so it is never taken
+    // for the request, even when the author's request reads like a result.
     const text = strings(m.content).join('');
-    if (RESULT.test(text) || !text.includes(OPEN)) continue;
+    if (!text.includes(OPEN)) continue;
     const context = contextBlock(text);
     if (context) return { index: i, context };
   }
@@ -1176,7 +1189,8 @@ export function scrubAssistant<T>(value: T, secrets: string[], scrub: (s: string
   if (!secrets.some(Boolean)) return value;
   // A credential long enough not to occur in an ID by chance is scrubbed even where an ID is expected.
   const long = secrets.filter((x) => x.length >= 8);
-  const kept = (v: string) => (APP_ID.test(v) || VOCABULARY.has(v)) && !long.some((x) => v.includes(x));
+  // A protocol word is always itself; an ID is, unless it is a credential or holds a long one.
+  const kept = (v: string) => VOCABULARY.has(v) || (APP_ID.test(v) && !secrets.includes(v) && !long.some((x) => v.includes(x)));
   const visit = (v: unknown, key?: string): unknown => {
     if (typeof v === 'string') return key && KEPT_KEYS.has(key) && kept(v) ? v : scrub(v);
     // A list of IDs (a message's images) keeps its key for each of them.
