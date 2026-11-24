@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Box, CircleAlert, CircleMinus, Component, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
+import { newId } from '@shared/ids';
 import { displayName, placesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
 import { uniqueCopyName } from '@engine/definitions';
 import type { LinkHolder, PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
-import { applyOps, api, getState, projectHistory, setState, toast, useStore } from '../store';
+import { applyOps, api, commitOps, getState, projectHistory, saveLocal, setState, toast, useStore } from '../store';
 import { Field, Modal, openMenus, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
-import { goToShellPart, selectPage } from '../lib/actions';
+import { goToShellPart, insertionPoint, selectPage, setMode } from '../lib/actions';
+import { componentRequest, componentRequestContext, newComponentPlace, startBlankOps } from '../lib/new-component';
 import { planPageRemoval, reviewPageRemoval, withoutCards } from '../lib/page-removal';
 import { SECTION_NODE, sectionOptions } from '../lib/sections';
 import { HistoryTabs, SavedVersionsModal } from './SavedVersions';
@@ -302,6 +304,194 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
                 setName(e.target.value);
               }}
               onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void create()}
+            />
+          </Field>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * Resolves once the editor shows the project at `revision` or later (true), or after a moment without it (false). The
+ * canvas ends editing a design its snapshot does not have, so a design just made is opened only once it is shown.
+ */
+function shownAt(revision: number, workspaceKey: string, ms = 3000): Promise<boolean> {
+  const ok = () => {
+    const s = getState().snapshot;
+    return !!s && s.workspaceKey === workspaceKey && s.revision >= revision;
+  };
+  if (ok()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = (v: boolean) => {
+      stop();
+      clearTimeout(timer);
+      resolve(v);
+    };
+    const stop = useStore.subscribe(() => void (ok() && done(true)));
+    const timer = setTimeout(() => done(ok()), ms);
+  });
+}
+
+/** Where Create component would place a new component now, by the editor's own insertion point. */
+function newComponentPlaceNow() {
+  const s = getState();
+  const st = s.snapshot?.state;
+  if (!st) return null;
+  const at = s.definitionMode ? null : insertionPoint('section');
+  return newComponentPlace(st, s, at && !at.parentId && at.owner.kind === 'page' ? at.index : undefined);
+}
+
+/**
+ * Create component, from Your components in Insert or the command menu: a new component started blank, placed on the
+ * page and opened for editing, or described for the AI to build from the components the site already has.
+ */
+export function NewComponentModal() {
+  const snap = useStore((s) => s.snapshot);
+  const running = useStore((s) => !!s.runStatus);
+  const waiting = useStore((s) => !!s.chatRequest);
+  // The page Start blank places it on, said as it is now: the page on screen, or the one a design was opened from.
+  const pageId = useStore((s) => s.definitionMode?.returnPageId ?? s.pageId);
+  const readOnly = !!snap?.readOnly;
+  const input = useRef<HTMLInputElement>(null);
+  useHeldFocus(input);
+  const close = useCloseOwn();
+  const [own] = useState(() => getState().modal);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  // Asked for only once the author has typed or tried to start, so the dialog never opens on an error.
+  const [touched, setTouched] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const pageTitle = pageId && snap && Object.hasOwn(snap.state.pages, pageId) ? snap.state.pages[pageId].title : undefined;
+  const nameError = touched && !name.trim() ? 'Enter a name for this component.' : undefined;
+  const canBuild = !readOnly && !busy && !running && !waiting && !!(name.trim() || description.trim());
+
+  const start = async () => {
+    setTouched(true);
+    if (busy || readOnly || !name.trim()) return;
+    const now = getState().snapshot;
+    // Placed where the editor points as the change is made: the page may have changed since the dialog opened.
+    const at = newComponentPlaceNow();
+    if (!now || !at) return void toast('Open a page to place the new component on.', 'info');
+    const plan = startBlankOps(at, name, description);
+    setBusy(true);
+    let r: Awaited<ReturnType<typeof commitOps>> = null;
+    try {
+      r = await commitOps(plan.ops, `Create component ${name.trim()}`, undefined, now.revision);
+    } finally {
+      if (!r) setBusy(false);
+    }
+    if (!r) return;
+    const root = typeof r.results?.[0]?.rootNodeId === 'string' ? r.results[0].rootNodeId : null;
+    // Opened once the editor shows the change. An Undo or another change that landed meanwhile can have taken the
+    // component or its placement away again: then nothing opens.
+    await shownAt(r.revision, now.workspaceKey);
+    const after = getState();
+    const shown = after.snapshot?.state;
+    const gone = !shown?.components[plan.definitionId] || !shown.pages[at.pageId]?.nodes[plan.nodeId];
+    const mine = after.modal === own;
+    if (after.snapshot?.workspaceKey !== now.workspaceKey || !root || gone) {
+      setBusy(false);
+      if (mine) setState({ modal: null });
+      return;
+    }
+    // The new design opens for editing on its placement, as Edit everywhere opens one. Another dialog opened meanwhile
+    // stays open over it.
+    if (after.mode !== 'edit') setMode('edit');
+    if (after.pageId !== at.pageId) saveLocal({ pageId: at.pageId });
+    setState({
+      ...(mine ? { modal: null } : {}),
+      pageId: at.pageId,
+      definitionMode: { definitionId: plan.definitionId, returnPageId: at.pageId },
+      selection: { owner: { kind: 'page', id: at.pageId }, instancePath: [plan.nodeId], nodeId: root },
+      rightTab: 'inspect',
+      dockOpen: true
+    });
+  };
+
+  const build = () => {
+    setTouched(true);
+    const s = getState();
+    if (!canBuild || !s.snapshot) return;
+    // The chat sends it, as its own Send would, once it can; its own unsent message stays as it is.
+    setState({
+      modal: null,
+      chatRequest: { id: newId('req'), text: componentRequest(name, description), context: componentRequestContext(s.snapshot.state, newComponentPlaceNow(), s.viewport), workspaceKey: s.snapshot.workspaceKey },
+      rightTab: 'chat',
+      dockOpen: true
+    });
+  };
+
+  const details: Detail[] = [
+    { kind: 'change', icon: <Component />, text: pageTitle ? `Start blank adds it to ${pageTitle} and opens its design, ready for elements.` : 'Start blank adds it to Your components and opens its design, ready for elements.' },
+    { kind: 'note', icon: <Sparkles />, text: 'Build with AI sends the name and description to the AI, which builds it from the components your site already has.' },
+    { kind: 'keep', icon: <Undo2 />, text: 'Either way, one Undo takes it back.' }
+  ];
+  return (
+    <Modal
+      title="Create component"
+      icon={<Badge icon={<Component />} tone={readOnly ? 'caution' : 'neutral'} />}
+      onClose={close}
+      busy={busy}
+      describedBy={readOnly ? GONE_ID : 'new-component-desc new-component-details'}
+      footer={
+        readOnly ? (
+          <GoneClose onClose={close} />
+        ) : (
+          <>
+            <button className="btn" onClick={close} disabled={busy}>
+              Cancel
+            </button>
+            <button className="btn" disabled={!canBuild} title={running ? 'The AI is working on another request.' : waiting ? 'Another request is waiting to be sent in the chat.' : undefined} onClick={build}>
+              <Sparkles aria-hidden="true" />
+              Build with AI
+            </button>
+            <button className="btn btn-primary" disabled={busy || !name.trim()} onClick={() => void start()}>
+              {busy ? 'Creating…' : 'Start blank'}
+            </button>
+          </>
+        )
+      }
+    >
+      {readOnly ? (
+        <GoneNotice>This project is open read-only, so no component can be made.</GoneNotice>
+      ) : (
+        <div className="authoring-form">
+          <FormStatus text={busy ? 'Creating component' : (nameError ?? limitSaid(name.length, NAME_MAX, 'Names'))} />
+          <p id="new-component-desc" className="confirm-lead">
+            A component is a design you place on any page and keep in step everywhere. Start with an empty one, or describe it for the AI.
+          </p>
+          <Details id="new-component-details" items={details} />
+          <Field label="Component name" hint={nameHint(name, WHERE_NAMES_SHOW)} error={nameError} extra={<Count length={name.length} max={NAME_MAX} />}>
+            <input
+              ref={input}
+              className="input"
+              autoFocus
+              readOnly={busy}
+              aria-required="true"
+              maxLength={NAME_MAX}
+              value={name}
+              placeholder="e.g. Pricing card"
+              onChange={(e) => {
+                setTouched(true);
+                setName(e.target.value);
+              }}
+              onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void start()}
+            />
+          </Field>
+          <Field
+            label="Description"
+            hint={description.length >= DESCRIPTION_MAX ? `Descriptions can be up to ${DESCRIPTION_MAX} characters.` : 'What it shows and how it looks. The AI builds from it, and Insert shows it.'}
+            extra={<Count length={description.length} max={DESCRIPTION_MAX} />}
+          >
+            <textarea
+              className="textarea"
+              rows={3}
+              readOnly={busy}
+              maxLength={DESCRIPTION_MAX}
+              value={description}
+              placeholder="e.g. One plan with its name, price, a short list of features and a button"
+              onChange={(e) => setDescription(e.target.value.replace(/\s*\n\s*/g, ' '))}
             />
           </Field>
         </div>

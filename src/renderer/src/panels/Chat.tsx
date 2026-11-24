@@ -420,10 +420,11 @@ export function Chat() {
     if (!after.conversation?.messages.some((x) => x.runId === q.runId && x.result) && !announced.current.has(`${q.runId}:done`)) sayOnce(`${key}:answered`, 'Answer sent. The AI is continuing.');
   };
 
-  /** `context` replaces the editor's own (and its images), for a message that continues an earlier request. */
-  const send = async (text = draft, context?: ChatContext) => {
-    if (!text.trim() || running || sending || !conversation) return;
-    if (!configured) return openSettings();
+  /** `context` replaces the editor's own (and its images), for a message that continues an earlier request. True once
+   *  the request has started. */
+  const send = async (text = draft, context?: ChatContext): Promise<boolean> => {
+    if (!text.trim() || running || sending || !conversation) return false;
+    if (!configured) return (openSettings(), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;
     const opening = snap.workspaceKey;
@@ -435,19 +436,55 @@ export function Chat() {
     nearBottom.current = true;
     // Sent for the model the composer names now: if Settings or the local server would send it elsewhere by the time it
     // runs, nothing is sent and the turn says so.
-    const r = await api.ai.send(text.trim(), ctx, conversationId, next ? { provider: next.provider, model: next.id } : undefined);
+    let r: Awaited<ReturnType<typeof api.ai.send>>;
+    try {
+      r = await api.ai.send(text.trim(), ctx, conversationId, next ? { provider: next.provider, model: next.id } : undefined);
+    } catch (e) {
+      // A send that never got an answer leaves the composer usable, as a refused one does.
+      r = { ok: false, message: e instanceof Error && e.message ? e.message : 'Could not start the request.' };
+    }
     setSending(false);
-    if (!r.ok) return toast(r.message ?? 'Could not start the request.', 'error');
+    if (!r.ok) return (toast(r.message ?? 'Could not start the request.', 'error'), false);
     // A continuation was never typed, so whatever is in the composer is the user's own next message.
-    if (context) return;
+    if (context) return true;
     // Clear what was sent, but never text typed (or images attached) while the request was starting.
     const s = getState();
-    if (s.snapshot?.workspaceKey !== opening) return;
+    if (s.snapshot?.workspaceKey !== opening) return true;
     const after = afterSendMessage(s.chatDrafts, s.chatImages, conversationId, text, ctx.assetIds ?? []);
-    if (after.drafts === s.chatDrafts && after.images === s.chatImages) return;
+    if (after.drafts === s.chatDrafts && after.images === s.chatImages) return true;
     setState({ chatDrafts: after.drafts, chatImages: after.images });
     if (after.drafts !== s.chatDrafts && taRef.current && s.conversation?.id === conversationId) taRef.current.style.height = '';
+    return true;
   };
+
+  // A request handed over from elsewhere in the editor (Create component's Build with AI) is sent as it was asked, with
+  // its own page and task, when the chat can send it straight away. When it cannot (the AI is not set up, the switch
+  // note says earlier messages would go to another model, or the send is refused), it waits by the composer until
+  // the author sends or discards it: never sent behind a note they have not seen, and never lost.
+  const handed = useStore((s) => s.chatRequest);
+  const sendHanded = (req: NonNullable<typeof handed>) => {
+    // Only the request still waiting: one discarded since this render is never sent.
+    if (getState().chatRequest?.id !== req.id) return;
+    // Held from the moment it starts, so whatever renders meanwhile never sends it twice.
+    setState({ chatRequest: { ...req, held: true } });
+    void send(req.text, req.context).then(
+      (sent) => {
+        if (sent && getState().chatRequest?.id === req.id) setState({ chatRequest: null });
+      },
+      () => undefined
+    );
+  };
+  useEffect(() => {
+    if (!handed) return;
+    if (handed.workspaceKey !== snap.workspaceKey) return void setState({ chatRequest: null });
+    if (handed.held || !conversation || running || sending) return;
+    // Earlier messages go with it, so it goes on its own only to a model known to have them: a server's model not known
+    // yet could be another one than they went to.
+    if (!configured || notice || (msgs.length > 0 && next?.id == null)) return void setState({ chatRequest: { ...handed, held: true } });
+    sendHanded(handed);
+    // `send` reads the state it needs when it runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handed, conversation, running, sending, configured, notice, msgs.length, next?.id, snap.workspaceKey]);
 
   /** Carry on with an unfinished request, with that request's own page and selection, leaving the draft alone. */
   const continueRequest = (user: ChatMessage | undefined) => {
@@ -716,6 +753,24 @@ export function Chat() {
         <div className="scope-note danger" role="status">
           <TriangleAlert />
           <span>{provider.warning}</span>
+        </div>
+      )}
+      {handed && (
+        <div className="scope-note held-request" role="status">
+          <Component />
+          <span>
+            <span>
+              {handed.held ? 'Waiting to send' : 'About to send'}: {handed.text}
+            </span>{' '}
+            {handed.held && (
+              <button className="link" disabled={running || sending || !conversation} title={running ? 'Available when the current request finishes' : undefined} onClick={() => sendHanded(handed)}>
+                Send
+              </button>
+            )}{' '}
+            <button className="link" disabled={sending} onClick={() => setState({ chatRequest: null })}>
+              Discard
+            </button>
+          </span>
         </div>
       )}
       {configured && notice && (

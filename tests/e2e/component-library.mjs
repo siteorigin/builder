@@ -47,9 +47,56 @@ const componentSection = async () => {
   if ((await head.getAttribute('aria-expanded')) === 'false') await head.click();
 };
 
-step('an Exhibitor card made from a group, and a second copy from Insert');
 const pageId = (await snapshot()).site.homePageId;
 const owner = { kind: 'page', id: pageId };
+
+step('Create component starts a blank one without Developer mode, opens its design, and one Undo takes it back (#172)');
+assert.equal((await win.evaluate(() => window.builder.app.getSettings())).developerMode, false, 'Developer mode is off');
+const homeBefore172 = (await snapshot()).pages[pageId];
+await openInsert();
+await panel.locator('.insert-tile.new[data-key="new-component"]', { hasText: 'Create component' }).click();
+await dialog.getByLabel('Component name').fill('Price tag');
+await dialog.getByLabel('Description').fill('One plan and its price.');
+await dialog.getByRole('button', { name: 'Start blank' }).click();
+await dialog.waitFor({ state: 'detached' });
+await eventually(async () => assert.deepEqual(await library(), { 'Price tag': 1 }, 'the component is made and placed once'));
+const priceTag = Object.values((await snapshot()).components).find((d) => d.name === 'Price tag');
+assert.equal(priceTag.kind, 'managed', 'a managed design');
+assert.equal(priceTag.description, 'One plan and its price.');
+// Its design is open for editing, with its root selected in Layers, ready for elements.
+await win.locator('.mode-band', { hasText: 'Editing Price tag everywhere' }).waitFor();
+await openRail('Layers');
+await eventually(async () => assert.equal(await win.locator(`[role="treeitem"][data-owner="component:${priceTag.id}"][data-node="${priceTag.tree.rootIds[0]}"]`).getAttribute('aria-selected'), 'true', 'Layers selects the new design’s root'));
+await win.locator('.mode-band-done').click();
+await win.locator('.mode-band').waitFor({ state: 'detached' });
+await win.evaluate(() => window.builder.project.undo());
+await eventually(async () => assert.deepEqual(await library(), {}, 'one Undo removes the component'));
+assert.deepEqual((await snapshot()).pages[pageId], homeBefore172, 'and its placement');
+// The command menu offers the same dialog.
+await win.keyboard.press(`${process.platform === 'darwin' ? 'Meta' : 'Control'}+K`);
+await win.locator('.cmdk').waitFor();
+await win.keyboard.type('create component');
+await win.locator('.cmdk [role="option"]', { hasText: 'Create component…' }).first().click();
+await dialog.getByLabel('Component name').waitFor();
+await dialog.getByRole('button', { name: 'Cancel' }).click();
+await dialog.waitFor({ state: 'detached' });
+assert.deepEqual(await library(), {}, 'Cancel makes nothing');
+// Build with AI with no AI provider set up: the request waits in the chat to be sent or discarded, never lost, and never
+// sent anywhere (this check stops before the click if a provider were set up).
+const ai = await win.evaluate(async () => ({ settings: await window.builder.app.getSettings(), providers: await window.builder.ai.providers() }));
+assert.equal(ai.providers.find((p) => p.id === ai.settings.ai.provider)?.configured ?? false, false, 'no AI provider is set up');
+await openInsert();
+await panel.locator('.insert-tile.new[data-key="new-component"]').click();
+await dialog.getByLabel('Component name').fill('Quote card');
+await dialog.getByRole('button', { name: 'Build with AI' }).click();
+await dialog.waitFor({ state: 'detached' });
+const held = win.locator('.held-request', { hasText: 'Create a component called "Quote card".' });
+await held.waitFor();
+await held.getByRole('button', { name: 'Discard' }).click();
+await held.waitFor({ state: 'detached' });
+assert.deepEqual(await library(), {}, 'nothing is made');
+
+step('an Exhibitor card made from a group, and a second copy from Insert');
 // Blank's Home starts empty: a section to build in first.
 const [{ nodeId: section }] = await apply([{ type: 'node.insert', owner, componentId: 'layout.section' }], 'Insert section');
 const [{ nodeId: stack }] = await apply([{ type: 'node.insert', owner, parentId: section, slot: 'content', primitive: 'stack' }], 'Insert stack');

@@ -371,6 +371,8 @@ export interface ChatContext {
   assetIds?: string[];
   /** Absent in messages sent before questions existed, which were all edits. */
   mode?: ChatMode;
+  /** What the request is for, when the editor says: "component" builds a new project component (Create component). */
+  task?: 'component';
 }
 
 /** A content field the AI located while answering a question, opened from the answer with "Open in inspector". */
