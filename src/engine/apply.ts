@@ -1,3 +1,4 @@
+import { propBindingSchema, withProp } from '@shared/bindings';
 import type {
   AltReview,
   ComponentDefinition,
@@ -22,7 +23,7 @@ import type {
   VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
-import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isBinding, isComparison, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
+import { ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isBinding, isComparison, slotChildren, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, validateRoute } from '@shared/routes';
@@ -47,7 +48,8 @@ import { clone, definitionHash, freshListIds, installComponent, makeInstance } f
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { editTable } from './table';
 import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties } from './schema';
-import { declaredTokens, findTokenCycle, forEachTokenRef, tokenUsageCounts } from './tokens';
+import { declaredTokens, findTokenCycle, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
+import { slotDecl, slotFill, slotLandingProblem } from './slots';
 import { formDefaults, settleFormKeys } from './form-keys';
 import { namesFormFields, type FormField } from '@catalogue/foundation/form';
 import {
@@ -717,7 +719,7 @@ function copySubtree(from: NodeTree, to: NodeTree, nodeId: string, state: Projec
     if (from === to) delete n.anchor;
     if (n.kind === 'element' || n.kind === 'repeat') n.children = n.children.map((c) => idMap.get(c) ?? c);
     if (n.kind === 'instance') {
-      if (n.slots) for (const k of Object.keys(n.slots)) n.slots[k] = n.slots[k].map((c) => idMap.get(c) ?? c);
+      if (n.slots) for (const k of Object.keys(n.slots)) n.slots[k] = slotChildren(n, k).map((c) => idMap.get(c) ?? c);
       const def = state.components[n.definitionId];
       if (def) {
         const before = n.props;
@@ -955,10 +957,35 @@ function insertionList(tree: NodeTree, parentId: string | null | undefined, slot
     const name = slot ?? slots[0];
     if (!slots.includes(name)) fail(`Unknown slot "${name}". Slots: ${slots.join(', ')}.`);
     parent.slots ??= {};
-    parent.slots[name] ??= [];
+    // A list damaged by hand holds nothing that can be shown (validation reports it): new content starts it again.
+    if (!Array.isArray(parent.slots[name])) parent.slots[name] = [];
     return parent.slots[name];
   }
   fail(`Cannot insert inside a ${parent.kind} node.`);
+}
+
+/** The placement and slot a child list belongs to, when it is one of a placement's slots. */
+function slotAt(tree: NodeTree, parentId: string | null | undefined, list: string[]): { inst: InstanceNode; slot: string } | null {
+  const parent = parentId && Object.hasOwn(tree.nodes, parentId) ? tree.nodes[parentId] : undefined;
+  if (parent?.kind !== 'instance') return null;
+  const slot = Object.keys(parent.slots ?? {}).find((k) => parent.slots![k] === list);
+  return slot === undefined ? null : { inst: parent, slot };
+}
+
+/**
+ * Content about to land in `list`: what its slot shows now (for the limit check after the edit), and a check to run
+ * once it has landed that refuses content the slot does not take, or more than it holds. Lists that are no slot pass.
+ */
+function slotLanding(state: ProjectState, owner: OwnerRef, tree: NodeTree, parentId: string | null | undefined, list: string[]): (added: string[]) => void {
+  const at = slotAt(tree, parentId, list);
+  if (!at) return () => {};
+  const design = owner.kind === 'component' ? state.components[owner.id] : undefined;
+  const decl = slotDecl(state, at.inst, at.slot);
+  const before = decl ? slotFill(state, tree, list, decl, design).count : 0;
+  return (added) => {
+    const problem = slotLandingProblem(state, tree, at.inst, at.slot, added, before, design);
+    if (problem) fail(problem);
+  };
 }
 
 function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
@@ -970,6 +997,7 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
     if (settled) fail('Insert inside the component, not beside its root.');
     if (!op.primitive || !HOLDERS.has(op.primitive)) fail(UNSETTLED);
   }
+  const landed = slotLanding(state, op.owner, tree, op.parentId, list);
   let nodes: GraphNode[];
   if (op.primitive === 'slot' || op.primitive === 'repeat') {
     nodes = [structuralNode(state, op.owner, op.primitive, op.bind)];
@@ -1007,6 +1035,7 @@ function nodeInsert(state: ProjectState, op: Op<'node.insert'>): OpResult {
   for (const n of nodes) tree.nodes[n.id] = n;
   const index = op.index === undefined ? list.length : Math.min(op.index, list.length);
   list.splice(index, 0, nodes[0].id);
+  landed([nodes[0].id]);
   if (op.owner.kind === 'component' && !settled) followRoot(state.components[op.owner.id]);
   return { nodeId: nodes[0].id };
 }
@@ -1081,8 +1110,11 @@ function nodeMove(state: ProjectState, op: Op<'node.move'>): OpResult {
   // Only what shows list items, or repeats one, depends on the repeat around it.
   const listed = def ? subtreeIds(tree, op.nodeId).filter((id) => tree.nodes[id].kind === 'repeat' || showsItemField(tree.nodes[id])) : [];
   const listsBefore = def ? new Map(listed.map((id) => [id, enclosingRepeatProp(def, id)])) : undefined;
+  // A move within one slot changes nothing it holds; into another, the slot must take it.
+  const landed = target === info.list ? () => {} : slotLanding(state, op.owner, tree, op.parentId, target);
   info.list.splice(info.index, 1);
   target.splice(Math.min(op.index, target.length), 0, op.nodeId);
+  landed([op.nodeId]);
   if (def && listsBefore) checkMovedItemFields(state, def, listsBefore);
   if (def && !settled) followRoot(def);
   return {};
@@ -1132,8 +1164,10 @@ function nodeDuplicate(state: ProjectState, op: Op<'node.duplicate'>): OpResult 
   // same list, so the copies stay together after the last of them.
   const at = op.index ?? info.index + 1;
   if (at > info.list.length) fail(`index ${at} is past the end of the list, which has ${info.list.length} items.`);
+  const landed = slotLanding(state, op.owner, tree, info.parentId, info.list);
   const nid = copySubtree(tree, tree, op.nodeId, state);
   info.list.splice(at, 0, nid);
+  landed([nid]);
   return { nodeId: nid };
 }
 
@@ -1257,6 +1291,7 @@ function placeCopy(state: ProjectState, from: NodeTree, nodeId: string, op: { to
   if (op.toOwner.kind === 'component') refuseItemStylesInto(state, from, subtreeIds(from, nodeId), 'inside a component every placement shares its items.');
   if (op.slot && !op.parentId) fail('A slot needs the instance that has it as parentId.');
   const list = insertionList(to, op.parentId, op.slot, state);
+  const landed = slotLanding(state, op.toOwner, to, op.parentId, list);
   const taken = anchorsInUse(state, op.toOwner);
   const nid = copySubtree(from, to, nodeId, state);
   for (const id of subtreeIds(to, nid)) {
@@ -1265,6 +1300,7 @@ function placeCopy(state: ProjectState, from: NodeTree, nodeId: string, op: { to
     else if (n.anchor) taken.add(n.anchor);
   }
   list.splice(op.index === undefined ? list.length : Math.min(op.index, list.length), 0, nid);
+  landed([nid]);
   return { nodeId: nid };
 }
 
@@ -1481,6 +1517,12 @@ function nodeSetContent(state: ProjectState, op: Op<'node.setContent'>): OpResul
     if (!def || !('$prop' in field)) fail('This content is bound to a repeated item; edit the list item instead.');
     const schema = own(def.properties, field.$prop);
     if (!schema) fail(`Missing property ${field.$prop}.`);
+    if (field.field !== undefined) {
+      // One field of an object's default; its other fields keep theirs.
+      const f = propBindingSchema(def.properties, field) ?? fail(`Missing field ${field.field} of ${field.$prop}.`);
+      (schema as { default: unknown }).default = normalizeProp(schema, { [field.field]: schemaFix(f) }, state, `${def.name} → ${schema.label}`, schema.default);
+      return true;
+    }
     // The default must still fit its schema (a number or choice can be bound to text).
     (schema as { default: unknown }).default = normalizeProp(schema, schemaFix(schema), state, `${def.name} → ${schema.label}`);
     return true;
@@ -1659,6 +1701,16 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
     list[idx] = next;
     node.props[op.prop] = [...list];
     return followed.length ? { followed } : {};
+  }
+  if (op.field !== undefined) {
+    // One field of an object: the rest keep what the placement shows now (its own value, or the definition's).
+    if (schema.type !== 'object') fail(`"${op.prop}" is not an object or a list; leave out field.`);
+    if (!Object.hasOwn(schema.fields, op.field)) fail(`${schema.label} has no field "${op.field}". Fields: ${Object.keys(schema.fields).join(', ')}.`);
+    const own = node.props[op.prop];
+    if (isBinding(own)) fail(`${schema.label} comes from the enclosing component's own property; edit it there.`);
+    const current = own && typeof own === 'object' && !Array.isArray(own) ? own : schema.default;
+    node.props[op.prop] = normalizeProp(schema, { [op.field]: op.value }, state, `${def.name} → ${schema.label}`, current);
+    return {};
   }
   node.props[op.prop] = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`, node.props[op.prop]);
   return {};
@@ -1891,6 +1943,9 @@ function tokenRemove(state: ProjectState, op: Op<'token.remove'>): OpResult {
     if (!op.detach)
       throw new EngineError('VALIDATION_FAILED', `"${t.label}" is used ${uses} time${uses === 1 ? '' : 's'}. Choose a replacement style, or keep its current value where it is used.`, { references: uses });
     if (t.group === 'text') fail('A text style cannot be kept as a plain value. Choose a replacement text style.');
+    // A token property always holds a token, so its uses can only move to another one.
+    const props = tokenPropUsageCounts(state)[t.id] ?? 0;
+    if (props) fail(`"${t.label}" is chosen by ${props} component propert${props === 1 ? 'y' : 'ies'}, which can only hold a site style. Choose a replacement style.`);
     const literal = resolvedTokenValue(state, t.id);
     forEachTokenRef(state, (id, site) => id === t.id && site.replace(clone(literal)));
   }
@@ -2043,10 +2098,11 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
         if (!schema) fail(`The selection uses "${src}", which "${ownerDef.name}" does not define.`);
         name = propName(src);
         properties[name] = clone(schema);
-        props[name] = clone(b);
+        // An object field moves with its whole object, which the new component reads the same field of.
+        props[name] = isProp ? { $prop: b.$prop } : clone(b);
         hoisted.set(key, name);
       }
-      return { $prop: name };
+      return isProp ? withProp(b, name) : { $prop: name };
     };
     const walk = (id: string, innerRepeat: boolean) => {
       const n = defTree.nodes[id];
@@ -2159,9 +2215,13 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
       delete v.styles[op.nodeId];
     }
   }
+  // In a slot, the new component takes the selection's place: the slot must take a component of its category. What
+  // the slot shows is measured while the selection is still there, so taking its place adds nothing.
+  const landed = slotLanding(state, op.owner, tree, info.parentId, info.list);
   for (const id of removed) delete tree.nodes[id];
   tree.nodes[inst.id] = inst;
   info.list.splice(info.index, 1, inst.id);
+  landed([inst.id]);
   return { definitionId: def.id, nodeId: inst.id };
 }
 
@@ -2194,7 +2254,7 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   // The source renders rich text through the RichText helper, which takes blocks.
   for (const schema of Object.values(work.properties)) {
     if (schema.type === 'richtext') schema.codeForm = 'blocks';
-    if (schema.type === 'list') for (const f of Object.values(schema.fields)) if (f.type === 'richtext') f.codeForm = 'blocks';
+    if (schema.type === 'list' || schema.type === 'object') for (const f of Object.values(schema.fields)) if (f.type === 'richtext') f.codeForm = 'blocks';
   }
   // Generate as if the file already lives at its final path under its own ID, so relative imports resolve and
   // the markup and its <style> block use the new component's class names: the code no longer depends on the
@@ -2250,6 +2310,8 @@ function withoutPageLinks(schema: PropSchema, v: unknown): unknown {
       return Array.isArray(v)
         ? v.map((it) => (it && typeof it === 'object' ? { ...it, ...Object.fromEntries(Object.entries(schema.fields).filter(([f]) => Object.hasOwn(it, f)).map(([f, fs]) => [f, withoutPageLinks(fs, (it as Record<string, unknown>)[f])])) } : it))
         : v;
+    case 'object':
+      return Array.isArray(v) ? v : { ...v, ...Object.fromEntries(Object.entries(schema.fields).filter(([f]) => Object.hasOwn(v, f)).map(([f, fs]) => [f, withoutPageLinks(fs, (v as Record<string, unknown>)[f])])) };
     default:
       return v;
   }
@@ -2259,7 +2321,7 @@ const unlinked = (s: RichSpan): RichSpan => (s && typeof s === 'object' && s.lin
 /** A property as the converted source's own fallback holds it: its default, and a list's field defaults, unlinked from pages. */
 function sourceFallback(schema: PropSchema): PropSchema {
   const out = { ...schema, default: withoutPageLinks(schema, schema.default) } as PropSchema;
-  if (out.type === 'list') out.fields = Object.fromEntries(Object.entries(out.fields).map(([f, fs]) => [f, { ...fs, default: withoutPageLinks(fs, fs.default) } as typeof fs]));
+  if (out.type === 'list' || out.type === 'object') out.fields = Object.fromEntries(Object.entries(out.fields).map(([f, fs]) => [f, { ...fs, default: withoutPageLinks(fs, fs.default) } as typeof fs]));
   return out;
 }
 

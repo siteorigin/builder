@@ -1,6 +1,6 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
-import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ObjectProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
 import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
@@ -10,6 +10,7 @@ import { DraftInput, Field, openSection, Switch, SwitchRow } from '../components
 import { isSettling, savesInFlight } from '../lib/pending';
 import { announcementText } from '../lib/announce';
 import { MAX_CHOICES as MAX_CHOICE_ROWS } from '@engine/values';
+import { declaredTokens } from '@engine/tokens';
 import { applyChoiceAction, choiceText, sameChoice, staleRename, type ChoiceAction } from '../lib/choices';
 
 const MOVE_PENDING_MS = 3000;
@@ -907,6 +908,22 @@ export function ScalarEditor({ schema, value, onChange, state, label, id, descri
       return <IconPicker id={id} describedBy={describedBy} value={String(value ?? schema.default)} onChange={onChange} label={label ?? schema.label} />;
     case 'choices':
       return <ChoicesEditor schema={schema} value={value} onChange={onChange} label={label} />;
+    case 'token': {
+      // The site's tokens of the property's group, by name. One a theme switch took away stays shown until changed.
+      const ref = value && typeof value === 'object' ? (value as { token?: unknown }).token : undefined;
+      const current = typeof ref === 'string' ? ref : schema.default.token;
+      const tokens = declaredTokens(state).filter((t) => t.group === schema.tokenGroup);
+      return (
+        <select className="select" {...wired} value={current} onChange={(e) => onChange({ token: e.target.value })} aria-label={name}>
+          {!tokens.some((t) => t.id === current) && <option value={current}>Missing style: {current}</option>}
+          {tokens.map((t) => (
+            <option key={t.id} value={t.id}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+      );
+    }
   }
 }
 
@@ -1347,11 +1364,13 @@ export interface ListReveal {
 /** Item fields that are one link's visible text and its destination (see itemLinkPairs). */
 export type LinkPairs = ReadonlyArray<{ text: string; link: string }>;
 
-export function PropField({ name, schema, value, onChange, onList, onTable, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages }: {
+export function PropField({ name, schema, value, onChange, onField, onList, onTable, read, state, focusItem, openItem, label, hint, annotate, hiddenFields, linkPairs, error, action, place, everywhere, pickImages }: {
   name: string;
   schema: PropSchema;
   value: unknown;
   onChange: (v: unknown, edit?: PendingEdit) => unknown;
+  /** For an object: an edit of one field, which keeps the others. Without it the field is sent as `{ [field]: value }`. */
+  onField?: (field: string, v: unknown, edit?: PendingEdit) => unknown;
   onList: (op: ListOp) => unknown;
   /** A table edit: one cell, row or column by ID. Resolves to whether it was applied. */
   onTable: (edit: TableEdit) => Promise<boolean>;
@@ -1383,8 +1402,32 @@ export function PropField({ name, schema, value, onChange, onList, onTable, read
   if (schema.type === 'list' && schema.feed) return <ComputedList name={name} schema={schema} state={state} pageId={placedOnPage(place?.ref)} />;
   if (schema.type === 'list') return <ListEditor name={name} schema={schema} items={Array.isArray(value) ? (value as ListItem[]) : []} onList={onList} state={state} focusItem={focusItem} openItem={openItem} annotate={annotate} hiddenFields={hiddenFields} linkPairs={linkPairs} place={place} read={read} everywhere={everywhere} pickImages={pickImages ?? undefined} />;
   if (schema.type === 'table') return <TableEditor name={name} schema={schema} value={value} onTable={onTable} />;
+  if (schema.type === 'object') return <ObjectEditor name={name} schema={schema} value={value} onField={onField ?? ((f, v, edit) => onChange({ [f]: v }, edit))} state={state} label={label} everywhere={everywhere} error={error} action={action} />;
   return <ScalarField schema={schema} value={value} onChange={onChange} read={read} state={state} label={label} hint={hint} error={error} action={action} everywhere={everywhere} />;
   void name;
+}
+
+/** An object property: its fields under its name, each edited on its own. */
+function ObjectEditor({ name, schema, value, onField, state, label, everywhere, error, action }: { name: string; schema: ObjectProp; value: unknown; onField: (field: string, v: unknown, edit?: PendingEdit) => unknown; state: ProjectState; label?: string; everywhere?: boolean; error?: string; action?: FieldAction }) {
+  const v = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : schema.default;
+  return (
+    <fieldset className="insp-group" data-object={name}>
+      <legend className="insp-group-title">{label ?? schema.label}</legend>
+      {schema.description && <div className="field-hint">{schema.description}</div>}
+      {Object.entries(schema.fields).map(([key, f]) => (
+        <div key={key} data-object-field={key} style={{ display: 'contents' }}>
+          <ScalarField schema={f} value={Object.hasOwn(v, key) ? v[key] : Object.hasOwn(schema.default, key) ? schema.default[key] : f.default} onChange={(x, edit) => onField(key, x, edit)} state={state} everywhere={everywhere} />
+        </div>
+      ))}
+      {/* A problem with the object as a whole, such as a button whose link is missing, and its fix. */}
+      {error && <div className="field-error">{error}</div>}
+      {action && (
+        <button className="btn btn-sm insp-inline-btn" onClick={action.run}>
+          {action.label}
+        </button>
+      )}
+    </fieldset>
+  );
 }
 
 /** The page a placement's computed lists are worked out for: the page it is on, or none (the shared header and footer). */
@@ -1468,11 +1511,16 @@ export function FieldGroups<T>({ groups, render }: { groups: Array<PropGroup<T>>
         g.title ? (
           <fieldset key={gi} className="insp-group">
             <legend className="insp-group-title">{g.title}</legend>
-            {g.items.map((it) => (
-              <FieldSlot key={it.key} name={it.key}>
-                {render(it)}
-              </FieldSlot>
-            ))}
+            {/* A declared group draws the buttons inside it as groups of their own. */}
+            {g.groups ? (
+              <FieldGroups groups={g.groups} render={render} />
+            ) : (
+              g.items.map((it) => (
+                <FieldSlot key={it.key} name={it.key}>
+                  {render(it)}
+                </FieldSlot>
+              ))
+            )}
           </fieldset>
         ) : (
           <FieldSlot key={g.items[0].key} name={g.items[0].key}>

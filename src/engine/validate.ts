@@ -8,9 +8,11 @@ import { isLanguageCode, pageLanguage, shownValue, translationClashMessage, tran
 import { variantIdsValid, variantOptions } from '@shared/variants';
 import { EngineError, allTrees, childLists, displayName, instancesOf, subtreeIds } from './tree';
 import { normalizeTable } from './table';
+import { normalizeObject } from './values';
+import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
 import { bindingProblem, bindingSlots, boundSchema } from './schema';
 import { cardLinkProblems } from '@generator/card-links';
-import { declaredTokens, findTokenCycle } from './tokens';
+import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, type FormNameClash } from '@generator/checks';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
 import { codeNeeds } from './definitions';
@@ -177,6 +179,8 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         if (!b) continue;
         if ('$prop' in b && !(b.$prop in def.properties))
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: an element uses the property "${b.$prop}", which the component does not have.`, owner, nodeId: id });
+        else if ('$prop' in b && b.field !== undefined && !boundSchema(def, id, b))
+          out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: an element uses the field "${b.field}" of "${b.$prop}", which is not a field of that property.`, owner, nodeId: id });
         if ('$item' in b && !inRepeat)
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: an element shows a list item field outside its list.`, owner, nodeId: id });
         else if ('$item' in b && !boundSchema(def, id, b))
@@ -241,6 +245,17 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
             if (schema.type === 'list' && !schema.feed && Object.hasOwn(n.props, k))
               for (const id of duplicateItemIds(n.props[k]))
                 out.push({ severity: 'error', code: 'LIST_ITEM_DUPLICATE', message: `${label}: ${duplicateItemMessage(displayName(state, n), schema, id)}`, owner, nodeId: n.id, site: `${n.id}|${k}|${id}` });
+            if (schema.type === 'object' && Object.hasOwn(n.props, k) && !isBinding(n.props[k])) {
+              // An object edited by hand: a field it does not have, or one missing, is reported; the site shows the rest.
+              let problem: string | null = null;
+              try {
+                if (sortedJson(normalizeObject(schema, n.props[k], state, schema.label, n.props[k])) !== sortedJson(n.props[k])) problem = 'it is not saved in the form the editor shows';
+              } catch (e) {
+                problem = e instanceof EngineError ? e.message : 'it is not an object of its fields';
+              }
+              if (problem) out.push({ severity: 'warning', code: 'OBJECT_DAMAGED', message: `${label}: “${schema.label}” in ${displayName(state, n)} cannot be read as saved (${problem}). Set it again in the Inspector.`, owner, nodeId: n.id });
+              continue;
+            }
             if (schema.type !== 'table' || !Object.hasOwn(n.props, k) || isBinding(n.props[k])) continue;
             // A pure check of a saved value: whatever it throws, the project still opens and says what is wrong.
             let problem: string | null = null;
@@ -499,8 +514,11 @@ const TEXT_TAG_SET = new Set<string>(TEXT_TAGS);
 /** A plain binding names exactly one property or item field; anything else in it would be silently ignored. */
 const plainBinding = (v: unknown) => {
   if (!isBinding(v)) return false;
+  const r = v as Record<string, unknown>;
   const keys = Object.keys(v);
-  return keys.length === 1 && typeof (v as Record<string, unknown>)[keys[0]] === 'string';
+  // `{ $item }`, `{ $prop }`, or `{ $prop, field }` for one field of an object property.
+  if (keys.length === 2 && typeof r.$prop === 'string' && typeof r.field === 'string') return true;
+  return keys.length === 1 && typeof r[keys[0]] === 'string';
 };
 
 /** A condition is a plain binding, or a binding (`ref`) compared with one string, number or yes/no value. */
@@ -611,9 +629,25 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
         out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });
       if (n.kind === 'instance') {
         const target = state.components[n.definitionId];
-        for (const s of Object.keys(n.slots ?? {}))
-          if (target && !Object.hasOwn(target.slots ?? {}, s))
+        for (const s of Object.keys(n.slots ?? {})) {
+          const placed = n.slots![s];
+          if (!Array.isArray(placed)) {
+            out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the content placed in "${s}" of ${displayName(state, n)} is damaged and cannot be shown.`, owner, nodeId: n.id });
+            continue;
+          }
+          if (target && !Object.hasOwn(target.slots ?? {}, s)) {
             out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: content is placed in "${s}", which ${target.name} does not have.`, owner, nodeId: n.id });
+            continue;
+          }
+          // What the slot holds must be what it takes, and no more than it holds (a hand edit, or a contract tightened since).
+          const decl = target ? slotDecl(state, n, s) : undefined;
+          if (!decl || slotDeclProblem(decl)) continue;
+          const fill = slotFill(state, tree, placed, decl, def);
+          const where = `${label}: the “${decl.label}” slot of ${displayName(state, n)}`;
+          for (const r of fill.refusedAll) out.push({ severity: 'error', code: 'SLOT_REFUSED', message: `${where} takes ${slotAccepts(decl)}, but holds ${r.what}.`, owner, nodeId: r.nodeId });
+          // The message leaves the count out, so taking content out of a slot that is still over its limit is no new problem.
+          if (decl.max !== undefined && fill.count > decl.max) out.push({ severity: 'error', code: 'SLOT_FULL', message: `${where} holds at most ${decl.max}, but shows more.`, owner, nodeId: n.id });
+        }
         for (const [axis, v] of Object.entries(n.variants ?? {})) {
           if (!target || isBinding(v)) continue;
           const a = target.variantAxes && Object.hasOwn(target.variantAxes, axis) ? target.variantAxes[axis] : undefined;
@@ -642,6 +676,20 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
             out.push({ severity: 'warning', code: 'SLOT_UNPLACED', message: `${label}: the "${def.slots![s].label}" slot is declared but not placed, so content put there will not show.`, owner });
     }
   }
+  // Slot declarations of the project's own components, code components included (theme ones are checked by the loader).
+  for (const def of Object.values(state.components)) {
+    if (def.owner === 'theme') continue;
+    for (const [k, d] of Object.entries(def.slots ?? {})) {
+      const problem = slotDeclProblem(d);
+      if (problem) out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${def.name}: the slot "${k}" ${problem}.`, owner: { kind: 'component', id: def.id } });
+    }
+  }
+  // A token property names a token of its own group. One that is gone (a hand edit, a theme without it) shows nothing.
+  forEachTokenPropRef(state, (id, site) => {
+    const where = { owner: site.owner, ...(site.nodeId ? { nodeId: site.nodeId } : {}) };
+    if (!tokenIds.has(id)) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${site.label}: a component property uses the site style "${id}", which does not exist.`, ...where });
+    else if (groupOf.get(id) !== site.tokenGroup) out.push({ severity: 'error', code: 'TOKEN_MISSING', message: `${site.label}: a component property uses the site style "${id}", which is not a ${site.tokenGroup} style.`, ...where });
+  }, { themeDesigns: true });
   for (const [id, v] of [...Object.entries(state.tokens.overrides), ...state.tokens.custom.map((t) => [t.id, t.value] as const)]) {
     // Editing refuses these; one written by hand or by an older version still exports, metric by metric.
     if (groupOf.get(id) === 'text' && v && typeof v === 'object' && 'token' in v)

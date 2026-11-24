@@ -10,6 +10,9 @@ import { pageIds, shellPageLinks } from '@generator/checks';
 import { EngineError, instancesOf } from '@engine/tree';
 import { blocksSaving, introducedDiagnostics, validateState, type Diagnostic } from '@engine/validate';
 import { effectiveTokens, generateProject, resolveInstanceProps } from '@generator/index';
+import { tokenUsageCounts } from '@engine/tokens';
+import { slotFill } from '@engine/slots';
+import { validateOperation } from '@shared/ops';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
 const home = (s: ProjectState) => s.pages[s.site.homePageId];
@@ -764,7 +767,7 @@ describe('create component from a selection (§2.3)', () => {
     const sec = fork(blankWithSection(), 'layout.section');
     const w = applyOperations(sec.state, [{ type: 'component.createFromNode', owner: { kind: 'component', id: sec.id }, nodeId: 'inner', name: 'Inner' }]);
     const inner = w.state.components[w.results[0].definitionId as string];
-    expect(inner.slots).toEqual({ content: { label: 'Content' } });
+    expect(inner.slots).toEqual({ content: { label: 'Content', description: 'Headings, text, images, buttons and components placed inside the section.' } });
     const through = w.state.components[sec.id].tree!.nodes[w.results[0].nodeId as string] as InstanceNode;
     expect(through.slots?.content).toHaveLength(1);
     expect(errors(w.state)).toEqual([]);
@@ -844,6 +847,175 @@ describe('definition editing operations (§2.5)', () => {
     // However much it holds.
     s = applyOperations(s, [{ type: 'node.insert', owner: owner(s), parentId: section, slot: 'content', primitive: 'paragraph', text: 'More' }]).state;
     expect(() => applyOperations(s, [{ type: 'component.removeSlot', definitionId: f.id, slot: 'content' }])).toThrow(/has content/);
+  });
+
+  describe('slot contracts (issue #96)', () => {
+    /** A blank site whose Section is the project's own, with two placements of it on Home: the first holds a heading and a paragraph. */
+    function sections() {
+      let start = blankWithSection();
+      const first = home(start).rootIds[0];
+      start = applyOperations(start, [
+        { type: 'node.insert', owner: owner(start), parentId: first, slot: 'content', primitive: 'heading', text: 'Welcome to Blank' },
+        { type: 'node.insert', owner: owner(start), parentId: first, slot: 'content', primitive: 'paragraph', text: 'Select this text to edit it.' }
+      ]).state;
+      const f = fork(start, 'layout.section');
+      let s = applyOperations(f.state, [{ type: 'node.insert', owner: owner(f.state), parentId: null, definitionId: f.id }]).state;
+      const [a, b] = home(s).rootIds;
+      const own = { kind: 'component' as const, id: f.id };
+      s = applyOperations(s, [
+        { type: 'component.setSlot', definitionId: f.id, slot: 'content', label: 'Content', description: 'Words and buttons', categories: ['media'], primitives: ['text', 'link'], max: 2 },
+        { type: 'component.setSlot', definitionId: f.id, slot: 'aside', label: 'Aside', primitives: ['text'], max: 1 },
+        { type: 'node.insert', owner: own, parentId: 'inner', primitive: 'slot', bind: 'aside' }
+      ]).state;
+      return { s, id: f.id, a, b, page: owner(s) };
+    }
+    const slotOf = (s: ProjectState, nodeId: string, slot = 'content') => (home(s).nodes[nodeId] as InstanceNode).slots?.[slot] ?? [];
+
+    it('takes only the components and elements it lists, and no more than its limit', () => {
+      const { s: base, id, b, page } = sections();
+      expect(base.components[id].slots!.content).toEqual({ label: 'Content', description: 'Words and buttons', categories: ['media'], primitives: ['text', 'link'], max: 2 });
+      let s = applyOperations(base, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'heading' }]).state;
+      expect(() => applyOperations(s, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'image' }])).toThrow(/“Content” slot of “Section” takes media components, text and buttons, not an image/);
+      expect(() => applyOperations(s, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'stack' }])).toThrow(/not a container/);
+      expect(() => applyOperations(s, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', componentId: 'features.grid' }])).toThrow(/not “Services grid” \(a content component\)/);
+      s = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', componentId: 'media.gallery' }]).state;
+      expect(slotOf(s, b)).toHaveLength(2);
+      expect(() => applyOperations(s, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'button' }])).toThrow(/holds at most 2 items/);
+      // Duplicating inside a full slot would put a third there.
+      expect(() => applyOperations(s, [{ type: 'node.duplicate', owner: page, nodeId: slotOf(s, b)[0] }])).toThrow(/holds at most 2 items/);
+      expect(errors(s)).toEqual([]);
+    });
+
+    it('lets a full slot reorder its own content, and refuses moves and copies into one that is full or does not take it', () => {
+      const { s: base, a, b, page } = sections();
+      // The first section already holds a heading and a paragraph: its Content slot is full.
+      let s = applyOperations(base, [
+        { type: 'node.insert', owner: page, parentId: a, slot: 'aside', primitive: 'paragraph' },
+        { type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'button' }
+      ]).state;
+      const [first, second] = slotOf(s, a);
+      expect(slotOf(s, a)).toHaveLength(2);
+      // Reordering within the full slot changes nothing it holds.
+      s = applyOperations(s, [{ type: 'node.move', owner: page, nodeId: first, parentId: a, slot: 'content', index: 1 }]).state;
+      expect(slotOf(s, a)).toEqual([second, first]);
+      // Into the full slot of the same placement, or of another one, is refused, and the content stays where it was.
+      const aside = slotOf(s, a, 'aside')[0];
+      expect(() => applyOperations(s, [{ type: 'node.move', owner: page, nodeId: aside, parentId: a, slot: 'content', index: 0 }])).toThrow(/holds at most 2 items/);
+      expect(() => applyOperations(s, [{ type: 'node.move', owner: page, nodeId: slotOf(s, b)[0], parentId: a, slot: 'aside', index: 0 }])).toThrow(/“Aside” slot of “Section” takes text, not a button/);
+      expect(() => applyOperations(s, [{ type: 'node.copy', owner: page, nodeId: slotOf(s, b)[0], toOwner: page, parentId: a, slot: 'content' }])).toThrow(/holds at most 2 items/);
+      // A copy into a slot with room is still refused when the slot does not take what it is.
+      expect(() => applyOperations(s, [{ type: 'node.copy', owner: page, nodeId: slotOf(s, b)[0], toOwner: page, parentId: b, slot: 'aside' }])).toThrow(/“Aside” slot of “Section” takes text, not a button/);
+      // Making a component of text in a text-only slot would put a custom component there.
+      const [asideText] = slotOf(s, a, 'aside');
+      expect(() => applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: asideText, name: 'Note' }])).toThrow(/takes text, not “Note” \(a custom component\)/);
+      expect(slotOf(s, a, 'aside')).toEqual([aside]);
+      // A slot with room takes content moved out of a full one.
+      s = applyOperations(s, [{ type: 'node.move', owner: page, nodeId: first, parentId: b, slot: 'content', index: 0 }]).state;
+      expect(slotOf(s, b)).toHaveLength(2);
+      expect(errors(s)).toEqual([]);
+    });
+
+    it('keeps a contract a label change leaves out, clears one sent as null, and refuses one its content no longer fits', () => {
+      const { s: base, id, b, page } = sections();
+      const s = applyOperations(base, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'button' }]).state;
+      const relabelled = applyOperations(s, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Body' }]).state;
+      expect(relabelled.components[id].slots!.content).toEqual({ label: 'Body', description: 'Words and buttons', categories: ['media'], primitives: ['text', 'link'], max: 2 });
+      const opened = applyOperations(s, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', categories: null, primitives: null, max: null, description: null }]).state;
+      expect(opened.components[id].slots!.content).toEqual({ label: 'Content' });
+      expect(() => applyOperations(s, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', max: 1 }])).toThrow(/Home: the “Content” slot already holds more than 1/);
+      expect(() => applyOperations(s, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', primitives: ['text'] }])).toThrow(/already holds a button, which it would no longer take/);
+      expect(validateOperation({ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'x', primitives: ['video'] }).ok).toBe(false);
+    });
+
+    it('reports content a slot does not take, or more than it holds, and damaged slots, when the project is opened', () => {
+      const { s: base, id, b, page } = sections();
+      const s = applyOperations(base, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'heading' }]).state;
+      const inst = home(s).nodes[b] as InstanceNode;
+      home(s).nodes.img1 = { id: 'img1', kind: 'image', image: { assetId: null, alt: '' } };
+      inst.slots!.content.push('img1');
+      expect(errors(s).map((d) => [d.code, d.nodeId])).toEqual([['SLOT_REFUSED', 'img1']]);
+      // Each child the slot does not take is its own problem, so a second one is never hidden behind the first.
+      home(s).nodes.img2 = { id: 'img2', kind: 'image', image: { assetId: null, alt: '' } };
+      const saved = [...inst.slots!.content];
+      inst.slots!.content = ['img1', 'img2'];
+      expect(errors(s).map((d) => [d.code, d.nodeId])).toEqual([['SLOT_REFUSED', 'img1'], ['SLOT_REFUSED', 'img2']]);
+      inst.slots!.content = saved;
+      delete home(s).nodes.img2;
+      home(s).nodes.img1 = { id: 'img1', kind: 'text', tag: 'p', text: 'More' };
+      home(s).nodes.t2 = { id: 't2', kind: 'text', tag: 'p', text: 'Most' };
+      inst.slots!.content.push('t2');
+      expect(errors(s).map((d) => [d.code, d.message])).toEqual([['SLOT_FULL', 'Home: the “Content” slot of Section holds at most 2, but shows more.']]);
+      // Taking one out of a slot still over its limit is no new problem, so the session lets the author repair it.
+      home(s).nodes.t3 = { id: 't3', kind: 'text', tag: 'p', text: 'Even more' };
+      inst.slots!.content.push('t3');
+      const over = errors(s).map((d) => d.message);
+      inst.slots!.content.pop();
+      expect(errors(s).map((d) => d.message)).toEqual(over);
+      // A hand edit that is not a list of children, or a contract that cannot be read, is reported rather than failing
+      // the open or the generator.
+      for (const damaged of ['img1', {}, 42]) {
+        inst.slots!.content = damaged as never;
+        expect(errors(s).map((d) => d.code)).toContain('SLOT_INVALID');
+        expect(() => generateProject(s)).not.toThrow();
+        expect(() => generateProject(s, { instrument: true })).not.toThrow();
+        // New content starts the damaged list again.
+        const fixed = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'heading', text: 'Again' }]).state;
+        expect(slotOf(fixed, b)).toHaveLength(1);
+      }
+      inst.slots!.content = [];
+      s.components[id].slots!.content.categories = ['banner' as never];
+      expect(errors(s).map((d) => d.message)).toEqual(['Section: the slot "content" lists categories other than hero, content, social-proof, conversion, media, layout, shell, primitive, custom.']);
+    });
+
+    it('lets a component be made from content in a slot already over its limit, since it only takes that content’s place', () => {
+      const { s: base, id, b, page } = sections();
+      let s = applyOperations(base, [
+        { type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', categories: ['custom'], primitives: ['text'], max: 3 },
+        { type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'heading' },
+        { type: 'node.insert', owner: page, parentId: b, slot: 'content', primitive: 'paragraph' }
+      ]).state;
+      // A hand edit then lowers the limit below what the slot holds.
+      s.components[id].slots!.content.max = 1;
+      s = applyOperations(s, [{ type: 'component.createFromNode', owner: page, nodeId: slotOf(s, b)[0], name: 'Lead' }]).state;
+      expect(slotOf(s, b)).toHaveLength(2);
+    });
+
+    it('counts a repeat in a slot as any number of items, whatever its list holds today', () => {
+      const tree = { rootIds: ['r'], nodes: { r: { id: 'r', kind: 'repeat' as const, list: { $prop: 'rows' }, children: ['t'] }, t: { id: 't', kind: 'text' as const, tag: 'p' as const, text: 'x' }, e: { id: 'e', kind: 'repeat' as const, list: { $prop: 'rows' }, children: [] } } };
+      const s = fresh();
+      // The list can be handed in from an enclosing component with more items than its own maximum allows.
+      expect(slotFill(s, tree, ['r'], { label: 'Content', max: 1 }).count).toBe(Infinity);
+      expect(slotFill(s, tree, ['e'], { label: 'Content', max: 1 }).count).toBe(0);
+      expect(slotFill(s, tree, ['r'], { label: 'Content', primitives: ['image'] }).refusedAll.map((r) => r.nodeId)).toEqual(['t']);
+    });
+
+    it('takes a slot passed on from outside only when what that slot allows fits it', () => {
+      const { s: base, id } = sections();
+      // The section's inner box becomes a component of its own: its slots pass the section's slots straight on.
+      const w = applyOperations(base, [{ type: 'component.createFromNode', owner: { kind: 'component', id }, nodeId: 'inner', name: 'Inner' }]);
+      const inner = w.results[0].definitionId as string;
+      expect(w.state.components[inner].slots!.content).toEqual(w.state.components[id].slots!.content);
+      expect(errors(w.state)).toEqual([]);
+      // Narrower than what is passed on is refused: the outer slot can bring two items, or an image.
+      expect(() => applyOperations(w.state, [{ type: 'component.setSlot', definitionId: inner, slot: 'content', label: 'Content', max: 1 }])).toThrow(/already holds more than 1/);
+      expect(() => applyOperations(w.state, [{ type: 'component.setSlot', definitionId: inner, slot: 'content', label: 'Content', categories: null }])).toThrow(/already holds the content of “Content”, which can be media components, text and buttons/);
+      // Widening the outer slot past what the inner one holds is refused too, at the outer slot.
+      // Widening the outer slot past what the inner one holds is reported when the edit is saved...
+      const wider = applyOperations(w.state, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', max: 3 }]).state;
+      expect(errors(wider).map((d) => d.code)).toEqual(['SLOT_FULL']);
+      // ...and once the inner one is over its limit, which the save cannot tell apart, widening further is refused here.
+      expect(() => applyOperations(wider, [{ type: 'component.setSlot', definitionId: id, slot: 'content', label: 'Content', max: 4 }])).toThrow(/slot it passes this content to holds at most 2/);
+      // Both ends can change together in one edit.
+      const images = applyOperations(w.state, [
+        { type: 'component.setSlot', definitionId: id, slot: 'aside', label: 'Aside', primitives: ['image'] },
+        { type: 'component.setSlot', definitionId: inner, slot: 'aside', label: 'Aside', primitives: ['image'] }
+      ]).state;
+      expect(errors(images)).toEqual([]);
+      // A contract damaged by hand is reported, and decides nothing until it is fixed.
+      (images.components[inner].slots!.aside as { primitives: unknown }).primitives = { bad: true };
+      expect(() => applyOperations(images, [{ type: 'component.setSlot', definitionId: id, slot: 'aside', label: 'Side' }])).not.toThrow();
+      expect(errors(images).map((d) => d.code)).toEqual(['SLOT_INVALID']);
+    });
   });
 
   it('binds and unbinds node fields with type checks', () => {
@@ -988,6 +1160,95 @@ describe('custom site styles (§2.5, spec §7.2)', () => {
     expect((home(s).nodes[hero.id] as InstanceNode).overrides?.root?.base?.background).toEqual({ token: 'color.brand' });
     expect(s.tokens.custom.find((t) => t.id === follower)?.value).toEqual({ token: 'color.brand' });
     expect(errors(s)).toEqual([]);
+  });
+});
+
+describe('token properties (issue #96)', () => {
+  /** A project component with a spacing token property and a list whose items choose an accent colour. */
+  function tokenDef(s: ProjectState) {
+    const r = applyOperations(s, [
+      { type: 'token.create', group: 'space', label: 'Roomy', value: '3rem' },
+      { type: 'token.create', group: 'color', label: 'Sea green', value: '#2e8b57' }
+    ]);
+    const [space, color] = [r.results[0].tokenId as string, r.results[1].tokenId as string];
+    s = r.state;
+    const def = {
+      ...structuredClone(Object.values(s.components).find((d) => d.componentId === 'content.text')!),
+      id: 'proj.panel',
+      componentId: 'proj.panel',
+      name: 'Panel',
+      owner: 'project' as const,
+      kind: 'code' as const,
+      tree: undefined,
+      source: '<script>let { spacing, cards } = $props();</script><div style:gap={spacing}>{#each cards as c (c.id)}<p style:color={c.accent}>{c.title}</p>{/each}</div>',
+      properties: {
+        spacing: { type: 'token' as const, label: 'Spacing', tokenGroup: 'space' as const, default: { token: space } },
+        cards: { type: 'list' as const, label: 'Cards', itemLabel: 'Card', fields: { title: { type: 'string' as const, label: 'Title', default: 'Card' }, accent: { type: 'token' as const, label: 'Accent', tokenGroup: 'color' as const, default: { token: 'color.brand' } } }, default: [] },
+        frame: { type: 'object' as const, label: 'Frame', fields: { note: { type: 'string' as const, label: 'Note', default: '' }, edge: { type: 'token' as const, label: 'Edge', tokenGroup: 'color' as const, default: { token: 'color.brand' } } }, default: { note: '', edge: { token: 'color.brand' } } }
+      }
+    };
+    s.components[def.id] = def as never;
+    return { s, def, space, color };
+  }
+
+  it('offers only tokens of its group, counts each one it holds, refuses removal while used and follows a replacement', () => {
+    const { s: base, def, space, color } = tokenDef(fresh());
+    let s = applyOperations(base, [{ type: 'node.insert', owner: owner(base), parentId: null, definitionId: def.id, props: { cards: [{ title: 'One', accent: color }, { title: 'Two', accent: { token: 'color.brand' } }], frame: { edge: color } } }]).state;
+    const inst = () => home(s).nodes[home(s).rootIds.at(-1)!] as InstanceNode;
+    // The placement's own choice, its default (unchanged, so the same token) and one card's accent are each a use.
+    expect(inst().props.spacing).toEqual({ token: space });
+    expect(tokenUsageCounts(s)[space]).toBe(2);
+    // One card's accent and the object's edge.
+    expect(tokenUsageCounts(s)[color]).toBe(2);
+    // A token of another group, or one that does not exist, is not a choice.
+    const at = { owner: owner(s), nodeId: inst().id };
+    expect(() => applyOperations(s, [{ type: 'instance.setProp', ...at, prop: 'spacing', value: { token: 'color.brand' } }])).toThrow(/"Brand" is a color token; choose a space token/);
+    expect(() => applyOperations(s, [{ type: 'instance.setProp', ...at, prop: 'spacing', value: 'space.nope' }])).toThrow(/there is no token "space.nope"/);
+    // Removing a token a property holds is refused, and a property cannot keep a plain value in its place.
+    expect(() => applyOperations(s, [{ type: 'token.remove', tokenId: space }])).toThrow(/used 2 times/);
+    expect(() => applyOperations(s, [{ type: 'token.remove', tokenId: space, detach: true }])).toThrow(/chosen by 2 component properties/);
+    expect(() => applyOperations(s, [{ type: 'token.remove', tokenId: color, replacementTokenId: 'space.md' }])).toThrow(/replace it with a color style/);
+    // Replacing moves every property that holds it, the definition's default included.
+    s = applyOperations(s, [{ type: 'token.remove', tokenId: space, replacementTokenId: 'space.lg' }]).state;
+    expect(inst().props.spacing).toEqual({ token: 'space.lg' });
+    expect((s.components[def.id].properties.spacing as { default: unknown }).default).toEqual({ token: 'space.lg' });
+    s = applyOperations(s, [{ type: 'token.replace', tokenId: color, withTokenId: 'color.accent' }]).state;
+    expect((inst().props.cards as Array<{ accent: unknown }>).map((c) => c.accent)).toEqual([{ token: 'color.accent' }, { token: 'color.brand' }]);
+    expect(inst().props.frame).toEqual({ note: '', edge: { token: 'color.accent' } });
+    expect(tokenUsageCounts(s)[color]).toBeUndefined();
+    expect(errors(s)).toEqual([]);
+    // What the placement chose is the token's own variable, so it follows later edits to the token.
+    const page = [...generateProject(s)].find(([p]) => p.endsWith('+page.svelte') && p.startsWith('src/routes/+'))![1];
+    expect(page).toContain('var(--so-space-lg)');
+    expect(page).toContain('var(--so-color-accent)');
+  });
+
+  it('reports a token property whose token is gone or of another group', () => {
+    const { s: base, def, space } = tokenDef(fresh());
+    const s = applyOperations(base, [{ type: 'node.insert', owner: owner(base), parentId: null, definitionId: def.id }]).state;
+    const inst = home(s).nodes[home(s).rootIds.at(-1)!] as InstanceNode;
+    inst.props.spacing = { token: 'space.gone' };
+    expect(errors(s).map((d) => [d.code, d.nodeId])).toEqual([['TOKEN_MISSING', inst.id]]);
+    inst.props.spacing = { token: 'color.brand' };
+    expect(errors(s)[0]?.message).toMatch(/which is not a space style/);
+    inst.props.spacing = { token: space };
+    expect(errors(s)).toEqual([]);
+  });
+
+  it('declares a token property through the schema operation, starting on a token of its group', () => {
+    const s = fresh();
+    const r = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(s), nodeId: home(s).rootIds[0], name: 'Mine' }]);
+    const id = r.results[0].definitionId as string;
+    const set = applyOperations(r.state, [
+      { type: 'component.setPropSchema', definitionId: id, prop: 'accent', schema: { type: 'token', label: 'Accent', tokenGroup: 'color' } },
+      { type: 'component.setPropSchema', definitionId: id, prop: 'gap', schema: { type: 'token', label: 'Gap', tokenGroup: 'space' } }
+    ]).state;
+    // Each starts on the first token of its own group.
+    const first = (group: string) => effectiveTokens(set).find((t) => t.group === group)!.id;
+    expect(set.components[id].properties.accent).toEqual({ type: 'token', label: 'Accent', tokenGroup: 'color', default: { token: first('color') } });
+    expect(set.components[id].properties.gap).toEqual({ type: 'token', label: 'Gap', tokenGroup: 'space', default: { token: first('space') } });
+    expect(() => applyOperations(r.state, [{ type: 'component.setPropSchema', definitionId: id, prop: 'accent', schema: { type: 'token', label: 'Accent', tokenGroup: 'text' } }])).toThrow(/tokenGroup must be one of color, font, space/);
+    expect(() => applyOperations(r.state, [{ type: 'component.setPropSchema', definitionId: id, prop: 'accent', schema: { type: 'token', label: 'Accent', tokenGroup: 'color', default: 'space.md' } }])).toThrow(/is a space token; choose a color token/);
   });
 });
 

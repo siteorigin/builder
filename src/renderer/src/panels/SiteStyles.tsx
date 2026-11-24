@@ -6,6 +6,7 @@ import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
 import { allTrees, instancesOf } from '@engine/tree';
+import { forEachTokenPropRef } from '@engine/tokens';
 import { api, applyOps, useStore } from '../store';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { ColorPick } from '../components/ColorPick';
@@ -141,6 +142,12 @@ function tokenUses(state: ProjectState): Map<string, TokenUse> {
       if (n.kind === 'instance') for (const o of [...Object.values(n.overrides ?? {}), ...itemStyleRecords(n)]) scan(o, mark);
     }
   }
+  // A placement's token property (an accent colour, a spacing step) uses the style it chooses.
+  forEachTokenPropRef(state, (id, site) => {
+    if (site.owner.kind === 'page') at(id).pages.set(site.owner.id, site.label);
+    else if (site.owner.kind === 'shell') at(id).shared.add(site.label);
+    else if (instancesOf(state, site.owner.id).length) at(id).components.set(site.owner.id, site.label);
+  });
   return uses;
 }
 

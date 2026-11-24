@@ -4,6 +4,7 @@ import { newId } from '@shared/ids';
 import { fail } from './tree';
 import { ICONS } from '@catalogue/foundation/icons';
 import { normalizeTable } from './table';
+import { declaredTokens } from './tokens';
 
 const own = <T>(rec: Record<string, T>, key: string): T | undefined => (Object.hasOwn(rec, key) ? rec[key] : undefined);
 
@@ -251,7 +252,43 @@ export function normalizeScalar(schema: ScalarPropSchema, v: unknown, state: Pro
       return v;
     case 'choices':
       return normalizeChoices(v, label, stored);
+    case 'token':
+      return normalizeTokenRef(schema.tokenGroup, v, state, label, stored);
   }
+}
+
+/**
+ * A token property's value: a reference to a declared token of its group, sent as `{ token }` or as the token's ID.
+ * A reference saved before its token was lost (a theme switch) stays while it is not being changed.
+ */
+export function normalizeTokenRef(group: string, v: unknown, state: ProjectState, label: string, stored?: unknown): { token: string } {
+  const id = typeof v === 'string' ? v : v && typeof v === 'object' && !Array.isArray(v) && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string }).token : undefined;
+  if (id === undefined) fail(`${label}: expected a ${group} token, such as { "token": "${declaredTokens(state).find((t) => t.group === group)?.id ?? `${group}.name`}" }.`);
+  if (stored && typeof stored === 'object' && (stored as { token?: unknown }).token === id) return { token: id };
+  const t = declaredTokens(state).find((x) => x.id === id);
+  const choices = () => declaredTokens(state).filter((x) => x.group === group).map((x) => x.id).join(', ');
+  if (!t) fail(`${label}: there is no token "${id.slice(0, 60)}". Use one of: ${choices()}.`);
+  if (t.group !== group) fail(`${label}: "${t.label}" is a ${t.group} token; choose a ${group} token (${choices()}).`);
+  return { token: id };
+}
+
+/**
+ * An object property's value: every field, each checked as its own type. Fields left out keep their stored value
+ * (or their default), so one field can be changed alone; a field the object does not have is refused.
+ */
+export function normalizeObject(schema: Extract<PropSchema, { type: 'object' }>, v: unknown, state: ProjectState, label: string, stored?: unknown): Record<string, unknown> {
+  const names = Object.keys(schema.fields);
+  if (!v || typeof v !== 'object' || Array.isArray(v)) fail(`${label}: expected an object with the fields ${names.join(', ')}.`);
+  const extra = Object.keys(v).find((k) => !Object.hasOwn(schema.fields, k));
+  if (extra !== undefined) fail(`${label}: "${extra.slice(0, 40)}" is not one of its fields (${names.join(', ')}).`);
+  const before = stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, unknown>) : undefined;
+  const given = v as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [k, f] of Object.entries(schema.fields)) {
+    const raw = Object.hasOwn(given, k) ? given[k] : before && Object.hasOwn(before, k) ? before[k] : Object.hasOwn(schema.default ?? {}, k) ? structuredClone(schema.default[k]) : structuredClone(f.default);
+    out[k] = normalizeScalar(f, raw, state, `${label} → ${f.label}`, before && Object.hasOwn(before, k) ? before[k] : undefined);
+  }
+  return out;
 }
 
 export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, item: Record<string, unknown> | undefined, state: ProjectState, label: string, base?: ListItem, stored?: Record<string, unknown>): ListItem {
@@ -267,6 +304,7 @@ export function normalizeItem(schema: Extract<PropSchema, { type: 'list' }>, ite
 /** `stored` is the property's current value, so unchanged legacy values inside it stay accepted. */
 export function normalizeProp(schema: PropSchema, v: unknown, state: ProjectState, label: string, stored?: unknown): unknown {
   if (schema.type === 'table') return normalizeTable(v, label);
+  if (schema.type === 'object') return normalizeObject(schema, v, state, label, stored);
   if (schema.type === 'list') {
     if (!Array.isArray(v)) fail(`${label}: expected a list.`);
     if (schema.feed) {

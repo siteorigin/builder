@@ -518,17 +518,21 @@ export const header: ComponentDefinition = {
     logo: P.image('Logo'),
     showSiteName: { ...P.bool('Show site name', true), description: 'With a logo, turn this off to show the logo alone.' },
     links: P.list('Navigation', 'Link', { label: P.str('Label', 'Page'), link: P.link('Destination') }, [], { titleField: 'label', max: 10 }),
-    ctaLabel: P.str('Action label', ''),
-    ctaLink: P.link('Action link'),
-    ctaStyle: { group: 'Action', ...P.choice('Action style', 'primary', [
-      ['primary', 'Filled button'],
-      ['secondary', 'Outlined button']
-    ]) },
+    ...P.group('Action', {
+      ctaLabel: P.str('Action label', ''),
+      ctaLink: P.link('Action link'),
+      ctaStyle: P.choice('Action style', 'primary', [
+        ['primary', 'Filled button'],
+        ['secondary', 'Outlined button']
+      ])
+    }),
     // A notice for every page that shows the header, such as a closure: set it once here, clear it to remove it.
     // A sentence or two: a notice is not the place for a page's content.
-    notice: { group: 'Notice', ...P.str('Notice text', '', { maxLength: 160 }), description: 'A sentence or two, shown in a bar above the header on every page that shows the header. Clear it to remove the notice and its link.' },
-    noticeLabel: { group: 'Notice', ...P.str('Notice link label', '', { maxLength: 40 }) },
-    noticeLink: { group: 'Notice', ...P.link('Notice link') },
+    ...P.group('Notice', {
+      notice: { ...P.str('Notice text', '', { maxLength: 160 }), description: 'A sentence or two, shown in a bar above the header on every page that shows the header. Clear it to remove the notice and its link.' },
+      noticeLabel: P.str('Notice link label', '', { maxLength: 40 }),
+      noticeLink: P.link('Notice link')
+    }),
     surface: P.choice('Background', 'background', [
       ['background', 'Page background'],
       ['surface', 'Cards and panels'],

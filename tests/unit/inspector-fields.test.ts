@@ -4,6 +4,7 @@ import { createStarterState } from '@catalogue/starters';
 import { groupFields, listItemImage, listRowTitle } from '@shared/fields';
 import { locateField } from '@engine/locate';
 import { applyOperations } from '@engine/apply';
+import { P } from '@catalogue/dsl';
 
 /** Issue #203: answers name the Inspector's own labels, worked out the way the Inspector draws them. */
 
@@ -32,9 +33,10 @@ describe('locateField', () => {
     const about = pageNamed('About');
     const cta = instanceOf(about, 'cta.banner');
     const owner = { kind: 'page' as const, id: about.id };
-    expect(locateField(state, { owner, nodeId: cta.id, prop: 'heading' })).toMatchObject({ ok: true, path: ['About', 'Call to action', 'Content', 'Heading'] });
-    // "Primary button label" and "Primary button link" are one button: a group with Label and Link.
-    expect(locateField(state, { owner, nodeId: cta.id, prop: 'primaryLabel' })).toMatchObject({ ok: true, path: ['About', 'Call to action', 'Content', 'Primary button', 'Label'], value: 'Contact the studio' });
+    expect(locateField(state, { owner, nodeId: cta.id, prop: 'heading' })).toMatchObject({ ok: true, path: ['About', 'Call to action', 'Content', 'Text', 'Heading'] });
+    // "Primary button label" and "Primary button link" are one button: a group with Label and Link, inside the
+    // component's own "Actions" group (issue #96).
+    expect(locateField(state, { owner, nodeId: cta.id, prop: 'primaryLabel' })).toMatchObject({ ok: true, path: ['About', 'Call to action', 'Content', 'Actions', 'Primary button', 'Label'], value: 'Contact the studio' });
   });
 
   it('uses the name the author gave the component, and the row title the list shows', () => {
@@ -176,6 +178,70 @@ describe('shared field grouping', () => {
     expect(listRowTitle(schema, row('img_a', '  '), 6, 'swatch-01.png')).toBe('swatch-01.png');
     expect(listRowTitle(schema, row(null, ''), 6, undefined)).toBe('Image 7');
     expect(listRowTitle(schema, row(null, ''), 6, '  ')).toBe('Image 7');
+  });
+
+  describe('groups declared by the catalogue (issue #96)', () => {
+    const str = (label: string, group?: string) => ({ type: 'string' as const, label, default: '', ...(group ? { group } : {}) });
+    const link = (label: string, group?: string) => ({ type: 'link' as const, label, default: { type: 'none' as const, target: '' }, ...(group ? { group } : {}) });
+    const shape = (groups: ReturnType<typeof groupFields>): unknown =>
+      groups.map((g) => (g.title ? { title: g.title, items: g.items.map((i) => i.label ?? i.schema.label), ...(g.groups ? { groups: shape(g.groups) } : {}) } : g.items[0].label ?? g.items[0].schema.label));
+
+    it('shows the split hero as Text, Actions and Media, with each button a group inside Actions', () => {
+      const def = createStarterState('business', 'Test Studio', false).components;
+      const split = Object.values(def).find((d) => d.componentId === 'hero.split')!;
+      const groups = groupFields(Object.entries(split.properties).map(([key, schema]) => ({ key, schema, data: null })));
+      expect(shape(groups)).toEqual([
+        { title: 'Text', items: ['Eyebrow', 'Heading', 'Heading level', 'Supporting text'] },
+        {
+          title: 'Actions',
+          items: ['Label', 'Link', 'Label', 'Link'],
+          groups: [
+            { title: 'Primary button', items: ['Label', 'Link'] },
+            { title: 'Secondary button', items: ['Label', 'Link'] }
+          ]
+        },
+        { title: 'Media', items: ['Image'] }
+      ]);
+    });
+
+    it('does not run a declared group into a button of the same name just before it', () => {
+      const groups = groupFields([
+        { key: 'ctaLabel', schema: str('Action label'), data: null },
+        { key: 'ctaLink', schema: link('Action link'), data: null },
+        { key: 'style', schema: str('Action style', 'Action'), data: null }
+      ]);
+      expect(shape(groups)).toEqual([
+        { title: 'Action', items: ['Label', 'Link'] },
+        { title: 'Action', items: ['Style'] }
+      ]);
+    });
+
+    it('shortens a button named after its own group instead of nesting it, as the header does', () => {
+      const header = Object.values(createStarterState('business', 'Test Studio', false).components).find((d) => d.componentId === 'shell.header')!;
+      const groups = groupFields(Object.entries(header.properties).map(([key, schema]) => ({ key, schema, data: null })));
+      expect((shape(groups) as unknown[]).filter((g) => typeof g === 'object')).toEqual([
+        { title: 'Action', items: ['Label', 'Link', 'Style'] },
+        { title: 'Notice', items: ['Text', 'Link label', 'Link'] }
+      ]);
+    });
+
+    it('splits a declared group that another field interrupts, and still pairs buttons outside every group', () => {
+      const groups = groupFields([
+        { key: 'a', schema: str('Heading', 'Text'), data: null },
+        { key: 'b', schema: str('Note'), data: null },
+        { key: 'c', schema: str('Lead', 'Text'), data: null },
+        { key: 'd', schema: str('More label'), data: null },
+        { key: 'e', schema: link('More link'), data: null }
+      ]);
+      expect(shape(groups)).toEqual([{ title: 'Text', items: ['Heading'] }, 'Note', { title: 'Text', items: ['Lead'] }, { title: 'More', items: ['Label', 'Link'] }]);
+    });
+
+    it('stamps a group on every property P.group declares, keeping their names and order', () => {
+      const props = P.group('Actions', { primaryLabel: P.str('Primary button label', 'Go'), primaryLink: P.link('Primary button link') });
+      expect(Object.keys(props)).toEqual(['primaryLabel', 'primaryLink']);
+      expect(Object.values(props).map((p) => p.group)).toEqual(['Actions', 'Actions']);
+      expect(props.primaryLabel).toMatchObject({ type: 'string', label: 'Primary button label', default: 'Go' });
+    });
   });
 
   it('keeps grouping a lone link labelled "Link" under Destination', () => {

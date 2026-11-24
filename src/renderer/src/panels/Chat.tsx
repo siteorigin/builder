@@ -1081,7 +1081,7 @@ function openLocation(l: FieldLocation) {
     mode: 'edit',
     rightTab: 'inspect',
     dockOpen: true,
-    inspectorFocus: { seq: ++revealSeq, at: Date.now(), opening: s.snapshot.workspaceKey, owner: target.selection.owner, nodeId: l.nodeId, prop: l.prop, ...(l.itemId !== undefined ? { itemId: l.itemId, field: l.field } : {}), label: l.path.at(-1) ?? 'That field' }
+    inspectorFocus: { seq: ++revealSeq, at: Date.now(), opening: s.snapshot.workspaceKey, owner: target.selection.owner, nodeId: l.nodeId, prop: l.prop, ...(l.itemId !== undefined ? { itemId: l.itemId, field: l.field } : l.field !== undefined ? { field: l.field } : {}), label: l.path.at(-1) ?? 'That field' }
   });
 }
 

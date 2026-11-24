@@ -63,8 +63,20 @@ export function locateField(state: ProjectState, target: FieldTarget, currentPag
   const entry = group?.items.find((i) => i.key === prop);
   const keys = (gs: typeof groups) => gs.flatMap((g) => g.items.map((i) => i.key)).join(', ');
   if (!group || !entry) return { ok: false, message: `${name} has no such field in its Content.`, hint: `Its fields: ${keys(groups)}.` };
-  const head = [where, name, 'Content', ...(group.title ? [group.title] : [])];
+  // A button inside a declared group ("Actions") is a group of its own within it.
+  const inner = group.groups?.find((g) => g.items.some((i) => i.key === prop));
+  const head = [where, name, 'Content', ...(group.title ? [group.title] : []), ...(inner?.title ? [inner.title] : [])];
   const schema = entry.schema as PropSchema;
+  if (schema.type === 'object') {
+    // An object shows its fields under its own name; one field is opened by `field`.
+    if (target.itemId !== undefined) return { ok: false, message: `${schema.label} is an object, not a list.`, hint: `Leave out itemId; give field, one of ${Object.keys(schema.fields).join(', ')}.` };
+    const objectValue = has(node.props, prop) ?? schema.default;
+    if (target.field === undefined) return { ok: true, pageId, owner, path: [...head, entry.label ?? schema.label], value: objectValue };
+    const f = has(schema.fields, target.field);
+    if (!f) return { ok: false, message: `${schema.label} has no field "${target.field}".`, hint: `Its fields: ${Object.keys(schema.fields).join(', ')}.` };
+    const fieldValue = objectValue && typeof objectValue === 'object' && Object.hasOwn(objectValue, target.field) ? (objectValue as Record<string, unknown>)[target.field] : f.default;
+    return { ok: true, pageId, owner, path: [...head, entry.label ?? schema.label, f.label], value: fieldValue, ...shownAs(f, fieldValue) };
+  }
   if (schema.type !== 'list') {
     if (target.itemId !== undefined || target.field !== undefined) return { ok: false, message: `${schema.label} is a single field, not a list.`, hint: 'Leave out itemId and field.' };
     const value = has(node.props, prop) ?? schema.default;
@@ -83,10 +95,11 @@ export function locateField(state: ProjectState, target: FieldTarget, currentPag
   const index = items.findIndex((it) => it.id === target.itemId);
   if (index < 0) return { ok: false, message: `${schema.label} in ${name} no longer has that ${schema.itemLabel.toLowerCase()}.`, hint: listed };
   const itemGroup = itemFields.find((g) => g.items.some((i) => i.key === target.field));
+  const itemInner = itemGroup?.groups?.find((g) => g.items.some((i) => i.key === target.field));
   const field = itemGroup?.items.find((i) => i.key === target.field);
   if (!itemGroup || !field) return { ok: false, message: `A ${schema.itemLabel.toLowerCase()} has no such field.`, hint: listed };
   // A page list's card field that follows its page reads as the page's value, as the card shows it.
   const item = items[index];
   const itemValue = has(effectiveItem(state, schema, item), target.field);
-  return { ok: true, pageId, owner, path: [...head, schema.label, rowTitle(item, index), ...(itemGroup.title ? [itemGroup.title] : []), field.label ?? field.schema.label], value: itemValue, ...shownAs(field.schema as PropSchema, itemValue) };
+  return { ok: true, pageId, owner, path: [...head, schema.label, rowTitle(item, index), ...(itemGroup.title ? [itemGroup.title] : []), ...(itemInner?.title ? [itemInner.title] : []), field.label ?? field.schema.label], value: itemValue, ...shownAs(field.schema as PropSchema, itemValue) };
 }

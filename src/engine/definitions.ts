@@ -2,9 +2,11 @@
  * Definition-level editing of project components: removal, property schema, parts, variants, slots and
  * property bindings. Every operation keeps instances consistent with the definition it changes.
  */
-import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ProjectState, PropSchema } from '@shared/types';
+import type { ComponentDefinition, Comparison, GraphNode, InstanceNode, ProjectState, PropSchema, SlotDef } from '@shared/types';
+import { slotDecl, slotDeclProblem, slotFill } from './slots';
+import { propBindingName, propBindingSchema } from '@shared/bindings';
 import { isArticleDate } from '@shared/articles';
-import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding } from '@shared/types';
+import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, TEXT_TAGS, isBinding, slotChildren } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { STYLE_PROP_MAP, styleSetFor } from '@shared/styles';
 import { richTextToPlain, toRichText } from '@shared/richtext';
@@ -134,10 +136,13 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
   for (const site of bindingSites(def)) {
     const b = site.binding;
     if ('$prop' in b && b.$prop === name) {
+      // A binding to one field of an object reads that field's schema.
+      const bound = propBindingSchema({ [name]: schema }, b);
+      if (!bound) fail(`"${name}" is shown by ${describeNode(site.node)} through its field "${b.field}". Keep that field in an object property, or unbind it first.`);
       const nested = site.field === 'prop' ? state.components[(site.node as InstanceNode).definitionId]?.properties[site.prop!] : undefined;
       const ok = acceptedTypes(site.node, site.field as BindField, nested);
-      if (ok && !ok.includes(schema.type)) fail(`"${name}" is shown by ${describeNode(site.node)} as its ${site.field === 'prop' ? site.prop : site.field}, which needs a ${ok.join(' or ')} property. Unbind it first.`);
-      const problem = bindingProblem(state, site, schema);
+      if (ok && !ok.includes(bound.type)) fail(`"${propBindingName(b)}" is shown by ${describeNode(site.node)} as its ${site.field === 'prop' ? site.prop : site.field}, which needs a ${ok.join(' or ')} property. Unbind it first.`);
+      const problem = bindingProblem(state, site, bound);
       if (problem) fail(`"${name}" cannot change this way: ${describeNode(site.node)} ${problem}`);
     }
     if ('$item' in b && enclosingRepeatProp(def, site.node.id) === name) {
@@ -214,7 +219,8 @@ export function setPropSchema(state: ProjectState, op: Op<'component.setPropSche
 export function setPropDefault(state: ProjectState, op: Op<'component.setPropDefault'>): OpResult {
   const def = projectDef(state, op.definitionId);
   const schema = own(def.properties, op.prop) ?? fail(`"${def.name}" has no property "${op.prop}".`);
-  (schema as { default: unknown }).default = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`);
+  // An object's default can change one field at a time; the fields left out keep theirs.
+  (schema as { default: unknown }).default = normalizeProp(schema, op.value, state, `${def.name} → ${schema.label}`, schema.type === 'object' ? schema.default : undefined);
   return {};
 }
 
@@ -386,7 +392,48 @@ export function setSlot(state: ProjectState, op: Op<'component.setSlot'>): OpRes
   const def = projectDef(state, op.definitionId);
   if (!validId(op.slot)) fail(`Slot names must be camelCase identifiers ("${op.slot}").`);
   def.slots ??= {};
-  def.slots[op.slot] = { ...(own(def.slots, op.slot) ?? {}), label: op.label.trim() };
+  // What the operation leaves out stays as it was; null takes it away.
+  const next: SlotDef = { ...(own(def.slots, op.slot) ?? {}), label: op.label.trim() };
+  const description = op.description?.trim();
+  for (const [key, value] of [
+    ['description', op.description === undefined ? undefined : description || null],
+    ['categories', op.categories === undefined ? undefined : op.categories === null ? null : [...new Set(op.categories)]],
+    ['primitives', op.primitives === undefined ? undefined : op.primitives === null ? null : [...new Set(op.primitives)]],
+    ['max', op.max]
+  ] as const) {
+    if (value === null) delete next[key];
+    else if (value !== undefined) (next as unknown as Record<string, unknown>)[key] = value;
+  }
+  // Where this design passes the slot's content on to a component inside it, that component's slot must still take
+  // what it can now bring: measured before and after, so content already over a limit is never made worse.
+  const forwards = Object.values(def.tree?.nodes ?? {}).flatMap((n) =>
+    n.kind !== 'instance' ? [] : Object.keys(n.slots ?? {}).filter((k) => slotChildren(n, k).some((c) => def.tree!.nodes[c]?.kind === 'slot' && (def.tree!.nodes[c] as { slot: string }).slot === op.slot)).map((k) => ({ inst: n, slot: k }))
+  );
+  const fillOf = (f: (typeof forwards)[number]) => {
+    const decl = slotDecl(state, f.inst, f.slot);
+    return decl ? { decl, fill: slotFill(state, def.tree!, slotChildren(f.inst, f.slot), decl, def) } : undefined;
+  };
+  const before = forwards.map(fillOf);
+  def.slots[op.slot] = next;
+  forwards.forEach((f, i) => {
+    const now = fillOf(f);
+    if (!now) return;
+    // An inner slot already over its limit reports the same problem however much more it takes, so the save would not
+    // notice more; anything else this change breaks there is refused when the whole edit is saved.
+    const was = before[i];
+    if (now.decl.max !== undefined && was && was.fill.count > now.decl.max && now.fill.count > was.fill.count) fail(`The “${now.decl.label}” slot it passes this content to holds at most ${now.decl.max}.`);
+  });
+  // Placements keep their content: a contract it no longer fits is refused until that content moves.
+  for (const { node, owner, label } of instancesOf(state, def.id)) {
+    const placed = node.slots?.[op.slot];
+    if (!Array.isArray(placed) || !placed.length) continue;
+    const tree = owner.kind === 'page' ? state.pages[owner.id] : owner.kind === 'shell' ? state.site.shell[owner.id as 'header' | 'footer'] : state.components[owner.id]?.tree;
+    if (!tree || slotDeclProblem(next)) continue;
+    const design = owner.kind === 'component' ? state.components[owner.id] : undefined;
+    const fill = slotFill(state, tree, placed, next, design);
+    if (fill.refused) fail(`${label}: the “${next.label}” slot already holds ${fill.refused.what}, which it would no longer take. Move it out first.`);
+    if (next.max !== undefined && fill.count > next.max) fail(`${label}: the “${next.label}” slot already holds more than ${next.max}. Move some of it out first.`);
+  }
   return {};
 }
 
@@ -528,6 +575,10 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
   if ('$item' in b && field === 'list') fail('A repeat must use a list property ($prop), not a list item field.');
   const schema = boundSchema(def, node.id, b);
   if (!schema) {
+    if ('$prop' in b && b.field !== undefined && own(def.properties, b.$prop)) {
+      const p = def.properties[b.$prop];
+      fail(p.type === 'object' ? `"${p.label}" has no field "${b.field}". Fields: ${Object.keys(p.fields).join(', ')}.` : `"${p.label}" is not an object property, so it has no field "${b.field}".`);
+    }
     if ('$prop' in b) fail(`"${def.name}" has no property "${b.$prop}". Add it with component.setPropSchema first.`);
     fail(enclosingList(def, node.id) ? `The list has no field "${b.$item}".` : 'Only elements inside a repeat can show list item fields.');
   }

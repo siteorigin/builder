@@ -50,8 +50,11 @@ export type ValuePlace = ({ owner: OwnerRef; nodeId: string } | { definitionId: 
  */
 export type AltReview = ValuePlace & { reason: 'custom' | 'missing'; alt: string };
 
-/** Binding to a property of the enclosing component, or a field of the current repeated item. */
-export type Binding = { $prop: string } | { $item: string };
+/**
+ * Binding to a property of the enclosing component, or a field of the current repeated item. `field` names one
+ * field of an object property (`{ $prop: 'primary', field: 'label' }`); without it the whole value is bound.
+ */
+export type Binding = { $prop: string; field?: string } | { $item: string };
 export type Bindable<T> = T | Binding;
 
 export function isBinding(v: unknown): v is Binding {
@@ -165,6 +168,15 @@ export interface ChoicesProp extends PropBase {
   type: 'choices';
   default: ChoiceOption[];
 }
+/**
+ * One of the site's design tokens, chosen per placement (an accent color, a spacing step). The value is always a
+ * reference to a token of `tokenGroup`, so it follows edits to that token and counts as one of its uses.
+ */
+export interface TokenProp extends PropBase {
+  type: 'token';
+  tokenGroup: TokenGroup;
+  default: { token: string };
+}
 export type ScalarPropSchema =
   | StringProp
   | RichTextProp
@@ -174,7 +186,8 @@ export type ScalarPropSchema =
   | LinkProp
   | ImageProp
   | IconProp
-  | ChoicesProp;
+  | ChoicesProp
+  | TokenProp;
 export interface ListProp extends PropBase {
   type: 'list';
   itemLabel: string;
@@ -228,7 +241,17 @@ export interface TableProp extends PropBase {
   type: 'table';
   default: TableValue;
 }
-export type PropSchema = ScalarPropSchema | ListProp | TableProp;
+/**
+ * Related values kept together as one property (a button's label and link), each a named single value. A managed
+ * definition binds one field with `{ $prop, field }`, or passes the whole object to a component that takes one.
+ */
+export interface ObjectProp extends PropBase {
+  type: 'object';
+  fields: Record<string, ScalarPropSchema>;
+  /** Every field's value, by field name. */
+  default: Record<string, unknown>;
+}
+export type PropSchema = ScalarPropSchema | ListProp | TableProp | ObjectProp;
 export type ListItem = { id: string } & Record<string, unknown>;
 
 // ---------------------------------------------------------------------------
@@ -361,6 +384,12 @@ export interface InstanceNode extends NodeBase {
   slots?: Record<string, string[]>;
 }
 
+/** A placement's content in one slot: the list it holds, or none when a hand edit left something else there. */
+export function slotChildren(node: { slots?: Record<string, string[]> }, slot: string): string[] {
+  const ids = node.slots && Object.hasOwn(node.slots, slot) ? node.slots[slot] : undefined;
+  return Array.isArray(ids) ? ids : [];
+}
+
 /** One part's styles for single items of a list. */
 export interface ItemStyles {
   /**
@@ -415,6 +444,25 @@ export interface VariantAxis {
   options: Record<string, VariantDef>;
 }
 
+/** Kinds of element a slot can take besides placed components, as stored: a heading and a paragraph are both text. */
+export type SlotPrimitive = 'element' | 'text' | 'image' | 'link' | 'icon' | 'divider';
+export const SLOT_PRIMITIVES: readonly SlotPrimitive[] = ['element', 'text', 'image', 'link', 'icon', 'divider'];
+export const COMPONENT_CATEGORIES: readonly ComponentCategory[] = ['hero', 'content', 'social-proof', 'conversion', 'media', 'layout', 'shell', 'primitive', 'custom'];
+
+/**
+ * A place in a component where each placement puts content of its own. With neither `categories` nor `primitives`
+ * it takes anything; with either, only components of those categories and elements of those kinds. `max` caps how
+ * many children it holds (0 closes it).
+ */
+export interface SlotDef {
+  label: string;
+  /** What belongs there, for authors and the AI. */
+  description?: string;
+  categories?: ComponentCategory[];
+  primitives?: SlotPrimitive[];
+  max?: number;
+}
+
 export interface ComponentDefinition {
   schemaVersion: number;
   /** Unique installed definition identity. */
@@ -430,7 +478,7 @@ export interface ComponentDefinition {
   tags: string[];
   properties: Record<string, PropSchema>;
   parts: Record<string, PartDef>;
-  slots?: Record<string, { label: string }>;
+  slots?: Record<string, SlotDef>;
   variantAxes?: Record<string, VariantAxis>;
   /** Managed graph (managed components only). */
   tree?: NodeTree;

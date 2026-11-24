@@ -4,6 +4,7 @@
  * model never has to carry page IDs or revisions from one turn to the next.
  */
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
+import { propBindingValue } from '@shared/bindings';
 import { z } from 'zod';
 import type { ComponentDefinition, Condition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
 import { conditionHolds, conditionRef } from '@shared/types';
@@ -45,11 +46,17 @@ export function isArticleHeader(state: ProjectState, def: ComponentDefinition, p
   if (seen.has(def.id)) return false;
   seen.add(def.id);
   // A header placed under a condition counts while that condition holds for the props sent (or their defaults).
-  const value = (k: string) => (Object.hasOwn(props, k) ? props[k] : (def.properties[k] as { default?: unknown } | undefined)?.default);
+  const value = (k: string) => {
+    const d = (def.properties[k] as { default?: unknown } | undefined)?.default;
+    if (!Object.hasOwn(props, k)) return d;
+    // An object sent in part keeps its default for the fields left out, as placing it does.
+    const v = props[k];
+    return def.properties[k]?.type === 'object' && v && typeof v === 'object' && !Array.isArray(v) && d && typeof d === 'object' ? { ...d, ...v } : v;
+  };
   const present = (v: unknown) => (typeof v === 'string' ? !!v.trim() : Array.isArray(v) ? v.length > 0 : !!v);
   const holds = (c: Condition | undefined, want: boolean) => {
     const ref = c === undefined ? undefined : conditionRef(c);
-    return !ref || !('$prop' in ref) || conditionHolds(c!, value(ref.$prop), present) === want;
+    return !ref || !('$prop' in ref) || conditionHolds(c!, propBindingValue(value(ref.$prop), ref), present) === want;
   };
   return Object.values(def.tree?.nodes ?? {}).some(
     (n) => n.kind === 'instance' && holds(n.when, true) && holds(n.unless, false) && Object.hasOwn(state.components, n.definitionId) && isArticleHeader(state, state.components[n.definitionId], n.props, seen)
@@ -270,6 +277,19 @@ export function checkProps(
       checkValue(() => normalizeScalar(schema, r.value, state, schema.label, storedProp(k)), `${path}.${k}`, issues);
       continue;
     }
+    if (schema.type === 'object' && v && typeof v === 'object' && !Array.isArray(v)) {
+      // An object's link to a page made later in the run waits for it, as a list item's does.
+      const copy: Record<string, unknown> = { ...(v as Record<string, unknown>) };
+      for (const [f, fs] of Object.entries(schema.fields)) {
+        if (fs.type !== 'link' || !Object.hasOwn(copy, f)) continue;
+        const r = resolveRouteLink(copy[f], state);
+        if (r.pendingRoute) deferred.push({ route: r.pendingRoute, prop: k, field: f });
+        copy[f] = r.value;
+      }
+      out[k] = copy;
+      checkValue(() => normalizeProp(schema, copy, state, schema.label), `${path}.${k}`, issues);
+      continue;
+    }
     if (schema.type === 'list' && Array.isArray(v)) {
       const before = issues.length;
       const kept = storedProp(k);
@@ -376,7 +396,8 @@ function navOps(state: ProjectState, shell: 'header' | 'footer', pageId: string,
 function pendingSlot(state: ProjectState, p: PendingLink): { value: unknown } | undefined {
   const node = Object.hasOwn(state.pages, p.pageId) ? state.pages[p.pageId].nodes[p.nodeId] : undefined;
   if (node?.kind !== 'instance') return undefined;
-  if (!p.itemId) return { value: node.props[p.prop] };
+  // One field of an object property, or the whole property.
+  if (!p.itemId) return { value: p.field !== undefined ? propBindingValue(node.props[p.prop], { field: p.field }) : node.props[p.prop] };
   const list = node.props[p.prop];
   const item = Array.isArray(list) ? (list as ListItem[]).find((i) => i?.id === p.itemId) : undefined;
   return item ? { value: item[p.field!] } : undefined;
@@ -401,7 +422,7 @@ function pendingLinkOps(state: ProjectState, memory: MacroMemory, route: string,
       owner: { kind: 'page', id: p.pageId },
       nodeId: p.nodeId,
       prop: p.prop,
-      ...(p.itemId ? { itemId: p.itemId, field: p.field } : {}),
+      ...(p.itemId ? { itemId: p.itemId, field: p.field } : p.field !== undefined ? { field: p.field } : {}),
       value: { type: 'page', target: pageId }
     });
   }
@@ -783,7 +804,9 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
           push({ type: 'instance.setProp', owner, nodeId: slot.id, prop, value: merged.items }, slot.section);
           continue;
         }
-        written.add(slotKey(slot.id, prop));
+        // An object merges what is sent over what it holds: only the fields sent are written.
+        if (schema?.type === 'object' && value && typeof value === 'object' && !Array.isArray(value)) for (const f of Object.keys(value)) written.add(slotKey(slot.id, prop, '', f));
+        else written.add(slotKey(slot.id, prop));
         push({ type: 'instance.setProp', owner, nodeId: slot.id, prop, value }, slot.section);
       }
       // One choice per axis, so tone and layout set together each keep the other.
@@ -849,7 +872,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
     if (!nodeId) return;
     for (const d of c.deferred) {
       if (d.itemIndex === undefined) {
-        memory.pendingLinks.push({ route: d.route, pageId, nodeId, prop: d.prop });
+        memory.pendingLinks.push({ route: d.route, pageId, nodeId, prop: d.prop, ...(d.field !== undefined ? { field: d.field } : {}) });
         continue;
       }
       const list = (saved?.nodes[nodeId] as InstanceNode | undefined)?.props[d.prop] as ListItem[] | undefined;

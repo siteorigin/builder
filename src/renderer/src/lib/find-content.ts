@@ -136,6 +136,10 @@ function fieldLabel(state: ProjectState, tree: NodeTree, c: RenderedContent): { 
   const def = node.kind === 'instance' ? own(state.components, node.definitionId) : undefined;
   const schema = def ? own(def.properties, s.prop) : undefined;
   if (!schema) return { label: s.prop };
+  if (!s.itemId && s.field !== undefined && schema.type === 'object') {
+    const field = own(schema.fields, s.field);
+    return { label: field ? `${schema.label} ${field.label.toLowerCase()}` : schema.label, plainAs: field?.type === 'richtext' ? field.plainAs : undefined };
+  }
   if (!s.itemId || schema.type !== 'list' || node.kind !== 'instance') return { label: schema.label, plainAs: schema.type === 'richtext' ? schema.plainAs : undefined };
   const items = listItems(node, s.prop, schema.default);
   const i = items.findIndex((x) => x?.id === s.itemId);
@@ -649,7 +653,8 @@ export function planReplace(state: ProjectState, chosen: ContentMatch[], replace
     planned.add(f.key);
     changes.push(...next.changes);
     if (s.kind === 'node') operations.push({ type: 'node.setContent', owner: f.owner, nodeId: f.nodeId, field: s.field, value: next.value });
-    else if (!s.itemId || !s.field) operations.push({ type: 'instance.setProp', owner: f.owner, nodeId: f.nodeId, prop: s.prop, value: next.value });
+    // One field of an object property is replaced alone; the object's other fields stay as they are.
+    else if (!s.itemId || !s.field) operations.push({ type: 'instance.setProp', owner: f.owner, nodeId: f.nodeId, prop: s.prop, ...(!s.itemId && s.field !== undefined ? { field: s.field } : {}), value: next.value });
     else {
       const k = JSON.stringify([f.owner.kind, f.owner.id, f.nodeId, s.prop, s.itemId]);
       const patch = patches.get(k) ?? { owner: f.owner, nodeId: f.nodeId, prop: s.prop, itemId: s.itemId, value: {} };

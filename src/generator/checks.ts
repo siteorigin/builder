@@ -2,7 +2,8 @@
  * Checks on what a page will actually show, evaluated with the same rules the generated components use.
  */
 import type { Binding, ComponentDefinition, GraphNode, ImageValue, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
-import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, type Condition } from '@shared/types';
+import { propBindingSchema, propBindingValue } from '@shared/bindings';
+import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, slotChildren, type Condition } from '@shared/types';
 import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
@@ -57,7 +58,7 @@ interface Scope {
 function evaluate(v: unknown, scope: Scope): unknown {
   if (!isBinding(v)) return v;
   const b = v as Binding;
-  if ('$prop' in b) return scope.props[b.$prop];
+  if ('$prop' in b) return propBindingValue(scope.props[b.$prop], b);
   const item = scope.item ?? {};
   return Object.hasOwn(item, b.$item) ? item[b.$item] : (scope.fields?.[b.$item] as { default?: unknown } | undefined)?.default;
 }
@@ -253,7 +254,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         // another design's slot shows again wherever that one does).
         const slots = [...new Set([...(from.frame.scope.slots ?? []), ...(frame.scope.slots ?? []), slot])];
         const target = { ...from.frame, origin: supplier, scope: { ...from.frame.scope, multiple, slots } };
-        for (const c of from.content[n.slot] ?? []) walk(target, c, inner);
+        for (const c of slotChildren({ slots: from.content }, n.slot)) walk(target, c, inner);
         break;
       }
       case 'instance': {
@@ -286,7 +287,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           if (ownId && SO_ID_ATTR.test(def.source ?? '')) visit.id?.(ownId, reportId);
           // Code places its slot content where its own markup says; count all of it as rendered, as often as it likes.
           const placed = frame.scope.multiple ? frame : { ...frame, origin: frame.origin ?? frame, scope: { ...frame.scope, multiple: true, codeSlot: true } };
-          for (const ids of Object.values(n.slots ?? {})) for (const c of ids) walk(placed, c, inner);
+          for (const slot of Object.keys(n.slots ?? {})) for (const c of slotChildren(n, slot)) walk(placed, c, inner);
         }
         break;
       }
@@ -517,7 +518,12 @@ function placementField(b: unknown, scope: Scope): PlacementField | undefined {
   if (!isBinding(b)) return undefined;
   // A computed list is the pages' rows, whatever it is handed to.
   if ('$prop' in b && scope.feedProps?.has(b.$prop)) return undefined;
-  if ('$prop' in b) return scope.placement ? { prop: b.$prop } : scope.forwarded?.[b.$prop];
+  if ('$prop' in b) {
+    // One field of an object property is that field of the placement's object.
+    const whole = scope.placement ? { prop: b.$prop } : scope.forwarded?.[b.$prop];
+    if (b.field === undefined || !whole) return whole;
+    return whole.itemId === undefined && whole.field === undefined ? { prop: whole.prop, field: b.field } : undefined;
+  }
   const id = scope.item?.id;
   if (!scope.list || typeof id !== 'string' || !id) return undefined;
   const list = scope.placement ? { prop: scope.list } : scope.forwarded?.[scope.list];
@@ -528,7 +534,7 @@ function placementField(b: unknown, scope: Scope): PlacementField | undefined {
 function fieldSchema(state: ProjectState, tree: NodeTree, placementId: string, f: PlacementField): PropSchema | undefined {
   const inst = tree.nodes[placementId];
   const schema = inst?.kind === 'instance' ? state.components[inst.definitionId]?.properties[f.prop] : undefined;
-  if (!f.itemId) return schema;
+  if (!f.itemId) return f.field !== undefined && schema ? propBindingSchema({ [f.prop]: schema }, { $prop: f.prop, field: f.field }) : schema;
   return schema?.type === 'list' && f.field ? schema.fields[f.field] : undefined;
 }
 
@@ -539,7 +545,7 @@ function followsPageField(state: ProjectState, tree: NodeTree, placementId: stri
   return list?.type === 'list' && !!list.pageTeaser && teaserFields(list.pageTeaser).some(([field]) => field === f.field);
 }
 
-const sameBinding = (a: unknown, b: unknown) => isBinding(a) && isBinding(b) && ('$prop' in a ? '$prop' in b && a.$prop === b.$prop : '$item' in b && a.$item === b.$item);
+const sameBinding = (a: unknown, b: unknown) => isBinding(a) && isBinding(b) && ('$prop' in a ? '$prop' in b && a.$prop === b.$prop && a.field === b.field : '$item' in b && a.$item === b.$item);
 
 /**
  * Buttons that will render with a label but no destination. The site leaves them out, which is easy to miss in
@@ -564,7 +570,13 @@ export function unlinkedButtons(state: ProjectState, tree: NodeTree): UnlinkedBu
       if (n.kind === 'text') reads.push(n.text);
       if (n.kind === 'link') reads.push(n.label);
       if (n.kind === 'instance' && state.components[n.definitionId]?.kind !== 'managed') reads.push(...Object.values(n.props));
-      const fields = new Set(reads.map((b) => placementField(b, scope)).filter((f): f is PlacementField => !!f).map((f) => key(f, reportId)));
+      const read = reads.map((b) => placementField(b, scope)).filter((f): f is PlacementField => !!f);
+      // A whole object handed on (to code, say) reads every one of its fields.
+      const whole = read.flatMap((f) => {
+        const schema = !f.itemId && f.field === undefined ? fieldSchema(state, tree, reportId, f) : undefined;
+        return schema?.type === 'object' ? Object.keys(schema.fields).map((field) => ({ prop: f.prop, field })) : [];
+      });
+      const fields = new Set([...read, ...whole].map((f) => key(f, reportId)));
       for (const f of fields) uses.set(f, (uses.get(f) ?? 0) + (scope.multiple ? 2 : 1));
     },
     link: (n, scope, reportId, inDef, ownId) => {
@@ -729,7 +741,13 @@ export function renderedContent(state: ProjectState, tree: NodeTree): RenderedCo
       // A form's fields handed in by a design are edited on that design's list, where their submission keys are not kept.
       const keyless = (key: string) => which === 'contact.form' && inDef && key === 'fields';
       /** A field this code may read as a setting (or in ways its markup alone decides): never changed from here. */
-      const guard = (f: PlacementField | undefined) => f && guarded.add(JSON.stringify([reportId, f.prop, f.itemId ?? null, f.field ?? null]));
+      const guard = (f: PlacementField | undefined) => {
+        if (!f) return;
+        guarded.add(JSON.stringify([reportId, f.prop, f.itemId ?? null, f.field ?? null]));
+        // A whole object the code reads is each of its fields too.
+        const schema = !f.itemId && f.field === undefined ? fieldSchema(state, tree, reportId, f) : undefined;
+        if (schema?.type === 'object') for (const k of Object.keys(schema.fields)) guarded.add(JSON.stringify([reportId, f.prop, null, k]));
+      };
       const add = (kind: 'text' | 'link', value: unknown, source: PlacementField | undefined, schema: PropSchema, at: string, custom: boolean) =>
         push({
           nodeId: reportId,
@@ -1381,7 +1399,7 @@ const hiddenEverywhere = (...layers: Array<ResponsiveStyles | undefined>) => {
 function renderedTag(n: GraphNode & { kind: 'text' }, scope: Scope, def: ComponentDefinition | undefined): { tag: string; levels?: number[] } {
   if (!isBinding(n.tag)) return { tag: TEXT_TAG_SET.has(n.tag) ? n.tag : 'p' };
   const b = n.tag;
-  const schema = '$prop' in b ? (def && Object.hasOwn(def.properties, b.$prop) ? def.properties[b.$prop] : undefined) : scope.fields?.[b.$item];
+  const schema = '$prop' in b ? (def ? propBindingSchema(def.properties, b) : undefined) : scope.fields?.[b.$item];
   const options = schema?.type === 'enum' ? schema.options.map((o) => o.value).filter((o) => TEXT_TAG_SET.has(o)) : [];
   const fallback = schema?.type === 'enum' && options.includes(schema.default) ? schema.default : (options[0] ?? 'p');
   const v = evaluate(b, scope);
@@ -1502,7 +1520,7 @@ function readByDesign(state: ProjectState, owner: OwnerRef, nodeId: string, f: P
   const def = inst?.kind === 'instance' && Object.hasOwn(state.components, inst.definitionId) ? state.components[inst.definitionId] : undefined;
   const reads = (c: unknown) => {
     const ref = conditionRef(c);
-    return !!ref && (f.itemId ? '$item' in ref && ref.$item === f.field : '$prop' in ref && ref.$prop === f.prop);
+    return !!ref && (f.itemId ? '$item' in ref && ref.$item === f.field : '$prop' in ref && ref.$prop === f.prop && (f.field === undefined || ref.field === undefined || ref.field === f.field));
   };
   return Object.values(def?.tree?.nodes ?? {}).some((n) => reads(n.when) || reads(n.unless));
 }

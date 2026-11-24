@@ -1,4 +1,5 @@
 import type { ComponentDefinition, GraphNode, InstanceNode, OwnerRef, ProjectState, ScalarPropSchema } from '@shared/types';
+import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { isBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { enclosingRepeatProp, instancesOf } from '@engine/tree';
@@ -48,10 +49,12 @@ export function designContent(def: ComponentDefinition, node: GraphNode): Design
         out.push({ field, source: 'item', list: enclosingRepeatProp(def, node.id) ?? null, itemField: raw.$item });
         continue;
       }
-      const schema = Object.hasOwn(def.properties, raw.$prop) ? def.properties[raw.$prop] : undefined;
+      const schema = propBindingSchema(def.properties, raw);
       // A list or table can only feed a repeat or a table, never one field; a missing property has nothing to change.
-      if (!schema || schema.type === 'list' || schema.type === 'table') continue;
-      out.push({ field, source: 'default', prop: raw.$prop, schema, value: schema.default });
+      if (!schema || schema.type === 'list' || schema.type === 'table' || schema.type === 'object') continue;
+      // One field of an object shows that field of the object's default.
+      const value = raw.field === undefined ? schema.default : (propBindingValue(def.properties[raw.$prop].default, raw) ?? schema.default);
+      out.push({ field, source: 'default', prop: raw.$prop, schema: (raw.field === undefined ? schema : { ...schema, default: value }) as ScalarPropSchema, value });
       continue;
     }
     out.push({ field, source: 'design', value: raw });
@@ -88,6 +91,11 @@ export function defaultReach(state: ProjectState, definitionId: string, prop: st
 /** A forwarded value: a nested placement's property filled in from a property of the component it sits in. */
 export function forwardedProp(value: unknown): string | null {
   return isBinding(value) && '$prop' in value ? value.$prop : null;
+}
+
+/** The same, as the binding itself: one field of an object property keeps its field. */
+export function forwardedBinding(value: unknown): { $prop: string; field?: string } | null {
+  return isBinding(value) && '$prop' in value ? value : null;
 }
 
 /** The words for who a default reaches: "Shown on Home and About (2 of 3 placements). New placements start with it." */

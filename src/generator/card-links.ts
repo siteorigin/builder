@@ -4,7 +4,7 @@
  * Validation reports each card that breaks this, and the generator renders those cards as their plain container.
  */
 import type { ComponentDefinition, ElementNode, GraphNode, LinkValue, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { isBinding } from '@shared/types';
+import { isBinding, slotChildren } from '@shared/types';
 import { isListBlock, toRichText, type RichSpan } from '@shared/richtext';
 import { allTrees } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
@@ -141,7 +141,7 @@ function renderedSlots(pass: Pass, def: ComponentDefinition): Set<string> {
           const nested = pass.state.components[n.definitionId];
           if (!nested) continue;
           const shown = renderedSlots(pass, nested);
-          for (const [slot, content] of Object.entries(n.slots ?? {})) if (shown.has(slot)) walk(content);
+          for (const slot of Object.keys(n.slots ?? {})) if (shown.has(slot)) walk(slotChildren(n, slot));
         }
       }
     };
@@ -192,7 +192,7 @@ function firstInteractive(pass: Pass, def: ComponentDefinition | undefined, tree
           const own = intrinsicInteractive(pass, placed);
           if (own) return `${describe(n, placed)}, which holds ${own}`;
           for (const slot of renderedSlots(pass, placed)) {
-            inner = firstInteractive(pass, def, tree, n.slots?.[slot] ?? [], path);
+            inner = firstInteractive(pass, def, tree, slotChildren(n, slot), path);
             if (inner) break;
           }
           break;
@@ -234,7 +234,7 @@ function cardSlots(pass: Pass, def: ComponentDefinition): Map<string, CardRef[]>
           if (!nested) continue;
           const shown = renderedSlots(pass, nested);
           const inner = cardSlots(pass, nested);
-          for (const [slot, content] of Object.entries(n.slots ?? {})) if (shown.has(slot)) walk(content, mergeCards(cards, inner.get(slot) ?? []));
+          for (const slot of Object.keys(n.slots ?? {})) if (shown.has(slot)) walk(slotChildren(n, slot), mergeCards(cards, inner.get(slot) ?? []));
         }
       }
     };
@@ -258,7 +258,7 @@ export function cardLinkProblems(state: ProjectState): CardProblem[] {
       const placed = state.components[n.definitionId];
       if (!placed) continue;
       for (const [slot, cards] of cardSlots(pass, placed)) {
-        const what = firstInteractive(pass, def, tree, n.slots?.[slot] ?? []);
+        const what = firstInteractive(pass, def, tree, slotChildren(n, slot));
         if (what) out.push({ owner, label, nodeId: n.id, cards, what });
       }
     }

@@ -2,6 +2,7 @@ import type { Binding, ComponentDefinition, ConditionValue, GraphNode, OwnerRef,
 import { conditionRef, isComparison } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { enclosingList } from '@engine/schema';
+import { propBindingName } from '@shared/bindings';
 
 /**
  * The visibility rules of a node in a component's design, as the Inspector offers them: "Show when" (`when`) and
@@ -34,11 +35,16 @@ export interface ConditionRule {
   source?: ConditionSource;
 }
 
-export const sourceKey = (b: Binding) => ('$prop' in b ? `prop:${b.$prop}` : `item:${b.$item}`);
+export const sourceKey = (b: Binding) => ('$prop' in b ? `prop:${propBindingName(b)}` : `item:${b.$item}`);
 
 /** What a condition at this node can read: the component's properties, then the fields of the item it repeats for. */
 export function conditionSources(def: ComponentDefinition, nodeId: string): { props: ConditionSource[]; item: ConditionSource[]; itemLabel?: string } {
-  const props = Object.entries(def.properties).map(([name, schema]) => ({ key: `prop:${name}`, binding: { $prop: name }, schema, label: schema.label || name }));
+  // An object is always there: a condition reads one of its fields ("Primary button label").
+  const props = Object.entries(def.properties).flatMap(([name, schema]): ConditionSource[] =>
+    schema.type === 'object'
+      ? Object.entries(schema.fields).map(([f, fs]) => ({ key: `prop:${name}.${f}`, binding: { $prop: name, field: f }, schema: fs, label: `${schema.label || name} ${lower(fs.label || f)}` }))
+      : [{ key: `prop:${name}`, binding: { $prop: name }, schema, label: schema.label || name }]
+  );
   // The nearest repeat above the node (not the node itself: a repeat's own condition reads the item around it).
   const list = def.tree?.nodes[nodeId] ? enclosingList(def, nodeId) : null;
   const item = Object.entries(list?.fields ?? {}).map(([name, schema]) => ({ key: `item:${name}`, binding: { $item: name }, schema: schema as PropSchema, label: schema.label || name }));
@@ -114,7 +120,7 @@ export function shownLiteral(value: ConditionValue | undefined, source: Conditio
 
 /** A rule in words: "Show when Featured is on", "Hide when Badge has a value". */
 export function describeRule(field: ConditionField, rule: ConditionRule, itemLabel?: string): string {
-  const name = rule.source ? (rule.source.key.startsWith('item:') && itemLabel ? `${itemLabel} ${lower(rule.source.label)}` : rule.source.label) : '$prop' in rule.binding ? rule.binding.$prop : rule.binding.$item;
+  const name = rule.source ? (rule.source.key.startsWith('item:') && itemLabel ? `${itemLabel} ${lower(rule.source.label)}` : rule.source.label) : '$prop' in rule.binding ? propBindingName(rule.binding) : rule.binding.$item;
   const test = rule.test === 'set' ? 'has a value' : `${rule.test === 'eq' ? 'is' : 'is not'} ${shownLiteral(rule.value, rule.source)}`;
   return `${field === 'when' ? 'Show' : 'Hide'} when ${name} ${test}`;
 }

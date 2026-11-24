@@ -1,6 +1,7 @@
 import type { EditOperation } from '@shared/ops';
+import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import type { GraphNode, NodeTree, OwnerRef, ProjectState, TableValue } from '@shared/types';
-import { conditionRef, isComparison } from '@shared/types';
+import { conditionRef, isBinding, isComparison } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { displayName, enclosingRepeatProp } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
@@ -103,9 +104,10 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       if (typeof node === 'string') return gone(node);
       const value = (node as unknown as Record<string, unknown>)[op.field];
       // In component editing, bound content writes the property's default, so that property is the field.
-      const bound = value && typeof value === 'object' && '$prop' in value ? String((value as { $prop: unknown }).$prop) : null;
+      const bound = isBinding(value) && '$prop' in value ? value : null;
       const def = bound && op.owner.kind === 'component' ? has(state.components, op.owner.id) : undefined;
-      return withRoutes(state, op.value, { kind: node.kind, value, schema: bound ? has(def?.properties, bound) : undefined });
+      // One field of an object writes that field of the object's default.
+      return withRoutes(state, op.value, { kind: node.kind, value, schema: bound && def ? propBindingSchema(def.properties, bound) : undefined, ...(bound?.field !== undefined && def ? { shows: propBindingValue(has(def.properties, bound.$prop)?.default, bound) } : {}) });
     }
     case 'instance.setProp': {
       const node = nodeOf(state, op.owner, op.nodeId);
@@ -115,6 +117,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       // decides how the value is read.
       const schema = has(has(state.components, node.definitionId)?.properties, op.prop);
       const value = has(node.props, op.prop);
+      // One field of an object is its own field: an edit to another field of the same object does not touch it.
+      if (!op.itemId && op.field !== undefined) return withRoutes(state, op.value, { definitionId: node.definitionId, schema, value: propBindingValue(value === undefined ? schema?.default : value, { field: op.field }) });
       if (!op.itemId) return withRoutes(state, op.value, { definitionId: node.definitionId, schema, value });
       // A placement without its own list shows (and edits) the definition's items.
       const items = value === undefined && schema?.type === 'list' ? schema.default : value;

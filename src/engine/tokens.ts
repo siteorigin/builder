@@ -1,5 +1,6 @@
 import { variantOptions } from '@shared/variants';
-import type { ProjectState, ResponsiveStyles, TokenDef } from '@shared/types';
+import type { OwnerRef, ProjectState, PropSchema, ResponsiveStyles, TokenDef } from '@shared/types';
+import { isBinding } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { linkOf } from '@shared/styles';
 import { allTrees } from './tree';
@@ -8,7 +9,8 @@ import { itemStyleRecords } from '@shared/item-styles';
 export interface TokenRefSite {
   /** Where the reference is, in words ("Home", "Feature card", "Site styles"). */
   label: string;
-  kind: 'style' | 'token';
+  /** A node's style, a token's own value, or a token property's value (which must stay a token: never detached). */
+  kind: 'style' | 'token' | 'prop';
   /** Style property ID for style references. */
   property?: string;
   /** Point the reference somewhere else, or replace it with a literal value. */
@@ -58,6 +60,66 @@ export function forEachTokenRef(state: ProjectState, fn: (tokenId: string, site:
   };
   for (const id of Object.keys(state.tokens.overrides)) tokenValue(state.tokens.overrides as Record<string, unknown>, id, id);
   for (const t of state.tokens.custom) tokenValue(t as unknown as Record<string, unknown>, 'value', t.id);
+  forEachTokenPropRef(state, (id, site) => fn(id, { label: site.label, kind: 'prop', replace: site.replace }));
+}
+
+/** Where a token property's value is stored, and the group of tokens it takes. */
+export interface TokenPropSite {
+  owner: OwnerRef;
+  label: string;
+  /** The placement holding it; none for a definition's default. */
+  nodeId?: string;
+  tokenGroup: string;
+  replace: (next: unknown) => void;
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * Visit every token a token property holds, once per place it is stored: placements' values (a list item's or an
+ * object's token field included) and the defaults of the project's own definitions. Theme-owned defaults are fixed
+ * data. A value bound to an enclosing component's property holds no token of its own.
+ */
+export function forEachTokenPropRef(state: ProjectState, fn: (tokenId: string, site: TokenPropSite) => void, opts: { themeDesigns?: boolean } = {}) {
+  const visit = (schema: PropSchema, holder: Record<string, unknown>, key: string, owner: OwnerRef, label: string, nodeId?: string) => {
+    const v = holder[key];
+    if (v === undefined || isBinding(v)) return;
+    if (schema.type === 'token') {
+      const ref = refOf(v);
+      if (ref) fn(ref, { owner, label, nodeId, tokenGroup: schema.tokenGroup, replace: (next) => (holder[key] = next) });
+      return;
+    }
+    if (schema.type !== 'object' && schema.type !== 'list') return;
+    const tokenFields = Object.entries(schema.fields).filter(([, f]) => f.type === 'token');
+    if (!tokenFields.length) return;
+    const records = schema.type === 'object' ? (isRecord(v) ? [v] : []) : Array.isArray(v) ? v.filter(isRecord) : [];
+    for (const r of records) for (const [k, f] of tokenFields) if (Object.hasOwn(r, k)) visit(f, r, k, owner, label, nodeId);
+  };
+  for (const t of allTrees(state)) {
+    // A theme-owned design is fixed theme data, locked to its pack: it is neither counted nor rewritten. Validation
+    // still reads it (`themeDesigns`), as a design kept from an earlier theme can choose a token the new one lacks.
+    if (!opts.themeDesigns && t.owner.kind === 'component' && state.components[t.owner.id]?.owner !== 'project') continue;
+    for (const n of Object.values(t.tree.nodes)) {
+      if (n.kind !== 'instance' || !Object.hasOwn(state.components, n.definitionId)) continue;
+      for (const [k, schema] of Object.entries(state.components[n.definitionId].properties ?? {})) if (Object.hasOwn(n.props, k)) visit(schema, n.props, k, t.owner, t.label, n.id);
+    }
+  }
+  for (const def of Object.values(state.components)) {
+    if (def.owner !== 'project') continue;
+    const owner: OwnerRef = { kind: 'component', id: def.id };
+    for (const schema of Object.values(def.properties ?? {})) {
+      visit(schema, schema as unknown as Record<string, unknown>, 'default', owner, def.name);
+      // A list's or object's token field has a default of its own, which new items start with.
+      if (schema.type === 'list' || schema.type === 'object') for (const f of Object.values(schema.fields)) if (f.type === 'token') visit(f, f as unknown as Record<string, unknown>, 'default', owner, def.name);
+    }
+  }
+}
+
+/** How many times token properties hold each token: uses that can only move to another token, never to a value. */
+export function tokenPropUsageCounts(state: ProjectState): Record<string, number> {
+  const out: Record<string, number> = {};
+  forEachTokenPropRef(state, (id) => (out[id] = (out[id] ?? 0) + 1));
+  return out;
 }
 
 /** How many times project data refers to each token. */

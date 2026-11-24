@@ -1,5 +1,6 @@
 /** Read-only helpers over the project state for the editor UI. */
 import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
+import { propBindingValue } from '@shared/bindings';
 import { articleRows, feedLimit } from '@shared/articles';
 import { isBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent } from '@engine/tree';
@@ -470,7 +471,7 @@ export function shownValue(state: ProjectState, ref: ElementRef, bound: unknown)
   if (!isBinding(bound)) return bound;
   const r = resolveRef(state, ref);
   const props = (r.instance?.props ?? {}) as Record<string, unknown>;
-  if ('$prop' in bound) return props[bound.$prop] ?? (r.def?.properties[bound.$prop] as { default?: unknown } | undefined)?.default;
+  if ('$prop' in bound) return propBindingValue(props[bound.$prop] ?? (r.def?.properties[bound.$prop] as { default?: unknown } | undefined)?.default, bound);
   const list = r.def ? listPropFor(r.def, ref.nodeId) : undefined;
   const schema = list ? r.def!.properties[list] : undefined;
   const itemId = ref.itemPath?.[ref.itemPath.length - 1];

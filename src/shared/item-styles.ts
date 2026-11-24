@@ -5,6 +5,7 @@
  */
 import type { ComponentDefinition, GraphNode, InstanceNode, ItemStyles, ListItem, ResponsiveStyles } from './types';
 import { sha256Hex } from './sha256';
+import { slotChildren } from './types';
 
 const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined => (rec && Object.hasOwn(rec, key) ? rec[key] : undefined);
 
@@ -17,7 +18,7 @@ function parentsOf(def: ComponentDefinition): Map<string, string> {
 
 /** Content placed in a nested instance's slots: rendered wherever, and however often, that component renders it. */
 function slotted(def: ComponentDefinition): Set<string> {
-  return new Set(Object.values(def.tree?.nodes ?? {}).flatMap((n) => (n.kind === 'instance' ? Object.values(n.slots ?? {}).flat() : [])));
+  return new Set(Object.values(def.tree?.nodes ?? {}).flatMap((n) => (n.kind === 'instance' ? Object.keys(n.slots ?? {}).flatMap((k) => slotChildren(n, k)) : [])));
 }
 
 /**

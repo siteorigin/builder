@@ -1,4 +1,5 @@
 import type { AssetRecord, ComponentDefinition, ElementRef, ImageValue, NodeTree, PageDoc, ProjectState, PropSchema } from '@shared/types';
+import { propBindingValue } from '@shared/bindings';
 import { isBinding } from '@shared/types';
 import { isRichBlock, richTextToPlain } from '@shared/richtext';
 import { childLists, headerMenu } from '@engine/tree';
@@ -322,7 +323,7 @@ function resolved(r: ReturnType<typeof resolveRef>, ref: ElementRef, v: unknown)
   if (!instance || !def) return { known: false };
   const props = instance.props ?? {};
   let value: unknown;
-  if ('$prop' in v) value = Object.hasOwn(props, v.$prop) ? props[v.$prop] : own(def.properties, v.$prop)?.default;
+  if ('$prop' in v) value = propBindingValue(Object.hasOwn(props, v.$prop) ? props[v.$prop] : own(def.properties, v.$prop)?.default, v);
   else {
     const listProp = listPropFor(def, ref.nodeId);
     const schema = listProp ? own(def.properties, listProp) : undefined;
