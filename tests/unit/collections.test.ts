@@ -580,3 +580,43 @@ describe('collections format', () => {
     expect(migrateProject(newer)).toBeNull();
   });
 });
+
+describe('an imported post keeps its old address (#399)', () => {
+  const create = (s: ProjectState, from: string, extra: Partial<EditOperation & { type: 'entry.create' }> = {}) =>
+    apply(s, [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_import', title: 'Winter workshop', slug: 'winter-workshop', publishedAt: '2019-03-01', draft: false, redirectFrom: from, ...extra } as EditOperation]);
+
+  it('keeps the old permalink working for the new entry', () => {
+    const s = create(blog(), '/2019/03/winter-workshop/').state;
+    expect(s.site.redirects).toEqual([{ from: '/2019/03/winter-workshop/', entryId: 'en_import' }]);
+    expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
+    expect(routeOwners(s).find((o) => o.route === '/2019/03/winter-workshop/')).toMatchObject({ kind: 'redirect', entryId: 'en_import' });
+  });
+
+  it('refuses an old address the site cannot have, Home, its own, or one something holds', () => {
+    expect(() => create(blog(), '/?p=12')).toThrow(EngineError);
+    expect(() => create(blog(), '/?p=12/')).toThrow(/lowercase letters, numbers and hyphens/);
+    expect(() => create(blog(), '/')).toThrow(/the Home page keeps its own address/);
+    expect(() => create(blog(), '/2019/03/01/a/b/')).toThrow(/four levels/);
+    expect(() => create(blog(), '/blog/winter-workshop/')).toThrow(/its own address/);
+    expect(() => create(blog(), '/about/')).toThrow(/already the address of the page/);
+    expect(() => create(blog(), '/blog/spring-open-studio/')).toThrow(/already the address of the entry/);
+    expect(() => create(blog(), '/blog/page/2/')).toThrow(/archive pages/);
+    const s = blog();
+    s.site.redirects = [{ from: '/old/', pageId: pageAt(s, '/about/').id }];
+    expect(() => create(s, '/old/')).toThrow(/already the address/);
+  });
+
+  it('is kept only for a published entry: a draft is no destination', () => {
+    expect(() => create(blog(), '/2019/03/winter-workshop/', { draft: true })).toThrow(/only for a published entry/);
+    expect(() => apply(blog(), [{ type: 'entry.create', collectionId: 'posts', title: 'Untold', redirectFrom: '/old/' } as EditOperation])).toThrow(/only for a published entry/);
+  });
+
+  it('is part of the batch: an entry created later cannot take the address it keeps', () => {
+    expect(() =>
+      apply(blog(), [
+        { type: 'entry.create', collectionId: 'posts', entryId: 'en_one', title: 'One', draft: false, redirectFrom: '/blog/two/' } as EditOperation,
+        { type: 'entry.create', collectionId: 'posts', entryId: 'en_two', title: 'Two', slug: 'two' }
+      ])
+    ).toThrow(/already the address/);
+  });
+});

@@ -473,6 +473,23 @@ function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, o
   if (op.body !== undefined) entry.body = normalizeRichText(op.body ?? [], state, `${label} text`, undefined, { entries: true });
 }
 
+/**
+ * Keeps `from`, an address the entry had on an earlier site (an imported post's old permalink), working for it: an
+ * address the site can have, other than Home and the entry's own, that nothing else holds or keeps for its archives.
+ */
+function keepOldAddress(state: ProjectState, c: Collection, entry: EntryDoc, from: string) {
+  const label = `“${entry.title}”`;
+  // A draft is no destination: visitors at the old address would find nothing.
+  if (entry.draft !== false) fail(`${label}: an old address is kept working only for a published entry.`);
+  const err = from === '/' ? 'the Home page keeps its own address.' : validateRoute(from);
+  if (err) fail(`${label}: ${from.slice(0, 80)} cannot be kept as its old address: ${err}`);
+  if (from.toLowerCase() === entryRoute(c, entry).toLowerCase()) fail(`${label}: ${from} is its own address, not an old one.`);
+  refuseTaken(state, from, {}, 'old address');
+  const archive = archiveRouteOwner(state, from);
+  if (archive) fail(`${from} is kept for ${archive.label}. Choose another old address.`);
+  setKeptAddresses(state, [...keptAddresses(state), { from, entryId: entry.id }]);
+}
+
 export function entryCreate(state: ProjectState, op: Op<'entry.create'>): OpResult {
   const c = getCollection(state, op.collectionId);
   const id = op.entryId ?? newId('en');
@@ -488,6 +505,7 @@ export function entryCreate(state: ProjectState, op: Op<'entry.create'>): OpResu
   // An old address kept for this ID (a document edited by hand) is the entry's own again.
   claimOwnAddresses(state, new Map([[entryRoute(c, entry).toLowerCase(), id]]));
   applyEntryFields(state, c, entry, { ...op, slug: undefined });
+  if (op.redirectFrom !== undefined) keepOldAddress(state, c, entry, op.redirectFrom);
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder.push(id);
   return { collectionId: c.settings.id, entryId: id, slug: entry.slug, route: entryRoute(c, entry) };
 }

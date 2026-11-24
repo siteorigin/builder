@@ -1,9 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Copy, Newspaper, Plus, Search, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Copy, FileDown, Newspaper, Plus, Search, Trash2, X } from 'lucide-react';
 import { formatArticleDate } from '@shared/articles';
 import { entryLinkUses } from '@engine/page-links';
 import { api, commitOps, confirmDialog, getState, markDraft, setState, toast, undoAction, useStore } from '../store';
-import { Field, Modal } from '../components/ui';
+import { Field, Modal, useMenu, type MenuItem } from '../components/ui';
+import { reviewPostImport } from './PostImportReview';
+import type { PostImportKind } from '@shared/api';
 import { isImeComposing } from '../lib/ime';
 import { POST_SORTS, duplicatePostOps, newPostOps, postAt, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostSort } from '../lib/posts';
 import { findEntry, orderedEntries } from '@shared/collections';
@@ -151,6 +153,8 @@ export function PostsPanel() {
   const [title, setTitle] = useState('');
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState<PostRef | null>(null);
+  const [reading, setReading] = useState(false);
+  const importMenu = useMenu();
   const findInput = useRef<HTMLInputElement>(null);
   const addInput = useRef<HTMLInputElement>(null);
   const uid = useId();
@@ -213,6 +217,23 @@ export function PostsPanel() {
     toast(`Duplicated as a draft: “${postAt(getState().snapshot!.state, plan.ref)?.title ?? 'copy'}”`, 'info', r.entryId ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: r.workspaceKey }) : undefined);
   };
 
+  /** Read a WordPress export or a folder of Markdown posts, once the post being written is saved, and review it. */
+  const importFrom = async (kind: PostImportKind) => {
+    if (reading || !(await openSaved())) return;
+    setReading(true);
+    try {
+      await reviewPostImport(kind);
+    } finally {
+      setReading(false);
+    }
+  };
+  const importItems: MenuItem[] = [
+    { heading: 'Import posts from' },
+    { label: 'WordPress export (.xml)…', description: 'In WordPress: Tools → Export. Put the site’s uploads folder beside it for its pictures.', onSelect: () => void importFrom('wordpress') },
+    { label: 'Folder of Markdown posts…', description: 'Jekyll, Hugo, Eleventy or Astro posts, with their pictures.', onSelect: () => void importFrom('markdown') }
+  ];
+  const openImport = (el: HTMLElement) => importMenu.openAt(el, importItems, 'Import posts');
+
   /** Delete a post. One that is linked to asks where those links go instead (see DeletePostDialog). */
   const remove = async (entryId: string) => {
     if (!collection) return;
@@ -254,6 +275,10 @@ export function PostsPanel() {
         >
           <Plus aria-hidden="true" /> New post
         </button>
+        <button className="btn btn-sm btn-ghost" aria-haspopup="menu" aria-expanded="false" data-testid="posts-import" disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
+          <FileDown aria-hidden="true" /> {reading ? 'Reading…' : 'Import…'}
+        </button>
+        {importMenu.node}
       </div>
       {previewing && post && (
         <div className="posts-previewing" role="status">
@@ -347,6 +372,9 @@ export function PostsPanel() {
             <p>Write articles, news and updates. Each post gets its own page on the site, in the site’s header and footer.</p>
             <button className="btn btn-sm btn-primary" onClick={() => (setAdding(true), requestAnimationFrame(() => addInput.current?.focus()))}>
               <Plus aria-hidden="true" /> Write the first post
+            </button>
+            <button className="btn btn-sm" aria-haspopup="menu" aria-expanded="false" disabled={reading} onClick={(e) => openImport(e.currentTarget)}>
+              <FileDown aria-hidden="true" /> Import posts…
             </button>
           </div>
         )}

@@ -2,9 +2,9 @@ import { app, BrowserWindow, dialog, shell, type OpenDialogOptions } from 'elect
 import { watch, type FSWatcher } from 'node:fs';
 import { constants as fsConstants, existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { ComponentExportResult, ComponentImportResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
+import type { ComponentExportResult, ComponentImportResult, PostImportKind, PostImportResult, PostImportReviewResult, CreateProjectOptions, DuplicateProjectOptions, DuplicateProjectResult, ExportFormat, ExportNote, ExportResult, FileText, FontFileData, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -21,7 +21,12 @@ import { StaticPreviews } from './static-preview';
 import { builtPhotosMessage, pageLanguageWarning, publicUrlNote, rivalHookStop, cleanBuiltSite, cleanWebsitePhotos, copyProjectSource, draftLinksStop, draftSourceNotes, publishedChanged, withheldRoutes, withheldStaticFiles, editedGeneratedFile, explainBuildFailure, exportedAssetFilter, finishExportedSource, leaveOutDrafts, listFiles, locatedPhotos, locationKeptNote, locationRemovedNote, missingAssetsStop, missingSourceWarnings, missingUnusedWarnings, missingWebsiteAssets, notFoundAddressWarning, notFoundHostNote, notFoundPageProblem, omittedAssetsWarning, ownNotFoundFileNote, ownNotFoundFileStop, readNotFoundPage, settleServerHook, projectFingerprint, projectReadme, publishFolder, pruneWebsiteAssets, replaceEmptyFolder, readLibraryImage, sectionLinkWarnings, uncleanablePhotosMessage, uniqueChild, unlinkedButtonWarnings, unlinkedMenuLinkWarnings, formNameWarnings, runtimeFontWarnings, variantCredits } from './export';
 import { LOCAL_DIR, NO_LOCK, ProjectLockedError, ProjectSession, ThemeUnavailableError } from './project/session';
 import { DOC_DIR, MANIFEST_FILE, ProjectFormatError } from './project/documents';
-import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
+import { DOCUMENT_EXTENSIONS, FONT_EXTENSIONS, IMAGE_EXTENSIONS, IMPORT_IMAGE_EXTENSIONS, importAsset, importPackageImage, isAssetOfKind, isOpaquePicture, libraryWebCopyPlan, locateAssetFile, pictureMime, restoreAssetFiles, reviewImportFile, storeLibraryWebCopy } from './project/assets';
+import { postReader, stopPostReads } from './posts-import/process';
+import { planOperations, planPostImport, type PostImportPlan } from './posts-import/plan';
+import { postImportPreview } from './posts-import/preview';
+import { readContained } from './posts-import/files';
+import { MAX_PICTURE_BYTES, type ParsedSource } from './posts-import/source';
 import { heicDecoder, type PhotoDecoder } from './project/photo-convert';
 import { findMissingAssetFiles, missingFileDiagnostics, missingParts } from './project/asset-files';
 import { atomicWrite, readIfExists, sha } from './project/fsutil';
@@ -1234,6 +1239,9 @@ export class Controller {
     const s = this.session;
     if (!s) return this.endExports();
     this.closings++;
+    // A posts import being read or reviewed belongs to this project.
+    this.postImport = null;
+    stopPostReads();
     // Workspace state belongs to the project it was saved in: accept no more of it, and write it before the lock goes.
     this.workspaceKey = null;
     this.onOpeningChange?.();
@@ -1746,6 +1754,128 @@ export class Controller {
         if (!r.ok) return { ok: false, message: `“${name}” was not imported: ${(r.error?.message ?? 'it could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
         const definitionId = r.results?.at(-1)?.definitionId;
         return { ok: true, definitionId: typeof definitionId === 'string' ? definitionId : undefined, name, entryId: r.entryId, revision: r.revision };
+      })
+    );
+  }
+
+  /**
+   * The posts import under review (#399): the plan shown to the author, bound to the project and the revision it was
+   * made against. Importing takes it, once; anything else that changes the project makes it stale.
+   */
+  private postImport: { id: string; session: ProjectSession; opening: string; revision: number; plan: PostImportPlan; realRoot: string } | null = null;
+
+  /**
+   * Choose a WordPress export or a folder of Markdown posts (the chooser, unless `path` is given), read it in the
+   * import reader, and plan the import, writing nothing. The review replaces any earlier one.
+   */
+  async reviewPostImport(kind: PostImportKind, opening: string, path?: string): Promise<PostImportReviewResult> {
+    const s = this.session;
+    const closed = { ok: false as const, message: 'The project was closed before the posts could be read.' };
+    if (!s || opening !== this.workspaceKey || this.closing) return closed;
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
+    this.postImport = null;
+    let file = path;
+    if (!file) {
+      const r =
+        kind === 'wordpress'
+          ? await dialog.showOpenDialog(this.getWindow()!, { title: 'Import posts from WordPress', buttonLabel: 'Read', properties: ['openFile'], filters: [{ name: 'WordPress export', extensions: ['xml'] }] })
+          : await dialog.showOpenDialog(this.getWindow()!, { title: 'Import a folder of Markdown posts', buttonLabel: 'Read', properties: ['openDirectory'] });
+      if (r.canceled || !r.filePaths[0]) return { ok: false };
+      file = r.filePaths[0];
+    }
+    if (this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
+    // The pages the reader links to and the project the plan is made against are the same revision of it.
+    const revision = s.revision;
+    const pages = Object.fromEntries(Object.values(s.state.pages).map((p) => [p.id, { id: p.id, route: p.route }]));
+    let source: ParsedSource;
+    try {
+      source = await postReader.read(kind, file, pages);
+    } catch (e) {
+      return { ok: false, message: (e as Error).message };
+    }
+    if (this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
+    if (s.revision !== revision) return { ok: false, message: 'The project changed while the posts were being read. Choose Import posts again.' };
+    const plan = planPostImport(s.state, source);
+    const id = randomUUID();
+    // Pictures are read later from the very folder the reader checked them in, never one moved into its place.
+    this.postImport = { id, session: s, opening, revision, plan, realRoot: source.realRoot };
+    return { ok: true, preview: postImportPreview(id, plan) };
+  }
+
+  /** Forget review `id`. */
+  cancelPostImport(id: string): void {
+    if (this.postImport?.id === id) this.postImport = null;
+  }
+
+  /**
+   * Import the posts of review `id`: their pictures become library images (checked, with their responsive copies),
+   * then the collection, its categories and tags, the entries and their old addresses land as one change, or nothing
+   * does. Refused once the project has changed since the review.
+   */
+  async commitPostImport(id: string, opening: string): Promise<PostImportResult> {
+    const pending = this.postImport;
+    if (!pending || pending.id !== id) return { ok: false, message: 'This import was already finished or cancelled. Choose Import posts again.' };
+    this.postImport = null;
+    const s = this.session;
+    const closed = { ok: false, message: 'The project was closed before the posts could be imported.' };
+    const stale = { ok: false, message: 'The project changed while the import was being reviewed, so nothing was imported. Choose Import posts again to see what it would do now.' };
+    const busy = { ok: false, message: 'The AI is making changes. Stop it before importing posts.' };
+    const open = () => !!s && this.session === s && s === pending.session && opening === pending.opening && opening === this.workspaceKey && !this.closing;
+    if (!s || !open()) return closed;
+    if (s.readOnly) return { ok: false, message: s.readOnly.reason };
+    const { plan } = pending;
+    if (plan.problems.length) return { ok: false, message: plan.problems[0] };
+    if (this.aiBusy()) return busy;
+    if (s.revision !== pending.revision) return stale;
+    // The pictures are written before their records exist, so the session holds off sweeping meanwhile.
+    return this.serialImport(() =>
+      s.withImport(async (): Promise<PostImportResult> => {
+        if (!open()) return closed;
+        if (s.revision !== pending.revision) return stale;
+        const known = Object.values(s.state.assets.assets);
+        const createdAt = new Date().toISOString();
+        const assetIds = new Map<string, string>();
+        const byFile = new Map<string, string>();
+        const added: AssetRecord[] = [];
+        const notes: string[] = [];
+        for (const m of plan.media) {
+          if (!open()) return closed;
+          if (!m.path) continue;
+          const already = byFile.get(m.path);
+          if (already) {
+            assetIds.set(m.key, already);
+            continue;
+          }
+          const ext = extname(m.path).toLowerCase();
+          const shown = basename(m.path);
+          try {
+            const mime = pictureMime(ext);
+            if (!mime) throw new Error(`${shown} was not imported: it is not a picture the library takes.`);
+            // Read from the very file checked to be inside the chosen folder.
+            const bytes = await readContained(pending.realRoot, m.path, MAX_PICTURE_BYTES).catch((e: Error) => {
+              throw new Error(`${shown} was not imported: ${e.message}`);
+            });
+            const name = shown.slice(0, -ext.length).replace(/[-_]+/g, ' ').trim() || 'Image';
+            const { record, existing } = await importPackageImage(s.dir, { name, mime, ext, bytes }, known, this.writeFence(s), createdAt);
+            if (!existing) {
+              added.push(record);
+              known.push(record);
+            }
+            assetIds.set(m.key, record.id);
+            byFile.set(m.path, record.id);
+          } catch (e) {
+            notes.push((e as Error).message);
+          }
+        }
+        if (!open()) return closed;
+        if (this.aiBusy()) return busy;
+        const n = plan.posts.length;
+        const r = await s.apply({ operations: planOperations(plan, assetIds, added), expectedRevision: pending.revision }, { label: n === 1 ? 'Import a post' : `Import ${n} posts`, source: 'user' });
+        if (!r.ok) {
+          if (r.error?.code === 'STALE_REVISION') return stale;
+          return { ok: false, message: `The posts were not imported: ${(r.error?.message ?? 'they could not be added.').replace(/^Operation \d+ \([\w.]+\): /, '')}` };
+        }
+        return { ok: true, imported: n, entryId: r.entryId, revision: r.revision, firstEntryId: plan.posts[0]?.entryId, ...(notes.length ? { notes } : {}) };
       })
     );
   }
