@@ -3,9 +3,8 @@ import { ChevronRight, CircleAlert, CircleCheck, Component, Ellipsis, Info, Lock
 import type { Diagnostic, RuntimeState } from '@shared/api';
 import { api, applyOps, confirmDialog, getState, setState, toast, useStore } from '../store';
 import { refKey, type ElementRef, type ProjectState } from '@shared/types';
-import { breadcrumb, inDefinition, treeFor, type Crumb } from '../lib/model';
-import { goToShellPart, groupCount, openAsset, openOutline, selectPage } from '../lib/actions';
-import { liveSet } from '../lib/layer-set';
+import { breadcrumb, inDefinition, type Crumb } from '../lib/model';
+import { goToShellPart, groupCount, liveGroup, openAsset, openOutline, selectPage } from '../lib/actions';
 import { Modal, useMenu } from '../components/ui';
 import { useTransitionAnnouncement } from '../lib/announce';
 
@@ -27,6 +26,7 @@ export function StatusBar() {
   const runtime = useStore((s) => s.runtime);
   const selection = useStore((s) => s.selection);
   const layerSet = useStore((s) => s.layerSet);
+  const pageId = useStore((s) => s.pageId);
   const dev = useStore((s) => !!s.settings?.developerMode);
   const pageIssue = useStore((s) => s.previewIssue);
   const stylesOpen = useStore((s) => s.rightTab === 'styles' && s.dockOpen);
@@ -81,7 +81,7 @@ export function StatusBar() {
     });
   };
   // Several layers selected together in Layers: the path is the selection's, and the count says the rest come too.
-  const picked = layerSet && crumbs.length ? liveSet(treeFor(snap.state, layerSet.owner), selection, layerSet) : null;
+  const picked = crumbs.length ? liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode }) : null;
   const problemText = errors ? plural(errors, 'problem') : warnings ? plural(warnings, 'warning') : 'No problems';
   return (
     <footer className="status-bar">

@@ -1,5 +1,5 @@
 import { createContext, Fragment, useContext, useEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowUp, Box, ChevronRight, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
+import { ArrowDown, ArrowUp, Box, ChevronRight, ClipboardCopy, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Square, SquareDashed, Trash2, Type } from 'lucide-react';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
 import { refKey, sameRef } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
@@ -8,10 +8,11 @@ import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } f
 import { aiActivity, api, applyOps, commitDraft, getState, markDraft, setState, toast, useStore } from '../store';
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
-import { askAiAbout, deleteLayers, deleteSelection, duplicateLayers, duplicateSelection, groupCount, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, type LayersPlan } from '../lib/actions';
+import { askAiAbout, deleteLayers, deleteSelection, duplicateLayers, duplicateSelection, focusSelectedRow, groupCount, liveGroup, moveLayers, moveLayersInto, moveSelection, moveToPage, otherPages, planLayers, type LayersPlan } from '../lib/actions';
+import { copySelection } from '../lib/clipboard';
 import { styleCopyItems } from './StylePaste';
 import { everySizeEdits, eyeAction, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type VisibilityEdit } from '../lib/layers';
-import { besideOf, extendTo, inSet, layerRef, liveSet, toggle, type Group } from '../lib/layer-set';
+import { besideOf, extendTo, inSet, layerRef, toggle, type Group } from '../lib/layer-set';
 import { treeFor } from '../lib/model';
 import { OutlinePanel } from './OutlinePanel';
 
@@ -134,19 +135,6 @@ function pickRow(how: 'range' | 'toggle', ref: ElementRef) {
   return true;
 }
 
-/**
- * Once the rows have caught up with a change (a page opened, copies made), move keyboard focus to the selection's
- * row, while focus is still in Layers or nowhere: a Tab away meanwhile keeps its place.
- */
-function focusSelected(tries = 10) {
-  setTimeout(() => {
-    const active = document.activeElement;
-    if (active && active !== document.body && !active.closest('.layers-tree')) return;
-    const row = document.querySelector<HTMLElement>('.layers-tree [role="treeitem"][data-primary="true"]');
-    if (row) row.focus();
-    else if (tries > 1) focusSelected(tries - 1);
-  }, 60);
-}
 
 /** The row to keep as the tree's one tab stop: the selection's (of several selected together), any selected, the focused one, else the first. */
 const tabStop = (rows: HTMLElement[]) =>
@@ -197,8 +185,8 @@ export function LayersPanel() {
   const page = st.pages[pageId];
   const defOwner: OwnerRef | null = definitionMode ? { kind: 'component', id: definitionMode.definitionId } : null;
   const defTree = defOwner ? st.components[defOwner.id]?.tree : null;
-  // The layers selected together, while the selection is one of them and they still sit side by side.
-  const picked = layerSet ? liveSet(treeFor(st, layerSet.owner), selection, layerSet) : null;
+  // The layers selected together, while the selection is one of them and they still sit side by side here.
+  const picked = liveGroup({ snapshot: snap, selection, layerSet, pageId, definitionMode });
 
   /** The page a section (or the sections selected together) can be moved to, at its end; the moved ones are selected there. */
   const pageMenu = (anchor: { x: number; y: number }, plan: LayersPlan | null, pages: Array<{ id: string; title: string }>, what: string, returnTo: string) =>
@@ -206,7 +194,7 @@ export function LayersPanel() {
     menu.open(
       anchor.x,
       anchor.y,
-      [{ heading: `Move ${what} to the end of…` }, ...pages.map((p) => ({ label: p.title, icon: <FileText />, onSelect: () => void moveToPage(p.id, plan).then((ids) => ids && focusSelected()) }))],
+      [{ heading: `Move ${what} to the end of…` }, ...pages.map((p) => ({ label: p.title, icon: <FileText />, onSelect: () => void moveToPage(p.id, plan, true) }))],
       `Move ${what} to another page`,
       rowFor(returnTo)
     );
@@ -226,7 +214,7 @@ export function LayersPanel() {
       menu.open(
         anchor.x,
         anchor.y,
-        [{ heading: `Move ${count} into…` }, ...destinations.map((d) => ({ label: d.label, onSelect: () => void moveLayersInto({ parentId: d.parentId, slot: d.slot, index: d.index }, plan).then((ok) => ok && focusSelected()) }))],
+        [{ heading: `Move ${count} into…` }, ...destinations.map((d) => ({ label: d.label, onSelect: () => void moveLayersInto({ parentId: d.parentId, slot: d.slot, index: d.index }, plan).then((ok) => ok && focusSelectedRow()) }))],
         `Move ${count}`,
         rowFor(primary)
       );
@@ -237,7 +225,8 @@ export function LayersPanel() {
       ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : []),
       ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), plan, pages, count, primary), 0) }] : []),
       { separator: true },
-      { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateLayers(plan).then(() => focusSelected()) },
+      ...(g.owner.kind === 'page' ? [{ label: 'Copy', icon: <ClipboardCopy />, shortcut: '⌘C', onSelect: () => void copySelection() }] : []),
+      { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateLayers(plan, true) },
       { separator: true },
       { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteLayers(plan) }
     ];
@@ -265,8 +254,10 @@ export function LayersPanel() {
     const here = editable && !ref.instancePath.length ? findParent(tree, ref.nodeId) : null;
     // "Move to…": the keyboard and menu equivalent of dragging a layer into another container or slot.
     const destinations = editable && !ref.instancePath.length && node ? moveDestinations(st, tree, ref.owner, [ref.nodeId]) : [];
-    // Moving a page's section to another page: one change, at the end of that page.
+    // Moving a page's section to another page: one change, at the end of that page, planned now for the layer this
+    // menu names (a change landing while it is open can move the selection elsewhere).
     const pages = editable && here?.parentId === null && ref.owner.kind === 'page' && !ref.instancePath.length ? otherPages(st, ref.owner.id) : [];
+    const plan = planLayers();
     const moveTo = (anchor: { x: number; y: number }) =>
       menu.open(
         anchor.x,
@@ -317,7 +308,7 @@ export function LayersPanel() {
             { label: 'Move up', icon: <ArrowUp />, shortcut: '⇧⌘↑', disabled: here.index === 0, onSelect: () => void moveSelection(-1) },
             { label: 'Move down', icon: <ArrowDown />, shortcut: '⇧⌘↓', disabled: here.index >= here.list.length - 1, onSelect: () => void moveSelection(1) },
             ...(destinations.length ? [{ label: 'Move into…', icon: <CornerDownRight />, onSelect: () => setTimeout(() => moveTo(anchorOf()), 0) }] : []),
-            ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), planLayers(), pages, name, ref.nodeId), 0) }] : [])
+            ...(pages.length ? [{ label: 'Move to page…', icon: <FileInput />, onSelect: () => setTimeout(() => pageMenu(anchorOf(), plan, pages, name, ref.nodeId), 0) }] : [])
           ]
         : []),
       ...(visibility.length ? [{ separator: true }, ...visibility] : []),
@@ -325,6 +316,7 @@ export function LayersPanel() {
       ...(editable
         ? [
             ...(visibility.length || styleItems.length ? [{ separator: true }] : []),
+            ...(ref.owner.kind === 'page' && !definitionMode ? [{ label: 'Copy', icon: <ClipboardCopy />, shortcut: '⌘C', onSelect: () => void copySelection() }] : []),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             { separator: true },
             { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
@@ -353,6 +345,8 @@ export function LayersPanel() {
         e.preventDefault();
         const owner = ownerOfRow(row);
         const id = row.dataset.node;
+        // A part of a placed component has no layers beside it to select with it.
+        if (!id) return void toast('Parts of a component are selected one at a time.', 'info');
         const tree = owner ? treeFor(st, owner) : undefined;
         const next = tree && id ? besideOf(tree, id, dir) : null;
         // The row beside is already shown (a sibling of the focused one): focus moves to it at once.
@@ -362,7 +356,11 @@ export function LayersPanel() {
       if (!e.shiftKey && (e.metaKey || e.ctrlKey)) {
         e.preventDefault();
         const rows = treeRows(row);
-        rows[rows.indexOf(row) + dir]?.focus();
+        const to = rows[rows.indexOf(row) + dir];
+        if (!to) return;
+        // The tab stop goes with focus, so Tab leaves the tree from here rather than visiting the selection first.
+        for (const r of rows) r.tabIndex = r === to ? 0 : -1;
+        to.focus();
         return;
       }
     }
@@ -968,10 +966,18 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
                 aria-selected={psel}
                 aria-level={depth + 2}
                 tabIndex={-1}
-                onClick={() => setState({ selection: pref })}
+                onClick={(e) => {
+                  // A Shift or Cmd/Ctrl pick of a part says why it can't join layers selected, rather than replacing them.
+                  if (e.shiftKey || additive(e)) return void pickRow(e.shiftKey ? 'range' : 'toggle', pref);
+                  setState({ selection: pref });
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'ArrowLeft') (e.preventDefault(), setState({ selection: ref }), rowFor(id)?.focus());
-                  if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) (e.preventDefault(), setState({ selection: pref }));
+                  if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+                    e.preventDefault();
+                    if (e.key === ' ' && !psel) pickRow('toggle', pref);
+                    else setState({ selection: pref });
+                  }
                   if ((e.shiftKey && e.key === 'F10') || e.key === 'ContextMenu') (e.preventDefault(), onMenu(e.currentTarget, pref, false));
                 }}
                 onContextMenu={(e) => {

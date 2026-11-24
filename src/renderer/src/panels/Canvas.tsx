@@ -15,7 +15,7 @@ import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, computedAt, definitionPick, descOf, inDefinition, placementsOn, refLabel, resolveRef, selectionFromChain, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
-import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateSelection, moveSelection, structuralTarget } from '../lib/actions';
+import { askAiAbout, canInlineEdit, commitText, deleteSelection, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, structuralTarget } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
@@ -688,7 +688,8 @@ export function Canvas() {
     const on = (fn: () => unknown) => () => {
       const now = getState().snapshot?.state;
       if (!now || !resolveRef(now, ref).node) return;
-      if (!sameRef(getState().selection, ref)) setState({ selection: ref });
+      // The menu names one element: layers selected with it in Layers are let go, so it acts on that one alone.
+      if (!sameRef(getState().selection, ref) || getState().layerSet) setState({ selection: ref });
       void fn();
     };
     const items = [
@@ -1132,6 +1133,7 @@ function chipPlacement(box: { top: number; height: number }, topLevel: boolean, 
  */
 function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats, repeatsLabel, item, sib, onMore, onGrip, onWidth, onLostFocus }: { box: { left: number; top: number; width: number; height: number }; frameWidth: number; placement: 'inside' | 'above' | 'strip'; name: string; icon: React.ReactNode; parent: string | null; repeats: number; repeatsLabel: string; item: { n: number; count: number } | null; sib: { index: number; count: number } | null; onMore: (el: HTMLElement, focusLast?: boolean) => void; onGrip: (e: React.PointerEvent) => void; onWidth: (w: number) => void; onLostFocus: () => void }) {
   const selection = useStore((s) => s.selection);
+  const layerSet = useStore((s) => s.layerSet);
   // With the inspector out of sight (dock closed, or AI / Site styles showing), the chip offers the way back.
   const inspectorHidden = useStore((s) => !s.dockOpen || s.rightTab !== 'inspect');
   const ref = useRef<HTMLDivElement>(null);
@@ -1174,9 +1176,11 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
   const parentRef = selection?.instancePath.length ? { owner: selection.owner, instancePath: selection.instancePath.slice(0, -1), nodeId: selection.instancePath[selection.instancePath.length - 1] } : null;
   const structural = !!t && !selection?.instancePath.length;
   const canEdit = structural && t!.owner.kind !== 'shell';
+  // With layers selected together in Layers, the chip's commands (like their shortcuts) move and duplicate them all.
+  const group = layerSet ? liveGroup() : null;
   const canReorder = structural && !!sib && sib.count > 1;
-  const canUp = !!sib && sib.index > 0;
-  const canDown = !!sib && sib.index < sib.count - 1;
+  const canUp = group ? group.indexes[0] > 0 : !!sib && sib.index > 0;
+  const canDown = group ? group.indexes[group.indexes.length - 1] < group.list.length - 1 : !!sib && sib.index < sib.count - 1;
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const list = buttons();
@@ -1248,16 +1252,16 @@ function SelectionChip({ box, frameWidth, placement, name, icon, parent, repeats
       {(canReorder || canEdit) && <span className="chip-sep" aria-hidden="true" />}
       {canReorder && (
         <>
-          <button className="icon-btn" title={`Move up (${keys('⇧⌘↑')})`} aria-label="Move up" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowUp')} aria-disabled={!canUp || undefined} onClick={guard(canUp, () => void moveSelection(-1))}>
+          <button className="icon-btn" title={`Move up (${keys('⇧⌘↑')})`} aria-label="Move up" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowUp')} aria-disabled={!canUp || undefined} onClick={guard(canUp, () => void moveLayers(-1))}>
             <ArrowUp />
           </button>
-          <button className="icon-btn" title={`Move down (${keys('⇧⌘↓')})`} aria-label="Move down" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowDown')} aria-disabled={!canDown || undefined} onClick={guard(canDown, () => void moveSelection(1))}>
+          <button className="icon-btn" title={`Move down (${keys('⇧⌘↓')})`} aria-label="Move down" aria-keyshortcuts={ariaKeys('Shift+Meta+ArrowDown')} aria-disabled={!canDown || undefined} onClick={guard(canDown, () => void moveLayers(1))}>
             <ArrowDown />
           </button>
         </>
       )}
       {canEdit && (
-        <button className="icon-btn" title={`Duplicate (${keys('⌘D')})`} aria-label="Duplicate" aria-keyshortcuts={ariaKeys('Meta+D')} onClick={() => void duplicateSelection()}>
+        <button className="icon-btn" title={`Duplicate (${keys('⌘D')})`} aria-label="Duplicate" aria-keyshortcuts={ariaKeys('Meta+D')} onClick={() => void duplicateLayers()}>
           <Copy />
         </button>
       )}

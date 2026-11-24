@@ -213,6 +213,16 @@ await win.keyboard.press('Shift+ArrowDown');
 await eventually(async () => assert.deepEqual(await selectedNames(), ['Gallery', 'Testimonials'], 'Shift+↓ selects Gallery and Testimonials together'));
 assert.equal(await focusedName(), 'Testimonials', 'focus moves on to Testimonials');
 assert.equal(await win.locator('[role="tree"] [role="treeitem"][tabindex="0"]').count(), 1, 'the tree keeps one tab stop');
+assert.equal(await win.locator('[role="tree"] [role="treeitem"][tabindex="0"]').getAttribute('data-name'), 'Testimonials', 'on the selection itself');
+assert.equal(await win.locator('[role="tree"]').first().getAttribute('aria-multiselectable'), 'true', 'the tree says several can be selected');
+// Escape keeps just the selection; Cmd/Ctrl+↑ moves focus alone; Space adds the focused layer again.
+await win.keyboard.press('Escape');
+await eventually(async () => assert.deepEqual(await selectedNames(), ['Testimonials'], 'Escape keeps only Testimonials'));
+await win.keyboard.press(`${MOD}+ArrowUp`);
+await eventually(async () => assert.equal(await focusedName(), 'Gallery', 'Cmd/Ctrl+↑ moves focus to Gallery'));
+assert.deepEqual(await selectedNames(), ['Testimonials'], 'without selecting it');
+await win.keyboard.press(' ');
+await eventually(async () => assert.deepEqual(await selectedNames(), ['Gallery', 'Testimonials'], 'Space adds Gallery'));
 await win.locator('.layers-picked', { hasText: '2 sections selected' }).waitFor();
 await win.locator('.status-bar .crumbs-count', { hasText: '2 sections selected' }).waitFor();
 await win.screenshot({ path: join(OUT, '16-two-selected.png') });
@@ -229,7 +239,7 @@ const homeNow = await sectionsOn('Home');
 assert.ok(!homeNow.includes('Gallery') && !homeNow.includes('Testimonials'), 'and leave Home');
 await win.locator('.toast', { hasText: 'Moved Gallery and Testimonials to the end of About.' }).waitFor();
 await eventually(async () => assert.deepEqual(await selectedNames(), ['Gallery', 'Testimonials'], 'About opens with both selected'));
-await eventually(async () => assert.equal(await focusedName(), 'Testimonials', 'keyboard focus follows them there'));
+await eventually(async () => assert.equal(await focusedName(), 'Gallery', 'keyboard focus follows them there, to the selection'));
 // One Undo puts both pages back as they were.
 await win.keyboard.press(`${MOD}+z`);
 await eventually(async () => assert.deepEqual([await pageJson('Home'), await pageJson('About')], [homeBefore, aboutBefore], 'one Undo puts both pages back'));

@@ -1177,13 +1177,23 @@ describe('review regressions', () => {
   it('rejects a model-supplied place for a duplicate, and never offers one', async () => {
     let home = '';
     let first = '';
-    const { session, adapter, run } = await setup([() => [call('x', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'node.duplicate', owner: { kind: 'page', id: home }, nodeId: first, index: 0 }] })], () => finish()]);
+    const { session, adapter, run } = await setup([() => [call('x', 'apply_operations', { expectedRevision: 0, operations: [{ type: 'node.duplicate', owner: { kind: 'page', id: home }, nodeId: first, index: 3 }] })], () => finish()]);
     home = session.state.site.homePageId;
     first = session.state.pages[home].rootIds[0];
     await run('Duplicate the first section');
-    const offered = JSON.stringify(adapter.requests[0].tools.find((t) => t.name === 'apply_operations'));
-    expect(offered).toContain('node.duplicate');
-    expect(offered).not.toContain('where in the same list the copy goes');
+    const tool = adapter.requests[0].tools.find((t) => t.name === 'apply_operations');
+    // The node.duplicate variant of the offered operations, found by its type: it has no place to give.
+    const variants: Array<{ properties?: Record<string, { const?: unknown }> }> = [];
+    const walk = (v: unknown) => {
+      if (Array.isArray(v)) return v.forEach(walk);
+      if (!v || typeof v !== 'object') return;
+      const o = v as { properties?: Record<string, { const?: unknown }> };
+      if (o.properties?.type?.const === 'node.duplicate') variants.push(o);
+      Object.values(o).forEach(walk);
+    };
+    walk(tool?.parameters);
+    expect(variants).toHaveLength(1);
+    expect(Object.keys(variants[0].properties!).sort()).toEqual(['nodeId', 'owner', 'type']);
     expect(JSON.stringify(adapter.requests[1].items.at(-1))).toContain('does not take an index');
     expect(session.revision).toBe(0);
   });

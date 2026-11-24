@@ -22,9 +22,8 @@ import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModa
 import { ImportReviewModal } from './panels/ImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
-import { askAiAbout, deleteLayers, duplicateLayers, groupName, insertionPoint, moveLayers, openSiteStyles, planLayers } from './lib/actions';
-import { layerRef } from './lib/layer-set';
-import { refLabel } from './lib/model';
+import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openSiteStyles, planLayers } from './lib/actions';
+import { copySelection, pasteCopy } from './lib/clipboard';
 import { focusedSurface } from './lib/history';
 import { visitorStepKey } from '@shared/preview-keys';
 import { useTransitionAnnouncement } from './lib/announce';
@@ -54,87 +53,10 @@ function isTyping(e: KeyboardEvent) {
   return !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
 }
 
-/** What Cmd+C last copied: a section or element on a page, or several side by side selected together in Layers.
- *  The open project holds the content itself, taken when it was copied, so editing or deleting the original
- *  afterwards does not change what is pasted. `clipboardId` settles once the project has taken the copy, or to null
- *  when it could not; `previous` is the copy before it, which a paste falls back to while this one is failing
- *  (dropped once it succeeds). `primary`: which of several was the selection, for the paste to select its copy. */
-type Copied = { dir: string; label: string; section: boolean; count: number; primary: number; clipboardId: Promise<string | null>; previous: Copied | null };
-let copied: Copied | null = null;
-
-/** Each project holds its own copies, so they are forgotten when the project closes. */
-export function forgetCopy() {
-  copied = null;
-}
-
 const textSelected = () => {
   const sel = window.getSelection();
   return !!sel && !sel.isCollapsed;
 };
-
-/** Copy the selected section or element (the whole section when a part of one is selected), or the sections or
- *  elements selected together in Layers. */
-function copySelection(): boolean {
-  const s = getState();
-  const plan = planLayers(s);
-  if (!plan || !s.snapshot) return false;
-  const g = plan.group;
-  if (g.owner.kind !== 'page') {
-    toast(g.owner.kind === 'shell' ? 'The shared header and footer are shared by the pages that show them, so they aren’t copied.' : 'Copy sections from a page. Inside a component, use Duplicate.', 'error');
-    return true;
-  }
-  const snap = s.snapshot;
-  const label = plan.several ? groupName(snap.state, g) : refLabel(snap.state, layerRef(g.owner, g.ids[0]));
-  const sameProject = () => getState().snapshot?.dir === snap.dir;
-  const failed = (message?: string) => {
-    if (sameProject()) toast(message ?? `${label} could not be copied.`, 'error');
-    return null;
-  };
-  const entry: Copied = {
-    dir: snap.dir,
-    label,
-    section: g.parentId === null,
-    count: g.ids.length,
-    primary: Math.max(0, g.ids.indexOf(s.selection?.nodeId ?? '')),
-    previous: copied,
-    clipboardId: api.project.copy(g.owner.id, plan.several ? g.ids : g.ids[0], snap.revision).then(
-      (r) => {
-        if (!r.ok || !r.clipboardId) return failed(r.message);
-        entry.previous = null;
-        if (copied === entry && sameProject()) toast(`Copied ${label}. Paste ${entry.count > 1 ? 'them' : 'it'} on any page with ⌘V.`, 'info');
-        return r.clipboardId;
-      },
-      () => failed()
-    )
-  };
-  copied = entry;
-  return true;
-}
-
-/** Paste the latest copy that worked, as it was when copied, after the selection (after the last of the layers
- *  selected together, or at the end of the page), with new IDs, and select it. The place is taken when ⌘V is
- *  pressed, even if the copy is still being taken. */
-async function pasteCopied(latest: Copied) {
-  const plan = planLayers();
-  const from = plan?.several ? layerRef(plan.group.owner, plan.group.ids[plan.group.ids.length - 1]) : getState().selection;
-  const places = { section: insertionPoint('section', from), element: insertionPoint('element', from) };
-  let entry: Copied | null = latest;
-  let clipboardId: string | null = null;
-  while (entry && !(clipboardId = await entry.clipboardId)) entry = entry.previous;
-  // A copy that failed has said so; a project closed in the meantime took its copies with it.
-  if (!entry || !clipboardId || getState().snapshot?.dir !== entry.dir) return;
-  const at = places[entry.section ? 'section' : 'element'];
-  if (!at) return;
-  const r = await applyOps([{ type: 'node.paste', clipboardId, toOwner: at.owner, parentId: at.parentId, slot: at.slot, index: at.index }], `Paste ${entry.label}`);
-  const id = r?.[0]?.nodeId as string | undefined;
-  const ids = Array.isArray(r?.[0]?.nodeIds) ? (r[0].nodeIds as string[]) : id ? [id] : [];
-  const here = getState();
-  if (ids.length && here.snapshot?.dir === entry.dir && here.pageId === at.owner.id && !here.definitionMode) {
-    const primary = ids[Math.min(entry.primary, ids.length - 1)];
-    // Several pasted together stay selected together, as they were when copied.
-    setState({ selection: layerRef(at.owner, primary), layerSet: ids.length > 1 ? { owner: at.owner, ids, anchor: ids[0] } : null, rightTab: 'inspect' });
-  }
-}
 
 /** Undo or redo the project, from a shortcut or the Edit menu. */
 export function projectHistory(action: 'undo' | 'redo') {
@@ -179,10 +101,7 @@ export function handleShortcut(key: string, mod: boolean, shift: boolean): boole
   // editor's own focus checks, and Preview mode keeps the site's own copy and paste.
   if (mod && !shift && (key.toLowerCase() === 'c' || key.toLowerCase() === 'v') && !textSelected() && s.mode === 'edit' && !s.definitionMode && !s.modal && !openDialogs.length && !openMenus.count) {
     if (key.toLowerCase() === 'c') return copySelection();
-    if (copied && copied.dir !== s.snapshot?.dir) copied = null;
-    if (!copied) return false;
-    void pasteCopied(copied);
-    return true;
+    return pasteCopy();
   }
   if (mod && key.toLowerCase() === 'j') {
     askAiAbout(s.selection);

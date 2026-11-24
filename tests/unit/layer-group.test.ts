@@ -18,6 +18,7 @@ const bridge = {
     apply: (batch: Parameters<ProjectSession['apply']>[0], opts: { label?: string; coalesceKey?: string } = {}) => track(session.apply(batch, { label: opts.label ?? 'Edit', coalesceKey: opts.coalesceKey, source: 'user' }).then(refresh)),
     undo: () => track(session.undo().then(refresh)),
     undoEntry: (entryId: string) => track(session.undoEntry(entryId).then(refresh)),
+    copy: (pageId: string, nodeId: string | string[], rev: number) => session.copy(pageId, nodeId, rev),
     saveLocalState: async () => {}
   },
   ai: { stop: async () => {} },
@@ -44,6 +45,7 @@ interface EditorState {
   layerSet: LayerSet | null;
   pageId: string | null;
   definitionMode: unknown;
+  setState: (p: Partial<EditorState>) => void;
 }
 interface Plan {
   several: boolean;
@@ -57,6 +59,7 @@ const actions = (await load('../../src/renderer/src/lib/actions')) as {
   moveToPage: (pageId: string, plan?: Plan | null) => Promise<string[] | null>;
 };
 const { getState, setState } = (await load('../../src/renderer/src/store')) as { getState: () => EditorState; setState: (p: Partial<EditorState>) => void };
+const clipboard = (await load('../../src/renderer/src/lib/clipboard')) as { copySelection: () => boolean; pasteCopy: () => boolean; forgetCopy: () => void };
 
 function refresh<T>(r: T): T {
   setState({ snapshot: { state: session.state, revision: session.revision, history: session.historyInfo(), workspaceKey: opening, aiBusy: false, dir: 'project' } as unknown as ProjectSnapshot });
@@ -69,6 +72,7 @@ beforeEach(async () => {
   dirs.push(dir);
   session = await ProjectSession.create(dir, createStarterState('business', 'Studio', false));
   setState({ toasts: [], selection: null, layerSet: null, pageId: session.state.site.homePageId, definitionMode: null });
+  clipboard.forgetCopy();
   refresh(null);
 });
 afterEach(async () => {
@@ -84,6 +88,23 @@ const sectionOf = (componentId: string, pageId = homeId(), s: ProjectState = ses
   roots(pageId, s).find((id) => s.components[(s.pages[pageId].nodes[id] as InstanceNode).definitionId]?.componentId === componentId)!;
 const ref = (owner: OwnerRef, nodeId: string): ElementRef => ({ owner, instancePath: [], nodeId });
 const entries = () => session.historyInfo().entries.filter((e) => e.applied).length;
+
+/** A Section at the top of Home holding three headings side by side in its "content" slot. */
+async function threeHeadings() {
+  const r = await bridge.project.apply(
+    {
+      operations: [
+        { type: 'node.insert', newNodeId: 'n_holder', owner: home(), parentId: null, index: 0, componentId: 'layout.section' },
+        ...['One', 'Two', 'Three'].map((text) => ({ type: 'node.insert' as const, owner: home(), parentId: 'n_holder', slot: 'content', primitive: 'heading' as const, text }))
+      ]
+    },
+    { label: 'Headings' }
+  );
+  expect(r.ok).toBe(true);
+  return slotIds();
+}
+const slotIds = (id = 'n_holder') => (session.state.pages[homeId()].nodes[id] as InstanceNode).slots!.content;
+const textOf = (id: string, pageId = homeId()) => JSON.stringify((session.state.pages[pageId].nodes[id] as { text?: unknown }).text);
 
 /** Gallery picked, then Testimonials Shift-picked, as Layers leaves it. */
 function pickGalleryAndTestimonials() {
@@ -119,6 +140,56 @@ describe('sections selected together in Layers', () => {
     setState({ selection: ref(home(), testimonials) });
     expect(getState().layerSet).toBeNull();
     expect(actions.planLayers()?.several).toBe(false);
+    // The very same selection written again, through either way of setting state.
+    pickGalleryAndTestimonials();
+    setState({ selection: getState().selection });
+    expect(getState().layerSet).toBeNull();
+    pickGalleryAndTestimonials();
+    getState().setState({ selection: getState().selection });
+    expect(getState().layerSet).toBeNull();
+  });
+
+  it('layers selected on a page that is not open are not acted on (an Undo brought it back while another is open)', async () => {
+    pickGalleryAndTestimonials();
+    setState({ pageId: aboutId() });
+    expect(actions.planLayers()?.several).toBe(false);
+    const n = entries();
+    await actions.duplicateLayers();
+    // The selection alone (as before this change) is what a shortcut reaches; never both, on a page not shown.
+    expect(entries()).toBeLessThanOrEqual(n + 1);
+    expect(sectionOf('media.gallery')).toBeDefined();
+    expect(roots().filter((id) => (session.state.pages[homeId()].nodes[id] as InstanceNode).definitionId === (session.state.pages[homeId()].nodes[sectionOf('media.gallery')] as InstanceNode).definitionId)).toHaveLength(1);
+  });
+
+  it('duplicates three side by side, keeping which one is selected and where the range starts', async () => {
+    const [h1, h2, h3] = await threeHeadings();
+    setState({ selection: ref(home(), h2), layerSet: { owner: home(), ids: [h1, h2, h3], anchor: h3 } });
+    await actions.duplicateLayers();
+    const [, , , c1, c2, c3] = slotIds();
+    expect(slotIds().slice(0, 3)).toEqual([h1, h2, h3]);
+    expect([c1, c2, c3].map((id) => textOf(id))).toEqual([h1, h2, h3].map((id) => textOf(id)));
+    expect(getState().selection).toEqual(ref(home(), c2));
+    expect(getState().layerSet).toEqual({ owner: home(), ids: [c1, c2, c3], anchor: c3 });
+  });
+
+  it('a change that lands after the author moved on, or pressed Escape, leaves their selection alone', async () => {
+    const { gallery, testimonials } = pickGalleryAndTestimonials();
+    const elsewhere = ref(home(), roots()[0]);
+    const moving = actions.duplicateLayers();
+    setState({ selection: elsewhere });
+    await moving;
+    expect(roots()).toHaveLength(10);
+    expect(getState().selection).toBe(elsewhere);
+    expect(getState().layerSet).toBeNull();
+    // Escape kept just the selection: the copies are not selected over it.
+    setState({ selection: ref(home(), testimonials), layerSet: { owner: home(), ids: [gallery, testimonials], anchor: gallery } });
+    const kept = getState().selection;
+    const again = actions.duplicateLayers();
+    setState({ layerSet: null });
+    await again;
+    expect(roots()).toHaveLength(12);
+    expect(getState().selection).toBe(kept);
+    expect(getState().layerSet).toBeNull();
   });
 
   it('moves both to the end of About as one change, follows them there, and one Undo puts both back', async () => {
@@ -142,29 +213,32 @@ describe('sections selected together in Layers', () => {
     expect(JSON.stringify([session.state.pages[homeId()], session.state.pages[aboutId()]])).toBe(before);
   });
 
-  it('says when a link jumped to a moved section where it was', async () => {
+  it('says how many links the move leaves going nowhere, not counting one that already did', async () => {
     const gallery = sectionOf('media.gallery');
-    const hero = roots()[0];
-    await bridge.project.apply({ operations: [{ type: 'node.setContent', owner: home(), nodeId: gallery, field: 'anchor', value: 'gallery' }] }, { label: 'Section ID' });
-    // A button on About that jumps to Home's gallery.
-    const about = { kind: 'page' as const, id: aboutId() };
-    const r = await bridge.project.apply(
+    const testimonials = sectionOf('testimonials.grid');
+    await bridge.project.apply(
       {
         operations: [
-          { type: 'node.insert', newNodeId: 'n_jumpsection', owner: about, parentId: null, index: 0, componentId: 'layout.section' },
-          { type: 'node.insert', owner: about, parentId: 'n_jumpsection', slot: 'content', primitive: 'button', text: 'See the work' }
+          { type: 'node.setContent', owner: home(), nodeId: gallery, field: 'anchor', value: 'gallery' },
+          { type: 'node.setContent', owner: home(), nodeId: testimonials, field: 'anchor', value: 'praise' }
         ]
       },
-      { label: 'Button' }
+      { label: 'Section IDs' }
     );
+    // Buttons on About that jump to both sections on Home, and one that already goes nowhere.
+    const about = { kind: 'page' as const, id: aboutId() };
+    const button = (text: string) => ({ type: 'node.insert' as const, owner: about, parentId: 'n_jumpsection', slot: 'content', primitive: 'button' as const, text });
+    const r = await bridge.project.apply({ operations: [{ type: 'node.insert', newNodeId: 'n_jumpsection', owner: about, parentId: null, index: 0, componentId: 'layout.section' }, button('See the work'), button('Read the reviews'), button('Lost')] }, { label: 'Buttons' });
     expect(r.ok).toBe(true);
-    const button = r.results![1].nodeId as string;
-    await bridge.project.apply({ operations: [{ type: 'node.setContent', owner: about, nodeId: button, field: 'link', value: { type: 'page', target: homeId(), anchor: 'gallery' } }] }, { label: 'Link' });
-    setState({ selection: ref(home(), gallery), layerSet: null });
+    const [b1, b2, b3] = [1, 2, 3].map((i) => r.results![i].nodeId as string);
+    const link = (nodeId: string, anchor: string) => ({ type: 'node.setContent' as const, owner: about, nodeId, field: 'link' as const, value: { type: 'page', target: homeId(), anchor } });
+    await bridge.project.apply({ operations: [link(b1, 'gallery'), link(b2, 'praise'), link(b3, 'nowhere')] }, { label: 'Links' });
+    pickGalleryAndTestimonials();
     const ids = await actions.moveToPage(aboutId());
-    expect(ids).toHaveLength(1);
-    expect(getState().toasts.at(-1)?.text).toMatch(/^Moved Gallery to the end of About\. A link that jumped to it on Home now goes to a section Home no longer has/);
-    expect(hero).toBe(roots()[0]);
+    expect(ids).toHaveLength(2);
+    expect(getState().toasts.at(-1)).toMatchObject({ kind: 'error', text: 'Moved Gallery and Testimonials to the end of About. 2 links now go to a section that isn’t there (moved from Home): Project health lists them.' });
+    // The section IDs go with them (About has none of its own by those names).
+    expect(ids!.map((id) => session.state.pages[aboutId()].nodes[id].anchor)).toEqual(['gallery', 'praise']);
   });
 
   it('deletes both as one change, with one Undo beside its notice', async () => {
@@ -193,6 +267,11 @@ describe('sections selected together in Layers', () => {
     expect(entries()).toBe(n + 1);
     expect(roots().slice(g - 1, g + 2)).toEqual([gallery, testimonials, r[g - 1]]);
     expect(actions.planLayers()?.several).toBe(true);
+    await actions.moveLayers(1);
+    await actions.moveLayers(1);
+    expect(roots().slice(g, g + 3)).toEqual([r[g + 2], gallery, testimonials]);
+    expect(getState().selection).toEqual(ref(home(), testimonials));
+    expect(getState().layerSet).toEqual({ owner: home(), ids: [gallery, testimonials], anchor: gallery });
   });
 
   it('a plan made before the project changed is refused whole, changing nothing', async () => {
@@ -203,6 +282,48 @@ describe('sections selected together in Layers', () => {
     await actions.duplicateLayers(plan);
     expect(JSON.stringify(session.state.pages[homeId()])).toBe(before);
     expect(getState().toasts.at(-1)).toMatchObject({ kind: 'error', text: 'The project changed while you were choosing. Choose again.' });
+    const pages = JSON.stringify(session.state.pages);
+    const n = entries();
+    await actions.deleteLayers(plan);
+    expect(await actions.moveToPage(aboutId(), plan)).toBeNull();
+    await actions.moveLayers(-1, plan);
+    expect(JSON.stringify(session.state.pages)).toBe(pages);
+    expect(entries()).toBe(n);
+  });
+});
+
+describe('copying several selected together, as Layers and ⌘C/⌘V do', () => {
+  it('pastes elements after the last of the layers selected, in their list, never into one of them, and selects them as copied', async () => {
+    const [h1, h2, h3] = await threeHeadings();
+    // Two picked upwards: the selection is the first, the range starts at the second.
+    setState({ selection: ref(home(), h1), layerSet: { owner: home(), ids: [h1, h2], anchor: h2 } });
+    expect(clipboard.copySelection()).toBe(true);
+    await vi.waitFor(() => expect(getState().toasts.at(-1)?.text).toBe('Copied Heading 2 and Heading 2. Paste them on any page with ⌘V.'));
+    const n = entries();
+    expect(clipboard.pasteCopy()).toBe(true);
+    await vi.waitFor(() => expect(slotIds()).toHaveLength(5));
+    expect(entries()).toBe(n + 1);
+    const [, , c1, c2] = slotIds();
+    expect(slotIds()).toEqual([h1, h2, c1, c2, h3]);
+    expect([c1, c2].map((id) => textOf(id))).toEqual([h1, h2].map((id) => textOf(id)));
+    await vi.waitFor(() => expect(getState().selection).toEqual(ref(home(), c1)));
+    expect(getState().layerSet).toEqual({ owner: home(), ids: [c1, c2], anchor: c2 });
+  });
+
+  it('pastes two sections on another page, in order, as one change, selected together', async () => {
+    pickGalleryAndTestimonials();
+    clipboard.copySelection();
+    await vi.waitFor(() => expect(getState().toasts.at(-1)?.text).toMatch(/^Copied Gallery and Testimonials/));
+    setState({ pageId: aboutId(), selection: null });
+    const before = roots(aboutId()).length;
+    clipboard.pasteCopy();
+    await vi.waitFor(() => expect(roots(aboutId())).toHaveLength(before + 2));
+    const [g2, t2] = roots(aboutId()).slice(-2);
+    expect([sectionOf('media.gallery', aboutId()), sectionOf('testimonials.grid', aboutId())]).toEqual([g2, t2]);
+    await vi.waitFor(() => expect(getState().selection).toEqual(ref({ kind: 'page', id: aboutId() }, t2)));
+    expect(getState().layerSet?.ids).toEqual([g2, t2]);
+    await bridge.project.undo();
+    expect(roots(aboutId())).toHaveLength(before);
   });
 });
 
@@ -224,15 +345,32 @@ describe('copying several sections side by side', () => {
     expect([sectionOf('media.gallery', aboutId()), sectionOf('testimonials.grid', aboutId())]).toEqual(ids);
   });
 
-  it('refuses layers that are not side by side, and keeps one-section copies as they were', async () => {
+  it('refuses layers that are not side by side, or named twice, and keeps one-section copies as they were', async () => {
+    const [inner] = await threeHeadings();
     const gallery = sectionOf('media.gallery');
-    const s = session.state.pages[homeId()].nodes[roots()[0]] as InstanceNode;
-    const inner = Object.values(s.slots ?? {}).flat()[0];
-    if (inner) expect(await session.copy(homeId(), [gallery, inner], session.revision)).toMatchObject({ ok: false, message: expect.stringMatching(/side by side/) });
-    expect(await session.copy(homeId(), [gallery, gallery], session.revision)).toMatchObject({ ok: false });
+    expect(await session.copy(homeId(), ['n_holder', inner], session.revision)).toMatchObject({ ok: false, message: expect.stringMatching(/side by side/) });
+    expect(await session.copy(homeId(), [gallery, sectionOf('testimonials.grid'), gallery], session.revision)).toMatchObject({ ok: false, message: expect.stringMatching(/named twice/) });
     const one = await session.copy(homeId(), gallery, session.revision);
     const r = await session.apply({ operations: [{ type: 'node.paste', clipboardId: one.clipboardId!, toOwner: home(), parentId: null }] }, { label: 'Paste', source: 'user' });
     expect(r.results![0].nodeIds).toEqual([r.results![0].nodeId]);
     expect(roots().at(-1)).toBe(r.results![0].nodeId);
+  });
+
+  it('takes everything inside each section, in the page order, whatever order they were named in', async () => {
+    const make = (id: string, text: string) => [
+      { type: 'node.insert' as const, newNodeId: id, owner: home(), parentId: null, index: 0, componentId: 'layout.section' },
+      { type: 'node.insert' as const, owner: home(), parentId: id, slot: 'content', primitive: 'paragraph' as const, text }
+    ];
+    await session.apply({ operations: [...make('n_firstsec', 'Inside the first'), ...make('n_secondsec', 'Inside the second')] }, { label: 'Sections', source: 'user' });
+    // n_secondsec was inserted at the top after n_firstsec, so the page reads second, first.
+    expect(roots().slice(0, 2)).toEqual(['n_secondsec', 'n_firstsec']);
+    const c = await session.copy(homeId(), ['n_firstsec', 'n_secondsec'], session.revision);
+    const r = await session.apply({ operations: [{ type: 'node.paste', clipboardId: c.clipboardId!, toOwner: { kind: 'page', id: aboutId() }, parentId: null, index: 0 }] }, { label: 'Paste', source: 'user' });
+    const ids = r.results![0].nodeIds as string[];
+    expect(roots(aboutId()).slice(0, 2)).toEqual(ids);
+    expect(ids).not.toContain('n_firstsec');
+    const child = (id: string) => (session.state.pages[aboutId()].nodes[id] as InstanceNode).slots!.content[0];
+    expect(ids.map((id) => textOf(child(id), aboutId()))).toEqual([JSON.stringify('Inside the second'), JSON.stringify('Inside the first')]);
+    expect(ids.map(child)).not.toContain(slotIds('n_firstsec')[0]);
   });
 });

@@ -50,13 +50,15 @@ export function groupOf(tree: NodeTree, owner: OwnerRef, ids: string[]): Group |
 
 /**
  * The set as it stands in the project now, or null when it no longer applies: the selection has moved off it, or
- * its layers no longer share one list (an Undo or the AI changed the page). Layers it had that are gone are left
- * out; a set left with one layer is no set.
+ * has gone. Layers it had that are gone, or are no longer beside the selection (an Undo or the AI moved them), are
+ * left out; a set left with one layer is no set.
  */
 export function liveSet(tree: NodeTree | undefined, selection: ElementRef | null, set: LayerSet | null): Group | null {
   if (!tree || !set || !selection || selection.instancePath.length || !sameOwner(selection.owner, set.owner)) return null;
-  if (!set.ids.includes(selection.nodeId) || !Object.hasOwn(tree.nodes, selection.nodeId)) return null;
-  const ids = set.ids.filter((id) => Object.hasOwn(tree.nodes, id));
+  if (!set.ids.includes(selection.nodeId)) return null;
+  const here = findParent(tree, selection.nodeId);
+  if (!here) return null;
+  const ids = set.ids.filter((id) => here.list.includes(id));
   if (ids.length < 2) return null;
   return groupOf(tree, set.owner, ids);
 }
@@ -163,17 +165,23 @@ function current(tree: NodeTree, selection: ElementRef | null, set: LayerSet | n
 const setOf = (owner: OwnerRef, ids: string[], anchor: string): LayerSet | null => (ids.length > 1 ? { owner, ids, anchor } : null);
 
 /**
+ * A pick that can't add `ref` to what is selected: refused, saying why, while a layer is selected (so the pick never
+ * silently replaces it); with nothing selected, or only a part, `ref` alone.
+ */
+const cannot = (selection: ElementRef | null, ref: ElementRef, why: string): PickResult => (selection && !selection.instancePath.length ? { refused: why } : { selection: ref, layerSet: null });
+
+/**
  * Shift: select every layer from the anchor (the layer picked before) to `ref`, which becomes the selection. With
- * nothing picked before in this tree, `ref` alone.
+ * nothing picked before, `ref` alone.
  */
 export function extendTo(tree: NodeTree, selection: ElementRef | null, set: LayerSet | null, ref: ElementRef): PickResult {
   const now = current(tree, selection, set, ref.owner);
-  if (!now || now.anchor === ref.nodeId) return { selection: ref, layerSet: null };
-  const why = cannotGroup(tree, ref) ?? cannotGroup(tree, layerRef(ref.owner, now.anchor));
-  if (why) return { refused: why };
-  const ids = rangeOf(tree, now.anchor, ref.nodeId);
-  if (!ids) return { refused: NOT_SIBLINGS };
-  return { selection: ref, layerSet: setOf(ref.owner, ids, now.anchor) };
+  if (now?.anchor === ref.nodeId) return { selection: ref, layerSet: null };
+  const why = cannotGroup(tree, ref) ?? (now ? cannotGroup(tree, layerRef(ref.owner, now.anchor)) : NOT_SIBLINGS);
+  if (why) return cannot(selection, ref, why);
+  const ids = rangeOf(tree, now!.anchor, ref.nodeId);
+  if (!ids) return cannot(selection, ref, NOT_SIBLINGS);
+  return { selection: ref, layerSet: setOf(ref.owner, ids, now!.anchor) };
 }
 
 /**
@@ -182,11 +190,10 @@ export function extendTo(tree: NodeTree, selection: ElementRef | null, set: Laye
  */
 export function toggle(tree: NodeTree, selection: ElementRef | null, set: LayerSet | null, ref: ElementRef): PickResult {
   const now = current(tree, selection, set, ref.owner);
-  if (!now) return { selection: ref, layerSet: null };
-  if (now.ids.includes(ref.nodeId)) {
+  if (now?.ids.includes(ref.nodeId)) {
     const ids = now.ids.filter((id) => id !== ref.nodeId);
     if (!ids.length) return { selection: null, layerSet: null };
-    let primary = selection!.nodeId;
+    let primary = selection?.nodeId ?? ref.nodeId;
     if (primary === ref.nodeId) {
       const list = findParent(tree, ref.nodeId)!.list;
       const at = list.indexOf(ref.nodeId);
@@ -198,10 +205,10 @@ export function toggle(tree: NodeTree, selection: ElementRef | null, set: LayerS
     }
     return { selection: layerRef(ref.owner, primary), layerSet: setOf(ref.owner, ids, ids.includes(now.anchor) ? now.anchor : primary) };
   }
-  const why = cannotGroup(tree, ref) ?? cannotGroup(tree, layerRef(ref.owner, now.ids[0]));
-  if (why) return { refused: why };
-  if (!joins(tree, { owner: ref.owner, ids: now.ids }, ref)) return { refused: NOT_SIBLINGS };
-  const ids = groupOf(tree, ref.owner, [...now.ids, ref.nodeId])!.ids;
+  const why = cannotGroup(tree, ref) ?? (now ? cannotGroup(tree, layerRef(ref.owner, now.ids[0])) : NOT_SIBLINGS);
+  if (why) return cannot(selection, ref, why);
+  if (!joins(tree, { owner: ref.owner, ids: now!.ids }, ref)) return cannot(selection, ref, NOT_SIBLINGS);
+  const ids = groupOf(tree, ref.owner, [...now!.ids, ref.nodeId])!.ids;
   return { selection: ref, layerSet: setOf(ref.owner, ids, ref.nodeId) };
 }
 

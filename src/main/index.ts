@@ -241,8 +241,8 @@ function registerIpc() {
   handle('projects:reveal', (p?: string) => controller.revealInFinder(p));
   handle('project:snapshot', () => controller.snapshot());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
-  // One node, or several siblings copied together (at most a page's worth).
-  const nodeIds = (v: unknown): v is string | string[] => typeof v === 'string' || (Array.isArray(v) && v.length > 0 && v.length <= 1000 && v.every((x) => typeof x === 'string'));
+  // One node, or several siblings copied together (the session checks they are siblings on that page).
+  const nodeIds = (v: unknown): v is string | string[] => typeof v === 'string' || (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string'));
   handle('project:copy', (pageId: unknown, nodeId: unknown, rev: unknown) =>
     typeof pageId === 'string' && nodeIds(nodeId) && typeof rev === 'number' && controller.session
       ? controller.session.copy(pageId, nodeId, rev)

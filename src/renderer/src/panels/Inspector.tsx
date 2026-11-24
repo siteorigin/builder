@@ -51,7 +51,7 @@ import { StyleControls } from './StyleControls';
 import { useStyleCopyItems } from './StylePaste';
 import type { FocusImage } from './FocusEditor';
 import { assetUrl, definitionView, listPropFor, ownerLabel, placementsOn, refLabel, resolveRef, shellPageNames, shellReach, shownValue, throughPlacement, treeFor } from '../lib/model';
-import { askAiAbout, deleteSelection, duplicateSelection, selectPage, structuralTarget } from '../lib/actions';
+import { askAiAbout, deleteLayers, deleteSelection, duplicateLayers, selectPage, structuralTarget } from '../lib/actions';
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
@@ -559,8 +559,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
     ...(!shell
       ? [
           { separator: true },
-          { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
-          { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
+          { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateLayers() },
+          { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteLayers() }
         ]
       : [])
   ];
@@ -1112,8 +1112,8 @@ function PrimitiveInspector({ state, owner, node, tokens, selection }: { state: 
     ...(structural
       ? [
           ...(styleItems.length ? [{ separator: true }] : []),
-          { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
-          { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }
+          { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateLayers() },
+          { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteLayers() }
         ]
       : [])
   ];

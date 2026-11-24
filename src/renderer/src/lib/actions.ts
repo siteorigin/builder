@@ -12,7 +12,7 @@ import { api, applyOps, commitOps, getState, saveLocal, setState, toast, undoAct
 import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { showAsset } from './place';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownValue, treeFor } from './model';
-import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group } from './layer-set';
+import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
 
@@ -83,21 +83,35 @@ export interface LayersPlan {
   group: Group;
   several: boolean;
   selection: ElementRef | null;
+  /** The layers selected with it then, as the store had them (null for one). */
+  layerSet: LayerSet | null;
   /** Where the next Shift pick starts, among the layers selected together. */
   anchor?: string;
 }
 
-export function planLayers(s = getState()): LayersPlan | null {
+type EditorPlace = Pick<ReturnType<typeof getState>, 'snapshot' | 'selection' | 'layerSet' | 'pageId' | 'definitionMode'>;
+
+/**
+ * The layers selected together, while they apply: the selection is one of them, they still sit side by side, and
+ * they are in what Layers shows (the page open, or the component being edited everywhere). An Undo can bring back a
+ * page whose layers were selected while another page is open: they are not acted on from there.
+ */
+export function liveGroup(s: EditorPlace = getState()): Group | null {
+  const set = s.layerSet;
+  if (!set || !s.snapshot) return null;
+  const shown = s.definitionMode ? set.owner.kind === 'component' && set.owner.id === s.definitionMode.definitionId : set.owner.kind === 'page' && set.owner.id === s.pageId;
+  return shown ? liveSet(treeFor(s.snapshot.state, set.owner), s.selection, set) : null;
+}
+
+export function planLayers(s: EditorPlace = getState()): LayersPlan | null {
   const snap = s.snapshot;
   if (!snap) return null;
-  if (s.layerSet) {
-    const group = liveSet(treeFor(snap.state, s.layerSet.owner), s.selection, s.layerSet);
-    if (group) return { snap, group, several: true, selection: s.selection, anchor: s.layerSet.anchor };
-  }
+  const live = liveGroup(s);
+  if (live) return { snap, group: live, several: true, selection: s.selection, layerSet: s.layerSet, anchor: s.layerSet?.anchor };
   const t = structuralTarget(s.selection, { state: snap.state });
   const tree = t ? treeFor(snap.state, t.owner) : undefined;
   const group = t && tree ? groupOf(tree, t.owner, [t.nodeId]) : null;
-  return group ? { snap, group, several: false, selection: s.selection } : null;
+  return group ? { snap, group, several: false, selection: s.selection, layerSet: s.layerSet } : null;
 }
 
 /** "2 sections", or "3 layers" inside a section or a component. */
@@ -119,8 +133,26 @@ function lockedGroup(st: ProjectState, g: Group): string | null {
   return null;
 }
 
-/** Whether the author is still where `plan` was made: the same selection, in the same opening of the project. */
-const stillOn = (plan: LayersPlan) => getState().selection === plan.selection && getState().snapshot?.workspaceKey === plan.snap.workspaceKey;
+/** Whether the author is still where `plan` was made: the same selection (and the same layers with it: an Escape
+ *  meanwhile kept just one), in the same opening of the project. */
+const stillOn = (plan: LayersPlan) => getState().selection === plan.selection && getState().layerSet === plan.layerSet && getState().snapshot?.workspaceKey === plan.snap.workspaceKey;
+
+/**
+ * Once the rows have caught up with a change made from Layers (copies made, a page opened), move keyboard focus to
+ * the selection's row: only while focus is still in Layers (or nowhere), so a Tab away meanwhile keeps its place.
+ */
+export function focusSelectedRow(tries = 10) {
+  setTimeout(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && !active.closest('.layers-tree, .layers-picked')) return;
+    const row = document.querySelector<HTMLElement>('.layers-tree [role="treeitem"][data-primary="true"]');
+    if (row) row.focus();
+    else if (tries > 1) focusSelectedRow(tries - 1);
+  }, 60);
+}
+
+/** Whether keyboard focus is in Layers as a change is asked for, so focus goes on to what it selects. */
+export const focusInLayers = () => typeof document !== 'undefined' && !!document.activeElement?.closest('.layers-tree, .layers-picked');
 
 /** The selection that stands for `plan`'s layers once a change has made `ids` of them (in order): the same one selected, and the same anchor. */
 function resultSelection(plan: LayersPlan, ids: string[], owner: OwnerRef = plan.group.owner) {
@@ -137,14 +169,17 @@ export async function moveLayers(dir: -1 | 1, plan = planLayers()) {
   if (ops) await applyOps(ops, `Move ${groupCount(plan.group)} ${dir < 0 ? 'up' : 'down'}`, undefined, plan.snap.revision);
 }
 
-/** Duplicate the layers selected together: the copies go together after the last of them, and are selected. */
-export async function duplicateLayers(plan = planLayers()) {
+/** Duplicate the layers selected together: the copies go together after the last of them, and are selected (with
+ *  keyboard focus, when `follow`: asked for from Layers). */
+export async function duplicateLayers(plan = planLayers(), follow = focusInLayers()) {
   if (!plan?.several) return duplicateSelection();
   const why = lockedGroup(plan.snap.state, plan.group);
   if (why) return toast(why, 'error');
   const r = await applyOps(duplicateOps(plan.group), `Duplicate ${groupCount(plan.group)}`, undefined, plan.snap.revision);
   const ids = r?.map((x) => x.nodeId);
-  if (ids?.length === plan.group.ids.length && ids.every((id): id is string => typeof id === 'string') && stillOn(plan)) setState(resultSelection(plan, ids));
+  if (ids?.length !== plan.group.ids.length || !ids.every((id): id is string => typeof id === 'string') || !stillOn(plan)) return;
+  setState(resultSelection(plan, ids));
+  if (follow) focusSelectedRow();
 }
 
 /** Delete the layers selected together, in one change, with an Undo beside its notice (the selection alone: deleteSelection). */
@@ -155,7 +190,7 @@ export async function deleteLayers(plan = planLayers()) {
   const name = groupName(plan.snap.state, plan.group);
   const r = await commitOps(removeOps(plan.group), `Delete ${groupCount(plan.group)}`, undefined, plan.snap.revision);
   if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-  if (getState().selection === plan.selection) setState({ selection: null });
+  if (stillOn(plan)) setState({ selection: null });
   toast(`Deleted ${name}`, 'info', undoAction(r));
 }
 
@@ -178,7 +213,7 @@ export function otherPages(st: ProjectState, pageId: string): Array<{ id: string
  * has no section by that ID; a link that jumped to one on the page they left is named in the notice. Returns the
  * moved sections' new IDs, or null when nothing moved.
  */
-export async function moveToPage(pageId: string, plan = planLayers()): Promise<string[] | null> {
+export async function moveToPage(pageId: string, plan = planLayers(), follow = focusInLayers()): Promise<string[] | null> {
   if (!plan) return null;
   const g = plan.group;
   const st = plan.snap.state;
@@ -186,10 +221,13 @@ export async function moveToPage(pageId: string, plan = planLayers()): Promise<s
   if (g.owner.kind !== 'page' || g.parentId !== null || !dest || pageId === g.owner.id) return null;
   const from = st.pages[g.owner.id]?.title ?? 'this page';
   const ops = moveToPageOps(g, pageId, dest.rootIds.length);
-  // Counted on a copy of the project before it is sent: links elsewhere that jumped to these sections where they were.
+  // Links the move leaves going to a section that isn't there (one that jumped to these sections where they were, or
+  // one they carry to a section of the page they left), found on a copy of the project before it is sent.
   let broken = 0;
   try {
-    broken = Math.max(0, missingSectionLinks(applyOperations(st, ops).state).length - missingSectionLinks(st).length);
+    const key = (i: ReturnType<typeof missingSectionLinks>[number]) => JSON.stringify([i.owner, i.nodeId, i.fragment, i.pageId ?? null, i.label]);
+    const before = new Set(missingSectionLinks(st).map(key));
+    broken = missingSectionLinks(applyOperations(st, ops).state).filter((i) => !before.has(key(i))).length;
   } catch {
     // The project refuses it, and says why.
   }
@@ -203,9 +241,9 @@ export async function moveToPage(pageId: string, plan = planLayers()): Promise<s
   if (stillOn(plan) && getState().pageId === g.owner.id && !getState().definitionMode) {
     selectPage(pageId);
     setState(resultSelection(plan, ids, { kind: 'page', id: pageId }));
+    if (follow) focusSelectedRow();
   }
-  const them = g.ids.length > 1 ? 'them' : 'it';
-  const note = broken ? ` ${broken === 1 ? 'A link' : `${broken} links`} that jumped to ${them} on ${from} now ${broken === 1 ? 'goes' : 'go'} to a section ${from} no longer has: Project health lists ${broken === 1 ? 'it' : 'them'}.` : '';
+  const note = broken ? ` ${broken === 1 ? 'A link now goes' : `${broken} links now go`} to a section that isn’t there (moved from ${from}): Project health lists ${broken === 1 ? 'it' : 'them'}.` : '';
   toast(`Moved ${name} to the end of ${dest.title}.${note}`, broken ? 'error' : 'info', undoAction(r));
   return ids;
 }
@@ -517,7 +555,9 @@ export function goToShellPart(part: string): boolean {
 export function askAiAbout(ref: ElementRef | null) {
   // Asking about a specific element scopes the message to it; opening the chat generically keeps the
   // scope the user chose.
-  setState({ rightTab: 'chat', dockOpen: true, selection: ref ?? getState().selection, ...(ref ? { chatContextEnabled: { page: true, selection: true } } : {}) });
+  // Only a specific element is selected for it: the chat opened generically leaves the selection (and the layers
+  // selected with it) as they are.
+  setState({ rightTab: 'chat', dockOpen: true, ...(ref ? { selection: ref, chatContextEnabled: { page: true, selection: true } } : {}) });
   setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 50);
 }
 
