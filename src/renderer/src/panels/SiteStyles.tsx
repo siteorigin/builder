@@ -5,6 +5,8 @@ import type { ProjectState, TextStyleValue, TokenDef } from '@shared/types';
 import { followToken, followedText, textMetrics, tokenVar } from '@shared/styles';
 import { effectiveTokens } from '@generator/index';
 import { getTheme, listThemes } from '@catalogue/index';
+import { installedFonts } from '@catalogue/fonts';
+import { activePairing, activeTypeScale, availablePairings, pairingOps, scaleRoles, sizeAtWidth, typeScale, typeScaleOps, TYPE_SCALE_CHOICES, type TypeScaleChoice } from '@shared/type-scale';
 import { allTrees, instancesOf } from '@engine/tree';
 import { forEachTokenPropRef } from '@engine/tokens';
 import { api, applyOps, useStore } from '../store';
@@ -150,6 +152,14 @@ function tokenUses(state: ProjectState): Map<string, TokenUse> {
   });
   return uses;
 }
+
+/** The widths the type specimen shows each text style at: a phone, and a desktop window. */
+const SPECIMEN_WIDTHS = [
+  { label: 'Phone', width: 375 },
+  { label: 'Desktop', width: 1280 }
+] as const;
+/** A size drawn small enough for the dock and in the same order as the real ones: body text reads at 13px. */
+const specimenPx = (px: number) => Math.round(13 * Math.pow(Math.max(px, 1) / 16, 0.45) * 2) / 2;
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 const refOf = (v: unknown) => (v && typeof v === 'object' && 'token' in (v as object) ? String((v as { token: string }).token) : null);
@@ -935,6 +945,45 @@ export function SiteStyles() {
   // Headings first: the display font is the one that sets a site's character.
   const fontsOrdered = [...group('font')].sort((a, b) => Number(b.id === 'font.display') - Number(a.id === 'font.display'));
   const brand = byId('color.brand') ?? colors[0];
+
+  // Font pairings: both fonts the theme ships, set together in one step.
+  const pairings = byId('font.display')?.group === 'font' && byId('font.body')?.group === 'font' ? availablePairings(installedFonts(st)) : [];
+  const pairing = activePairing(pairings, fontStack('font.display'), fontStack('font.body'));
+  const choosePairing = (p: (typeof pairings)[number]) => {
+    const ops = pairingOps(p, tokens);
+    if (ops.length) void applyOps(ops, `Use ${p.display} and ${p.body}`, undefined, snap.revision);
+  };
+
+  // Type scale: every heading and text size at once, keeping each style's font; one step to undo.
+  const roles = scaleRoles(theme.tokens, tokens);
+  const scale = activeTypeScale(tokens, theme.tokens);
+  const scaleName = (c: TypeScaleChoice) => (c === 'theme' ? 'Theme' : typeScale(c).label);
+  const scaleDescription = (c: TypeScaleChoice) => (c === 'theme' ? `${theme.name}'s own sizes, line heights and letter spacing.` : typeScale(c).description);
+  const chooseScale = (c: TypeScaleChoice) => {
+    const { ops } = typeScaleOps(tokens, theme.tokens, overrides, c);
+    if (ops.length) void applyOps(ops, c === 'theme' ? "Use the theme's type scale" : `Use the ${typeScale(c).label} type scale`, undefined, snap.revision);
+  };
+  const specimen = roles.flatMap((id) => {
+    const t = byId(id);
+    const v = textMetrics(tokens, id, themeValue(id));
+    if (!t || !v) return [];
+    const famRef = refOf(v.family);
+    const ends = clampRange(v.size);
+    return [
+      {
+        id,
+        label: t.label,
+        v,
+        stack: famRef ? fontStack(famRef) : String(v.family),
+        // Worked out where the size allows; a size written some other way is shown as written, never guessed.
+        sizes: SPECIMEN_WIDTHS.map((w, i) => {
+          const px = sizeAtWidth(v.size, w.width);
+          return { px, drawn: specimenPx(px ?? ends?.[i] ?? toPx(v.size) ?? 16), text: px === null ? friendlySize(v.size) : `${Math.round(px)}px` };
+        })
+      }
+    ];
+  });
+
   const jumps = [
     { id: 'tok-basics', label: 'Basics' },
     { id: 'tok-color', label: 'Colors' },
@@ -1127,6 +1176,25 @@ export function SiteStyles() {
             </p>
           )}
           {fontsOrdered.map(fontRow)}
+          {pairings.length > 0 && (
+            <div className="ss-pairings" role="group" aria-labelledby={`${uid}-pairings`}>
+              <div className="ss-group-label" id={`${uid}-pairings`}>
+                Font pairings
+              </div>
+              <div className="ss-pairing-list">
+                {pairings.map((p) => (
+                  <button key={p.id} className="ss-pairing" aria-pressed={pairing?.id === p.id} onClick={() => choosePairing(p)}>
+                    <span className="ss-pairing-fonts">
+                      <span style={{ fontFamily: p.displayStack }}>{p.display}</span>
+                      <span className="faint"> + </span>
+                      <span style={{ fontFamily: p.bodyStack }}>{p.body}</span>
+                    </span>
+                    <span className="ss-pairing-note">{p.note}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </Section>
 
@@ -1143,6 +1211,47 @@ export function SiteStyles() {
       </Section>
 
       <Section title="Text styles" id="tok-text" scope={changedNote(textIds)}>
+        {roles.length > 0 && (
+          <div className="ss-scale" role="group" aria-labelledby={`${uid}-scale`}>
+            <div className="ss-group-label" id={`${uid}-scale`}>
+              Type scale
+            </div>
+            <div className="segmented full ss-scale-choices">
+              {TYPE_SCALE_CHOICES.map((c) => (
+                <button key={c} aria-pressed={scale === c} title={scaleDescription(c)} onClick={() => chooseScale(c)}>
+                  {scaleName(c)}
+                </button>
+              ))}
+            </div>
+            <p className="ss-scale-note">
+              {scale ? scaleDescription(scale) : 'Sizes of your own. A scale sets every heading and text size at once, keeping your fonts.'} Each style below stays editable.
+            </p>
+            <div
+              className="ss-type-specimen"
+              role="img"
+              aria-label={SPECIMEN_WIDTHS.map((w, i) => `${w.label}, ${w.width} pixels wide: ${specimen.map((r) => `${r.label} ${r.sizes[i].text}`).join(', ')}`).join('. ')}
+            >
+              {SPECIMEN_WIDTHS.map((w, i) => (
+                <div className="ss-type-col" key={w.label} aria-hidden="true">
+                  <div className="ss-type-head">
+                    {w.label} <span className="faint">{w.width}px</span>
+                  </div>
+                  {specimen.map((r) => (
+                    <div className="ss-type-row" key={r.id}>
+                      <span
+                        className="ss-type-sample"
+                        style={{ fontFamily: r.stack, fontWeight: r.v.weight, fontSize: r.sizes[i].drawn, letterSpacing: r.v.tracking, textTransform: (r.v.transform as React.CSSProperties['textTransform']) ?? 'none' }}
+                      >
+                        {r.label}
+                      </span>
+                      <span className="ss-type-px">{r.sizes[i].text}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="ss-text-list">{group('text').map(textRow)}</div>
       </Section>
 
