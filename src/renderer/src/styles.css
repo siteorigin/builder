@@ -2991,85 +2991,157 @@ button.asset-use:hover svg.go { color: var(--text); }
 .modal [data-autofocus]:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* Layers panel (LayersPanel.tsx). Scoped to .layers-tree so the shared list rows elsewhere keep their look.
-   Depth reads from one indent step (--layers-indent, tighter in a narrow sidebar) and a straight guide per open branch (darker on the path to the selection);
-   the selected row is the heaviest thing in the tree, its ancestors one step lighter. A drop between rows is
-   a line with a leading dot at the depth it lands; a drop into a row is a dashed ring with a fill and words. */
-.layers-tree { --layers-drop: var(--accent); --layers-pad: 8px; --layers-indent: 12px; }
-.layers-tree .layer-row { gap: 6px; padding-left: calc(var(--layers-pad) + var(--depth, 0) * var(--layers-indent)); }
+   Depth reads from one indent step (--layers-indent, tighter in a narrow sidebar) and a straight guide per open branch
+   (darker on the path to the selection). Past --layers-cap levels each further level takes the smaller
+   --layers-indent-deep step, so the deepest names keep their room; rows, guides, labels and drop lines all take their
+   inset from the same --inset.
+   The selected row is the heaviest thing in the tree, its ancestors one step lighter. A drop between rows is a line
+   with a leading dot at the depth it lands; a drop into a row is a dashed ring with a fill and words. */
+.layers-tree { --layers-drop: var(--accent); --layers-pad: 8px; --layers-indent: 12px; --layers-indent-deep: 7px; --layers-cap: 3; }
+.layers-tree :is(.layer-row, .layers-children, .layers-sublabel) { --inset: calc(var(--layers-pad) + min(var(--depth, 0), var(--layers-cap)) * var(--layers-indent) + max(0, var(--depth, 0) - var(--layers-cap)) * var(--layers-indent-deep)); }
+.layers-tree .layer-row { --drop-inset: calc(var(--layers-pad) + min(var(--drop-depth, 0), var(--layers-cap)) * var(--layers-indent) + max(0, var(--drop-depth, 0) - var(--layers-cap)) * var(--layers-indent-deep)); gap: 6px; padding-left: var(--inset); }
 /* Opaque selection fills (the tint over the panel), so the branch guides stop at the selected row. */
 .layers-tree .layer-row.selected { font-weight: 600; background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel); }
+/* Of several selected together, the one the inspector and canvas follow keeps the full weight and fill; the others
+   keep the ring and the accent text, on a lighter fill and weight. */
+.layers-tree .layer-row.selected.member { font-weight: 500; background: linear-gradient(color-mix(in srgb, var(--accent) 4%, transparent), color-mix(in srgb, var(--accent) 4%, transparent)), var(--panel); }
 .layers-tree .layer-row.selected.shared { background: linear-gradient(var(--green-soft), var(--green-soft)), var(--panel); }
 .editor.defining .layers-tree .layer-row.selected { background: linear-gradient(var(--plum-soft), var(--plum-soft)), var(--panel); }
+.editor.defining .layers-tree { --layers-drop: var(--plum); }
+.editor.defining .layers-tree .layer-row.selected.member { background: linear-gradient(color-mix(in srgb, var(--plum) 4%, transparent), color-mix(in srgb, var(--plum) 4%, transparent)), var(--panel); }
+/* A selected row's chevron and buttons take its scope colour with the rest of it. */
+.layers-tree .layer-row.selected :is(.tree-toggle, .actions .icon-btn) { color: inherit; }
 .layers-tree .layer-row.contains-sel .grow { font-weight: 500; }
-.layers-tree .layer-row.contains-sel .layer-kind.shell { color: var(--green); }
+.layers-tree .layer-row.contains-sel .layer-kind.shell, .layers-tree .layer-row[data-owner^='shell:'].contains-sel .layer-kind { color: var(--green); }
 .editor.defining .layers-tree .layer-row.contains-sel .layer-kind { color: var(--plum); }
 /* Inside a green or plum selected row the whole row carries the scope colour; a tinted tile would vanish into it. */
 .layers-tree .layer-row.selected .layer-kind { background: transparent; }
-/* Focus on the selected row: the 2px focus outline, then a 1px gap of panel, then the selection fill. */
-.layers-tree .layer-row.selected:focus-visible { box-shadow: inset 0 0 0 3px var(--panel); }
-.layers-tree .layer-row.is-hidden:not(.selected) .layer-name, .layers-tree .layer-row.is-hidden:not(.selected) .layer-kind { color: var(--text-3); }
+/* Focus: the 2px ring, also when keys moved it where the browser would not draw one (Cmd/Ctrl+↓ after a click). On
+   the selected row: the ring, then a 1px gap of panel, then the selection fill. */
+.layers-tree[data-keys] [role='treeitem']:focus { outline: 2px solid var(--focus); outline-offset: -2px; }
+.layers-tree .layer-row.selected:focus-visible, .layers-tree[data-keys] .layer-row.selected:focus { box-shadow: inset 0 0 0 3px var(--panel); }
+.layers-tree .layer-row.is-hidden:not(.selected) :is(.layer-name, .layer-kind, .layer-words, .layer-level) { color: var(--text-3); }
 .layers-tree .layer-flag { display: inline-flex; flex: none; color: var(--text-3); }
-/* An unnamed text's words follow its type, a little quieter; an empty one says so in italics. */
+/* An unnamed text or button reads as its words; a heading's level leads them, small and quiet. An empty one, or one
+   that shows a component setting, keeps its type with the words after it. */
+.layers-tree .layer-level { margin-right: 5px; font-size: 11px; font-weight: 600; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .layers-tree .layer-words { color: var(--text-2); }
 .layers-tree .layer-words.empty { font-style: italic; color: var(--text-3); }
-.layers-tree .layer-row.selected .layer-words { color: inherit; opacity: 0.85; }
-/* The sizes a layer hides itself at, when not every size; stronger when the preview shows one of them. */
-.layers-tree .layer-sizes { flex: none; height: 18px; display: inline-flex; align-items: center; padding: 0 5px; border-radius: var(--r-sm); font-size: 10.5px; font-weight: 500; color: var(--text-3); background: var(--hover); }
-.layers-tree .layer-sizes.here { color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
-.layers-tree .layer-row.selected .layer-sizes { color: inherit; background: var(--raised); }
-/* The layer above that hides this one in the preview: a quiet button that selects it. */
-.layers-tree .layer-hider { color: var(--text-3); }
-.layers-tree .layer-row.selected .layer-hider { color: inherit; }
+.layers-tree .layer-row.selected :is(.layer-words, .layer-level) { color: inherit; font-weight: 500; }
+/* The sizes a layer hides itself at, when not every size, with the closed eye that says what the sizes mean;
+   stronger when the preview shows one of them. */
+/* A tag is a note, not a control: no fill, so it never looks like the pressed eye beside it. */
+.layers-tree .layer-sizes { flex: none; height: 18px; display: inline-flex; align-items: center; gap: 3px; padding: 0 3px; border-radius: var(--r-sm); font-size: 11px; font-weight: 500; color: var(--text-3); }
+.layers-tree :is(.layer-sizes, .with-sizes) svg { width: 11px; height: 11px; }
+/* In a wide sidebar the sizes are words; a narrow one swaps them for the sizes' own icons. */
+.layers-tree .layer-sizes-icons { display: none; gap: 2px; }
+/* The pressed eye of a layer hidden at only some sizes, the preview showing one of them: the sizes are its face. */
+/* (The eye's own rules make it a grid; its face runs in one row.) */
+.layers-tree .layer-eye.with-sizes { width: auto; padding: 0 6px 0 5px; grid-auto-flow: column; align-items: center; gap: 3px; font-size: 11px; font-weight: 500; }
+.layers-tree .layer-sizes.here { color: var(--text-2); }
+.layers-tree .layer-row.selected .layer-sizes { color: inherit; }
 .layers-tree .layer-flag svg { width: 14px; height: 14px; }
 .layers-tree .layer-row.selected .layer-flag { color: inherit; }
-/* The eye: always shown on a hidden layer, otherwise on the row being pointed at, selected or focused. */
-.layers-tree .layer-eye { flex: none; color: var(--text-3); visibility: hidden; }
-.layers-tree .layer-eye.on, .layers-tree .layer-row:is(:hover, .selected, :focus-within) .layer-eye { visibility: visible; }
+/* One visibility place per row, before the options button. The layer's own eye shows when it hides itself here
+   (pressed: a neutral fill, since blue means selection), and otherwise on the row being pointed at, focused, or the
+   selection. A layer hidden by one above gets a quiet closed eye, no fill, that selects that layer. */
+/* The eye sits 3px from the options button: two full 24px targets, not a 6px gutter between them. */
+.layers-tree .layer-eye { flex: none; margin-right: -3px; color: var(--text-3); display: none; }
+.layers-tree .layer-row:not(.drop-inside) .layer-eye.on, .layers-tree .layer-row:is(:hover, [data-primary], :focus-within):not([data-dragging], .drop-inside) .layer-eye { display: inline-grid; }
+.layers-tree .layer-eye[aria-pressed='true'] { background: var(--active); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border-control); }
 .layers-tree .layer-row.selected .layer-eye { color: inherit; }
+.layers-tree .layer-row.selected .layer-eye[aria-pressed='true'] { background: var(--raised); box-shadow: inset 0 0 0 1px currentColor; }
 .layers-tree .layer-row.drop-inside .layer-eye { display: none; }
-.layers-tree .layer-badge { flex: none; height: 18px; padding: 0 6px; font-weight: 500; }
-.layers-tree .layer-row.selected .layer-badge { background: var(--raised); color: inherit; }
+.layers-tree .layer-badge { flex: none; height: 18px; padding: 0 6px; border-radius: var(--r-sm); font-weight: 500; }
+/* On a selected row the Custom badge gives its room to the name and becomes a dot on the glyph (the inspector,
+   tooltip and label say what it is). */
+.layers-tree .layer-row.selected .layer-badge { display: none; }
+.layers-tree .layer-row.is-custom.selected .layer-kind { position: relative; }
+.layers-tree .layer-row.is-custom.selected .layer-kind::after { content: ''; position: absolute; right: -1px; top: -1px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 1.5px var(--panel); }
+/* The options button whose menu is open stays marked while the menu covers the rows around it. */
+.layers-tree .actions .icon-btn[aria-expanded='true'] { background: var(--active); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+.layers-tree .layer-row.selected .actions .icon-btn[aria-expanded='true'] { background: var(--raised); color: inherit; box-shadow: inset 0 0 0 1px currentColor; }
 .layers-children { position: relative; display: flex; flex-direction: column; gap: 1px; }
-.layers-children::before { content: ''; position: absolute; left: calc(var(--layers-pad) + var(--depth, 0) * var(--layers-indent) + 4px); top: 0; bottom: 6px; width: 1px; background: var(--border-strong); pointer-events: none; }
+.layers-children::before { content: ''; position: absolute; left: calc(var(--inset) + 4px); top: 0; bottom: 6px; width: 1px; background: var(--border-strong); pointer-events: none; }
 .layers-children.on-path::before { background: color-mix(in srgb, var(--text-3) 70%, transparent); }
 :where(:root[data-appearance='dark']) { .layers-children.on-path::before { background: color-mix(in srgb, var(--text-3) 50%, transparent); } }
-.layers-sublabel { padding: 6px 8px 2px calc(var(--layers-pad) + var(--depth, 0) * var(--layers-indent) + 16px); font-size: 11px; font-weight: 600; color: var(--text-3); }
-/* The row being dragged keeps readable text; a quiet dashed ring marks it as the one moving. */
+.layers-sublabel { padding: 6px 8px 2px calc(var(--inset) + 16px); font-size: 11px; font-weight: 600; color: var(--text-3); }
+/* A branch hidden by the layer that holds it says so once, at its top. */
+.layers-sublabel.with-icon { display: flex; align-items: center; gap: 4px; min-width: 0; font-weight: 500; }
+.layers-sublabel.with-icon svg { flex: none; width: 11px; height: 11px; }
+/* A truncated row reached by keys shows its full name and place just below it. */
+.layers-peek { position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-md), inset 0 0 0 1px var(--border-strong); font-size: 12px; font-weight: 500; color: var(--text); overflow-wrap: anywhere; pointer-events: none; }
+.layers-peek-path { font-size: 11px; font-weight: 400; color: var(--text-2); }
+.layers-peek.above { transform: translateY(-100%); }
+/* The rows being dragged keep readable text; a quiet dashed ring marks them as the ones moving, and their own
+   buttons step back. Several dragged together travel as one badge under the pointer. */
 .layers-tree .list-item.layer-row[data-dragging], .editor.defining .layers-tree .list-item.layer-row.selected[data-dragging] { background: var(--panel-2); color: var(--text-2); box-shadow: none; outline: 1px dashed var(--border-control); outline-offset: -1px; }
-.layers-tree .inline-edit { margin-left: -5px; padding: 0 4px; font-weight: 400; }
+.layers-tree .layer-row[data-dragging] :is(.layer-eye:not(.on), .actions) { visibility: hidden; }
+.layers-drag-badge { position: fixed; top: -100px; left: -100px; padding: 4px 9px; border-radius: var(--r-sm); background: var(--accent-fill); color: var(--on-accent); font: 600 12px/1.4 var(--font); white-space: nowrap; }
+.layers-drag-badge.definition { background: var(--plum); }
+/* Renaming: the field's own focus ring is the row's only edge. */
+.layers-tree .layer-row.renaming, .editor.defining .layers-tree .layer-row.selected.renaming { box-shadow: none; }
+.layers-tree .inline-edit { height: 24px; margin-left: -3px; padding: 0 5px; font-weight: 400; }
 .layers-tree .layer-row.drop-before::before, .layers-tree .layer-row.drop-after::after {
-  left: calc(var(--layers-pad) + var(--drop-depth, 0) * var(--layers-indent) - 1px); right: 6px; height: 8px; border-radius: 0;
+  left: calc(var(--drop-inset) - 1px); right: 6px; height: 8px; border-radius: 0;
   background: radial-gradient(circle at 4px 4px, var(--layers-drop) 0 3px, transparent 3.5px) no-repeat, linear-gradient(var(--layers-drop), var(--layers-drop)) 6px 3px / calc(100% - 6px) 2px no-repeat;
 }
 .layers-tree .layer-row.drop-before::before { top: -4.5px; }
 .layers-tree .layer-row.drop-after::after { bottom: -4.5px; }
 .layers-tree .layer-row:is(.drop-before, .drop-after) { z-index: 2; }
-.layers-tree .layer-row.drop-inside, .editor.defining .layers-tree .layer-row.selected.drop-inside { background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel); outline: 2px dashed var(--layers-drop); outline-offset: -2px; box-shadow: none; }
+.layers-tree .layer-row.drop-inside, .editor.defining .layers-tree .layer-row.selected.drop-inside { padding-right: 5px; background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--panel); outline: 2px dashed var(--layers-drop); outline-offset: -2px; box-shadow: none; }
+.editor.defining .layers-tree .layer-row.drop-inside, .editor.defining .layers-tree .layer-row.selected.drop-inside { background: linear-gradient(var(--plum-soft), var(--plum-soft)), var(--panel); }
 .layers-tree .layer-row.drop-inside .actions, .layers-tree .layer-row.drop-inside .layer-badge, .layers-tree .layer-row.drop-inside .layer-flag, .layers-tree .layer-row.drop-inside .layer-sizes { display: none; }
 .layers-tree .layer-drop-tag { flex: none; height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: var(--r-sm); font-size: 11px; font-weight: 600; background: var(--layers-drop); color: var(--on-accent); }
-/* A narrow sidebar gives the names the room: a tighter indent, and the Custom badge and options button show
-   only on the row being pointed at, selected or focused (the badge's meaning stays in the tooltip and label). */
+/* A narrow sidebar gives the names the room: a tighter indent with a smaller deep step, tighter gaps, the options
+   button only on the row being pointed at, focused or the selection, the unpressed eye and the hider's button only
+   on the row being pointed at, the Custom badge as a dot, and size tags as a closed eye with the sizes' own icons;
+   the words stay in the tooltip and the accessible name. */
+/* In Layers the empty state lines up with the Header and Footer glyphs above and below it. */
+.layers-tree .layers-empty { padding-left: 30px; }
 .layers-tree { container: layers / inline-size; }
 @container layers (max-width: 232px) {
-  .layers-tree .list { --layers-pad: 6px; --layers-indent: 9px; padding-inline: 4px; }
+  .layers-tree .list { --layers-pad: 6px; --layers-indent: 9px; --layers-indent-deep: 6px; --layers-cap: 3; padding-inline: 4px; }
+  .layers-tree .layer-row { gap: 4px; }
+  /* The 4px gap is already tight: no pull towards the options button. */
+  .layers-tree .layer-eye { margin-right: 0; }
+  /* A row with a size tag keeps its name when pointed at: hiding is in its menu. */
+  .layers-tree .layer-row:has(.layer-sizes) .layer-eye:not(.on) { display: none; }
   .layers-tree .layer-badge { display: none; }
   .layers-tree .layer-row .actions { display: none; }
-  .layers-tree .layer-row:is(:hover, .selected, :focus-within):not(.drop-inside) :is(.actions, .layer-badge) { display: inline-flex; }
-  /* The sizes a layer hides at give way to its name too (they stay in its tooltip and accessible name). */
-  .layers-tree .layer-sizes:not(.here) { display: none; }
-  /* At rest a project-made component keeps a small neutral dot on its glyph (the tooltip and label say what it is). */
-  .layers-tree .layer-row.is-custom:not(:hover, .selected, :focus-within) .layer-kind { position: relative; }
-  .layers-tree .layer-row.is-custom:not(:hover, .selected, :focus-within) .layer-kind::after { content: ''; position: absolute; right: -1px; top: -1px; width: 6px; height: 6px; border-radius: 50%; background: var(--text-2); box-shadow: 0 0 0 1.5px var(--panel); }
+  .layers-tree .layers-empty { padding-left: 24px; }
+  /* The options button of an open menu stays, wherever focus has gone in that menu. */
+  .layers-tree .layer-row:is(:hover, [data-primary], :focus-within, :has(.actions [aria-expanded='true'])):not(.drop-inside) .actions { display: inline-flex; }
+  .layers-tree .layer-row:is([data-primary], :focus-within):not(:hover) .layer-eye:not(.on) { display: none; }
+  .layers-tree :is(.layer-sizes, .with-sizes) .layer-sizes-text { display: none; }
+  .layers-tree :is(.layer-sizes, .with-sizes) .layer-sizes-icons { display: inline-flex; }
+  .layers-tree .layer-eye.with-sizes { padding: 0 5px; }
+  /* A project-made component keeps a small neutral dot on its glyph, pointed at or not (the tooltip and label say
+     what it is): a badge appearing on hover would take the name's room just as it is being read. */
+  .layers-tree .layer-row.is-custom:not(.selected) .layer-kind { position: relative; }
+  .layers-tree .layer-row.is-custom:not(.selected) .layer-kind::after { content: ''; position: absolute; right: -1px; top: -1px; width: 6px; height: 6px; border-radius: 50%; background: var(--text-2); box-shadow: 0 0 0 1.5px var(--panel); }
 }
-.layers-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 2px 14px 8px 33px; }
-.layers-empty p { margin: 0; color: var(--text-2); }
+.layers-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 4px 14px 12px 33px; }
+.layers-empty p { margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
 .layers-empty .btn svg { width: 14px; height: 14px; }
 .layers-tree[hidden] { display: none; }
 /* Layers or the page's heading outline. */
 .layers-views { padding: 0 10px 8px 14px; flex: none; }
-/* Several layers selected together: how many, and their commands. */
-.layers-picked { display: flex; align-items: center; gap: 6px; margin: 0 10px 6px 14px; padding: 2px 4px 2px 10px; flex: none; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text); font-size: 12px; font-weight: 500; }
+/* Several layers selected together: how many, their Actions, and the way back to one. It lines up with the rows it
+   describes, and its words with the tree's chevrons. */
+.layers-picked { container: picked / inline-size; display: flex; align-items: center; gap: 2px; min-height: 30px; margin: 0 16px 6px 6px; padding: 2px 3px 2px 8px; flex: none; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text); font-size: 12px; font-weight: 600; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
+.layers-picked-count { min-width: 0; white-space: nowrap; }
+/* Too narrow for "3 sections selected" beside Actions: "selected" goes (still read out), the count stays whole. */
+@container picked (max-width: 220px) { .layers-picked-word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } }
+.layers-picked-actions { flex: none; display: inline-flex; align-items: center; gap: 3px; height: 24px; padding: 0 6px 0 8px; border: 0; border-radius: var(--r-sm); background: transparent; color: inherit; font-size: 12px; font-weight: 600; }
+.layers-picked-actions svg { width: 13px; height: 13px; }
+.layers-picked :is(.layers-picked-actions, .icon-btn):hover, .layers-picked-actions[aria-expanded='true'] { background: color-mix(in srgb, var(--accent) 12%, transparent); color: inherit; }
+.layers-picked .icon-btn { flex: none; color: inherit; }
+.layers-picked :focus-visible { outline-offset: -2px; }
+.editor.defining .layers-picked { background: var(--plum-soft); color: var(--plum); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--plum) 40%, transparent); }
+.editor.defining .layers-picked :is(.layers-picked-actions, .icon-btn):hover, .editor.defining .layers-picked-actions[aria-expanded='true'] { background: color-mix(in srgb, var(--plum) 7%, transparent); }
 .status-bar .crumbs-count { flex: none; margin-left: 6px; padding: 0 6px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text); font-size: 12px; line-height: 20px; white-space: nowrap; }
+.editor.defining .status-bar .crumbs-count { background: var(--plum-soft); color: var(--plum); }
 /* The heading outline: the page's headings in the order screen readers list them, indented by level. Its right
    padding gives way to the panel's stable scrollbar gutter, so the summary lines up with Layers | Headings above. */
 .outline-view { padding: 0 2px 12px 10px; }
