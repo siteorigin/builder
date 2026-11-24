@@ -606,51 +606,151 @@ body.dialog-open .toast { pointer-events: none; }
 .sketch-cards svg { display: block; width: 100%; height: 20px; border-radius: 3px; background: var(--sky-1); }
 @media (max-width: 1200px) { .welcome-hero { grid-template-columns: minmax(0, 1fr) minmax(0, 300px); padding: 28px 28px 24px; gap: 24px 28px; } .welcome-main .welcome-hero h2 { font-size: 28px; } .sketch-h1 { font-size: 14px; } .sketch-pic { width: 60px; height: 60px; } }
 
-.starter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 2px; }
-.starter-card { position: relative; display: flex; flex-direction: column; gap: 8px; padding: 0; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--raised); text-align: left; overflow: hidden; transition: border-color 120ms; }
-/* The ring sits outside the artwork, so it is the same weight all the way round. */
-.starter-card[aria-checked='true'] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.starter-card:focus-visible { outline-offset: 3px; }
-.starter-card .picked { position: absolute; top: 0; right: 10px; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); }
-.starter-card .picked svg { width: 12px; height: 12px; }
-.starter-card .art { height: 72px; padding: 8px; background: var(--panel-2); display: flex; flex-direction: column; gap: 5px; }
-.starter-card .art i { display: block; border-radius: var(--r-xs); background: color-mix(in srgb, var(--text-3) 35%, transparent); }
-.starter-card .art i.hi { background: var(--text-3); opacity: 0.7; }
-.starter-card[aria-checked='true'] .art i.hi { background: var(--accent); opacity: 0.6; }
-.starter-card .copy { position: relative; padding: 0 12px 10px; }
-.starter-card strong { font-size: 13px; font-weight: 600; }
-.starter-card p { margin: 2px 0 0; font-size: 12px; color: var(--text-2); }
-
-/* Tall enough for a two-line detail, so Cancel stays put when one appears. */
-.progress-steps { display: flex; flex-direction: column; gap: 12px; min-height: 134px; margin: 0; padding: 6px 0; list-style: none; }
-.progress-step { display: grid; grid-template-columns: 18px minmax(0, 1fr); column-gap: 10px; align-items: center; color: var(--text-3); }
-.progress-step.active { color: var(--text); font-weight: 600; }
-.progress-step.done { color: var(--text-2); }
-.progress-step .dot { width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; border: 1.5px solid var(--border-control); flex: none; }
-.progress-step.active .dot { border-color: transparent; }
-.progress-step.active .dot .spinner { width: 18px; height: 18px; }
-/* Finished steps recede, so the eye stays on the one running. */
-.progress-step.done .dot { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
-.progress-step.done .dot svg { width: 11px; height: 11px; }
-/* What the current step is doing, under that step. Real install output can be long, so it gets two lines. */
-.progress-detail { grid-column: 2; margin-top: 3px; font-size: 12px; font-weight: 400; color: var(--text-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.foot-note { display: flex; align-items: center; gap: 6px; min-width: 0; margin-right: auto; font-size: 12px; color: var(--text-2); }
-.foot-note svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
-/* Keeps its width when the label becomes Cancelling…, so the button does not jump under the pointer. */
-.busy-cancel { min-width: 104px; }
-.new-project-form { display: flex; flex-direction: column; gap: 10px; }
-.new-project-form .scope-note.info { font-size: 12px; }
-.new-project-form .scope-note.danger > svg { margin-top: 2px; }
+/* ---------- New project, setup, Trust this project, Unpacking ---------- */
+/* Wide enough for two starting points drawn at the size of the theme's own thumbnails. */
+.modal:has(> .modal-body > .new-project-form), .modal:has(> .modal-body > .setup) { width: min(720px, calc(100vw - 48px)); }
+.new-project-form { display: flex; flex-direction: column; gap: 18px; }
+/* Name and folder are one decision; the starting point is the next. */
+.np-identity { display: flex; flex-direction: column; gap: 12px; }
+.np-path-row { display: flex; align-items: flex-start; gap: 8px; }
+.np-path-row > .path-readout { flex: 1; }
+.np-path-row > .btn { flex: none; }
+.new-project-form .scope-note { font-size: 12px; }
+.new-project-form .scope-note > svg { margin-top: 2px; }
+.new-project-form .scope-note > span, .progress-detail { text-wrap: pretty; }
 /* The shared switch is 20px tall; here its target reaches the 24px floor without changing how it looks. */
 .new-project-form .switch::before { content: ''; position: absolute; inset: -2px 0; }
-.path-field { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 5px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text-2); user-select: text; }
-.path-field svg { flex: none; color: var(--text-3); }
-.path-field span { min-width: 0; overflow-wrap: anywhere; }
-.trust-body { display: flex; flex-direction: column; gap: 12px; }
-.trust-body > p { margin: 0; }
-.trust-body strong { font-weight: 600; }
-.trust-risk { background: var(--amber-soft); }
-.trust-risk > svg { margin-top: 2px; color: var(--amber); }
+
+/* A whole path, selectable: the folders it sits in quiet, the folder it names in full ink. */
+.path-readout { display: flex; align-items: flex-start; gap: 8px; min-width: 0; min-height: 32px; margin: 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; line-height: 16px; color: var(--text-2); user-select: text; }
+.path-readout > svg { width: 14px; height: 14px; flex: none; margin-top: 1px; color: var(--text-3); }
+.path-readout .path-text { min-width: 0; overflow-wrap: anywhere; }
+.path-readout .path-leaf { color: var(--text); font-weight: 600; }
+/* Before a name is typed: where the project's own folder will go. */
+.path-readout .path-pending { color: var(--text-3); font-style: italic; user-select: none; }
+.path-readout.invalid { border-color: var(--red); }
+.path-group { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+
+.np-start { display: flex; flex-direction: column; gap: 8px; }
+.np-start-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.np-theme { font-size: 12px; color: var(--text-3); }
+.starter-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.starter-card { position: relative; display: flex; flex-direction: column; min-width: 0; padding: 0; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--raised); color: var(--text); text-align: left; overflow: hidden; transition: border-color 120ms, box-shadow 120ms; }
+/* Hover keeps the control edge and lifts the surface, and the empty ring firms up. */
+.starter-card:hover:not([aria-checked='true']) { background: var(--panel-2); }
+.starter-card:hover:not([aria-checked='true']) .mark { box-shadow: inset 0 0 0 1.5px var(--text-2); }
+.starter-card[aria-checked='true'] { border-color: var(--accent); }
+/* The selected ring is two pixels all the way round, the second drawn inside, so a focus ring keeps its full gap. */
+.starter-card[aria-checked='true']::after { content: ''; position: absolute; inset: 0; border-radius: calc(var(--r-md) - 1px); box-shadow: inset 0 0 0 1px var(--accent); pointer-events: none; }
+.starter-card:focus-visible { outline-offset: 2px; }
+.starter-card .copy { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px 12px; border-top: 1px solid var(--border); }
+.starter-card .title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* A radio's own mark: an empty ring, filled with a check when chosen, so the choice never rests on colour alone. */
+.starter-card .mark { width: 16px; height: 16px; flex: none; display: grid; place-items: center; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--border-control); }
+.starter-card[aria-checked='true'] .mark { background: var(--accent); box-shadow: none; color: var(--on-accent); }
+.starter-card .mark svg { width: 11px; height: 11px; stroke-width: 3; }
+.starter-card strong { font-size: 13px; font-weight: 600; }
+.starter-card .pages { display: flex; gap: 4px; margin-left: auto; }
+.starter-card .pages span { padding: 1px 6px; border-radius: var(--r-xs); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); font-size: 11px; line-height: 16px; color: var(--text-2); }
+.starter-card .blurb { padding-left: 24px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
+
+/* The starter's pages on a quiet desk, in the site's own colours (set inline from its theme), light in either app
+   theme: Home tall on the left and bleeding off the bottom, each other page's top beside it. */
+.starter-art { position: relative; display: flex; gap: 10px; height: 196px; padding: 16px 16px 0; overflow: hidden; background: var(--panel-2); }
+.starter-art.blank { justify-content: center; padding-bottom: 14px; }
+/* Business's pages carry on below the card: they fade into the desk rather than stopping at a cut. */
+.starter-art.business::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 18px; background: linear-gradient(transparent, var(--panel-2)); pointer-events: none; }
+.starter-art .sheet { position: relative; display: flex; flex-direction: column; min-width: 0; border-radius: 3px 3px 0 0; background: var(--site-bg, var(--raised)); color: var(--site-text, var(--text)); box-shadow: var(--shadow-sm), 0 0 0 1px color-mix(in srgb, var(--text) 14%, transparent); overflow: hidden; }
+.starter-art .sheet.home { flex: 0 0 60%; min-height: calc(100% + 1px); container-type: inline-size; }
+.starter-art.blank .sheet.home { min-height: 0; height: 100%; border-radius: 3px; }
+.starter-art .sheet-side { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.starter-art .sheet.side { flex: 1; min-height: 0; border-radius: 3px; container-type: inline-size; }
+.starter-art .sheet.side:last-child { border-radius: 3px 3px 0 0; margin-bottom: -1px; }
+.starter-art .sheet-head { display: flex; align-items: center; gap: 6px; height: 16px; flex: none; padding: 0 6px; border-bottom: 1px solid var(--site-border, var(--border)); font-size: 7.5px; }
+.starter-art .sheet-head b { min-width: 0; font-weight: 650; }
+.starter-art .sheet-nav { display: flex; gap: 4px; margin-left: auto; flex: none; color: var(--site-muted, var(--text-2)); font-size: 6.5px; }
+/* The page a sheet shows, marked the way a site's own navigation marks the current page. */
+.starter-art .sheet-nav .here { color: var(--site-text, var(--text)); font-weight: 600; }
+/* A small Home sheet keeps the site's name and lets its navigation go. */
+@container (max-width: 150px) { .starter-art .sheet.home .sheet-nav { display: none; } }
+/* A small side sheet keeps the page it shows rather than a stub of the name. */
+@container (max-width: 110px) { .starter-art .sheet.side .sheet-head b { display: none; } }
+.starter-art .sheet-page { display: flex; flex-direction: column; }
+.starter-art .sheet-shot { overflow: hidden; }
+.starter-art .sheet-shot img { display: block; width: 100%; height: auto; }
+.starter-art .sheet-empty { flex: 1; display: grid; place-items: center; margin: 8px; border: 1px dashed var(--site-border, var(--border)); border-radius: 3px; font-size: 7.5px; color: var(--site-muted, var(--text-2)); }
+.starter-art .sheet-foot { flex: none; display: flex; align-items: center; min-width: 0; height: 18px; padding: 0 7px; background: var(--site-inverse, var(--ink)); color: var(--site-on-inverse, var(--panel)); font-size: 6.5px; }
+@media (max-height: 820px) { .new-project-form .starter-art { height: 156px; padding-top: 14px; } }
+/* The minimum window: the tallest form (a problem and its note) fits without scrolling. */
+@media (max-height: 740px) {
+  .new-project-form { gap: 10px; }
+  .new-project-form .np-identity { gap: 6px; }
+  .new-project-form .starter-art { height: 86px; padding-top: 8px; }
+  /* Home narrows so its whole hero shows; About and Contact take the room. */
+  .new-project-form .starter-art .sheet.home { flex-basis: 44%; }
+  .starter-card .copy { gap: 2px; padding: 6px 12px 8px; }
+}
+
+/* Either starter's option takes the same height, so switching never moves the buttons. */
+.np-option { display: flex; align-items: center; min-height: 42px; }
+@media (max-height: 740px) { .np-option { min-height: 34px; } }
+.np-option > .switch-row { flex: 1; }
+.np-option-note { margin: 0; font-size: 12px; color: var(--text-2); }
+.tools-note[data-tools='local'] svg { color: var(--green); }
+
+/* Setup: the starter being made beside its steps and the folder it goes in. */
+.setup { display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 22px; align-items: stretch; padding-top: 4px; }
+.setup > .starter-art { height: auto; min-height: 176px; padding: 14px 14px 0; border: 1px solid var(--border); border-radius: var(--r-md); }
+.setup > .starter-art.blank { padding-bottom: 14px; }
+.setup.stopping > .starter-art { opacity: 0.6; }
+.setup-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+/* Tall enough for a detail and a hint under the running step, so nothing below it moves when one appears. */
+.progress-steps { display: flex; flex-direction: column; min-height: 160px; margin: 0; padding: 2px 0 0; list-style: none; }
+.progress-step { position: relative; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; column-gap: 10px; align-items: center; padding-bottom: 16px; font-size: 13px; color: var(--text-3); }
+.progress-step:last-child { padding-bottom: 0; }
+/* The rail joining each step to the next. */
+.progress-step:not(:last-child)::before { content: ''; position: absolute; left: 9px; top: 24px; bottom: 4px; width: 2px; border-radius: 1px; background: var(--border); }
+.progress-step.done:not(:last-child)::before { background: color-mix(in srgb, var(--green) 45%, transparent); }
+.progress-step .dot { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; background: var(--panel); box-shadow: inset 0 0 0 1.5px var(--border-control); }
+.progress-step .dot svg { width: 12px; height: 12px; stroke-width: 2.5; }
+.progress-step.warn .dot svg { width: 13px; height: 13px; stroke-width: 2; }
+/* A step being stopped keeps its ring, with a stop mark in it. */
+.setup.stopping .progress-step.active .dot { box-shadow: inset 0 0 0 1.5px var(--border-control); }
+.progress-step .dot .stop { width: 6px; height: 6px; border-radius: 1px; background: var(--text-2); }
+.progress-step.active { color: var(--text); }
+.progress-step.active .step-label { font-weight: 600; }
+.progress-step.active .dot { box-shadow: none; }
+.progress-step.active .dot .spinner { width: 20px; height: 20px; border-color: color-mix(in srgb, var(--accent) 22%, transparent); border-top-color: var(--accent); }
+/* Finished steps recede, so the eye stays on the one running. */
+.progress-step.done { color: var(--text-2); }
+.progress-step.done .dot { background: var(--green-soft); box-shadow: none; color: var(--green); }
+.progress-step.warn { color: var(--text); }
+.progress-step.warn .dot { background: var(--amber-soft); box-shadow: none; color: var(--amber); }
+.setup.stopping .progress-step.active { color: var(--text-2); }
+.progress-step .elapsed, .unpack-status .elapsed { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text-3); }
+/* What the current step is doing, under that step. Real install output can be long, so it gets two lines. */
+.progress-detail, .progress-hint { grid-column: 2 / -1; margin-top: 3px; font-size: 12px; line-height: 1.4; color: var(--text-2); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.progress-hint { margin-top: 4px; color: var(--text-3); }
+.foot-note { display: flex; align-items: center; gap: 6px; min-width: 0; margin-right: auto; font-size: 12px; color: var(--text-2); }
+.foot-note svg { width: 14px; height: 14px; flex: none; color: var(--text-3); }
+/* Keeps its width when the label becomes Canceling…, so the button does not jump under the pointer. */
+.busy-cancel { min-width: 104px; }
+
+.unpack-body { display: flex; flex-direction: column; gap: 14px; }
+.unpack-status { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; font-size: 13px; line-height: 1.45; }
+.unpack-status > .spinner { margin-top: 2px; }
+
+/* What trusting allows first, then exactly which project, then why it is asked. */
+.trust-body { display: flex; flex-direction: column; gap: 14px; }
+.trust-risk { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--amber) 32%, transparent); border-radius: var(--r-sm); background: var(--amber-soft); font-size: 13px; line-height: 1.45; color: var(--text); }
+.trust-risk > svg { width: 16px; height: 16px; flex: none; margin-top: 1px; color: var(--amber); }
+.trust-risk p { margin: 0; text-wrap: pretty; }
+.trust-risk strong { font-weight: 600; }
+.trust-project { display: flex; flex-direction: column; gap: 6px; }
+.trust-name { font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.trust-why { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-2); text-wrap: pretty; }
+/* Titles that carry a project's name wrap rather than run under the close button. */
+.modal:has(> .modal-body > .setup) > .modal-head h2, .modal:has(> .modal-body > .unpack-body) > .modal-head h2 { min-width: 0; overflow-wrap: anywhere; }
 
 /* ---------- Editor shell ---------- */
 .editor { display: grid; grid-template-rows: var(--toolbar-h) 1fr 28px; grid-template-columns: minmax(0, 1fr); height: 100%; }
@@ -2779,9 +2879,6 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .starting-mark > svg { position: absolute; }
 .starting-mark .spinner.lg { width: 64px; height: 64px; border-width: 2px; border-color: color-mix(in srgb, var(--accent) 18%, transparent); border-top-color: var(--accent); }
 .overlay-backdrop.light { background: color-mix(in srgb, var(--scrim) 55%, transparent); }
-.trust-path { display: flex; gap: 8px; align-items: flex-start; margin: 0; padding: 8px 10px; border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text-2); user-select: text; }
-.trust-path svg { flex: none; margin-top: 1px; color: var(--text-3); }
-.trust-path span { overflow-wrap: anywhere; }
 .ai-veil.issue { width: min(560px, calc(100% - 24px)); border-radius: 18px; background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
 /* While editing, the bar sits below the page as a status card: a card's corners and a 3:1 edge. Preview's is its own. */
 .canvas.edit-mode .ai-veil.issue:not(.retrying) { border-radius: var(--r-md); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); }

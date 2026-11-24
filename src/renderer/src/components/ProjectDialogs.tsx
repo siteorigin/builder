@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
-import { Check, CircleAlert, CloudDownload, FileArchive, FolderOpen, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
+import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Check, CircleAlert, CloudAlert, CloudDownload, FileArchive, FolderOpen, Info, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
 import type { ProgressEvent, WebsiteTools } from '@shared/api';
+import { getTheme } from '@catalogue/index';
 import { isImeComposing } from '../lib/ime';
 import { endEditingHold } from '../lib/leave';
 import { api, errorText, toast } from '../store';
+import { usePackPreview, usePreviewExtent } from './PackPreview';
 import { Field, Modal, Spinner, SwitchRow } from './ui';
 
 /*
@@ -21,6 +23,194 @@ const isPlainDetail = (d?: string) => !!d && /^[A-Z]/.test(d) && !/\bnpm\b/i.tes
 
 /** A control about to disable itself hands focus to its dialog, so Tab and Escape still belong to the dialog. */
 const keepFocusInDialog = (from: Element | null) => from?.closest<HTMLElement>('.modal')?.focus();
+
+/** Minutes and seconds since `since`, once a wait is long enough to be worth counting; null before that. */
+function useElapsed(since: number | null, after = 5000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (since === null) return;
+    setNow(Date.now());
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [since]);
+  if (since === null || now - since < after) return null;
+  const s = Math.floor((now - since) / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/** A path's style is read from its root, so a POSIX folder name that happens to hold a backslash stays POSIX. */
+const isWindowsPath = (p: string) => /^([A-Za-z]:\\|\\\\)/.test(p);
+
+/**
+ * A folder path as one selectable readout: the folders it sits in are quiet, the folder it names in full ink. The
+ * whole path is always shown (a shortened one hides whose home folder it is), and it may break after any separator.
+ * `pending` stands in for the folder's own name until there is one.
+ */
+function PathReadout({ path, pending, id, className = '' }: { path: string; pending?: string; id?: string; className?: string }) {
+  const sep = isWindowsPath(path) ? '\\' : '/';
+  const parts = path.split(sep);
+  if (pending && parts[parts.length - 1] !== '') parts.push('');
+  const leaf = parts.pop() ?? '';
+  return (
+    <div id={id} className={`path-readout ${className}`.trim()}>
+      <FolderOpen aria-hidden="true" />
+      <span className="path-text">
+        {parts.map((p, i) => (
+          <Fragment key={i}>
+            <span className="path-parent">
+              {p}
+              {sep}
+            </span>
+            <wbr />
+          </Fragment>
+        ))}
+        {leaf ? <span className="path-leaf">{leaf}</span> : pending ? (
+          <span className="path-pending" aria-hidden="true">
+            {pending}
+          </span>
+        ) : null}
+      </span>
+    </div>
+  );
+}
+
+// ---------- Starting points ----------
+
+type StarterId = 'business' | 'blank';
+
+/** The theme every new project starts from (`emptyState` in the catalogue's starters). */
+const STARTER_THEME = 'foundation';
+
+type PageSketch = { name: string; sections: Array<{ id: string; variant?: string; whole?: boolean }> };
+
+/**
+ * Each starter's pages and their sections, in the order and variants it builds them (`src/catalogue/starters.ts`).
+ * Contact leaves out its page intro: the theme's thumbnail of it is About's, and two sheets opening on the same
+ * banner read as one page twice.
+ */
+const STARTER_PAGES: Record<StarterId, PageSketch[]> = {
+  business: [
+    { name: 'Home', sections: [{ id: 'hero.split' }, { id: 'logos.strip' }, { id: 'features.grid' }, { id: 'content.media', variant: 'media-end' }, { id: 'stats.row', variant: 'inverse' }] },
+    { name: 'About', sections: [{ id: 'intro.page' }, { id: 'content.media' }, { id: 'team.grid', variant: 'muted' }] },
+    { name: 'Contact', sections: [{ id: 'contact.details', whole: true }, { id: 'faq.list', variant: 'muted' }] }
+  ],
+  blank: [{ name: 'Home', sections: [] }]
+};
+
+const STARTERS: Array<{ id: StarterId; name: string; blurb: string }> = [
+  { id: 'business', name: 'Business', blurb: 'Sample text, services, a gallery and testimonials, ready to make your own.' },
+  { id: 'blank', name: 'Blank site', blurb: 'One empty page with a header and footer. Add sections as you go.' }
+];
+const pagesOf = (id: StarterId) => STARTER_PAGES[id].map((p) => p.name);
+
+/** The site's own colours, from the theme it starts with, so the sketch around the thumbnails matches them. */
+function siteColours(): CSSProperties {
+  const tokens = getTheme(STARTER_THEME).tokens;
+  const read = (id: string) => {
+    const v = tokens.find((t) => t.id === id)?.value;
+    return typeof v === 'string' ? v : undefined;
+  };
+  const vars: Record<string, string | undefined> = {
+    '--site-bg': read('color.background'),
+    '--site-text': read('color.text'),
+    '--site-muted': read('color.muted'),
+    '--site-border': read('color.border'),
+    '--site-inverse': read('color.inverse'),
+    '--site-on-inverse': read('color.on-inverse')
+  };
+  return Object.fromEntries(Object.entries(vars).filter(([, v]) => v)) as CSSProperties;
+}
+
+/** One section's thumbnail, cropped to where its content ends, as the Insert panel shows it. */
+function SectionShot({ id, variant, whole, onReady }: { id: string; variant?: string; whole?: boolean; onReady: (ready: boolean) => void }) {
+  const shots = getTheme(STARTER_THEME).previews?.[id];
+  // A variant is an option on one of the section's axes (a tone, a layout); its own thumbnail when the pack drew one.
+  const file = (variant && Object.values(shots?.variants ?? {}).find((axis) => axis[variant])?.[variant]) || shots?.default;
+  const url = usePackPreview(file ? STARTER_THEME : undefined, file);
+  // Cropped where its content ends, unless that content is drawn too close to the page colour to be told from it.
+  const measured = usePreviewExtent(file && !whole ? STARTER_THEME : undefined, file, url);
+  const extent = whole ? 1 : measured;
+  const ready = !file || !!url;
+  useEffect(() => onReady(ready), [ready, onReady]);
+  if (!url || extent <= 0) return null;
+  return (
+    <div className="sheet-shot" style={{ aspectRatio: `320 / ${Math.max(24, Math.round(200 * extent))}` }}>
+      <img src={url} alt="" draggable={false} />
+    </div>
+  );
+}
+
+/** A page of the site: its header (with the name being typed, as the site's own header has it) and its sections. */
+function PageSheet({ page, nav, siteName, className, onReady }: { page: PageSketch; nav: string[]; siteName: string; className: string; onReady: (key: string, ready: boolean) => void }) {
+  return (
+    <div className={`sheet ${className}`}>
+      <div className="sheet-head">
+        <b className="ellipsis">{siteName}</b>
+        <span className="sheet-nav">
+          {nav.map((p) => (
+            <span key={p} className={p === page.name ? 'here' : undefined}>
+              {p}
+            </span>
+          ))}
+        </span>
+      </div>
+      {page.sections.length ? (
+        <div className="sheet-page">
+          {page.sections.map((s) => (
+            <SectionShot key={s.id} id={s.id} variant={s.variant} whole={s.whole} onReady={(r) => onReady(`${page.name}:${s.id}`, r)} />
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="sheet-empty">
+            <span>Your first section</span>
+          </div>
+          <div className="sheet-foot">
+            <span className="ellipsis">
+              © {new Date().getFullYear()} {siteName}
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What a starter makes, drawn as its pages in the site's own colours: Home as a tall sheet built from the theme's
+ * real section thumbnails in the order the starter builds it, and each other page beside it, showing its top. A
+ * blank site is its one empty page, at the same scale.
+ */
+function StarterArt({ starter, siteName }: { starter: StarterId; siteName: string }) {
+  const keys = () => STARTER_PAGES[starter].flatMap((p) => p.sections.map((s) => `${p.name}:${s.id}`));
+  const [waiting, setWaiting] = useState<Set<string>>(() => new Set(keys()));
+  const onReady = useRef((key: string, ready: boolean) =>
+    setWaiting((w) => {
+      if (ready === !w.has(key)) return w;
+      const next = new Set(w);
+      if (ready) next.delete(key);
+      else next.add(key);
+      return next;
+    })
+  ).current;
+  const [home, ...rest] = STARTER_PAGES[starter];
+  const name = siteName.trim() || 'Your site';
+  const nav = pagesOf(starter);
+  return (
+    <div className={`starter-art ${starter}`} aria-hidden="true" data-loading={waiting.size ? '' : undefined} style={siteColours()}>
+      <PageSheet page={home} nav={nav} siteName={name} className="home" onReady={onReady} />
+      {rest.length > 0 && (
+        <div className="sheet-side">
+          {rest.map((p) => (
+            <PageSheet key={p.name} page={p} nav={[p.name]} siteName={name} className="side" onReady={onReady} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Trust ----------
 
 /** Ask before running a project's own website tools; Trust and open records the trust, then opens it. */
 export function TrustProjectModal({ project, onClose, onOpened }: { project: { dir: string; name: string }; onClose: () => void; onOpened?: () => void }) {
@@ -74,25 +264,27 @@ export function TrustProjectModal({ project, onClose, onOpened }: { project: { d
         </>
       }
     >
+      {/* What trusting allows comes first, then exactly which project, then why it is being asked. */}
       <div id="trust-body" className="trust-body">
-        <p>
-          <strong>{project.name}</strong> was made on another computer, or its setup files changed since you last opened it.
-        </p>
-        <p className="trust-path">
-          <FolderOpen size={14} aria-hidden="true" />
-          {/* The exact path: shortened, folders in two people's home folders would look the same. */}
-          <span>{project.dir}</span>
-        </p>
-        <div className="scope-note trust-risk">
+        <div className="trust-risk">
           <TriangleAlert aria-hidden="true" />
-          <span>
-            <strong>Trust and open lets this project run code on your computer</strong> to show its preview. Continue only if you trust the project’s source and any changes to its setup. If you’re unsure, choose Cancel.
-          </span>
+          <p>
+            <strong>Trust and open lets this project run code on your computer</strong> to show its preview. Continue only if you trust its source and any setup changes.
+          </p>
         </div>
+        <div className="trust-project">
+          <div className="trust-name">{project.name}</div>
+          {/* The exact path: shortened, folders in two people's home folders would look the same. */}
+          <span className="sr-only">Project folder:</span>
+          <PathReadout path={project.dir} className="trust-path" />
+        </div>
+        <p className="trust-why">It was made on another computer, or its setup files changed since you last opened it. If you’re unsure, choose Cancel: the project stays closed and nothing is changed.</p>
       </div>
     </Modal>
   );
 }
+
+// ---------- Unpacking ----------
 
 /**
  * A project ZIP file being unpacked into a new folder (#263), over Welcome or the open project, from the moment its
@@ -102,14 +294,17 @@ export function TrustProjectModal({ project, onClose, onOpened }: { project: { d
 export function UnpackingModal() {
   const [unpacking, setUnpacking] = useState<{ name: string; dir: string } | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [since, setSince] = useState<number | null>(null);
   useEffect(
     () =>
       api.on('projects:unpacking', (u) => {
         setUnpacking(u);
         setCancelling(false);
+        setSince(u ? Date.now() : null);
       }),
     []
   );
+  const elapsed = useElapsed(since);
   if (!unpacking) return null;
   const cancel = () => {
     keepFocusInDialog(document.activeElement);
@@ -126,23 +321,33 @@ export function UnpackingModal() {
       dismissOnBackdrop={false}
       footer={
         <button className="btn busy-cancel" data-autofocus disabled={cancelling} onClick={cancel}>
-          {cancelling ? 'Cancelling…' : 'Cancel'}
+          {cancelling ? 'Canceling…' : 'Cancel'}
         </button>
       }
     >
-      <div className="trust-body">
-        <p id="unpack-body" className="row" role="status" style={{ gap: 8 }}>
+      <div id="unpack-body" className="unpack-body">
+        <div className="unpack-status">
           <Spinner decorative />
-          <span>{cancelling ? 'Cancelling. Anything unpacked so far is being removed.' : 'Making a working copy from the ZIP file. The ZIP file is not changed.'}</span>
-        </p>
-        <p className="trust-path" title={unpacking.dir}>
-          <FolderOpen size={14} aria-hidden="true" />
-          <span>{shortPath(unpacking.dir)}</span>
-        </p>
+          <span role="status">{cancelling ? 'Canceling. Anything unpacked so far is being removed.' : 'Making a working copy from the ZIP file. The ZIP file is not changed.'}</span>
+          {elapsed && !cancelling && (
+            <span className="elapsed" aria-hidden="true">
+              {elapsed}
+            </span>
+          )}
+        </div>
+        <div className="path-group">
+          <div className="field-label">Working copy</div>
+          <PathReadout path={unpacking.dir} className="trust-path" />
+        </div>
       </div>
     </Modal>
   );
 }
+
+// ---------- New project ----------
+
+/** What to do when the website tools could not be downloaded, said the same way on the step and to a screen reader. */
+const OFFLINE_STEP = 'Not downloaded. Choose Try again in the preview once you’re connected.';
 
 const STEPS: Array<{ id: ProgressEvent['step']; label: string }> = [
   { id: 'files', label: 'Preparing files' },
@@ -150,16 +355,36 @@ const STEPS: Array<{ id: ProgressEvent['step']; label: string }> = [
   { id: 'preview', label: 'Starting preview' }
 ];
 
+/**
+ * What a failed attempt is about, so the message lands beside what it concerns: the name (a folder by that name is
+ * already there), the chosen location, or neither. Cancel is not a failure and is told as such.
+ */
+type Problem = { text: string; about: 'name' | 'location' | 'other' | 'canceled'; target?: string };
+function problemOf(message: string): Problem {
+  if (/^Cancell?ed\b/i.test(message)) {
+    const rest = message.replace(/^Cancell?ed\.?\s*/i, '');
+    return { about: 'canceled', text: rest ? `Setup was canceled. ${rest}` : 'Setup was canceled. Nothing it made was kept.' };
+  }
+  // A folder by this name is already there: a new name or another folder answers it.
+  if (/already exists and is not empty|^Enter a project name/i.test(message)) return { about: 'name', text: message };
+  // The chosen folder cannot be written to, or is inside the open project: only another folder answers it.
+  if (/does not have permission to write|outside the open project/i.test(message)) return { about: 'location', text: message };
+  return { about: 'other', text: message };
+}
+
 export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [parent, setParent] = useState('');
-  const [starter, setStarter] = useState<'business' | 'blank'>('business');
+  const [starter, setStarter] = useState<StarterId>('business');
   const [images, setImages] = useState(true);
   const [progress, setProgress] = useState<ProgressEvent | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [problem, setProblem] = useState<Problem | null>(null);
   // Whether setup will download anything, known before Create is pressed (null while it is being checked).
   const [tools, setTools] = useState<WebsiteTools | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  // The website tools could not be downloaded: the project still opens, and its preview waits for a connection.
+  const [toolsMissing, setToolsMissing] = useState(false);
+  const [stepSince, setStepSince] = useState<number | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   // Progress belongs to this dialog's own attempt, named in its create call: another attempt still running (from a
@@ -167,6 +392,7 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   // here. Once this dialog has gone, its attempt's answer is only told as a notice.
   const attempt = useRef<string | null>(null);
   const live = useRef(true);
+  const stepRef = useRef<ProgressEvent['step'] | null>(null);
   useEffect(() => {
     live.current = true;
     void api.dialogs.defaultProjectsFolder().then(setParent, () => undefined);
@@ -176,6 +402,13 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
     );
     const off = api.on('create:progress', (p) => {
       if (!attempt.current || p.attempt !== attempt.current) return;
+      // Main opens the project without its preview when the tools could not be downloaded, and says so here.
+      if (p.step === 'preview' && /^Opening/.test(p.message)) setToolsMissing(true);
+      // Each step is timed from when it began, so a long one shows it is still going.
+      if (stepRef.current !== p.step) {
+        stepRef.current = p.step;
+        setStepSince(Date.now());
+      }
       // The last line written for people stays up while the install runs.
       setProgress((prev) => ({ ...p, detail: isPlainDetail(p.detail) ? p.detail : prev?.step === p.step ? prev.detail : undefined }));
     });
@@ -187,6 +420,9 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   const running = !!progress && progress.step !== 'error' && progress.step !== 'done';
   const inProgress = !!progress && progress.step !== 'error';
   const lastStep = progress?.step === 'preview' || progress?.step === 'done';
+  // Setup can be called off (by Cancel, the close button or Esc) until the new project is starting its preview.
+  const canCancel = running && !lastStep && !cancelling;
+  const elapsed = useElapsed(running && !cancelling ? stepSince : null, 8000);
   // The form's controls went with it: focus moves to Cancel, then to the dialog once nothing is left to cancel.
   useEffect(() => {
     if (inProgress) cancelRef.current?.focus();
@@ -194,21 +430,35 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (lastStep) keepFocusInDialog(cancelRef.current);
   }, [lastStep]);
-  // Back on the form with an error: the fields it talks about are in view, and focus is on the first of them.
+  // Back on the form with a problem: the fields it talks about are in view, and focus is on the first of them.
   useEffect(() => {
-    if (!error) return;
+    if (!problem) return;
     nameRef.current?.closest('.modal-body')?.scrollTo({ top: 0 });
     nameRef.current?.focus();
-  }, [error]);
-  // The author learns whether anything is downloaded before committing to it, by the button or by Enter.
-  const canCreate = !!name.trim() && !!parent && tools !== null;
+  }, [problem]);
   const slug = name.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, ' and ').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'website';
 
-  const separator = parent.includes('\\') ? '\\' : '/';
-  const target = parent && name.trim() ? `${parent}${separator}${slug}` : parent;
+  const separator = isWindowsPath(parent) ? '\\' : '/';
+  const target = parent && name.trim() ? `${parent.endsWith(separator) ? parent : parent + separator}${slug}` : parent;
+  // A folder that is already there stays the problem while the name still leads to it, and goes when it doesn't; it
+  // comes back if the name returns to it. Choosing a folder again asks afresh, in case it was emptied meanwhile.
+  const shown = problem?.about === 'name' && problem.target && problem.target !== target ? null : problem;
+  // The author learns whether anything is downloaded before committing to it, by the button or by Enter, and is not
+  // offered the same folder again once it was found taken.
+  const canCreate = !!name.trim() && !!parent && tools !== null && !(shown?.about === 'name' && shown.target === target);
   const idx = progress ? STEPS.findIndex((s) => s.id === progress.step) : -1;
   // One line per step for a screen reader, in a region that is already there when the form gives way to progress.
-  const announce = !progress || !inProgress ? '' : cancelling && !lastStep ? 'Stopping setup…' : idx < 0 ? progress.message : `Step ${idx + 1} of ${STEPS.length}. ${STEPS[idx].label}.${progress.detail ? ` ${progress.detail}` : ''}`;
+  const announce = !progress || !inProgress
+    ? problem?.about === 'canceled'
+      ? problem.text
+      : ''
+    : cancelling && !lastStep
+      ? 'Stopping setup, and removing what it made so far.'
+      : idx < 0
+        ? progress.message
+        : toolsMissing && idx === 2
+          ? `Step 3 of ${STEPS.length}. Opening your project without its preview. ${OFFLINE_STEP} Setup can no longer be canceled.`
+          : `Step ${idx + 1} of ${STEPS.length}. ${STEPS[idx].label}.${progress.detail ? ` ${progress.detail}` : ''}${lastStep ? ' Setup can no longer be canceled.' : ''}`;
   const status = (
     <div className="sr-only" role="status">
       {announce}
@@ -219,8 +469,11 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
     if (attempt.current || !canCreate) return;
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     attempt.current = id;
-    setError(null);
+    setProblem(null);
     setCancelling(false);
+    setToolsMissing(false);
+    stepRef.current = 'files';
+    setStepSince(Date.now());
     setProgress({ step: 'files', message: 'Preparing project files…' });
     let r: { ok: boolean; message?: string };
     try {
@@ -242,53 +495,92 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
     // The author chose to keep editing it: the dialog makes way.
     if (!r.message) return onClose();
     // Anything else is explained here, with the form as it was, to fix and try again.
-    setError(r.message);
+    setProblem({ ...problemOf(r.message), target });
     setProgress(null);
   };
 
   if (progress && progress.step !== 'error') {
+    const cancel = () => {
+      if (!canCancel) return;
+      keepFocusInDialog(cancelRef.current);
+      setCancelling(true);
+      void api.projects.cancelCreate().catch(() => setCancelling(false));
+    };
+    const downloading = tools !== 'local' || /\bdownload/i.test(progress.detail ?? '');
+    const waitHint = cancelling ? null : idx === 1 && downloading ? 'Downloads can take a few minutes on a slow connection.' : null;
     return (
       <Modal
         title={`Creating ${name.trim()}`}
         icon={<LayoutTemplate />}
-        onClose={() => undefined}
-        busy
+        onClose={cancel}
+        busy={!canCancel}
+        dismissOnBackdrop={false}
+        describedBy="setup-steps"
         footer={
           <>
-            {(lastStep || cancelling) && <span className="foot-note">{lastStep ? 'Opening your project now' : 'Stopping setup…'}</span>}
+            <span className="foot-note">
+              {lastStep ? (
+                'Opening your project now'
+              ) : cancelling ? (
+                <>
+                  <Spinner decorative /> Stopping setup…
+                </>
+              ) : null}
+            </span>
             {/* Once the new project is starting its preview it has replaced the open one: nothing is left to cancel. */}
-            <button
-              ref={cancelRef}
-              className="btn busy-cancel"
-              onClick={(e) => {
-                keepFocusInDialog(e.currentTarget);
-                setCancelling(true);
-                void api.projects.cancelCreate().catch(() => setCancelling(false));
-              }}
-              disabled={!running || lastStep || cancelling}
-            >
-              {cancelling && !lastStep ? 'Cancelling…' : 'Cancel'}
+            <button ref={cancelRef} className="btn busy-cancel" onClick={cancel} disabled={!canCancel}>
+              {cancelling && !lastStep ? 'Canceling…' : 'Cancel'}
             </button>
           </>
         }
       >
         {status}
-        <ol className="progress-steps">
-          {STEPS.map((s, i) => (
-            <li key={s.id} className={`progress-step${i < idx || progress.step === 'done' ? ' done' : i === idx ? ' active' : ''}`} aria-current={i === idx ? 'step' : undefined}>
-              <span className="dot">{i < idx || progress.step === 'done' ? <Check aria-hidden="true" /> : i === idx ? <Spinner decorative /> : null}</span>
-              <span>
-                {i < idx || progress.step === 'done' ? <span className="sr-only">Done: </span> : null}
-                {s.label}
-              </span>
-              {i === idx && progress.detail && <span className="progress-detail">{progress.detail}</span>}
-            </li>
-          ))}
-        </ol>
+        <div className={`setup${cancelling && !lastStep ? ' stopping' : ''}`}>
+          <StarterArt starter={starter} siteName={name} />
+          <div className="setup-main">
+            <ol id="setup-steps" className="progress-steps">
+              {STEPS.map((s, i) => {
+                const done = i < idx || progress.step === 'done';
+                const warn = toolsMissing && i === 1;
+                const active = i === idx;
+                const label = toolsMissing && i === 2 ? 'Opening your project' : s.label;
+                return (
+                  <li key={s.id} className={`progress-step${warn ? ' warn' : done ? ' done' : active ? ' active' : ''}`} aria-current={active ? 'step' : undefined}>
+                    <span className="dot">{warn ? <CloudAlert aria-hidden="true" /> : done ? <Check aria-hidden="true" /> : active && !(cancelling && !lastStep) ? <Spinner decorative /> : active ? <span className="stop" /> : null}</span>
+                    <span className="step-label">
+                      {done && !warn ? <span className="sr-only">Done: </span> : null}
+                      {label}
+                    </span>
+                    {active && elapsed && (
+                      <span className="elapsed" aria-hidden="true">
+                        {elapsed}
+                      </span>
+                    )}
+                    {warn && <span className="progress-detail">{OFFLINE_STEP}</span>}
+                    {active && cancelling && !lastStep ? (
+                      <span className="progress-detail">Stopping, and removing what setup made so far…</span>
+                    ) : active && progress.detail && !(toolsMissing && i === 2) ? (
+                      <span className="progress-detail">{progress.detail}</span>
+                    ) : null}
+                    {active && waitHint && <span className="progress-hint">{waitHint}</span>}
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="path-group">
+              <div className="field-label">Project folder</div>
+              <PathReadout path={target} />
+            </div>
+          </div>
+        </div>
       </Modal>
     );
   }
 
+  const onName = shown?.about === 'name';
+  const onLocation = shown?.about === 'name' || shown?.about === 'location';
+  // What happens offline stays in view whenever Create is on offer, a failure that can be retried included.
+  const showToolsNote = (tools === 'download' || tools === 'unknown') && canCreate;
   return (
     <Modal
       title="New project"
@@ -305,18 +597,17 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
             ) : tools === 'local' ? (
               <>
                 <Check aria-hidden="true" /> Website tools are on this computer
-                <span className="sr-only">If a saved copy can’t be used, setup downloads it again.</span>
               </>
             ) : (
               <>
-                <CloudDownload aria-hidden="true" /> {tools === 'download' ? 'Setup needs a download' : 'Setup may need a download'}
+                <CloudDownload aria-hidden="true" /> {tools === 'download' ? 'Setup downloads website tools' : 'Setup may download website tools'}
               </>
             )}
           </span>
           <button className="btn" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn-primary" disabled={!canCreate} aria-describedby="new-project-tools new-project-tools-note" onClick={() => void create()}>
+          <button className="btn btn-primary" disabled={!canCreate} aria-describedby={showToolsNote ? 'new-project-tools new-project-tools-note' : 'new-project-tools'} onClick={() => void create()}>
             Create project
           </button>
         </>
@@ -324,53 +615,59 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
     >
       {status}
       <div className="new-project-form">
-        <Field label="Project name" controlId="new-project-name">
-          <input
-            ref={nameRef}
-            id="new-project-name"
-            className="input"
-            autoFocus
-            placeholder="For example, Harbour Lane Studio"
-            value={name}
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? 'new-project-error' : undefined}
-            onChange={(e) => {
-              setName(e.target.value);
-              setError(null);
-            }}
-            onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void create()}
-          />
-        </Field>
-        <Field label="Location">
-          <div className="row">
-            <div id="new-project-path" className="path-field grow" title={target || undefined}>
-              <FolderOpen size={14} aria-hidden="true" />
-              <span>{target ? shortPath(target) : 'Choose a folder'}</span>
-            </div>
-            <button
-              className="btn"
-              aria-describedby={error ? 'new-project-path new-project-error' : 'new-project-path'}
-              onClick={async () => {
-                const d = await api.dialogs.chooseFolder('Choose where to create the project', parent);
-                if (d) {
-                  setParent(d);
-                  setError(null);
-                }
+        <div className="np-identity">
+          <Field label="Project name" controlId="new-project-name">
+            <input
+              ref={nameRef}
+              id="new-project-name"
+              className="input"
+              autoFocus
+              placeholder="For example, Harbour Lane Studio"
+              value={name}
+              aria-invalid={onName ? true : undefined}
+              aria-describedby={shown && (shown.about === 'name' || shown.about === 'other') ? 'new-project-error' : undefined}
+              onChange={(e) => {
+                setName(e.target.value);
+                // A clash with a folder of that name follows the destination; a problem with the chosen folder stays.
+                if (problem?.about === 'canceled') setProblem(null);
               }}
-            >
-              Choose…
-            </button>
+              onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void create()}
+            />
+          </Field>
+          <div className="field">
+            <div className="field-label" id="new-project-path-label">
+              Project folder
+            </div>
+            <div className="np-path-row">
+              <PathReadout id="new-project-path" path={target} pending={name.trim() ? undefined : 'your-site'} className={onLocation ? 'invalid' : ''} />
+              <button
+                className="btn"
+                aria-describedby={onLocation ? 'new-project-path-label new-project-path new-project-error' : 'new-project-path-label new-project-path'}
+                onClick={async () => {
+                  const d = await api.dialogs.chooseFolder('Choose where to create the project', parent);
+                  if (d) {
+                    setParent(d);
+                    if (problem && problem.about !== 'other') setProblem(null);
+                  }
+                }}
+              >
+                Choose…
+              </button>
+            </div>
           </div>
-        </Field>
-        {error && (
-          <div id="new-project-error" className="scope-note danger" role="alert">
-            <CircleAlert aria-hidden="true" />
-            <span>{error}</span>
-          </div>
-        )}
-        <div className="field">
-          <div className="field-label" id="new-project-starter-label">
-            Start from
+          {shown && (
+            <div id="new-project-error" className={`scope-note ${shown.about === 'canceled' ? 'info' : 'danger'}`} role={shown.about === 'canceled' ? undefined : 'alert'}>
+              {shown.about === 'canceled' ? <Info aria-hidden="true" /> : <CircleAlert aria-hidden="true" />}
+              <span>{shown.text}</span>
+            </div>
+          )}
+        </div>
+        <div className="np-start">
+          <div className="np-start-head">
+            <div className="field-label" id="new-project-starter-label">
+              Start from
+            </div>
+            <span className="np-theme">Previews show the Foundation theme · change it any time in Site styles</span>
           </div>
           <div
             className="starter-grid"
@@ -384,59 +681,56 @@ export function NewProjectModal({ onClose }: { onClose: () => void }) {
               requestAnimationFrame(() => group.querySelector<HTMLElement>('[aria-checked="true"]')?.focus());
             }}
           >
-            <button className="starter-card" role="radio" aria-checked={starter === 'business'} tabIndex={starter === 'business' ? 0 : -1} onClick={() => setStarter('business')}>
-              <div className="art">
-                <i style={{ height: 6, width: '100%', opacity: 0.6 }} />
-                <div className="row" style={{ gap: 5, flex: 1, minHeight: 0, alignItems: 'stretch' }}>
-                  <div className="col" style={{ gap: 4, flex: 1, justifyContent: 'center' }}>
-                    <i className="hi" style={{ height: 9, width: '80%' }} />
-                    <i style={{ height: 5, width: '90%' }} />
-                    <i style={{ height: 5, width: '70%' }} />
-                  </div>
-                  <i style={{ width: 48 }} />
-                </div>
-                <div className="row" style={{ gap: 5 }}>
-                  <i style={{ height: 12, flex: 1 }} />
-                  <i style={{ height: 12, flex: 1 }} />
-                  <i style={{ height: 12, flex: 1 }} />
-                </div>
-              </div>
-              <div className="copy">
-                {starter === 'business' && (
-                  <span className="picked" aria-hidden="true">
-                    <Check />
+            {STARTERS.map((s) => {
+              const on = starter === s.id;
+              return (
+                <button
+                  key={s.id}
+                  className="starter-card"
+                  role="radio"
+                  aria-checked={on}
+                  aria-labelledby={`starter-${s.id}-name`}
+                  aria-describedby={`starter-${s.id}-pages starter-${s.id}-blurb`}
+                  tabIndex={on ? 0 : -1}
+                  onClick={() => setStarter(s.id)}
+                >
+                  <StarterArt starter={s.id} siteName={name} />
+                  <span className="copy">
+                    <span className="title-row">
+                      <span className="mark" aria-hidden="true">
+                        {on && <Check />}
+                      </span>
+                      <strong id={`starter-${s.id}-name`}>{s.name}</strong>
+                      <span className="pages" aria-hidden="true">
+                        {pagesOf(s.id).map((p) => (
+                          <span key={p}>{p}</span>
+                        ))}
+                      </span>
+                      <span className="sr-only" id={`starter-${s.id}-pages`}>
+                        {pagesOf(s.id).length === 1 ? 'One page: Home.' : `${pagesOf(s.id).length} pages: ${pagesOf(s.id).join(', ')}.`}
+                      </span>
+                    </span>
+                    <span className="blurb" id={`starter-${s.id}-blurb`}>
+                      {s.blurb}
+                    </span>
                   </span>
-                )}
-                <strong>Business</strong>
-                <p>Home, About and Contact pages, ready to make your own.</p>
-              </div>
-            </button>
-            <button className="starter-card" role="radio" aria-checked={starter === 'blank'} tabIndex={starter === 'blank' ? 0 : -1} onClick={() => setStarter('blank')}>
-              <div className="art">
-                <i style={{ height: 8, width: '100%', opacity: 0.6 }} />
-                <div style={{ flex: 1, display: 'grid', placeItems: 'center' }}>
-                  <i style={{ height: 8, width: '50%' }} />
-                </div>
-                <i style={{ height: 10, width: '100%', opacity: 0.6 }} />
-              </div>
-              <div className="copy">
-                {starter === 'blank' && (
-                  <span className="picked" aria-hidden="true">
-                    <Check />
-                  </span>
-                )}
-                <strong>Blank site</strong>
-                <p>One page with a header and footer.</p>
-              </div>
-            </button>
+                </button>
+              );
+            })}
+          </div>
+          {/* The same height for either starter, so choosing one never moves the buttons under the pointer. */}
+          <div className="np-option">
+            {starter === 'business' ? (
+              <SwitchRow checked={images} onChange={setImages} label="Include sample images" hint="Interior photos fill the image spaces, shown empty in the previews. Replace them any time." />
+            ) : (
+              <p className="np-option-note">Starts with nothing to replace: no sample text or images.</p>
+            )}
           </div>
         </div>
-        {starter === 'business' && (
-          <SwitchRow checked={images} onChange={setImages} label="Include sample images" hint="Placeholder photos you can replace any time." />
-        )}
-        {(tools === 'download' || tools === 'unknown') && (
+        {showToolsNote && (
           <div id="new-project-tools-note" className="scope-note info">
-            <span>If the download can’t connect, your project still opens for editing. Choose Try again in its preview once you’re back online.</span>
+            <Info aria-hidden="true" />
+            <span>If the website tools can’t download, your project still opens. Choose Try again in its preview later.</span>
           </div>
         )}
       </div>
