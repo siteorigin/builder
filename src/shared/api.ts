@@ -90,9 +90,68 @@ export interface HistoryInfo {
   canRedo: boolean;
   undoLabel?: string;
   redoLabel?: string;
-  entries: Array<{ id: string; label: string; source: string; time: string; applied: boolean; runId?: string }>;
+  entries: Array<{
+    id: string;
+    label: string;
+    source: string;
+    time: string;
+    applied: boolean;
+    runId?: string;
+    /** The AI run this step took back on its own, keeping the edits made after it (issue 164). */
+    revertsRunId?: string;
+  }>;
   /** AI runs whose step History has let go, and whether it was applied or undone when it went (issue 276). */
   droppedRuns?: Record<string, 'applied' | 'undone'>;
+}
+
+/**
+ * One thing a History step changed, named the way the editor names it: `owner` is what it is part of (a page by its
+ * title, "Site settings", "Header"), `property` what changed there. `before` and `after` are the values as they were
+ * and became, absent when there was none (a page added has no `before`); a change with neither has no single value
+ * to show, such as a page's content (`detail` then says how much changed).
+ */
+export interface StepChange {
+  owner: string;
+  property: string;
+  change: 'added' | 'removed' | 'changed';
+  before?: string;
+  after?: string;
+  detail?: string;
+}
+
+/**
+ * A change made after an AI turn, and how it stands with taking that turn back on its own: `depends` when it changed
+ * something the turn changed or made (a page it added) or relies on it (a link to that page), so it can only go back
+ * with the turn; `separate` when it did neither. `reason` says why it depends.
+ */
+export interface TurnLaterChange {
+  entryId: string;
+  label: string;
+  source: string;
+  time: string;
+  changes: StepChange[];
+  relation: 'depends' | 'separate';
+  reason?: string;
+}
+
+/** What an AI turn's History step changed, what came after it, and whether it can be taken back on its own (issue 164). */
+export interface AiTurnReview {
+  entryId: string;
+  runId: string;
+  label: string;
+  /** The revision this was worked out at: a revert passes it back, and a project changed since is refused. */
+  revision: number;
+  /** The turn's step is applied in History. */
+  applied: boolean;
+  /** The later step that already took the turn back on its own, while it is applied. */
+  revertedBy?: { entryId: string; label: string };
+  changes: StepChange[];
+  /** The applied changes made after it, oldest first. */
+  later: TurnLaterChange[];
+  /** Undone changes after History's position, which any new change (a revert too) leaves no longer redoable. */
+  redoable: number;
+  /** Whether the turn can be taken back on its own, keeping every later change; otherwise why not. */
+  revert: { ok: true } | { ok: false; reason: string };
 }
 
 /** One saved version of the site, as History lists it (issue 260). */
@@ -775,6 +834,10 @@ export interface BuilderApi {
      * edits allow it, and refused with CONFLICT otherwise.
      */
     undoEntry(entryId: string, workspaceKey: string): Promise<ApplyResult>;
+    /** What an AI turn's History step changed and what came after it (issue 164). It never writes. */
+    reviewAiTurn(entryId: string, workspaceKey: string): Promise<{ ok: boolean; message?: string; review?: AiTurnReview }>;
+    /** Take an AI turn back on its own, keeping every later change, as reviewed at `expected.revision` (issue 164). */
+    revertAiTurn(entryId: string, expected: { revision: number }, workspaceKey: string): Promise<ApplyResult>;
     redo(): Promise<ApplyResult>;
     /**
      * Step History of the opening `workspaceKey` to an entry chosen in it, in one change: `undo` undoes that entry and

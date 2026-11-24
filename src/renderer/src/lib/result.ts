@@ -92,6 +92,8 @@ export function standingNote(m: Pick<ChatMessage, 'runId' | 'result' | 'text'>, 
   if (!unfinished) return undefined;
   if (turn.standing === 'undone') {
     if (!last) return undefined;
+    // Taken back on its own by a later step (issue 164): undoing that step puts them back.
+    if (history?.entries.some((e) => e.applied && e.revertsRunId === m.runId)) return 'These changes were reverted, so this request can only be continued once that revert is undone.';
     const redoable = !!history?.entries.some((e) => e.runId === m.runId && !e.applied);
     return redoable ? 'These changes were undone, so this request can only be continued once they are redone.' : `These changes were undone.${again}`;
   }
