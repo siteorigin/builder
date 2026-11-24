@@ -1228,6 +1228,13 @@ export class ProjectSession extends EventEmitter {
         this.holdConflict(d.path, null, 'Changed outside SiteOrigin Builder while a save was interrupted.');
         continue;
       }
+      // A collection's settings stay while any of its entries is still there (one added outside the app since, or one
+      // held above): an entry is never left without its collection, which would stop the project opening.
+      const settingsOf = collectionPathOf(d.path);
+      if (settingsOf && settingsOf.entryId === undefined) {
+        const left = await fs.readdir(join(this.dir, DOC_DIR, 'collections', settingsOf.collectionId, 'entries')).catch(() => [] as string[]);
+        if (left.some((f) => isCanonicalPath(`${DOC_DIR}/collections/${settingsOf.collectionId}/entries/${f}`))) continue;
+      }
       await this.removeCanonical(d.path);
     }
     // A file the interrupted save had already replaced or removed may not have reached the disk for good yet.
@@ -2823,8 +2830,10 @@ export class ProjectSession extends EventEmitter {
     }
     // An entry is kept only with its collection: a restore that would leave one without it (its collection deleted
     // outside the app since) cannot be saved.
-    const orphan = collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)])).orphans[0];
-    if (orphan) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${orphan} would have no collection.`, recoverable: false } };
+    // Nor beside another entry with its ID (one added to another collection outside the app since).
+    const restored = collectionsFromDocs([...docs].filter(([p]) => collectionPathOf(p)).map(([p, c]) => [p, JSON.parse(c)]));
+    const unsaveable = restored.orphans.length ? `${restored.orphans[0]} would have no collection` : restored.duplicates.length ? `${restored.duplicates[0]} would share its entry ID with another entry` : null;
+    if (unsaveable) return { ok: false, revision: this.revision, error: { code: 'CONFLICT', message: `Cannot ${direction} "${entry.label}": ${unsaveable}.`, recoverable: false } };
     const next = docsToState(docs, this.state);
     // History restores only its own documents, and another may have changed outside the app since (a page now on
     // a route this restores, an old address kept there): never save a project that could not be opened again.

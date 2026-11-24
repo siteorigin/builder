@@ -209,14 +209,16 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       ...(schema?.type === 'list' ? Object.entries(schema.fields ?? {}).map(([f, field]) => ({ label: `${schema.label || name} › ${field?.label || f}`, links: linksOf(field, field?.default) })) : [])
     ]);
     for (const { label, links } of defaults) {
-      const broken = new Set<'page' | 'document'>();
+      const broken = new Set<'page' | 'document' | 'entry'>();
       for (const l of links) {
+        if (l.type === 'entry') broken.add('entry');
         if (l.type === 'page' && !Object.hasOwn(state.pages, l.target)) broken.add('page');
         if (l.type === 'document' && (Object.hasOwn(state.assets.assets, l.target) ? state.assets.assets[l.target] : undefined)?.kind !== 'document') broken.add('document');
       }
       const what = `${def.name}: the default “${label}” links to`;
       if (broken.has('page')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a page that no longer exists.`, owner });
       if (broken.has('document')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a document that is no longer in Assets. Choose another destination for it.`, owner });
+      if (broken.has('entry')) out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${what} a collection entry, which only another entry can link to for now. Choose another destination for it.`, owner });
     }
   }
 
@@ -282,8 +284,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       const o = v as Record<string, unknown>;
       if (o.type === 'page' && typeof o.target === 'string' && !state.pages[o.target])
         out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a page that no longer exists.`, owner, nodeId });
-      if (o.type === 'entry' && typeof o.target === 'string' && !findEntry(state, o.target))
-        out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link points to a collection entry that no longer exists.`, owner, nodeId });
+      // Only an entry's own text can hold a link to an entry for now: anywhere else the website could not show it, and
+      // editing its text on the page would drop it.
+      if (o.type === 'entry' && typeof o.target === 'string')
+        out.push({ severity: 'error', code: 'LINK_BROKEN', message: `${label}: a link goes to ${findEntry(state, o.target) ? 'a collection entry, which only another entry can link to for now' : 'a collection entry that no longer exists'}. Choose another destination for it.`, owner, nodeId });
       const asset = typeof o.assetId === 'string' && Object.hasOwn(state.assets.assets, o.assetId) ? state.assets.assets[o.assetId] : undefined;
       if (typeof o.assetId === 'string' && !asset) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${label}: an image references a missing asset.`, owner, nodeId });
       else if (asset && asset.kind !== 'image' && shown)

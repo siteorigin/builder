@@ -41,10 +41,22 @@ type Except = { collectionId?: string; entryIds?: ReadonlySet<string> };
 const excepted = (o: RouteOwner, except: Except) =>
   (o.kind === 'collection' && o.collectionId === except.collectionId) || (o.kind === 'entry' && (o.collectionId === except.collectionId || !!except.entryIds?.has(o.entryId)));
 
+/**
+ * What holds each address of the site, built once for an operation that checks many (moving a collection, numbering
+ * a slug), so the check is one lookup per address. Compared as case-insensitive file systems do.
+ */
+function routeIndex(state: ProjectState): (route: string, except?: Except) => RouteOwner | undefined {
+  const byRoute = new Map<string, RouteOwner[]>();
+  for (const o of routeOwners(state)) {
+    const key = o.route.toLowerCase();
+    byRoute.set(key, [...(byRoute.get(key) ?? []), o]);
+  }
+  return (route, except = {}) => byRoute.get(route.toLowerCase())?.find((o) => !excepted(o, except));
+}
+
 /** What already holds `route`, apart from the claims `except` names. */
 function routeHolder(state: ProjectState, route: string, except: Except = {}): RouteOwner | undefined {
-  const key = route.toLowerCase();
-  return routeOwners(state).find((o) => o.route.toLowerCase() === key && !excepted(o, except));
+  return routeIndex(state)(route, except);
 }
 
 /** A collection's address prefix, as given: valid, not Home's, and shallow enough to leave a level for entries. */
@@ -70,7 +82,8 @@ function explicitSlug(input: string): string {
  */
 function autoSlug(state: ProjectState, collection: Collection, title: string, entryId: string): string {
   const stem = slugify(title) || 'entry';
-  const free = (slug: string) => !routeHolder(state, `${collection.settings.route}${slug}/`, { entryIds: new Set([entryId]) });
+  const holder = routeIndex(state);
+  const free = (slug: string) => !holder(`${collection.settings.route}${slug}/`, { entryIds: new Set([entryId]) });
   let slug = stem;
   for (let i = 2; !free(slug); i++) slug = `${stem.slice(0, 60 - `-${i}`.length).replace(/-+$/, '')}-${i}`;
   return slug;
@@ -148,11 +161,17 @@ function settleEntries(state: ProjectState, collection: Collection, taxonomies: 
     const values: Record<string, CollectionFieldValue> = {};
     for (const [name, v] of Object.entries(entry.values ?? {})) {
       if (!Object.hasOwn(fields, name)) continue;
+      // Kept exactly as stored: a value the new field would read differently (a number as text, lines run together)
+      // is refused like one it does not take at all.
+      let kept: unknown;
       try {
-        values[name] = normalizeScalar(fields[name], v, state, name, v) as CollectionFieldValue;
-      } catch (e) {
-        fail(`“${entry.title}” has a value for ${fields[name].label} that the new field does not take (${(e as Error).message}). Change that entry first, or remove the field and add it again.`);
+        kept = normalizeScalar(fields[name], v, state, name, v);
+      } catch {
+        kept = undefined;
       }
+      if (kept === undefined || JSON.stringify(kept) !== JSON.stringify(v))
+        fail(`“${entry.title}” has a value for ${fields[name].label} that the changed field would not keep as it is. Change that entry first, or remove the field and add it again.`);
+      values[name] = v;
     }
     entry.values = values;
   }
@@ -185,8 +204,9 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     // The collection and every entry move together: each new address must be free of everything else.
     const except = { collectionId: c.settings.id };
     refuseTaken(state, route, except, 'address for the collection');
+    const held = routeIndex(state);
     for (const e of Object.values(c.entries)) {
-      const holder = routeHolder(state, `${route}${e.slug}/`, except);
+      const holder = held(`${route}${e.slug}/`, except);
       if (holder) fail(`Moving the collection to ${route} would give “${e.title}” the address ${route}${e.slug}/, which is ${holder.label}'s. Change that entry's slug first, or choose another address.`);
     }
     c.settings.route = route;
@@ -205,7 +225,7 @@ export function collectionRemove(state: ProjectState, op: Op<'collection.remove'
   const c = getCollection(state, op.collectionId);
   const members = new Set(Object.keys(c.entries));
   // Links between its own entries go with them; any other link to one of them would be left going nowhere.
-  const outside = [...members].flatMap((id) => entryLinkUses(state, id)).filter((u) => !(u.owner.kind === 'entry' && members.has(u.owner.id)));
+  const outside = entryLinkUses(state, members);
   if (outside.length) {
     const n = outside.length;
     throw new EngineError('VALIDATION_FAILED', `${n} link${n === 1 ? '' : 's'} outside the ${c.settings.name} collection point to its entries (in ${[...new Set(outside.map((u) => u.where))].slice(0, 3).join(', ')}). Point them elsewhere first.`, { references: n });
@@ -268,24 +288,28 @@ function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, o
     }
     entry.values = values;
   }
-  if (op.body !== undefined) entry.body = normalizeRichText(op.body ?? [], state, `${label} text`, undefined, { entries: true });
+  // The new address first, so the text can link to it.
   if (op.slug !== undefined) {
     const slug = explicitSlug(op.slug);
     if (slug !== entry.slug) refuseTaken(state, `${c.settings.route}${slug}/`, { entryIds: new Set([entry.id]) }, 'slug');
     entry.slug = slug;
   }
+  if (op.body !== undefined) entry.body = normalizeRichText(op.body ?? [], state, `${label} text`, undefined, { entries: true });
 }
 
 export function entryCreate(state: ProjectState, op: Op<'entry.create'>): OpResult {
   const c = getCollection(state, op.collectionId);
   const id = op.entryId ?? newId('en');
   if (findEntry(state, id)) fail(`An entry with the ID "${id}" already exists.`);
-  const entry: EntryDoc = { schemaVersion: SCHEMA_VERSION, id, slug: '', title: '', publishedAt: todayArticleDate(), draft: true, terms: {}, values: {}, body: [] };
-  // Added first, so its own text can link to it, and its new address is checked against everything else.
+  const title = op.title.trim() || fail('An entry needs a title.');
+  const entry: EntryDoc = { schemaVersion: SCHEMA_VERSION, id, slug: '', title, publishedAt: todayArticleDate(), draft: true, terms: {}, values: {}, body: [] };
+  // Added, with its address, before anything else, so its own text can link to it.
   c.entries[id] = entry;
+  if (op.slug !== undefined) {
+    entry.slug = explicitSlug(op.slug);
+    refuseTaken(state, entryRoute(c, entry), { entryIds: new Set([id]) }, 'slug');
+  } else entry.slug = autoSlug(state, c, title, id);
   applyEntryFields(state, c, entry, { ...op, slug: undefined });
-  entry.slug = op.slug !== undefined ? explicitSlug(op.slug) : autoSlug(state, c, entry.title, id);
-  if (op.slug !== undefined) refuseTaken(state, entryRoute(c, entry), { entryIds: new Set([id]) }, 'slug');
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder.push(id);
   return { collectionId: c.settings.id, entryId: id, slug: entry.slug, route: entryRoute(c, entry) };
 }
@@ -383,8 +407,10 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
     const fields = s.fields && typeof s.fields === 'object' ? s.fields : {};
     if (taxonomies !== s.taxonomies || Object.entries(taxonomies).some(([id, t]) => !isTermId(id) || typeof t?.label !== 'string' || !t.terms || typeof t.terms !== 'object'))
       out.push({ severity: 'error', code: 'COLLECTION_INVALID', message: `${name}: its groupings are damaged.`, owner });
-    if (fields !== s.fields || Object.values(fields).some((f) => !(COLLECTION_FIELD_TYPES as readonly unknown[]).includes(f?.type)))
-      out.push({ severity: 'error', code: 'COLLECTION_INVALID', message: `${name}: its custom fields are damaged.`, owner });
+    const damaged = (f: CollectionFieldSchema | undefined) =>
+      !(COLLECTION_FIELD_TYPES as readonly unknown[]).includes(f?.type) || (f!.type === 'enum' && (!Array.isArray(f!.options) || !f!.options.every((o) => o && typeof o === 'object')));
+    const fieldsDamaged = fields !== s.fields || Object.values(fields).some(damaged);
+    if (fieldsDamaged) out.push({ severity: 'error', code: 'COLLECTION_INVALID', message: `${name}: its custom fields are damaged.`, owner });
     for (const [k, f] of Object.entries(fields)) {
       const a = f?.type === 'image' && f.default?.assetId ? own(assets, f.default.assetId) : undefined;
       if (f?.type === 'image' && f.default?.assetId && !a) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${name}: the default of ${f.label} shows an image that is not in the library.`, owner, site: `default|${k}` });
@@ -419,6 +445,8 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
       }
       for (const [k, v] of Object.entries(e.values && typeof e.values === 'object' ? e.values : {})) {
         const f = own(fields, k);
+        // A damaged field is reported once, above; its values cannot be judged.
+        if (f && damaged(f)) continue;
         if (!f) {
           out.push({ severity: 'warning', code: 'FIELD_VALUE_INVALID', message: `${what}: the collection has no field "${k}".`, owner: eo, site: `values|${k}` });
           continue;

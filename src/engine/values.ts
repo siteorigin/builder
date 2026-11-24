@@ -87,8 +87,11 @@ export function normalizeImage(v: unknown, state: ProjectState, label: string): 
     return { assetId: v, alt: state.assets.assets[v].altSuggestion ?? '' };
   }
   const i = v as Partial<ImageValue>;
+  // An ID is text: anything else would look up a library image without being one (an array reads as its text).
+  if (i.assetId !== undefined && i.assetId !== null && typeof i.assetId !== 'string') fail(`${label}: an image's assetId must be an asset ID or null.`);
   if (i.assetId) notImage(i.assetId);
-  const out: ImageValue = { assetId: i.assetId ?? null, alt: String(i.alt ?? '').slice(0, 300) };
+  // No image is null, however it was sent.
+  const out: ImageValue = { assetId: i.assetId || null, alt: String(i.alt ?? '').slice(0, 300) };
   if (i.decorative) out.decorative = true;
   return out;
 }
@@ -103,13 +106,14 @@ const MAX_RICH_BLOCKS = 500;
  */
 export function normalizeRichText(v: unknown, state: ProjectState, label: string, plainAs?: RichListType, scope: LinkScope = {}): RichText {
   const link = (target: string, newTab: boolean): LinkValue | null => {
-    if (scope.entries) {
-      const t = target.trim();
-      // An entry by its ID, or by its address while nothing else has it.
+    const t = target.trim();
+    // An entry by its ID, refused where entry links are not kept, so it never stays behind as plain text.
+    if (t.startsWith(ENTRY_LINK_PREFIX)) return normalizeLink({ type: 'entry', target: t.slice(ENTRY_LINK_PREFIX.length), newTab }, state, label, scope);
+    // Or by its address (a path of this site, never a //host one), while no page has it.
+    if (scope.entries && /^\/(?!\/)/.test(t)) {
       const route = `/${t.replace(/^\/+|\/+$/g, '')}/`;
       const owner = collectionRoutes(state).find((o) => o.kind === 'entry' && o.route === route);
-      const id = t.startsWith(ENTRY_LINK_PREFIX) ? t.slice(ENTRY_LINK_PREFIX.length) : owner?.kind === 'entry' ? owner.entryId : undefined;
-      if (id !== undefined) return normalizeLink({ type: 'entry', target: id, newTab }, state, label, scope);
+      if (owner?.kind === 'entry') return normalizeLink({ type: 'entry', target: owner.entryId, newTab }, state, label, scope);
     }
     const out = linkFromTarget(target, state.pages, newTab);
     if (!out && target.startsWith('/')) fail(`${label}: no page${scope.entries ? ' or entry' : ''} has the route "${target.slice(0, 60)}".`);

@@ -18,8 +18,11 @@ export const POSTS_COLLECTION_ID = 'posts';
 /** Names a folder may not have on every system that may open the project. */
 const DEVICE_NAMES = /^(con|prn|aux|nul|com\d|lpt\d)$/;
 
+/** Object-prototype names, which no operation may name as an ID (see `validateOperation`). */
+const PROTO_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+
 export function isCollectionId(id: unknown): boolean {
-  return typeof id === 'string' && id.length <= 60 && COLLECTION_ID_RE.test(id) && !DEVICE_NAMES.test(id) && !(id in Object.prototype);
+  return typeof id === 'string' && id.length <= 60 && COLLECTION_ID_RE.test(id) && !DEVICE_NAMES.test(id) && !PROTO_NAMES.has(id) && !(id in Object.prototype);
 }
 
 export function isEntryId(id: unknown): boolean {
@@ -27,7 +30,7 @@ export function isEntryId(id: unknown): boolean {
 }
 
 export function isTermId(id: unknown): boolean {
-  return typeof id === 'string' && TERM_ID_RE.test(id) && !(id in Object.prototype);
+  return typeof id === 'string' && TERM_ID_RE.test(id) && !PROTO_NAMES.has(id) && !(id in Object.prototype);
 }
 
 /** An entry's address: its collection's prefix and its slug. */

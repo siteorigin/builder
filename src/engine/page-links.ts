@@ -34,16 +34,20 @@ export function pageLinkUses(state: ProjectState, pageId: string): PageLinkUse[]
   return linkUses(state, 'page', pageId);
 }
 
-/** Every stored link to the collection entry `entryId` from anywhere else in the project; its own links go with it. */
-export function entryLinkUses(state: ProjectState, entryId: string): PageLinkUse[] {
-  return linkUses(state, 'entry', entryId);
+/**
+ * Every stored link to any of the collection entries `entryIds` from anywhere else in the project, in one walk. Links
+ * those entries hold themselves go with them, so they are not listed.
+ */
+export function entryLinkUses(state: ProjectState, entryIds: string | ReadonlySet<string>): PageLinkUse[] {
+  return linkUses(state, 'entry', typeof entryIds === 'string' ? new Set([entryIds]) : entryIds);
 }
 
-function linkUses(state: ProjectState, kind: 'page' | 'entry', id: string): PageLinkUse[] {
+function linkUses(state: ProjectState, kind: 'page' | 'entry', target: string | ReadonlySet<string>): PageLinkUse[] {
   const out: PageLinkUse[] = [];
   const seen = new Set<object>();
-  const pageId = kind === 'page' ? id : undefined;
-  const isTarget = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && (v as LinkValue).type === kind && (v as LinkValue).target === id;
+  const ids = typeof target === 'string' ? new Set([target]) : target;
+  const pageId = kind === 'page' && typeof target === 'string' ? target : undefined;
+  const isTarget = (v: unknown): v is LinkValue => !!v && typeof v === 'object' && (v as LinkValue).type === kind && typeof (v as LinkValue).target === 'string' && ids.has((v as LinkValue).target);
   const add = (link: LinkValue, owner: LinkHolder, where: string, label: string, card?: PageLinkUse['card']) => {
     if (seen.has(link)) return;
     seen.add(link);
@@ -118,11 +122,10 @@ function linkUses(state: ProjectState, kind: 'page' | 'entry', id: string): Page
   for (const p of Object.values(state.pages)) if (p.id !== pageId) collect(p.seo, { kind: 'page', id: p.id }, p.title, 'Page settings');
   for (const c of Object.values(state.collections ?? {}))
     for (const e of Object.values(c.entries)) {
-      if (kind === 'entry' && e.id === id) continue;
+      if (kind === 'entry' && ids.has(e.id)) continue;
       const owner: LinkHolder = { kind: 'entry', id: e.id, collectionId: c.settings.id };
-      const where = `${typeof e.title === 'string' ? e.title : e.id} (${c.settings.name})`;
-      collect(e.body, owner, where, 'Entry text');
-      collect(e.values, owner, where, 'Entry fields');
+      // Only the text holds links: custom fields are plain values, whatever they are named.
+      collect(e.body, owner, `${typeof e.title === 'string' ? e.title : e.id} (${c.settings.name})`, 'Entry text');
     }
   return out;
 }

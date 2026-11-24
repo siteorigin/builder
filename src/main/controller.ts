@@ -1087,7 +1087,8 @@ export class Controller {
     };
     // Watch src/lib/siteorigin (not just custom/) so a custom folder created later is still seen.
     for (const [rel, accept] of [
-      ['siteorigin', (f: string) => !f.includes('generated-manifest')],
+      // Only the generated manifest itself is left out: a collection or entry may have any name.
+      ['siteorigin', (f: string) => !/^generated-manifest\.json/.test(f.replace(/\\/g, '/'))],
       ['src/lib/siteorigin', (f: string) => f.startsWith('custom')]
     ] as const) {
       try {

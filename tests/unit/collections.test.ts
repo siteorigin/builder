@@ -10,6 +10,8 @@ import type { EditOperation } from '@shared/ops';
 import { validateOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations, assetUsages } from '@engine/apply';
+import { normalizeRichText } from '@engine/values';
+import { EngineError } from '@engine/tree';
 import { entryLinkUses, pageLinkUses } from '@engine/page-links';
 import { validateState } from '@engine/validate';
 import { MIGRATIONS, migrateProject } from '@shared/migrations';
@@ -56,6 +58,9 @@ describe('collections', () => {
       fields: {}
     });
     expect(s.collections['case-studies'].settings).toMatchObject({ name: 'Case studies', route: '/case-studies/', taxonomies: {}, fields: {} });
+    // What is given wins over the ready-made blog's settings.
+    const named = run(site(), { type: 'collection.create', collectionId: 'posts', name: 'Journal', route: '/journal/', taxonomies: {} });
+    expect(named.collections.posts.settings).toMatchObject({ name: 'Journal', route: '/journal/', taxonomies: {} });
     const custom = run(site(), {
       type: 'collection.create',
       collectionId: 'projects',
@@ -67,12 +72,17 @@ describe('collections', () => {
     expect(custom.collections.projects.settings).toMatchObject({ route: '/work/projects/', taxonomies: { sector: { terms: { housing: { label: 'Housing' } } } } });
     expect(custom.collections.projects.settings.fields.client).toMatchObject({ type: 'string', label: 'Client', default: '' });
     expect(custom.collections.projects.settings.fields.hero).toMatchObject({ type: 'image', default: { assetId: null, alt: '' } });
+    expect(custom.collections.projects.settings.fields.budget).toMatchObject({ type: 'number', min: 0, default: 0 });
+    expect(() => apply(custom, [{ type: 'entry.create', collectionId: 'projects', title: 'X', values: { budget: -1 } }])).toThrow(/at least 0/);
+    // Two terms readers cannot tell apart.
+    expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', taxonomies: { tags: { label: 'Tags', terms: { a: { label: 'Housing' }, b: { label: 'housing' } } } } }])).toThrow(/two terms called “housing”/);
   });
 
   it('refuses bad IDs, a second collection with the same ID and unusable addresses', () => {
     const s = run(site(), { type: 'collection.create', collectionId: 'posts' });
     expect(() => apply(s, [{ type: 'collection.create', collectionId: 'posts' }])).toThrow(/already exists/);
-    for (const id of ['Posts', 'case_studies', 'con', '-x', 'a--b', '__proto__']) expect(() => apply(site(), [{ type: 'collection.create', collectionId: id }]), id).toThrow();
+    for (const id of ['Posts', 'case_studies', 'con', '-x', 'a--b', '__proto__', 'constructor', 'prototype']) expect(() => apply(site(), [{ type: 'collection.create', collectionId: id }]), id).toThrow();
+    expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'prototype' }])).toThrow(/not a collection ID/);
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/' }])).toThrow(/Home page/);
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/a/b/c/d/' }])).toThrow(/at most 3 levels/);
     expect(() => apply(site(), [{ type: 'collection.create', collectionId: 'news', route: '/api/' }])).toThrow(/reserved/);
@@ -85,6 +95,12 @@ describe('collections', () => {
     expect(entryId).toMatch(/^en_[a-z0-9]{8}$/);
     expect({ slug, route }).toEqual({ slug: 'hello-world', route: '/blog/hello-world/' });
     expect(r.state.collections.posts.entries[entryId]).toEqual({ schemaVersion: SCHEMA_VERSION, id: entryId, slug: 'hello-world', title: 'Hello, World!', publishedAt: todayArticleDate(), draft: true, terms: {}, values: {}, body: [] });
+    const two = apply(r.state, [{ type: 'entry.create', collectionId: 'posts', title: 'Again' }]);
+    expect(two.results[0].entryId).not.toBe(entryId);
+    expect(Object.keys(two.state.collections.posts.entries)).toHaveLength(2);
+    // IDs are unique across the project, not only within a collection.
+    const other = run(r.state, { type: 'collection.create', collectionId: 'projects' });
+    expect(() => apply(other, [{ type: 'entry.create', collectionId: 'projects', entryId, title: 'Copy' }])).toThrow(/already exists/);
   });
 
   it('numbers a slug whose address a page, an old page address or another entry already has', () => {
@@ -105,6 +121,13 @@ describe('collections', () => {
     expect(t.collections.posts.entries.en_long1.slug).toBe(`${'a'.repeat(58)}-b`);
     expect(t.collections.posts.entries.en_long2.slug).toBe(`${'a'.repeat(58)}-2`);
     expect(validateState(t).filter((d) => d.code.startsWith('ROUTE'))).toEqual([]);
+    // Two-digit numbers still fit in 60 characters.
+    const ten = run(t, ...Array.from({ length: 8 }, (_, i): EditOperation => ({ type: 'entry.create', collectionId: 'posts', entryId: `en_long${i + 3}`, title: long })));
+    expect(ten.collections.posts.entries.en_long10.slug).toBe(`${'a'.repeat(57)}-10`);
+    expect(validateState(ten).filter((d) => d.code.startsWith('ROUTE'))).toEqual([]);
+    // Another collection's own address counts too.
+    const nested = run(site(), { type: 'collection.create', collectionId: 'posts' }, { type: 'collection.create', collectionId: 'launches', route: '/blog/launch/' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_launch', title: 'Launch' });
+    expect(nested.collections.posts.entries.en_launch.slug).toBe('launch-2');
   });
 
   it('refuses a slug or a collection address that a page, an old page address or another entry has', () => {
@@ -117,8 +140,12 @@ describe('collections', () => {
     expect(() => apply(s, [{ type: 'entry.create', collectionId: 'posts', title: 'X', slug: 'Not a slug!' }])).toThrow(/is not a slug/);
     expect(() => apply(s, [{ type: 'collection.create', collectionId: 'about', route: '/about/' }])).toThrow(/the page “About/);
     expect(() => apply(s, [{ type: 'collection.create', collectionId: 'news', route: '/blog/' }])).toThrow(/the Posts collection/);
-    // An entry keeps its own slug.
+    expect(() => apply(s, [{ type: 'entry.create', collectionId: 'posts', title: 'Team', slug: 'team' }])).toThrow(/the page “Team”/);
+    expect(() => apply(s, [{ type: 'collection.update', collectionId: 'posts', route: '/about/' }])).toThrow(/\/about\/ is already the address of the page “About/);
+    // An entry keeps its own slug, and a collection its own address.
     expect(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', slug: 'winter-hours' }).collections.posts.entries.en_winter.slug).toBe('winter-hours');
+    expect(run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' }).collections.posts.settings.route).toBe('/blog/');
+    expect(apply(s, [{ type: 'entry.create', collectionId: 'posts', title: 'Free', slug: 'free' }]).results[0].route).toBe('/blog/free/');
   });
 
   it('keeps pages off collection and entry addresses, and gives a new page a free one', () => {
@@ -126,6 +153,7 @@ describe('collections', () => {
     expect(() => apply(s, [{ type: 'page.create', title: 'Blog', route: '/blog/' }])).toThrow(/\/blog\/ is the address of the Posts collection/);
     expect(() => apply(s, [{ type: 'page.create', title: 'Spring', route: '/blog/spring-open-studio/' }])).toThrow(/the entry “Spring open studio”/);
     expect(() => apply(s, [{ type: 'page.update', pageId: pageAt(s, '/about/').id, route: '/blog/winter-hours/' }])).toThrow(/the entry “Winter hours”/);
+    expect(() => apply(s, [{ type: 'page.update', pageId: pageAt(s, '/about/').id, route: '/BLOG/' }])).toThrow(/the Posts collection/);
     const r = apply(s, [{ type: 'page.create', title: 'Blog' }]);
     expect(r.results[0].route).toBe('/blog-2/');
     // Making another page Home moves the old Home to a free address of its own, never a collection's.
@@ -155,6 +183,12 @@ describe('collections', () => {
     expect(s.collections.posts.entries.en_winter).not.toHaveProperty('excerpt');
     expect(s.collections.posts.entries.en_winter.draft).toBe(true);
     expect(() => apply(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', publishedAt: '2027-02-30' }])).toThrow(/not a calendar date/);
+    expect(() => apply(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', updatedAt: '2027-02-30' }])).toThrow(/revision date/);
+    // A link made by address names the entry, so a new title and slug keep it.
+    const linked = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['[Hours](/blog/winter-hours/)'] }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'Opening hours', slug: 'opening-hours' });
+    expect(linked.collections.posts.entries.en_winter).toMatchObject({ id: 'en_winter', slug: 'opening-hours' });
+    expect(JSON.stringify(linked.collections.posts.entries.en_spring.body)).toContain('{"type":"entry","target":"en_winter"}');
+    expect(validateState(linked).filter((d) => d.severity === 'error')).toEqual([]);
     expect(() => apply(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_nope', title: 'X' }])).toThrow(/no entry "en_nope"/);
   });
 
@@ -171,6 +205,10 @@ describe('collections', () => {
     expect(ids(s)).toEqual(['en_spring', 'en_winter', 'en_third']);
     expect(() => apply(s, [{ type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_spring', 'en_winter'] }])).toThrow(/exactly once/);
     expect(() => apply(s, [{ type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_spring', 'en_spring', 'en_third'] }])).toThrow(/exactly once/);
+    expect(() => apply(s, [{ type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_spring', 'en_winter', 'en_missing'] }])).toThrow(/exactly once/);
+    // Entries of the same day go by ID, whatever order they were added in.
+    const sameDay = run(site(), { type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_zzzz', title: 'Z', publishedAt: '2026-05-05' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_aaaa', title: 'A', publishedAt: '2026-05-05' });
+    expect(ids(sameDay)).toEqual(['en_aaaa', 'en_zzzz']);
     s = run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' });
     expect(s.collections.posts.settings.entryOrder).toEqual(['en_spring', 'en_third']);
     s = run(s, { type: 'entry.reorder', collectionId: 'posts', entryIds: null });
@@ -203,10 +241,37 @@ describe('collections', () => {
       taxonomies: { sector: { label: 'Sector', terms: { civic: { label: 'Civic buildings' } } } },
       fields: { status: { type: 'enum', label: 'Status', options: ['open', 'closed', 'withdrawn'] }, size: { type: 'number', label: 'Size' } }
     });
-    expect(settled.collections.projects.entries.en_hall).toMatchObject({ terms: { sector: ['civic'] }, values: { status: 'withdrawn', size: 3 } });
+    expect(settled.collections.projects.entries.en_hall.terms).toEqual({ sector: ['civic'] });
+    expect(settled.collections.projects.entries.en_hall.values).toEqual({ status: 'withdrawn', size: 3 });
+    // A whole grouping that goes takes every assignment to it.
+    expect(run(s, { type: 'collection.update', collectionId: 'projects', taxonomies: {} }).collections.projects.entries.en_hall.terms).toEqual({});
+    // An empty list clears a grouping; a term given twice is refused.
+    expect(run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', terms: { sector: [] } }).collections.projects.entries.en_hall.terms).toEqual({});
+    expect(() => apply(s, [{ type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', terms: { sector: ['civic', 'civic'] } }])).toThrow(/given twice/);
     expect(settled.collections.projects.settings.taxonomies.sector.terms.civic.label).toBe('Civic buildings');
     // A field that stays never changes an entry's value on its own: an option still chosen cannot be removed.
     expect(() => apply(s, [{ type: 'collection.update', collectionId: 'projects', fields: { status: { type: 'enum', label: 'Status', options: ['open', 'closed'] } } }])).toThrow(/“Town hall” has a value for Status/);
+    // Nor one that would be read differently: a number as a picture, or text whose lines would run together.
+    expect(() => apply(s, [{ type: 'collection.update', collectionId: 'projects', fields: { size: { type: 'image', label: 'Size' } } }])).toThrow(/value for Size/);
+    expect(() => apply(s, [{ type: 'collection.update', collectionId: 'projects', fields: { size: { type: 'string', label: 'Size' } } }])).toThrow(/value for Size/);
+    const lines = run(
+      site(),
+      { type: 'collection.create', collectionId: 'notes', fields: { text: { type: 'string', label: 'Text', multiline: true } } },
+      { type: 'entry.create', collectionId: 'notes', entryId: 'en_note', title: 'Note', values: { text: 'one\ntwo' } }
+    );
+    expect(() => apply(lines, [{ type: 'collection.update', collectionId: 'notes', fields: { text: { type: 'string', label: 'Text' } } }])).toThrow(/value for Text/);
+  });
+
+  it('never reads custom fields as links, whatever they are named', () => {
+    let s = run(
+      site(),
+      { type: 'collection.create', collectionId: 'posts', fields: { type: { type: 'string', label: 'Type' }, target: { type: 'string', label: 'Target' }, anchor: { type: 'string', label: 'Anchor' } } }
+    );
+    const contact = pageAt(s, '/contact/');
+    s = run(s, { type: 'entry.create', collectionId: 'posts', entryId: 'en_odd', title: 'Odd', values: { type: 'page', target: contact.id, anchor: 'original' } });
+    expect(pageLinkUses(s, contact.id).filter((u) => u.owner.kind === 'entry')).toEqual([]);
+    const next = run(s, { type: 'page.remove', pageId: contact.id, replacementPageId: pageAt(s, '/about/').id });
+    expect(next.collections.posts.entries.en_odd.values).toEqual({ type: 'page', target: contact.id, anchor: 'original' });
   });
 
   it('keeps links in an entry’s text to pages and entries, and refuses entry links anywhere else', () => {
@@ -227,6 +292,23 @@ describe('collections', () => {
     expect(() => apply(s, [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: header.id, prop: 'ctaLink', value: { type: 'entry', target: 'en_spring' } }])).toThrow(/only be made in an entry's text/);
     // The website shows such a link's words without a destination until entries are pages.
     expect(resolveLink({ type: 'entry', target: 'en_spring' }, { state: s } as never)).toBeNull();
+    // Structured blocks, list items included, are held to the same rule as text.
+    const list = [{ type: 'ul', items: [[{ text: 'Spring', link: { type: 'entry', target: 'en_spring' } }]] }];
+    expect(normalizeRichText(list, s, 'Text', undefined, { entries: true })).toEqual(list);
+    expect(() => normalizeRichText(list, s, 'Text')).toThrow(/only be made in an entry's text/);
+    expect(() => normalizeRichText('[Read](entry:en_spring)', s, 'Text')).toThrow(/only be made in an entry's text/);
+    // A //host path is not an address of this site.
+    expect(() => apply(s, [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', body: ['[x](//blog/spring-open-studio/)'] }])).toThrow();
+    // An entry can link to its own new address in the change that gives it.
+    const own = apply(s, [{ type: 'entry.create', collectionId: 'posts', entryId: 'en_launch', title: 'Launch', slug: 'launch', body: ['[Permalink](/blog/launch/)'] }]);
+    expect(JSON.stringify(own.state.collections.posts.entries.en_launch.body)).toContain('{"type":"entry","target":"en_launch"}');
+    const moved = run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', slug: 'hours', body: ['[Here](/blog/hours/)'] });
+    expect(JSON.stringify(moved.collections.posts.entries.en_winter.body)).toContain('{"type":"entry","target":"en_winter"}');
+    // A link to an entry hand-written into a page is reported: the page could neither show nor keep it.
+    const hand = structuredClone(s);
+    const handHeader = hand.site.shell.header.nodes[hand.site.shell.header.rootIds[0]] as InstanceNode;
+    handHeader.props.ctaLink = { type: 'entry', target: 'en_spring' };
+    expect(validateState(hand).find((d) => d.code === 'LINK_BROKEN')?.message).toMatch(/a collection entry, which only another entry can link to/);
   });
 
   it('guards links to an entry it removes, or points them at a replacement entry or page', () => {
@@ -241,10 +323,14 @@ describe('collections', () => {
     expect(() => apply(s, [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring' }])).toThrow(/1 link point to “Spring open studio”/);
     const toEntry = apply(s, [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_other' }]);
     expect(toEntry.results[0]).toMatchObject({ referencesRepointed: 1 });
+    expect(toEntry.state.collections.posts.entries).not.toHaveProperty('en_spring');
+    expect(() => apply(s, [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_missing' }])).toThrow(/replacement entry "en_missing" does not exist/);
+    expect(() => apply(s, [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementPageId: 'pg_missing' }])).toThrow(/replacement page does not exist/);
     expect(JSON.stringify(toEntry.state.collections.posts.entries.en_winter.body)).toContain('{"type":"entry","target":"en_other"}');
     const about = pageAt(s, '/about/');
     const toPage = run(s, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementPageId: about.id });
     expect(JSON.stringify(toPage.collections.posts.entries.en_winter.body)).toContain(`{"type":"page","target":"${about.id}"}`);
+    expect(toPage.collections.posts.entries).not.toHaveProperty('en_spring');
     expect(validateState(toPage).filter((d) => d.code === 'LINK_BROKEN')).toEqual([]);
     expect(() => apply(s, [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_spring' }])).toThrow(/different entry/);
     expect(() => apply(s, [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring', replacementEntryId: 'en_other', replacementPageId: about.id }])).toThrow(/not both/);
@@ -260,6 +346,7 @@ describe('collections', () => {
     const r = apply(s, [{ type: 'collection.remove', collectionId: 'posts' }]);
     expect(r.results[0]).toEqual({ collectionId: 'posts', removedEntries: 2 });
     expect(r.state.collections).not.toHaveProperty('posts');
+    expect(r.state.collections.projects.entries).toHaveProperty('en_hall');
     const linked = run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', body: ['See [winter](entry:en_winter).'] });
     expect(() => apply(linked, [{ type: 'collection.remove', collectionId: 'posts' }])).toThrow(/1 link outside the Posts collection point to its entries \(in Town hall \(Projects\)\)/);
   });
@@ -275,6 +362,18 @@ describe('collections', () => {
     expect(refsWithout).toBeGreaterThan(0);
     const next = run(s, { type: 'page.remove', pageId: contact.id, replacementPageId: about.id });
     expect(JSON.stringify(next.collections.posts.entries.en_winter.body)).toContain(`{"type":"page","target":"${about.id}"}`);
+    // A page only an entry links to is guarded like any other.
+    const lonely = apply(s, [{ type: 'page.create', pageId: 'pg_lonely', title: 'Lonely' }]).state;
+    const linked = run(lonely, { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['[Lonely](/lonely/)'] });
+    expect(() => apply(lonely, [{ type: 'page.remove', pageId: 'pg_lonely' }])).not.toThrow();
+    let refused: unknown;
+    try {
+      apply(linked, [{ type: 'page.remove', pageId: 'pg_lonely' }]);
+    } catch (e) {
+      refused = e;
+    }
+    expect(refused).toBeInstanceOf(EngineError);
+    expect((refused as EngineError).details).toEqual({ references: 1 });
     expect(validateState(next).filter((d) => d.code === 'LINK_BROKEN')).toEqual([]);
   });
 
@@ -302,6 +401,29 @@ describe('collections', () => {
     expect(run(s, { type: 'asset.remove', assetId: 'img_b' }).assets.assets).not.toHaveProperty('img_b');
   });
 
+  it('moves picture field defaults and values to a replacement image, their suggested descriptions with them', () => {
+    const base = site();
+    base.assets.assets.img_a.altSuggestion = 'Old view';
+    base.assets.assets.img_b.altSuggestion = 'New view';
+    let s = run(
+      base,
+      { type: 'collection.create', collectionId: 'projects', fields: { hero: { type: 'image', label: 'Hero', default: { assetId: 'img_a', alt: 'Old view' } } } },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_hall', title: 'Hall', values: { hero: { assetId: 'img_a', alt: 'Old view' } } },
+      { type: 'entry.create', collectionId: 'projects', entryId: 'en_park', title: 'Park', values: { hero: { assetId: 'img_a', alt: 'The park at dusk' } }, featuredImage: 'img_a' }
+    );
+    s = run(s, { type: 'asset.replace', assetId: 'img_a', withAssetId: 'img_b' }, { type: 'asset.remove', assetId: 'img_a' });
+    expect(s.collections.projects.settings.fields.hero.default).toEqual({ assetId: 'img_b', alt: 'New view' });
+    expect(s.collections.projects.entries.en_hall.values.hero).toEqual({ assetId: 'img_b', alt: 'New view' });
+    expect(s.collections.projects.entries.en_park.values.hero).toEqual({ assetId: 'img_b', alt: 'The park at dusk' });
+    expect(s.assets.assets).not.toHaveProperty('img_a');
+    // Removing a featured image is one use fewer.
+    const before = assetUsages(s).img_b;
+    expect(assetUsages(run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_park', featuredImage: null })).img_b).toBe(before - 1);
+    // An image is an asset ID or nothing.
+    expect(() => apply(s, [{ type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { hero: { assetId: ['img_b'], alt: 'x' } } }])).toThrow(/assetId must be an asset ID or null/);
+    expect(run(s, { type: 'entry.update', collectionId: 'projects', entryId: 'en_hall', values: { hero: { assetId: '', alt: '' } } }).collections.projects.entries.en_hall.values.hero).toEqual({ assetId: null, alt: '' });
+  });
+
   it('reports what hand edits break: shared addresses, damaged entries, missing pictures and broken links', () => {
     const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', featuredImage: 'img_a', body: ['[About](/about/)'] });
     expect(validateState(s).filter((d) => d.severity === 'error')).toEqual([]);
@@ -326,6 +448,26 @@ describe('collections', () => {
     const damaged = structuredClone(s);
     (damaged.collections.posts.entries.en_winter as { body: unknown }).body = 'text';
     expect(codes(damaged)).toContain('ENTRY_INVALID');
+    // Each check on its own, named on its entry.
+    const only = (mutate: (st: ProjectState) => void, code: string, message: RegExp) => {
+      const st = structuredClone(s);
+      mutate(st);
+      const found = validateState(st).filter((d) => d.code === code && d.owner?.kind === 'entry');
+      expect(found.map((d) => d.message).join('\n'), code).toMatch(message);
+    };
+    only((st) => (st.collections.posts.entries.en_winter.body = [{ type: 'p', spans: [{ text: 'x', link: { type: 'page', target: 'pg_gone' } }] }]), 'LINK_BROKEN', /a page that no longer exists/);
+    only((st) => (st.collections.posts.entries.en_winter.body = [{ type: 'p', spans: [{ text: 'x', link: { type: 'entry', target: 'en_gone' } }] }]), 'LINK_BROKEN', /an entry that no longer exists/);
+    only((st) => (st.collections.posts.entries.en_winter.slug = 'bad/slug'), 'ROUTE_INVALID', /its slug is not one lowercase part/);
+    only((st) => ((st.collections.posts.entries.en_winter as { body: unknown }).body = [{}]), 'ENTRY_INVALID', /is damaged/);
+    only((st) => (st.collections.posts.entries.en_winter.featuredImage = 'doc_a'), 'ASSET_NOT_IMAGE', /“Guide doc_a”, which is a document/);
+    // An old page address on an entry's own address.
+    const kept2 = structuredClone(s);
+    kept2.site.redirects = [{ from: '/blog/winter-hours/', pageId: pageAt(s, '/about/').id }];
+    expect(validateState(kept2).find((d) => d.code === 'ROUTE_DUPLICATE')?.owner).toEqual({ kind: 'entry', id: 'en_winter' });
+    // A damaged choice field is reported, never thrown on.
+    const choice = run(s, { type: 'collection.update', collectionId: 'posts', fields: { mood: { type: 'enum', label: 'Mood', options: ['calm'] } } }, { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', values: { mood: 'calm' } });
+    (choice.collections.posts.settings.fields.mood as { options: unknown }).options = 'calm';
+    expect(codes(choice)).toContain('COLLECTION_INVALID');
   });
 
   it('accepts every operation through the shared validator', () => {
@@ -339,13 +481,21 @@ describe('collections', () => {
       { type: 'entry.remove', collectionId: 'posts', entryId: 'en_abcd', replacementEntryId: 'en_efgh' }
     ];
     for (const op of ops) expect(validateOperation(op).ok, JSON.stringify(op)).toBe(true);
+    for (const op of [
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_abcd', draft: 'false' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'wrong', title: 'Hi' },
+      { type: 'entry.reorder', collectionId: 'posts', entryIds: 'en_abcd' },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_abcd', publishedAt: '1 May 2026' }
+    ])
+      expect(validateOperation(op).ok, JSON.stringify(op)).toBe(false);
     // Object-prototype names are never keys or IDs.
     expect(validateOperation({ type: 'entry.update', collectionId: 'posts', entryId: 'en_abcd', terms: JSON.parse('{"__proto__": ["x"]}') }).ok).toBe(false);
     expect(validateOperation({ type: 'entry.update', collectionId: 'posts', entryId: '__proto__' }).ok).toBe(false);
   });
 
   it('is never offered to the assistant', () => {
-    const offered = JSON.stringify([toolDefinitions(), toolDefinitions({ codeEnabled: true, definitionOps: true })]);
+    const offered = JSON.stringify([toolDefinitions(), toolDefinitions({ codeEnabled: false }), toolDefinitions({ codeEnabled: false, definitionOps: true }), toolDefinitions({ codeEnabled: true, definitionOps: true })]);
+    expect(offered).toContain('"page.create"');
     for (const t of ['collection.create', 'collection.update', 'collection.remove', 'entry.create', 'entry.update', 'entry.reorder', 'entry.remove']) expect(offered).not.toContain(`"${t}"`);
   });
 });
@@ -354,7 +504,7 @@ describe('collections format', () => {
   it('is format 8, which stamps collection and entry documents like any other', () => {
     expect(MIGRATIONS.at(-1)!.id).toBe('collections');
     expect(SCHEMA_VERSION).toBe(8);
-    const s = blog();
+    const s = run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['**Bold** [link](entry:en_winter)'], terms: {}, author: 'Ana' });
     for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = 7;
     s.collections.posts.settings.schemaVersion = 7;
     s.collections.posts.entries.en_spring.schemaVersion = 7;
@@ -362,6 +512,9 @@ describe('collections format', () => {
     expect(r).toMatchObject({ from: 7, to: 8, applied: ['collections'] });
     expect(r.state.collections.posts.settings.schemaVersion).toBe(8);
     expect(r.state.collections.posts.entries.en_spring.schemaVersion).toBe(8);
+    // Nothing else changes.
+    expect({ ...r.state.collections.posts.entries.en_spring, schemaVersion: 7 }).toEqual(s.collections.posts.entries.en_spring);
+    expect({ ...r.state.collections.posts.settings, schemaVersion: 7 }).toEqual(s.collections.posts.settings);
     // A newer entry alone makes the whole project newer than this app.
     const newer = blog();
     newer.collections.posts.entries.en_winter.schemaVersion = 9;

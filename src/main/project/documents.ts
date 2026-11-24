@@ -47,7 +47,7 @@ export function collectionPathOf(p: string): { collectionId: string; entryId?: s
  * in, so an entry always finds its collection. An entry whose collection has no settings document is returned in
  * `orphans` instead.
  */
-export function collectionsFromDocs(docs: Iterable<[string, unknown]>): { collections: Record<string, Collection>; orphans: string[] } {
+export function collectionsFromDocs(docs: Iterable<[string, unknown]>): { collections: Record<string, Collection>; orphans: string[]; duplicates: string[] } {
   const settings: Array<[string, CollectionDoc]> = [];
   const entries: Array<[string, string, EntryDoc]> = [];
   for (const [path, doc] of docs) {
@@ -59,11 +59,17 @@ export function collectionsFromDocs(docs: Iterable<[string, unknown]>): { collec
   const collections: Record<string, Collection> = {};
   for (const [id, doc] of settings.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) collections[id] = { settings: doc, entries: {} };
   const orphans: string[] = [];
+  const duplicates: string[] = [];
+  const seen = new Set<string>();
   for (const [path, cid, entry] of entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     if (!Object.hasOwn(collections, cid)) orphans.push(path);
     else collections[cid].entries[entry.id] = entry;
+    // Entry IDs are unique across the project: links name no collection.
+    const id = collectionPathOf(path)!.entryId!;
+    if (seen.has(id)) duplicates.push(path);
+    seen.add(id);
   }
-  return { collections, orphans };
+  return { collections, orphans, duplicates };
 }
 export function isSafeId(id: unknown): id is string {
   return typeof id === 'string' && SAFE_ID_RE.test(id) && !id.includes('..');
@@ -287,13 +293,8 @@ async function readStoredState(dir: string, opts: ReadOptions, raw: Map<string, 
       collectionDocs.push([path, entry]);
     }
   }
-  const { collections, orphans } = collectionsFromDocs(collectionDocs);
+  const { collections, orphans, duplicates } = collectionsFromDocs(collectionDocs);
   if (orphans.length) throw new ProjectFormatError(`${orphans[0]} belongs to a collection that has no collection.json. Restore that file, or move the entry out of the project.`);
-  const seenEntries = new Map<string, string>();
-  for (const c of Object.values(collections))
-    for (const id of Object.keys(c.entries)) {
-      if (seenEntries.has(id)) throw new ProjectFormatError(`The entry ${id} is in both the ${seenEntries.get(id)} and ${c.settings.id} collections. Entry IDs must be unique across the project.`);
-      seenEntries.set(id, c.settings.id);
-    }
+  if (duplicates.length) throw new ProjectFormatError(`${duplicates[0]} has the same entry ID as an entry of another collection. Entry IDs must be unique across the project.`);
   return { manifest, site, tokens, assets, themeLock, pages, components, collections };
 }

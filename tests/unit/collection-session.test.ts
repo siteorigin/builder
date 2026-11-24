@@ -11,7 +11,7 @@ import type { EditOperation } from '@shared/ops';
 import { SCHEMA_VERSION } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { ProjectSession } from '../../src/main/project/session';
-import { readState } from '../../src/main/project/documents';
+import { newestStoredVersion, readState } from '../../src/main/project/documents';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -67,55 +67,130 @@ describe('collections on disk', () => {
     open.push(again);
     expect(again.state.collections).toEqual(state.collections);
     // An entry's edit rewrites that entry's file and nothing else.
-    const r = await ok(again.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: false }] }, { label: 'Publish' }));
+    const r = await ok(again.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', draft: false, publishedAt: '2020-01-01' }] }, { label: 'Publish' }));
     expect((r as { changed?: string[] }).changed).toEqual([`${POSTS}/entries/en_spring.json`]);
+    await ok(again.apply({ operations: [{ type: 'entry.reorder', collectionId: 'posts', entryIds: ['en_spring', 'en_winter'] }] }, { label: 'Order' }));
+    expect(read(dir, `${POSTS}/entries/en_spring.json`)).toMatchObject({ draft: false, publishedAt: '2020-01-01' });
+    expect(read(dir, `${POSTS}/collection.json`).entryOrder).toEqual(['en_spring', 'en_winter']);
+    const published = again.state.collections;
+    await again.close();
+    const third = await ProjectSession.open(dir, 'third');
+    open.push(third);
+    expect(third.state.collections).toEqual(published);
   });
 
   it('undoes and redoes a whole batch as one step, removing and restoring the folder', async () => {
     const { dir, s } = await make();
+    // A collection made earlier is left alone by both.
+    await ok(s.apply({ operations: [{ type: 'collection.create', collectionId: 'projects' }, { type: 'entry.create', collectionId: 'projects', entryId: 'en_hall', title: 'Hall' }] }, { label: 'Projects' }));
+    const projects = readFileSync(join(dir, 'siteorigin/collections/projects/entries/en_hall.json'), 'utf8');
     await ok(s.apply({ operations: blog }, { label: 'Start the blog' }));
     const files = (rel: string) => readFileSync(join(dir, rel), 'utf8');
     const before = [files(`${POSTS}/collection.json`), files(`${POSTS}/entries/en_spring.json`), files(`${POSTS}/entries/en_winter.json`)];
     await ok(s.undo());
-    expect(s.state.collections).toEqual({});
+    expect(Object.keys(s.state.collections)).toEqual(['projects']);
     expect(existsSync(join(dir, POSTS))).toBe(false);
     await ok(s.redo());
     expect(Object.keys(s.state.collections.posts.entries).sort()).toEqual(['en_spring', 'en_winter']);
     expect([files(`${POSTS}/collection.json`), files(`${POSTS}/entries/en_spring.json`), files(`${POSTS}/entries/en_winter.json`)]).toEqual(before);
+    expect(files('siteorigin/collections/projects/entries/en_hall.json')).toBe(projects);
+    expect(Object.keys(s.state.collections.projects.entries)).toEqual(['en_hall']);
   });
 
   it('deletes a collection with every entry, keeps a file of the author’s in its folder, and undoes the delete', async () => {
     const { dir, s } = await make();
     await ok(s.apply({ operations: blog }, { label: 'Start the blog' }));
+    const kept = structuredClone(s.state.collections);
     writeFileSync(join(dir, POSTS, 'notes.txt'), 'mine');
     await ok(s.apply({ operations: [{ type: 'collection.remove', collectionId: 'posts' }] }, { label: 'Delete Posts' }));
     expect(existsSync(join(dir, `${POSTS}/collection.json`))).toBe(false);
     expect(existsSync(join(dir, POSTS, 'entries'))).toBe(false);
     expect(readFileSync(join(dir, POSTS, 'notes.txt'), 'utf8')).toBe('mine');
     await ok(s.undo());
-    expect(read(dir, `${POSTS}/entries/en_winter.json`).title).toBe('Winter hours');
-    expect(Object.keys(s.state.collections.posts.entries)).toHaveLength(2);
+    // Every document comes back whole, text and links included.
+    expect(s.state.collections).toEqual(kept);
+    expect(read(dir, `${POSTS}/entries/en_winter.json`)).toEqual(kept.posts.entries.en_winter);
+    expect(read(dir, `${POSTS}/collection.json`)).toEqual(kept.posts.settings);
     // Deleting the last entry keeps the collection.
     await ok(s.apply({ operations: [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' }, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring' }] }, { label: 'Empty' }));
     expect(existsSync(join(dir, POSTS, 'entries'))).toBe(false);
     expect(read(dir, `${POSTS}/collection.json`).id).toBe('posts');
   });
 
-  it('refuses a guarded change and leaves the files as they were', async () => {
+  it('refuses a guarded change and leaves the files, the project and its history as they were', async () => {
     const { dir, s } = await make();
     await ok(s.apply({ operations: blog }, { label: 'Start the blog' }));
-    const r = await s.apply({ operations: [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring' }] }, { label: 'Delete' });
+    const files = () => [`${POSTS}/entries/en_spring.json`, `${POSTS}/entries/en_winter.json`].map((p) => readFileSync(join(dir, p), 'utf8'));
+    const before = { files: files(), state: structuredClone(s.state.collections), revision: s.revision, history: s.historyInfo() };
+    // A valid edit first, then the refused removal: the whole batch is refused.
+    const r = await s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'Changed' }, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring' }] }, { label: 'Delete' });
     expect(r.ok).toBe(false);
     expect(r.error?.message).toMatch(/1 link point to “Spring open studio”/);
-    expect(existsSync(join(dir, `${POSTS}/entries/en_spring.json`))).toBe(true);
+    expect({ files: files(), state: s.state.collections, revision: s.revision, history: s.historyInfo() }).toEqual(before);
   });
 
   it('keeps collections out of the assistant’s reach', async () => {
     const { s } = await make();
-    const r = await s.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }] }, { label: 'AI', source: 'ai' });
+    await ok(s.apply({ operations: blog }, { label: 'Start the blog' }));
+    const before = structuredClone(s.state.collections);
+    const ops: EditOperation[] = [
+      { type: 'collection.create', collectionId: 'projects' },
+      { type: 'collection.update', collectionId: 'posts', name: 'News' },
+      { type: 'collection.remove', collectionId: 'posts' },
+      { type: 'entry.create', collectionId: 'posts', title: 'AI post' },
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', title: 'AI title' },
+      { type: 'entry.reorder', collectionId: 'posts', entryIds: null },
+      { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' }
+    ];
+    const refused = async (op: EditOperation, opts: Parameters<ProjectSession['apply']>[1]) => {
+      const r = await s.apply({ operations: [op] }, opts);
+      expect(r.ok, `${op.type} ${JSON.stringify(opts)}`).toBe(false);
+      expect(r.error).toMatchObject({ code: 'SCOPE_MISMATCH' });
+    };
+    for (const op of ops) await refused(op, { label: 'AI', source: 'ai' });
+    // Inside a run, the run alone says it is the assistant's.
+    expect(await s.beginRun('run_ai')).toBeNull();
+    for (const op of ops) await refused(op, { label: 'AI', runId: 'run_ai', history: false });
+    expect(s.state.collections).toEqual(before);
+  });
+
+  it('waits for an entry added outside the app before a change that depends on every entry', async () => {
+    const { dir, s } = await make();
+    await ok(s.apply({ operations: [...blog, { type: 'collection.create', collectionId: 'projects' }] }, { label: 'Start' }));
+    // Added on disk, not yet loaded: it links to a post.
+    const late = { schemaVersion: SCHEMA_VERSION, id: 'en_late', slug: 'late', title: 'Late', publishedAt: '2026-01-01', draft: true, terms: {}, values: {}, body: [{ type: 'p', spans: [{ text: 'Spring', link: { type: 'entry', target: 'en_spring' } }] }] };
+    mkdirSync(join(dir, 'siteorigin/collections/projects/entries'), { recursive: true });
+    writeFileSync(join(dir, 'siteorigin/collections/projects/entries/en_late.json'), JSON.stringify(late));
+    const r = await s.apply({ operations: [{ type: 'collection.remove', collectionId: 'posts' }] }, { label: 'Delete Posts' });
     expect(r.ok).toBe(false);
-    expect(r.error).toMatchObject({ code: 'SCOPE_MISMATCH' });
-    expect(s.state.collections).toEqual({});
+    expect(r.error?.code).toBe('CONFLICT');
+    expect(existsSync(join(dir, `${POSTS}/entries/en_spring.json`))).toBe(true);
+    // An edit that reads no other entry goes ahead.
+    await ok(s.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_winter', excerpt: 'Short' }] }, { label: 'Excerpt' }));
+  });
+
+  it('refuses an undo that would leave an entry without its collection or beside another with its ID', async () => {
+    const { dir, s } = await make();
+    await ok(s.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_spring', title: 'Spring' }] }, { label: 'Blog' }));
+    await ok(s.apply({ operations: [{ type: 'entry.remove', collectionId: 'posts', entryId: 'en_spring' }] }, { label: 'Remove Spring' }));
+    // The collection goes without a step of its own (as an AI run's provisional change would).
+    await ok(s.apply({ operations: [{ type: 'collection.remove', collectionId: 'posts' }] }, { label: 'Silent', history: false }));
+    const cursor = s.historyInfo();
+    const r = await s.undo();
+    expect(r.ok).toBe(false);
+    expect(r.error?.message).toMatch(/en_spring\.json would have no collection/);
+    expect(s.historyInfo()).toEqual(cursor);
+    // Another collection now has an entry with the same ID.
+    await ok(s.apply({ operations: [{ type: 'collection.create', collectionId: 'posts' }] }, { label: 'Posts again', history: false }));
+    await s.close();
+    mkdirSync(join(dir, 'siteorigin/collections/projects/entries'), { recursive: true });
+    writeFileSync(join(dir, 'siteorigin/collections/projects/collection.json'), JSON.stringify({ schemaVersion: SCHEMA_VERSION, id: 'projects', name: 'Projects', route: '/projects/', taxonomies: {}, fields: {} }));
+    writeFileSync(join(dir, 'siteorigin/collections/projects/entries/en_spring.json'), JSON.stringify({ schemaVersion: SCHEMA_VERSION, id: 'en_spring', slug: 'spring', title: 'Other', publishedAt: '2026-01-01', draft: true, terms: {}, values: {}, body: [] }));
+    const again = await ProjectSession.open(dir, 'again');
+    open.push(again);
+    const dup = await again.undo();
+    expect(dup.ok).toBe(false);
+    expect(dup.error?.message).toMatch(/would share its entry ID with another entry/);
   });
 
   it('keeps collections in a saved version and brings them back on restore', async () => {
@@ -145,15 +220,28 @@ describe('collections on disk', () => {
     writeFileSync(join(dir, 'siteorigin/collections/Case_Studies/collection.json'), JSON.stringify({ ...settings, id: 'Case_Studies' }));
     await expect(readState(dir)).rejects.toThrow(/Case_Studies is not a valid collection folder name/);
     rmSync(join(dir, 'siteorigin/collections/Case_Studies'), { recursive: true });
-    // A file named for another entry.
+    // A file named for another entry, a file named like no entry, settings for another collection, and one entry ID in two collections.
     writeFileSync(join(dir, 'siteorigin/collections/projects/entries/en_park.json'), JSON.stringify(entry));
     await expect(readState(dir)).rejects.toThrow(/en_park\.json has a mismatched id "en_hall"/);
     rmSync(join(dir, 'siteorigin/collections/projects/entries/en_park.json'));
+    writeFileSync(join(dir, 'siteorigin/collections/projects/entries/draft.json'), JSON.stringify(entry));
+    await expect(readState(dir)).rejects.toThrow(/draft\.json is not named like an entry/);
+    rmSync(join(dir, 'siteorigin/collections/projects/entries/draft.json'));
+    writeFileSync(join(dir, 'siteorigin/collections/projects/collection.json'), JSON.stringify({ ...settings, id: 'works' }));
+    await expect(readState(dir)).rejects.toThrow(/projects\/collection\.json has a mismatched id "works"/);
+    writeFileSync(join(dir, 'siteorigin/collections/projects/collection.json'), JSON.stringify(settings));
+    mkdirSync(join(dir, 'siteorigin/collections/works/entries'), { recursive: true });
+    writeFileSync(join(dir, 'siteorigin/collections/works/collection.json'), JSON.stringify({ ...settings, id: 'works', route: '/works/' }));
+    writeFileSync(join(dir, 'siteorigin/collections/works/entries/en_hall.json'), JSON.stringify(entry));
+    await expect(readState(dir)).rejects.toThrow(/works\/entries\/en_hall\.json has the same entry ID as an entry of another collection/);
+    rmSync(join(dir, 'siteorigin/collections/works'), { recursive: true });
     rmSync(join(dir, 'siteorigin/collections/projects/collection.json'));
     await expect(readState(dir)).rejects.toThrow(/en_hall\.json belongs to a collection that has no collection\.json/);
-    // An entry written by a newer app makes the project read-only here.
+    // An entry written by a newer app makes the project read-only here, even past a broken document.
     writeFileSync(join(dir, 'siteorigin/collections/projects/collection.json'), JSON.stringify(settings));
     writeFileSync(join(dir, 'siteorigin/collections/projects/entries/en_hall.json'), JSON.stringify({ ...entry, schemaVersion: SCHEMA_VERSION + 1 }));
     await expect(readState(dir)).rejects.toThrow(/newer version/);
+    writeFileSync(join(dir, 'siteorigin/tokens.json'), '{ broken');
+    await expect(newestStoredVersion(dir)).resolves.toBe(SCHEMA_VERSION + 1);
   });
 });
