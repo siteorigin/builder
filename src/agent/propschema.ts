@@ -44,6 +44,7 @@ function compactScalar(s: ScalarPropSchema): JsonSchema {
     case 'image':
       return { $ref: '#/$defs/image' };
     default:
+      // Text, links and icons are written as strings, and so is a token: its ID.
       return { type: 'string' };
   }
 }
@@ -72,7 +73,24 @@ function scalarSchema(s: ScalarPropSchema): JsonSchema {
       return choicesSchema(
         `${description}, in the order shown. Add a choice as { label }. Keep a saved choice by sending its id, label and value as read: renaming it keeps its id and value, so earlier answers stay together. Leave a choice out to remove it.`
       );
+    case 'token':
+      return { type: 'string', maxLength: 80, description: `${description}. The ID of one of the site's ${s.tokenGroup} tokens, such as ${TOKEN_EXAMPLES[s.tokenGroup] ?? `${s.tokenGroup}.name`}.` };
   }
+}
+
+/** A token ID of each group, as an example in a token property's description. */
+const TOKEN_EXAMPLES: Partial<Record<string, string>> = { color: 'color.brand', space: 'space.md', radius: 'radius.md', shadow: 'shadow.md', font: 'font.body', container: 'container.content', border: 'border.default' };
+
+/** An object's fields, each a single value. Fields left out keep their current values. */
+function objectSchema(s: Extract<PropSchema, { type: 'object' }>, compact: boolean): JsonSchema {
+  const properties: Record<string, JsonSchema> = {};
+  for (const [k, f] of Object.entries(s.fields)) properties[k] = compact ? compactScalar(f) : scalarSchema(f);
+  return {
+    type: 'object',
+    ...(compact ? {} : { description: `${s.label}. Send the fields to change; fields left out keep their values.` }),
+    properties,
+    additionalProperties: false
+  };
 }
 
 /**
@@ -95,6 +113,7 @@ function tableSchema(description?: string): JsonSchema {
 
 export function propJsonSchema(s: PropSchema): JsonSchema {
   if (s.type === 'table') return tableSchema(s.label);
+  if (s.type === 'object') return objectSchema(s, false);
   if (s.type !== 'list') return scalarSchema(s);
   const properties: Record<string, JsonSchema> = { id: { type: 'string', description: 'Keep the existing item ID when editing an item. Omit it for a new item.' } };
   // A page list's fields left empty show the linked page's own values, which follow that page's later edits.
@@ -138,6 +157,10 @@ export function compactPropsSchema(def: Pick<ComponentDefinition, 'properties'>)
     if (!writableProp(s)) continue;
     if (s.type === 'table') {
       properties[k] = tableSchema();
+      continue;
+    }
+    if (s.type === 'object') {
+      properties[k] = objectSchema(s, true);
       continue;
     }
     if (s.type !== 'list') {

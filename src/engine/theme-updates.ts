@@ -17,7 +17,8 @@ import { getTheme, themeLockEntry } from '@catalogue/index';
 import { definitionHash, matchesLock } from '@shared/migrations';
 import { variantOptions } from '@shared/variants';
 import { clone } from './install';
-import { EngineError, childLists, fail, instancesOf, subtreeIds } from './tree';
+import { EngineError, childLists, fail, getTree, instancesOf, subtreeIds } from './tree';
+import { slotFill } from './slots';
 import { codeNeeds, directDependencies } from './definitions';
 import { normalizeProp } from './values';
 import { cardKey, cardLinkProblems, type CardProblem } from '@generator/card-links';
@@ -57,10 +58,23 @@ export function contractConflicts(state: ProjectState, def: ComponentDefinition,
       if (was.feed !== now.feed) conflicts.push(`${def.name}: "${p}" is filled from the site's pages differently.`);
       for (const [f, field] of Object.entries(was.fields)) {
         const nf = own(now.fields, f);
-        if (!nf || nf.type !== field.type) conflicts.push(`${def.name}: "${p}" item field "${f}" is not compatible.`);
+        if (!nf || nf.type !== field.type || (nf.type === 'token' && field.type === 'token' && nf.tokenGroup !== field.tokenGroup)) conflicts.push(`${def.name}: "${p}" item field "${f}" is not compatible.`);
         else if (nf.type === 'enum') for (const v of usedValues(state, def.id, p, f)) if (!nf.options.some((o) => o.value === v)) conflicts.push(`${def.name}: "${p}" item field "${f}" has no option "${String(v)}".`);
       }
     }
+    // An object's placements keep every field they hold, each meaning what it did; a token choice stays in its group.
+    if (was.type === 'object' && now.type === 'object')
+      for (const [f, field] of Object.entries(was.fields)) {
+        const nf = own(now.fields, f);
+        if (!nf || nf.type !== field.type || (nf.type === 'token' && field.type === 'token' && nf.tokenGroup !== field.tokenGroup)) conflicts.push(`${def.name}: "${p}" field "${f}" is not compatible.`);
+        else if (nf.type === 'enum') {
+          // A choice a placement made must still be one of the field's options.
+          // Placements inside project components stay pinned to the old definition, so only pages and the shell count.
+          const chosen = new Set(instancesOf(state, def.id).filter(({ owner }) => owner.kind !== 'component').map(({ node }) => node.props[p]).filter((v): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v) && !isBinding(v)).map((v) => v[f]).filter((v) => v !== undefined));
+          for (const v of chosen) if (!nf.options.some((o) => o.value === v)) conflicts.push(`${def.name}: "${p}" field "${f}" has no option "${String(v)}".`);
+        }
+      }
+    if (was.type === 'token' && now.type === 'token' && was.tokenGroup !== now.tokenGroup) conflicts.push(`${def.name}: property "${p}" takes ${now.tokenGroup} tokens, not ${was.tokenGroup} tokens.`);
     if (now.type === 'enum') for (const v of usedValues(state, def.id, p)) if (!now.options.some((o) => o.value === v)) conflicts.push(`${def.name}: property "${p}" has no option "${String(v)}".`);
   }
   for (const p of Object.keys(def.parts)) if (!own(next.parts, p)) conflicts.push(`${def.name}: part "${p}" is missing.`);
@@ -177,6 +191,14 @@ function placementConflicts(state: ProjectState, def: ComponentDefinition, next:
         // Content too malformed to check (a hand-edited list) is a reason to hold the update, never to fail.
         out.add(e instanceof EngineError ? e.message : `${label}: ${def.name} holds content in "${name}" that could not be checked.`);
       }
+    }
+    for (const [slot, ids] of Object.entries(node.slots ?? {})) {
+      if (!Array.isArray(ids) || !ids.length) continue;
+      // The slot's new contract (a code component's too) must still take what the placement put there.
+      const decl = own(next.slots ?? {}, slot);
+      const fill = decl ? slotFill(state, getTree(state, owner), ids, decl) : undefined;
+      if (fill?.refused) out.add(`${label}: ${def.name}'s “${decl!.label}” slot would no longer take ${fill.refused.what}.`);
+      else if (decl?.max !== undefined && fill && fill.count > decl.max) out.add(`${label}: ${def.name}'s “${decl.label}” slot would hold at most ${decl.max}.`);
     }
     if (next.kind !== 'managed' || !next.tree) continue;
     for (const m of hiddenSlotContent(def, next, node, label)) out.add(m);

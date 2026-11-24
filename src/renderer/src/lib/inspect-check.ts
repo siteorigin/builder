@@ -1,6 +1,6 @@
 /** Whether a measured preview load showed the page as it is now. Pure, so the checks are testable. */
 import type { ProjectState } from '@shared/types';
-import { isBinding } from '@shared/types';
+import { isBinding, slotChildren } from '@shared/types';
 import { partsShown } from '@shared/page-shell';
 
 interface Report {
@@ -57,7 +57,7 @@ function renderedImageNodes(state: ProjectState, pageId: string) {
       const def = state.components[node.definitionId];
       if (def?.kind !== 'managed' || !def.tree) return;
       const outlets = new Set(Object.values(def.tree.nodes).flatMap((n) => (n.kind === 'slot' ? [n.slot] : [])));
-      for (const [slot, ids] of Object.entries(node.slots ?? {})) if (outlets.has(slot)) ids.forEach(visit);
+      for (const slot of Object.keys(node.slots ?? {})) if (outlets.has(slot)) slotChildren(node, slot).forEach(visit);
     }
   };
   page.rootIds.forEach(visit);

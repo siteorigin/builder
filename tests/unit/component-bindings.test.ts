@@ -21,6 +21,10 @@ import { nodeClass } from '@generator/index';
 import { isCardLink } from '@generator/card-links';
 import { validateOperation } from '@shared/ops';
 import { axesOf } from '@shared/variants';
+import { readState, stateToDocs } from '../../src/main/project/documents';
+import { locateField } from '@engine/locate';
+import { contractConflicts } from '@engine/theme-updates';
+import { bindingProblem } from '@engine/schema';
 
 const { managed } = FOUNDATION;
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -1046,5 +1050,167 @@ describe('gallery items that open a full image or a link (#75)', () => {
     ]).state;
     expect(shot(s)).toEqual({ $prop: 'opens' });
     expect(errors(s)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Object properties (issue #96)
+// ---------------------------------------------------------------------------
+
+describe('object properties', () => {
+  /** A call to action whose button is one object property: its label and its link. */
+  function actionDef(s: ProjectState) {
+    return addDef(s, {
+      componentId: 'test.action',
+      name: 'Action',
+      properties: {
+        heading: P.str('Heading', 'Ready?'),
+        primary: P.object('Primary button', { label: P.str('Label', 'Get in touch'), link: P.link('Link'), external: P.bool('Opens elsewhere', false) })
+      },
+      parts: {},
+      build: (b) =>
+        b.el('root', 'section', {}, [
+          b.text('heading', 'h2', prop('heading')),
+          b.link('button', { $prop: 'primary', field: 'link' }, { $prop: 'primary', field: 'label' }, 'primary', { when: { $prop: 'primary', field: 'label' } })
+        ])
+    });
+  }
+
+  it('edits one field, validates it, generates it and survives a save and reopen', async () => {
+    const s = fresh();
+    const def = actionDef(s);
+    const about = Object.values(s.pages).find((p) => p.title === 'About')!;
+    // Inserted with a page route, as the AI writes a link; the object keeps every field it was not sent.
+    let r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, parentId: null, definitionId: def.id, props: { primary: { link: about.route } } }]);
+    const nodeId = r.results[0].nodeId as string;
+    const at = { owner: { kind: 'page' as const, id: s.site.homePageId }, nodeId };
+    const props = (st: ProjectState) => (home(st).nodes[nodeId] as InstanceNode).props.primary;
+    expect(props(r.state)).toEqual({ label: 'Get in touch', link: { type: 'page', target: about.id }, external: false });
+    // One field alone keeps the others, as the Inspector sends it.
+    expect(validateOperation({ type: 'instance.setProp', ...at, prop: 'primary', field: 'label', value: 'Book a visit' }).ok).toBe(true);
+    r = applyOperations(r.state, [{ type: 'instance.setProp', ...at, prop: 'primary', field: 'label', value: 'Book a visit' }]);
+    expect(props(r.state)).toEqual({ label: 'Book a visit', link: { type: 'page', target: about.id }, external: false });
+    // Each field is checked as its own type, and only fields the object has are taken.
+    expect(() => applyOperations(r.state, [{ type: 'instance.setProp', ...at, prop: 'primary', field: 'link', value: 'not a link' }])).toThrow(/Primary button → Link: "not a link" is not a page ID/);
+    expect(() => applyOperations(r.state, [{ type: 'instance.setProp', ...at, prop: 'primary', field: 'colour', value: 'red' }])).toThrow(/has no field "colour"/);
+    expect(() => applyOperations(r.state, [{ type: 'instance.setProp', ...at, prop: 'primary', value: { label: 'x', colour: 'red' } }])).toThrow(/"colour" is not one of its fields/);
+    expect(() => applyOperations(r.state, [{ type: 'instance.setProp', ...at, prop: 'primary', value: 'Book' }])).toThrow(/expected an object with the fields label, link, external/);
+    expect(errors(r.state)).toEqual([]);
+
+    // Saved and read back, it is the same project.
+    mkdirSync(resolve('.tmp'), { recursive: true });
+    const dir = mkdtempSync(join(resolve('.tmp'), 'object-prop-'));
+    roots.push(dir);
+    for (const [path, text] of stateToDocs(r.state)) {
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
+    const reopened = await readState(dir);
+    expect(reopened.components[def.id].properties.primary).toEqual(r.state.components[def.id].properties.primary);
+    expect(reopened.components[def.id].tree!.nodes.button).toMatchObject({ link: { $prop: 'primary', field: 'link' }, label: { $prop: 'primary', field: 'label' } });
+    expect(props(reopened)).toEqual(props(r.state));
+    expect(errors(reopened)).toEqual([]);
+
+    // The exported page shows the label and goes to the page's address.
+    expect(compileErrors(reopened)).toEqual([]);
+    const html = await renderHome(reopened);
+    expect(html).toMatch(new RegExp(`<a[^>]*href="/studio${about.route.replace(/\/$/, '')}/?"[^>]*>[\\s\\S]*?Book a visit`));
+    // Clearing the label hides the button, as its condition reads the same field: no link to the page is left.
+    const cleared = applyOperations(reopened, [{ type: 'instance.setProp', ...at, prop: 'primary', field: 'label', value: '' }]).state;
+    const clearedHtml = await renderHome(cleared);
+    expect(clearedHtml).not.toContain('Book a visit');
+    expect(clearedHtml.match(new RegExp(`href="/studio${about.route.replace(/\/$/, '')}/?"`, 'g'))?.length ?? 0).toBe(html.match(new RegExp(`href="/studio${about.route.replace(/\/$/, '')}/?"`, 'g'))!.length - 1);
+    // The AI and the Inspector open one field of the object by name.
+    expect(locateField(reopened, { owner: at.owner, nodeId, prop: 'primary', field: 'link' })).toMatchObject({ ok: true, path: ['Home', 'Action', 'Content', 'Primary button', 'Link'], value: { type: 'page', target: about.id } });
+    expect(locateField(reopened, { owner: at.owner, nodeId, prop: 'primary', field: 'colour' })).toMatchObject({ ok: false });
+  });
+
+  it('is declared, bound and changed through operations, and refused where it cannot hold', () => {
+    const s = fresh();
+    const def = actionDef(s);
+    const own = owner(def);
+    // Declared through the same operation the AI and the property editor use.
+    const r = applyOperations(s, [
+      { type: 'component.setPropSchema', definitionId: def.id, prop: 'secondary', schema: { type: 'object', label: 'Secondary button', fields: { label: { type: 'string', label: 'Label' }, link: { type: 'link', label: 'Link' } } } },
+      { type: 'node.setBinding', owner: own, nodeId: 'heading', field: 'text', binding: { $prop: 'secondary', field: 'label' } }
+    ]);
+    const secondary = r.state.components[def.id].properties.secondary;
+    expect(secondary).toEqual({ type: 'object', label: 'Secondary button', fields: { label: { type: 'string', label: 'Label', default: '' }, link: { type: 'link', label: 'Link', default: { type: 'none', target: '' } } }, default: { label: '', link: { type: 'none', target: '' } } });
+    expect(r.state.components[def.id].tree!.nodes.heading).toMatchObject({ text: { $prop: 'secondary', field: 'label' } });
+    // A field the object lacks, a field of a property that is no object, or a field of the wrong type is refused.
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'heading', field: 'text', binding: { $prop: 'primary', field: 'colour' } }])).toThrow(/"Primary button" has no field "colour"/);
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'heading', field: 'text', binding: { $prop: 'heading', field: 'label' } }])).toThrow(/is not an object property/);
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'heading', field: 'text', binding: { $prop: 'primary', field: 'link' } }])).toThrow(/A link property cannot be used as the text/);
+    expect(() => applyOperations(s, [{ type: 'node.setBinding', owner: own, nodeId: 'heading', field: 'text', binding: { $prop: 'primary' } }])).toThrow(/A object property cannot be used as the text/);
+    // Changing the object so a bound field goes, or changes to a type its element cannot show, is refused.
+    expect(() =>
+      applyOperations(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'primary', schema: { type: 'object', label: 'Primary button', fields: { label: { type: 'string', label: 'Label' } } } }])
+    ).toThrow(/through its field "link"/);
+    expect(() =>
+      applyOperations(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'primary', schema: { type: 'object', label: 'Primary button', fields: { label: { type: 'boolean', label: 'Label' }, link: { type: 'link', label: 'Link' } } } }])
+    ).toThrow(/"primary.label" is shown by/);
+    // Objects hold single values: no object, list or table inside one, and no object inside a list.
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'nested', schema: { type: 'object', label: 'Nested', fields: { inner: { type: 'object', label: 'Inner', fields: { a: { type: 'string', label: 'A' } } } } } }])).toThrow(/needs a type of/);
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'rows', schema: { type: 'list', label: 'Rows', fields: { action: { type: 'object', label: 'Action', fields: { a: { type: 'string', label: 'A' } } } } } }])).toThrow(/needs a type of/);
+    expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'empty', schema: { type: 'object', label: 'Empty', fields: {} } }])).toThrow(/an object needs 1 to 20 fields/);
+  });
+
+  it('unbinds a field to what the object showed by default, and refuses forwarding to an object with other choices', () => {
+    const s = fresh();
+    const def = actionDef(s);
+    def.properties.primary.default = { ...(def.properties.primary.default as Record<string, unknown>), label: 'Book now' };
+    const r = applyOperations(s, [{ type: 'node.setBinding', owner: owner(def), nodeId: 'button', field: 'label', binding: null }]);
+    expect(r.state.components[def.id].tree!.nodes.button).toMatchObject({ label: 'Book now' });
+    // A theme whose object drops or changes a field its placements hold is no stand-in for this one.
+    const next = structuredClone(def);
+    (next.properties.primary as { fields: Record<string, unknown> }).fields = { label: P.str('Label', 'Go') };
+    expect(contractConflicts(s, def, next)).toEqual(['Action: "primary" field "link" is not compatible.', 'Action: "primary" field "external" is not compatible.']);
+    // A choice a placement made inside the object must still be offered.
+    const sized = structuredClone(def);
+    (sized.properties.primary as { fields: Record<string, unknown> }).fields.size = P.choice('Size', 'small', [['small', 'Small'], ['large', 'Large']]);
+    s.components[def.id] = sized;
+    place(s, sized, { primary: { label: 'Go', link: { type: 'none', target: '' }, external: false, size: 'large' } });
+    const smaller = structuredClone(sized);
+    (smaller.properties.primary as { fields: Record<string, unknown> }).fields.size = P.choice('Size', 'small', [['small', 'Small']]);
+    expect(contractConflicts(s, sized, smaller)).toEqual(['Action: "primary" field "size" has no option "large".']);
+    // A list's token field that changes group means something else in every item.
+    const tinted = { ...sized, properties: { ...sized.properties, rows: P.list('Rows', 'Row', { tint: P.token('Tint', 'color', 'color.brand') }, []) } };
+    const spaced = { ...tinted, properties: { ...tinted.properties, rows: P.list('Rows', 'Row', { tint: P.token('Tint', 'space', 'space.md') }, []) } };
+    expect(contractConflicts(s, tinted, spaced)).toEqual(['Action: "rows" item field "tint" is not compatible.']);
+    // A choice field written without options (a damaged pack) is compared without failing.
+    const loose = structuredClone(sized);
+    delete (loose.properties.primary as { fields: Record<string, { options?: unknown }> }).fields.size.options;
+    s.components[loose.id] = loose;
+    const host = { kind: 'instance', id: 'h', definitionId: loose.id, props: {} } as unknown as InstanceNode;
+    expect(() => bindingProblem(s, { node: host, field: 'prop', prop: 'primary' }, sized.properties.primary)).not.toThrow();
+  });
+
+  it('reports a field binding and a saved object that no longer fit, when the project is opened', () => {
+    const s = fresh();
+    const def = actionDef(s);
+    const inst = place(s, def);
+    expect(errors(s)).toEqual([]);
+    (def.tree!.nodes.button as { label: unknown }).label = { $prop: 'primary', field: 'caption' };
+    expect(errors(s).map((d) => [d.code, d.nodeId])).toEqual([['BINDING_INVALID', 'button']]);
+    (def.tree!.nodes.button as { label: unknown }).label = { $prop: 'primary', field: 'label' };
+    inst.props.primary = { label: 'Go', colour: 'red' };
+    expect(validateState(s).filter((d) => d.code === 'OBJECT_DAMAGED').map((d) => d.nodeId)).toEqual([inst.id]);
+  });
+
+  it('moves with its whole object when the button becomes a component of its own', () => {
+    const s = fresh();
+    const def = actionDef(s);
+    const r = applyOperations(s, [{ type: 'component.createFromNode', owner: owner(def), nodeId: 'button', name: 'Action button' }]);
+    const made = r.state.components[r.results[0].definitionId as string];
+    const root = made.tree!.nodes[made.tree!.rootIds[0]] as GraphNode & { label: unknown; link: unknown };
+    // The new component takes the whole object, and its button reads the same fields of it.
+    expect(Object.values(made.properties).map((p) => p.type)).toEqual(['object']);
+    const name = Object.keys(made.properties)[0];
+    expect(root.label).toEqual({ $prop: name, field: 'label' });
+    expect(root.link).toEqual({ $prop: name, field: 'link' });
+    const inst = r.state.components[def.id].tree!.nodes[r.results[0].nodeId as string] as InstanceNode;
+    expect(inst.props[name]).toEqual({ $prop: 'primary' });
+    expect(errors(r.state)).toEqual([]);
+    expect(compileErrors(r.state)).toEqual([]);
   });
 });

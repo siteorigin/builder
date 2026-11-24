@@ -1,7 +1,7 @@
 import { createContext, Fragment, useContext, useEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Box, ChevronRight, ClipboardCopy, Columns3, Component, Copy, CornerDownRight, CornerLeftUp, Ellipsis, Eye, EyeOff, FileInput, FileText, Image, LayoutGrid, Link2, Minus, PanelBottom, PanelTop, Pencil, Plus, Repeat, Rows3, Shapes, Sparkles, Split, Square, SquareDashed, Trash2, Type } from 'lucide-react';
 import type { ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState } from '@shared/types';
-import { refKey, sameRef } from '@shared/types';
+import { refKey, sameRef, slotChildren } from '@shared/types';
 import { showsPart } from '@shared/page-shell';
 import { scopeForWidth } from '@shared/styles';
 import { childLists, codeTakesOverrides, displayName, findParent, subtreeIds } from '@engine/tree';
@@ -559,7 +559,7 @@ type MenuFn = (el: HTMLElement | { x: number; y: number; returnTo?: HTMLElement 
 /** A branch's child lists in outline order (an instance's slots in its definition's order). */
 function childIdsInOrder(state: ProjectState, n: GraphNode): string[][] {
   if (n.kind !== 'instance') return childLists(n).map((l) => l.ids);
-  return Object.keys(state.components[n.definitionId]?.slots ?? {}).map((slot) => n.slots?.[slot] ?? []);
+  return Object.keys(state.components[n.definitionId]?.slots ?? {}).map((slot) => slotChildren(n, slot));
 }
 interface ListProps {
   state: ProjectState;
@@ -600,7 +600,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
   // Slot content, per slot in the definition's order (an element has one unnamed list).
   const slotLists: Array<{ slot?: string; label?: string; ids: string[] }> =
     n?.kind === 'instance'
-      ? Object.entries(def?.slots ?? {}).map(([slot, info]) => ({ slot, label: info.label, ids: n.slots?.[slot] ?? [] })).filter((l) => l.ids.length)
+      ? Object.entries(def?.slots ?? {}).map(([slot, info]) => ({ slot, label: info.label, ids: slotChildren(n, slot) })).filter((l) => l.ids.length)
       : n
         ? childLists(n)
         : [];
@@ -665,7 +665,7 @@ function LayerRow({ state, owner, tree, id, depth, onMenu, path, parentId }: Lis
     if (!source) return null;
     if (where === 'inside' || where === 'first') {
       const slot = n.kind === 'instance' ? Object.keys(def?.slots ?? {})[0] : undefined;
-      const list = n.kind === 'element' ? n.children : n.kind === 'instance' ? n.slots?.[slot!] ?? [] : [];
+      const list = n.kind === 'element' ? n.children : n.kind === 'instance' ? slotChildren(n, slot!) : [];
       const index = where === 'first' ? 0 : list.length;
       const same = source.parentId === id && source.slot === slot;
       if (same && (where === 'first' ? source.index === 0 : source.index === list.length - 1)) return null;

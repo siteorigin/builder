@@ -355,7 +355,7 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     // Checked against the element's own values, as the engine checks them: one sent back unchanged is kept.
     const { props, deferred } = checkProps(def, a.props ?? {}, state, 'props', issues, r.node.kind === 'instance' ? r.node.props : undefined);
     // A selection edit cannot create pages, so a link must point at one that exists.
-    for (const d of deferred) issues.push({ field: `props.${d.prop}${d.itemIndex !== undefined ? `[${d.itemIndex}].${d.field}` : ''}`, message: `no page uses the route ${d.route}` });
+    for (const d of deferred) issues.push({ field: `props.${d.prop}${d.itemIndex !== undefined ? `[${d.itemIndex}].${d.field}` : d.field !== undefined ? `.${d.field}` : ''}`, message: `no page uses the route ${d.route}` });
     let chosen: Record<string, string> | undefined;
     if (a.variant === undefined && a.variants === undefined) chosen = undefined;
     else if (!r.def) issues.push({ field: a.variant !== undefined ? 'variant' : 'variants', message: 'this element has no variants' });

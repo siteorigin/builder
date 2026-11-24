@@ -20,12 +20,15 @@ import type {
   LinkValue,
   ListItem,
   ListProp,
+  ObjectProp,
   PartDef,
   PropSchema,
   ResponsiveStyles,
   ScalarPropSchema,
+  SlotDef,
   StyleProps,
   TextTag,
+  TokenGroup,
   VariantAxis
 } from '@shared/types';
 import { SCHEMA_VERSION, isBinding } from '@shared/types';
@@ -143,7 +146,7 @@ export interface ComponentSpec {
   properties: Record<string, PropSchema>;
   parts: Record<string, PartDef>;
   variantAxes?: Record<string, VariantAxis>;
-  slots?: Record<string, { label: string }>;
+  slots?: Record<string, SlotDef>;
   build: (b: TreeBuilder) => string;
   examples?: ComponentDefinition['examples'];
 }
@@ -234,6 +237,12 @@ export function createPack(meta: PackMeta): PackAuthor {
 /** A value authored with plain strings, with its rich text in the stored form. */
 export function canonicalRich(schema: PropSchema, value: unknown): unknown {
   if (schema.type === 'richtext') return isBinding(value) ? value : toRichText(value, schema.plainAs);
+  if (schema.type === 'object') {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || isBinding(value)) return value;
+    const out: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+    for (const [k, f] of Object.entries(schema.fields)) if (k in out) out[k] = canonicalRich(f, out[k]);
+    return out;
+  }
   if (schema.type !== 'list' || !Array.isArray(value)) return value;
   return value.map((it: Record<string, unknown>) => {
     const out = { ...it };
@@ -243,7 +252,13 @@ export function canonicalRich(schema: PropSchema, value: unknown): unknown {
 }
 
 export const P = {
-  str: (label: string, def: string, extra: Partial<ScalarPropSchema> = {}): ScalarPropSchema =>
+  /**
+   * Properties shown together under one heading in the Inspector (`...P.group('Actions', { primaryLabel, … })`).
+   * Keeps their names and order; each schema records the group's title.
+   */
+  group: <T extends Record<string, PropSchema>>(title: string, props: T): T =>
+    Object.fromEntries(Object.entries(props).map(([k, p]) => [k, { ...p, group: title }])) as T,
+  str:(label: string, def: string, extra: Partial<ScalarPropSchema> = {}): ScalarPropSchema =>
     ({ type: 'string', label, default: def, ...extra }) as ScalarPropSchema,
   text: (label: string, def: string): ScalarPropSchema => ({ type: 'string', label, default: def, multiline: true }),
   rich: (label: string, def: string[], extra: { plainAs?: RichListType } = {}): ScalarPropSchema => ({ type: 'richtext', label, default: toRichText(def, extra.plainAs), ...extra }),
@@ -263,6 +278,16 @@ export const P = {
   image: (label: string, alt = ''): ScalarPropSchema => ({ type: 'image', label, default: { assetId: null, alt } }),
   icon: (label: string, def: string): ScalarPropSchema => ({ type: 'icon', label, default: def }),
   choices: (label: string, extra: Partial<ScalarPropSchema> = {}): ScalarPropSchema => ({ type: 'choices', label, default: [], ...extra }) as ScalarPropSchema,
+  /** One of the site's tokens of `tokenGroup` (an accent color, a spacing step), starting as `def`. */
+  token: (label: string, tokenGroup: TokenGroup, def: string, extra: { description?: string } = {}): ScalarPropSchema => ({ type: 'token', label, tokenGroup, default: { token: def }, ...extra }),
+  /** Related single values kept together as one property, such as a button's label and link. */
+  object: (label: string, fields: Record<string, ScalarPropSchema>, extra: { description?: string } = {}): ObjectProp => ({
+    type: 'object',
+    label,
+    fields,
+    default: Object.fromEntries(Object.entries(fields).map(([k, f]) => [k, structuredClone(f.default)])),
+    ...extra
+  }),
   list: (
     label: string,
     itemLabel: string,

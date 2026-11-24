@@ -2,7 +2,7 @@ import { useId, useMemo, useRef, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import type { ProjectState, TokenDef, TokenGroup } from '@shared/types';
 import { effectiveTokens } from '@generator/index';
-import { tokenUsageCounts } from '@engine/tokens';
+import { tokenPropUsageCounts, tokenUsageCounts } from '@engine/tokens';
 import { followedText, linkOf, textMetrics } from '@shared/styles';
 import { applyOps } from '../store';
 import { ColorPick } from '../components/ColorPick';
@@ -142,7 +142,7 @@ function Mark({ t, value, tokens }: { t: TokenDef; value: string; tokens: TokenD
   );
 }
 
-function StyleRow({ t, uses, where, tokens, state, say, onEditText }: { t: TokenDef; uses: number; where: string[]; tokens: TokenDef[]; state: ProjectState; say: (text: string) => void; onEditText: (id: string) => void }) {
+function StyleRow({ t, uses, propUses, where, tokens, state, say, onEditText }: { t: TokenDef; uses: number; propUses: number; where: string[]; tokens: TokenDef[]; state: ProjectState; say: (text: string) => void; onEditText: (id: string) => void }) {
   const uid = useId();
   const [removing, setRemoving] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -159,7 +159,9 @@ function StyleRow({ t, uses, where, tokens, state, say, onEditText }: { t: Token
   }
   const others = tokens.filter((x) => x.group === t.group && x.id !== t.id && !followers.has(x.id));
   // What the menu shows is what Remove sends: text styles cannot keep a plain value.
-  const options = [...(t.group !== 'text' ? ['__keep'] : []), ...others.map((o) => o.id)];
+  // A text style, or one a component property chooses, can only move to another style: neither keeps a plain value.
+  const keepable = t.group !== 'text' && !propUses;
+  const options = [...(keepable ? ['__keep'] : []), ...others.map((o) => o.id)];
   const replacement = options.includes(choice) ? choice : (options[0] ?? '');
   const ref = linkOf(t.value, t.group);
   const follows = ref ? (tokens.find((x) => x.id === ref)?.label ?? 'a style that is no longer available') : null;
@@ -306,17 +308,17 @@ function StyleRow({ t, uses, where, tokens, state, say, onEditText }: { t: Token
               `Used in ${uses === 1 ? 'one place' : `${uses} places`}.`
             )}{' '}
             {uses === 1
-              ? t.group !== 'text'
+              ? keepable
                 ? 'That place can keep the value it shows now, or follow another style.'
-                : 'That place follows another text style instead.'
-              : t.group !== 'text'
+                : `That place follows another ${t.group === 'text' ? 'text ' : ''}style instead.`
+              : keepable
                 ? 'Those places can keep the value they show now, or follow another style.'
-                : 'Those places follow another text style instead.'}
+                : `Those places follow another ${t.group === 'text' ? 'text ' : ''}style instead.`}
           </p>
           <Field label="In its place" controlId={`${uid}-repl`}>
             {/* Opening the step puts focus on its one decision. */}
             <select id={`${uid}-repl`} className="select sm" value={replacement} autoFocus onChange={(e) => setChoice(e.target.value)}>
-              {t.group !== 'text' && <option value="__keep">{uses === 1 ? 'Keep the value it shows now' : 'Keep the value they show now'}</option>}
+              {keepable && <option value="__keep">{uses === 1 ? 'Keep the value it shows now' : 'Keep the value they show now'}</option>}
               {others.map((o) => (
                 <option key={o.id} value={o.id}>
                   Use {o.label}
@@ -351,6 +353,7 @@ function StyleRow({ t, uses, where, tokens, state, say, onEditText }: { t: Token
 export function CustomTokens({ state, whereUsed, say = () => {}, onEditText }: { state: ProjectState; whereUsed?: (id: string) => string[]; say?: (text: string) => void; onEditText: (id: string) => void }) {
   const tokens = useMemo(() => effectiveTokens(state), [state]);
   const uses = useMemo(() => tokenUsageCounts(state), [state]);
+  const propUses = useMemo(() => tokenPropUsageCounts(state), [state]);
   const custom = tokens.filter((t) => state.tokens.custom.some((c) => c.id === t.id));
   return (
     <div className="ss-custom">
@@ -365,7 +368,7 @@ export function CustomTokens({ state, whereUsed, say = () => {}, onEditText }: {
           </>
         )}
       </p>
-      {custom.length ? <div className="ss-custom-list">{custom.map((t) => <StyleRow key={t.id} t={t} uses={uses[t.id] ?? 0} where={whereUsed?.(t.id) ?? []} tokens={tokens} say={say} state={state} onEditText={onEditText} />)}</div> : <p className="ss-none">No styles of your own yet.</p>}
+      {custom.length ? <div className="ss-custom-list">{custom.map((t) => <StyleRow key={t.id} t={t} uses={uses[t.id] ?? 0} propUses={propUses[t.id] ?? 0} where={whereUsed?.(t.id) ?? []} tokens={tokens} say={say} state={state} onEditText={onEditText} />)}</div> : <p className="ss-none">No styles of your own yet.</p>}
       <NewStyle tokens={tokens} say={say} />
     </div>
   );

@@ -458,13 +458,17 @@ export const contactForm: ComponentDefinition = {
   tags: ['contact', 'form', 'enquiry', 'message', 'email', 'get in touch', 'formspree', 'netlify', 'web3forms'],
   icon: 'mail',
   properties: {
-    eyebrow: P.str('Eyebrow', 'Contact'),
-    heading: P.str('Heading', 'Send us a message'),
-    lead: P.text('Supporting text', 'Tell us a little about what you need and we will reply within two working days.'),
-    provider: P.choice('Form service', 'endpoint', FORM_PROVIDERS),
-    endpoint: P.str('Form endpoint URL', '', { description: 'The HTTPS address your form service gives you, such as https://formspree.io/f/abc123.' }),
-    accessKey: P.str('Web3Forms access key', '', { description: 'Only used with Web3Forms.' }),
-    formName: P.str('Netlify form name', 'contact', { description: 'Only used with Netlify Forms.' }),
+    ...P.group('Text', {
+      eyebrow: P.str('Eyebrow', 'Contact'),
+      heading: P.str('Heading', 'Send us a message'),
+      lead: P.text('Supporting text', 'Tell us a little about what you need and we will reply within two working days.')
+    }),
+    ...P.group('Sending', {
+      provider: P.choice('Form service', 'endpoint', FORM_PROVIDERS),
+      endpoint: P.str('Form endpoint URL', '', { description: 'The HTTPS address your form service gives you, such as https://formspree.io/f/abc123.' }),
+      accessKey: P.str('Web3Forms access key', '', { description: 'Only used with Web3Forms.' }),
+      formName: P.str('Netlify form name', 'contact', { description: 'Only used with Netlify Forms.' })
+    }),
     fields: P.list(
       'Fields',
       'Field',
@@ -493,9 +497,11 @@ export const contactForm: ComponentDefinition = {
       ],
       { titleField: 'label', max: 12 }
     ),
-    submitLabel: P.str('Button label', 'Send message'),
-    successMessage: P.text('Sent message', 'Thank you. Your message has been sent.'),
-    errorMessage: P.text('Error message', 'Sorry, your message could not be sent. Please try again or contact us directly.')
+    ...P.group('Messages', {
+      submitLabel: P.str('Button label', 'Send message'),
+      successMessage: P.text('Sent message', 'Thank you. Your message has been sent.'),
+      errorMessage: P.text('Error message', 'Sorry, your message could not be sent. Please try again or contact us directly.')
+    })
   },
   parts: { root: { nodeId: 'root', label: 'Form section' } },
   variantAxes: {

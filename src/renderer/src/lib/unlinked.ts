@@ -32,7 +32,7 @@ export function hideAt(b: UnlinkedButton | undefined, itemId?: string): Unlinked
 
 /** Hides a button by clearing the label that decides whether it shows. */
 export function hideButtonOp(owner: OwnerRef, nodeId: string, label: PlacementField): EditOperation {
-  return label.itemId && label.field
-    ? { type: 'instance.setProp', owner, nodeId, prop: label.prop, itemId: label.itemId, field: label.field, value: '' }
-    : { type: 'instance.setProp', owner, nodeId, prop: label.prop, value: '' };
+  if (label.itemId && label.field) return { type: 'instance.setProp', owner, nodeId, prop: label.prop, itemId: label.itemId, field: label.field, value: '' };
+  // A label that is one field of an object property is cleared alone, keeping the object's other fields.
+  return label.field ? { type: 'instance.setProp', owner, nodeId, prop: label.prop, field: label.field, value: '' } : { type: 'instance.setProp', owner, nodeId, prop: label.prop, value: '' };
 }

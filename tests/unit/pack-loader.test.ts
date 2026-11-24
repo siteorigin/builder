@@ -188,6 +188,39 @@ describe('loading a theme pack release', () => {
       const name = Object.keys(def.properties).find((k) => def.properties[k].type === 'list')!;
       delete (def.properties[name] as { fields?: unknown }).fields;
     }), /the list property "[^"]+" has no fields/],
+    ['an object property without fields (issue #96)', (d) => edit(d, (m) => {
+      (m.components[2].properties as Record<string, unknown>).action = { type: 'object', label: 'Action', default: {} };
+    }), /the object property "action" has no fields or no default/],
+    ['an object field that is no field (issue #96)', (d) => edit(d, (m) => {
+      (m.components[2].properties as Record<string, unknown>).action = { type: 'object', label: 'Action', fields: { caption: null }, default: {} };
+    }), /the field "caption" of "action" has no type or no default/],
+    ['a choice field without options inside an object (issue #96)', (d) => edit(d, (m) => {
+      (m.components[2].properties as Record<string, unknown>).action = { type: 'object', label: 'Action', fields: { size: { type: 'enum', label: 'Size', default: 'small' } }, default: { size: 'small' } };
+    }), /the choice field "size" of "action" has no options/],
+    ['slot content that names no element (issue #96)', (d) => edit(d, (m) => {
+      const host = m.components.find((c) => c.kind === 'managed' && c.tree)!;
+      const target = m.components.find((c) => c.slots)!;
+      const root = host.tree!.rootIds[0];
+      host.tree!.nodes.placed = { id: 'placed', kind: 'instance', definitionId: target.id, props: {}, slots: { [Object.keys(target.slots!)[0]]: ['ghost'] } } as never;
+      (host.tree!.nodes[root] as { children: string[] }).children.push('placed');
+    }), /puts "ghost" in a slot, which does not exist/],
+    ['a condition reading an item field outside any list (issue #96)', (d) => edit(d, (m) => {
+      const def = m.components[2];
+      def.tree!.nodes[def.tree!.rootIds[0]].when = { $item: 'nope' };
+    }), /uses the item field "nope"/],
+    ['a token property without its group (issue #96)', (d) => edit(d, (m) => {
+      (m.components[2].properties as Record<string, unknown>).accent = { type: 'token', label: 'Accent', default: { token: 'color.brand' } };
+    }), /the token property "accent" has no token group/],
+    ['a slot limit that is not a whole number (issue #96)', (d) => edit(d, (m) => {
+      const def = m.components.find((c) => c.slots)!;
+      (def.slots![Object.keys(def.slots!)[0]] as { max?: unknown }).max = -1;
+    }), /malformed at components\.\d+\.slots/],
+    ['a condition reading an object field the property does not have (issue #96)', (d) => edit(d, (m) => {
+      const def = m.components[2];
+      const root = def.tree!.rootIds[0];
+      (def.properties as Record<string, unknown>).action = { type: 'object', label: 'Action', fields: { label: { type: 'string', label: 'Label', default: '' } }, default: { label: '' } };
+      def.tree!.nodes[root].when = { ref: { $prop: 'action', field: 'colour' }, eq: 'red' };
+    }), /uses the field "colour" of "action"/],
     ['a WOFF2 file cut short', (d) => {
       const f = firstFont(d);
       replaceListed(d, f, readFileSync(join(d, f)).subarray(0, 200));

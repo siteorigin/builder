@@ -8,6 +8,7 @@ import { MEDIA_QUERIES, validateStyleValue } from '@shared/styles';
 import { applyOperations } from '@engine/apply';
 import { GEN_ROOT, RUNTIME_DIR, STYLES_DIR, defFile, generateManagedComponent, generateProject, js, propLocals, resolveLink } from '@generator/index';
 import { externalLink } from '@shared/links';
+import { GenerationCache } from '@generator/cache';
 import { DRAFTS_JS, usedIcons } from '@generator/runtime-files';
 import { contactForm } from '@catalogue/foundation/form';
 import { checkSvelteSource } from '../../src/main/codecheck';
@@ -1365,5 +1366,50 @@ describe('old addresses kept working (#37)', () => {
     const files = generateProject(s);
     expect(isRedirect(files.get('src/routes/about/+page.svelte'))).toBe(true);
     expect([...files.entries()]).toEqual([...generateProject(structuredClone(s)).entries()]);
+  });
+});
+
+describe('empty slots in the editor preview (issue #96)', () => {
+  /** A blank site with a second Section placed empty, and the page file each run writes for Home. */
+  function emptySection() {
+    const base = createStarterState('blank', 'Blank', false);
+    const r = applyOperations(base, [{ type: 'node.insert', owner: { kind: 'page', id: base.site.homePageId }, parentId: null, componentId: 'layout.section' }]);
+    return { s: r.state, id: r.results[0].nodeId as string, page: { kind: 'page' as const, id: base.site.homePageId } };
+  }
+  const homeFile = 'src/routes/+page.svelte';
+  const MARKER = /data-so-slot-empty|so-slot-empty/;
+
+  it('marks only an empty slot, with its label and description, and only where the editor shows it', () => {
+    const { s, id, page } = emptySection();
+    const cache = new GenerationCache();
+    const dev = generateProject(s, { instrument: true }, cache);
+    const home = dev.get(homeFile)!;
+    // The starter's section holds a heading and text: no marker. The new one is empty: one marker, labelled.
+    expect(home.match(/data-so-slot-empty=/g)).toHaveLength(1);
+    expect(home).toContain('data-so-editor-only=""');
+    expect(home).toContain('<strong>{"Content"}</strong>');
+    expect(home).toContain('<span>{"Headings, text, images, buttons and components placed inside the section."}</span>');
+    for (const [path, src] of dev) if (path.endsWith('.svelte')) expect(() => compile(src, { filename: path, generate: 'client', runes: true }), path).not.toThrow();
+    // No clean file holds the marker, the bridge's styling for it, or its label markup, from a fresh run or the shared cache.
+    for (const files of [generateProject(s, {}, cache), generateProject(s)]) for (const [path, src] of files) expect(src, path).not.toMatch(MARKER);
+    // Filled, the slot shows its content instead; emptied again, the marker comes back, and clean output stays free of it.
+    const filled = applyOperations(s, [{ type: 'node.insert', owner: page, parentId: id, slot: 'content', primitive: 'heading', text: 'Now filled' }]).state;
+    const filledHome = generateProject(filled, { instrument: true }, cache).get(homeFile)!;
+    expect(filledHome).not.toMatch(MARKER);
+    expect(filledHome.match(/Now filled/g)).toHaveLength(1);
+    for (const [path, src] of generateProject(filled, {}, cache)) expect(src, path).not.toMatch(MARKER);
+    const emptied = applyOperations(filled, [{ type: 'node.remove', owner: page, nodeId: (filled.pages[page.id].nodes[id] as InstanceNode).slots!.content[0] }]).state;
+    for (const [path, src] of generateProject(emptied, {}, cache)) expect(src, path).not.toMatch(MARKER);
+    expect(generateProject(emptied, { instrument: true }, cache).get(homeFile)!.match(/data-so-slot-empty=/g)).toHaveLength(1);
+  });
+
+  it('shows no marker for a slot closed to content, and a marker for one with room', () => {
+    const { s, id } = emptySection();
+    const def = (s.pages[s.site.homePageId].nodes[id] as InstanceNode).definitionId;
+    s.components[def] = { ...s.components[def], slots: { content: { label: 'Content', max: 0 } } };
+    expect(generateProject(s, { instrument: true }).get(homeFile)).not.toMatch(MARKER);
+    s.components[def] = { ...s.components[def], slots: { content: { label: 'Body', max: 3 } } };
+    // Phrasing content only, so a slot inside a paragraph keeps the paragraph whole.
+    expect(generateProject(s, { instrument: true }).get(homeFile)).toContain('<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty={"content"}><strong>{"Body"}</strong></span>');
   });
 });

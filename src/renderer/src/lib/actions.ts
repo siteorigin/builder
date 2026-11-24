@@ -577,7 +577,8 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
   const binding = target.value;
   if (!isBinding(binding)) return toast('This text is part of the component design. Use Edit everywhere or Make unique to change it.', 'error');
   if ('$prop' in binding) {
-    if (!(await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, value: text }], label))) return 'restore';
+    // Text bound to one field of an object property changes that field alone.
+    if (!(await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, ...(binding.field !== undefined ? { field: binding.field } : {}), value: text }], label))) return 'restore';
   } else {
     // The list the repeated item belongs to: the one the enclosing repeat shows (matching field names alone
     // cannot tell a footer's links from its contact links).

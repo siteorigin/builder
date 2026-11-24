@@ -1,4 +1,5 @@
 import { axesOf, designLayers, designStyles, selectedVariants, selectedVariantStyles } from '@shared/variants';
+import { propBindingSchema } from '@shared/bindings';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import {
   ArrowDown,
@@ -56,7 +57,7 @@ import { askAiAbout, asPlanned, deleteLayers, deleteSelection, duplicateLayers, 
 import { linkClash, linkedGroup, pageLanguage, siteLanguage, translationPeers } from '@shared/languages';
 import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '../lib/unlinked';
 import { teaserFieldNote } from '../lib/page-teasers';
-import { defaultReach, designContent, designContentOp, forwardedProp, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
+import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
 
 type Tokens = ReturnType<typeof effectiveTokens>;
@@ -238,6 +239,8 @@ function revealField(slot: HTMLElement) {
 function findField(req: InspectorFocus): HTMLElement | null {
   const panel = document.getElementById('dock-panel-inspect');
   const own = [...(panel?.querySelectorAll<HTMLElement>(`[data-field="${CSS.escape(req.prop)}"]`) ?? [])].find((el) => !el.parentElement?.closest('.list-editor-body'));
+  // One field of an object, inside the object's own fields.
+  if (own && !req.itemId && req.field !== undefined) return own.querySelector<HTMLElement>(`[data-object-field="${CSS.escape(req.field)}"]`) ?? own;
   if (!own || !req.itemId) return own ?? null;
   const body = own.querySelector<HTMLElement>(`#list-item-${CSS.escape(req.itemId)}`);
   if (!body || body.hidden) return null;
@@ -623,7 +626,8 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
         <FieldGroups
           groups={fields}
           render={({ key, schema, label }) => {
-            const found = unlinkedField(unlinked, key);
+            // An object's button is flagged at the object, whichever of its fields holds the missing link.
+            const found = schema.type === 'object' ? unlinked.find((b) => b.link?.prop === key && b.link.itemId === undefined) : unlinkedField(unlinked, key);
             const own = hideAt(found);
             return (
               <PropField
@@ -634,6 +638,7 @@ function InstanceInspector({ state, owner, node, tokens, selection }: { state: P
                 hint={service && key === service.prop ? formServiceHint(service) : videoHint(videoNote(key))}
                 value={node.props[key] ?? schema.default}
                 onChange={(v, edit) => set(key, v, edit)}
+                onField={(field, v, edit) => applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], `Edit ${schema.label}`, `${node.id}:${key}:${field}`)}
                 onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label}`, op.kind === 'field' ? `${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
                 read={() => readProp(owner, node.id, key)}
                 onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label}`)}
@@ -822,7 +827,10 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const pushB = (v: unknown, kind: string) => {
     if (!isBinding(v)) return;
     const b = '$prop' in v ? { prop: v.$prop, kind } : { item: v.$item, kind };
-    if (!bindings.some((x) => x.prop === b.prop && x.item === b.item)) bindings.push(b);
+    const seen = bindings.find((x) => x.prop === b.prop && x.item === b.item);
+    if (!seen) bindings.push(b);
+    // One object can hold a button's label and its link: it is flagged where the link is.
+    else if (kind === 'link') seen.kind = 'link';
   };
   if (node.kind === 'text') pushB(node.text, 'text');
   // A heading's level, when its placement chooses it, sits beside its words: it changes the outline, never the look.
@@ -953,8 +961,8 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
               const schema = def.properties[b.prop];
               if (!schema) return null;
               // Filled in from a property of the design this component sits in: that property's default.
-              const forwarded = everywhere ? forwardedProp(inst.props[b.prop]) : null;
-              if (forwarded) return <ForwardedDefault key={i} state={state} def={everywhere!} prop={forwarded} />;
+              const forwarded = everywhere ? forwardedBinding(inst.props[b.prop]) : null;
+              if (forwarded) return <ForwardedDefault key={i} state={state} def={everywhere!} binding={forwarded} />;
               // Filled in from each item of a list the design repeats it over.
               if (isBinding(inst.props[b.prop]))
                 return (
@@ -971,6 +979,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                   state={state}
                   everywhere={!!everywhere}
                   onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}`)}
+                  onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, field, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}:${field}`)}
                   onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
                   read={() => readProp(instOwner, instNodeId, b.prop!)}
                   onTable={(edit) => applyTableEdit(instOwner, instNodeId, b.prop!, edit, `Edit ${schema.label}`)}
@@ -1323,11 +1332,15 @@ function DefaultField({ state, def, prop, schema, onChange, label }: { state: Pr
  * A nested component's input that the design fills in from one of its own properties: that property's default,
  * which every placement without its own value shows.
  */
-function ForwardedDefault({ state, def, prop }: { state: ProjectState; def: ComponentDefinition; prop: string }) {
-  const schema = Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
+function ForwardedDefault({ state, def, binding }: { state: ProjectState; def: ComponentDefinition; binding: { $prop: string; field?: string } }) {
+  const prop = binding.$prop;
+  // One field of an object reads that field, with the object's default for it.
+  const schema = propBindingSchema(def.properties, binding);
   if (!schema) return null;
-  if (schema.type === 'list' || schema.type === 'table') return <p className="muted insp-note">Each placement of {def.name} fills this in, as its {schema.label.toLowerCase()}.</p>;
-  const change = (v: unknown, edit?: PendingEdit) => void applyWith(edit, [propDefaultOp(def.id, prop, v)], `Edit ${schema.label} default`, `${def.id}:default:${prop}`);
+  if (schema.type === 'list' || schema.type === 'table' || schema.type === 'object') return <p className="muted insp-note">Each placement of {def.name} fills this in, as its {schema.label.toLowerCase()}.</p>;
+  const field = binding.field;
+  const change = (v: unknown, edit?: PendingEdit) =>
+    void applyWith(edit, [propDefaultOp(def.id, prop, field === undefined ? v : { [field]: v })], `Edit ${schema.label} default`, `${def.id}:default:${prop}${field === undefined ? '' : `:${field}`}`);
   return <DefaultField state={state} def={def} prop={prop} schema={schema} onChange={change} />;
 }
 
@@ -1413,8 +1426,8 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
         groups={fields}
         render={({ key, schema, label }) => {
           const raw = node.props[key];
-          const forwarded = forwardedProp(raw);
-          if (forwarded) return <ForwardedDefault key={key} state={state} def={def} prop={forwarded} />;
+          const forwarded = forwardedBinding(raw);
+          if (forwarded) return <ForwardedDefault key={key} state={state} def={def} binding={forwarded} />;
           if (isBinding(raw))
             return (
               <p key={key} className="muted insp-note">
@@ -1429,6 +1442,7 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
               label={label}
               value={raw ?? schema.default}
               onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${key}`)}
+              onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${key}:${field}`)}
               onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label} everywhere`, op.kind === 'field' ? `${def.id}:${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
               read={() => readProp(owner, node.id, key)}
               onTable={(edit) => applyTableEdit(owner, node.id, key, edit, `Edit ${schema.label} everywhere`)}
@@ -1488,7 +1502,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           ...focusImage(
             state,
             devUrl,
-            placedImage ?? (!bound ? node.image : '$prop' in bound && Object.hasOwn(def.properties, bound.$prop) ? def.properties[bound.$prop].default : undefined),
+            placedImage ?? (!bound ? node.image : '$prop' in bound ? propBindingSchema(def.properties, bound)?.default : undefined),
             [],
             'Each one shows its own picture. Select one on the page to see it here.',
             node.styles ?? {}

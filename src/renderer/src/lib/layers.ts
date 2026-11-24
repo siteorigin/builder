@@ -3,6 +3,7 @@
  * state, so what a row says (to the eye and to a screen reader) can be tested without rendering it.
  */
 import type { ComponentDefinition, GraphNode, InstanceNode, NodeTree, ProjectState, ResponsiveStyles } from '@shared/types';
+import { propBindingSchema } from '@shared/bindings';
 import { isBinding } from '@shared/types';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { selectedVariantStyles } from '@shared/variants';
@@ -55,7 +56,7 @@ export function contentText(n: GraphNode): string | null {
 function boundTo(n: GraphNode, def: ComponentDefinition | undefined): string | null {
   const v = n.kind === 'text' ? n.text : n.kind === 'link' ? n.label : undefined;
   if (!def || !isBinding(v) || !('$prop' in v)) return null;
-  return def.properties[v.$prop]?.label ?? null;
+  return propBindingSchema(def.properties, v)?.label ?? null;
 }
 
 /**

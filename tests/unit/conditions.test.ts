@@ -304,3 +304,28 @@ describe('a typed comparison value made while the AI works (#368)', () => {
     expect(readFields(s, [{ type: 'node.setBinding', owner: owner(def), nodeId: 'heading', field: 'text', binding: { $prop: 'title' } }])).toBeNull();
   });
 });
+
+describe('object properties as condition sources (issue #96)', () => {
+  it('offers each field of an object, and saves and reads back a rule on one field', () => {
+    const s = fresh();
+    const def = addDef(s, {
+      componentId: 'test.cta',
+      name: 'Call',
+      properties: { primary: P.object('Primary button', { label: P.str('Label', 'Go'), external: P.bool('Opens elsewhere', false) }) },
+      parts: {},
+      build: (b) => b.el('root', 'section', {}, [b.text('note', 'p', { $prop: 'primary', field: 'label' })])
+    });
+    const { props } = conditionSources(def, 'note');
+    expect(props.map((p) => [p.key, p.label, p.schema.type])).toEqual([
+      ['prop:primary.label', 'Primary button label', 'string'],
+      ['prop:primary.external', 'Primary button opens elsewhere', 'boolean']
+    ]);
+    const op = ruleOp(owner(def), 'note', 'when', { binding: props[1].binding, test: 'eq', value: true });
+    const saved = applyOperations(s, [op]).state;
+    expect(saved.components[def.id].tree!.nodes.note.when).toEqual({ ref: { $prop: 'primary', field: 'external' }, eq: true });
+    expect(errors(saved)).toEqual([]);
+    const rule = readRule(saved.components[def.id], saved.components[def.id].tree!.nodes.note, 'when')!;
+    expect(rule.source?.key).toBe('prop:primary.external');
+    expect(describeConditions(saved.components[def.id], saved.components[def.id].tree!.nodes.note)).toContain('Show when Primary button opens elsewhere is on');
+  });
+});

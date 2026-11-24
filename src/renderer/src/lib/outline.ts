@@ -98,7 +98,7 @@ export function headingLevelOps(h: OutlineHeading, level: number): EditOperation
   const s = h.levelSource!;
   const value = `h${level}`;
   if (s.kind === 'node') return [{ type: 'node.setContent', owner: h.owner, nodeId: h.nodeId, field: 'tag', value }];
-  return [{ type: 'instance.setProp', owner: h.owner, nodeId: h.nodeId, prop: s.prop, ...(s.itemId ? { itemId: s.itemId, field: s.field } : {}), value }];
+  return [{ type: 'instance.setProp', owner: h.owner, nodeId: h.nodeId, prop: s.prop, ...(s.itemId ? { itemId: s.itemId, field: s.field } : s.field !== undefined ? { field: s.field } : {}), value }];
 }
 
 /** Names one heading across revisions: where it is shown, not its level or words. */

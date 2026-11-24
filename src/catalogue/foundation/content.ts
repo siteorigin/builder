@@ -78,16 +78,20 @@ export const mediaSplit = managed({
   tags: ['image', 'text', 'about', 'story', 'media', 'split', 'feature'],
   icon: 'panel-left',
   properties: {
-    eyebrow: P.str('Eyebrow', 'Our approach'),
-    heading: P.str('Heading', 'Good projects start with listening'),
-    headingLevel: headingLevel('h2'),
-    body: P.rich('Text', [
-      'Before we draw anything we spend time understanding how you live and work, what matters most and what you would happily leave behind.',
-      'That conversation shapes **every decision** that follows, from the first sketch to the final finishes.'
-    ]),
-    image: P.image('Image', 'Two people reviewing plans at a table'),
-    actionLabel: P.str('Action label', 'More about us'),
-    actionLink: P.link('Action link')
+    ...P.group('Text', {
+      eyebrow: P.str('Eyebrow', 'Our approach'),
+      heading: P.str('Heading', 'Good projects start with listening'),
+      headingLevel: headingLevel('h2'),
+      body: P.rich('Text', [
+        'Before we draw anything we spend time understanding how you live and work, what matters most and what you would happily leave behind.',
+        'That conversation shapes **every decision** that follows, from the first sketch to the final finishes.'
+      ])
+    }),
+    ...P.group('Media', { image: P.image('Image', 'Two people reviewing plans at a table') }),
+    ...P.group('Action', {
+      actionLabel: P.str('Action label', 'More about us'),
+      actionLink: P.link('Action link')
+    })
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
@@ -438,7 +442,7 @@ export const container = managed({
   tags: ['section', 'container', 'empty', 'blank', 'layout', 'custom'],
   icon: 'square-dashed',
   properties: {},
-  slots: { content: { label: 'Content' } },
+  slots: { content: { label: 'Content', description: 'Headings, text, images, buttons and components placed inside the section.' } },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'paddingInline', 'background', 'color', 'minHeight'] },
     container: { nodeId: 'inner', label: 'Container', styleControls: ['maxWidth', 'gap', 'layout', 'columns', 'align', 'justify', 'textAlign'] }

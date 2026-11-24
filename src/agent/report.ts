@@ -1,4 +1,5 @@
 import type { ChatChange, ChatCheck } from '@shared/api';
+import { propBindingValue } from '@shared/bindings';
 import type { EditOperation } from '@shared/ops';
 import type { AltReview, GraphNode, ImageValue, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { isBinding } from '@shared/types';
@@ -98,7 +99,7 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
     add(op, `style:${ownerKey(op.owner)}:${op.nodeId}`, (d) => `Changed the ${joinWords(d)} of ${name(op.owner, op.nodeId)} on ${where(op.owner)}`, linkTo(op.owner, op.nodeId), detail);
   /** An image value as shown: one bound to a component property shows that property's default. */
   const shownImage = (state: ProjectState, o: OwnerRef, value: unknown): Partial<ImageValue> => {
-    const v = isBinding(value) && '$prop' in value && o.kind === 'component' ? state.components[o.id]?.properties[value.$prop]?.default : value;
+    const v = isBinding(value) && '$prop' in value && o.kind === 'component' ? propBindingValue(state.components[o.id]?.properties[value.$prop]?.default, value) : value;
     return (v && typeof v === 'object' && !isBinding(v) ? v : {}) as Partial<ImageValue>;
   };
   /** What an image edit changed: the picture, its alt text, or whether it is decorative. */

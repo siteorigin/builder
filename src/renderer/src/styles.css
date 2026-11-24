@@ -2591,6 +2591,9 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp .list-editor-body .insp-group { gap: 8px; }
 /* The first block in an open item already sits under the item's own divider. */
 .insp .list-editor-body > [data-field]:first-child > :is(.insp-group, .insp-image) { padding-top: 0; border-top: 0; }
+/* A button inside a declared group ("Actions" › "Primary button"): a rule above it rather than a second frame. */
+.insp-group .insp-group { padding: 8px 0 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; background: none; }
+.insp-group .insp-group > .insp-group-title { font-weight: 500; color: var(--text-2); }
 .insp-group-title { float: left; width: 100%; margin: 0; padding: 0; font-size: 12px; font-weight: 600; color: var(--text); }
 /* A link reads top to bottom: its kind, where it goes (the full width, so it can be read), the section, a new tab. */
 .insp-link { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

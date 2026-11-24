@@ -24,11 +24,12 @@ import type {
   PropSchema,
   ResponsiveScope,
   ResponsiveStyles,
+  SlotDef,
   TextStyleValue,
   TokenDef,
   TokenValue
 } from '@shared/types';
-import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, isBinding, isComparison, type Condition } from '@shared/types';
+import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, isBinding, isComparison, slotChildren, type Condition } from '@shared/types';
 import {
   MEDIA_QUERIES,
   REDUCED_MOTION_QUERY,
@@ -59,6 +60,7 @@ import { asParagraphList, isListBlock, richTextToParagraphs, richTextToPlain, to
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
+import { propBindingSchema } from '@shared/bindings';
 import { ARTICLE_ROW_FIELDS, articleRows, feedLimit, isArticleDate, pageArticle } from '@shared/articles';
 import { actionWraps, brokenCardKeys, cardKey, isCardLink } from './card-links';
 import { showsPart, type ShellPart } from '@shared/page-shell';
@@ -265,7 +267,7 @@ export function resolveRichText(value: unknown, ctx: ResolveContext, plainAs?: R
 export const codeTakesBlocks = (schema: PropSchema | undefined): boolean => schema?.type === 'richtext' && schema.codeForm === 'blocks';
 
 /** The rich text fields of a list a code component takes as paragraph strings. */
-const paragraphFields = (schema: PropSchema): string[] => (schema.type === 'list' ? Object.entries(schema.fields).filter(([, f]) => f.type === 'richtext' && !codeTakesBlocks(f)).map(([k]) => k) : []);
+const paragraphFields = (schema: PropSchema): string[] => (schema.type === 'list' || schema.type === 'object' ? Object.entries(schema.fields).filter(([, f]) => f.type === 'richtext' && !codeTakesBlocks(f)).map(([k]) => k) : []);
 
 export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx: ResolveContext): unknown {
   if (!schema) return value;
@@ -297,6 +299,18 @@ export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx
       return typeof value === 'number' ? value : Number(value ?? schema.default);
     case 'boolean':
       return typeof value === 'boolean' ? value : schema.default;
+    case 'object': {
+      // Each field as a property of its type shows it: a page link as its address, rich text as its blocks.
+      const v = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : schema.default;
+      const out: Record<string, unknown> = {};
+      for (const [k, f] of Object.entries(schema.fields)) out[k] = resolveValue(f, Object.hasOwn(v, k) ? v[k] : Object.hasOwn(schema.default, k) ? schema.default[k] : f.default, ctx);
+      return out;
+    }
+    case 'token': {
+      // A token choice is the token's CSS variable, so a placement follows later edits to the token itself.
+      const ref = value && typeof value === 'object' && typeof (value as { token?: unknown }).token === 'string' ? (value as { token: string }).token : schema.default.token;
+      return `var(${tokenVar(ref)})`;
+    }
     default:
       return value ?? schema.default;
   }
@@ -885,7 +899,12 @@ function useImport(ctx: EmitCtx, name: string, path: string) {
 
 function bindExpr(ctx: EmitCtx, v: unknown, schema?: PropSchema): string {
   if (isBinding(v)) {
-    if ('$prop' in v) return ctx.locals.get(v.$prop) ?? 'undefined';
+    if ('$prop' in v) {
+      const local = ctx.locals.get(v.$prop);
+      if (!local) return 'undefined';
+      // One field of an object property; a name the object lacks reads as nothing (validation reports it).
+      return v.field === undefined ? local : `${local}?.[${js(v.field)}]`;
+    }
     // Outside every list there is no item to read (validation reports it), so the field is empty.
     const itemVar = ctx.items[ctx.items.length - 1];
     return itemVar ? itemField(itemVar, v.$item) : 'undefined';
@@ -963,7 +982,7 @@ function emitNodes(ctx: EmitCtx, ids: string[]): string {
 
 function propSchemaFor(ctx: EmitCtx, v: unknown): PropSchema | undefined {
   if (!ctx.def || !isBinding(v) || !('$prop' in v)) return undefined;
-  return ctx.def.properties[v.$prop];
+  return propBindingSchema(ctx.def.properties, v);
 }
 
 function emitNode(ctx: EmitCtx, id: string): string {
@@ -1093,7 +1112,7 @@ function nameAttr(ctx: EmitCtx, attr: string, v: unknown): string {
 /** The schema a binding reads in this scope: a property of the definition, or a field of the innermost list. */
 function bindingSchema(ctx: EmitCtx, b: Binding): PropSchema | undefined {
   if (!ctx.def) return undefined;
-  if ('$prop' in b) return Object.hasOwn(ctx.def.properties, b.$prop) ? ctx.def.properties[b.$prop] : undefined;
+  if ('$prop' in b) return propBindingSchema(ctx.def.properties, b);
   const list = ctx.lists?.at(-1);
   return list?.type === 'list' && Object.hasOwn(list.fields, b.$item) ? list.fields[b.$item] : undefined;
 }
@@ -1273,7 +1292,7 @@ function slotParentMap(tree: NodeTree): Map<string, { id: string; slot?: string 
   const out = new Map<string, { id: string; slot?: string }>();
   for (const n of Object.values(tree.nodes)) {
     if (n.kind === 'element' || n.kind === 'repeat') for (const c of n.children) out.set(c, { id: n.id });
-    else if (n.kind === 'instance') for (const [slot, ids] of Object.entries(n.slots ?? {})) for (const c of ids) out.set(c, { id: n.id, slot });
+    else if (n.kind === 'instance') for (const slot of Object.keys(n.slots ?? {})) for (const c of slotChildren(n, slot)) out.set(c, { id: n.id, slot });
   }
   return out;
 }
@@ -1649,7 +1668,8 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     const fields = code && isBinding(raw) ? paragraphFields(schema) : [];
     if (code && isBinding(raw) && ((schema.type === 'richtext' && !codeTakesBlocks(schema)) || fields.length)) {
       useImport(ctx, '{ richParagraphs }', `${RUNTIME_DIR}/util.js`);
-      expr = schema.type === 'richtext' ? `richParagraphs(${expr})` : `richParagraphs(${expr}, ${js(fields)})`;
+      // An object is converted as the one item of a list.
+      expr = schema.type === 'richtext' ? `richParagraphs(${expr})` : schema.type === 'object' ? `richParagraphs([${expr}], ${js(fields)})[0]` : `richParagraphs(${expr}, ${js(fields)})`;
     }
     attrs.push(propAttr(propKey(def, propName), expr));
   }
@@ -1727,8 +1747,15 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   if (def.slots) {
     const snippets: string[] = [];
     for (const slotName of Object.keys(def.slots).sort()) {
-      const childIds = node.slots?.[slotName] ?? [];
-      if (!childIds.length) continue;
+      // A list damaged by hand is no content (validation reports it).
+      const placed = node.slots?.[slotName];
+      const childIds = Array.isArray(placed) ? placed : [];
+      if (!childIds.length) {
+        // The editor's preview marks an empty slot where content can go. Visitors, and every export, see nothing.
+        const marker = ctx.instrument && def.kind === 'managed' ? emptySlotMarker(def.slots[slotName], slotName) : '';
+        if (marker) snippets.push(`${p}\t{#snippet slot_${safeIdent(slotName)}()}\n${p}\t\t${marker}\n${p}\t{/snippet}`);
+        continue;
+      }
       ctx.indent += 2;
       const inner = emitNodes(ctx, childIds);
       ctx.indent -= 2;
@@ -1743,6 +1770,18 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     markup = `${p}<div style="display: contents" data-so-ctx=${c} data-so-node="${node.id}"${itemsAttr(ctx, node.id)} data-so-code="true">\n${indentBlock(markup)}\n${p}</div>`;
   }
   return markup;
+}
+
+/**
+ * The placeholder an empty slot shows in the editor: its label, and what belongs there. Editor-only (the bridge hides
+ * it in Preview and styles it), and never written into a clean file. A slot closed to content (max 0) shows none.
+ */
+function emptySlotMarker(decl: SlotDef | undefined, slotName: string): string {
+  if (!decl || decl.max === 0) return '';
+  const label = typeof decl.label === 'string' && decl.label.trim() ? decl.label.trim() : slotName;
+  const description = typeof decl.description === 'string' ? decl.description.trim() : '';
+  // Phrasing content only, so it is valid wherever the slot sits (a paragraph included); the bridge lays it out as a box.
+  return `<span class="so-slot-empty" data-so-editor-only="" data-so-slot-empty={${js(slotName)}}><strong>{${js(label)}}</strong>${description ? `<span>{${js(description)}}</span>` : ''}</span>`;
 }
 
 /**

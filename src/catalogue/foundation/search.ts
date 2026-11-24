@@ -317,14 +317,20 @@ export const siteSearch: ComponentDefinition = {
   tags: ['search', 'site search', 'find', 'search box', 'lookup', 'index', 'portfolio', 'projects', 'directory', 'pages'],
   icon: 'search',
   properties: {
-    eyebrow: P.str('Eyebrow', ''),
-    heading: P.str('Heading', 'Search this site'),
-    lead: P.text('Supporting text', ''),
-    label: P.str('Search box label', 'Search for'),
-    placeholder: P.str('Placeholder', ''),
-    buttonLabel: P.str('Button label', 'Search'),
-    emptyMessage: P.text('Message for an empty search', 'Type a word or phrase to search for.'),
-    noResultsMessage: P.text('Advice when nothing matches', 'Try fewer or different words.')
+    ...P.group('Text', {
+      eyebrow: P.str('Eyebrow', ''),
+      heading: P.str('Heading', 'Search this site'),
+      lead: P.text('Supporting text', '')
+    }),
+    ...P.group('Search box', {
+      label: P.str('Search box label', 'Search for'),
+      placeholder: P.str('Placeholder', ''),
+      buttonLabel: P.str('Button label', 'Search')
+    }),
+    ...P.group('Messages', {
+      emptyMessage: P.text('Message for an empty search', 'Type a word or phrase to search for.'),
+      noResultsMessage: P.text('Advice when nothing matches', 'Try fewer or different words.')
+    })
   },
   parts: { root: { nodeId: 'root', label: 'Search section' } },
   variantAxes: {

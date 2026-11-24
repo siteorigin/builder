@@ -9,8 +9,10 @@ import { catalogueComponent, listThemes } from '@catalogue/index';
 import { Orchestrator } from '@agent/orchestrator';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelEvent, ToolDefinition } from '@agent/types';
 import { toolsForRun } from '@agent/tools';
-import { upsertToolSchema, withStoredFields } from '@agent/macros';
-import { hasOpenSchema, propsJsonSchema } from '@agent/propschema';
+import { checkProps, upsertToolSchema, withStoredFields } from '@agent/macros';
+import { compactPropsSchema, hasOpenSchema, propsJsonSchema } from '@agent/propschema';
+import { propSchemaSummary } from '@agent/context';
+import { P } from '@catalogue/dsl';
 import { findForbiddenShapes, toStrictSchema } from '@agent/strict-schema';
 import { selectionTools } from '@agent/selection';
 import { applyContextBudget, estimateRequestTokens } from '@agent/budget';
@@ -719,6 +721,41 @@ describe('selection tools', () => {
     }
     const props = (selectionTools(state, target)![0].parameters.properties as Record<string, Record<string, Record<string, unknown>>>).props.properties;
     expect(Object.keys(props)).toEqual(Object.keys(catalogueComponent('foundation', 'features.grid')!.properties));
+  });
+
+  it('writes object and token properties as closed, typed schemas and short signatures (issue #96)', () => {
+    const def = {
+      properties: {
+        primary: P.object('Primary button', { label: P.str('Label', 'Go'), link: P.link('Link') }),
+        accent: P.token('Accent', 'color', 'color.brand')
+      }
+    };
+    const full = propsJsonSchema(def) as { properties: Record<string, Record<string, unknown>> };
+    expect(hasOpenSchema(full)).toBe(false);
+    expect(findForbiddenShapes(toStrictSchema(full))).toEqual([]);
+    expect(full.properties.primary).toMatchObject({ type: 'object', additionalProperties: false, properties: { label: { type: 'string' }, link: { type: 'string' } } });
+    expect(full.properties.accent).toMatchObject({ type: 'string' });
+    expect(String(full.properties.accent.description)).toMatch(/color tokens, such as color\.brand/);
+    const compact = compactPropsSchema(def) as { properties: Record<string, Record<string, unknown>> };
+    expect(hasOpenSchema(compact)).toBe(false);
+    expect(compact.properties.primary).toEqual({ type: 'object', properties: { label: { type: 'string' }, link: { type: 'string' } }, additionalProperties: false });
+    expect(propSchemaSummary(def.properties)).toMatchObject({
+      primary: { type: 'object', label: 'Primary button', fields: { label: 'string', link: 'link' } },
+      accent: { type: 'token', label: 'Accent', tokenGroup: 'color' }
+    });
+  });
+
+  it('holds an object field linking to a page made later in the run until that page exists (issue #96)', () => {
+    const state = createStarterState('business', 'Test', false);
+    const def = { name: 'Action', properties: { primary: P.object('Primary button', { label: P.str('Label', 'Go'), link: P.link('Link') }) } } as unknown as Parameters<typeof checkProps>[0];
+    const issues: Array<{ field: string; message: string }> = [];
+    const r = checkProps(def, { primary: { label: 'See services', link: '/later-services/' } }, state, 'sections[0].props', issues);
+    expect(issues).toEqual([]);
+    expect(r.props.primary).toEqual({ label: 'See services', link: { type: 'none', target: '' } });
+    expect(r.deferred).toEqual([{ route: '/later-services/', prop: 'primary', field: 'link' }]);
+    // A field the object does not have is reported at its path.
+    checkProps(def, { primary: { colour: 'red' } }, state, 'sections[0].props', issues);
+    expect(issues.map((i) => i.field)).toEqual(['sections[0].props.primary']);
   });
 
   it('chooses tools by task: small sets for local models, the general tools kept for cloud models', () => {

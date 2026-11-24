@@ -11,6 +11,7 @@
  * renamed pages only send visitors on, so they are never results; a page found always links to where it is now.
  */
 import type { NodeTree, PageDoc, ProjectState, ResponsiveStyles } from '@shared/types';
+import { slotChildren } from '@shared/types';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { renderedContent } from './checks';
 import { isDraftPage } from './index';
@@ -70,7 +71,7 @@ function hiddenLayers(tree: NodeTree): Set<string> {
     if (out.has(id)) return;
     out.add(id);
     const n = tree.nodes[id];
-    const inside = n?.kind === 'element' ? n.children : n?.kind === 'instance' ? Object.values(n.slots ?? {}).flat() : [];
+    const inside = n?.kind === 'element' ? n.children : n?.kind === 'instance' ? Object.keys(n.slots ?? {}).flatMap((k) => slotChildren(n, k)) : [];
     for (const c of inside) hide(c);
   };
   for (const n of Object.values(tree.nodes)) if (hiddenEverywhere(n.kind === 'instance' ? n.overrides?.root : n.styles)) hide(n.id);

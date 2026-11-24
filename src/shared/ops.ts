@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { FONT_FAMILY_RE, FONT_WEIGHT_RE } from './fonts';
 import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
+import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from './types';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -34,7 +35,7 @@ const FONT_FACE = z.object({
   style: z.enum(['normal', 'italic'])
 });
 const styleValue = z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() })]);
-const binding = z.union([z.object({ $prop: z.string() }), z.object({ $item: z.string() })]);
+const binding = z.union([z.object({ $prop: z.string(), field: z.string().optional() }), z.object({ $item: z.string() })]);
 const conditionValue = z.union([z.string(), z.number(), z.boolean()]);
 const link = z.object({
   type: z.enum(['none', 'page', 'url', 'email', 'tel', 'anchor', 'document']),
@@ -207,7 +208,7 @@ export const OPERATION_SCHEMAS = {
       .describe('"datetime" (plain text only): a YYYY-MM-DD date text property the text states, rendered as a <time> element.'),
     prop: z.string().optional().describe('For field "prop": the nested instance property to bind.'),
     axis: z.string().optional().describe('For field "variant": the nested instance variant axis to bind to an enum property.'),
-    binding: binding.nullable().describe('{"$prop": name} or {"$item": field}; null unbinds, keeping the current default.'),
+    binding: binding.nullable().describe('{"$prop": name}, {"$prop": name, "field": objectField} for one field of an object property, or {"$item": field}; null unbinds, keeping the current default.'),
     eq: conditionValue.optional().describe('For "when"/"unless": render when the bound value equals this (or, for unless, when it does not).'),
     ne: conditionValue.optional().describe('For "when"/"unless": render when the bound value differs from this (or, for unless, when it does not).')
   }),
@@ -217,7 +218,7 @@ export const OPERATION_SCHEMAS = {
     nodeId: z.string().describe('Instance node ID.'),
     prop: z.string(),
     itemId: z.string().optional().describe('For list properties: the stable item ID to edit.'),
-    field: z.string().optional().describe('For list properties: the item field to set.'),
+    field: z.string().optional().describe('For list properties: the item field to set. For object properties: the one field to set, keeping the others.'),
     value: z.unknown().describe(`${RICH_TEXT_VALUE} For choices: the whole set in order, { label } for a new choice and the saved { id, label, value } for one kept or renamed. ${TABLE_VALUE}`)
   }),
   'instance.listInsert': z.object({
@@ -352,7 +353,26 @@ export const OPERATION_SCHEMAS = {
     makeDefault: z.boolean().optional()
   }),
   'component.removeVariant': z.object({ type: z.literal('component.removeVariant'), definitionId: z.string(), variant: z.string(), axis: z.string().optional() }),
-  'component.setSlot': z.object({ type: z.literal('component.setSlot'), definitionId: z.string(), slot: z.string(), label: z.string().min(1).max(60) }),
+  'component.setSlot': z.object({
+    type: z.literal('component.setSlot'),
+    definitionId: z.string(),
+    slot: z.string(),
+    label: z.string().min(1).max(60),
+    description: z.string().max(300).nullable().optional().describe('What belongs in the slot. Left out keeps it; null removes it.'),
+    categories: z
+      .array(z.enum(COMPONENT_CATEGORIES as unknown as [string, ...string[]]))
+      .max(20)
+      .nullable()
+      .optional()
+      .describe('Component categories the slot takes. With primitives, the slot takes only what either lists; with neither, anything. Left out keeps it; null removes the restriction.'),
+    primitives: z
+      .array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]]))
+      .max(6)
+      .nullable()
+      .optional()
+      .describe('Element kinds the slot takes: element (containers), text, image, link (buttons), icon, divider. Left out keeps it; null removes the restriction.'),
+    max: z.number().int().min(0).max(1000).nullable().optional().describe('The most children the slot holds; 0 closes it. Left out keeps it; null removes the limit.')
+  }),
   'component.removeSlot': z.object({ type: z.literal('component.removeSlot'), definitionId: z.string(), slot: z.string() }),
 
   'theme.apply': z.object({ type: z.literal('theme.apply'), themeId: z.string() }),

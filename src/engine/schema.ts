@@ -1,15 +1,19 @@
 /**
  * Property schema validation for component definitions, and where a managed definition binds its properties.
  */
-import type { Binding, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
+import type { Binding, ComponentDefinition, Comparison, GraphNode, ListFeed, ListProp, NodeTree, PageTeaser, ProjectState, PropSchema, ScalarPropSchema, TokenGroup } from '@shared/types';
 import { ELEMENT_ACTIONS, ELEMENT_TAGS, ICON_POSITIONS, LIST_FEEDS, RICH_CODE_FORMS, TEXT_TAGS, conditionRef, isBinding, isComparison } from '@shared/types';
 import { ARTICLE_ROW_FIELDS } from '@shared/articles';
 import { PAGE_TEASER_TYPES, type PageTeaserValue } from '@shared/page-teasers';
 import { axesOf } from '@shared/variants';
+import { propBindingSchema } from '@shared/bindings';
 import { fail, findParent } from './tree';
 import { normalizeProp } from './values';
+import { declaredTokens } from './tokens';
 
-const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'choices', 'list', 'table'] as const;
+const PROP_TYPES = ['string', 'richtext', 'number', 'boolean', 'enum', 'link', 'image', 'icon', 'choices', 'token', 'list', 'table', 'object'] as const;
+/** Token groups a token property can choose from. A text style is several values at once, so no style can bind one. */
+const TOKEN_PROP_GROUPS: readonly TokenGroup[] = ['color', 'font', 'space', 'container', 'radius', 'shadow', 'border'];
 
 /** Names generated code already uses (props, helpers, repeat variables), or that cannot be a destructured identifier. */
 const RESERVED = new Set([
@@ -90,8 +94,9 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(`Property "${name}" needs a schema object with a type.`);
   const r = raw as Record<string, unknown>;
   const type = String(r.type) as (typeof PROP_TYPES)[number];
-  // A list item's fields are single values: a list or a table inside one has no editor or tool shape.
-  const allowed = inList ? PROP_TYPES.filter((t) => t !== 'list' && t !== 'table') : PROP_TYPES;
+  // A list item's or an object's fields are single values: a list, a table or an object inside one has no editor or
+  // tool shape.
+  const allowed = inList ? PROP_TYPES.filter((t) => t !== 'list' && t !== 'table' && t !== 'object') : PROP_TYPES;
   if (!(allowed as readonly string[]).includes(type)) fail(`Property "${name}" needs a type of ${allowed.join(', ')}.`);
   const out: Record<string, unknown> = { type, label: text(r.label, 80) ?? name };
   const description = text(r.description, 300);
@@ -158,18 +163,25 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
     case 'choices':
       out.default = [];
       break;
+    case 'token': {
+      const group = r.tokenGroup;
+      if (typeof group !== 'string' || !(TOKEN_PROP_GROUPS as readonly string[]).includes(group)) fail(`${label}: tokenGroup must be one of ${TOKEN_PROP_GROUPS.join(', ')}.`);
+      out.tokenGroup = group;
+      const first = declaredTokens(state).find((t) => t.group === group);
+      if (!first) fail(`${label}: the site has no ${group} tokens to choose from.`);
+      out.default = { token: first.id };
+      break;
+    }
+    case 'object': {
+      out.fields = fieldSchemas(r.fields, state, name, label, 'an object');
+      out.default = {};
+      break;
+    }
     case 'table':
       out.default = { columns: [{ label: 'Column 1' }, { label: 'Column 2' }], rows: [] };
       break;
     case 'list': {
-      if (!r.fields || typeof r.fields !== 'object' || Array.isArray(r.fields)) fail(`${label}: a list needs fields.`);
-      const entries = Object.entries(r.fields as Record<string, unknown>);
-      if (!entries.length || entries.length > 20) fail(`${label}: a list needs 1 to 20 fields.`);
-      const fields: Record<string, ScalarPropSchema> = {};
-      for (const [k, f] of entries) {
-        checkPropName(k, 'Field');
-        fields[k] = normalizePropSchema(f, state, `${name}.${k}`, true) as ScalarPropSchema;
-      }
+      const fields = fieldSchemas(r.fields, state, name, label, 'a list');
       out.fields = fields;
       out.itemLabel = text(r.itemLabel, 40) ?? 'Item';
       const titleField = text(r.titleField, 40);
@@ -199,6 +211,19 @@ export function normalizePropSchema(raw: unknown, state: ProjectState, name: str
   const value = r.default === undefined ? (schema.type === 'list' && schema.min ? Array.from({ length: schema.min }, () => ({})) : schema.default) : r.default;
   (schema as { default: unknown }).default = normalizeProp(schema, value, state, `${label} default`);
   return schema;
+}
+
+/** The named single-value fields of a list item or an object: 1 to 20, each a camelCase name. */
+function fieldSchemas(raw: unknown, state: ProjectState, name: string, label: string, what: string): Record<string, ScalarPropSchema> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail(`${label}: ${what} needs fields.`);
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (!entries.length || entries.length > 20) fail(`${label}: ${what} needs 1 to 20 fields.`);
+  const fields: Record<string, ScalarPropSchema> = {};
+  for (const [k, f] of entries) {
+    checkPropName(k, 'Field');
+    fields[k] = normalizePropSchema(f, state, `${name}.${k}`, true) as ScalarPropSchema;
+  }
+  return fields;
 }
 
 /** Normalize a whole `{ name: schema }` map. */
@@ -367,6 +392,26 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
         return `compares a ${schema.type} property with a value; a ${schema.type} can only be tested for being set.`;
     }
   }
+  // A whole object or token passed on to a nested component must mean the same there: the same fields, the same group.
+  if (field === 'prop' && node.kind === 'instance' && (schema.type === 'object' || schema.type === 'token')) {
+    const nested = state.components[node.definitionId];
+    const to = nested && site.prop !== undefined && Object.hasOwn(nested.properties, site.prop) ? nested.properties[site.prop] : undefined;
+    if (to?.type === 'object' && schema.type === 'object' && fieldShape(to) !== fieldShape(schema))
+      return `passes "${schema.label}" to "${to.label}" of "${nested!.name}", whose fields differ (${fieldShape(to) || 'none'}).`;
+    if (to?.type === 'token' && schema.type === 'token' && to.tokenGroup !== schema.tokenGroup)
+      return `passes the ${schema.tokenGroup} token "${schema.label}" to "${to.label}" of "${nested!.name}", which takes a ${to.tokenGroup} token.`;
+  }
+  // A whole list passed on: its token fields must take tokens of the same group as the fields they arrive in.
+  if (field === 'prop' && node.kind === 'instance' && schema.type === 'list') {
+    const nested = state.components[node.definitionId];
+    const to = nested && site.prop !== undefined && Object.hasOwn(nested.properties, site.prop) ? nested.properties[site.prop] : undefined;
+    if (to?.type === 'list')
+      for (const [k, f] of Object.entries(to.fields)) {
+        const from = Object.hasOwn(schema.fields, k) ? schema.fields[k] : undefined;
+        if (f.type === 'token' && from && (from.type !== 'token' || from.tokenGroup !== f.tokenGroup))
+          return `passes "${schema.label}" to "${to.label}" of "${nested!.name}", whose "${k}" takes ${f.tokenGroup} tokens, not ${from.type === 'token' ? `${from.tokenGroup} tokens` : `a ${from.type}`}.`;
+      }
+  }
   // Older fields are type-checked where they are bound; documents saved before these checks keep loading as they did.
   // Rich text has only ever been bindable to rich text properties, so only a hand-edited document shows anything else.
   const fresh =
@@ -407,6 +452,18 @@ export function bindingProblem(state: ProjectState, site: Pick<BindingSite, 'nod
   }
 }
 
+/** An object's fields and their types, in a form two objects can be compared by ("label:string, link:link"). */
+const fieldShape = (o: { fields: Record<string, ScalarPropSchema> }) =>
+  Object.keys(o.fields)
+    .sort()
+    .map((k) => {
+      const f = o.fields[k];
+      // A choice's options and a token's group are part of what the field can hold.
+      const detail = f.type === 'token' ? `(${f.tokenGroup})` : f.type === 'enum' ? JSON.stringify((Array.isArray(f.options) ? f.options : []).map((x) => x?.value).sort()) : '';
+      return `${k}:${f.type}${detail}`;
+    })
+    .join(', ');
+
 /** The list property repeated by the nearest repeat above a node, or null outside any repeat. */
 export function enclosingList(def: ComponentDefinition, nodeId: string): ListProp | null {
   const tree = def.tree as NodeTree;
@@ -427,7 +484,7 @@ export function enclosingList(def: ComponentDefinition, nodeId: string): ListPro
 
 /** The schema a binding at this node resolves to, or undefined when it does not resolve. */
 export function boundSchema(def: ComponentDefinition, nodeId: string, b: Binding): PropSchema | undefined {
-  if ('$prop' in b) return Object.hasOwn(def.properties, b.$prop) ? def.properties[b.$prop] : undefined;
+  if ('$prop' in b) return propBindingSchema(def.properties, b);
   const list = enclosingList(def, nodeId);
   return list && Object.hasOwn(list.fields, b.$item) ? list.fields[b.$item] : undefined;
 }

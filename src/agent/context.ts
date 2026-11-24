@@ -1,6 +1,6 @@
 import { axesOf, selectedVariants } from '@shared/variants';
 import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema } from '@shared/types';
-import { isBinding } from '@shared/types';
+import { isBinding, slotChildren } from '@shared/types';
 import { partStyleControls } from '@shared/styles';
 import { isRichBlock, richTextToMarkdown, type RichPages } from '@shared/richtext';
 import { displayName, enclosingRepeatProp, getTree } from '@engine/tree';
@@ -154,7 +154,7 @@ export function compactNode(state: ProjectState, tree: NodeTree, id: string, dep
       base.props = agentProps(def, n.props, state.pages);
       if (n.overrides) base.styleOverrides = n.overrides;
       if (n.itemOverrides) base.itemStyleOverrides = n.itemOverrides;
-      if (n.slots && depth < 4) base.slots = Object.fromEntries(Object.entries(n.slots).map(([k, ids]) => [k, ids.map((c) => compactNode(state, tree, c, depth + 1))]));
+      if (n.slots && depth < 4) base.slots = Object.fromEntries(Object.keys(n.slots).map((k) => [k, slotChildren(n, k).map((c) => compactNode(state, tree, c, depth + 1))]));
       break;
     }
     case 'element':
@@ -231,6 +231,9 @@ export function propSchemaSummary(schema: Record<string, PropSchema>) {
     else if (s.type === 'table') out[k] = { type: 'table', label: s.label, shape: TABLE_SIGNATURE };
     // How code receives rich text: what its source must be written for.
     else if (s.type === 'richtext' && s.codeForm) out[k] = { type: 'richtext', label: s.label, codeForm: s.codeForm };
+    else if (s.type === 'object')
+      out[k] = { type: 'object', label: s.label, fields: Object.fromEntries(Object.entries(s.fields).map(([f, fs]) => [f, propSignature(fs)])), note: 'Send only the fields to change; the others keep their values.' };
+    else if (s.type === 'token') out[k] = { type: 'token', label: s.label, tokenGroup: s.tokenGroup, note: `The ID of a ${s.tokenGroup} token (read_project with sections ["tokens"] lists them).` };
     else out[k] = { type: s.type, label: s.label };
   }
   return out;
@@ -267,6 +270,8 @@ function propSignature(s: PropSchema): string {
   if (s.type === 'table') return TABLE_SIGNATURE;
   if (s.type === 'list' && s.feed) return `computed from the site's ${s.feed === 'articles' ? 'dated articles' : 'page'}: never send`;
   if (s.type === 'list') return `list<${Object.entries(s.fields).map(([f, fs]) => `${f}:${propSignature(fs)}`).join(', ')}>${s.max ? ` max ${s.max}` : ''}`;
+  if (s.type === 'object') return `object{${Object.entries(s.fields).map(([f, fs]) => `${f}:${propSignature(fs)}`).join(', ')}}`;
+  if (s.type === 'token') return `token(${s.tokenGroup})`;
   return s.type;
 }
 

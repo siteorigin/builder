@@ -7,11 +7,14 @@
 import { promises as fs, type Stats } from 'node:fs';
 import { join, relative, sep, isAbsolute } from 'node:path';
 import { z } from 'zod';
-import type { ComponentDefinition, GraphNode } from '@shared/types';
-import { SCHEMA_VERSION, isBinding } from '@shared/types';
+import type { ComponentDefinition, GraphNode, ProjectState } from '@shared/types';
+import { COMPONENT_CATEGORIES, SCHEMA_VERSION, SLOT_PRIMITIVES, conditionRef, isBinding, slotChildren } from '@shared/types';
+import { slotDecl, slotFill } from '@engine/slots';
 import { BUNDLED_PACK_IDS, PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST, PACK_VERSION_RE, type PackManifest, type ThemePack } from '@catalogue/pack';
 import { FONT_FAMILY_RE } from '@shared/fonts';
 import { variantIdsValid } from '@shared/variants';
+import { propBindingSchema } from '@shared/bindings';
+import { boundSchema } from '@engine/schema';
 import { defKey, slotIdent } from '@generator/index';
 import { sha } from '../project/fsutil';
 import { readRegularFile, type PackFileSource } from './files';
@@ -103,7 +106,18 @@ const component = z
     icon: text(60).optional(),
     properties: z.record(z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,59}$/), z.object({ type: z.string(), label: z.string() }).loose()),
     parts: z.record(z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,59}$/), z.object({ nodeId: z.string(), label: z.string() }).loose()),
-    slots: z.record(z.string(), z.object({ label: z.string() })).optional(),
+    slots: z
+      .record(
+        z.string(),
+        z.strictObject({
+          label: z.string(),
+          description: text(300).optional(),
+          categories: z.array(z.enum(COMPONENT_CATEGORIES as unknown as [string, ...string[]])).max(20).optional(),
+          primitives: z.array(z.enum(SLOT_PRIMITIVES as unknown as [string, ...string[]])).max(6).optional(),
+          max: z.number().int().min(0).max(1000).optional()
+        })
+      )
+      .optional(),
     variantAxes: z.record(z.string(), z.object({ label: z.string(), default: z.string(), options: z.record(z.string(), z.object({ label: z.string() }).loose()) }).loose()).optional(),
     tree: z.object({ rootIds: z.array(z.string()).min(1), nodes: z.record(z.string(), z.object({ id: z.string(), kind: z.string() }).loose()) }).optional(),
     source: z.string().max(256 * 1024).optional(),
@@ -168,7 +182,16 @@ function checkTree(def: ComponentDefinition) {
     const slot = (n as { slot?: unknown }).slot;
     if (slot !== undefined && (typeof slot !== 'string' || !SAFE_ID.test(slot))) refuse(`${where}: node "${id}" has an unusable slot name.`);
     for (const child of (n as GraphNode & { children?: string[] }).children ?? []) if (!nodes[child]) refuse(`${where}: node "${id}" lists a child "${child}" that does not exist.`);
-    for (const v of Object.values(n)) if (isBinding(v) && '$prop' in v && !(v.$prop in def.properties)) refuse(`${where}: node "${id}" uses the property "${v.$prop}", which the component does not have.`);
+    // Bindings sit in a node's own fields, in its conditions, and in the properties it gives a nested component.
+    const inst = (n as GraphNode).kind === 'instance' ? (n as GraphNode & { props?: Record<string, unknown>; variants?: Record<string, unknown>; slots?: Record<string, unknown> }) : undefined;
+    const values = [...Object.values(n), conditionRef((n as GraphNode).when), conditionRef((n as GraphNode).unless), ...Object.values(inst?.props ?? {}), ...Object.values(inst?.variants ?? {})];
+    for (const v of values) {
+      if (isBinding(v) && '$prop' in v && !(v.$prop in def.properties)) refuse(`${where}: node "${id}" uses the property "${v.$prop}", which the component does not have.`);
+      if (isBinding(v) && '$prop' in v && v.field !== undefined && !propBindingSchema(def.properties, v)) refuse(`${where}: node "${id}" uses the field "${String(v.field).slice(0, 40)}" of "${v.$prop}", which is not a field of that property.`);
+      if (isBinding(v) && '$item' in v && !boundSchema(def, id, v)) refuse(`${where}: node "${id}" uses the item field "${String(v.$item).slice(0, 40)}", which the list it repeats over does not have.`);
+    }
+    // A slot's content is elements of the same design.
+    if (inst) for (const ids of Object.values(inst.slots ?? {})) for (const c of Array.isArray(ids) ? ids : []) if (!nodes[c]) refuse(`${where}: node "${id}" puts "${String(c).slice(0, 40)}" in a slot, which does not exist.`);
   }
   for (const id of def.tree!.rootIds) if (!nodes[id]) refuse(`${where}: its root "${id}" does not exist.`);
   // Every element is reached once from the roots: no element inside itself, and none in two places.
@@ -199,8 +222,19 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
     files.set(key, def.componentId!);
     if (!variantIdsValid(def)) refuse(`${where} has a variant or option ID that is not allowed (letters and digits, starting with a letter).`);
     for (const [name, p] of Object.entries(def.properties)) {
-      const prop = p as { type: string; fields?: unknown; default?: unknown; options?: unknown };
+      const prop = p as { type: string; fields?: unknown; default?: unknown; options?: unknown; tokenGroup?: unknown };
       if (prop.type === 'list' && (!prop.fields || typeof prop.fields !== 'object' || !Array.isArray(prop.default))) refuse(`${where}: the list property "${name}" has no fields or no default items.`);
+      const isRecord = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v);
+      // A token names its group and starts on a token; every field of a list or object is a typed value with a default.
+      const tokenOk = (t: { tokenGroup?: unknown; default?: unknown }) => typeof t.tokenGroup === 'string' && isRecord(t.default) && typeof (t.default as { token?: unknown }).token === 'string';
+      if (prop.type === 'object' && (!isRecord(prop.fields) || !Object.keys(prop.fields as object).length || !isRecord(prop.default))) refuse(`${where}: the object property "${name}" has no fields or no default.`);
+      if (prop.type === 'token' && !tokenOk(prop)) refuse(`${where}: the token property "${name}" has no token group or no default token.`);
+      if ((prop.type === 'object' || prop.type === 'list') && isRecord(prop.fields))
+        for (const [f, field] of Object.entries(prop.fields as Record<string, unknown>)) {
+          const r = field as { type?: unknown; default?: unknown; tokenGroup?: unknown };
+          if (!isRecord(field) || typeof r.type !== 'string' || r.default === undefined || (r.type === 'token' && !tokenOk(r))) refuse(`${where}: the field "${f}" of "${name}" has no type or no default.`);
+          if (r.type === 'enum' && !Array.isArray((field as { options?: unknown }).options)) refuse(`${where}: the choice field "${f}" of "${name}" has no options.`);
+        }
       if (prop.type === 'enum' && !Array.isArray(prop.options)) refuse(`${where}: the choice property "${name}" has no options.`);
     }
     const idents = new Map<string, string>();
@@ -222,6 +256,23 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
       // Code runs in the preview's Node process, which no policy check can sandbox. An installed pack may reuse code
       // the app itself ships, exactly as it ships it, and otherwise brings data only: its components are managed.
       if (source === 'user' && !reviewed.has(def.source!)) refuse(`${where} has code of its own, which an installed pack may not bring. Make it a managed component, or reuse a code component SiteOrigin Builder ships, unchanged.`);
+    }
+  }
+  // A component that places another of the pack's components keeps to the slot contracts of the one it places.
+  const pack = { components: Object.fromEntries(m.components.map((c) => [c.id, c])) } as unknown as ProjectState;
+  for (const def of m.components) {
+    if (def.kind !== 'managed' || !def.tree) continue;
+    for (const [id, n] of Object.entries(def.tree.nodes)) {
+      if (n.kind !== 'instance') continue;
+      for (const slot of Object.keys(n.slots ?? {})) {
+        const decl = slotDecl(pack, n, slot);
+        const target = pack.components[n.definitionId];
+        // Content for a slot the placed component lacks, or not written as a list, would never show.
+        if ((target && !decl) || !Array.isArray(n.slots![slot])) refuse(`Component ${def.componentId}: node "${id}" puts content in "${slot}", which its component does not have as a slot.`);
+        if (!decl) continue;
+        const fill = slotFill(pack, def.tree, slotChildren(n, slot), decl, def);
+        if (fill.refused || (decl.max !== undefined && fill.count > decl.max)) refuse(`Component ${def.componentId}: node "${id}" puts content in the "${slot}" slot that its component does not take.`);
+      }
     }
   }
 }

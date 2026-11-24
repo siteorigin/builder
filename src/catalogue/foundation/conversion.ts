@@ -137,13 +137,17 @@ export const cta = managed({
   tags: ['cta', 'call to action', 'banner', 'contact', 'sign up', 'book', 'conversion'],
   icon: 'megaphone',
   properties: {
-    heading: P.str('Heading', 'Ready to start your project?'),
-    headingLevel: headingLevel('h2'),
-    lead: P.text('Supporting text', 'Tell us a little about what you have in mind and we will be in touch within two working days.'),
-    primaryLabel: P.str('Primary button label', 'Get in touch'),
-    primaryLink: P.link('Primary button link'),
-    secondaryLabel: P.str('Secondary button label', ''),
-    secondaryLink: P.link('Secondary button link')
+    ...P.group('Text', {
+      heading: P.str('Heading', 'Ready to start your project?'),
+      headingLevel: headingLevel('h2'),
+      lead: P.text('Supporting text', 'Tell us a little about what you have in mind and we will be in touch within two working days.')
+    }),
+    ...P.group('Actions', {
+      primaryLabel: P.str('Primary button label', 'Get in touch'),
+      primaryLink: P.link('Primary button link'),
+      secondaryLabel: P.str('Secondary button label', ''),
+      secondaryLink: P.link('Secondary button link')
+    })
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
@@ -183,10 +187,12 @@ export const contact = managed({
   tags: ['contact', 'email', 'phone', 'address', 'location', 'hours', 'get in touch'],
   icon: 'contact',
   properties: {
-    eyebrow: P.str('Eyebrow', 'Contact'),
-    heading: P.str('Heading', 'Let’s talk about your project'),
-    headingLevel: headingLevel('h2'),
-    lead: P.text('Supporting text', 'The quickest way to reach us is by email or phone. We reply to every enquiry within two working days.'),
+    ...P.group('Text', {
+      eyebrow: P.str('Eyebrow', 'Contact'),
+      heading: P.str('Heading', 'Let’s talk about your project'),
+      headingLevel: headingLevel('h2'),
+      lead: P.text('Supporting text', 'The quickest way to reach us is by email or phone. We reply to every enquiry within two working days.')
+    }),
     items: P.list(
       'Contact methods',
       'Contact method',
@@ -199,8 +205,10 @@ export const contact = managed({
       ],
       { titleField: 'label', max: 8 }
     ),
-    actionLabel: P.str('Action label', 'Email us'),
-    actionLink: P.link('Action link', { type: 'email', target: SAMPLE_CONTACT.email })
+    ...P.group('Action', {
+      actionLabel: P.str('Action label', 'Email us'),
+      actionLink: P.link('Action link', { type: 'email', target: SAMPLE_CONTACT.email })
+    })
   },
   parts: {
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },

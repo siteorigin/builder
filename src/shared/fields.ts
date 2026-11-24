@@ -2,31 +2,55 @@ import type { ListItem, ListProp, PropSchema, ScalarPropSchema } from './types';
 
 const sentence = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
+type FieldEntry<T> = { key: string; schema: PropSchema | ScalarPropSchema; data: T };
+
 export interface PropGroup<T> {
   /** Heading for fields that belong together ("Primary button"), or none for a field that stands alone. */
   title?: string;
-  items: Array<{ key: string; schema: PropSchema | ScalarPropSchema; label?: string; data: T }>;
+  /** Every field of the group, in order, each with the label it shows under (when shorter than its own). */
+  items: Array<FieldEntry<T> & { label?: string }>;
+  /**
+   * A declared group's fields as they are drawn inside it, when some of them belong together again (the label and
+   * link of one button in "Actions"). The same fields as `items`, in the same order.
+   */
+  groups?: Array<PropGroup<T>>;
 }
 
 /**
- * Group content fields the way they appear on the page. A schema's own `group` wins; otherwise a text field
- * named "X label" followed by a link named "X link" (or just "Link") is one thing on the page, a button or a
- * link, so it becomes a group "X" with fields "Label" and "Link". Everything else stays in schema order.
+ * Group content fields the way they appear on the page. Consecutive fields that declare the same `group` are one
+ * group under that heading. Otherwise a text field named "X label" followed by a link named "X link" (or just
+ * "Link") is one thing on the page, a button or a link, so it becomes a group "X" with fields "Label" and "Link";
+ * inside a declared group the same pair is a group of its own within it. Everything else stays in schema order.
  */
-export function groupFields<T>(entries: Array<{ key: string; schema: PropSchema | ScalarPropSchema; data: T }>): Array<PropGroup<T>> {
+export function groupFields<T>(entries: Array<FieldEntry<T>>): Array<PropGroup<T>> {
+  const out: Array<PropGroup<T>> = [];
+  for (let i = 0; i < entries.length; ) {
+    const g = entries[i].schema.group;
+    if (!g) {
+      const run: Array<FieldEntry<T>> = [];
+      while (i < entries.length && !entries[i].schema.group) run.push(entries[i++]);
+      out.push(...pairFields(run));
+      continue;
+    }
+    const run: Array<FieldEntry<T>> = [];
+    while (i < entries.length && entries[i].schema.group === g) run.push(entries[i++]);
+    const inner = pairFields(run, g);
+    const items = inner.flatMap((x) => x.items);
+    out.push(inner.some((x) => x.title) ? { title: g, items, groups: inner } : { title: g, items });
+  }
+  return out;
+}
+
+/** Fields paired up as buttons and links; inside the declared group `within`, labels that repeat its name shorten. */
+function pairFields<T>(entries: Array<FieldEntry<T>>, within?: string): Array<PropGroup<T>> {
   const out: Array<PropGroup<T>> = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
-    const g = e.schema.group;
-    if (g) {
-      const last = out[out.length - 1];
-      if (last?.title === g) last.items.push({ ...e, label: shorten(e.schema.label, g) });
-      else out.push({ title: g, items: [{ ...e, label: shorten(e.schema.label, g) }] });
-      continue;
-    }
+    const short = within ? shorten(e.schema.label, within) : undefined;
     const next = entries[i + 1];
     const m = /^(.*) label$/i.exec(e.schema.label);
-    if (m && e.schema.type === 'string' && next && next.schema.type === 'link' && !next.schema.group) {
+    // A pair named after the group itself ("Action label" in "Action") is the group: its fields just shorten.
+    if (m && e.schema.type === 'string' && next && next.schema.type === 'link' && !(within && m[1].toLowerCase() === within.toLowerCase())) {
       const prefix = m[1];
       const nl = next.schema.label.toLowerCase();
       if (nl === `${prefix} link`.toLowerCase() || nl === 'link') {
@@ -35,7 +59,7 @@ export function groupFields<T>(entries: Array<{ key: string; schema: PropSchema 
         continue;
       }
     }
-    out.push({ items: [e] });
+    out.push({ items: [short ? { ...e, label: short } : e] });
   }
   return out;
 }
