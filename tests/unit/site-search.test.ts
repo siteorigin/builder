@@ -96,11 +96,17 @@ describe('site search files', () => {
     const after = apply(s, [{ type: 'component.makeUnique', owner: home(s), nodeId: node.id, name: 'Project finder' }]);
     const copy = Object.values(after.components).find((d) => d.owner === 'project' && d.kind === 'code')!;
     expect(copy.sourcePath).toMatch(/^src\/lib\/siteorigin\/custom\//);
-    // The copy alone keeps the search files, with the theme's original gone from the project.
+    // The copy alone keeps the search files, with the theme's original gone from the project, however its import is spelled.
     delete after.components[node.definitionId];
     expect(usesSiteSearch(after)).toBe(true);
     const files = generateProject(after);
     expect(files.has(HELPER)).toBe(true);
+    for (const spelling of ["'../runtime/site-search'", "'$lib/siteorigin/runtime/./site-search.js'"]) {
+      copy.source = copy.source!.replace(/'[^']*site-search[^']*'/, spelling);
+      expect(usesSiteSearch(after), spelling).toBe(true);
+    }
+    copy.source = copy.source!.replace(/import \{[^}]*\} from '[^']*site-search[^']*';/, '');
+    expect(usesSiteSearch(after)).toBe(false);
     expect(files.get(copy.sourcePath!)).toContain(`from '../runtime/${SEARCH_HELPER_FILE}'`);
     expect(files.has(INDEX)).toBe(true);
   });
@@ -251,11 +257,19 @@ describe('site search index', () => {
     expect(text('pg_project1')).toContain('Shown everywhere.');
     expect(text('pg_project2')).not.toContain('secret');
     expect(text('pg_project3')).toContain('Hidden on phones only.');
-    // Shown again at one size, it is shown text: by its own setting, or by an arrangement that size gives it.
-    section('pg_project2').overrides = { root: { base: { hidden: true }, desktop: { hidden: false } } };
-    expect(text('pg_project2')).toContain('A secret kept on every screen.');
-    section('pg_project2').overrides = { root: { base: { hidden: true }, desktop: { layout: 'stack' } } };
-    expect(text('pg_project2')).toContain('A secret kept on every screen.');
+    // Hidden at each size by that size's own setting.
+    section('pg_project2').overrides = { root: { phone: { hidden: true }, tablet: { hidden: true }, desktop: { hidden: true } } };
+    expect(text('pg_project2')).not.toContain('secret');
+    // Anything a size or the wide range says about its display may show it again: its text stays searchable.
+    for (const root of [
+      { base: { hidden: true }, desktop: { hidden: false } },
+      { base: { hidden: true }, desktop: { layout: 'stack' } },
+      { base: { hidden: true }, phone: { customCss: 'display: none;' } },
+      { base: { hidden: true, columnSpan: 2, customCss: 'display: block' } }
+    ]) {
+      section('pg_project2').overrides = { root };
+      expect(text('pg_project2'), JSON.stringify(root)).toContain('A secret kept on every screen.');
+    }
     // A hidden container hides what is inside it.
     const page = s.pages.pg_project1;
     page.nodes.n_box = { id: 'n_box', kind: 'element', tag: 'div', children: ['n_tucked'], styles: { base: { hidden: true } } } as GraphNode;

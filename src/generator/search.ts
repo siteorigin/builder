@@ -44,18 +44,20 @@ export function searchHidden(page: PageDoc): boolean {
 
 const SIZES = ['phone', 'tablet', 'desktop'] as const;
 
-/** Whether a size's own rule shows the layer again after an every-size hide: an arrangement, or a display in custom CSS. */
-function reshown(props: ResponsiveStyles['base']): boolean {
-  return props?.layout !== undefined || (typeof props?.customCss === 'string' && /(?:^|[;\s{])display\s*:\s*(?!none\b)/i.test(props.customCss));
-}
+/** Whether a size's own rule says anything about how the layer displays: a hide or show, an arrangement, or custom CSS. */
+const touchesDisplay = (props: ResponsiveStyles['base']) => !!props && (props.hidden !== undefined || props.layout !== undefined || props.customCss !== undefined);
 
 /**
- * Whether a layer's own styles hide it at every size: each size hides it in its own rule (where the hide comes last),
- * or the every-size rule does and no size shows it again.
+ * Whether a layer's own styles certainly hide it at every size, in the two ways the generated CSS leaves no doubt:
+ * each size hides it in its own rule (the size rules come last, and the hide is each rule's last word), or the
+ * every-size rule hides it ("Hide at every size") and nothing after that rule says anything about its display. Any
+ * other mix is read as shown, so its text stays searchable rather than visible text going missing.
  */
 function hiddenEverywhere(styles: ResponsiveStyles | undefined): boolean {
   if (!styles) return false;
-  return SIZES.every((size) => styles[size]?.hidden === true || (styles.base?.hidden === true && styles[size]?.hidden !== false && !reshown(styles[size])));
+  if (SIZES.every((size) => styles[size]?.hidden === true)) return true;
+  const baseCss = styles.base?.customCss;
+  return styles.base?.hidden === true && !(typeof baseCss === 'string' && /display/i.test(baseCss)) && SIZES.every((size) => !touchesDisplay(styles[size]));
 }
 
 /**
@@ -118,12 +120,15 @@ export function buildSearchIndex(state: ProjectState): SearchEntry[] {
   return out;
 }
 
+/** A module path that names the search code, with or without its extension, however the path leads to it. */
+const NAMES_HELPER = /['"`][^'"`\n]*site-search(?:\.js)?['"`]/;
+
 /**
  * Whether a component of the site searches it: its code names the search code (however it spells the path there).
  * Naming it without importing it only writes two files the build leaves alone.
  */
 export function usesSiteSearch(state: ProjectState): boolean {
-  return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && def.source.includes(SEARCH_HELPER_FILE));
+  return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source));
 }
 
 /** The index as a module: the same pages always give the same bytes. */
