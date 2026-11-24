@@ -487,7 +487,10 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
   // Where this image sits in the project, so a description refused for being too long waits for it there.
   const home = useFieldHome();
   const v = value ?? { assetId: null, alt: '' };
-  const asset = v.assetId ? state.assets.assets[v.assetId] : null;
+  // A picture-only field (a sharing image) shows only what the library has as an image: a saved ID that names a
+  // document or font, or is no record at all, is the same as an image that is gone.
+  const named = v.assetId && Object.hasOwn(state.assets.assets, v.assetId) ? state.assets.assets[v.assetId] : null;
+  const asset = picture ? (named?.kind === 'image' ? named : null) : v.assetId ? state.assets.assets[v.assetId] : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   // The value as it is now, for work that finishes later (an import).
   const latest = useRef(v);
@@ -658,11 +661,11 @@ export function ImageEditor({ value, onChange, state, title, plain, picture }: {
         <div className={`insp-image-thumb${shownAsset ? '' : ' empty'}`} data-testid={plain ? `${plain}-preview` : undefined}>{shownAsset && devUrl ? <AssetImage key={missingKey(snapshot, shownAsset.id)} asset={shownAsset} devUrl={devUrl} cover alt="" /> : gone ? <ImageOff aria-hidden="true" /> : <ImageIcon aria-hidden="true" />}</div>
         <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
           <span className={`insp-image-name${shownAsset ? '' : gone ? ' gone' : ' none'}`} id={`${titleId}-now`} title={shownAsset?.name}>
-            {shownAsset ? (labels.get(shownAsset.id)?.label ?? shownAsset.name) : over ? 'Drop to use this image' : gone ? 'This image is no longer in Assets' : (picture?.none ?? (plain ? 'None' : 'No image chosen'))}
+            {shownAsset ? (labels.get(shownAsset.id)?.label ?? shownAsset.name) : over ? 'Drop to use this image' : gone ? (named ? 'This file is not an image' : 'This image is no longer in Assets') : (picture?.none ?? (plain ? 'None' : 'No image chosen'))}
           </span>
           {/* Whose image this is, when it is not the field's own. */}
           {fallback && !over && <span className="faint insp-note">{picture!.from}</span>}
-          <span className="row" style={{ gap: 4 }}>
+          <span className="row" style={{ gap: 4, flexWrap: picture ? 'wrap' : undefined }}>
             <button ref={chooseBtn} className="btn btn-sm" aria-describedby={gone || plain ? `${titleId}-now` : undefined} aria-expanded={browsing} aria-controls={browsing ? browseId : undefined} onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))} disabled={importing}>
               <ImagePlus />
               {importing ? 'Adding…' : asset || gone ? 'Change…' : 'Choose image…'}

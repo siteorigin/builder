@@ -2556,7 +2556,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
             onChange={(v) => upd({ socialImage: v.assetId }, v.assetId ? 'Change sharing image' : 'Use the site’s sharing image')}
           />
           <div className="field-hint">{sharing.imageNote}</div>
-          <button type="button" className="insp-mini" style={{ alignSelf: 'flex-start', marginLeft: -6 }} onClick={openSiteSharing}>
+          <button type="button" className="insp-mini" style={{ alignSelf: 'flex-start', marginLeft: -6 }} onClick={() => openSiteSharing('socialImage')}>
             Change the site’s sharing image
           </button>
         </div>

@@ -35,9 +35,15 @@ const chooser = () => picker().locator('.insp-image-top .btn', { hasText: /Choos
 const back = () => picker().locator('.insp-image-top .btn:not([aria-expanded])', { hasText: /Use the site’s image|Remove image/ });
 const imageName = () => picker().locator('.insp-image-name');
 const cardText = async () => ({ host: await card().locator('.share-card-host').innerText(), title: await card().locator('.share-card-title').innerText(), description: await card().locator('.share-card-desc').innerText() });
-/** The file the preview's picture loads, from the editor's own asset address. */
-const cardPicture = () => card().locator('.share-card-image img').getAttribute('src');
 const focusedLabel = () => win.evaluate(() => document.activeElement?.textContent?.trim() ?? '');
+/** A picture that has really loaded, and which asset's file it is. */
+const loaded = async (img, file) => {
+  await eventually(async () => assert.match((await img.getAttribute('src')) ?? '', file));
+  await eventually(async () => assert.ok(await img.evaluate((el) => el.complete && el.naturalWidth > 0), 'the picture has loaded'));
+};
+const cardImage = () => card().locator('.share-card-image img');
+const pickerThumb = () => picker().locator('.insp-image-thumb img');
+const field = (label) => section().locator('.field', { has: win.locator('label', { hasText: label }) });
 
 /** Choose an image from the library browser opened by the chooser. */
 async function choose(name) {
@@ -58,14 +64,36 @@ assert.ok(set.ok, JSON.stringify(set));
 assert.equal(siteFile().socialImage ?? null, null, 'the site-wide image stays unset');
 await openPage('Kitchens');
 await eventually(async () => assert.equal(await imageName().innerText(), 'Kitchen', 'the picker names the page’s own photo'));
-await eventually(async () => assert.match((await cardPicture()) ?? '', /kitchen/, 'the preview shows the Kitchen photo'));
-assert.deepEqual(await cardText(), { host: 'Public URL not set', title: 'Kitchens · Harbour Lane Studio', description: await card().locator('.share-card-desc').innerText() }, 'the preview shows the page’s title');
+await loaded(cardImage(), /kitchen/);
+await loaded(pickerThumb(), /kitchen/);
+const siteDescription = (await snapshot()).state.site.description;
+assert.ok(siteDescription, 'the starter site has a description');
+assert.deepEqual(await cardText(), { host: 'No usable public URL', title: 'Kitchens · Harbour Lane Studio', description: siteDescription }, 'the preview shows the page’s title and the site’s description');
 assert.match(await section().locator('.scope').innerText(), /Own sharing image/, 'the closed heading says the page has its own image');
-assert.match(await section().innerText(), /Only this page uses it/, 'it says the image belongs to this page');
+assert.match(await section().innerText(), /This page’s own choice/, 'it says the image is this page’s own');
+assert.equal(await picker().getByLabel('Image description').count(), 0, 'a sharing image has no description to write');
+assert.equal(await picker().getByRole('switch', { name: 'Decorative image' }).count(), 0, 'and is never decorative');
 assert.match(await section().innerText(), /no usable public URL/, 'it says the image address needs a public URL');
 assert.equal(await back().innerText(), 'Remove image', 'with no site image there is nothing to return to, so it offers Remove');
 await section().scrollIntoViewIfNeeded();
 await win.screenshot({ path: join(SHOTS, 'page-sharing-own.png') });
+
+step('the preview follows the title and description typed for the page, and falls back when they are cleared');
+await field('Browser title').getByRole('textbox').fill('Our kitchens');
+await field('Browser title').getByRole('textbox').press('Tab');
+await field('Description').getByRole('textbox').fill('Oak, steel and stone.');
+await field('Description').getByRole('textbox').press('Tab');
+await eventually(async () => assert.deepEqual(await cardText(), { host: 'No usable public URL', title: 'Our kitchens', description: 'Oak, steel and stone.' }));
+await field('Browser title').getByRole('textbox').fill('');
+await field('Browser title').getByRole('textbox').press('Tab');
+await field('Description').getByRole('textbox').fill('');
+await field('Description').getByRole('textbox').press('Tab');
+await eventually(async () => assert.deepEqual(await cardText(), { host: 'No usable public URL', title: 'Kitchens · Harbour Lane Studio', description: siteDescription }));
+
+step('Open Site details under the address note goes to the Public URL');
+await section().getByRole('button', { name: 'Open Site details' }).click();
+await eventually(async () => assert.equal(await win.evaluate(() => document.activeElement?.id), 'site-public-url', 'the Public URL field has the cursor'));
+await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
 
 step('two pages with different photos, chosen from the visual picker');
 await openPage('About');
@@ -74,6 +102,8 @@ assert.equal(await card().locator('.share-card-image.empty').count(), 1, 'the pr
 await choose('Bedroom');
 await eventually(() => assert.equal(pageFile(about).seo.socialImage, 'a_bedroom', 'About is saved with the Bedroom photo'));
 await eventually(async () => assert.equal(await imageName().innerText(), 'Bedroom'));
+await loaded(cardImage(), /bedroom/);
+await loaded(pickerThumb(), /bedroom/);
 assert.equal(pageFile(kitchens).seo.socialImage, 'a_kitchen', 'Kitchens keeps its own');
 
 step('an open picker closes when another page opens');
@@ -103,42 +133,56 @@ assert.match(await section().innerText(), /has no image of its own, so a shared 
 assert.equal(pageFile(home).seo.socialImage, undefined, 'Home stores no image of its own');
 assert.equal(await back().count(), 0, 'there is nothing to clear on a page that follows the site');
 assert.equal(await chooser().innerText(), 'Choose image…');
-await eventually(async () => assert.match((await cardPicture()) ?? '', /studio/, 'the preview shows the site’s image'));
+await loaded(cardImage(), /studio/);
+await loaded(pickerThumb(), /studio/);
 assert.equal((await cardText()).host, 'studio.example', 'the preview names the public URL’s host');
 assert.equal((await cardText()).title, 'Harbour Lane Studio', 'the home page is titled with the site name');
 await win.screenshot({ path: join(SHOTS, 'page-sharing-site-default.png') });
 
 await openPage('Kitchens');
 assert.equal(await imageName().innerText(), 'Kitchen');
+await loaded(cardImage(), /kitchen/);
 assert.equal(await back().innerText(), 'Use the site’s image', 'Kitchens can return to the site’s image');
 assert.match(await section().innerText(), /Pages without their own image show the site’s sharing image, Studio table\./);
 assert.equal(await section().getByText(/no usable public URL/).count(), 0, 'the address note goes once the site has a public URL');
 
-step('choosing the site’s own photo again keeps it for this page when the site’s image changes');
+step('choosing the photo the page already shows from the site keeps it for this page when the site’s image changes');
+const contact = (await pageBy('Contact')).id;
+await openPage('Home');
 await choose('Studio table');
-await eventually(() => assert.equal(pageFile(kitchens).seo.socialImage, 'a_studio', 'the page now holds the choice itself'));
+await eventually(() => assert.equal(pageFile(home).seo.socialImage, 'a_studio', 'Home now holds the choice itself, though the site already had it'));
+assert.equal(await back().innerText(), 'Use the site’s image', 'and can return to following the site');
 await win.getByRole('button', { name: 'Change the site’s sharing image' }).click();
 await win.locator('#dock-panel-styles select[data-site-field="socialImage"]').selectOption('a_dining');
 await eventually(() => assert.equal(siteFile().socialImage, 'a_dining'));
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
-await openPage('Kitchens');
-assert.equal(await imageName().innerText(), 'Studio table', 'the page keeps what it chose');
 await openPage('Home');
-await eventually(async () => assert.equal(await imageName().innerText(), 'Dining room', 'Home follows the new site image'));
-// Back to the Kitchen photo, and the site's image to Studio table, for the rest.
+assert.equal(await imageName().innerText(), 'Studio table', 'Home keeps what it chose');
+await loaded(cardImage(), /studio/);
+await openPage('Contact');
+await eventually(async () => assert.equal(await imageName().innerText(), 'Dining room', 'a page that follows the site moves with it'));
+await loaded(cardImage(), /dining/);
+assert.equal(pageFile(contact).seo.socialImage, undefined);
+// Back to following the site, with Studio table as the site's image, and Kitchens on its own photo, for the rest.
+await openPage('Home');
+await back().click();
+await eventually(() => assert.equal(pageFile(home).seo.socialImage, undefined, 'Home follows the site again'));
+await eventually(async () => assert.equal(await imageName().innerText(), 'Dining room'));
 await win.getByRole('button', { name: 'Change the site’s sharing image' }).click();
 await win.locator('#dock-panel-styles select[data-site-field="socialImage"]').selectOption('a_studio');
 await eventually(() => assert.equal(siteFile().socialImage, 'a_studio'));
 await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
-await openPage('Kitchens');
-await choose('Kitchen');
-await eventually(() => assert.equal(pageFile(kitchens).seo.socialImage, 'a_kitchen'));
+await openPage('Home');
+await eventually(async () => assert.equal(await imageName().innerText(), 'Studio table'));
 
 step('Use the site’s image clears the override from the keyboard, and undo and redo follow');
+await openPage('Kitchens');
+assert.equal(await imageName().innerText(), 'Kitchen');
 await back().focus();
 await win.keyboard.press('Enter');
 await eventually(() => assert.equal(pageFile(kitchens).seo.socialImage, undefined, 'the page’s own image is gone from its file'));
 await eventually(async () => assert.equal(await imageName().innerText(), 'Studio table', 'Kitchens now shows the site’s image'));
+await loaded(cardImage(), /studio/);
 await eventually(async () => assert.equal(await focusedLabel(), 'Choose image…', 'focus lands on the chooser when the button goes'));
 assert.equal(await section().locator('.scope').count(), 0, 'the closed heading no longer mentions an own image');
 assert.equal(pageFile(about).seo.socialImage, 'a_bedroom', 'About keeps Bedroom');
@@ -146,10 +190,12 @@ assert.equal(siteFile().socialImage, 'a_studio', 'the site keeps its image');
 const undone = await win.evaluate(() => window.builder.project.undo());
 assert.ok(undone.ok, JSON.stringify(undone));
 await eventually(async () => assert.equal(await imageName().innerText(), 'Kitchen', 'undo brings the own image back'));
+await loaded(cardImage(), /kitchen/);
 assert.equal(pageFile(kitchens).seo.socialImage, 'a_kitchen');
 const redone = await win.evaluate(() => window.builder.project.redo());
 assert.ok(redone.ok, JSON.stringify(redone));
 await eventually(async () => assert.equal(await imageName().innerText(), 'Studio table', 'redo clears it again'));
+await loaded(cardImage(), /studio/);
 assert.equal(pageFile(kitchens).seo.socialImage, undefined);
 // Left with its own image again, as the closing checks expect.
 await choose('Kitchen');
@@ -164,11 +210,14 @@ assert.ok(reopened.ok, JSON.stringify(reopened));
 await win.waitForSelector('.editor');
 await openPage('Kitchens');
 await eventually(async () => assert.equal(await imageName().innerText(), 'Kitchen'));
+await loaded(cardImage(), /kitchen/);
 assert.equal(await back().innerText(), 'Use the site’s image');
 await openPage('About');
 await eventually(async () => assert.equal(await imageName().innerText(), 'Bedroom'));
+await loaded(cardImage(), /bedroom/);
 await openPage('Home');
 await eventually(async () => assert.equal(await imageName().innerText(), 'Studio table'));
+await loaded(cardImage(), /studio/);
 assert.match(await picker().innerText(), /The site’s sharing image\./);
 assert.equal((await cardText()).host, 'studio.example');
 

@@ -435,7 +435,7 @@ function publicUrlProblem(text: string): DraftProblem | null {
  * reason, the value still saved, and a correction when there is one, until it is corrected or discarded (Escape).
  * A saved value that can't be used (saved by hand or by an earlier version) is pointed out the same way.
  */
-function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder }: { label: string; hint: string; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string }) {
+function CheckedField({ label, hint, value: saved, check, onCommit, unusable, className, placeholder, id }: { id?: string; label: string; hint: string; value: unknown; check: (v: string) => DraftProblem | null; onCommit: (v: string) => unknown; unusable: string; className?: string; placeholder?: string }) {
   // A value of another kind (written by hand into the project's files) is shown as text, to be corrected.
   const value = typeof saved === 'string' ? saved : saved == null ? '' : JSON.stringify(saved);
   const [problem, setProblem] = useState<DraftProblem | null>(null);
@@ -465,7 +465,7 @@ function CheckedField({ label, hint, value: saved, check, onCommit, unusable, cl
   );
   return (
     <Field label={label} hint={hint} error={error}>
-      <DraftInput className={className} value={value} placeholder={placeholder} check={check} onProblem={setProblem} onDirty={setDirty} reveal={revealSiteDetails} handle={handle} onCommit={onCommit} />
+      <DraftInput id={id} className={className} value={value} placeholder={placeholder} check={check} onProblem={setProblem} onDirty={setDirty} reveal={revealSiteDetails} handle={handle} onCommit={onCommit} />
     </Field>
   );
 }
@@ -1354,6 +1354,7 @@ export function SiteStyles() {
         {/* Keyed by the project's opening: text one project refused never shows in the next. */}
         <CheckedField
           key={`url-${snap?.workspaceKey}`}
+          id="site-public-url"
           label="Public URL"
           hint="For canonical links and the sitemap."
           value={site.baseUrl}

@@ -32,6 +32,10 @@ describe('pageSharing', () => {
     expect(pageSharing(state, home).title).toBe('Test Studio');
     expect(pageSharing(state, byTitle('Kitchens')).title).toBe('Kitchens · Test Studio');
     expect(defaultPageTitle(state, byTitle('Kitchens'))).toBe('Kitchens · Test Studio');
+    // The site's name is the one the site records now, not the one it started with.
+    const renamed = apply(state, { type: 'site.update', name: 'Oak & Steel' });
+    expect(pageSharing(renamed, renamed.pages[renamed.site.homePageId]).title).toBe('Oak & Steel');
+    expect(pageSharing(renamed, renamed.pages[byTitle('Kitchens').id]).title).toBe('Kitchens · Oak & Steel');
   });
 
   it('takes the page’s own title and description over the defaults, and the site’s description when it has none', () => {
@@ -43,6 +47,16 @@ describe('pageSharing', () => {
     expect(pageSharing(own, own.pages[kitchens.id])).toMatchObject({ title: 'Our kitchens', description: 'Oak and steel' });
     const none = apply(state, { type: 'site.update', description: '' });
     expect(pageSharing(none, none.pages[kitchens.id]).description).toBe('');
+    // Each is its own choice: a title alone leaves the description to the site, and the other way round.
+    const titleOnly = apply(withSite, { type: 'page.update', pageId: kitchens.id, seoTitle: 'Our kitchens' });
+    expect(pageSharing(titleOnly, titleOnly.pages[kitchens.id])).toMatchObject({ title: 'Our kitchens', description: 'Kitchens and gardens' });
+    const descriptionOnly = apply(withSite, { type: 'page.update', pageId: kitchens.id, description: 'Oak and steel' });
+    expect(pageSharing(descriptionOnly, descriptionOnly.pages[kitchens.id])).toMatchObject({ title: 'Kitchens · Test Studio', description: 'Oak and steel' });
+    // Stored empty text is no choice either.
+    const blank = apply(withSite, { type: 'site.update', description: 'Kitchens and gardens' });
+    blank.pages[kitchens.id].seo.title = '';
+    blank.pages[kitchens.id].seo.description = '';
+    expect(pageSharing(blank, blank.pages[kitchens.id])).toMatchObject({ title: 'Kitchens · Test Studio', description: 'Kitchens and gardens' });
   });
 
   it('shares a page with its own image, else the site’s, else none', () => {
@@ -51,6 +65,7 @@ describe('pageSharing', () => {
     expect(pageSharing(state, kitchens)).toMatchObject({ imageId: null, image: undefined, source: 'none' });
     const siteImage = apply(state, { type: 'site.update', socialImage: 'a_table' });
     expect(pageSharing(siteImage, siteImage.pages[kitchens.id])).toMatchObject({ imageId: 'a_table', source: 'site' });
+    expect(pageSharing(siteImage, siteImage.pages[kitchens.id]).image?.name).toBe('Studio table');
     const own = apply(siteImage, { type: 'page.update', pageId: kitchens.id, socialImage: 'a_kitchen' });
     expect(pageSharing(own, own.pages[kitchens.id])).toMatchObject({ imageId: 'a_kitchen', source: 'page' });
     expect(pageSharing(own, own.pages[kitchens.id]).image?.name).toBe('Kitchen');
@@ -60,6 +75,7 @@ describe('pageSharing', () => {
     const cleared = apply(own, { type: 'page.update', pageId: kitchens.id, socialImage: null });
     expect(cleared.pages[kitchens.id].seo.socialImage).toBeUndefined();
     expect(pageSharing(cleared, cleared.pages[kitchens.id])).toMatchObject({ imageId: 'a_table', source: 'site' });
+    expect(pageSharing(cleared, cleared.pages[kitchens.id]).image?.name).toBe('Studio table');
   });
 
   it('keeps a page’s own choice when its image has gone, never swapping in the site’s', () => {
@@ -75,6 +91,18 @@ describe('pageSharing', () => {
     const kitchens = byTitle('Kitchens');
     kitchens.seo.socialImage = 'a_doc';
     expect(pageSharing(state, kitchens)).toMatchObject({ imageId: 'a_doc', image: undefined, source: 'page' });
+    state.assets.assets['a_font'] = image('a_font', 'Serif', { kind: 'font', mime: 'font/woff2', file: 'static/assets/serif.woff2' });
+    kitchens.seo.socialImage = 'a_font';
+    expect(pageSharing(state, kitchens)).toMatchObject({ imageId: 'a_font', image: undefined, source: 'page' });
+    // The site's own image is held to the same rule.
+    delete kitchens.seo.socialImage;
+    state.site.socialImage = 'a_doc';
+    expect(pageSharing(state, kitchens)).toMatchObject({ imageId: 'a_doc', image: undefined, source: 'site' });
+    state.site.socialImage = 'a_font';
+    expect(pageSharing(state, kitchens).image).toBeUndefined();
+    // A name that only the object's prototype has is no asset.
+    kitchens.seo.socialImage = 'constructor';
+    expect(pageSharing(state, kitchens)).toMatchObject({ imageId: 'constructor', image: undefined, source: 'page' });
     kitchens.seo.socialImage = '';
     state.site.socialImage = 'a_table';
     expect(pageSharing(state, kitchens)).toMatchObject({ imageId: 'a_table', source: 'site' });
@@ -87,7 +115,7 @@ describe('sharingView', () => {
     const s = apply(state, { type: 'site.update', socialImage: 'a_table' }, { type: 'page.update', pageId: byTitle('Kitchens').id, socialImage: 'a_kitchen' });
     const v = sharingView(s, s.pages[byTitle('Kitchens').id]);
     expect(v).toMatchObject({ imageSource: 'page', imageName: 'Kitchen', host: 'studio.example', addressNote: null });
-    expect(v.imageNote).toBe('Only this page uses it. Pages without their own image show the site’s sharing image, Studio table. It also shows on this page’s card in page lists.');
+    expect(v.imageNote).toBe('This page’s own choice. Pages without their own image show the site’s sharing image, Studio table. Page lists that follow this page show it on this page’s card.');
     // Returning to the site's image is offered by name, with the site's picture to stand in for it.
     expect(v.picker).toEqual({ inherited: 'a_table', from: 'The site’s sharing image.', none: 'No sharing image', back: 'Use the site’s image' });
   });
@@ -111,7 +139,18 @@ describe('sharingView', () => {
     const own = apply(state, { type: 'page.update', pageId: byTitle('Kitchens').id, socialImage: 'a_kitchen' });
     const v = sharingView(own, own.pages[byTitle('Kitchens').id]);
     expect(v.picker.back).toBe('Remove image');
-    expect(v.imageNote).toContain('The site has no sharing image, so other pages are shared without one.');
+    expect(v.imageNote).toContain('Pages without their own image are shared without one.');
+    // A page's choice that has gone from the library stays its own, with no picture, and returning to the site's image is offered.
+    const dangling = apply(state, { type: 'site.update', socialImage: 'a_table' });
+    dangling.pages[byTitle('Kitchens').id].seo.socialImage = 'a_gone';
+    const d = sharingView(dangling, dangling.pages[byTitle('Kitchens').id]);
+    expect(d).toMatchObject({ imageSource: 'page', imageName: undefined });
+    expect(d.imageNote).toMatch(/no longer in Assets/);
+    expect(d.picker).toMatchObject({ inherited: 'a_table', back: 'Use the site’s image' });
+    // A site image that is a document is no image to return to.
+    const doc = apply(state, { type: 'site.update', socialImage: 'a_table' });
+    doc.assets.assets['a_table'] = image('a_table', 'Menu', { kind: 'document', mime: 'application/pdf', file: 'static/assets/menu.pdf' });
+    expect(sharingView(doc, doc.pages[byTitle('Kitchens').id]).picker).toMatchObject({ inherited: null, back: 'Remove image' });
     const gone = apply(state, { type: 'site.update', socialImage: 'a_table' });
     delete gone.assets.assets['a_table'];
     const g = sharingView(gone, gone.pages[byTitle('Kitchens').id]);
@@ -124,11 +163,11 @@ describe('sharingView', () => {
     const { state, byTitle } = site();
     const kitchens = byTitle('Kitchens');
     const s = apply(state, { type: 'site.update', description: 'Kitchens and gardens' });
-    expect(sharingView(s, s.pages[kitchens.id])).toMatchObject({ title: 'Kitchens · Test Studio', titleOwn: false, description: 'Kitchens and gardens', descriptionFrom: 'site' });
+    expect(sharingView(s, s.pages[kitchens.id])).toMatchObject({ title: 'Kitchens · Test Studio', description: 'Kitchens and gardens' });
     const own = apply(s, { type: 'page.update', pageId: kitchens.id, seoTitle: 'Our kitchens', description: 'Oak and steel' });
-    expect(sharingView(own, own.pages[kitchens.id])).toMatchObject({ title: 'Our kitchens', titleOwn: true, description: 'Oak and steel', descriptionFrom: 'page' });
+    expect(sharingView(own, own.pages[kitchens.id])).toMatchObject({ title: 'Our kitchens', description: 'Oak and steel' });
     const none = apply(state, { type: 'site.update', description: '' });
-    expect(sharingView(none, none.pages[kitchens.id])).toMatchObject({ description: '', descriptionFrom: 'none' });
+    expect(sharingView(none, none.pages[kitchens.id])).toMatchObject({ description: '' });
   });
 
   it('says the image’s address needs a usable public URL, and names the host and sub-path site once it has one', () => {
@@ -138,10 +177,12 @@ describe('sharingView', () => {
     expect(v.addressNote).toMatch(/no usable public URL/);
     const sub = site({ url: 'https://me.github.io/studio/' });
     expect(sharingView(sub.state, sub.byTitle('Kitchens'))).toMatchObject({ host: 'me.github.io', addressNote: null });
+    const port = site({ url: 'https://studio.example:8443' });
+    expect(sharingView(port.state, port.byTitle('Kitchens')).host).toBe('studio.example:8443');
     // A stored address the build refuses is no public URL either.
     const bad = site();
     bad.state.site.baseUrl = 'http://studio.example';
-    expect(sharingView(bad.state, bad.byTitle('Kitchens')).addressNote).toMatch(/no usable public URL/);
+    expect(sharingView(bad.state, bad.byTitle('Kitchens'))).toMatchObject({ host: undefined, addressNote: expect.stringMatching(/no usable public URL/) });
   });
 });
 
@@ -157,7 +198,11 @@ describe('searchSummary', () => {
     kitchens.seo.searchHidden = true;
     expect(searchSummary(kitchens)).toBe('Own sharing image · Hidden from all search');
     delete kitchens.seo.socialImage;
+    expect(searchSummary(kitchens)).toBe('Hidden from all search');
+    delete kitchens.seo.searchHidden;
+    expect(searchSummary(kitchens)).toBe('Not in search engines');
     delete kitchens.seo.noindex;
+    kitchens.seo.searchHidden = true;
     expect(searchSummary(kitchens)).toBe('Not in site search');
     expect(state).toBeTruthy();
   });
@@ -178,6 +223,7 @@ describe('the generated sharing tags', () => {
     expect(ogImages(head(s, s.pages[s.site.homePageId]))).toEqual(['https://studio.example/work/assets/studio-table.jpg']);
     const kitchens = head(s, s.pages[byTitle('Kitchens').id]);
     expect(kitchens).toContain('<meta property="og:image:width" content="1200" />');
+    expect(kitchens).toContain('<meta property="og:image:height" content="630" />');
     expect(kitchens).toContain('<meta property="og:image:alt" content={"An oak kitchen"} />');
     expect(kitchens).toContain('<meta name="twitter:card" content="summary_large_image" />');
   });
@@ -192,7 +238,27 @@ describe('the generated sharing tags', () => {
     expect(head(noImages, noImages.pages[byTitle('Kitchens').id])).toContain('<meta name="twitter:card" content="summary" />');
     const noUrl = site({ url: null });
     const s = apply(noUrl.state, { type: 'page.update', pageId: noUrl.byTitle('Kitchens').id, socialImage: 'a_kitchen' });
-    expect(head(s, s.pages[noUrl.byTitle('Kitchens').id])).not.toMatch(/og:image"/);
+    const bare = head(s, s.pages[noUrl.byTitle('Kitchens').id]);
+    expect(bare).not.toMatch(/og:image/);
+    expect(bare).toContain('<meta name="twitter:card" content="summary" />');
+  });
+
+  it('describes the picture from the library when it has no suggested description, and keeps its own size', () => {
+    const { state, byTitle } = site();
+    state.assets.assets['a_wide'] = image('a_wide', 'Wide', { width: 2000, height: 900, description: 'A wide kitchen' });
+    const s = apply(state, { type: 'page.update', pageId: byTitle('Kitchens').id, socialImage: 'a_wide' });
+    const src = head(s, s.pages[byTitle('Kitchens').id]);
+    expect(src).toContain('<meta property="og:image:width" content="2000" />');
+    expect(src).toContain('<meta property="og:image:height" content="900" />');
+    expect(src).toContain('<meta property="og:image:alt" content={"A wide kitchen"} />');
+  });
+
+  it('writes no image for a page whose own image has gone, even when the site has one', () => {
+    const { state, byTitle } = site();
+    const s = apply(state, { type: 'site.update', socialImage: 'a_table' });
+    s.pages[byTitle('Kitchens').id].seo.socialImage = 'a_gone';
+    expect(ogImages(head(s, s.pages[byTitle('Kitchens').id]))).toEqual([]);
+    expect(ogImages(head(s, s.pages[s.site.homePageId]))).toEqual(['https://studio.example/assets/studio-table.jpg']);
   });
 
   it('leaves out a picture that is not a picture, where it used to name the file as the sharing image', () => {
@@ -200,13 +266,31 @@ describe('the generated sharing tags', () => {
     state.assets.assets['a_doc'] = image('a_doc', 'Menu', { kind: 'document', mime: 'application/pdf', file: 'static/assets/menu.pdf' });
     state.pages[byTitle('Kitchens').id].seo.socialImage = 'a_doc';
     expect(ogImages(head(state, state.pages[byTitle('Kitchens').id]))).toEqual([]);
+    expect(head(state, state.pages[byTitle('Kitchens').id])).toContain('<meta name="twitter:card" content="summary" />');
+    // The site's image is held to it too, and a picture still writes its tag with the same public URL.
+    delete state.pages[byTitle('Kitchens').id].seo.socialImage;
+    state.site.socialImage = 'a_doc';
+    expect(ogImages(head(state, state.pages[byTitle('Kitchens').id]))).toEqual([]);
+    state.site.socialImage = 'a_kitchen';
+    expect(ogImages(head(state, state.pages[byTitle('Kitchens').id]))).toEqual(['https://studio.example/assets/kitchen.jpg']);
   });
 
-  it('carries the title and description the preview shows', () => {
+  it('carries the title and description the preview shows, the page’s own over the site’s', () => {
     const { state, byTitle } = site();
-    const s = apply(state, { type: 'site.update', description: 'Kitchens and gardens' }, { type: 'page.update', pageId: byTitle('Kitchens').id, seoTitle: 'Our kitchens' });
-    const src = head(s, s.pages[byTitle('Kitchens').id]);
+    const kitchens = byTitle('Kitchens').id;
+    const s = apply(state, { type: 'site.update', description: 'Kitchens and gardens' }, { type: 'page.update', pageId: kitchens, seoTitle: 'Our kitchens' });
+    const src = head(s, s.pages[kitchens]);
+    expect(src).toContain('<title>{"Our kitchens"}</title>');
     expect(src).toContain('<meta property="og:title" content={"Our kitchens"} />');
+    expect(src).toContain('<meta name="description" content={"Kitchens and gardens"} />');
     expect(src).toContain('<meta property="og:description" content={"Kitchens and gardens"} />');
+    expect(sharingView(s, s.pages[kitchens])).toMatchObject({ title: 'Our kitchens', description: 'Kitchens and gardens' });
+    const own = apply(s, { type: 'page.update', pageId: kitchens, description: 'Oak and steel' });
+    expect(head(own, own.pages[kitchens])).toContain('<meta name="description" content={"Oak and steel"} />');
+    expect(head(own, own.pages[kitchens])).toContain('<meta property="og:description" content={"Oak and steel"} />');
+    expect(sharingView(own, own.pages[kitchens]).description).toBe('Oak and steel');
+    // The home page is titled with the site's name, and the head says what the preview does.
+    expect(head(own, own.pages[own.site.homePageId])).toContain('<title>{"Test Studio"}</title>');
+    expect(sharingView(own, own.pages[own.site.homePageId]).title).toBe('Test Studio');
   });
 });

@@ -22,11 +22,7 @@ export interface PictureStandIn {
 
 export interface SharingView {
   title: string;
-  /** Whether the title is the page's own (not made from its name and the site's). */
-  titleOwn: boolean;
   description: string;
-  /** The page's own description, else the site's, else none. */
-  descriptionFrom: 'page' | 'site' | 'none';
   imageSource: SharingImageSource;
   /** The image's name in the library, as the pickers label it, when it shows. */
   imageName: string | undefined;
@@ -57,7 +53,9 @@ export function sharingView(state: ProjectState, page: PageDoc): SharingView {
   const imageName = shared.image?.kind === 'image' ? nameOf(state, shared.imageId) : undefined;
   let imageNote: string;
   if (own) {
-    imageNote = `Only this page uses it. ${siteHas ? `Pages without their own image show the site’s sharing image, ${siteName}.` : 'The site has no sharing image, so other pages are shared without one.'} It also shows on this page’s card in page lists.`;
+    imageNote = shared.image
+      ? `This page’s own choice. ${siteHas ? `Pages without their own image show the site’s sharing image, ${siteName}.` : 'Pages without their own image are shared without one.'} Page lists that follow this page show it on this page’s card.`
+      : 'The image chosen for this page is no longer in Assets, so a shared link to it shows no picture. Choose another, or return to the site’s image.';
   } else if (shared.source === 'site') {
     imageNote = shared.image
       ? 'This page has no image of its own, so a shared link shows the site’s sharing image. Choose one to use a different image for this page.'
@@ -67,9 +65,7 @@ export function sharingView(state: ProjectState, page: PageDoc): SharingView {
   }
   return {
     title: shared.title,
-    titleOwn: !!page.seo.title,
     description: shared.description,
-    descriptionFrom: page.seo.description ? 'page' : state.site.description ? 'site' : 'none',
     imageSource: shared.source,
     imageName,
     host: base ? new URL(base).host : undefined,
@@ -80,7 +76,7 @@ export function sharingView(state: ProjectState, page: PageDoc): SharingView {
       back: siteHas ? 'Use the site’s image' : 'Remove image'
     },
     imageNote,
-    addressNote: base ? null : 'The site has no usable public URL yet, so the exported site leaves this image’s address out of its sharing tags. Set the Public URL in Site details.'
+    addressNote: base ? null : 'The site has no usable public URL yet, so the exported site writes no page or image addresses into its sharing tags. Set the Public URL in Site details.'
   };
 }
 

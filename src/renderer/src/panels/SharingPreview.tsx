@@ -8,10 +8,10 @@ import { openSiteStyles } from '../lib/actions';
 import { sharingView } from '../lib/sharing';
 import { missingKey } from './ImagesPicker';
 
-/** Site details, with the site's sharing image under the cursor: it is the one setting a page without an image of its own follows. */
-export function openSiteSharing() {
+/** Site details, with the cursor on the site's sharing image (the one a page without an image of its own follows) or its public URL. */
+export function openSiteSharing(field: 'socialImage' | 'baseUrl') {
   openSiteStyles();
-  openSection('site-settings', { focus: '[data-site-field="socialImage"]' });
+  openSection('site-settings', { focus: field === 'baseUrl' ? '#site-public-url' : '[data-site-field="socialImage"]' });
 }
 
 /**
@@ -33,7 +33,7 @@ export function SharingPreview({ state, page }: { state: ProjectState; page: Pag
           {!picture && <span>No sharing image</span>}
         </div>
         <div className="share-card-text">
-          <span className="share-card-host">{view.host ?? 'Public URL not set'}</span>
+          <span className="share-card-host">{view.host ?? 'No usable public URL'}</span>
           <span className="share-card-title">{view.title}</span>
           <span className={`share-card-desc${view.description ? '' : ' none'}`}>{view.description || 'No description'}</span>
         </div>
@@ -44,7 +44,7 @@ export function SharingPreview({ state, page }: { state: ProjectState; page: Pag
       {view.addressNote && (
         <p className="field-hint share-preview-note">
           {view.addressNote}{' '}
-          <button type="button" className="link-btn" onClick={openSiteSharing}>
+          <button type="button" className="link-btn" onClick={() => openSiteSharing('baseUrl')}>
             Open Site details
           </button>
         </p>
