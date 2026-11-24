@@ -375,7 +375,8 @@ function shellLinks(state: ProjectState, shell: 'header' | 'footer'): { node: In
     const schema = state.components[n.definitionId]?.properties.links;
     // A computed list fills itself from the site's pages: a link stored in it would never show.
     if (schema?.type === 'list' && !schema.feed && schema.fields.label?.type === 'string' && schema.fields.link?.type === 'link')
-      return { node: n, max: schema.max, items: (n.props.links as ListItem[] | undefined) ?? [] };
+      // An unset list shows its default items, and an insertion starts from them.
+      return { node: n, max: schema.max, items: (n.props.links as ListItem[] | undefined) ?? (schema.default as ListItem[] | undefined) ?? [] };
   }
   return null;
 }

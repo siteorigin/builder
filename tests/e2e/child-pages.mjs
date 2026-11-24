@@ -75,6 +75,8 @@ try {
   step('Pages shows Kitchens inside Lookbook, and the header menu groups its link under Lookbook’s');
   await eventually(async () => assert.deepEqual(await outline(), ['Home', 'About', 'Contact', 'Lookbook', '  Kitchens']));
   assert.equal(await pageRow('Kitchens').getAttribute('aria-description'), 'Inside Lookbook. /lookbook/kitchens/');
+  const titleX = async (title) => (await pageRow(title).locator('.page-title').boundingBox()).x;
+  assert.ok((await titleX('Kitchens')) >= (await titleX('Lookbook')) + 12, 'Kitchens is shown indented under Lookbook');
   const rows = await menuRows();
   assert.deepEqual(rows.map((r) => r.row), ['Home', 'About', 'Contact', 'Lookbook', '  Kitchens']);
   const kitchensItem = rows.find((r) => r.target === kitchens.id);
@@ -128,6 +130,7 @@ try {
   const hydrated = (page) => page.waitForFunction(() => document.documentElement.style.getPropertyValue('--so-header-offset') !== '', null, { timeout: 30000 });
   const expanded = (toggle) => toggle.getAttribute('aria-expanded');
   const focusedText = (page) => page.evaluate(() => document.activeElement?.textContent?.trim() ?? null);
+  const hasFocus = (locator) => locator.evaluate((el) => el === document.activeElement);
 
   step('the old address sends visitors on to the new one');
   const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -143,6 +146,12 @@ try {
   const toggle = nav.getByRole('button', { name: 'Lookbook submenu' });
   const kitchensLink = nav.getByRole('link', { name: 'Kitchens', exact: true });
   assert.equal(await kitchensLink.isVisible(), false, 'the submenu starts closed');
+  // From the Lookbook link, Tab reaches its button next, and the closed submenu's links are skipped after it.
+  await nav.getByRole('link', { name: 'Lookbook', exact: true }).focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await hasFocus(toggle), true, 'Tab moves from the link to its submenu button');
+  await page.keyboard.press('Tab');
+  assert.equal(await focusedText(page), 'Book a call', 'the closed submenu is skipped');
   await toggle.focus();
   await page.keyboard.press('Enter');
   await eventually(async () => assert.equal(await expanded(toggle), 'true', 'Enter opens it'));
@@ -152,7 +161,7 @@ try {
   await page.keyboard.press('Escape');
   await eventually(async () => assert.equal(await expanded(toggle), 'false', 'Escape closes it'));
   assert.equal(await kitchensLink.isVisible(), false);
-  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('aria-controls')?.startsWith('so-sub-')), true, 'focus is back on its button');
+  assert.equal(await hasFocus(toggle), true, 'focus is back on its button');
   await page.keyboard.press('Space');
   await eventually(async () => assert.equal(await expanded(toggle), 'true', 'Space opens it'));
   await page.keyboard.press('Tab');
@@ -171,6 +180,14 @@ try {
   assert.equal(await expanded(toggle), 'false', 'choosing a link closes the submenu');
   assert.deepEqual(await nav.locator('[aria-current="page"]').allInnerTexts(), ['Kitchens'], 'only the open page is marked current');
   assert.equal(await nav.locator('li.so-header__group--current').count(), 1, 'its parent link is marked as the section');
+  const color = (l) => l.evaluate((el) => getComputedStyle(el).color);
+  assert.notEqual(await color(nav.getByRole('link', { name: 'Lookbook', exact: true })), await color(nav.getByRole('link', { name: 'About', exact: true })), 'the section link stands out from the others');
+  // Choosing the page already open changes no address, and still closes the submenu.
+  await toggle.click();
+  await eventually(async () => assert.equal(await expanded(toggle), 'true'));
+  await kitchensLink.click();
+  await eventually(async () => assert.equal(await expanded(toggle), 'false', 'choosing the open page closes the submenu'));
+  assert.equal(page.url(), `${ORIGIN}/studio/work/kitchens/`);
 
   step('phone: taps open and close the menu and its submenu');
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
@@ -183,11 +200,27 @@ try {
   const mKitchens = mNav.getByRole('link', { name: 'Kitchens', exact: true });
   await menuButton.tap();
   await eventually(async () => assert.equal(await expanded(menuButton), 'true', 'the menu opens'));
+  const cta = mNav.getByRole('link', { name: 'Book a call' });
+  const ctaBefore = (await cta.boundingBox()).y;
   await mToggle.tap();
   await eventually(async () => assert.equal(await expanded(mToggle), 'true', 'a tap opens the submenu'));
   assert.equal(await mKitchens.isVisible(), true);
   const box = await mKitchens.boundingBox();
-  assert.ok(box && box.y >= ((await mToggle.boundingBox())?.y ?? 0), 'the submenu opens in place, below its link');
+  const toggleBox = await mToggle.boundingBox();
+  assert.ok(box.y >= toggleBox.y + toggleBox.height - 1, 'the submenu opens in place, below its link');
+  assert.ok((await cta.boundingBox()).y >= ctaBefore + box.height, 'what follows in the menu moves down to make room');
+  // Escape closes the submenu first, back to its button, then the menu, back to the menu button.
+  await mobile.keyboard.press('Escape');
+  await eventually(async () => assert.equal(await expanded(mToggle), 'false', 'Escape closes the submenu'));
+  assert.equal(await expanded(menuButton), 'true', 'the menu stays open');
+  assert.equal(await hasFocus(mToggle), true, 'focus is on the submenu button');
+  await mobile.keyboard.press('Escape');
+  await eventually(async () => assert.equal(await expanded(menuButton), 'false', 'a second Escape closes the menu'));
+  assert.equal(await hasFocus(menuButton), true, 'focus is on the menu button');
+  await menuButton.tap();
+  await eventually(async () => assert.equal(await expanded(menuButton), 'true'));
+  await mToggle.tap();
+  await eventually(async () => assert.equal(await expanded(mToggle), 'true'));
   await mToggle.tap();
   await eventually(async () => assert.equal(await expanded(mToggle), 'false', 'a second tap closes it'));
   assert.equal(await mKitchens.isVisible(), false);

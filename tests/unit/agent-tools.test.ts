@@ -160,6 +160,8 @@ describe('upsert_page_with_sections', () => {
     expect(rows(header)).toEqual(['Home', 'About', '  Team', 'Contact']);
     expect(rows(footer)).toEqual(['Home', 'About', 'Contact', 'Team']);
     expect(((header.nodes[header.rootIds[0]] as InstanceNode).props.links as Array<{ link: { target?: string } }>)[2].link.target).toBe(team.id);
+    expect(((footer.nodes[footer.rootIds[0]] as InstanceNode).props.links as Array<{ sub?: boolean; link: { target?: string } }>)[3]).toMatchObject({ link: { target: team.id } });
+    expect(((footer.nodes[footer.rootIds[0]] as InstanceNode).props.links as Array<{ sub?: boolean }>)[3]).not.toHaveProperty('sub');
   });
 
   it('writes a page in another language as a translation of an existing one, and unlinks it when asked', async () => {

@@ -584,7 +584,17 @@ describe('shell.header', () => {
       const leading = nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/'), sub: true }, { id: 'l2', label: 'Contact', link: link('/contact/'), sub: true }] }));
       expect(leading).toBe(`<ul class="so-header__list"><li class="so-header__group"><a href="/about/">About</a>${toggle('l1', 'About')}<ul id="so-sub-l1" class="so-header__sub" hidden=""><li><a href="/contact/">Contact</a></li></ul></li></ul>`);
       // Items stored before submenus existed have no mark: they are top-level links.
-      expect(nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/') }] }))).not.toContain('so-header__sub');
+      expect(nav(authoredHtml('shell.header', { links: [{ id: 'l1', label: 'About', link: link('/about/') }] }))).toBe('<ul class="so-header__list"><li><a href="/about/">About</a></li></ul>');
+    });
+
+    it('makes an element ID safe from any item ID, so its button still finds its list', () => {
+      const links = [
+        { id: 'a "b" c', label: 'About', link: link('/about/') },
+        { id: 'l2', label: 'Contact', link: link('/contact/'), sub: true }
+      ];
+      const out = nav(authoredHtml('shell.header', { links }));
+      expect(out).toContain('aria-controls="so-sub-a--b--c"');
+      expect(out).toContain('<ul id="so-sub-a--b--c" class="so-header__sub" hidden="">');
     });
 
     it('marks only the open page, and its parent link as the section, on a page under it', () => {

@@ -31,7 +31,7 @@ import { selectPage } from '../lib/actions';
 import { groupFields, listItemImage, listRowTitle, type PropGroup } from '@shared/fields';
 import type { TableEdit } from '@engine/table';
 import { TableEditor } from './TableEditor';
-import { isSubItem, menuGroups } from '@engine/tree';
+import { menuGroups, shownUnder } from '@engine/tree';
 import { ImagesPicker, missingKey, pickGridKeys } from './ImagesPicker';
 import { isShellPart, type ShellPart } from '@shared/page-shell';
 import { documentDetails, documentLabels, isLibraryDocument, libraryDocuments } from '../lib/documents';
@@ -1745,14 +1745,11 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
   // grouping the website will: moving or removing a link can regroup the ones after it.
   const underOf: Array<string | null> = [];
   if (menuGroups(schema)) {
+    const under = shownUnder(items);
     let top: string | null = null;
     items.forEach((it, i) => {
-      if (isSubItem(it) && top !== null) {
-        underOf[i] = top;
-      } else {
-        underOf[i] = null;
-        top = titleOf(it, i);
-      }
+      if (!under[i]) top = titleOf(it, i);
+      underOf[i] = under[i] ? top : null;
     });
   }
   const runtime = useStore((st) => st.runtime);

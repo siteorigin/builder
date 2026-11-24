@@ -81,8 +81,8 @@ const HEADER_SOURCE = `<script>
 		openSub = null;
 	});
 
-	/** The submenu toggle and list of the link with this item ID. */
-	const subId = (id) => \`so-sub-\${id}\`;
+	/** The submenu toggle and list of the link with this item ID (made safe to use as an element ID). */
+	const subId = (id) => \`so-sub-\${String(id).replace(/[^\\w-]/g, '-')}\`;
 	const subToggle = (id) => header?.querySelector(\`[aria-controls="\${subId(id)}"]\`);
 
 	/** Choosing a link closes the menus, including links to the current page or an anchor on it. */
@@ -525,7 +525,7 @@ const HEADER_SOURCE = `<script>
 		color: inherit;
 	}
 	/* A link with a submenu is marked while one of the pages under it is open. */
-	.so-header__group--current > a {
+	.so-header__nav .so-header__group--current > a {
 		color: inherit;
 	}
 	.so-header__list > li > a[aria-current='page']::after,
@@ -591,6 +591,15 @@ const HEADER_SOURCE = `<script>
 	.so-header--inverse .so-header__sub {
 		color: var(--so-color-on-inverse);
 		border-color: transparent;
+	}
+	/* The last link's panel opens leftwards from its right edge, so it stays inside the window; a long one scrolls. */
+	.so-header__list > .so-header__group:last-child .so-header__sub {
+		left: auto;
+		right: -10px;
+	}
+	.so-header__sub {
+		max-height: min(70vh, 480px);
+		overflow-y: auto;
 	}
 	.so-header__sub[hidden] {
 		display: none;
@@ -679,11 +688,14 @@ const HEADER_SOURCE = `<script>
 			height: 44px;
 			margin-right: -10px;
 		}
-		.so-header__sub {
+		.so-header__sub,
+		.so-header__list > .so-header__group:last-child .so-header__sub {
 			position: static;
 			flex-basis: 100%;
 			min-width: 0;
 			max-width: none;
+			max-height: none;
+			overflow: visible;
 			margin: 0 0 10px;
 			padding: 0 0 0 var(--so-space-md);
 			background: transparent;

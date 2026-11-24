@@ -434,7 +434,8 @@ export function PagesPanel() {
   const headerMenu = menuOf ? { id: menuOf.node.id } : null;
   // A page inside another joins the menu under that page's link, when the menu groups links and has one.
   const menuItems = (menuOf?.node.props.links ?? menuOf?.schema.default ?? []) as Array<Record<string, unknown>>;
-  const navUnder = parent && menuOf && headerMenuSlotUnder(st, menuItems, parent.id).sub ? parent : null;
+  const slotUnder = parent && menuOf ? headerMenuSlotUnder(st, menuItems, parent.id) : null;
+  const navUnder = parent && slotUnder?.sub ? (slotUnder.under ?? parent.title) : null;
   /** Select the shared header and land on its navigation list, ready to edit. */
   const editMenu = () => {
     if (!headerMenu) return;
@@ -772,7 +773,7 @@ export function PagesPanel() {
                     setAddToNav(e.target.checked);
                   }}
                 />
-                {navUnder ? `Add to header menu, under ${navUnder.navLabel || navUnder.title}` : 'Add to header menu'}
+                {navUnder ? `Add to header menu, under ${navUnder}` : 'Add to header menu'}
               </label>
             )}
             <div className="pages-add-actions">

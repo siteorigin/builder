@@ -665,7 +665,10 @@ function movePages(state: ProjectState, moves: RouteMove[]) {
   for (const m of moves) state.pages[m.pageId].route = m.to;
   for (const m of moves) claimRoute(state, m.to);
   const used = new Set(Object.values(state.pages).map((p) => p.route.toLowerCase()));
-  const kept = moves.filter((m) => !used.has(m.from.toLowerCase()) && redirectIndex(state, m.from) < 0).map((m) => ({ from: m.from, pageId: m.pageId }));
+  // A draft is not on the website, so nothing outside leads to its address; and an address that is not a valid
+  // route (a hand-written one) could not be kept working.
+  const keep = (m: RouteMove) => !used.has(m.from.toLowerCase()) && redirectIndex(state, m.from) < 0 && state.pages[m.pageId].draft !== true && !validateRoute(m.from);
+  const kept = moves.filter(keep).map((m) => ({ from: m.from, pageId: m.pageId }));
   if (kept.length) state.site.redirects = [...(Array.isArray(state.site.redirects) ? state.site.redirects : []), ...kept];
 }
 
@@ -2781,6 +2784,22 @@ export function walkOperations(state: ProjectState, ops: EditOperation[], check:
   return null;
 }
 
+/**
+ * Old addresses kept during one batch for addresses no page had when it began: a page that passed through an
+ * address on its way somewhere else (swapping two pages' addresses through a spare one, a parent moved before its
+ * child) was never served there, so nothing outside leads to it.
+ */
+function dropPassingAddresses(before: ProjectState, after: ProjectState) {
+  const list: unknown = after.site.redirects;
+  if (!Array.isArray(list) || list === before.site.redirects) return;
+  const known = new Set<string>(Object.values(before.pages).map((p) => p.route.toLowerCase()));
+  for (const r of Array.isArray(before.site.redirects) ? (before.site.redirects as unknown[]) : []) if (typeof (r as { from?: unknown })?.from === 'string') known.add((r as { from: string }).from.toLowerCase());
+  const kept = list.filter((r) => typeof r?.from !== 'string' || known.has(r.from.toLowerCase()));
+  if (kept.length === list.length) return;
+  if (kept.length) after.site.redirects = kept;
+  else delete after.site.redirects;
+}
+
 export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: ApplyContext = {}): { state: ProjectState; results: OpResult[] } {
   const draft = clone(state);
   const results: OpResult[] = [];
@@ -2799,6 +2818,7 @@ export function applyOperations(state: ProjectState, ops: EditOperation[], ctx: 
       throw e;
     }
   }
+  dropPassingAddresses(state, draft);
   // A theme update changes no project component, not even this derived field.
   if (ops.every((op) => op.type === 'theme.refresh')) return { state: draft, results };
   // A managed project component's dependencies are the components its tree places: keep them current.

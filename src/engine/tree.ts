@@ -182,34 +182,39 @@ export function headerMenu(state: ProjectState): { node: InstanceNode; schema: E
  * above it that is not itself under another (the Foundation header's submenus). A list without one is flat.
  */
 export function menuGroups(schema: Extract<ComponentDefinition['properties'][string], { type: 'list' }> | undefined): boolean {
-  return schema?.type === 'list' && schema.fields.sub?.type === 'boolean';
+  return schema?.type === 'list' && schema.fields.sub?.type === 'boolean' && schema.fields.link?.type === 'link';
 }
 
-/** Whether a menu item is shown under the link above it. */
+/** Whether a menu item is marked to show under the link above it. */
 export const isSubItem = (item: unknown): boolean => (item as { sub?: unknown } | null)?.sub === true;
+
+/** Whether each item of a menu shows under another, as the header renders it: a marked first item has none above it. */
+export const shownUnder = (items: ReadonlyArray<unknown>): boolean[] => items.map((it, i) => i > 0 && isSubItem(it));
 
 /**
  * Where a new link to `pageId` goes in the header menu `items`: when the page is inside another (by its address)
  * and the menu groups links, under the first top-level link to that whole page, after the links already there;
  * otherwise at the end, at the top level.
  */
-export function headerMenuSlot(state: ProjectState, items: ReadonlyArray<Record<string, unknown>>, pageId: string): { index: number; sub: boolean } {
+export function headerMenuSlot(state: ProjectState, items: ReadonlyArray<Record<string, unknown>>, pageId: string): { index: number; sub: boolean; under?: string } {
   return headerMenuSlotUnder(state, items, pageParents(Object.values(state.pages)).get(pageId) ?? null);
 }
 
 /** Where a new link goes in the header menu `items` for a page inside `parentId` (null: at the top level). */
-export function headerMenuSlotUnder(state: ProjectState, items: ReadonlyArray<Record<string, unknown>>, parentId: string | null): { index: number; sub: boolean } {
+export function headerMenuSlotUnder(state: ProjectState, items: ReadonlyArray<Record<string, unknown>>, parentId: string | null): { index: number; sub: boolean; under?: string } {
   const end = { index: items.length, sub: false };
   const menu = headerMenu(state);
   if (!menu || !menuGroups(menu.schema) || !parentId) return end;
-  const at = items.findIndex((it) => {
+  const under = shownUnder(items);
+  const at = items.findIndex((it, i) => {
     const link = it?.link as { type?: unknown; target?: unknown; anchor?: unknown } | undefined;
-    return !isSubItem(it) && link?.type === 'page' && link.target === parentId && !link.anchor;
+    return !under[i] && link?.type === 'page' && link.target === parentId && !link.anchor;
   });
   if (at < 0) return end;
   let index = at + 1;
-  while (index < items.length && isSubItem(items[index])) index++;
-  return { index, sub: true };
+  while (index < items.length && under[index]) index++;
+  const label = items[at]?.label;
+  return typeof label === 'string' && label.trim() ? { index, sub: true, under: label.trim() } : { index, sub: true };
 }
 
 export function allTrees(state: ProjectState): Array<{ owner: OwnerRef; tree: NodeTree; label: string }> {

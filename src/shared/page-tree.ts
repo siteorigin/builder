@@ -100,6 +100,8 @@ export function planRouteMove(state: MoveSite, pageId: string, to: string, valid
   if (routeWithin(to, page.route)) return { error: `${quoteTitle(page)} cannot move inside itself. Choose an address outside ${page.route}.` };
   const branch = [page, ...pagesWithin(state.pages, pageId).map((id) => state.pages[id])];
   const inBranch = new Set(branch.map((p) => p.id));
+  // Where each page of the branch is now: a bookmark to one of those addresses must keep reaching that page.
+  const was = new Map(branch.map((p) => [p.route.toLowerCase(), p]));
   const kept: unknown[] = Array.isArray(state.site.redirects) ? state.site.redirects : [];
   const moves: RouteMove[] = [];
   for (const p of branch) {
@@ -110,6 +112,8 @@ export function planRouteMove(state: MoveSite, pageId: string, to: string, valid
     }
     const other = Object.values(state.pages).find((q) => !inBranch.has(q.id) && q.route.toLowerCase() === next.toLowerCase());
     if (other) return { error: p.id === pageId ? `Another page already uses ${next}.` : `Moving ${quoteTitle(page)} would move ${quoteTitle(p)} to ${next}, which ${quoteTitle(other)} already uses.` };
+    const before = was.get(next.toLowerCase());
+    if (before && before.id !== p.id) return { error: `Moving ${quoteTitle(page)} would move ${quoteTitle(p)} to ${next}, the address ${quoteTitle(before)} has now, so links to ${quoteTitle(before)} would open ${quoteTitle(p)}.` };
     if (p.id !== pageId) {
       const old = kept.find((r): r is { from: string; pageId: string } => typeof (r as { from?: unknown })?.from === 'string' && (r as { from: string }).from.toLowerCase() === next.toLowerCase());
       if (old && old.pageId !== p.id) {

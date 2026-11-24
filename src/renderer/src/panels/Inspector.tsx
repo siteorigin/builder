@@ -1736,26 +1736,34 @@ function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
   const parentId = pageParents(Object.values(state.pages)).get(page.id) ?? '';
   const leaf = routeLeaf(page.route);
   const branch = new Set([page.id, ...pagesWithin(state.pages, page.id)]);
+  /** Why the page cannot move to `to`, or null. */
+  const problem = (to: string) => (to === page.route ? null : (validateRoute(to) ?? (planRouteMove(state, page.id, to, validateRoute) as { error?: string }).error ?? null));
   const choices = rows
     .filter((r) => r.id !== state.site.homePageId && !branch.has(r.id))
     .map((r) => {
       const to = `${state.pages[r.id].route}${leaf}/`;
-      const err = validateRoute(to) ?? (r.id === parentId ? null : (planRouteMove(state, page.id, to, validateRoute) as { error?: string }).error ?? null);
-      return { ...r, to, err };
+      return { ...r, to, err: problem(to) };
     });
   const atTop = `/${leaf}/`;
-  const topErr = parentId ? (planRouteMove(state, page.id, atTop, validateRoute) as { error?: string }).error ?? null : null;
+  const topErr = problem(atTop);
+  // An address with folders no page uses ("/lookbook/2026/kitchens/") is shown as it is, so its parent (or the top
+  // level) can still be chosen to move it straight there.
+  const exact = (parentId ? `${state.pages[parentId].route}${leaf}/` : atTop) === page.route;
   const move = (id: string) => {
+    if (id === HERE) return;
     const to = id ? choices.find((c) => c.id === id)?.to : atTop;
     if (!to || to === page.route) return;
     void applyOps([{ type: 'page.update', pageId: page.id, route: to }], id ? `Move page into ${state.pages[id].title}` : 'Move page to the top level');
   };
-  // An address with folders no page uses ("/lookbook/2026/kitchens/") stays as typed until a place is chosen.
-  const exact = parentId ? `${state.pages[parentId].route}${leaf}/` === page.route : atTop === page.route;
   return (
     <Field label="Inside" hint={exact ? 'Moves the page and its address. Its link in the header menu stays where it is.' : `Its address, ${page.route}, has folders of its own. Choosing a page moves it straight inside that page.`}>
-      <select className="select" value={parentId} onChange={(e) => move(e.target.value)} aria-label="Inside page">
-        <option value="" disabled={!!topErr}>
+      <select className="select" value={exact ? parentId : HERE} onChange={(e) => move(e.target.value)} aria-label="Inside page">
+        {!exact && (
+          <option value={HERE} disabled>
+            {parentId ? `${state.pages[parentId].title}, at ${page.route}` : `Top level, at ${page.route}`}
+          </option>
+        )}
+        <option value="" disabled={!!topErr} title={topErr ?? undefined}>
           Top level{topErr ? ' (not possible)' : ''}
         </option>
         {choices.map((c) => (
@@ -1768,6 +1776,9 @@ function PageLocation({ page, state }: { page: PageDoc; state: ProjectState }) {
     </Field>
   );
 }
+
+/** The Inside choice standing for where a page with folders of its own in its address is now. */
+const HERE = ':here';
 
 function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const previewing = useStore((s) => s.mode === 'preview');
