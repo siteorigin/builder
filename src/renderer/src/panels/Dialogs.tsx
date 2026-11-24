@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Box, CircleAlert, CircleMinus, Component, CornerDownRight, FileText, History, House, Info, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
+import { Box, CircleAlert, CircleMinus, Component, CornerDownRight, FileText, History, House, Info, Newspaper, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, TriangleAlert, Undo2, User } from 'lucide-react';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { displayName, placesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
 import { uniqueCopyName } from '@engine/definitions';
-import type { PageLinkUse } from '@engine/page-links';
+import type { LinkHolder, PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
 import { applyOps, api, getState, projectHistory, setState, toast, useStore } from '../store';
@@ -522,9 +522,13 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
  * (an outlined red action), as a discard does; making a page Home is the accent's.
  */
 
-/** The glyph for where a link lives: the shared header or footer, a page, or a component. */
-function holderIcon(owner: OwnerRef) {
+/**
+ * The glyph for where a link lives: the shared header or footer, a page, a component, or a collection entry's text
+ * (a post or case study, shown with the glyph the Pages panel gives a dated article).
+ */
+function holderIcon(owner: LinkHolder) {
   if (owner.kind === 'shell') return owner.id === 'header' ? <PanelTop data-shared="" /> : <PanelBottom data-shared="" />;
+  if (owner.kind === 'entry') return <Newspaper />;
   return owner.kind === 'component' ? <Component /> : <FileText />;
 }
 
