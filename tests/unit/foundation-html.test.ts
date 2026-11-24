@@ -408,6 +408,79 @@ describe('shell.header', () => {
     expect(rule).toMatch(/object-fit:\s*contain/);
   });
 
+  describe('notice', () => {
+    const contactId = () => Object.values(bundle.state.pages).find((p) => p.route === '/contact/')!.id;
+    /** The notice bar's markup, without Svelte's scoping classes or the whitespace between tags. */
+    const notice = (out: string) =>
+      out.match(/<div class="so-header__notice[^"]*"[^>]*>[\s\S]*?<\/div>/)?.[0].replace(/ class="svelte-[a-z0-9]+"/g, '').replace(/ svelte-[a-z0-9]+/g, '').replace(/\s+/g, ' ').replace(/> </g, '><') ?? null;
+    const closed = 'Studio closed on Friday for repairs';
+
+    it('shows nothing above the header until it has words', () => {
+      const out = authoredHtml('shell.header', { siteName: 'Test Studio' });
+      expect(out).not.toContain('so-header__notice');
+      for (const blank of ['', '   ']) expect(notice(authoredHtml('shell.header', { notice: blank }))).toBeNull();
+      // Values the editor never stores still render no bar (and no error).
+      for (const odd of [null, 42, { text: 'Closed' }]) expect(notice(html('shell.header', { notice: odd }))).toBeNull();
+    });
+
+    it('shows its words in a bar above the brand row, leaving the name, menu and action as they were', () => {
+      const menu = [{ id: 'l1', label: 'Contact us', link: { type: 'page', target: contactId() } }];
+      const props = { siteName: 'Test Studio', links: menu, notice: `  ${closed}  `, ctaLabel: 'Book a call', ctaLink: { type: 'page', target: contactId() } };
+      const out = authoredHtml('shell.header', props);
+      expect(notice(out)).toBe(`<div class="so-header__notice"><p class="so-header__notice-inner"><span>${closed}</span></p></div>`);
+      // The bar sits inside the header, before the row holding the brand, the menu button and the menu.
+      expect(out.indexOf('so-header__notice')).toBeGreaterThan(out.indexOf('<header'));
+      expect(out.indexOf('so-header__notice')).toBeLessThan(out.indexOf('so-header__inner'));
+      const without = authoredHtml('shell.header', { ...props, notice: '' });
+      const rest = (markup: string) => markup.slice(markup.indexOf('<div class="so-header__inner'));
+      expect(rest(out)).toBe(rest(without));
+      expect(rest(out)).toMatch(/<span>Test Studio<\/span>/);
+      expect(rest(out)).toMatch(/<a href="\/contact\/"[^>]*>Contact us<\/a>/);
+      expect(rest(out)).toMatch(/<a class="so-btn so-btn--primary so-header__cta[^"]*" href="\/contact\/"[^>]*>Book a call<\/a>/);
+    });
+
+    it('links its label once the label has words and somewhere to go, and goes with its words', () => {
+      const link = { type: 'page', target: contactId() };
+      expect(notice(authoredHtml('shell.header', { notice: closed, noticeLabel: 'Opening hours', noticeLink: link }))).toBe(
+        `<div class="so-header__notice"><p class="so-header__notice-inner"><span>${closed}</span><a href="/contact/">Opening hours</a></p></div>`
+      );
+      expect(notice(authoredHtml('shell.header', { notice: closed, noticeLabel: 'Opening hours', noticeLink: { type: 'none', target: '' } }))).not.toContain('<a');
+      expect(notice(authoredHtml('shell.header', { notice: closed, noticeLabel: '  ', noticeLink: link }))).not.toContain('<a');
+      expect(notice(authoredHtml('shell.header', { notice: closed, noticeLink: link }))).not.toContain('<a');
+      expect(notice(authoredHtml('shell.header', { notice: closed, noticeLabel: ' Opening hours ', noticeLink: link }))).toContain('<a href="/contact/">Opening hours</a>');
+      // Clearing the words removes the notice, link and all.
+      for (const blank of ['', '  ']) expect(notice(authoredHtml('shell.header', { notice: blank, noticeLabel: 'Opening hours', noticeLink: link }))).toBeNull();
+      const away = notice(authoredHtml('shell.header', { notice: closed, noticeLabel: 'Map', noticeLink: { type: 'url', target: 'https://maps.example.com/studio', newTab: true } }));
+      expect(away).toMatch(/<a href="https:\/\/maps\.example\.com\/studio" target="_blank" rel="noopener noreferrer">Map<\/a>/);
+    });
+
+    it('stays readable: brand over the page colour over white, as the contrast check measures it, and a focus ring in its text colour', () => {
+      const source = bundle.defs['shell.header'].source!;
+      const rule = (selector: string) => source.match(new RegExp(`\\n\\t${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`))?.[1] ?? '';
+      // The theme's contrast check measures Text on brand against Brand painted over the page colour.
+      expect(rule('.so-header__notice')).toMatch(
+        /background:\s*linear-gradient\(var\(--so-color-brand\), var\(--so-color-brand\)\), linear-gradient\(var\(--so-color-background\), var\(--so-color-background\)\) #fff;/
+      );
+      expect(rule('.so-header__notice')).toMatch(/color:\s*var\(--so-color-on-brand\)/);
+      expect(rule('.so-header__notice a:focus-visible')).toMatch(/outline-color:\s*currentColor/);
+      // Nothing in the band scrolls on its own (a scrolling box needs a tab stop and can hold the page still).
+      expect(rule('.so-header__notice-inner')).toMatch(/text-align:\s*center/);
+      expect(rule('.so-header__notice-inner')).not.toMatch(/overflow(-[xy])?\s*:|max-height/);
+      expect(bundle.defs['shell.header'].properties.notice).toMatchObject({ type: 'string', maxLength: 160 });
+    });
+
+    it('scrolls away with the page while the brand row and its menu stay pinned, however tall it is', () => {
+      const source = bundle.defs['shell.header'].source!;
+      // The header measures the notice and pins itself that far above the window's top edge.
+      expect(source).toMatch(/el\.style\.setProperty\('--so-header-notice', noticeHeight\)/);
+      expect(source).toMatch(/\.so-header--sticky \{\s*position: sticky;[^}]*top: calc\(-1 \* var\(--so-header-notice, 0px\)\);/);
+      // The phone menu has the room below the brand row, not below the notice too.
+      expect(source).toMatch(/max-height: calc\(100dvh - 100% \+ var\(--so-header-notice, 0px\)\);/);
+      // Its measure goes with the effect that set it.
+      expect(source).toMatch(/el\.style\.removeProperty\('--so-header-notice'\);\n\t\t\};/);
+    });
+  });
+
   it('shows a text-only brand as is, and names an empty one Home', () => {
     const textOnly = brand(html('shell.header', { siteName: 'Test Studio', logo: null }));
     expect(textOnly).toMatch(/^<a\b[^>]*><span>Test Studio<\/span><\/a>$/);

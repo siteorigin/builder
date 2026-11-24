@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { GraphNode, InstanceNode, LinkValue, ListItem, ProjectState, RichText } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
-import { renderedContent } from '@generator/checks';
+import { missingSectionLinks, renderedContent } from '@generator/checks';
 import { contentFields, contentTarget, findContent, placedSections, planReplace, sectionMatches, type ContentMatch } from '../../src/renderer/src/lib/find-content';
 import { ProjectSession } from '../../src/main/project/session';
 
@@ -426,6 +426,51 @@ describe('what replacing keeps safe', () => {
     // The header shows its action for any label at all, even a space: its destination is still there to find.
     header.props.ctaLabel = ' ';
     expect(findContent(s, 'books@example.org').map((m) => m.field.label)).toEqual(['Action link']);
+  });
+
+  it('lists the header’s notice and its link only while visitors see them, and rewords it once for every page', () => {
+    const s = fresh();
+    const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+    const contact = pageAt(s, '/contact/');
+    // A link label without the notice's words shows nothing: clearing the words removed the notice.
+    const map = 'https://maps.example.com/harbour-lane';
+    Object.assign(header.props, { notice: '   ', noticeLabel: 'Directions', noticeLink: { type: 'url', target: map } });
+    expect(findContent(s, 'Directions')).toEqual([]);
+    expect(findContent(s, map)).toEqual([]);
+    header.props.notice = 'Studio closed on Friday for repairs';
+    expect(findContent(s, 'repairs').map((m) => [m.field.label, m.field.where])).toEqual([['Notice text', 'Header']]);
+    expect(only(findContent(s, 'Directions'), 'Notice link label')).toHaveLength(1);
+    expect(findContent(s, map).map((m) => m.field.label)).toEqual(['Notice link']);
+    // A label of spaces shows no link, so neither its words nor its destination are listed.
+    header.props.noticeLabel = '  ';
+    expect(findContent(s, map)).toEqual([]);
+    header.props.noticeLabel = 'Directions';
+    // A link that goes nowhere is not shown, so its label is not either.
+    header.props.noticeLink = { type: 'none', target: '' };
+    expect(findContent(s, 'Directions')).toEqual([]);
+    header.props.noticeLink = { type: 'page', target: contact.id };
+    // One replacement in the shared header rewords the notice everywhere it shows.
+    const { after } = apply(s, findContent(s, 'repairs'), 'a private event');
+    expect((after.site.shell.header.nodes[header.id] as InstanceNode).props.notice).toBe('Studio closed on Friday for a private event');
+  });
+
+  it('checks the notice’s link only while the notice shows it', () => {
+    const s = fresh();
+    const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
+    const contact = pageAt(s, '/contact/');
+    Object.assign(header.props, { notice: 'Studio closed on Friday', noticeLabel: 'Directions', noticeLink: { type: 'page', target: contact.id, anchor: 'no-such-section' } });
+    expect(missingSectionLinks(s).map((i) => [i.owner.id, i.label])).toEqual([['header', 'Directions']]);
+    // A header made unique keeps the header's code, so the same rules hold for its copy.
+    const owner = { kind: 'shell' as const, id: 'header' };
+    const forked = applyOperations(s, [{ type: 'component.makeUnique', owner, nodeId: header.id, name: 'Sale header' }]).state;
+    expect(forked.components[(forked.site.shell.header.nodes[header.id] as InstanceNode).definitionId].owner).not.toBe('theme');
+    expect(missingSectionLinks(forked).map((i) => [i.owner.id, i.label])).toEqual([['header', 'Directions']]);
+    for (const base of [s, forked])
+      for (const props of [{ notice: '' }, { notice: '  ' }, { noticeLabel: ' ' }]) {
+        const hidden = structuredClone(base);
+        Object.assign((hidden.site.shell.header.nodes[header.id] as InstanceNode).props, props);
+        expect(missingSectionLinks(hidden), JSON.stringify(props)).toEqual([]);
+      }
   });
 
   it('keeps a form field’s submission key when its label changes and it has no name of its own', () => {

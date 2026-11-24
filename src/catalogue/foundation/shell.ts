@@ -24,6 +24,9 @@ const HEADER_SOURCE = `<script>
 		sticky = true,
 		surface = 'background',
 		showSiteName = true,
+		notice = '',
+		noticeLabel = '',
+		noticeLink = null,
 		class: className = ''
 	} = $props();
 
@@ -39,6 +42,10 @@ const HEADER_SOURCE = `<script>
 	const logoAlt = $derived(logo?.src && !logo.decorative && typeof logo.alt === 'string' ? logo.alt.trim() : '');
 	// The logo shows 34px tall and at most 160px wide, so a small copy of the picture is all it needs.
 	const logoSizes = $derived(logo?.width > 0 && logo?.height > 0 ? \`\${Math.min(160, Math.ceil((34 * logo.width) / logo.height))}px\` : '160px');
+	// The notice above the header, on every page that shows it. Its words show it, so clearing them removes it
+	// (link and all); its link follows them once it has both a label and somewhere to go.
+	const noticeText = $derived(typeof notice === 'string' ? notice.trim() : '');
+	const noticeLinkText = $derived(noticeText && typeof noticeLabel === 'string' && noticeLink?.href ? noticeLabel.trim() : '');
 
 	/** Site-relative links go through resolve() so the site works under a sub-path. */
 	const href = (link) => (link?.href?.startsWith('/') && !link.href.startsWith('//') ? resolve(link.href) : link?.href);
@@ -55,8 +62,19 @@ const HEADER_SOURCE = `<script>
 	 * to it, so jump links land below it. The computed style also counts a position set as a style: a sticky
 	 * header stays in view at its top inset (only when it has one), a fixed one where it is, and either covers
 	 * the top of the window when it sits nearer the top edge than the bottom.
+	 *
+	 * First it measures the notice above the brand row as --so-header-notice on the header: a sticky header is
+	 * pinned that far above the window's top edge, so the notice scrolls away with the page however long it is,
+	 * and the brand row, the menu button and the menu stay on screen.
 	 */
 	function publishOffset(el) {
+		// Down to the notice's bottom edge, so the header's own padding and border above it scroll away too.
+		const notice = el.querySelector('.so-header__notice');
+		const noticeHeight = notice ? notice.getBoundingClientRect().bottom - el.getBoundingClientRect().top + 'px' : '';
+		if (el.style.getPropertyValue('--so-header-notice') !== noticeHeight) {
+			if (noticeHeight) el.style.setProperty('--so-header-notice', noticeHeight);
+			else el.style.removeProperty('--so-header-notice');
+		}
 		const root = el.ownerDocument.documentElement;
 		const style = getComputedStyle(el);
 		const box = el.getBoundingClientRect();
@@ -95,6 +113,7 @@ const HEADER_SOURCE = `<script>
 			win.removeEventListener('resize', resized);
 			win.cancelAnimationFrame(frame);
 			el.ownerDocument.documentElement.style.removeProperty('--so-header-offset');
+			el.style.removeProperty('--so-header-notice');
 		};
 	});
 
@@ -187,6 +206,21 @@ const HEADER_SOURCE = `<script>
 <svelte:window onkeydown={onKeydown} onpointerdown={onPointerdown} />
 
 <header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', open && 'so-header--open', className]} bind:this={header}>
+	{#if noticeText}
+		<div class="so-header__notice">
+			<p class="so-header__notice-inner">
+				<span>{noticeText}</span>
+				{#if noticeLinkText}
+					<a
+						href={href(noticeLink)}
+						target={noticeLink.newTab ? '_blank' : undefined}
+						rel={noticeLink.newTab ? 'noopener noreferrer' : undefined}
+						onclick={() => (open = false)}>{noticeLinkText}</a
+					>
+				{/if}
+			</p>
+		</div>
+	{/if}
 	<div class="so-header__inner">
 		<!-- Without the visible name, the link is still named for screen readers. -->
 		<a class="so-header__brand" href={resolve('/')} aria-label={nameShown || logoAlt ? undefined : name || 'Home'}>
@@ -255,7 +289,8 @@ const HEADER_SOURCE = `<script>
 	}
 	.so-header--sticky {
 		position: sticky;
-		top: 0;
+		/* Pinned by the brand row: a notice above it scrolls away with the page (publishOffset measures it). */
+		top: calc(-1 * var(--so-header-notice, 0px));
 	}
 	.so-header--surface,
 	.so-header--surface .so-header__nav {
@@ -271,6 +306,44 @@ const HEADER_SOURCE = `<script>
 		border-color: transparent;
 		color: var(--so-color-on-inverse);
 	}
+	/* The notice spans the header's full width above the brand row. On a phone its words wrap and push the row
+	   (and the menu that hangs from the header's bottom edge) down, so it never covers the menu button, and it
+	   scrolls away with the page while the brand row stays (see .so-header--sticky). Its brand colour is painted
+	   over the page colour over white, as the theme's contrast check measures Text on brand on Brand, whatever
+	   the header's own background. */
+	.so-header__notice {
+		background: linear-gradient(var(--so-color-brand), var(--so-color-brand)), linear-gradient(var(--so-color-background), var(--so-color-background)) #fff;
+		color: var(--so-color-on-brand);
+	}
+	.so-header__notice-inner {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		align-items: baseline;
+		gap: 0.25em 0.75em;
+		max-width: calc(var(--so-container-content) + 2 * var(--so-container-gutter));
+		margin: 0 auto;
+		padding: 0.55rem var(--so-container-gutter);
+		overflow-wrap: anywhere;
+		font-size: 0.9rem;
+		font-weight: 500;
+		line-height: 1.4;
+		text-align: center;
+	}
+	.so-header__notice a {
+		color: inherit;
+		font-weight: 600;
+		text-decoration: underline;
+		text-underline-offset: 0.18em;
+	}
+	.so-header__notice a:hover {
+		text-decoration-thickness: 2px;
+	}
+	/* The theme's focus colour can match the band (or nearly): the outline takes the band's text colour instead. */
+	.so-header__notice a:focus-visible {
+		outline-color: currentColor;
+	}
+
 	.so-header__inner {
 		display: flex;
 		align-items: center;
@@ -386,9 +459,10 @@ const HEADER_SOURCE = `<script>
 			border-bottom: 1px solid var(--so-color-border);
 			box-shadow: var(--so-shadow-md);
 			/* The menu hangs from a sticky header, so the page cannot scroll to it. When enlarged text or a short
-			   screen makes it taller than the space below the header, it scrolls on its own. */
-			max-height: calc(100vh - 100%);
-			max-height: calc(100dvh - 100%);
+			   screen makes it taller than the space below the header's brand row (a notice above that row scrolls
+			   away with the page), it scrolls on its own. */
+			max-height: calc(100vh - 100% + var(--so-header-notice, 0px));
+			max-height: calc(100dvh - 100% + var(--so-header-notice, 0px));
 			overflow-y: auto;
 		}
 		.so-header--open .so-header__nav {
@@ -420,9 +494,9 @@ export const header: ComponentDefinition = {
   kind: 'code',
   owner: 'theme',
   name: 'Header',
-  description: 'Site name or logo, navigation links, an optional action and a working mobile menu.',
+  description: 'Site name or logo, navigation links, an optional action, an optional notice bar shown on every page with the header (a closure, holiday hours or an announcement) and a working mobile menu.',
   category: 'shell',
-  tags: ['header', 'navigation', 'menu', 'nav', 'logo'],
+  tags: ['header', 'navigation', 'menu', 'nav', 'logo', 'notice', 'announcement'],
   icon: 'panel-top',
   properties: {
     siteName: P.str('Site name', 'Studio'),
@@ -435,6 +509,11 @@ export const header: ComponentDefinition = {
       ['primary', 'Filled button'],
       ['secondary', 'Outlined button']
     ]) },
+    // A notice for every page that shows the header, such as a closure: set it once here, clear it to remove it.
+    // A sentence or two: a notice is not the place for a page's content.
+    notice: { group: 'Notice', ...P.str('Notice text', '', { maxLength: 160 }), description: 'A sentence or two, shown in a bar above the header on every page that shows the header. Clear it to remove the notice and its link.' },
+    noticeLabel: { group: 'Notice', ...P.str('Notice link label', '', { maxLength: 40 }) },
+    noticeLink: { group: 'Notice', ...P.link('Notice link') },
     surface: P.choice('Background', 'background', [
       ['background', 'Page background'],
       ['surface', 'Cards and panels'],

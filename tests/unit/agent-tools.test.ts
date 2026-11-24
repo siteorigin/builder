@@ -1104,6 +1104,34 @@ describe('review regressions', () => {
   });
 });
 
+describe('the header notice (#269)', () => {
+  const NOTICE = 'Studio closed on Friday for repairs';
+
+  it('points a notice for every page at the shared header, where one edit reaches every page', async () => {
+    const { session, adapter, run } = await setup([
+      () => [call('n1', 'apply_operations', { expectedRevision: session.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: session.state.site.shell.header.rootIds[0], prop: 'notice', value: NOTICE }] })],
+      () => finish('Added the notice to the header.')
+    ]);
+    const pages = session.state.site.pageOrder.map((id) => session.state.pages[id].rootIds.length);
+    const { result } = await run('Tell visitors on every page that the studio is closed on Friday for repairs');
+    expect(result?.status).toBe('completed');
+    expect(adapter.requests[0].system).toContain('A notice for every page (a closure, holiday hours, an announcement) is the header\'s "notice" text');
+    expect(shellProps(session.state, 'header').notice).toBe(NOTICE);
+    expect(session.state.site.pageOrder.map((id) => session.state.pages[id].rootIds.length)).toEqual(pages);
+  });
+
+  it('says how to get a notice when the project’s header predates it, instead of naming fields it lacks', async () => {
+    const { adapter, run } = await setup([() => finish('Update the theme components first.')], {}, 'business', (s) => {
+      const header = s.components[(s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode).definitionId];
+      for (const key of ['notice', 'noticeLabel', 'noticeLink']) delete header.properties[key];
+    });
+    await run('Tell visitors on every page that the studio is closed on Friday');
+    expect(adapter.requests[0].system).toContain('This project\'s header has no notice field.');
+    expect(adapter.requests[0].system).not.toContain('"noticeLabel"');
+    expect(adapter.requests[0].system).toContain('Never add a page section for it');
+  });
+});
+
 describe('ai-profile examples', () => {
   it('are valid against every theme and cover every section family', () => {
     const state = createStarterState('business', 'Test', false);
