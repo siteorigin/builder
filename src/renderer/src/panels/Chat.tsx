@@ -426,7 +426,7 @@ export function Chat() {
     if (!text.trim() || running || sending || !conversation) return false;
     if (!configured) return (openSettings(), false);
     // The assistant has no tools for collections yet: an edit sent from a layout would land on the page behind it.
-    if (getState().templateMode && !askMode && !context)
+    if (getState().templateMode && !askMode && context?.mode !== 'ask')
       return (toast('The assistant can’t change a collection’s layout yet. Click Done to go back to the page, or ask it a question.', 'info'), false);
     // The message belongs to the conversation (and project) it was written in.
     const conversationId = conversation.id;

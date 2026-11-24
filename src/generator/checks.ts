@@ -1,7 +1,7 @@
 /**
  * Checks on what a page will actually show, evaluated with the same rules the generated components use.
  */
-import type { Binding, ComponentDefinition, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import type { Binding, Collection, ComponentDefinition, EntryDoc, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
 import { isListBlock, isRichBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
@@ -18,6 +18,7 @@ import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from
 import { actionWraps } from './card-links';
 import { parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
+import { entryNeighbours, materializeTemplate } from './entry-template';
 import { selectedVariantStyles, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
 
@@ -1195,26 +1196,26 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   // An entry's page shows the site's layout, header and footer, and its collection's layout, around its own text.
   let keptEntryIds: Set<string> | undefined;
   const entryIdsOf = (hidden?: boolean) => (hidden ? (keptEntryIds ??= treeIds(state, [state.site.shell.header, state.site.shell.footer], new Set(LAYOUT_IDS), true)) : entryIds);
-  const layoutIds = new Map<string, Set<string>>();
-  const collectionIdsOf = (collectionId: string, hidden?: boolean) => {
-    const key = `${hidden ? 'kept' : 'shown'}:${collectionId}`;
-    const template = state.collections[collectionId]?.settings?.template;
-    if (!layoutIds.has(key)) layoutIds.set(key, template?.nodes ? treeIds(state, [template], new Set(entryIdsOf(hidden)), !!hidden) : entryIdsOf(hidden));
-    return layoutIds.get(key)!;
+  // Each published entry's page as the website has it: its collection's layout read for it (what the entry lacks left
+  // out), so a section is counted only on the entries that show it.
+  const articles = published.map((e) => ({ ...e, tree: entryArticle(state, e.collection, e.entry) }));
+  const articleIds = new Map<string, Set<string>>();
+  const idsOnEntry = (a: (typeof articles)[number], hidden?: boolean) => {
+    const key = `${hidden ? 'kept' : 'shown'}:${a.entry.id}`;
+    if (!articleIds.has(key)) articleIds.set(key, treeIds(state, [a.tree], new Set(entryIdsOf(hidden)), !!hidden));
+    return articleIds.get(key)!;
   };
-  /** The published entries whose page lacks a section with this ID: of one collection, or of every one. */
-  const lackingIn = (fragment: string, hidden: boolean | undefined, collectionId?: string) =>
-    published.filter((e) => (collectionId === undefined || e.collection.settings.id === collectionId) && !collectionIdsOf(e.collection.settings.id, hidden).has(fragment)).map((e) => e.entry.id);
-  const withEntries = new Set(published.map((e) => e.collection.settings.id));
+  /** The published entries whose page lacks a section with this ID. */
+  const lackingIn = (fragment: string, hidden: boolean | undefined) => articles.filter((a) => !idsOnEntry(a, hidden).has(fragment)).map((a) => a.entry.id);
   // The header and footer are checked on the pages that show each: they can differ.
-  const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[] }> = [
+  const sources: Array<{ owner: SectionLinkIssue['owner']; tree: NodeTree; on: PageDoc[]; entry?: (typeof articles)[number] }> = [
     ...SHELL_PARTS.map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part], on: pagesShowing(state, part) })).filter((src) => src.on.length > 0 || entries.length > 0),
     ...pages.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree, on: [p] })),
-    // A collection's layout, on the pages of its published entries.
-    ...[...withEntries].flatMap((id) => (state.collections[id]?.settings?.template?.nodes ? [{ owner: { kind: 'template' as const, id }, tree: state.collections[id].settings.template, on: [] as PageDoc[] }] : []))
+    // A collection's layout, as each of its published entries shows it.
+    ...articles.map((a) => ({ owner: { kind: 'template' as const, id: a.collection.settings.id }, tree: a.tree, on: [] as PageDoc[], entry: a }))
   ];
   const out: SectionLinkIssue[] = [];
-  const seen = new Set<string>();
+  const seen = new Map<string, SectionLinkIssue>();
   // Links in a panel kept in the page hidden are in its HTML, where the build follows them; the sections they go to
   // count only where a visitor can see them.
   for (const src of sources)
@@ -1225,17 +1226,24 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
         const missing = src.on.filter((p) => !idsOf(p.id, hidden).has(fragment)).map((p) => p.id);
-        const lacking = src.owner.kind === 'shell' ? lackingIn(fragment, hidden) : src.owner.kind === 'template' ? lackingIn(fragment, hidden, src.owner.id) : [];
+        const lacking = src.owner.kind === 'shell' ? lackingIn(fragment, hidden) : src.entry && !idsOnEntry(src.entry, hidden).has(fragment) ? [src.entry.entry.id] : [];
         if (missing.length || lacking.length) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment, pages: missing, ...(lacking.length ? { entries: lacking } : {}) };
       }
-      // A link the walk reaches twice (a repeated slot, say) is reported once.
+      // A link the walk reaches twice (a repeated slot, say) is reported once; one in a layout, once for all the
+      // entries that lack its section.
       const id = JSON.stringify([src.owner, reportId, key]);
-      if (!issue || seen.has(id)) continue;
-      seen.add(id);
+      if (!issue) continue;
+      const had = seen.get(id);
+      if (had) {
+        if (src.entry && issue.entries?.length) had.entries = [...new Set([...(had.entries ?? []), ...issue.entries])];
+        continue;
+      }
+      seen.set(id, issue);
       out.push(issue);
     }
   // An entry's text: its page has the layout's and the header and footer's sections, and none of a page's.
-  for (const { entry, collection } of published) {
+  for (const a of articles) {
+    const { entry } = a;
     const owner = { kind: 'entry' as const, id: entry.id };
     entryTextLinks(entry.body).forEach(({ link, label }, i) => {
       const key = `body:${i}`;
@@ -1243,7 +1251,7 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
         if (!idsOf(link.target).has(link.anchor)) out.push({ owner, nodeId: '', key, label, inText: true, fragment: link.anchor, pageId: link.target });
       } else if (link.type === 'anchor' && link.target) {
         const fragment = link.target.replace(/^#/, '');
-        if (!collectionIdsOf(collection.settings.id).has(fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
+        if (!idsOnEntry(a).has(fragment)) out.push({ owner, nodeId: '', key, label, inText: true, fragment, entries: [entry.id] });
       }
     });
   }
@@ -1358,12 +1366,13 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
   // An entry shows both shared parts, and its collection's layout.
   const entryShown = entries.length > draftEntries.length;
   const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
-  const layouts = [...new Set(entries.filter((e) => !draftEntryIds.has(e.entry.id)).map((e) => e.collection.settings.id))];
   const sources: Array<{ owner: DraftLink['owner']; tree: NodeTree }> = [
     ...published.map((p) => ({ owner: { kind: 'page' as const, id: p.id }, tree: p as NodeTree })),
     // Each shared part, when a published page shows it: the header and footer can be on different pages.
     ...SHELL_PARTS.filter((part) => entryShown || published.some((p) => showsPart(p, part))).map((part) => ({ owner: { kind: 'shell' as const, id: part }, tree: state.site.shell[part] })),
-    ...layouts.flatMap((id) => (state.collections[id]?.settings?.template?.nodes ? [{ owner: { kind: 'template' as const, id }, tree: state.collections[id].settings.template }] : []))
+    // Each collection's layout, as each published entry shows it: its own words on the layout's buttons, and only the
+    // elements that entry shows.
+    ...entries.filter((e) => !draftEntryIds.has(e.entry.id)).map((e) => ({ owner: { kind: 'template' as const, id: e.collection.settings.id }, tree: entryArticle(state, e.collection, e.entry) }))
   ];
   const seen = new Set<string>();
   // A link a visitor reaches by choosing a tab or opening a disclosure goes to the draft as surely as one shown at first.
@@ -1795,3 +1804,12 @@ export function pageHeadings(state: ProjectState, pageId: string, opts: { shell?
   const hasContent = Object.hasOwn(state.pages, pageId) && !!state.pages[pageId].rootIds.length;
   return { outline, review: reviewHeadings(outline, hasContent, uninspected), uninspected };
 }
+
+/**
+ * An entry's page as the website has it, around its own text: its collection's layout read for the entry. The text
+ * itself is left out, since its links are checked as the entry's own.
+ */
+function entryArticle(state: ProjectState, collection: Collection, entry: EntryDoc): NodeTree {
+  return materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: false });
+}
+

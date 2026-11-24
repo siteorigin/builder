@@ -7,7 +7,7 @@
 import type { GraphNode, OwnerRef, ProjectState, PropSchema } from '@shared/types';
 import { conditionRef, isEntryBinding } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { ENTRY_DATE_FIELDS, entryFieldLabel, entryFieldSchemas } from '@shared/entry-fields';
+import { ENTRY_DATE_FIELDS, entryChoiceProblem, entryFieldLabel, entryFieldSchemas } from '@shared/entry-fields';
 import { acceptedTypes, type BindField } from '@engine/schema';
 import { applyOps } from '../store';
 import { Field, Section } from '../components/ui';
@@ -49,7 +49,8 @@ function placesOf(state: ProjectState, node: GraphNode): Place[] {
 /** Which of a collection's fields a place can show: those of a type it takes. */
 function fitting(fields: Record<string, PropSchema>, node: GraphNode, place: Place): string[] {
   const ok = acceptedTypes(node, place.field, place.nested);
-  return Object.keys(fields).filter((f) => !ok || ok.includes(fields[f].type));
+  // A choice must offer only what the placed section's choice offers.
+  return Object.keys(fields).filter((f) => (!ok || ok.includes(fields[f].type)) && !entryChoiceProblem(fields[f], place.nested));
 }
 
 /** The entry field a value shows, or '' for a value of its own. */

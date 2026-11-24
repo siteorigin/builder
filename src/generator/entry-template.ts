@@ -20,30 +20,40 @@ const own = <T>(rec: Record<string, T> | undefined, key: string): T | undefined 
 export function entryNeighbours(state: ProjectState, collectionId: string, entryId: string): EntryNeighbours {
   // Each entry's own pair, worked out once per state: in a cached run an entry's page depends on its two neighbours,
   // not on every entry (a draft added elsewhere, or a post reordered far from it, leaves it as it is).
-  const pair = derived(state, `entryNeighbours:${collectionId}:${entryId}`, (s) => {
-    const listed = collectionOrder(s, collectionId).filter((e) => e.id === entryId || !e.draft);
-    const at = listed.findIndex((e) => e.id === entryId);
-    return at < 0 ? null : { prev: listed[at - 1]?.id ?? null, next: listed[at + 1]?.id ?? null };
-  });
+  const pair = derived(state, `entryNeighbours:${collectionId}:${entryId}`, (s) => collectionPairs(s, collectionId).get(entryId) ?? null);
   const entries = state.collections[collectionId]?.entries ?? {};
   const prev = pair?.prev ? own(entries, pair.prev) : undefined;
   const next = pair?.next ? own(entries, pair.next) : undefined;
   return { ...(prev ? { prev } : {}), ...(next ? { next } : {}) };
 }
 
-/** Each collection's entries the site has a page for, in order, worked out once per state for all its entries. */
-const orders = new WeakMap<object, Map<string, Array<{ id: string; draft: boolean }>>>();
-function collectionOrder(state: ProjectState, collectionId: string): Array<{ id: string; draft: boolean }> {
-  let byCollection = orders.get(state);
-  if (!byCollection) orders.set(state, (byCollection = new Map()));
-  let order = byCollection.get(collectionId);
-  if (!order) {
-    order = siteEntries(state)
-      .filter((e) => e.collection.settings.id === collectionId)
-      .map((e) => ({ id: e.entry.id, draft: isDraftEntry(e.entry) }));
-    byCollection.set(collectionId, order);
+type Pair = { prev: string | null; next: string | null };
+/**
+ * Every entry's neighbours in one collection, by entry ID: the nearest published entries before and after it among
+ * those the site has a page for. Worked out in one pass per state and collection, however many entries ask.
+ */
+const pairs = new WeakMap<object, Map<string, Map<string, Pair>>>();
+function collectionPairs(state: ProjectState, collectionId: string): Map<string, Pair> {
+  let byCollection = pairs.get(state);
+  if (!byCollection) pairs.set(state, (byCollection = new Map()));
+  let out = byCollection.get(collectionId);
+  if (out) return out;
+  const order = siteEntries(state)
+    .filter((e) => e.collection.settings.id === collectionId)
+    .map((e) => ({ id: e.entry.id, draft: isDraftEntry(e.entry) }));
+  out = new Map();
+  let before: string | null = null;
+  for (const e of order) {
+    out.set(e.id, { prev: before, next: null });
+    if (!e.draft) before = e.id;
   }
-  return order;
+  let after: string | null = null;
+  for (let i = order.length - 1; i >= 0; i--) {
+    out.get(order[i].id)!.next = after;
+    if (!order[i].draft) after = order[i].id;
+  }
+  byCollection.set(collectionId, out);
+  return out;
 }
 
 const EMPTY_IMAGE: ImageValue = { assetId: null, alt: '' };
@@ -121,8 +131,10 @@ function boundValue(read: EntryReadContext, node: GraphNode, field: string, entr
 }
 
 /** The entry's page as a tree of literal values: the template read for `entry`. `template` is never changed. */
-export function materializeTemplate(state: ProjectState, collection: Collection, entry: EntryDoc, neighbours: EntryNeighbours): NodeTree {
+export function materializeTemplate(state: ProjectState, collection: Collection, entry: EntryDoc, neighbours: EntryNeighbours, opts: { body?: boolean } = {}): NodeTree {
   const template = collection.settings.template;
+  // Without the entry's text (`body: false`), for checks that read the entry's own text on their own.
+  if (opts.body === false) entry = { ...entry, body: [] };
   const nodes: Record<string, GraphNode> = structuredClone(template?.nodes && typeof template.nodes === 'object' ? template.nodes : {});
   const read: EntryReadContext = { state, collection, entry, neighbours };
   const hidden = new Set<string>();

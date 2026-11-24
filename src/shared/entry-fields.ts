@@ -236,8 +236,10 @@ export function entryValuePresent(v: unknown): boolean {
  */
 export function entryChoiceProblem(field: PropSchema, target: PropSchema | undefined): string | null {
   if (field.type !== 'enum' || target?.type !== 'enum') return null;
-  const offered = new Set(target.options.map((o) => o.value));
-  const missing = field.options.map((o) => o.value).filter((v) => !offered.has(v));
+  // A choice damaged by a hand edit (no options) is reported with the collection's settings, not here.
+  const values = (s: PropSchema) => (Array.isArray((s as { options?: unknown }).options) ? (s as { options: Array<{ value?: unknown }> }).options.map((o) => o?.value) : []);
+  const offered = new Set(values(target));
+  const missing = values(field).filter((v): v is string => typeof v === 'string' && !offered.has(v));
   return missing.length ? `offers ${missing.map((v) => `"${v}"`).join(', ')}, which "${target.label}" does not have.` : null;
 }
 
