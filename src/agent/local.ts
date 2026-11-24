@@ -21,7 +21,7 @@ const CONTEXT_DISCOVERY_MS = 1_000;
 const ERROR_BODY_MS = 5_000;
 const FINISH_REASONS = new Set(['stop', 'tool_calls', 'length', 'content_filter']);
 const MAX_CORRECTIONS = 2;
-const MAX_FALLBACKS = 3;
+const MAX_FALLBACKS = 4;
 
 /**
  * Where a local model is served. Deliberately independent of Settings: a process the app manages itself can
@@ -122,6 +122,18 @@ function serverMessage(body: string, apiKey?: string | null): string {
 function serverParam(body: string): string {
   const param = (safeJson(body) as { error?: { param?: unknown } } | undefined)?.error?.param;
   return typeof param === 'string' ? param : '';
+}
+
+/** A refusal of the structured response format, or of the grammar the server builds from it. */
+const FORMAT_REFUSED =
+  /(?:unknown|unsupported|unrecognized|invalid|extra)[^.]*(?:response_format|json_schema)|(?:response_format|json_schema)[^.]*(?:not supported|unsupported|unknown|invalid|not permitted|failed)|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i;
+/** What servers say when a schema's `$ref` or `$defs` is beyond them (llama.cpp, vLLM, Ollama, LM Studio wordings). */
+const DEFINITIONS_REFUSED = /\$ref|\$defs|resolv\w* ref|json schema|schema[^.]*(?:not supported|unsupported|unrecognized|invalid|conver|compil)|(?:unsupported|unrecognized|invalid)[^.]*schema/i;
+
+/** Whether a request went out with a schema that uses shared definitions. */
+function sentDefinitions(sent: Record<string, unknown>): boolean {
+  const schema = (sent.response_format as { json_schema?: { schema?: Record<string, unknown> } } | undefined)?.json_schema?.schema;
+  return !!schema && Object.hasOwn(schema, '$defs');
 }
 
 const CONTEXT_FULL = /context (size|length|window)|exceeds? .*context|n_ctx|too many tokens|prompt is too long/i;
@@ -388,6 +400,8 @@ export class LocalAdapter implements AgentModelAdapter {
   private profile: LocalModelProfile;
   private mode: 'native' | 'constrained-json';
   private responseFormat: 'json_schema' | 'json_object' | 'none' = 'json_schema';
+  /** The schema goes out with shared definitions until a server refuses them; then it is written out in full. */
+  private sharedDefs = true;
   private usageOption = true;
   private fetchImpl: typeof globalThis.fetch;
   /** The context size the author set in Settings. */
@@ -498,14 +512,17 @@ export class LocalAdapter implements AgentModelAdapter {
     };
     if (this.usageOption) body.stream_options = { include_usage: true };
     if (constrained) {
-      if (this.responseFormat === 'json_schema') body.response_format = { type: 'json_schema', json_schema: { name: 'agent_action', strict: true, schema: envelopeSchema(req.tools) } };
+      if (this.responseFormat === 'json_schema') body.response_format = { type: 'json_schema', json_schema: { name: 'agent_action', strict: true, schema: envelopeSchema(req.tools, { shared: this.sharedDefs }) } };
       else if (this.responseFormat === 'json_object') body.response_format = { type: 'json_object' };
     } else if (req.tools.length) body.tools = req.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }));
     return body;
   }
 
-  /** Drop a request option the server refused by name. The reply is still checked when the grammar is gone. */
-  private fallBack(status: number, body: string, constrained: boolean): boolean {
+  /**
+   * Drop a request option the server refused by name. The reply is still checked when the grammar is gone. A schema
+   * with shared definitions steps down to the same schema written out in full before the grammar is given up.
+   */
+  private fallBack(status: number, body: string, constrained: boolean, sent: Record<string, unknown>): boolean {
     if (status !== 400 && status !== 422) return false;
     const text = serverMessage(body);
     const param = serverParam(body);
@@ -515,8 +532,11 @@ export class LocalAdapter implements AgentModelAdapter {
       this.usageOption = false;
       return true;
     }
-    if (constrained && this.responseFormat !== 'none' && names('response_format', /(?:unknown|unsupported|unrecognized|invalid|extra)[^.]*(?:response_format|json_schema)|(?:response_format|json_schema)[^.]*(?:not supported|unsupported|unknown|invalid|not permitted|failed)|failed to (?:parse|compile)[^.]*grammar|grammar[^.]*(?:parse|compile)|(?:invalid|unsupported) grammar/i)) {
-      this.responseFormat = this.responseFormat === 'json_schema' ? 'json_object' : 'none';
+    if (!constrained || this.responseFormat === 'none') return false;
+    const shared = this.responseFormat === 'json_schema' && this.sharedDefs && sentDefinitions(sent);
+    if (names('response_format', FORMAT_REFUSED) || (shared && names('response_format', DEFINITIONS_REFUSED))) {
+      if (shared) this.sharedDefs = false;
+      else this.responseFormat = this.responseFormat === 'json_schema' ? 'json_object' : 'none';
       return true;
     }
     return false;
@@ -563,7 +583,7 @@ export class LocalAdapter implements AgentModelAdapter {
         return;
       }
       if (result.kind === 'http') {
-        if (fallbacks < MAX_FALLBACKS && this.fallBack(result.status, result.body, constrained)) {
+        if (fallbacks < MAX_FALLBACKS && this.fallBack(result.status, result.body, constrained, body)) {
           fallbacks++;
           continue;
         }

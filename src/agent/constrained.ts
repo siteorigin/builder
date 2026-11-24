@@ -4,7 +4,7 @@
  * it onto an ordinary tool call, so scope checks, validation and undo are the same as for any provider.
  */
 import type { ToolDefinition } from './types';
-import { decodeStrictValue, OPEN_VALUE_KEY, toStrictSchema, type JsonSchema } from './strict-schema';
+import { decodeStrictValue, OPEN_VALUE_KEY, shareDefinitions, toStrictSchema, type JsonSchema } from './strict-schema';
 
 /** The action that ends the run's turn loop. It is not a tool: the adapter turns it into a final answer. */
 export const FINISH_ACTION = 'finish';
@@ -16,9 +16,12 @@ function actionBranch(tool: string, args: JsonSchema): JsonSchema {
 
 const FINISH_ARGS: JsonSchema = { type: 'object', properties: { message: { type: 'string' } }, required: ['message'], additionalProperties: false };
 
-/** The strict response schema for a set of tools. */
-export function envelopeSchema(tools: ToolDefinition[]): JsonSchema {
-  return {
+/**
+ * The strict response schema for a set of tools. `shared` writes each repeated subtree once, under `$defs`: a
+ * smaller request and grammar for a server that follows local references, and the same replies accepted.
+ */
+export function envelopeSchema(tools: ToolDefinition[], opts: { shared?: boolean } = {}): JsonSchema {
+  const schema: JsonSchema = {
     type: 'object',
     properties: {
       brief_status: { type: 'string', maxLength: STATUS_LIMIT },
@@ -27,6 +30,7 @@ export function envelopeSchema(tools: ToolDefinition[]): JsonSchema {
     required: ['brief_status', 'action'],
     additionalProperties: false
   };
+  return opts.shared ? shareDefinitions(schema) : schema;
 }
 
 /** A compact signature for a strict schema; a grammar constrains the output but the model never sees it. */
