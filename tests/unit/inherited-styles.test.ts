@@ -123,7 +123,7 @@ function element(def: ComponentDefinition, nodeId: string, extra: string[] = [])
 }
 
 /** For each size: what the Inspector shows as inherited, and what the generated stylesheet renders. */
-function compare(state: ProjectState, def: ComponentDefinition, nodeId: string, prop: 'columns' | 'gridTemplate' | 'columnSpan', property: string) {
+function compare(state: ProjectState, def: ComponentDefinition, nodeId: string, prop: 'columns' | 'gridTemplate' | 'columnSpan' | 'rowSpan', property: string) {
   const rules = parseCss(generateComponentsCss(state));
   const inherited = designStyles(def, nodeId, undefined);
   return SIZES.map((size) => {
@@ -196,6 +196,28 @@ describe('the Inspector’s inherited styles match the generated CSS', () => {
     const span = compare(state, def, 'heading', 'columnSpan', 'grid-column');
     expect(span.map((r) => r.rendered)).toEqual([undefined, cssOf('columnSpan', 2), cssOf('columnSpan', 2)]);
     agree(span);
+  });
+
+  it('keeps custom column sizes and a tall span off phones, and shows a phone value where one is set (#352)', () => {
+    const { state, def } = grid({
+      node: { grid: { base: { layout: 'grid' } }, heading: { base: { rowSpan: '2' } } },
+      layout: { grid: { base: { gridTemplate: '16rem 1fr 14rem' }, phone: { gridTemplate: 'repeat(auto-fill, minmax(9rem, 1fr))' } } }
+    });
+    const template = compare(state, def, 'grid', 'gridTemplate', 'grid-template-columns');
+    expect(template.map((r) => r.rendered)).toEqual([
+      cssOf('gridTemplate', 'repeat(auto-fill, minmax(9rem, 1fr))'),
+      cssOf('gridTemplate', '16rem 1fr 14rem'),
+      cssOf('gridTemplate', '16rem 1fr 14rem')
+    ]);
+    agree(template);
+    const span = compare(state, def, 'heading', 'rowSpan', 'grid-row');
+    expect(span.map((r) => r.rendered)).toEqual([undefined, cssOf('rowSpan', '2'), cssOf('rowSpan', '2')]);
+    agree(span);
+    // A variant's taller span wins from tablet up; the design's own phone span still applies on phones.
+    const variant = grid({ node: { grid: { base: { layout: 'grid' } }, heading: { base: { rowSpan: '2' }, phone: { rowSpan: 2 } } }, layout: { heading: { base: { rowSpan: 3 } } } });
+    const spans = compare(variant.state, variant.def, 'heading', 'rowSpan', 'grid-row');
+    expect(spans.map((r) => r.rendered)).toEqual([cssOf('rowSpan', 2), cssOf('rowSpan', 3), cssOf('rowSpan', 3)]);
+    agree(spans);
   });
 
   it('keeps column sizes for all sizes off phones, and lets them override the column count from tablet up (#205)', () => {

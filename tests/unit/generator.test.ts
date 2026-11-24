@@ -506,6 +506,31 @@ describe('SEO and performance', () => {
     // As many as fit: how many is unknown, so the whole width.
     gridNode.styles = { base: { layout: 'grid', gridTemplate: 'auto-fit-sm' } };
     expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
+    gridNode.styles = { base: { layout: 'grid', gridTemplate: 'repeat(auto-fill, minmax(18rem, 1fr))' } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
+    // Custom fr shares, repeats included, size like the presets (#352): an item may sit in the widest column.
+    gridNode.styles = { base: { layout: 'grid', gridTemplate: '2fr repeat(2, minmax(0, 1fr))' } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 50vw, 100vw']);
+    // Spanning two of them: the widest run of two.
+    wrap.styles = { base: { columnSpan: '2' } };
+    expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 900px, (min-width: 768px) 75vw, 100vw');
+    // A span saved with spaces around it is the full width CSS gives it.
+    wrap.styles = { base: { columnSpan: ' full ' } };
+    expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw');
+    wrap.styles = {};
+    // Shares adding up to less than one are read against their own total, an upper estimate whatever gaps and
+    // implicit columns do with the rest.
+    gridNode.styles = { base: { layout: 'grid', gridTemplate: '.25fr .25fr' } };
+    expect(gridSizes(s)).toEqual(['(min-width: 1024px) 600px, (min-width: 768px) 50vw, 100vw']);
+    // Spanning past them adds a column that can stretch over the rest: the whole width.
+    wrap.styles = { base: { columnSpan: '3' } };
+    expect(photoSizes(s)[0]).toBe('(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw');
+    wrap.styles = {};
+    // With a fixed or content-sized column, any column may be the widest: the whole width, as before.
+    for (const template of ['16rem 1fr 14rem', 'minmax(10rem, 1fr) 1fr', 'auto 1fr']) {
+      gridNode.styles = { base: { layout: 'grid', gridTemplate: template } };
+      expect(gridSizes(s), template).toEqual(['(min-width: 1024px) 1200px, (min-width: 768px) 100vw, 100vw']);
+    }
   });
 
   it('keeps a width the image holds whatever its column, even when it overflows the column', () => {

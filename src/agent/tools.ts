@@ -3,7 +3,7 @@ import type { AssetRecord, ProjectState } from '@shared/types';
 import type { ChatImageRef, FieldLocation } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import { EditOperationSchema, legacyShellError, OPERATION_SCHEMAS, type OperationType } from '@shared/ops';
-import { STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
+import { MAX_GRID_TRACKS, STYLE_PROPS, TRANSLATE_LIMITS, type StylePropDef } from '@shared/styles';
 import { normalizeRoute, slugify } from '@shared/routes';
 import { catalogueComponent, searchCatalogue } from '@catalogue/index';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -295,8 +295,11 @@ export interface ToolOutcome {
 const WIDTHS = { phone: 390, tablet: 834, desktop: 1280 };
 const MAX_RESULT_CHARS = 24000;
 
-/** What a transform or transition property takes, for the read_project list: its range and unit. */
-function motionHint(p: StylePropDef): string {
+/** What a transform, transition or grid property takes, for the read_project list: its range, unit or grammar. */
+function valueHint(p: StylePropDef): string {
+  if (p.id === 'gridTemplate')
+    return ` or up to ${MAX_GRID_TRACKS} column sizes (repeats counted in full): fr shares, lengths, auto, minmax(min, max) with a min that is not fr, and repeat(count, sizes), such as "16rem 1fr 14rem" or "2fr repeat(2, 1fr)"; "repeat(auto-fit, minmax(18rem, 1fr))" (or auto-fill) for as many columns as fit, each at least that plain length (or the whole grid when narrower). Set for all sizes it applies from tablet up; set it at scope phone to use it on phones`;
+  if (p.id === 'columnSpan' || p.id === 'rowSpan') return ' (a grid child; above 1 for all sizes it applies from tablet up, set it at scope phone to span there)';
   if (p.group !== 'motion') return '';
   if (p.id === 'translateX' || p.id === 'translateY') return ` (0 or one length such as "-4px": at most ${TRANSLATE_LIMITS.px}px, ${TRANSLATE_LIMITS.rem}rem or em, or ${TRANSLATE_LIMITS['%']}% either way)`;
   if (p.kind === 'number') return ` (${p.integer ? 'whole number ' : ''}${p.min} to ${p.max}${p.unit ? ` ${p.unit}` : ''})`;
@@ -337,7 +340,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       }
       if (a.sections?.includes('components'))
         out.installedComponents = Object.values(state.components).map((d) => ({ definitionId: d.id, componentId: d.componentId, name: d.name, owner: d.owner, kind: d.kind }));
-      out.styleProperties = STYLE_PROPS.map((p) => `${p.id}${p.tokenGroup ? ` (token: ${p.tokenGroup})` : ''}${p.options ? ` [${p.options.map((o) => o.value).join('|')}]` : ''}${p.kind === 'focus' ? ' or "X% Y%": the focal point across and down a cropped image, each 0 to 100 with at most one decimal, such as "50% 20%"' : ''}${motionHint(p)}`);
+      out.styleProperties = STYLE_PROPS.map((p) => `${p.id}${p.tokenGroup ? ` (token: ${p.tokenGroup})` : ''}${p.options ? ` [${p.options.map((o) => o.value).join('|')}]` : ''}${p.kind === 'focus' ? ' or "X% Y%": the focal point across and down a cropped image, each 0 to 100 with at most one decimal, such as "50% 20%"' : ''}${valueHint(p)}`);
       return { ok: true, content: out };
     }
     case 'read_page': {
