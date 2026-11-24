@@ -371,7 +371,12 @@ export const OPERATION_SCHEMAS = {
   }),
   'asset.update': z.object({ type: z.literal('asset.update'), assetId: z.string(), name: z.string().max(120).optional(), description: z.string().max(500).optional(), altSuggestion: z.string().max(300).optional(), font: FONT_FACE.optional() }),
   'asset.remove': z.object({ type: z.literal('asset.remove'), assetId: z.string() }),
-  'asset.replace': z.object({ type: z.literal('asset.replace'), assetId: z.string(), withAssetId: z.string() }),
+  'asset.replace': z.object({
+    type: z.literal('asset.replace'),
+    assetId: z.string(),
+    withAssetId: z.string(),
+    keepAlt: z.boolean().optional().describe('Keep every use’s alt text as it is, for a copy of the same picture. Otherwise a use with the old image’s suggested alt text takes the new image’s.')
+  }),
   // Editor only: the file an existing library image or document has, after the author located or chose it. Its uses,
   // name and descriptions stay; the file details are replaced as a whole.
   'asset.relink': z.object({

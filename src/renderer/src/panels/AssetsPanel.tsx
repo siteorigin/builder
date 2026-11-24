@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ChevronDown, ChevronRight, Component, FileDown, FilePlus, FileSearch, FileText, FileUp, Globe, ImageDown, ImageIcon, ImagePlus, Info, MapPin, PanelTop, RefreshCw, Replace, Search, Sparkles, Trash2, TriangleAlert, Upload } from 'lucide-react';
 import { allTrees, displayName } from '@engine/tree';
 import { isDocumentLink } from '@engine/apply';
-import type { AssetRecord, OwnerRef, ProjectState } from '@shared/types';
-import { api, applyOps, attachToChat, commitOps, getState, setState, toast, undoAction, useStore } from '../store';
+import type { AltReview, AssetRecord, OwnerRef, ProjectState } from '@shared/types';
+import { api, applyOps, attachToChat, commitOps, getState, setState, toast, undoAction, undoAvailable, useStore, type UndoTarget } from '../store';
 import { Field, DraftInput, Segmented, Spinner } from '../components/ui';
 import { isValidFontAsset, sameFontFamily } from '@shared/fonts';
 import { inSeries, sortAssets } from '@shared/asset-order';
@@ -15,6 +15,7 @@ import { formatBytes, plural } from '../lib/storage';
 import { FreeSpaceDialog, StorageSummary, useProjectStorage } from './AssetStorage';
 import { assetArrived, reviewImport } from '../lib/import-review';
 import { documentDetails, documentLabels, documentName, libraryDocuments } from '../lib/documents';
+import { altChecks } from '../lib/alt-review';
 import type { MissingAssetFiles } from '@shared/api';
 
 /** Above this an image is worth flagging: pages load smaller copies, but the original still ships with the site. */
@@ -295,6 +296,13 @@ interface Place {
   go?: () => void;
 }
 
+/** Selects an element where an image is used, on its page or in the shared part that shows it. */
+const revealUse = (owner: OwnerRef, nodeId: string) => () => {
+  if (owner.kind === 'page') selectPage(owner.id);
+  else if (owner.kind === 'shell' && !goToShellPart(owner.id)) return toast(`No page shows the shared ${owner.id}, so this image is not on any page.`, 'info');
+  setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true });
+};
+
 /** Every place an image is used, or a document linked to, by the same rules as the engine's usage count. */
 function placesOf(state: ProjectState, assetId: string): Place[] {
   const document = state.assets.assets[assetId]?.kind === 'document';
@@ -306,19 +314,14 @@ function placesOf(state: ProjectState, assetId: string): Place[] {
     return n;
   };
   const out: Place[] = [];
-  const reveal = (owner: OwnerRef, nodeId: string) => () => {
-    if (owner.kind === 'page') selectPage(owner.id);
-    else if (owner.kind === 'shell' && !goToShellPart(owner.id)) return toast(`No page shows the shared ${owner.id}, so this image is not on any page.`, 'info');
-    setState({ selection: { owner, instancePath: [], nodeId }, rightTab: 'inspect', dockOpen: true });
-  };
   for (const t of allTrees(state)) {
     for (const n of Object.values(t.tree.nodes)) {
       const c = count(n);
       if (!c) continue;
       const what = displayName(state, n);
       const key = `${t.owner.kind}/${t.owner.id}/${n.id}`;
-      if (t.owner.kind === 'page') out.push({ key, icon: 'page', where: t.label, what, count: c, go: reveal(t.owner, n.id) });
-      else if (t.owner.kind === 'shell') out.push({ key, icon: 'shell', where: `Shared ${t.label.toLowerCase()}`, what, count: c, go: reveal(t.owner, n.id) });
+      if (t.owner.kind === 'page') out.push({ key, icon: 'page', where: t.label, what, count: c, go: revealUse(t.owner, n.id) });
+      else if (t.owner.kind === 'shell') out.push({ key, icon: 'shell', where: `Shared ${t.label.toLowerCase()}`, what, count: c, go: revealUse(t.owner, n.id) });
       else out.push({ key, icon: 'component', where: `${t.label} design`, what, count: c });
     }
   }
@@ -414,12 +417,15 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [replacing, setReplacing] = useState(false);
   const replaceSession = useRef(0);
+  const replacingNow = useRef(false);
   const [q, setQ] = useState('');
   const [pickQ, setPickQ] = useState('');
   const [filter, setFilter] = useState<'all' | 'unused'>('all');
   const [importing, setImporting] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
   const [allPlaces, setAllPlaces] = useState(false);
+  // The uses whose alt text the last Replace everywhere left to check, shown with the replaced image while that change stands.
+  const [altReview, setAltReview] = useState<{ assetId: string; withId: string; undo: UndoTarget; review: AltReview[] } | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [fixing, setFixing] = useState(false);
   const storage = useProjectStorage();
@@ -427,6 +433,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   // Free up space belongs to the project it was opened for.
   const opening = snap?.workspaceKey;
   useEffect(() => setFreeing(false), [opening]);
+  useEffect(() => setAltReview(null), [opening]);
   const assetsDoc = snap?.state.assets.assets;
   // Images whose files are not in the project folder: their uses stay, and the details offer to bring the files back.
   const missingAssets = snap?.missingAssets;
@@ -466,6 +473,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   useEffect(() => {
     setNameError(null);
     setAllPlaces(false);
+    setAltReview((r) => (r?.assetId === selected ? r : null));
   }, [selected]);
   // A pending "Import a replacement" never applies after the panel has gone.
   useEffect(() => () => void replaceSession.current++, []);
@@ -504,6 +512,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
       cancelAnimationFrame(frame);
     };
   }, []);
+  // Undone, the replacement has nothing to check; redone, the same uses are listed again.
+  const altToCheck = useMemo(() => (snap && sel && altReview?.assetId === sel.id && undoAvailable(altReview.undo, snap) ? altChecks(snap.state, altReview.withId, altReview.review) : []), [snap, sel, altReview]);
   if (!snap) return null;
   const usage = snap.assetUsage;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
@@ -648,14 +658,21 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
   };
 
   const replaceWith = async (withId: string) => {
-    if (!sel || withId === sel.id) return;
+    // A second choice while the first is on its way replaces nothing more.
+    if (!sel || withId === sel.id || replacingNow.current) return;
     const n = places.length || usage[sel.id] || 0;
     const target = getState().snapshot?.state.assets.assets[withId];
-    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], `Replace ${nameOf(sel)}`);
+    replacingNow.current = true;
+    const r = await commitOps([{ type: 'asset.replace', assetId: sel.id, withAssetId: withId }], `Replace ${nameOf(sel)}`).finally(() => (replacingNow.current = false));
     if (r) {
       replaceSession.current++;
       setReplacing(false);
-      toast(`${target ? nameOf(target) : 'The new image'} now shows in ${n === 1 ? 'its place' : `all ${n} places`} instead of ${nameOf(sel)}.`, 'info', undoAction(r));
+      // Uses with a description of their own, or none now, are listed with this image for the author to check.
+      const review = (r.results?.[0]?.altReview ?? []) as AltReview[];
+      const check = review.length > 0 && !!r.entryId && selectedNow.current === sel.id;
+      setAltReview(check ? { assetId: sel.id, withId, undo: { entryId: r.entryId!, workspaceKey: r.workspaceKey, revision: r.revision }, review } : null);
+      const more = check ? ` Check the alt text in ${review.length === 1 ? 'one place' : `${review.length} places`} below.` : '';
+      toast(`${target ? nameOf(target) : 'The new image'} now shows in ${n === 1 ? 'its place' : `all ${n} places`} instead of ${nameOf(sel)}.${more}`, 'info', undoAction(r));
       requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
     }
   };
@@ -929,6 +946,52 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
             </p>
           )}
         </div>
+        {altToCheck.length > 0 && (
+          <div className="asset-note asset-alt-review" role="note" aria-labelledby="asset-alt-review-title" data-testid="asset-alt-review">
+            <TriangleAlert aria-hidden="true" />
+            <div>
+              <span>
+                <b id="asset-alt-review-title">Check the alt text in {altToCheck.length === 1 ? 'one place' : `${altToCheck.length} places`}.</b> {nameOf(snap.state.assets.assets[altReview!.withId] ?? sel)} shows there now, but the alt text there was written for this image, or is empty.
+              </span>
+              <ul>
+                {altToCheck.map((c) => {
+                  const Icon = PLACE_ICON[c.icon];
+                  const inner = (
+                    <>
+                      <Icon aria-hidden="true" />
+                      <span className="where">{c.where}</span>
+                      <span className="what">{c.what}</span>
+                      {c.at && <ChevronRight className="go" aria-hidden="true" />}
+                    </>
+                  );
+                  return (
+                    <li key={c.key}>
+                      {c.at ? (
+                        <button className="asset-use" onClick={revealUse(c.at.owner, c.at.nodeId)} title={`Show ${c.what} on ${c.where}`}>
+                          {inner}
+                        </button>
+                      ) : (
+                        <span className="asset-use static">{inner}</span>
+                      )}
+                      <span className="asset-alt-text">{c.reason === 'custom' ? `Kept its own: “${c.alt}”` : 'No alt text'}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="asset-note-actions">
+                <button
+                  className="btn btn-sm btn-ghost"
+                  onClick={() => {
+                    setAltReview(null);
+                    requestAnimationFrame(() => document.querySelector<HTMLElement>('.asset-detail .asset-back')?.focus());
+                  }}
+                >
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {gone && (
           <div className="asset-note asset-missing" role="note">
             <TriangleAlert aria-hidden="true" />

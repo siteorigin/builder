@@ -2321,6 +2321,11 @@ button.code-problem:hover { background: var(--active); }
 .asset-note.asset-missing { background: var(--red-soft); }
 .asset-note.asset-missing > svg { color: var(--red); }
 .asset-note-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.asset-note.asset-alt-review { background: var(--amber-soft); }
+.asset-note.asset-alt-review > svg { color: var(--amber); }
+.asset-note.asset-alt-review > div { flex: 1; min-width: 0; }
+.asset-alt-review ul { display: flex; flex-direction: column; margin: 6px -6px 0; padding: 0; list-style: none; }
+.asset-alt-review .asset-alt-text { display: block; padding: 0 6px 4px 25px; overflow-wrap: anywhere; color: var(--text-2); }
 .import-review-lead { margin: 0 0 10px; }
 .import-review { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .import-review-row { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); }
