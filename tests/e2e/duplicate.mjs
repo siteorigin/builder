@@ -34,7 +34,7 @@ assert.match(await pathShown(), /\/sites\/fall-campaign$/, 'the folder shown is 
 await duplicateButton().click();
 const alert = dialog().getByRole('alert');
 await alert.waitFor();
-assert.match(await alert.innerText(), /“fall-campaign” is already there and is not empty/, 'the dialog says why');
+assert.match(await alert.innerText(), /“fall-campaign” is already there/, 'the dialog says why');
 assert.equal(await duplicateButton().isDisabled(), true, 'the same folder is not offered again');
 assert.deepEqual(readdirSync(taken), ['notes.txt'], 'the folder is left as it was');
 assert.equal(await toolbarName(), 'Storefront', 'the original is still open');
@@ -66,6 +66,9 @@ const r = await win.evaluate(() => window.builder.project.apply({ operations: [{
 assert.equal(r.ok, true, 'the rename is made');
 await eventually(() => assert.equal(JSON.parse(read(copy, 'siteorigin/site.json')).name, 'Fall Storefront', 'in the copy’s folder'));
 assert.equal(await toolbarName(), 'Fall Campaign', 'the toolbar keeps the copy’s own name');
+assert.match(await win.locator('.toolbar .project-title .brand').innerText(), /Fall Storefront/, 'beside its site’s name');
+const recents = () => win.evaluate(() => window.builder.projects.recents());
+assert.equal((await recents()).find((x) => x.dir === copy)?.name, 'Fall Campaign', 'Recent projects keeps it while the copy is open');
 assert.equal(read(original, 'siteorigin/site.json'), originalSite, 'the original’s site is untouched');
 assert.equal(read(original, 'siteorigin.project.json'), originalManifest, 'and so is its manifest');
 

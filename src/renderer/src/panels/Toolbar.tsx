@@ -237,6 +237,14 @@ export function Toolbar() {
             }
           >
             <strong className="site ellipsis">{projectName}</strong>
+            {/* A working copy shows its site's name too, so two copies of different sites never read alike. */}
+            {projectName !== siteName && (
+              <span className="brand ellipsis">
+                <span aria-hidden="true">· </span>
+                <span className="sr-only">site name </span>
+                {siteName}
+              </span>
+            )}
             <span className="sep" aria-hidden="true">/</span>
             <span className={`page${defName ? ' def' : ''}`}>
               {/* The house names the home page, unless the page's own name already says so. */}

@@ -88,10 +88,14 @@ const siteName = (dir: string) => read(dir, 'siteorigin/site.json').name as stri
 describe('the name a project is shown by', () => {
   it('is a working copy’s own name when it has one, and the site’s name otherwise', () => {
     expect(projectDisplayName({ manifest: {}, site: { name: 'Storefront' } })).toBe('Storefront');
-    expect(projectDisplayName({ manifest: { workingCopyName: 'Fall Campaign' }, site: { name: 'Storefront' } })).toBe('Fall Campaign');
+    expect(projectDisplayName({ manifest: { workingCopyName: '  Fall Campaign ' }, site: { name: 'Storefront' } })).toBe('Fall Campaign');
     expect(projectDisplayName({ manifest: { workingCopyName: '  ' }, site: { name: 'Storefront' } })).toBe('Storefront');
     expect(projectFolderName('Fall Campaign')).toBe('fall-campaign');
     expect(projectFolderName('***')).toBe('website');
+    // Names Windows keeps for devices are never a folder's whole name.
+    expect(projectFolderName('Con')).toBe('con-site');
+    expect(projectFolderName('LPT1')).toBe('lpt1-site');
+    expect(projectFolderName('Console')).toBe('console');
   });
 });
 
@@ -146,7 +150,7 @@ describe('a duplicated project (#176)', () => {
     expect(readFileSync(join(original, 'siteorigin/site.json'), 'utf8')).toBe(siteBefore);
   });
 
-  it('explains a name or destination it cannot use, writing nothing, and takes an empty folder', async () => {
+  it('explains a name or destination it cannot use, and writes nothing', async () => {
     const sites = temp('sites');
     const original = await makeProject(sites, 'storefront', 'Storefront');
     const c = controller();
@@ -158,22 +162,55 @@ describe('a duplicated project (#176)', () => {
     expect(await c.duplicate({ name: 'Fall Campaign', parentDir: sites, opening })).toEqual({
       ok: false,
       field: 'location',
-      message: 'A folder named “fall-campaign” is already there and is not empty. Choose another name or folder.'
+      message: 'A folder named “fall-campaign” is already there. Choose another name or folder.'
     });
     expect(readdirSync(join(sites, 'fall-campaign'))).toEqual(['notes.txt']);
     expect(await c.duplicate({ name: '   ', parentDir: sites, opening })).toMatchObject({ ok: false, field: 'name' });
     expect(await c.duplicate({ name: 'x'.repeat(MAX_COPY_NAME + 1), parentDir: sites, opening })).toMatchObject({ ok: false, field: 'name' });
+    // An empty folder is someone's too (another copy's or an export's, claimed and still being filled).
+    mkdirSync(join(sites, 'spring'));
+    expect(await c.duplicate({ name: 'Spring', parentDir: sites, opening })).toMatchObject({ ok: false, field: 'location', message: expect.stringMatching(/“spring” is already there/) });
+    expect(readdirSync(join(sites, 'spring'))).toEqual([]);
+    // A folder renamed or removed since it was chosen is not made again under its old name.
+    expect(await c.duplicate({ name: 'Copy', parentDir: join(sites, 'gone'), opening })).toMatchObject({ ok: false, field: 'location', message: expect.stringMatching(/no longer there/) });
     expect(await c.duplicate({ name: 'Copy', parentDir: 'relative/folder', opening })).toMatchObject({ ok: false, field: 'location' });
     // Chosen in an opening that has since closed, even of the same project.
     await c.close();
     expect(await c.duplicate({ name: 'Copy', parentDir: sites, opening })).toMatchObject({ ok: false, field: 'form' });
     expect((await c.trustAndOpen(original)).ok).toBe(true);
     expect(await c.duplicate({ name: 'Copy', parentDir: sites, opening })).toMatchObject({ ok: false, field: 'form' });
-    expect(readdirSync(sites).sort()).toEqual(['fall-campaign', 'storefront']);
-    // An empty folder by that name takes the copy.
-    mkdirSync(join(sites, 'spring'));
-    expect(await c.duplicate({ name: 'Spring', parentDir: sites, opening: c.openingKey! })).toMatchObject({ ok: true, dir: join(sites, 'spring') });
-    expect(siteName(join(sites, 'spring'))).toBe('Storefront');
+    expect(readdirSync(sites).sort()).toEqual(['fall-campaign', 'spring', 'storefront']);
+    // A name as long as allowed is taken.
+    const longest = 'x'.repeat(MAX_COPY_NAME);
+    expect(await c.duplicate({ name: longest, parentDir: sites, opening: c.openingKey! })).toMatchObject({ ok: true, name: longest });
+  });
+
+  it('copies nothing once the project closes before the copy starts, removing the folder it claimed', async () => {
+    const sites = temp('sites');
+    const original = await makeProject(sites, 'storefront', 'Storefront');
+    const c = controller();
+    expect((await c.trustAndOpen(original)).ok).toBe(true);
+    // Asked in this opening, which ends before the copy is read.
+    const copying = c.duplicate({ name: 'Fall Campaign', parentDir: sites, opening: c.openingKey! });
+    const closing = c.close();
+    expect(await copying).toMatchObject({ ok: false, field: 'form' });
+    await closing;
+    expect(readdirSync(sites)).toEqual(['storefront']);
+    expect(await recentName(join(sites, 'fall-campaign'))).toBeUndefined();
+  });
+
+  it('is trusted only while the original’s setup files are the ones that were trusted', async () => {
+    const sites = temp('sites');
+    const original = await makeProject(sites, 'storefront', 'Storefront');
+    const c = controller();
+    expect((await c.trustAndOpen(original)).ok).toBe(true);
+    // Changed on disk after the original was trusted and opened.
+    writeFileSync(join(original, 'vite.config.js'), 'export default { plugins: [] };');
+    const dup = await c.duplicate({ name: 'Fall Campaign', parentDir: sites, opening: c.openingKey! });
+    expect(dup.ok).toBe(true);
+    // Open copy asks first, as opening the original again would.
+    expect(await c.open(join(sites, 'fall-campaign'))).toMatchObject({ ok: false, needsTrust: { dir: join(sites, 'fall-campaign'), name: 'Fall Campaign' } });
+    expect(c.session?.dir).toBe(original);
   });
 
   it('lets only one of two copies to the same new folder land, leaving nothing of the other', async () => {

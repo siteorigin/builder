@@ -14,5 +14,11 @@ export function projectDisplayName(state: { manifest: Pick<ProjectManifest, 'wor
 /** The longest name a working copy takes. */
 export const MAX_COPY_NAME = 80;
 
-/** The folder a project named `name` is made in, inside the folder chosen for it. */
-export const projectFolderName = (name: string): string => slugify(name) || 'website';
+/** Folder names Windows keeps for devices. */
+const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/;
+
+/** The folder a project named `name` is made in, inside the folder chosen for it ("Con" gets a suffix). */
+export function projectFolderName(name: string): string {
+  const slug = slugify(name) || 'website';
+  return WINDOWS_RESERVED.test(slug) ? `${slug}-site` : slug;
+}

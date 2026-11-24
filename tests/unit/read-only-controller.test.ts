@@ -198,7 +198,7 @@ describe('a project another app is editing', () => {
     const { c } = controller();
     await c.trustAndOpen(dir);
     // The copy's folder is named after it, in the folder chosen for it: here, the project itself or a folder in it.
-    for (const [parentDir, name] of [[dir, 'copy'], [dir, '..draft'], [join(dir, 'missing'), 'copy']]) {
+    for (const [parentDir, name] of [[dir, 'copy'], [join(dir, '..draft'), 'copy'], [join(dir, 'missing'), 'copy']]) {
       expect(await c.duplicate({ name, parentDir, opening: c.openingKey! })).toEqual({ ok: false, field: 'location', message: 'Choose a folder outside the project folder.' });
     }
     // Through a linked folder that leads back into the project, to a folder not made yet.

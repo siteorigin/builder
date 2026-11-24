@@ -843,6 +843,8 @@ body.dialog-open .toast.rename-offer { visibility: hidden; }
    floor, and only then shortens itself rather than push the chevron out of the button. Whole numbers: a lone item
    with a shrink factor under 1 takes only that fraction of the overflow. */
 .project-title .site { flex: 0 100000 auto; min-width: 56px; font-weight: 500; color: var(--text-2); }
+/* A working copy's site name (#176) gives way before the copy's own name does. */
+.project-title .brand { flex: 0 1000000 auto; min-width: 0; color: var(--text-3); font-weight: 400; }
 .project-title .sep { color: var(--text-3); flex: none; }
 .project-title .page { display: inline-flex; align-items: center; gap: 4px; min-width: 48px; max-width: 200px; flex: 0 1 auto; color: var(--text); font-weight: 600; }
 .project-title .page svg { width: 13px; height: 13px; flex: none; color: var(--text-2); }

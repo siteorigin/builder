@@ -310,6 +310,7 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
   const [done, setDone] = useState<{ dir: string; name: string } | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const openRef = useRef<HTMLButtonElement>(null);
+  const chooseRef = useRef<HTMLButtonElement>(null);
   const live = useRef(true);
   useEffect(() => {
     live.current = true;
@@ -320,8 +321,10 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
   useEffect(() => {
     if (done) openRef.current?.focus();
   }, [done]);
+  // Back on the form with a problem: focus goes to what can fix it, which reads the problem out.
   useEffect(() => {
-    if (problem) nameRef.current?.focus();
+    if (problem?.field === 'location') chooseRef.current?.focus();
+    else if (problem) nameRef.current?.focus();
   }, [problem]);
 
   const trimmed = name.replace(/\s+/g, ' ').trim();
@@ -438,6 +441,7 @@ export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void
           <div className="np-path-row">
             <PathReadout id="duplicate-path" path={target} pending={trimmed ? undefined : 'copy-name'} className={onLocation ? 'invalid' : ''} />
             <button
+              ref={chooseRef}
               className="btn"
               disabled={busy}
               aria-describedby={onLocation ? 'duplicate-path-label duplicate-path duplicate-error' : 'duplicate-path-label duplicate-path'}

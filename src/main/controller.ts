@@ -187,6 +187,8 @@ export class Controller {
   quitting = false;
   /** New projects being made (or unpacked from a ZIP file), each until it is shown or has gone again. */
   private creations = new Map<Promise<unknown>, AbortController>();
+  /** Copies of the open project under way (see duplicate). */
+  private duplicates = new Set<Promise<unknown>>();
   /** Every open under way, so its window going can call off a project ZIP file being opened. */
   private openAborts = new Set<AbortController>();
   /** The open whose ZIP file is being unpacked now: the one the unpacking dialog's Cancel means. */
@@ -1252,14 +1254,35 @@ export class Controller {
    * Copy the open project to a new folder named after `opts.name` in `opts.parentDir` (#176), as the opening it was
    * chosen in left it. The copy gets its own project ID and keeps the name it is given in Recent projects and the
    * toolbar (`workingCopyName`), whatever its site is called; the site's visitor-facing name and every page are copied
-   * as they are. It is built in a private folder beside the destination and moved into place in one step, so a folder
-   * that appears meanwhile is never merged into, and a copy that fails leaves nothing behind. The open project stays
-   * open, and nothing in its folder is written.
+   * as they are. The new folder is claimed first, so a folder already there (empty or not, another copy's or an
+   * export's) is never taken over, and the copy is built in a private folder beside it and moved into place in one
+   * step, so a copy that fails leaves nothing behind. The open project stays open, and nothing in its folder is
+   * written. Quitting waits for a copy under way.
    */
   async duplicate(opts: DuplicateProjectOptions): Promise<DuplicateProjectResult> {
+    const run = this.duplicateProject(opts);
+    this.duplicates.add(run);
+    try {
+      return await run;
+    } finally {
+      this.duplicates.delete(run);
+    }
+  }
+
+  /** Wait for every copy under way (quitting): each finishes, or removes what it made. */
+  async settleDuplicates(): Promise<void> {
+    await Promise.all([...this.duplicates].map((run) => run.catch(() => undefined)));
+  }
+
+  get isDuplicating(): boolean {
+    return this.duplicates.size > 0;
+  }
+
+  private async duplicateProject(opts: DuplicateProjectOptions): Promise<DuplicateProjectResult> {
     const s = this.session;
-    if (!s || !opts || this.workspaceKey !== opts.opening)
-      return { ok: false, field: 'form', message: 'The project was closed or opened again before it was copied. Choose Duplicate project again.' };
+    const stale = { ok: false as const, field: 'form' as const, message: 'The project was closed or opened again before it was copied. Choose Duplicate project again.' };
+    const current = () => this.session === s && this.workspaceKey === opts.opening;
+    if (!s || !opts || !current()) return stale;
     const name = typeof opts.name === 'string' ? opts.name.replace(/\s+/g, ' ').trim() : '';
     if (!name) return { ok: false, field: 'name', message: 'Enter a name for the copy.' };
     if (name.length > MAX_COPY_NAME) return { ok: false, field: 'name', message: `Use a name of up to ${MAX_COPY_NAME} characters.` };
@@ -1267,12 +1290,26 @@ export class Controller {
     const dest = join(opts.parentDir, projectFolderName(name));
     // The copy would land inside the folder it copies, and write into a project that may be read-only here.
     if (isInside(s.dir, dest)) return { ok: false, field: 'location', message: 'Choose a folder outside the project folder.' };
-    const taken = { ok: false as const, field: 'location' as const, message: `A folder named “${basename(dest)}” is already there and is not empty. Choose another name or folder.` };
-    if (existsSync(dest) && !(await fs.readdir(dest).then((names) => names.length === 0, () => false))) return taken;
+    const taken = { ok: false as const, field: 'location' as const, message: `A folder named “${basename(dest)}” is already there. Choose another name or folder.` };
+    // Claimed in the folder the author chose, which must still be there: a folder renamed or removed meanwhile is not
+    // made again under its old name.
+    try {
+      await fs.mkdir(dest);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') return taken;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return { ok: false, field: 'location', message: `${opts.parentDir} is no longer there. Choose another folder.` };
+      if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return { ok: false, field: 'location', message: `SiteOrigin Builder does not have permission to write to ${opts.parentDir}. Choose another folder.` };
+      return { ok: false, field: 'location', message: `The copy could not be made in ${opts.parentDir}: ${(e as Error).message}` };
+    }
     const tmp = `${dest}.${randomUUID()}.tmp`;
     try {
-      // Read in turn with the project's own writes, so a save never lands halfway through the copy.
-      await s.exclusive(() => copyProjectSource(s.dir, tmp));
+      // Read in turn with the project's own writes, so a save never lands halfway through the copy, and only while the
+      // opening it was asked in is still the open one.
+      await s.exclusive(async () => {
+        if (!current()) throw Object.assign(new Error('stale'), { code: 'STALE_OPENING' });
+        await copyProjectSource(s.dir, tmp);
+      });
       const manifestPath = join(tmp, MANIFEST_FILE);
       const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
       manifest.projectId = newId('p', 12);
@@ -1283,17 +1320,21 @@ export class Controller {
       await replaceEmptyFolder(tmp, dest);
     } catch (e) {
       await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
+      // Only while it is still the empty folder claimed above.
+      await fs.rmdir(dest).catch(() => undefined);
       const err = e as NodeJS.ErrnoException;
+      if (err.code === 'STALE_OPENING') return stale;
       if (err.code === 'EEXIST') return taken;
-      if (err.code === 'EACCES' || err.code === 'EPERM' || err.code === 'EROFS')
-        return { ok: false, field: 'location', message: `SiteOrigin Builder does not have permission to write to ${opts.parentDir}. Choose another folder.` };
       if (err.code === 'ENOSPC') return { ok: false, field: 'form', message: 'Your disk is full. Free up some space and try again.' };
       return { ok: false, field: 'form', message: `The project could not be copied: ${err.message}` };
     }
     const dir = canonicalDir(dest);
-    // The copy is made: being trusted, and listed, are conveniences. Opening it asks for trust if that was not saved.
+    // The copy is trusted only as the original is: setup files changed since it was trusted are asked about when the
+    // copy is opened. Being trusted, and listed, are conveniences: the copy is made either way.
     await configHash(dir)
-      .then((hash) => trust(dir, hash))
+      .then(async (hash) => {
+        if (await isTrusted(s.dir, hash)) await trust(dir, hash);
+      })
       .catch(() => undefined);
     await addRecent(dir, name).catch(() => undefined);
     return { ok: true, dir, name };
