@@ -334,6 +334,15 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
         const how = op.type === 'component.removeVariant' ? 'Removed' : had ? 'Changed' : 'Added';
         return plain(op, `${how} the option ${quoted(label)} ${how === 'Removed' ? 'from' : 'of'} the ${quoted(componentName(op.definitionId))} component`);
       }
+      case 'component.setState':
+      case 'component.removeState': {
+        const had = before.components[op.definitionId]?.state?.[op.state];
+        const label = (op.type === 'component.setState' ? op.schema.label : undefined) || had?.label || op.state;
+        const how = op.type === 'component.removeState' ? 'Removed' : had ? 'Changed' : 'Added';
+        return plain(op, `${how} the UI state ${quoted(label)} ${how === 'Removed' ? 'from' : 'of'} the ${quoted(componentName(op.definitionId))} component`);
+      }
+      case 'node.setStateAction':
+        return plain(op, `${op.action ? 'Set' : 'Cleared'} what ${name(op.owner, op.nodeId)} does to UI state in ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
       case 'component.setSlot':
       case 'component.removeSlot': {
         const had = before.components[op.definitionId]?.slots?.[op.slot];

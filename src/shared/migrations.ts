@@ -385,6 +385,12 @@ export const MIGRATIONS: Migration[] = [
     description:
       'Projects can hold collections of entries under siteorigin/collections/. Nothing in the documents changes; the new version only keeps an older editor, which would neither read nor guard them, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'ui-state',
+    description:
+      'Managed components can declare UI state (state), read it in conditions and variants ($state) and change it from buttons (stateAction). Nothing in the documents changes; the new version only keeps an older editor, which would show every state-dependent element at once and drop what buttons do, from opening the project for editing.',
+    migrate() {}
   }
 ];
 

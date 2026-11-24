@@ -8,7 +8,7 @@ import { promises as fs, type Stats } from 'node:fs';
 import { join, relative, sep, isAbsolute } from 'node:path';
 import { z } from 'zod';
 import type { ComponentDefinition, GraphNode, ProjectState } from '@shared/types';
-import { COMPONENT_CATEGORIES, SCHEMA_VERSION, SLOT_PRIMITIVES, conditionRef, isBinding, slotChildren } from '@shared/types';
+import { COMPONENT_CATEGORIES, SCHEMA_VERSION, SLOT_PRIMITIVES, conditionRef, isBinding, isStateRef, slotChildren } from '@shared/types';
 import { slotDecl, slotFill } from '@engine/slots';
 import { BUNDLED_PACK_IDS, PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST, PACK_VERSION_RE, type PackManifest, type ThemePack } from '@catalogue/pack';
 import { FONT_FAMILY_RE } from '@shared/fonts';
@@ -16,6 +16,7 @@ import { variantIdsValid } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
 import { boundSchema } from '@engine/schema';
 import { defKey, slotIdent } from '@generator/index';
+import { stateActionProblem, uiStateProblem } from '@engine/schema';
 import { sha } from '../project/fsutil';
 import { readRegularFile, type PackFileSource } from './files';
 import type { PackRefusal } from '@shared/api';
@@ -192,6 +193,13 @@ function checkTree(def: ComponentDefinition) {
     }
     // A slot's content is elements of the same design.
     if (inst) for (const ids of Object.values(inst.slots ?? {})) for (const c of Array.isArray(ids) ? ids : []) if (!nodes[c]) refuse(`${where}: node "${id}" puts "${String(c).slice(0, 40)}" in a slot, which does not exist.`);
+    // UI state is read by conditions and nested variant axes, and changed by buttons: each names state the component declares.
+    const reads = [conditionRef(n.when), conditionRef(n.unless), ...Object.values((n as { variants?: Record<string, unknown> }).variants ?? {})];
+    for (const r of reads) if (isStateRef(r) && !(def.state && Object.hasOwn(def.state, r.$state))) refuse(`${where}: node "${id}" reads the UI state "${String(r.$state).slice(0, 40)}", which the component does not declare.`);
+    if (Object.hasOwn(n, 'stateAction')) {
+      const problem = n.kind === 'link' ? stateActionProblem(def, n.stateAction) : 'changes UI state, which only a button can.';
+      if (problem) refuse(`${where}: node "${id}" ${problem}`);
+    }
   }
   for (const id of def.tree!.rootIds) if (!nodes[id]) refuse(`${where}: its root "${id}" does not exist.`);
   // Every element is reached once from the roots: no element inside itself, and none in two places.
@@ -236,6 +244,13 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
           if (r.type === 'enum' && !Array.isArray((field as { options?: unknown }).options)) refuse(`${where}: the choice field "${f}" of "${name}" has no options.`);
         }
       if (prop.type === 'enum' && !Array.isArray(prop.options)) refuse(`${where}: the choice property "${name}" has no options.`);
+    }
+    if (def.state !== undefined) {
+      if (def.kind !== 'managed' || !def.state || typeof def.state !== 'object' || Array.isArray(def.state)) refuse(`${where} declares UI state that only a managed design can use.`);
+      for (const [name, decl] of Object.entries(def.state)) {
+        const problem = uiStateProblem(def, name, decl);
+        if (problem) refuse(`${where}: ${problem}`);
+      }
     }
     const idents = new Map<string, string>();
     for (const slot of Object.keys(def.slots ?? {})) {

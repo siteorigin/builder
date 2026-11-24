@@ -7,7 +7,7 @@ import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { propBindingValue } from '@shared/bindings';
 import { z } from 'zod';
 import type { ComponentDefinition, Condition, ImageValue, InstanceNode, ListItem, LinkValue, PageDoc, ProjectState, PropSchema } from '@shared/types';
-import { conditionHolds, conditionRef } from '@shared/types';
+import { conditionHolds, conditionRef, stateInitial } from '@shared/types';
 import { effectiveItem, followsPage, teaserFields } from '@shared/page-teasers';
 import type { EditOperation } from '@shared/ops';
 import { normalizeRoute, validateRoute } from '@shared/routes';
@@ -56,6 +56,8 @@ export function isArticleHeader(state: ProjectState, def: ComponentDefinition, p
   const present = (v: unknown) => (typeof v === 'string' ? !!v.trim() : Array.isArray(v) ? v.length > 0 : !!v);
   const holds = (c: Condition | undefined, want: boolean) => {
     const ref = c === undefined ? undefined : conditionRef(c);
+    // UI state reads as the value every placement starts with.
+    if (ref && '$state' in ref) return conditionHolds(c!, stateInitial(def, ref.$state), present) === want;
     return !ref || !('$prop' in ref) || conditionHolds(c!, propBindingValue(value(ref.$prop), ref), present) === want;
   };
   return Object.values(def.tree?.nodes ?? {}).some(

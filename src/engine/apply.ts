@@ -22,7 +22,7 @@ import type {
   VariantAxis
 } from '@shared/types';
 import type { Binding } from '@shared/types';
-import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isAppearPreset, isBinding, isComparison, slotChildren, type AppearPreset, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
+import { APPEAR_PRESETS, ELEMENT_ACTIONS, ICON_POSITIONS, SCHEMA_VERSION, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, slotChildren, type AppearPreset, type ElementAction, type IconPosition, type TextTag } from '@shared/types';
 import { propertiesHash, type EditOperation, type Op } from '@shared/ops';
 import { STYLE_PROP_MAP, isSafeCssValue, isTokenLength, linkOf, partStyleControls, styleSetFor, textStyleValue, textWeight, tokenVar, validateStyleValue } from '@shared/styles';
 import { normalizeRoute, slugify, suggestRoute, validateRoute } from '@shared/routes';
@@ -51,7 +51,7 @@ import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText, storedAlt } from './values';
 import { editTable } from './table';
-import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties } from './schema';
+import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties, usesState } from './schema';
 import { declaredTokens, findTokenCycle, forEachTokenRef, tokenPropUsageCounts, tokenUsageCounts } from './tokens';
 import { slotDecl, slotFill, slotLandingProblem } from './slots';
 import { formDefaults, settleFormKeys } from './form-keys';
@@ -62,15 +62,18 @@ import {
   directDependencies,
   dropPartOverrides,
   nodeSetBinding,
+  nodeSetStateAction,
   removePart,
   removePropSchema,
   setPropDefault,
   removeSlot,
+  removeState,
   removeVariant,
   replaceProperties,
   setPart,
   setPropSchema,
   setSlot,
+  setState,
   setVariant,
   uniqueCopyName
 } from './definitions';
@@ -185,6 +188,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return nodeSetContent(state, op);
     case 'node.setBinding':
       return nodeSetBinding(state, op);
+    case 'node.setStateAction':
+      return nodeSetStateAction(state, op);
     case 'instance.setProp':
       return keepingFormKeys(state, op, () => instanceSetProp(state, op, ctx));
     case 'instance.listInsert':
@@ -295,6 +300,10 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return setSlot(state, op);
     case 'component.removeSlot':
       return removeSlot(state, op);
+    case 'component.setState':
+      return setState(state, op);
+    case 'component.removeState':
+      return removeState(state, op);
     case 'theme.apply':
       return themeApply(state, op.themeId);
     case 'theme.refresh':
@@ -2209,6 +2218,9 @@ function createFromNode(state: ProjectState, op: Op<'component.createFromNode'>)
   if (root.kind === 'slot' || root.kind === 'repeat') fail('Select an element rather than a slot or repeat to create a component.');
   refuseItemStylesInto(state, tree, subtreeIds(tree, op.nodeId), 'every placement of a component shares its items.');
   if (op.owner.kind !== 'component') refuseCodeRootStylesInto(state, tree, subtreeIds(tree, op.nodeId));
+  // UI state belongs to the design that declares it; the new component would read or change state it does not have.
+  if (usesState(subtreeIds(tree, op.nodeId).flatMap((id) => (tree.nodes[id] ? [tree.nodes[id]] : []))))
+    fail('Part of this content reads or changes the UI state of the component around it, which a component of its own would not have. Remove those conditions and button actions first.');
   const ownerDef = op.owner.kind === 'component' ? state.components[op.owner.id] : undefined;
   const defTree: NodeTree = { rootIds: [], nodes: {} };
   const properties: Record<string, PropSchema> = {};
@@ -2428,6 +2440,8 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   const { node, def } = instanceTarget(state, op.owner, op.nodeId);
   if (def.kind !== 'managed' || !def.tree) fail(`"${def.name}" is already a code component.`);
   refuseItemStylesInto(state, getTree(state, op.owner), [op.nodeId], 'a code component styles its items together.');
+  // The code would show only the state's starting values, and its buttons would no longer change them.
+  if (Object.keys(def.state ?? {}).length) fail(`"${def.name}" has UI state its buttons change, which a code copy would not keep. Remove its UI state first.`);
   // Content placed in such a slot could no longer be checked for links inside the card's own link.
   const carded = slotsInsideCards(state, def);
   if (carded.length) fail(`"${def.name}" places its ${carded.map((s) => `“${def.slots?.[s]?.label ?? s}”`).join(', ')} content inside a card that links somewhere, which a code component cannot keep free of other links. Remove the card's link first.`);
@@ -2560,7 +2574,7 @@ function promotePageLinks(state: ProjectState, def: ComponentDefinition) {
     const nested = n.kind === 'instance' ? state.components[n.definitionId] : undefined;
     const code = nested?.kind === 'code';
     for (const slot of bindingSlots(n)) {
-      if (isBinding(slot.value) || isComparison(slot.value)) continue;
+      if (isBindingRef(slot.value) || isComparison(slot.value)) continue;
       // An element that does nothing on click renders no link (see isCardLink), so its destination stays out of the
       // properties, where the site's link checks would count it.
       if (slot.field === 'link' && n.kind === 'element' && n.action === 'none') continue;
@@ -2792,7 +2806,7 @@ function inheritedValues(state: ProjectState, node: InstanceNode, was: Component
   for (const [axis, a] of axesOf(was)) {
     const chosen = node.variants && Object.hasOwn(node.variants, axis) ? node.variants[axis] : undefined;
     // A bound axis is the placement's own; a code placement's choice naming no option passes nothing at all.
-    if (isBinding(chosen) || (was.kind === 'code' && typeof chosen === 'string' && !Object.hasOwn(a.options, chosen))) continue;
+    if (isBindingRef(chosen) || (was.kind === 'code' && typeof chosen === 'string' && !Object.hasOwn(a.options, chosen))) continue;
     const now = nextAxes.get(axis);
     if (!now) continue;
     const pick = (x: VariantAxis) => (typeof chosen === 'string' && Object.hasOwn(x.options, chosen) ? chosen : x.default);

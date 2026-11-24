@@ -6,6 +6,7 @@
 import type {
   Bindable,
   Binding,
+  BindingRef,
   ButtonAppearance,
   Comparison,
   Condition,
@@ -26,9 +27,12 @@ import type {
   ResponsiveStyles,
   ScalarPropSchema,
   SlotDef,
+  StateAction,
+  StateRef,
   StyleProps,
   TextTag,
   TokenGroup,
+  UiStateSchema,
   VariantAxis
 } from '@shared/types';
 import { SCHEMA_VERSION, isBinding } from '@shared/types';
@@ -37,11 +41,13 @@ import type { AuthoredPack, PackMeta } from './pack';
 
 export const prop = (name: string): Binding => ({ $prop: name });
 export const item = (name: string): Binding => ({ $item: name });
+/** A read of the component's own UI state, for conditions and nested variant axes (`when: eq(uiState('tab'), 'pricing')`). */
+export const uiState = (name: string): StateRef => ({ $state: name });
 export const tok = (token: string) => ({ token });
 /** A condition that holds when the bound value equals `value` (`when: eq(item('featured'), true)`). */
-export const eq = (ref: Binding, value: ConditionValue): Comparison => ({ ref, eq: value });
+export const eq = (ref: BindingRef, value: ConditionValue): Comparison => ({ ref, eq: value });
 /** A condition that holds when the bound value differs from `value`. */
-export const ne = (ref: Binding, value: ConditionValue): Comparison => ({ ref, ne: value });
+export const ne = (ref: BindingRef, value: ConditionValue): Comparison => ({ ref, ne: value });
 
 type NodeOpts = { styles?: ResponsiveStyles | StyleProps; when?: Condition; unless?: Condition; name?: string; anchor?: string };
 /** Options of nodes that take an accessible name. */
@@ -105,7 +111,7 @@ export class TreeBuilder {
     link: LinkValue | Binding,
     label: string | Binding,
     appearance: ButtonAppearance | Binding,
-    opts: NamedOpts & { icon?: Bindable<string>; iconPosition?: Bindable<IconPosition> } = {}
+    opts: NamedOpts & { icon?: Bindable<string>; iconPosition?: Bindable<IconPosition>; stateAction?: StateAction } = {}
   ): string {
     return this.add(
       {
@@ -116,7 +122,8 @@ export class TreeBuilder {
         appearance,
         ...(opts.icon !== undefined ? { icon: opts.icon } : {}),
         ...(opts.iconPosition !== undefined ? { iconPosition: opts.iconPosition } : {}),
-        ...(opts.ariaLabel !== undefined ? { ariaLabel: opts.ariaLabel } : {})
+        ...(opts.ariaLabel !== undefined ? { ariaLabel: opts.ariaLabel } : {}),
+        ...(opts.stateAction !== undefined ? { stateAction: opts.stateAction } : {})
       },
       opts
     );
@@ -147,6 +154,8 @@ export interface ComponentSpec {
   parts: Record<string, PartDef>;
   variantAxes?: Record<string, VariantAxis>;
   slots?: Record<string, SlotDef>;
+  /** UI state the design reads and its buttons change. */
+  state?: Record<string, UiStateSchema>;
   build: (b: TreeBuilder) => string;
   examples?: ComponentDefinition['examples'];
 }
@@ -207,6 +216,7 @@ export function createPack(meta: PackMeta): PackAuthor {
         parts: spec.parts,
         slots: spec.slots,
         variantAxes,
+        ...(spec.state ? { state: spec.state } : {}),
         tree: { rootIds: [rootId], nodes: b.nodes },
         provenance: provenance(spec.componentId),
         license: meta.license,

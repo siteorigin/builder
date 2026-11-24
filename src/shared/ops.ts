@@ -48,7 +48,15 @@ const FONT_FACE = z.object({
   style: z.enum(['normal', 'italic'])
 });
 const styleValue = z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() })]);
-const binding = z.union([z.object({ $prop: z.string(), field: z.string().optional() }), z.object({ $item: z.string() })]);
+// Strict, so a value naming two sources ({ $prop, $state }) is refused rather than read as whichever comes first.
+const binding = z.union([z.object({ $prop: z.string(), field: z.string().optional() }).strict(), z.object({ $item: z.string() }).strict(), z.object({ $state: z.string() }).strict()]);
+/** What a button does to its component's UI state (see `StateAction` in shared/types). */
+const stateAction = z.discriminatedUnion('op', [
+  z.object({ state: z.string(), op: z.literal('set'), value: z.union([z.boolean(), z.string()]).describe('true or false for a yes/no state; one of the options of a choice.') }).strict(),
+  z.object({ state: z.string(), op: z.literal('toggle') }).strict(),
+  z.object({ state: z.string(), op: z.literal('next'), wrap: z.boolean().optional().describe('After the last option, go back to the first.') }).strict(),
+  z.object({ state: z.string(), op: z.literal('prev'), wrap: z.boolean().optional().describe('Before the first option, go round to the last.') }).strict()
+]);
 const conditionValue = z.union([z.string(), z.number(), z.boolean()]);
 const link = z.object({
   type: z.enum(['none', 'page', 'url', 'email', 'tel', 'anchor', 'document']),
@@ -249,10 +257,20 @@ export const OPERATION_SCHEMAS = {
       .describe('"datetime" (plain text only): a YYYY-MM-DD date text property the text states, rendered as a <time> element.'),
     prop: z.string().optional().describe('For field "prop": the nested instance property to bind.'),
     axis: z.string().optional().describe('For field "variant": the nested instance variant axis to bind to an enum property.'),
-    binding: binding.nullable().describe('{"$prop": name}, {"$prop": name, "field": objectField} for one field of an object property, or {"$item": field}; null unbinds, keeping the current default.'),
+    binding: binding
+      .nullable()
+      .describe('{"$prop": name}, {"$prop": name, "field": objectField} for one field of an object property, or {"$item": field}; {"$state": name} (when, unless and variant only) reads the component\'s UI state. null unbinds, keeping the current default.'),
     eq: conditionValue.optional().describe('For "when"/"unless": render when the bound value equals this (or, for unless, when it does not).'),
     ne: conditionValue.optional().describe('For "when"/"unless": render when the bound value differs from this (or, for unless, when it does not).')
   }),
+  'node.setStateAction': z
+    .object({
+      type: z.literal('node.setStateAction'),
+      owner,
+      nodeId: z.string().describe('A button in a component definition.'),
+      action: stateAction.nullable().describe('What clicking the button does to the UI state; null removes it. The button keeps its link.')
+    })
+    .describe("Make a button in a component's design change the component's UI state: set it, toggle it, or step to the next or previous option."),
   'instance.setProp': z.object({
     type: z.literal('instance.setProp'),
     owner,
@@ -375,6 +393,23 @@ export const OPERATION_SCHEMAS = {
     prop: z.string(),
     value: z.unknown().describe('The new default: what placements without a value of their own show, and what new placements start with.')
   }),
+  'component.setState': z
+    .object({
+      type: z.literal('component.setState'),
+      definitionId: z.string(),
+      state: z.string().describe('The UI state variable to add or change: a camelCase name such as "open" or "billing", not one of the properties.'),
+      schema: z.object({
+        type: z.enum(['boolean', 'enum']),
+        label: z.string().max(80).optional(),
+        options: z
+          .array(z.union([z.string(), z.object({ value: z.string(), label: z.string().optional() })]))
+          .optional()
+          .describe('enum only: 2 to 50 options, in the order next and prev step through.'),
+        initial: z.union([z.boolean(), z.string()]).optional().describe('What every placement starts with: true or false, or one of the options. Defaults to false, or the first option.')
+      })
+    })
+    .describe("Declare UI state a managed component's design reads in conditions and variants and its buttons change. Placements never set it."),
+  'component.removeState': z.object({ type: z.literal('component.removeState'), definitionId: z.string(), state: z.string() }),
   'component.setPart': z.object({
     type: z.literal('component.setPart'),
     definitionId: z.string(),
@@ -515,7 +550,7 @@ export interface ApplyResult {
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Fields whose string values are used as lookup keys. Content (text, labels) may contain any words. */
-const KEY_FIELDS = /(^id$|Id$|^prop$|^field$|^property$|^variant$|^axis$|^slot$|^parentId$|^bind$|^\$prop$|^\$item$)/;
+const KEY_FIELDS = /(^id$|Id$|^prop$|^field$|^property$|^variant$|^axis$|^slot$|^parentId$|^bind$|^state$|^\$prop$|^\$item$|^\$state$)/;
 function hasForbidden(v: unknown, depth = 0): boolean {
   if (depth > 12) return true;
   if (Array.isArray(v)) return v.some((x) => hasForbidden(x, depth + 1));

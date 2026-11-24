@@ -142,6 +142,11 @@ const NEVER_OFFERED = new Set<OperationType>([
   'entry.reorder',
   'entry.remove'
 ]);
+/**
+ * Operations the assistant is not offered yet: UI state shows only its initial value in the generated site until its
+ * buttons work there, so a toggle or tabs built through these would be reported as working when they are not.
+ */
+const NOT_YET_OFFERED = new Set<OperationType>(['component.setState', 'component.removeState', 'node.setStateAction']);
 /** Operations that need Developer mode, shown only to runs that have it. */
 export { CODE_OPERATIONS };
 
@@ -165,7 +170,7 @@ const DEFINITION_OPERATIONS = new Set<OperationType>([
 /** The operation union the model is shown for a run; the app still checks every operation it receives. */
 function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
   const schemas = (Object.keys(OPERATION_SCHEMAS) as OperationType[])
-    .filter((t) => !NEVER_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)))
+    .filter((t) => !NEVER_OFFERED.has(t) && !NOT_YET_OFFERED.has(t) && (codeEnabled || !CODE_OPERATIONS.has(t)) && (definitionOps || !DEFINITION_OPERATIONS.has(t)))
     .map((t) =>
       t === 'page.create'
         ? OPERATION_SCHEMAS[t].omit({ pageId: true })

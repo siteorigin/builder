@@ -2,8 +2,8 @@
  * Named variant axes. A definition offers independent choices (tone, layout, ...), and a placement picks one
  * option on each, so tone and layout combine instead of multiplying into "dark-two-columns" style variants.
  */
-import type { Bindable, ComponentDefinition, InstanceNode, NodeTree, ProjectState, ResponsiveStyles, VariantAxis, VariantDef } from './types';
-import { isBinding } from './types';
+import type { BindingRef, ComponentDefinition, InstanceNode, NodeTree, ProjectState, ResponsiveStyles, VariantAxis, VariantDef } from './types';
+import { isBindingRef } from './types';
 import { cascadeStyles, type StyleLayer } from './styles';
 
 /** Axis and option IDs become generated identifiers and class names, so only plain ones are ever used. */
@@ -37,11 +37,11 @@ export function variantOptions(def: Pick<ComponentDefinition, 'variantAxes'>): A
 }
 
 /** What a placement shows on each axis: its own choice where that is a real option, otherwise the axis default. */
-export function selectedVariants(def: Pick<ComponentDefinition, 'variantAxes'>, chosen: InstanceNode['variants']): Record<string, Bindable<string>> {
-  const out: Record<string, Bindable<string>> = {};
+export function selectedVariants(def: Pick<ComponentDefinition, 'variantAxes'>, chosen: InstanceNode['variants']): Record<string, string | BindingRef> {
+  const out: Record<string, string | BindingRef> = {};
   for (const [axis, a] of axesOf(def)) {
     const v = chosen && Object.hasOwn(chosen, axis) ? chosen[axis] : undefined;
-    out[axis] = isBinding(v) ? v : typeof v === 'string' && Object.hasOwn(a.options, v) ? v : a.default;
+    out[axis] = isBindingRef(v) ? v : typeof v === 'string' && Object.hasOwn(a.options, v) ? v : a.default;
   }
   return out;
 }

@@ -1,13 +1,13 @@
-import type { Binding, ComponentDefinition, ConditionValue, GraphNode, OwnerRef, PropSchema } from '@shared/types';
+import type { BindingRef, ComponentDefinition, ConditionValue, GraphNode, OwnerRef, PropSchema } from '@shared/types';
 import { conditionRef, isComparison } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
-import { enclosingList } from '@engine/schema';
+import { declaredState, enclosingList, stateAsProp } from '@engine/schema';
 import { propBindingName } from '@shared/bindings';
 
 /**
  * The visibility rules of a node in a component's design, as the Inspector offers them: "Show when" (`when`) and
- * "Hide when" (`unless`), each testing a component property or a field of the list item the node is repeated for,
- * for having a value or for being (or not being) one value. The engine (`nodeSetBinding`) stays the judge of what
+ * "Hide when" (`unless`), each testing a component property, a field of the list item the node is repeated for, or
+ * the component's UI state, for having a value or for being (or not being) one value. The engine (`nodeSetBinding`) stays the judge of what
  * may be saved; this only lists what fits, so every choice offered is one it accepts.
  */
 
@@ -15,11 +15,11 @@ export type ConditionField = 'when' | 'unless';
 /** Has a value (the site's `has`), is a value (`eq`), or is not that value (`ne`). */
 export type ConditionTest = 'set' | 'eq' | 'ne';
 
-/** Something a node's condition can read: a property of the component, or a field of the enclosing list item. */
+/** Something a node's condition can read: a property of the component, a field of the enclosing list item, or UI state. */
 export interface ConditionSource {
-  /** Unique among a node's sources, also when a property and an item field share a name: `prop:title`, `item:title`. */
+  /** Unique among a node's sources, also when a property and an item field share a name: `prop:title`, `item:title`, `state:open`. */
   key: string;
-  binding: Binding;
+  binding: BindingRef;
   schema: PropSchema;
   label: string;
 }
@@ -29,16 +29,21 @@ export type ComparisonInput = { kind: 'boolean' } | { kind: 'number' } | { kind:
 
 /** A node's saved rule, read for the Inspector. `source` is missing when the rule reads something that has gone. */
 export interface ConditionRule {
-  binding: Binding;
+  binding: BindingRef;
   test: ConditionTest;
   value?: ConditionValue;
   source?: ConditionSource;
 }
 
-export const sourceKey = (b: Binding) => ('$prop' in b ? `prop:${propBindingName(b)}` : `item:${b.$item}`);
+export const sourceKey = (b: BindingRef) => ('$state' in b ? `state:${b.$state}` : '$prop' in b ? `prop:${propBindingName(b)}` : `item:${b.$item}`);
+/** The name a binding reads, for a rule whose source has gone. */
+export const bindingName = (b: BindingRef) => ('$state' in b ? b.$state : '$prop' in b ? propBindingName(b) : b.$item);
 
-/** What a condition at this node can read: the component's properties, then the fields of the item it repeats for. */
-export function conditionSources(def: ComponentDefinition, nodeId: string): { props: ConditionSource[]; item: ConditionSource[]; itemLabel?: string } {
+/**
+ * What a condition at this node can read: the component's properties, then the fields of the item it repeats for,
+ * then the component's UI state (which reads as a yes/no or choice property starting at its initial value).
+ */
+export function conditionSources(def: ComponentDefinition, nodeId: string): { props: ConditionSource[]; item: ConditionSource[]; state: ConditionSource[]; itemLabel?: string } {
   // An object is always there: a condition reads one of its fields ("Primary button label").
   const props = Object.entries(def.properties).flatMap(([name, schema]): ConditionSource[] =>
     schema.type === 'object'
@@ -48,13 +53,17 @@ export function conditionSources(def: ComponentDefinition, nodeId: string): { pr
   // The nearest repeat above the node (not the node itself: a repeat's own condition reads the item around it).
   const list = def.tree?.nodes[nodeId] ? enclosingList(def, nodeId) : null;
   const item = Object.entries(list?.fields ?? {}).map(([name, schema]) => ({ key: `item:${name}`, binding: { $item: name }, schema: schema as PropSchema, label: schema.label || name }));
-  return { props, item, itemLabel: list?.itemLabel };
+  const state = Object.keys(def.state ?? {}).flatMap((name) => {
+    const declared = declaredState(def, name);
+    return declared ? [{ key: `state:${name}`, binding: { $state: name }, schema: stateAsProp(declared), label: declared.label || name }] : [];
+  });
+  return { props, item, state, itemLabel: list?.itemLabel };
 }
 
-export function findSource(def: ComponentDefinition, nodeId: string, b: Binding): ConditionSource | undefined {
-  const { props, item } = conditionSources(def, nodeId);
+export function findSource(def: ComponentDefinition, nodeId: string, b: BindingRef): ConditionSource | undefined {
+  const { props, item, state } = conditionSources(def, nodeId);
   const key = sourceKey(b);
-  return [...props, ...item].find((s) => s.key === key);
+  return [...props, ...item, ...state].find((s) => s.key === key);
 }
 
 /** How a value of this type is compared, or null for types only tested for having a value (rich text, links, lists…). */
@@ -103,7 +112,7 @@ export function readRule(def: ComponentDefinition, node: GraphNode, field: Condi
 }
 
 /** The operation that saves a rule (`null` clears it). A comparison without a value is saved as a presence test. */
-export function ruleOp(owner: OwnerRef, nodeId: string, field: ConditionField, rule: { binding: Binding; test: ConditionTest; value?: ConditionValue } | null): EditOperation {
+export function ruleOp(owner: OwnerRef, nodeId: string, field: ConditionField, rule: { binding: BindingRef; test: ConditionTest; value?: ConditionValue } | null): EditOperation {
   if (!rule) return { type: 'node.setBinding', owner, nodeId, field, binding: null };
   const compared = rule.test !== 'set' && rule.value !== undefined;
   return { type: 'node.setBinding', owner, nodeId, field, binding: { ...rule.binding }, ...(compared ? { [rule.test]: rule.value } : {}) } as EditOperation;
@@ -120,7 +129,7 @@ export function shownLiteral(value: ConditionValue | undefined, source: Conditio
 
 /** A rule in words: "Show when Featured is on", "Hide when Badge has a value". */
 export function describeRule(field: ConditionField, rule: ConditionRule, itemLabel?: string): string {
-  const name = rule.source ? (rule.source.key.startsWith('item:') && itemLabel ? `${itemLabel} ${lower(rule.source.label)}` : rule.source.label) : '$prop' in rule.binding ? propBindingName(rule.binding) : rule.binding.$item;
+  const name = rule.source ? (rule.source.key.startsWith('item:') && itemLabel ? `${itemLabel} ${lower(rule.source.label)}` : rule.source.label) : bindingName(rule.binding);
   const test = rule.test === 'set' ? 'has a value' : `${rule.test === 'eq' ? 'is' : 'is not'} ${shownLiteral(rule.value, rule.source)}`;
   return `${field === 'when' ? 'Show' : 'Hide'} when ${name} ${test}`;
 }

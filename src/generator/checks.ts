@@ -3,7 +3,7 @@
  */
 import type { Binding, ComponentDefinition, GraphNode, ImageValue, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
-import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, slotChildren, type Condition } from '@shared/types';
+import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
 import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
 import type { EditOperation } from '@shared/ops';
 import { slugify } from '@shared/routes';
@@ -24,6 +24,8 @@ const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
 
 interface Scope {
   props: Record<string, unknown>;
+  /** The UI state of the definition being walked, at the values every placement starts with. */
+  ui?: Record<string, unknown>;
   /** The placements this scope sits in, from the page down, to tell their links apart. */
   trail?: string;
   item?: Record<string, unknown>;
@@ -57,6 +59,7 @@ interface Scope {
 }
 
 function evaluate(v: unknown, scope: Scope): unknown {
+  if (isStateRef(v)) return scope.ui && Object.hasOwn(scope.ui, v.$state) ? scope.ui[v.$state] : undefined;
   if (!isBinding(v)) return v;
   const b = v as Binding;
   if ('$prop' in b) return propBindingValue(scope.props[b.$prop], b);
@@ -280,7 +283,8 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           const feedProps = new Set(Object.entries(def.properties).filter(([, p]) => isFeed(p)).map(([k]) => k));
           const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots, codeSlot: frame.scope.codeSlot };
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
-          const child: Frame = { tree: def.tree, def, scope: { props, trail, instance: n, ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, stateInitial(def, k)])) : undefined;
+          const child: Frame = { tree: def.tree, def, scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);

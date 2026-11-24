@@ -75,7 +75,7 @@ function describe(n: GraphNode, def?: ComponentDefinition): string {
   const name = n.name ? `“${n.name}”` : '';
   switch (n.kind) {
     case 'link':
-      return name ? `the ${name} button` : 'a button or link';
+      return name ? `the ${name} button` : n.stateAction ? 'a button that changes UI state' : 'a button or link';
     case 'element':
       if (name) return `the ${name} element`;
       if (isCardLink(n)) return n.action !== undefined ? 'a container that opens its image or a link' : 'another card link';

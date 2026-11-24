@@ -92,6 +92,8 @@ export function partReach(def: ComponentDefinition, regionNodeId: string): PartR
   /** Where each property is used, by node: a list's items change wherever the list is used, not only where it repeats. */
   const propSites = new Map<string, string[]>();
   for (const site of bindingSites(def)) {
+    // UI state is the design's own: no placement's content reaches it.
+    if ('$state' in site.binding) continue;
     const inside = nodes.has(site.node.id);
     if ('$prop' in site.binding) {
       only.set(site.binding.$prop, (only.get(site.binding.$prop) ?? true) && inside);
@@ -261,6 +263,7 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'node.resetStyles': 'node',
   'node.setContent': 'node',
   'node.setBinding': 'node',
+  'node.setStateAction': 'node',
   'instance.setProp': 'node',
   'instance.listInsert': 'node',
   'instance.listRemove': 'node',
@@ -292,6 +295,8 @@ export const OP_REACH: Record<OperationType, OpReach> = {
   'component.removeVariant': 'wider',
   'component.setSlot': 'definition',
   'component.removeSlot': 'wider',
+  'component.setState': 'definition',
+  'component.removeState': 'wider',
   'theme.apply': 'wider',
   'theme.refresh': 'wider',
   'asset.add': 'wider',
@@ -356,7 +361,9 @@ const CONTRACT_EDITS = new Set<OperationType>([
   'component.setVariant',
   'component.removeVariant',
   'component.setSlot',
-  'component.removeSlot'
+  'component.removeSlot',
+  'component.setState',
+  'component.removeState'
 ]);
 
 /** Returns null when every operation stays within one component's own design, otherwise a reason. */
