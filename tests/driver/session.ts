@@ -54,6 +54,8 @@ const MAX_EVENTS = 100;
 const MAX_PAGE_ERRORS = 200;
 /** How often a wait looks again at what it waits for. */
 const POLL_MS = 200;
+/** Failures that end a wait at once, though a later request could succeed: the window or the app it watches is gone. */
+const WAIT_FATAL = new Set(['WINDOW_CLOSED', 'WINDOW_REPLACED', 'APP_EXITED', 'BUSY', 'CLOSED']);
 /** How long a replay record's observation (and its screenshots) may take. */
 const RECORD_OBSERVATION_MS = 8000;
 
@@ -1168,13 +1170,24 @@ export class Session {
     const progress = { condition: c, samples: 0, pending: 'nothing has been looked at yet', last: null as unknown };
     this.waiting = progress;
     // What a wait still needs once it stops looking: an observation and the errors, before its deadline.
-    const reserve = Math.min(2000, Math.max(300, Math.floor((deadline - began) / 4)));
+    const reserve = Math.min(3000, Math.max(500, Math.floor(((deadline - began) * 2) / 5)));
     try {
       await this.settled(Math.max(0, deadline - Date.now() - reserve));
       for (;;) {
         aborted(signal);
         if (this.closeRequested) throw new DriverError('CLOSED', 'The session closed while it waited.');
-        const { verdict, last } = await this.sample(c, request, signal, base, since);
+        let looked: { verdict: Verdict; last: unknown };
+        try {
+          looked = await this.sample(c, request, signal, base, since);
+        } catch (e) {
+          // A look the app's changes cut short (a project opening, a page navigating) is looked at again; one that can
+          // never succeed (the window or the app gone, a bad argument) ends the wait.
+          aborted(signal);
+          if (e instanceof DriverError && (!e.retryable || WAIT_FATAL.has(e.code))) throw e;
+          const info = errorInfo(e);
+          looked = { verdict: { met: false, pending: `the last look was cut short (${info.message.split('\n')[0].slice(0, 200)})` }, last: { error: { code: info.code, message: info.message.slice(0, 300) } } };
+        }
+        const { verdict, last } = looked;
         progress.samples++;
         progress.last = last;
         if (verdict.met) return this.present({ condition: c.condition, met: true, waitedMs: Date.now() - began, samples: progress.samples, ...verdict.value });
@@ -1212,6 +1225,7 @@ export class Session {
       case 'preview.ready': {
         const page = this.windowFor(request);
         const snap = await uiSnapshot(this.observer(page, signal), { scope: 'editor', maxNodes: 1, depth: 0 }, ++this.observations);
+        this.lastObservation = { id: snap.id, context: snap.context };
         return { verdict: judgeContext(c, snap.context), last: { context: snap.context } };
       }
       case 'save.settled':
@@ -1219,7 +1233,11 @@ export class Session {
       case 'export.finished': {
         const page = this.windowFor(request);
         const probe = await probeApp(page);
-        return { verdict: judgeApp(c, probe, base), last: { app: this.publicProbe(probe) } };
+        const verdict = judgeApp(c, probe, base);
+        // What met it names files as session paths, as everything else a client gets does.
+        const exported = verdict.value?.export as ExportBrief | undefined;
+        if (exported) verdict.value = { ...verdict.value, export: { ...exported, path: toSessionPath(this.areas(), exported.path) ?? exported.path } };
+        return { verdict, last: { app: this.publicProbe(probe) } };
       }
       case 'outcome.terminal': {
         const alive = this.bound && !this.bound.closed && !this.appExited ? this.bound.page : null;
@@ -1237,12 +1255,9 @@ export class Session {
     let observation: unknown = null;
     let probe: AppProbe | null = null;
     if (page) {
-      const snap = await bounded(
-        uiSnapshot(this.observer(page, signal), { maxNodes: 40 }, ++this.observations).catch(() => null),
-        Math.floor(left() * 0.7),
-        null
-      );
-      if (snap) observation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
+      const snap = await bounded(this.observeForEvidence(page, signal, 40, false), Math.floor(left() * 0.8), null);
+      // One that cannot be taken in time leaves the latest one there is, saying it is older.
+      observation = snap ?? (this.lastObservation ? { earlier: true, ...(this.lastObservation as object) } : null);
       probe = await bounded(probeApp(page).catch(() => null), left(), null);
     }
     const errors = {
@@ -1264,6 +1279,14 @@ export class Session {
       errors,
       ...(request.expectWindow !== undefined ? { expectWindow: request.expectWindow } : {})
     });
+  }
+
+  /** A bounded observation for evidence (context and the first nodes), kept as the latest one; null if it fails. */
+  private async observeForEvidence(page: Page, signal: AbortSignal, maxNodes: number, screenshot: boolean): Promise<unknown> {
+    const snap = await uiSnapshot(this.observer(page, signal), { maxNodes, screenshot }, ++this.observations).catch(() => null);
+    if (!snap) return null;
+    this.lastObservation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
+    return this.lastObservation;
   }
 
   // -- independent checks ----------------------------------------------------------
@@ -1298,7 +1321,7 @@ export class Session {
         null
       );
       if (snap) {
-        observation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
+        observation = this.lastObservation = clipJson({ id: snap.id, context: snap.context, editor: snap.editor, preview: snap.preview }, { string: 300, items: 40, depth: 10, keys: 40 });
         const shot = snap.screenshots;
         const rel = (p: string | undefined) => (p && this.paths ? relative(this.paths.artifacts, p).split('\\').join('/') : undefined);
         if (shot) screenshots = { ...(shot.editor ? { editor: rel(shot.editor.path) } : {}), ...(shot.preview ? { preview: rel(shot.preview.path) } : {}), ...(shot.withheld ? { withheld: shot.withheld } : {}) };

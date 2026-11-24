@@ -52,7 +52,7 @@ async function editHeading(text) {
 }
 
 try {
-  await session.start({ fixture: 'business-v1' });
+  ok(await call('session.start', { fixture: 'business-v1' }, { timeoutMs: 240000 }), 'session.start');
   const paths = session.paths;
 
   step('waiting for a save with no input sent times out, saying there is nothing to compare with');
@@ -105,7 +105,7 @@ try {
     ok(await call('desktop.setAnswers', { answers: [{ dialog: 'open', paths: [`${before.project.path}/siteorigin.project.json`] }] }), 'the chooser’s answer');
     await menu('File', 'Open Project…');
     await withTimeout(caughtIt, 180000, 'holding the reopened preview’s bridge');
-    const late = failed(await call('wait.for', { condition: 'preview.ready' }, { timeoutMs: 4000 }), 'TIMEOUT', 'a preview held back');
+    const late = failed(await call('wait.for', { condition: 'preview.ready' }, { timeoutMs: 6000 }), 'TIMEOUT', 'a preview held back');
     assert.equal(late.retryable, true, 'a wait may be repeated');
     assert.equal(late.details.condition.condition, 'preview.ready', 'it names the pending condition');
     assert.match(late.details.pending, /the preview is still loading/);

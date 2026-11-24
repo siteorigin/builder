@@ -178,6 +178,8 @@ try {
   assert.equal(existsSync(one.root), false, 'the run root is gone');
   assert.equal(closed.artifacts, join(callerArtifacts, one.id));
   assert.ok(existsSync(join(closed.artifacts, 'app.log')), 'the app log was kept');
+  const kept = JSON.parse(readFileSync(join(closed.artifacts, 'replay.json'), 'utf8'));
+  assert.deepEqual([kept.kind, kept.scenario.fixture, kept.steps[0].op], ['siteorigin-driver-replay', 'welcome', 'session.start'], 'and the replay record of the run');
   assert.equal(readFileSync(join(callerArtifacts, 'sentinel.txt'), 'utf8'), 'the caller’s own file', 'the caller’s own file is untouched');
   assert.deepEqual(await client.exited, { code: 0, signal: null }, 'the host exits once its session is closed');
 
