@@ -4582,7 +4582,7 @@ html.insert-dragging, html.insert-dragging * { cursor: grabbing !important; user
 .posts-tools .search { flex: 1; margin-right: 0; margin-bottom: 6px; }
 .posts-sort { margin-bottom: 6px; max-width: 120px; }
 .posts-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 12px 14px; color: var(--text-2); font-size: 13px; }
-.posts-empty svg { width: 20px; height: 20px; color: var(--text-3); }
+.posts-empty > svg { width: 20px; height: 20px; color: var(--text-3); }
 .posts-list { list-style: none; margin: 0; padding: 0 6px 12px; }
 .post-row { position: relative; display: flex; align-items: center; border-radius: var(--r-sm); }
 .post-row:hover, .post-row:focus-within { background: var(--hover); }
