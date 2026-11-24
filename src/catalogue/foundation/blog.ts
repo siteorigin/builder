@@ -194,3 +194,8 @@ export const blogList = managed({
       ])
     ])
 });
+
+// Brand-coloured category labels switch to the accent colour on the dark tone, as section eyebrows do.
+blogFeatured.variantAxes!.tone.options.inverse.styles!['card-category'] = { base: { color: tok('color.accent') } };
+blogGrid.variantAxes!.tone.options.inverse.styles!['card-category'] = { base: { color: tok('color.accent') } };
+blogList.variantAxes!.tone.options.inverse.styles!['row-category'] = { base: { color: tok('color.accent') } };
