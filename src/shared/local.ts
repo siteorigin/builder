@@ -54,10 +54,13 @@ export function checkLocalBaseURL(raw: string, allowRemote = false): LocalURLChe
   return { ok: true, url: `${u.protocol}//${u.host}${path}`, remote };
 }
 
-/** Which cloud provider issued a key, by its prefix, or by the marker every OpenAI secret key carries after it. */
+/**
+ * Which cloud provider issued a key: by its prefix, at the length every such key has (a short `sk-proj-local` is
+ * someone's own name for a local key), or by the marker every OpenAI secret key carries.
+ */
 function cloudKeyProvider(token: string): 'OpenAI' | 'Anthropic' | null {
-  if (/^sk-ant-\S/.test(token)) return 'Anthropic';
-  if (/^sk-(proj|svcacct|admin|None)-\S/.test(token) || /^sk-\S*T3BlbkFJ/.test(token)) return 'OpenAI';
+  if (/^sk-ant-\S{33,}$/.test(token)) return 'Anthropic';
+  if (/^sk-(proj|svcacct|admin|None)-\S{30,}$/.test(token) || /^sk-\S*T3BlbkFJ/.test(token)) return 'OpenAI';
   return null;
 }
 
@@ -68,7 +71,7 @@ function cloudKeyProvider(token: string): 'OpenAI' | 'Anthropic' | null {
  * started with (`sk-no-key-required`, or `sk-` and random hex) still work.
  */
 export function localKeyProblem(key: string | null | undefined): string | null {
-  const tokens = String(key ?? '').split(/[\s"'`=:,]+/);
+  const tokens = String(key ?? '').split(/[\s"'`=:,;()[\]<>{}]+/);
   const provider = tokens.map(cloudKeyProvider).find(Boolean);
   return provider ? `This looks like an ${provider} API key, which is never sent to a local server. Enter the key your local server was started with, or leave the field empty.` : null;
 }

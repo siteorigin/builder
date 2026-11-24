@@ -979,7 +979,7 @@ export class Orchestrator {
         // reply in progress, so a server that keeps streaming cannot outlast it; Stop still means Stop.
         let done: Extract<ModelEvent, { type: 'done' }> | null = null;
         let failed: Extract<ModelEvent, { type: 'error' }> | null = null;
-        /** Measured after the turn is prepared, and again once it ends, in case a busy loop held the timer back. */
+        /** Measured once the turn is prepared, and before a retry, in case a busy loop held the timer back. */
         const remaining = () => limitMs - (activeMs + Date.now() - lastResume);
         if (remaining() <= 0) {
           await stopAtLimit(timeLimit, 'time limit');
@@ -1009,16 +1009,19 @@ export class Orchestrator {
               else if (ev.type === 'error') err = ev;
             }
             if (signal.aborted) throw new Error('Cancelled');
-            // A reply that finished just as time ran out is not acted on either.
-            if (expired) break;
+            // A reply that finished in time is used; one cut off by the limit is not.
             if (done) break;
+            if (expired) break;
             if (!err || err.code === 'cancelled') throw new Error('Cancelled');
             if (['rate_limit', 'overloaded', 'network'].includes(err.code) && attempt < LIMITS.providerRetries) {
               const wait = Math.min(err.retryAfterMs ?? 1000 * 3 ** attempt, 20000);
               const a = addActivity(`${err.message} Retrying…`, 'provider');
               await sleep(wait, turn.signal);
               if (signal.aborted) throw new Error('Cancelled');
-              if (expired) break;
+              if (expired || remaining() <= 0) {
+                expired = true;
+                break;
+              }
               a.status = 'done';
               continue;
             }
@@ -1029,7 +1032,7 @@ export class Orchestrator {
           clearTimeout(deadline);
           signal.removeEventListener('abort', forwardStop);
         }
-        if (expired || remaining() <= 0) {
+        if (expired && !done) {
           // Valid work so far is kept, as at any other limit.
           msg.text = finalText;
           await stopAtLimit(timeLimit, 'time limit');

@@ -92,7 +92,7 @@ try {
 
   step('a cloud key pasted into the Local key field is refused, and never sent');
   const keyField = dialog.locator('#settings-api-key');
-  const cloudKey = 'sk-ant-api03-NotARealKey_0123456789';
+  const cloudKey = `sk-ant-api03-${'NotARealKey_0123456789-'.repeat(4)}`;
   const beforeKey = server.requests.length;
   await keyField.fill(cloudKey);
   await dialog.locator('.field-error', { hasText: 'This looks like an Anthropic API key' }).waitFor();

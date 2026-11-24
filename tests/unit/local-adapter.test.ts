@@ -520,20 +520,24 @@ describe('where a request may go', () => {
     expect(targets).toEqual([`${server.baseURL}/models`, `${server.baseURL}/chat/completions`]);
   });
 
+  /** Fake keys at the length real ones have. */
+  const fake = (prefix: string) => `${prefix}${'Ab3_dE6-gH9'.repeat(5)}`;
+
   it.each([
-    ['sk-proj-Abc123_def-456', 'OpenAI'],
-    ['sk-svcacct-Abc123', 'OpenAI'],
-    ['sk-admin-Abc123', 'OpenAI'],
-    ['sk-None-Abc123def456', 'OpenAI'],
+    [fake('sk-proj-'), 'OpenAI'],
+    [fake('sk-svcacct-'), 'OpenAI'],
+    [fake('sk-admin-'), 'OpenAI'],
+    [fake('sk-None-'), 'OpenAI'],
     [`sk-${'a1B2c3D4e5'.repeat(2)}T3BlbkFJ${'f6G7h8I9j0'.repeat(2)}`, 'OpenAI'],
-    ['Bearer sk-proj-Abc123_def-456', 'OpenAI'],
-    ['OPENAI_API_KEY=sk-proj-Abc123', 'OpenAI'],
-    ['  "sk-ant-api03-Abc123_def-456"  ', 'Anthropic']
+    [`Bearer ${fake('sk-proj-')}`, 'OpenAI'],
+    [`OPENAI_API_KEY=${fake('sk-proj-')}`, 'OpenAI'],
+    [`(${fake('sk-proj-')})`, 'OpenAI'],
+    [`  "${fake('sk-ant-api03-')}"  `, 'Anthropic']
   ])('recognizes the cloud key %s', (key, provider) => {
     expect(localKeyProblem(key)).toContain(`an ${provider} API key`);
   });
 
-  it.each(['', '   ', 'local-secret', 'ollama', 'lm-studio', 'sk-no-key-required', 'sk-local-dev', 'sk-1234567890abcdefghijkl', `sk-${'0123456789abcdef'.repeat(2)}`, `sk-${'x9'.repeat(30)}`])(
+  it.each(['', '   ', 'local-secret', 'ollama', 'lm-studio', 'sk-no-key-required', 'sk-local-dev', 'sk-proj-local', 'lab:sk-proj-local', 'sk-ant-mine', 'sk-1234567890abcdefghijkl', `sk-${'0123456789abcdef'.repeat(2)}`, `sk-${'x9'.repeat(30)}`])(
     'accepts the local key "%s"',
     (key) => {
       expect(localKeyProblem(key)).toBeNull();
@@ -541,18 +545,19 @@ describe('where a request may go', () => {
   );
 
   it.each([
-    ['on this computer', () => server.baseURL],
-    ['on another machine', () => 'http://192.0.2.10:8080/v1']
-  ])('never sends a cloud key to a local server %s', async (_where, baseURL) => {
+    ['on this computer', () => server.baseURL, fake('sk-ant-api03-'), 'Anthropic'],
+    ['on another machine', () => 'http://192.0.2.10:8080/v1', fake('sk-proj-'), 'OpenAI']
+  ])('never sends a cloud key to a local server %s', async (_where, baseURL, apiKey, provider) => {
     let calls = 0;
     const fetch = ((input: string | URL | Request, init?: RequestInit) => {
       calls++;
       return globalThis.fetch(input, init);
     }) as typeof globalThis.fetch;
-    const endpoint = { baseURL: baseURL(), model: 'test-model', apiKey: 'sk-ant-api03-secret', allowRemote: true };
-    expect(errorOf(await run(new LocalAdapter(endpoint, { fetch }), { tools: [] }))).toMatchObject({ code: 'invalid_request', message: expect.stringMatching(/Anthropic API key/) });
-    expect(await listLocalModels(endpoint, { fetch })).toMatchObject({ ok: false, message: expect.stringMatching(/Anthropic API key/) });
-    expect(await testLocal(endpoint, { fetch })).toMatchObject({ ok: false, message: expect.stringMatching(/Anthropic API key/) });
+    const endpoint = { baseURL: baseURL(), model: 'test-model', apiKey, allowRemote: true };
+    const refused = expect.stringContaining(`an ${provider} API key`);
+    expect(errorOf(await run(new LocalAdapter(endpoint, { fetch }), { tools: [] }))).toMatchObject({ code: 'invalid_request', message: refused });
+    expect(await listLocalModels(endpoint, { fetch })).toMatchObject({ ok: false, message: refused });
+    expect(await testLocal(endpoint, { fetch })).toMatchObject({ ok: false, message: refused });
     expect(calls).toBe(0);
     expect(server.requests).toEqual([]);
   });
