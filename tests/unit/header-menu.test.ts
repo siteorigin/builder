@@ -30,7 +30,11 @@ function exportedSite(logo: boolean) {
   const targets = s.site.pageOrder;
   const page = (target: string): LinkValue => ({ type: 'page', target });
   const header = s.site.shell.header.nodes[s.site.shell.header.rootIds[0]] as InstanceNode;
-  const image: ImageValue | null = logo ? { src: '/media/wordmark.svg', alt: 'North Harbor wordmark', width: 400, height: 100 } : null;
+  let image: ImageValue | null = null;
+  if (logo) {
+    s.assets.assets.wordmark = { id: 'wordmark', name: 'wordmark', file: 'static/assets/wordmark.svg', mime: 'image/svg+xml', bytes: LOGO_SVG.length, width: 400, height: 100, hash: 'wordmark', kind: 'image', createdAt: '' };
+    image = { assetId: 'wordmark', alt: 'North Harbor wordmark' };
+  }
   header.props = { ...header.props, siteName: BRAND, logo: image, showSiteName: true, sticky: true, links: LABELS.map((label, i) => ({ id: `i${i + 1}`, label, link: page(targets[i % targets.length]) })) };
   const files = generateProject(s);
   const css = ['tokens', 'theme', 'components', 'site'].map((n) => files.get(`${STYLES_DIR}/${n}.css`) ?? '').join('\n');
@@ -63,7 +67,9 @@ async function bundleSites(sites: Record<string, Map<string, string>>, generate:
           "import { navigated } from '$app/navigation';",
           ...imports,
           all,
-          "window.startSite = (name) => { hydrate(all[name], { target: document.getElementById('app') }); flushSync(); navigated('enter'); window.started = true; };"
+          "window.navigated = navigated;",
+          // No recovery: a mismatch fails the start instead of quietly replacing the served markup.
+          "window.startSite = (name) => { hydrate(all[name], { target: document.getElementById('app'), recover: false }); flushSync(); navigated('enter'); window.started = true; };"
         ].join('\n');
   const out = (await build({
     configFile: false,
@@ -124,7 +130,8 @@ const BOXES = `(() => {
     const b = el.getBoundingClientRect();
     return { left: b.left, right: b.right, top: b.top, bottom: b.bottom, width: b.width, height: b.height };
   };
-  return { toggle: box('.so-header__toggle'), brand: box('.so-header__brand'), viewport: document.documentElement.clientWidth };
+  const logo = document.querySelector('.so-header__brand img');
+  return { toggle: box('.so-header__toggle'), brand: box('.so-header__brand'), logo: logo && logo.complete && logo.naturalWidth > 0 ? box('.so-header__brand img') : null, viewport: document.documentElement.clientWidth };
 })()`;
 
 /** Whether the element is on screen and is what a tap at its centre lands on. */
@@ -205,7 +212,7 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       await page.route(`${ORIGIN}/**`, (route) => {
         const path = new URL(route.request().url()).pathname;
         if (path === '/site.js') return route.fulfill({ contentType: 'text/javascript; charset=utf-8', body: script });
-        if (path.startsWith('/media/')) return route.fulfill({ contentType: 'image/svg+xml', body: LOGO_SVG });
+        if (path.endsWith('.svg')) return route.fulfill({ contentType: 'image/svg+xml', body: LOGO_SVG });
         if (path !== '/') return route.fulfill({ status: 404, body: '' });
         const { head, body: rendered } = markup[name];
         const start = scripts === 'now' ? `<script src="/site.js"></script><script>startSite(${JSON.stringify(name)})</script>` : '';
@@ -227,6 +234,15 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
   }
 
   const menuOpen = (page: Page) => page.locator('#so-site-nav').isVisible();
+  /** The disclosure's own open state, which is what the browser announces. */
+  const expanded = (page: Page) => page.evaluate<boolean>("document.querySelector('.so-header__menu').open");
+  /** Which of the button's two icons shows, and whether it names the menu it controls. */
+  const button = (page: Page) =>
+    page.evaluate<{ bars: boolean; cross: boolean; controls: string | undefined }>(`(() => {
+      const shown = (sel) => getComputedStyle(document.querySelector(sel)).display !== 'none';
+      const toggle = document.querySelector('.so-header__toggle');
+      return { bars: shown('.so-header__icon-open'), cross: shown('.so-header__icon-close'), controls: document.getElementById(toggle.getAttribute('aria-controls'))?.tagName };
+    })()`);
   const focus = async (page: Page) => (await page.evaluate(FOCUS)) as Focus | null;
   const tab = async (page: Page, shift = false) => {
     await page.keyboard.press(shift ? 'Shift+Tab' : 'Tab');
@@ -257,8 +273,12 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
     for (const name of ['name', 'logo'] as const)
       for (const width of PHONES)
         await withSite(name, { width, height: 700 }, 'now', async (page) => {
-          const { toggle, brand, viewport } = (await page.evaluate(BOXES)) as { toggle: Box; brand: Box; viewport: number };
+          if (name === 'logo') await page.waitForFunction("document.querySelector('.so-header__brand img')?.complete");
+          const { toggle, brand, logo, viewport } = (await page.evaluate(BOXES)) as { toggle: Box; brand: Box; logo: Box | null; viewport: number };
           const at = `${name} at ${width}px`;
+          // The wordmark shows at the header's 34px logo height beside the name.
+          if (name === 'logo' && (!logo || Math.round(logo.height) !== 34 || Math.round(logo.width) !== 136)) problems.push(`${at}: the logo shows as ${JSON.stringify(logo)}`);
+          if (name === 'name' && logo) problems.push(`${at}: a logo shows`);
           if (Math.round(toggle.width) < 44 || Math.round(toggle.height) < 44) problems.push(`${at}: the button is ${toggle.width}×${toggle.height}`);
           if (toggle.right > viewport + 0.5) problems.push(`${at}: the button reaches ${toggle.right}px`);
           if (brand.right > toggle.left + 0.5) problems.push(`${at}: the brand (to ${brand.right}px) runs under the button (from ${toggle.left}px)`);
@@ -269,8 +289,10 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
   it('opens the menu by touch and by keyboard when the browser runs no scripts', async () => {
     await withSite('name', { width: 390, height: 844 }, 'off', async (page) => {
       expect(await menuOpen(page)).toBe(false);
+      expect(await button(page)).toEqual({ bars: true, cross: false, controls: 'NAV' });
       await page.locator('.so-header__toggle').tap();
       await expect.poll(() => menuOpen(page)).toBe(true);
+      expect(await button(page)).toEqual({ bars: false, cross: true, controls: 'NAV' });
       const last = '#so-site-nav .so-header__cta';
       expect(await page.evaluate(tappable(last)), 'Book a call can be tapped').toBe(true);
       for (const label of LABELS) expect(await page.locator('#so-site-nav ul a', { hasText: label }).first().isVisible(), label).toBe(true);
@@ -291,25 +313,78 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
     });
   }, 60_000);
 
-  it('keeps a menu opened before the script starts, then closes it by Escape and by a press outside', async () => {
+  it('keeps a menu opened before the script starts, then closes it by Escape, a press outside, a link or a navigation', async () => {
     await withSite('name', { width: 390, height: 844 }, 'late', async (page, start) => {
       await page.locator('.so-header__toggle').tap();
       await expect.poll(() => menuOpen(page)).toBe(true);
+      await page.locator('#so-site-nav ul a').first().focus();
+      await page.evaluate("window.servedMenu = document.querySelector('.so-header__menu')");
       await start();
       await page.evaluate(SETTLED);
-      expect(await menuOpen(page), 'still open once the script runs').toBe(true);
+      expect(await page.evaluate("window.servedMenu === document.querySelector('.so-header__menu')"), 'the script takes over the served menu').toBe(true);
+      expect(await expanded(page), 'still open once the script runs').toBe(true);
       expect(await page.evaluate(tappable('#so-site-nav .so-header__cta'))).toBe(true);
+      expect((await focus(page))?.text, 'focus stays on the link it was on').toBe('Home');
 
-      await page.locator('.so-header__toggle').focus();
+      // Escape from a menu link, or from nowhere, returns focus to the button.
       await page.keyboard.press('Escape');
-      await expect.poll(() => menuOpen(page)).toBe(false);
+      await expect.poll(() => expanded(page)).toBe(false);
+      expect(await menuOpen(page)).toBe(false);
       expect((await focus(page))?.toggle, 'Escape returns to the menu button').toBe(true);
+      await page.evaluate("document.activeElement.blur(); document.querySelector('.so-header__toggle').click()");
+      expect(await expanded(page)).toBe(true);
+      await page.keyboard.press('Escape');
+      await expect.poll(() => expanded(page)).toBe(false);
+      expect((await focus(page))?.toggle, 'Escape from nowhere returns to the menu button').toBe(true);
+      // With the menu closed, Escape leaves focus alone.
+      await page.locator('.so-header__brand').focus();
+      await page.keyboard.press('Escape');
+      expect((await focus(page))?.text).toBe(BRAND);
+      // Escape while focus is on the page closes the menu and leaves focus there.
+      await page.evaluate("document.querySelector('main a[href]').focus(); document.querySelector('.so-header__toggle').click()");
+      const onPage = await focus(page);
+      expect(onPage?.inHeader).toBe(false);
+      expect(await expanded(page)).toBe(true);
+      await page.keyboard.press('Escape');
+      await expect.poll(() => expanded(page)).toBe(false);
+      expect(await focus(page), 'Escape leaves focus on the page').toEqual(onPage);
 
+      // A press inside the menu keeps it open; one outside the header closes it.
+      await page.locator('.so-header__toggle').tap();
+      await expect.poll(() => expanded(page)).toBe(true);
+      await page.locator('#so-site-nav ul').dispatchEvent('pointerdown');
+      expect(await expanded(page), 'a press in the menu').toBe(true);
+      await page.locator('main').dispatchEvent('pointerdown');
+      expect(await expanded(page), 'a press on the page').toBe(false);
+
+      // Choosing a link closes it (the navigation itself is held back here), and so does arriving on another page.
+      await page.evaluate("document.addEventListener('click', (e) => { if (e.target.closest('a')) e.preventDefault(); }, true)");
+      for (const link of ['#so-site-nav ul li:nth-child(4) a', '#so-site-nav .so-header__cta']) {
+        await page.locator('.so-header__toggle').tap();
+        await expect.poll(() => expanded(page)).toBe(true);
+        await page.locator(link).click();
+        expect(await expanded(page), `after choosing ${link}`).toBe(false);
+      }
+      for (const type of ['link', 'goto', 'popstate']) {
+        await page.locator('.so-header__toggle').tap();
+        await expect.poll(() => expanded(page)).toBe(true);
+        await page.evaluate(`navigated(${JSON.stringify(type)})`);
+        expect(await expanded(page), `after a ${type} navigation`).toBe(false);
+      }
+    });
+  }, 60_000);
+
+  it('folds away a menu that focus left for the page before the script started, leaving focus there', async () => {
+    await withSite('name', { width: 390, height: 844 }, 'late', async (page, start) => {
       await page.locator('.so-header__toggle').tap();
       await expect.poll(() => menuOpen(page)).toBe(true);
-      const footer = await page.locator('footer').boundingBox();
-      await page.mouse.click(footer!.x + 5, footer!.y + 5);
-      await expect.poll(() => menuOpen(page)).toBe(false);
+      await page.locator('main a[href]').first().focus();
+      const left = await focus(page);
+      expect(left?.inHeader).toBe(false);
+      expect(await expanded(page), 'nothing closes it before the script runs').toBe(true);
+      await start();
+      await expect.poll(() => expanded(page)).toBe(false);
+      expect(await focus(page)).toEqual(left);
     });
   }, 60_000);
 
@@ -349,13 +424,16 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       await expect.poll(() => menuOpen(page)).toBe(false);
       expect(await focus(page)).toEqual(skip);
 
-      // Opening it and moving focus out in the same task, before the browser reports the toggle, still closes it.
-      await page.evaluate(`(() => {
+      // Opening it and moving focus out in the same task, before the browser reports the toggle, closes it at once.
+      const sameTask = await page.evaluate(`(() => {
         document.querySelector('.so-header__toggle').click();
+        const opened = document.querySelector('.so-header__menu').open;
         document.querySelector('main a[href]').focus();
+        return { opened, closed: !document.querySelector('.so-header__menu').open };
       })()`);
+      expect(sameTask).toEqual({ opened: true, closed: true });
       await page.evaluate(SETTLED);
-      expect(await menuOpen(page), 'closed after a same-task exit').toBe(false);
+      expect(await menuOpen(page), 'still closed once the toggle is reported').toBe(false);
       expect((await focus(page))?.inHeader).toBe(false);
     });
   }, 60_000);
@@ -372,13 +450,17 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       const last = '#so-site-nav .so-header__cta';
       expect(await page.evaluate(tappable(last)), 'Book a call starts out of reach').toBe(false);
 
-      // A wheel over the menu scrolls the menu, not the page, until Book a call can be tapped.
+      // A wheel over the menu scrolls the menu, not the page, until Book a call can be tapped. Each turn stays
+      // within the menu's own scroll range, so none of it carries on to the page.
+      const room = () => page.evaluate<number>("(() => { const n = document.getElementById('so-site-nav'); return n.scrollHeight - n.clientHeight - n.scrollTop; })()");
       await page.mouse.move(nav.x + nav.width / 2, nav.y + nav.height / 2);
-      for (let i = 0; i < 20 && !(await page.evaluate(tappable(last))); i++) {
-        await page.mouse.wheel(0, 80);
-        await page.evaluate(SETTLED);
+      for (let i = 0; i < 30 && !(await page.evaluate(tappable(last))); i++) {
+        const left = await room();
+        if (left < 1) break;
+        await page.mouse.wheel(0, Math.min(60, Math.floor(left)));
+        await expect.poll(room).toBeLessThan(left);
       }
-      expect(await page.evaluate(tappable(last)), 'Book a call scrolled into reach').toBe(true);
+      await expect.poll(() => page.evaluate(tappable(last)), { message: 'Book a call scrolled into reach' }).toBe(true);
       expect(await page.evaluate('scrollY')).toBe(scrolled);
       await page.locator(last).tap({ trial: true });
 
@@ -400,8 +482,7 @@ describe.each(ENGINES)('the phone menu in %s', (engineName, engine) => {
       expect(nav.y + nav.height).toBeLessThanOrEqual(375.5);
       for (let i = 0; i < MENU_LINKS.length; i++) await tab(page);
       expect((await focus(page))?.text).toBe('Book a call');
-      await page.evaluate('Promise.all(document.getAnimations().map((a) => a.finished.catch(() => {})))');
-      expect(await page.evaluate(tappable('#so-site-nav .so-header__cta')), 'focused Book a call is on screen').toBe(true);
+      await expect.poll(() => page.evaluate(tappable('#so-site-nav .so-header__cta')), { message: 'focused Book a call is on screen' }).toBe(true);
     });
   }, 60_000);
 });

@@ -199,6 +199,11 @@ const HEADER_SOURCE = `<script>
 		stopReveal = undefined;
 	});
 	onMount(() => () => stopReveal?.());
+	// A menu opened before the script started, which focus has since left for the page, folds away as it starts.
+	onMount(() => {
+		const active = header?.ownerDocument.activeElement;
+		if (active && active !== header.ownerDocument.body && !header.contains(active)) closeMenu();
+	});
 
 	// Escape returns focus to the menu button only from inside the header (or from nowhere), never from the page.
 	function onKeydown(event) {

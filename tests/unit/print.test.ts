@@ -291,6 +291,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         page.evaluate<Record<string, string>>(`(() => {
           const display = (sel) => [...document.querySelectorAll(sel)].map((el) => getComputedStyle(el).display).join(',');
           return {
+            menu: display('.so-header__menu'),
             toggle: display('.so-header__toggle'),
             nav: display('.so-header__nav'),
             icons: display('.so-foundation-faq-list__toggle-icon'),
@@ -305,6 +306,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         })()`);
       // On screen the phone menu is open, below its button, in a header that sticks.
       const screen = await styles();
+      expect(screen.menu).not.toBe('none');
       expect(screen.toggle).not.toBe('none');
       expect(screen.nav).not.toBe('none');
       expect(screen.icons.split(',')).not.toContain('none');
@@ -316,6 +318,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(screen.header).toBe('sticky');
       await page.emulateMedia({ media: 'print' });
       expect(await styles()).toEqual({
+        menu: 'none',
         toggle: 'none',
         nav: 'none',
         icons: 'none,none,none,none',
