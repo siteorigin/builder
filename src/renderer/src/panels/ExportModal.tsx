@@ -168,7 +168,7 @@ function SampleContactReview({ groups, kept, disabled, onSettle }: { groups: Sam
                 <ul className="export-samples-places" id={listId} hidden={!shown}>
                   {g.matches.map((m) => {
                     const f = m.field;
-                    const path = f.label === f.section || f.label.startsWith(`${f.section} › `) ? f.label : `${f.section} › ${f.label}`;
+                    const path = f.section === f.where || f.label === f.section || f.label.startsWith(`${f.section} › `) ? f.label : `${f.section} › ${f.label}`;
                     const name = `${f.owner.kind === 'shell' ? `Shared ${f.owner.id}` : f.where} › ${path}`;
                     return (
                       <li key={m.id}>
