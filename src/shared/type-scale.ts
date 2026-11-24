@@ -6,7 +6,7 @@
  */
 import type { EditOperation } from './ops';
 import type { TextStyleValue, TokenDef } from './types';
-import { linkOf, textMetrics } from './styles';
+import { isSafeCssValue, linkOf, textLinkLeadsToText, textMetrics, textStyleValue } from './styles';
 
 /** The viewport widths a fluid size grows between: its smallest size up to a phone, its largest from a laptop up. */
 export const FLUID_MIN_WIDTH = 360;
@@ -213,12 +213,22 @@ function sameText(a: TextStyleValue, b: TextStyleValue): boolean {
 }
 const asStyle = (role: string, value: unknown): TokenDef[] => [{ id: role, label: role, group: 'text', value: value as TextStyleValue }];
 
-/** The text styles a style follows through saved links, nearest first. */
-function followed(tokens: TokenDef[], role: string): string[] {
-  const out: string[] = [];
-  for (let cur = linkOf(tokens.find((t) => t.id === role)?.value, 'text'); cur && cur !== role && !out.includes(cur); cur = linkOf(tokens.find((t) => t.id === cur)?.value, 'text')) out.push(cur);
-  return out;
+/** The text styles a style follows through saved links, nearest first, and whether they lead back to it. */
+function followed(tokens: TokenDef[], role: string): { chain: string[]; loops: boolean } {
+  const chain: string[] = [];
+  let cur = linkOf(tokens.find((t) => t.id === role)?.value, 'text');
+  for (; cur && cur !== role && !chain.includes(cur); cur = linkOf(tokens.find((t) => t.id === cur)?.value, 'text')) chain.push(cur);
+  return { chain, loops: cur === role };
 }
+
+/** Where a style's edit goes in the batch: one in a loop of links first (the engine takes no edit while a loop stands), then a style before any it follows. */
+const editOrder = (tokens: TokenDef[], role: string) => {
+  const f = followed(tokens, role);
+  return f.loops ? Infinity : f.chain.length;
+};
+
+/** The engine's rule for a font value, so a shipped stack it would refuse goes by the font's name instead. */
+const FONT_VALUE_RE = /^[\p{L}\p{N}_\s'",.-]+$/u;
 
 /**
  * A saved style that cannot be read as it stands (a metric missing or broken in a hand-edited document): the
@@ -254,12 +264,13 @@ export interface TypeScaleEdits {
  * The edits that give the site a type scale, as one batch: each style the theme has takes the scale's size, line
  * height and letter spacing, and keeps its font, weight and case.
  * - A style already set that way is left alone; a changed one that ends up exactly as the theme writes it goes back
- *   to the theme. Choosing the theme's own scale leaves styles that were never changed alone, so one the theme
- *   writes as a link to another keeps following it.
+ *   to the theme. Choosing the theme's own scale leaves a style that was never changed alone while it shows the
+ *   theme's scale, so one the theme writes as a link to another keeps following it.
  * - Only the three scale metrics are sent, and the engine keeps the rest. A style is edited before any style it
  *   follows through a saved link (by hand, or from an older version), so it is written out from what it shows
  *   before the batch, whatever the batch then does to the styles it followed.
- * - A saved style that cannot be read is sent whole, except the metrics it saved that read, which the engine keeps.
+ * - A saved style that cannot be read is sent whole, except the metrics it saved that read, which the engine keeps;
+ *   one saved as a link that leads nowhere is sent whole, from the theme's metrics it shows.
  * `tokens` are the site's styles with its changes (effectiveTokens), `overrides` the changes themselves.
  */
 export function typeScaleOps(tokens: TokenDef[], themeTokens: TokenDef[], overrides: Record<string, unknown>, choice: TypeScaleChoice): TypeScaleEdits {
@@ -267,15 +278,21 @@ export function typeScaleOps(tokens: TokenDef[], themeTokens: TokenDef[], overri
   const unscalable = new Set<TypeScaleRole>();
   const want = targets(themeTokens, tokens, choice);
   // A style that follows another has a longer chain of links than the one it follows, so it goes first.
-  const order = [...want.keys()].sort((a, b) => followed(tokens, b).length - followed(tokens, a).length);
+  const order = [...want.keys()].sort((a, b) => editOrder(tokens, b) - editOrder(tokens, a));
   for (const role of order) {
     const target = want.get(role);
     const changed = Object.hasOwn(overrides, role);
-    if (!target || (choice === 'theme' && !changed)) continue;
     const declared = themeTokens.find((t) => t.id === role)!.value;
+    const readable = textMetrics(tokens, role, declared);
+    // The theme has no sizes of its own to give a style it cannot write out: that change stays, and is reported.
+    if (!target) {
+      if (changed) unscalable.add(role);
+      continue;
+    }
+    // A style never changed already shows the theme's scale, unless the theme has it follow a style that was changed.
+    if (choice === 'theme' && !changed && readable && sameScale(readable, target)) continue;
     const value = tokens.find((t) => t.id === role)?.value;
     const themeOwn = textMetrics(themeTokens, role);
-    const readable = textMetrics(tokens, role, declared);
     const fix = readable || !themeOwn ? null : repaired(role, value, themeOwn);
     const current = readable ?? fix?.metrics;
     if (!current) continue;
@@ -288,7 +305,12 @@ export function typeScaleOps(tokens: TokenDef[], themeTokens: TokenDef[], overri
       unscalable.add(role);
       continue;
     }
-    const sent = fix ? Object.fromEntries(TEXT_KEYS.filter((k) => !fix.kept.has(k) || (SCALE_KEYS as readonly string[]).includes(k)).flatMap((k) => (next[k] === undefined ? [] : [[k, next[k]]]))) : { ...target };
+    // A saved link that leads nowhere (or round in a loop) shows the theme's own metrics, which another edit in the batch could change: sent whole.
+    const broken = !!linkOf(value, 'text') && !textLinkLeadsToText(tokens, role);
+    const sent: Record<string, unknown> = broken ? { ...next } : fix ? Object.fromEntries(TEXT_KEYS.filter((k) => !fix.kept.has(k) || (SCALE_KEYS as readonly string[]).includes(k)).flatMap((k) => (next[k] === undefined ? [] : [[k, next[k]]]))) : { ...target };
+    // A letter case saved as something other than text reads as none, but the engine refuses to keep it: none is sent in its place.
+    const saved = textStyleValue(tokens, role, declared) ?? (value && typeof value === 'object' ? (value as Record<string, unknown>) : null);
+    if (saved && saved.transform !== undefined && typeof saved.transform !== 'string' && sent.transform === undefined) sent.transform = 'none';
     ops.push({ type: 'token.set', tokenId: role, value: backToTheme ? null : sent });
   }
   return { ops, unscalable: TYPE_SCALE_ROLES.filter((r) => unscalable.has(r)) };
@@ -388,6 +410,6 @@ export function pairingOps(p: AvailablePairing, tokens: TokenDef[]): EditOperati
       const v = tokens.find((t) => t.id === id)?.value;
       return typeof v !== 'string' || firstFamily(v) !== firstFamily(stack);
     })
-    // A stack longer than a font style takes goes by the font's name, which the engine expands to the same stack.
-    .map(([tokenId, stack]) => ({ type: 'token.set' as const, tokenId, value: stack.length <= 200 ? stack : tokenId === 'font.display' ? p.display : p.body }));
+    // A stack the engine would not take as written (too long, or with other characters) goes by the font's name, which it expands to the same stack.
+    .map(([tokenId, stack]) => ({ type: 'token.set' as const, tokenId, value: stack.length <= 200 && FONT_VALUE_RE.test(stack) && isSafeCssValue(stack) ? stack : tokenId === 'font.display' ? p.display : p.body }));
 }
