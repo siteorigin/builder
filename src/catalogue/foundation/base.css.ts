@@ -93,11 +93,6 @@ ${SURFACES}
 /* A button that changes what a component shows (a tab, a disclosure) while looking like a link. */
 :where(button:is(.so-link, .so-plain-link)) { padding: 0; border: 0; font: inherit; text-align: inherit; cursor: pointer; }
 :where(button.so-plain-link) { color: inherit; }
-/* The tab chosen, or a choice that is on, is marked by more than its state: its border, an inner ring on a filled
-   button, a heavier underline on a text button or link. A component's own styles for it still win. */
-.so-btn--secondary:where([aria-selected='true'], [aria-pressed='true']) { border-color: currentColor; background: color-mix(in srgb, currentColor 10%, var(--so-btn-bg, transparent)); }
-:is(.so-btn--primary, .so-btn--light):where([aria-selected='true'], [aria-pressed='true']) { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--so-btn-fg, currentColor) 72%, transparent); }
-:is(.so-btn--text, .so-link, .so-plain-link):where([aria-selected='true'], [aria-pressed='true']) { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 5px; }
 /* A link's icon beside its label. Buttons space it with their own gap; text links (and a link left without a
    destination, shown as plain text) sit it on the line with a margin. */
 :not(.so-btn) > .so-link__icon { display: inline-block; vertical-align: -0.18em; }
@@ -176,6 +171,12 @@ html:has(.so-viewer[open]) { overflow: hidden; }
 :is(a, button).so-btn--text:dir(rtl):hover::after { transform: translateX(-3px); }
 .so-btn--light { --so-btn-bg: var(--so-color-on-brand); --so-btn-fg: var(--so-color-brand-strong); --so-btn-bg-hover: color-mix(in srgb, var(--so-color-on-brand) 88%, var(--so-color-brand)); }
 :is(a, button).so-btn--light:hover { background: var(--so-btn-bg-hover, color-mix(in srgb, var(--so-btn-bg) 88%, var(--so-btn-fg))); }
+/* The tab chosen, or a choice that is on, is marked by more than its state: its border, an inner ring on a filled
+   button, a heavier underline on a text button or link. After the buttons' own rules, which they
+   would otherwise lose to; a component's own styles for it still win. */
+.so-btn--secondary:where([aria-selected='true'], [aria-pressed='true']) { border-color: currentColor; background: color-mix(in srgb, currentColor 10%, var(--so-btn-bg, transparent)); }
+:is(.so-btn--primary, .so-btn--light):where([aria-selected='true'], [aria-pressed='true']) { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--so-btn-fg, currentColor) 72%, transparent); }
+:is(.so-btn--text, .so-link, .so-plain-link):where([aria-selected='true'], [aria-pressed='true']) { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 5px; }
 
 .so-img { width: 100%; height: auto; object-fit: cover; }
 .so-img--placeholder {

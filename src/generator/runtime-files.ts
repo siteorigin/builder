@@ -20,15 +20,15 @@ export function linkSvelte(instrument = false): string {
   return `<script>
 	/**
 	 * Renders a resolved link. Site-relative links go through SvelteKit's resolve(), so the site also
-	 * works when it is published under a sub-path. A link without a destination but with a click handler
-	 * (one that changes what the component shows, or from your own code) is a real button, whatever it looks
-	 * like; a button with neither is left out (keeping only its id, so links to it still land). Other links
-	 * without a destination render as their text. With \`card\` (a tag), the link is a
+	 * works when it is published under a sub-path. A button without a destination but with a click handler
+	 * (from your own code) is a real button, and so is a \`control\` (one that changes what its component shows),
+	 * whatever it looks like; a button with neither is left out (keeping only its id, so links to it still land).
+	 * Other links without a destination render as their text. With \`card\` (a tag), the link is a
 	 * whole container: an anchor around everything inside it, or that tag when there is nowhere to go. A link to one
 	 * of the site's documents downloads it under its own file name.
 	 */
 	import { resolve } from '$app/paths';
-	let { link = null, appearance = '', card = '', class: className = '', children, ...rest } = $props();
+	let { link = null, appearance = '', card = '', control = false, class: className = '', children, ...rest } = $props();
 	const safe = $derived(typeof link?.href === 'string' && /^(https?:|mailto:|tel:|#|\\/)/i.test(link.href) ? link.href : null);
 	const href = $derived(safe ? (safe.startsWith('/') && !safe.startsWith('//') ? resolve(safe) : safe) : null);
 	const download = $derived(href && safe.startsWith('/') && typeof link?.download === 'string' && link.download ? link.download : undefined);
@@ -59,7 +59,7 @@ export function linkSvelte(instrument = false): string {
 		rel={link?.newTab ? 'noopener noreferrer' : undefined}
 		{...rest}>{@render children?.()}</a
 	>
-{:else if typeof rest.onclick === 'function'}
+{:else if (button || control) && typeof rest.onclick === 'function'}
 	<button class={[kind, className]} {...rest} type={['submit', 'reset'].includes(String(rest.type ?? '').toLowerCase()) ? rest.type : 'button'}>{@render children?.()}</button>
 {:else if button}
 	${unlinked}
@@ -519,7 +519,8 @@ export function stepState(options, value, by, wrap) {
 export function tabKey(event) {
 	if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
 	const tab = event.currentTarget;
-	const tabs = Array.from(tab.parentElement?.children ?? []).filter((t) => t.getAttribute('role') === 'tab');
+	// A tab the layout hides (at this screen size) is passed over.
+	const tabs = Array.from(tab.parentElement?.children ?? []).filter((t) => t.getAttribute('role') === 'tab' && t.getClientRects().length > 0);
 	const at = tabs.indexOf(tab);
 	const back = getComputedStyle(tab).direction === 'rtl' ? 'ArrowRight' : 'ArrowLeft';
 	const forward = back === 'ArrowLeft' ? 'ArrowRight' : 'ArrowLeft';

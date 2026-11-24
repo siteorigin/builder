@@ -10,7 +10,7 @@ import { slugify } from '@shared/routes';
 import { publicUrl } from '@shared/public-url';
 import { anchorCapable, anchorsInUse, displayName, findParent } from '@engine/tree';
 import { formFieldSettingsHidden, namesFormFields, netlifyFormName, offersFormChoices } from '@catalogue/foundation/form';
-import { codeTakesBlocks, isDraftPage, liveRedirects, resolveLink, stateActionWorks } from './index';
+import { codeTakesBlocks, isDraftPage, keptPanels, liveRedirects, resolveLink, stateActionWorks } from './index';
 import { effectiveItem, teaserFields } from '@shared/page-teasers';
 import { articleRows, feedLimit } from '@shared/articles';
 import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from '@shared/page-shell';
@@ -121,6 +121,11 @@ interface Frame {
   tree: NodeTree;
   /** The definition being walked; none for a page or shell tree. */
   def?: ComponentDefinition;
+  /**
+   * Its nodes kept in the page while its UI state hides them (a tab not chosen, a closed disclosure): they are in the
+   * markup the page ships, so they count as rendered (see keptPanels).
+   */
+  kept?: ReadonlySet<string>;
   scope: Scope;
   /** The id the placement gives the definition's root (`so_id`). */
   soId?: string;
@@ -185,8 +190,9 @@ function lets(c: Condition, negate: boolean, scope: Scope, state: ProjectState):
 
 /** Mirrors the generator's render conditions inside a definition: a node's own conditions, a repeat's list, a collapsing element's children. */
 function nodeRenders(state: ProjectState, frame: Frame, n: GraphNode, seen: Set<string>): boolean {
-  if (n.when && !lets(n.when, false, frame.scope, state)) return false;
-  if (n.unless && !lets(n.unless, true, frame.scope, state)) return false;
+  const kept = !!frame.kept?.has(n.id);
+  if (n.when && !kept && !lets(n.when, false, frame.scope, state)) return false;
+  if (n.unless && !kept && !lets(n.unless, true, frame.scope, state)) return false;
   if (n.kind === 'repeat') return shown(evaluate(n.list, frame.scope), state);
   return n.kind !== 'element' || !n.collapseEmpty || childRenders(state, frame, n, seen);
 }
@@ -213,12 +219,15 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
   // A slot a definition renders once per list item shows the same content, in the same frame, each time: it is
   // walked once per frame, which keeps nested placements of such a component from multiplying the walk.
   const slotsWalked = new WeakMap<Frame, Set<string>>();
+  const keptIn = new Map<string, ReadonlySet<string>>();
+  const keptOf = (def: ComponentDefinition) => keptIn.get(def.id) ?? keptIn.set(def.id, keptPanels(state, def)).get(def.id)!;
   const walk = (frame: Frame, id: string, path: Set<string>) => {
     const n = frame.tree.nodes[id];
     const key = `${frame.n}:${id}`;
     if (!n || path.has(key)) return;
-    if (frame.def && n.when && !lets(n.when, false, frame.scope, state)) return;
-    if (frame.def && n.unless && !lets(n.unless, true, frame.scope, state)) return;
+    const kept = !!frame.kept?.has(id);
+    if (frame.def && n.when && !kept && !lets(n.when, false, frame.scope, state)) return;
+    if (frame.def && n.unless && !kept && !lets(n.unless, true, frame.scope, state)) return;
     if (frame.def && n.kind === 'element' && n.collapseEmpty && !childRenders(state, frame, n, new Set())) return;
     const inner = new Set(path).add(key);
     const reportId = frame.reportId ?? n.id;
@@ -305,7 +314,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
           const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, stateInitial(def, k)])) : undefined;
           const chosen = startingVariants(n.variants, frame.def);
-          const child: Frame = { tree: def.tree, def, scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          const child: Frame = { tree: def.tree, def, kept: keptOf(def), scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);

@@ -205,6 +205,8 @@ describe.skipIf(!browserInstalled)('generated tabs and disclosures in a browser'
     }
     await frame.addScriptTag({ url: '/app.js', type: 'module' });
     await frame.waitForFunction('typeof window.startSite === "function"');
+    // Marks the server's first tab list, so a test can tell hydration kept the server's elements.
+    if (variant === 'clean') await frame.evaluate(`document.querySelector('[role="tablist"]').fromServer = true`);
     await frame.evaluate(`window.startSite(${JSON.stringify(variant)})`);
     if (variant === 'dev') {
       await frame.addScriptTag({ url: '/bridge.js', type: 'module' });
@@ -219,18 +221,17 @@ describe.skipIf(!browserInstalled)('generated tabs and disclosures in a browser'
     await site.waitForFunction(`document.documentElement.hasAttribute('data-so-editing') === ${to === 'edit'}`);
   }
 
-  /** Each placement's tabs as [label, selected, tab order] and the labels of the panels showing on screen. */
+  /**
+   * Each placement's tabs as [label, selected, tab order] and the words of the panels showing on screen. (Scripts run
+   * in the page are written as strings: this file is type-checked without the DOM's types.)
+   */
   const state = (site: Frame) =>
-    site.evaluate(() =>
-      [...document.querySelectorAll('[role="tablist"]')].map((list) => {
-        const root = list.parentElement!;
-        const tabs = [...list.querySelectorAll('[role="tab"]')].map((t) => [t.textContent!.trim(), t.getAttribute('aria-selected'), t.getAttribute('tabindex')]);
-        const shown = [...root.querySelectorAll('[role="tabpanel"]')].filter((p) => getComputedStyle(p).display !== 'none').map((p) => p.textContent!.trim());
-        return { tabs, shown };
-      })
-    );
+    site.evaluate(`[...document.querySelectorAll('[role="tablist"]')].map((list) => ({
+      tabs: [...list.querySelectorAll('[role="tab"]')].map((t) => [t.textContent.trim(), t.getAttribute('aria-selected'), t.getAttribute('tabindex')]),
+      shown: [...list.parentElement.querySelectorAll('[role="tabpanel"]')].filter((p) => getComputedStyle(p).display !== 'none').map((p) => p.textContent.trim())
+    }))`) as Promise<Array<{ tabs: string[][]; shown: string[] }>>;
   const selected = (tabs: string[][]) => tabs.filter((t) => t[1] === 'true').map((t) => t[0]);
-  const focused = (site: Frame) => site.evaluate(() => document.activeElement?.textContent?.trim() ?? '');
+  const focused = (site: Frame) => site.evaluate(`document.activeElement?.textContent?.trim() ?? ''`) as Promise<string>;
 
   it('hydrates the exported page and switches each placement’s tabs by pointer and keyboard', async () => {
     const opened = await open('clean');
@@ -238,6 +239,7 @@ describe.skipIf(!browserInstalled)('generated tabs and disclosures in a browser'
     try {
       // The server's markup, hydrated in place: Team chosen in both placements, its panel the only one on screen.
       await site.waitForFunction('document.querySelectorAll("[role=tab]").length === 6');
+      expect(await site.evaluate(`document.querySelector('[role="tablist"]').fromServer === true`)).toBe(true);
       expect(await state(site)).toEqual([...Array(2)].map(() => ({ tabs: [['Starter', 'false', '-1'], ['Studio', 'false', '-1'], ['Team', 'true', '0']], shown: ['Team plan details'] })));
       const [first, second] = [0, 1].map((i) => site.locator('[role="tablist"]').nth(i));
       await first.getByRole('tab', { name: 'Starter' }).click();
@@ -254,10 +256,10 @@ describe.skipIf(!browserInstalled)('generated tabs and disclosures in a browser'
       }
       // Tab leaves the list for the chosen panel; the second placement never moved.
       await page.keyboard.press('Tab');
-      expect(await site.evaluate(() => document.activeElement?.getAttribute('role'))).toBe('tabpanel');
+      expect(await site.evaluate(`document.activeElement?.getAttribute('role')`)).toBe('tabpanel');
       expect((await state(site))[1].tabs.map((t) => t[1])).toEqual(['false', 'false', 'true']);
       // Right to left, Right goes back.
-      await site.evaluate(() => document.documentElement.setAttribute('dir', 'rtl'));
+      await site.evaluate(`document.documentElement.setAttribute('dir', 'rtl')`);
       await second.getByRole('tab', { name: 'Team' }).focus();
       await page.keyboard.press('ArrowRight');
       await expect.poll(async () => selected((await state(site))[1].tabs)).toEqual(['Studio']);
@@ -287,12 +289,13 @@ describe.skipIf(!browserInstalled)('generated tabs and disclosures in a browser'
       expect(await details.isVisible()).toBe(false);
       // Printed: every panel in its own grid, under its tab's label, the row of tabs left out, the closed content shown.
       await page.emulateMedia({ media: 'print' });
-      const printed = await site.evaluate(() => ({
-        panels: [...document.querySelectorAll('[role="tabpanel"]')].map((p) => [getComputedStyle(p).display, getComputedStyle(p, '::before').content]),
+      const printed = (await site.evaluate(`({
+        panels: [...document.querySelectorAll('[role="tabpanel"]')].map((p) => [getComputedStyle(p).display, getComputedStyle(p, '::before').content, getComputedStyle(p, '::before').gridColumn]),
         lists: [...document.querySelectorAll('[role="tablist"]')].map((l) => getComputedStyle(l).display),
         details: [...document.querySelectorAll('p')].filter((p) => p.textContent === 'Cancel any time').map((p) => p.checkVisibility())
-      }));
-      expect(printed.panels).toEqual([...Array(2)].flatMap(() => [['grid', '"Starter"'], ['grid', '"Team"'], ['grid', '"Studio"']]));
+      })`)) as { panels: string[][]; lists: string[]; details: boolean[] };
+      // The label spans the panel's whole grid, above its content.
+      expect(printed.panels).toEqual([...Array(2)].flatMap(() => [['grid', '"Starter"', '1 / -1'], ['grid', '"Team"', '1 / -1'], ['grid', '"Studio"', '1 / -1']]));
       expect(printed.lists).toEqual(['none', 'none']);
       expect(printed.details).toEqual([true, true]);
       // Back on screen, nothing has changed.
@@ -310,7 +313,7 @@ describe.skipIf(!browserInstalled)('generated tabs and disclosures in a browser'
     const { page, site } = opened;
     try {
       const starter = site.locator('[role="tablist"]').first().getByRole('tab', { name: 'Starter' });
-      const selects = () => page.evaluate(() => (window as unknown as { sent: Array<{ type: string; payload: { chain?: Array<{ node: string }> } }> }).sent.filter((m) => m.type === 'select').map((m) => m.payload.chain?.[0]?.node));
+      const selects = () => page.evaluate(`window.sent.filter((m) => m.type === 'select').map((m) => m.payload.chain?.[0]?.node)`) as Promise<string[]>;
       await starter.click();
       // The editor is told to select the tab, and the canvas still shows Team.
       await expect.poll(selects).toEqual(['tab-a']);
@@ -322,9 +325,18 @@ describe.skipIf(!browserInstalled)('generated tabs and disclosures in a browser'
       expect(await focused(site)).toBe('Starter');
       expect(await selects()).toEqual(['tab-a']);
       expect((await state(site)).map((p) => p.shown)).toEqual([['Team plan details'], ['Team plan details']]);
-      // The disclosure stays closed in Edit too.
-      await site.getByRole('button', { name: 'More' }).first().click();
-      expect(await site.getByRole('button', { name: 'More' }).first().getAttribute('aria-expanded')).toBe('false');
+      // The disclosure stays closed in Edit too, also while its label is being edited, where a click places the caret.
+      const more = site.locator('[data-so-node="more"]').first();
+      await more.click();
+      expect(await more.getAttribute('aria-expanded')).toBe('false');
+      const ctx = await more.getAttribute('data-so-ctx');
+      const begin = { protocolVersion: 1, sessionId: SESSION, type: 'beginTextEdit', payload: { desc: { ctx, node: 'more', items: '' }, editId: 'edit-1' } };
+      await page.evaluate(`document.querySelector('iframe').contentWindow.postMessage(${JSON.stringify(begin)}, '*')`);
+      await site.waitForFunction(`document.querySelector('[data-so-node="more"][contenteditable]') !== null`);
+      await more.click();
+      expect(await more.getAttribute('aria-expanded')).toBe('false');
+      await page.keyboard.press('Escape');
+      await site.waitForFunction(`document.querySelector('[contenteditable]') === null`);
       await mode(opened, 'preview');
       await starter.click();
       await expect.poll(async () => (await state(site))[0].shown).toEqual(['Starter plan details']);

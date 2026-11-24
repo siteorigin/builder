@@ -571,8 +571,10 @@ document.addEventListener(
   (e) => {
     if (ownUi(e.target)) return;
     if (editing && editing.el.contains(e.target)) {
-      // Clicks place the caret in the text being edited; they never follow a link or toggle a disclosure.
+      // Clicks place the caret in the text being edited; they never follow a link, toggle a disclosure or reach the
+      // site's own click handlers (a button that changes what its component shows).
       if (e.target.closest && e.target.closest('a[href], summary')) e.preventDefault();
+      e.stopPropagation();
       return;
     }
     if (mode !== 'edit') {
@@ -670,7 +672,8 @@ document.addEventListener('keydown', (e) => {
   if (mode !== 'edit') return;
   // A component's tabs choose their panel from the keyboard in Preview only. In Edit a click on one selects it, and the
   // arrows, Home and End would otherwise change what the canvas shows behind the author's back.
-  if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) && e.target instanceof Element && e.target.closest('[role="tab"]')) {
+  const plain = !(e.metaKey || e.ctrlKey || e.altKey || e.shiftKey);
+  if (plain && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) && e.target instanceof Element && e.target.closest('[role="tab"]')) {
     e.stopPropagation();
     return;
   }
