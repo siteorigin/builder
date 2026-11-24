@@ -11,7 +11,7 @@ import { ImageEditor } from './PropEditors';
 import { isImeComposing } from '../lib/ime';
 import { registerFlush, trackApply } from '../lib/pending';
 import { PostDraft, setOpenWriter, type DraftProblem, type DraftSaveOutcome } from '../lib/post-draft';
-import { blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, type ArticleCaret } from '../lib/post-dom';
+import { blockAtCaret, caretIn, figureElement, fillFigure, insertFigure, placeCaret, readArticle, renderArticle, setBlock, toggleList, type ArticleBlockTag, type ArticleCaret, type ArticleListKind } from '../lib/post-dom';
 import { MAX_POST_TITLE, postAt } from '../lib/posts';
 import { setMode } from '../lib/actions';
 import { visitAddress } from './Canvas';
@@ -115,14 +115,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
           }
           if (!from || from.workspaceKey !== getState().snapshot?.workspaceKey) return { kind: 'closed' };
           const key = `post-text:${post.entryId}:${group.current}`;
-          let revision = 0;
-          const outcome = commitIfUnchanged(from, () => commitOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, body }], 'Edit post text', key).then((r) => (revision = r?.revision ?? 0)));
+          let committed: Promise<{ revision: number } | null> = Promise.resolve(null);
+          const outcome = commitIfUnchanged(from, () => (committed = commitOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, body }], 'Edit post text', key)));
           // Followed as a save in flight: Save and leaving the project wait for it.
           trackApply(outcome.then((o) => (o.kind === 'applied' || o.kind === 'unchanged' ? { ok: true } : { ok: false, message: o.kind === 'failed' ? o.message : undefined })));
           const o = await outcome;
+          // The revision the save made, which arrives just after its outcome: the next save is checked from there.
+          const r = await committed.catch(() => null);
           if (o.kind === 'applied') {
             agreed.current = body;
-            if (revision) landedAt.current = revision;
+            if (r?.revision) landedAt.current = r.revision;
           }
           return draftOutcome(o);
         },
@@ -135,6 +137,8 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   useEffect(() => {
     const el = root.current;
     if (!el) return;
+    // Enter starts a paragraph, as the site's text has them.
+    document.execCommand('defaultParagraphSeparator', false, 'p');
     renderArticle(el, entry.body, state, devUrl);
     agreed.current = entry.body;
     base.current = snap;
@@ -233,29 +237,27 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     run();
     draft.input();
   };
-  const block = (tag: string) =>
-    command(() => {
-      const current = blockAtCaret(root.current!);
-      const listed = current && (current.tagName === 'UL' || current.tagName === 'OL');
-      // Out of a list first, then into the block chosen.
-      if (listed) document.execCommand(current.tagName === 'OL' ? 'insertOrderedList' : 'insertUnorderedList');
-      document.execCommand('formatBlock', false, tag);
-    });
-  const list = (kind: 'ul' | 'ol' | 'check') =>
-    command(() => {
-      const current = blockAtCaret(root.current!);
-      const isCheck = current?.tagName === 'UL' && current.classList.contains('so-rich--check');
-      if (kind === 'check' && current?.tagName === 'UL') {
-        current.classList.toggle('so-rich--check', !isCheck);
-        return;
+  // Blocks and lists change in the DOM directly: the browser's own commands can nest a list in a paragraph.
+  const block = (tag: ArticleBlockTag) => command(() => void setBlock(root.current!, tag));
+  const list = (kind: ArticleListKind) => command(() => void toggleList(root.current!, kind));
+  /**
+   * Run what a dialog chose once it has gone: while it is open the editor cannot take focus. The caret goes back to
+   * where it was (`range`), or stays wherever `run` puts it.
+   */
+  const afterDialog = (range: Range | null, run: () => void) => {
+    setDialog(null);
+    requestAnimationFrame(() => {
+      const el = root.current;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      const sel = document.getSelection();
+      if (range && sel && el.contains(range.startContainer)) {
+        sel.removeAllRanges();
+        sel.addRange(range);
       }
-      if (kind === 'ul' && isCheck) {
-        current!.classList.remove('so-rich--check');
-        return;
-      }
-      document.execCommand(kind === 'ol' ? 'insertOrderedList' : 'insertUnorderedList');
-      if (kind === 'check') blockAtCaret(root.current!)?.closest('ul')?.classList.add('so-rich--check');
+      command(run);
     });
+  };
 
   const openLink = () => {
     const sel = document.getSelection();
@@ -289,13 +291,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     if (!href) return setDialog({ ...d, error: 'Choose where the link goes.' });
     const words = d.range && !d.range.collapsed ? '' : d.text.trim();
     if (d.range?.collapsed !== false && !words) return setDialog({ ...d, error: 'Type the words the link is on.' });
-    setDialog(null);
-    command(() => {
-      const sel = document.getSelection();
-      if (d.range && sel) {
-        sel.removeAllRanges();
-        sel.addRange(d.range);
-      }
+    afterDialog(d.range, () => {
       if (words) {
         const a = document.createElement('a');
         a.setAttribute('href', href);
@@ -315,8 +311,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const applyImage = (d: Extract<Dialog, { kind: 'image' }>) => {
     const el = root.current;
     if (!el || !d.value.assetId) return;
-    setDialog(null);
-    command(() => {
+    afterDialog(null, () => {
       const data = { type: 'image' as const, assetId: d.value.assetId!, alt: d.value.alt ?? '', ...(d.caption.trim() ? { caption: d.caption.trim() } : {}), ...(d.value.decorative ? { decorative: true as const } : {}) };
       if (d.fig && el.contains(d.fig)) {
         d.fig.dataset.assetId = data.assetId;
@@ -334,10 +329,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       }
     });
   };
-  const removeImage = (d: Extract<Dialog, { kind: 'image' }>) => {
-    setDialog(null);
-    if (d.fig && root.current?.contains(d.fig)) command(() => d.fig!.remove());
-  };
+  const removeImage = (d: Extract<Dialog, { kind: 'image' }>) => afterDialog(null, () => void (d.fig && root.current?.contains(d.fig) && d.fig.remove()));
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (isImeComposing(e)) return;
@@ -417,7 +409,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const labels = useMemo(() => assetLabels(images), [images]);
   const blockLabel = { p: 'Paragraph', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', blockquote: 'Quote' } as Record<string, string>;
   const tools: Array<{ id: string; label: string; icon: React.ReactNode; on?: boolean; run: () => void; gap?: boolean }> = [
-    { id: 'p', label: 'Paragraph', icon: <Pilcrow />, on: pressed.block === 'p', run: () => block('p') },
+    { id: 'p', label: 'Paragraph', icon: <Pilcrow />, on: pressed.block === 'p' || pressed.block === 'div', run: () => block('p') },
     { id: 'h2', label: 'Heading 2', icon: <Heading2 />, on: pressed.block === 'h2', run: () => block('h2') },
     { id: 'h3', label: 'Heading 3', icon: <Heading3 />, on: pressed.block === 'h3', run: () => block('h3') },
     { id: 'h4', label: 'Heading 4', icon: <Heading4 />, on: pressed.block === 'h4', run: () => block('h4') },

@@ -1,5 +1,5 @@
 import { useId, useMemo, useRef, useState } from 'react';
-import { Copy, Newspaper, Plus, Search, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Copy, Newspaper, Plus, Search, Trash2, X } from 'lucide-react';
 import { formatArticleDate } from '@shared/articles';
 import { entryLinkUses } from '@engine/page-links';
 import { commitOps, confirmDialog, getState, setState, toast, undoAction, useStore } from '../store';
@@ -18,6 +18,7 @@ let lastSort: PostSort = 'newest';
 export function PostsPanel() {
   const snap = useStore((s) => s.snapshot);
   const post = useStore((s) => s.post);
+  const previewing = useStore((s) => s.postView === 'preview');
   const [query, setQuery] = useState('');
   const [sort, setSortState] = useState<PostSort>(lastSort);
   const [collectionId, setCollectionId] = useState<string | null>(null);
@@ -120,6 +121,14 @@ export function PostsPanel() {
           <Plus aria-hidden="true" /> New post
         </button>
       </div>
+      {previewing && post && (
+        <div className="posts-previewing" role="status">
+          <span>Showing the post as visitors see it.</span>
+          <button className="btn btn-sm btn-primary" onClick={() => setState({ postView: 'write' })}>
+            <ArrowLeft aria-hidden="true" /> Back to writing
+          </button>
+        </div>
+      )}
       {collections.length > 1 && collection && (
         <div className="posts-collection">
           <select className="select sm" aria-label="Collection" value={collection.settings.id} onChange={(e) => setCollectionId(e.target.value)}>

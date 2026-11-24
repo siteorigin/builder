@@ -189,17 +189,25 @@ export function caretIn(root: HTMLElement): ArticleCaret | null {
   return { block, offset: range.toString().length };
 }
 
-/** Put the caret back where `at` says, as near as the text now allows. */
-export function placeCaret(root: HTMLElement, at: ArticleCaret | null): void {
-  const doc = root.ownerDocument;
-  const sel = doc.getSelection();
-  if (!sel) return;
-  const blocks = root.childNodes;
-  if (!blocks.length) return;
-  const top = blocks[Math.min(Math.max(at?.block ?? blocks.length - 1, 0), blocks.length - 1)];
+/** How far into `el`'s text the caret is, or null when it is not inside `el`. */
+export function caretOffset(el: Node): number | null {
+  const sel = el.ownerDocument?.getSelection();
+  const node = sel?.rangeCount ? sel.anchorNode : null;
+  if (!sel || !node || !el.contains(node)) return null;
+  const range = el.ownerDocument!.createRange();
+  range.selectNodeContents(el);
+  range.setEnd(node, sel.anchorOffset);
+  return range.toString().length;
+}
+
+/** Put the caret `offset` characters into `el`'s text, or at its end when it has fewer. */
+export function caretTo(el: Node, offset: number): void {
+  const doc = el.ownerDocument;
+  const sel = doc?.getSelection();
+  if (!doc || !sel) return;
   const range = doc.createRange();
-  let left = at ? at.offset : Infinity;
-  const walker = doc.createTreeWalker(top, NodeFilter.SHOW_TEXT);
+  let left = offset;
+  const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
   let last: Text | null = null;
   for (let t = walker.nextNode() as Text | null; t; t = walker.nextNode() as Text | null) {
     last = t;
@@ -213,10 +221,19 @@ export function placeCaret(root: HTMLElement, at: ArticleCaret | null): void {
     left -= t.data.length;
   }
   if (last) range.setStart(last, last.data.length);
-  else range.setStart(top, top.nodeName === 'FIGURE' ? 0 : top.childNodes.length && top.lastChild?.nodeName === 'BR' ? top.childNodes.length - 1 : top.childNodes.length);
+  // An empty block holds only the <br> that gives it a line: the caret goes before it.
+  else range.setStart(el, el.nodeName === 'FIGURE' ? 0 : el.lastChild?.nodeName === 'BR' ? el.childNodes.length - 1 : el.childNodes.length);
   range.collapse(true);
   sel.removeAllRanges();
   sel.addRange(range);
+}
+
+/** Put the caret back where `at` says, as near as the text now allows. */
+export function placeCaret(root: HTMLElement, at: ArticleCaret | null): void {
+  const blocks = root.childNodes;
+  if (!blocks.length) return;
+  const top = blocks[Math.min(Math.max(at?.block ?? blocks.length - 1, 0), blocks.length - 1)];
+  caretTo(top, at ? at.offset : Infinity);
 }
 
 /** The block of the writer's root the caret is in (a direct child of `root`), or null. */
@@ -244,4 +261,102 @@ export function insertFigure(root: HTMLElement, at: HTMLElement | null, fig: HTM
     fig.after(p);
   }
   return fig;
+}
+
+export type ArticleBlockTag = 'p' | 'h2' | 'h3' | 'h4' | 'blockquote';
+export type ArticleListKind = 'ul' | 'ol' | 'check';
+
+const listKind = (el: Element): ArticleListKind | null => (el.tagName === 'OL' ? 'ol' : el.tagName === 'UL' ? (el.classList.contains(CHECK_CLASS) ? 'check' : 'ul') : null);
+
+function newList(doc: Document, kind: ArticleListKind): HTMLElement {
+  const list = doc.createElement(kind === 'ol' ? 'ol' : 'ul');
+  if (kind === 'check') list.className = CHECK_CLASS;
+  return list;
+}
+
+/** The list item the caret is in, in a list that is a block of `root`. */
+function caretItem(root: HTMLElement): { list: HTMLElement; li: HTMLElement } | null {
+  const block = blockAtCaret(root);
+  if (!block || !listKind(block)) return null;
+  const node = root.ownerDocument.getSelection()?.anchorNode;
+  const li = (node instanceof Element ? node : node?.parentElement)?.closest('li');
+  return li && block.contains(li) ? { list: block, li } : null;
+}
+
+/** Give a block's content to a new element, keeping a line to type in when it is empty. */
+function moveInto(from: Element, to: HTMLElement): HTMLElement {
+  to.append(...from.childNodes);
+  if (!to.childNodes.length) to.appendChild(to.ownerDocument.createElement('br'));
+  return to;
+}
+
+/** Take one item out of its list as `el`, in its place: the items after it go on in a list of their own. */
+function liftItem(list: HTMLElement, li: HTMLElement, el: HTMLElement): void {
+  const after = [...list.children].slice([...list.children].indexOf(li) + 1);
+  if (after.length) {
+    const rest = list.cloneNode(false) as HTMLElement;
+    rest.append(...after);
+    list.after(rest);
+  }
+  list.after(el);
+  li.remove();
+  if (!list.children.length) list.remove();
+}
+
+/**
+ * Make the block the caret is in a paragraph, heading or quote (a list item leaves its list), keeping the caret where it
+ * was in the text. The browser's own command can leave a list inside a paragraph, which no page shows. False when the
+ * caret is in no block that can change (a picture).
+ */
+export function setBlock(root: HTMLElement, tag: ArticleBlockTag): boolean {
+  const doc = root.ownerDocument;
+  const item = caretItem(root);
+  if (item) {
+    const offset = caretOffset(item.li) ?? 0;
+    const el = moveInto(item.li, doc.createElement(tag));
+    liftItem(item.list, item.li, el);
+    caretTo(el, offset);
+    return true;
+  }
+  const block = blockAtCaret(root);
+  if (!block || block.tagName === 'FIGURE' || listKind(block)) return false;
+  if (block.tagName.toLowerCase() === tag) return true;
+  const offset = caretOffset(block) ?? 0;
+  const el = moveInto(block, doc.createElement(tag));
+  block.replaceWith(el);
+  caretTo(el, offset);
+  return true;
+}
+
+/**
+ * Put the block the caret is in into a list of `kind` (joining a list of that kind just before it), take its item out of
+ * that kind of list again, or change the kind of the list it is in.
+ */
+export function toggleList(root: HTMLElement, kind: ArticleListKind): boolean {
+  const doc = root.ownerDocument;
+  const item = caretItem(root);
+  if (item) {
+    if (listKind(item.list) === kind) return setBlock(root, 'p');
+    const offset = caretOffset(item.li) ?? 0;
+    const list = newList(doc, kind);
+    list.append(...item.list.childNodes);
+    item.list.replaceWith(list);
+    caretTo(item.li, offset);
+    return true;
+  }
+  const block = blockAtCaret(root);
+  if (!block || block.tagName === 'FIGURE' || listKind(block)) return false;
+  const offset = caretOffset(block) ?? 0;
+  const li = moveInto(block, doc.createElement('li'));
+  const prev = block.previousElementSibling;
+  if (prev && listKind(prev) === kind) {
+    prev.appendChild(li);
+    block.remove();
+  } else {
+    const list = newList(doc, kind);
+    list.appendChild(li);
+    block.replaceWith(list);
+  }
+  caretTo(li, offset);
+  return true;
 }
