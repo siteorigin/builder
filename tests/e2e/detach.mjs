@@ -46,6 +46,13 @@ const SIZES = [
   ['Tablet', 834],
   ['Desktop', 1280]
 ];
+/** Each region renders as it did at every width, once the preview has caught up with the change. */
+const rendersAs = async (expected, what) => {
+  for (const [name, px] of SIZES) {
+    await width(name, px);
+    for (const key of Object.keys(expected).filter((k) => k.endsWith(`@${name}`))) await eventually(async () => assert.deepEqual(await probe(key.split('@')[0]), expected[key], `${key} ${what}`), 20000);
+  }
+};
 const probeAll = async (anchors) => {
   const out = {};
   for (const [name, px] of SIZES) {
@@ -135,8 +142,7 @@ await eventually(async () => {
 await win.screenshot({ path: join(SHOTS, 'detach-after.png') });
 
 step('the detached elements look the same at every width');
-const after = await probeAll(['area', 'plans', 'cta']);
-for (const key of Object.keys(before)) assert.deepEqual(after[key], before[key], `${key} renders as it did`);
+await rendersAs(before, 'renders as it did');
 assert.equal(await panelInk(), inkBefore, 'the detached panel still takes the theme’s colours for a dark ground');
 assert.deepEqual(Object.keys((await snapshot()).components).sort(), libraryBefore, 'the library is unchanged');
 
@@ -151,8 +157,7 @@ await eventually(async () => {
   assert.deepEqual(page.nodes[section].slots.content, [pricing], 'Pricing is back in the section’s slot');
   assert.equal(page.nodes[pricing].itemOverrides.plan.items[plans[1].id].base.background, '#e8f0ff', 'with its own card styles');
 });
-const undone = await probeAll(['area', 'plans', 'cta']);
-for (const key of Object.keys(before)) assert.deepEqual(undone[key], before[key], `${key} renders as it did before detaching`);
+await rendersAs(before, 'renders as it did before detaching');
 
 assert.deepEqual(errors, [], 'no page errors');
 await app.close();
