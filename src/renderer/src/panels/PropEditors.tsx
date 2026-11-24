@@ -1,5 +1,5 @@
 import { createElement, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, Image as ImageIcon, ImageOff, ImagePlus, Images, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
@@ -46,9 +46,25 @@ const OTHER_SECTION = '\u0000other';
  * from its heading when it is chosen), the shared header and footer's IDs, or any ID typed in. `top` offers the top
  * of the page (no section); without it an empty value asks for a choice.
  */
-function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { state: ProjectState; pageId: string | null | undefined; value: string; onPick: (anchor: string, edit?: PendingEdit) => void; label: string; top?: boolean; shared?: ShellPart }) {
-  const [typing, setTyping] = useState(false);
+function SectionPicker({ state, pageId, value, onPick, label, top, shared, id, invalid, describedBy, onTyping }: { state: ProjectState; pageId: string | null | undefined; value: string; onPick: (anchor: string, edit?: PendingEdit) => void; label: string; top?: boolean; shared?: ShellPart; id?: string; invalid?: boolean; describedBy?: string; onTyping?: (typing: boolean) => void }) {
+  const [typing, setTypingState] = useState(false);
+  const setTyping = (on: boolean) => {
+    setTypingState(on);
+    onTyping?.(on);
+  };
+  // A picker that goes while an ID is being typed (another kind of link, another selection) ends the typing it reported.
+  const typingReport = useRef(onTyping);
+  typingReport.current = onTyping;
+  useEffect(() => () => typingReport.current?.(false), []);
   const picker = useRef<HTMLSelectElement>(null);
+  const box = useRef<HTMLSpanElement>(null);
+  // Only Enter goes back to the list with focus; leaving the field another way lets focus go where it went.
+  const byKey = useRef(false);
+  // An ID that can't be used stays in its field, with the reason under it, until it is fixed or abandoned with Esc.
+  const [problem, setProblem] = useState('');
+  const escaping = useRef(false);
+  const hintId = useId();
+  const problemId = useId();
   const revision = useStore((s) => s.snapshot?.revision);
   const page = pageId ? state.pages[pageId] : undefined;
   // A shared header or footer link to a section "on this page" shows on every page with that header or footer, so only
@@ -59,43 +75,88 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { s
   // Leaving the typed ID (a commit, Escape or a plain blur) goes back to the list.
   const backToList = (refocus: boolean) => {
     setTyping(false);
+    setProblem('');
+    escaping.current = false;
     if (refocus) requestAnimationFrame(() => picker.current?.focus());
+  };
+  // Why a typed ID can't be used, or '' when it can. A link to a section on this page needs one; Top of page doesn't.
+  const idProblem = (typed: string) => {
+    const a = typed.trim().replace(/^#/, '');
+    if (!a) return top ? '' : 'Enter a section ID, or press Esc to choose from the list.';
+    if (!/^[A-Za-z]/.test(a)) return 'An ID has to start with a letter.';
+    if (a.length > 61) return 'That ID is too long: use 61 characters or fewer.';
+    return /^[A-Za-z][\w-]*$/.test(a) ? '' : 'That ID has a character an ID can’t use.';
   };
   if (typing)
     return (
       <span
-        className="grow"
-        style={{ display: 'flex', minWidth: 0 }}
+        ref={box}
+        className="insp-link-typing grow"
         // While the project is being left, a refused ID stays in its field, for Keep editing to return to.
-        onBlur={() => !isSettling() && backToList(false)}
+        onBlur={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null) || isSettling()) return;
+          const enter = byKey.current;
+          byKey.current = false;
+          if (escaping.current) return;
+          // The text as it is left, a retry included: one that can't be used keeps the field open with its reason.
+          const typed = box.current?.querySelector('input')?.value ?? '';
+          const why = idProblem(typed);
+          if (why && enter) {
+            // Enter stays in the field to fix it, with the reason under it.
+            setProblem(why);
+            requestAnimationFrame(() => box.current?.querySelector('input')?.focus());
+          } else if (why) {
+            // A click or Tab elsewhere goes there: an ID that couldn't be used is dropped, and the reason said.
+            if (typed.trim()) toast(`That section ID wasn’t used. ${why}`, 'error');
+            backToList(false);
+          } else backToList(enter);
+        }}
+        onKeyDownCapture={(e) => {
+          if (isImeComposing(e)) return;
+          byKey.current = e.key === 'Enter';
+          escaping.current = e.key === 'Escape';
+        }}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') (e.stopPropagation(), backToList(true));
+          if (e.key === 'Escape' && !isImeComposing(e)) (e.stopPropagation(), backToList(true));
         }}
       >
         <DraftInput
-          className="input sm grow"
+          className="input sm"
+          id={id}
           value={value}
           ariaLabel={label}
-          placeholder={top ? 'Top of page, or a section ID' : 'section-id'}
+          aria-describedby={[problem ? problemId : '', hintId, describedBy ?? ''].filter(Boolean).join(' ')}
+          aria-invalid={!!problem || undefined}
+          placeholder={top ? 'Top of page, or a section ID' : 'A section ID, such as pricing'}
           autoFocus
+          onLive={() => problem && setProblem('')}
           onCommit={(t) => {
+            // An ID that can't be used is left in the field: the blur that follows says why and keeps it open.
+            if (idProblem(t)) return;
             const a = t.trim().replace(/^#/, '');
-            if (a && !/^[A-Za-z][\w-]{0,60}$/.test(a)) {
-              toast('Section IDs start with a letter and use letters, numbers, - and _.', 'error');
-              return false;
-            }
-            backToList(true);
             if (a !== value) onPick(a);
           }}
         />
+        {problem && (
+          <span className="field-error" id={problemId}>
+            {problem}
+          </span>
+        )}
+        <span className="field-hint" id={hintId}>
+          Start with a letter, then use letters, numbers, hyphens or underscores. Esc goes back to the list.
+        </span>
       </span>
     );
   return (
     <select
       ref={picker}
+      id={id}
       className="select sm grow"
       value={value ? `#${value}` : ''}
+      title={value ? options.find((o) => o.value === `#${value}`)?.text : undefined}
       aria-label={label}
+      aria-invalid={invalid || undefined}
+      aria-describedby={describedBy}
       onChange={(e) => {
         const v = e.target.value;
         if (v === OTHER_SECTION) return setTyping(true);
@@ -125,7 +186,7 @@ function SectionPicker({ state, pageId, value, onPick, label, top, shared }: { s
  * A link's document: one from the library, or one imported here, which the link then goes to. An import that
  * finishes after the link moved on (another selection, an undo, another project) changes nothing.
  */
-function DocumentPicker({ state, value, label, onPick }: { state: ProjectState; value: string; label: string; onPick: (id: string) => void }) {
+function DocumentPicker({ state, value, label, importFor, onPick, details, invalid, describedBy }: { state: ProjectState; value: string; label: string; importFor: string; onPick: (id: string) => void; details?: ReactNode; invalid?: boolean; describedBy?: string }) {
   const docs = libraryDocuments(state);
   const labels = documentLabels(docs);
   const [importing, setImporting] = useState(false);
@@ -156,9 +217,12 @@ function DocumentPicker({ state, value, label, onPick }: { state: ProjectState; 
   return (
     <>
       <select
-        className="select sm grow"
+        className="select sm"
         value={chosen ? value : ''}
         aria-label={label}
+        aria-invalid={invalid || undefined}
+        aria-describedby={describedBy}
+        title={chosen ? labels.get(chosen.id) : undefined}
         onChange={(e) => {
           if (!e.target.value) return;
           // A document chosen here wins over an import still on its way.
@@ -177,8 +241,10 @@ function DocumentPicker({ state, value, label, onPick }: { state: ProjectState; 
           </option>
         ))}
       </select>
-      <button type="button" className="btn btn-sm btn-ghost" disabled={importing} aria-label={`Import a document for ${label.toLowerCase()}`} title="Import a document (PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP)" onClick={() => void importOne()}>
+      {details}
+      <button type="button" className="btn btn-sm insp-link-import" disabled={importing} aria-label={`Import a document for ${importFor}`} title="Import a document (PDF, Word, Excel, PowerPoint, OpenDocument, text, CSV or ZIP)" onClick={() => void importOne()}>
         <FilePlus />
+        {importing ? 'Importing…' : 'Import…'}
       </button>
     </>
   );
@@ -188,8 +254,13 @@ function DocumentPicker({ state, value, label, onPick }: { state: ProjectState; 
  * A link's kind and destination. `everywhere` is for a link in a component's design, which shows on every page that
  * places it: it offers no section "on this page", since one page's section is not on the others.
  */
-export function LinkEditor({ value, onChange, state, label, everywhere }: { value: LinkValue; onChange: (v: LinkValue, edit?: PendingEdit) => void; state: ProjectState; label?: string; everywhere?: boolean }) {
+export function LinkEditor({ value, onChange, state, label, everywhere, invalid, describedBy }: { value: LinkValue; onChange: (v: LinkValue, edit?: PendingEdit) => void; state: ProjectState; label?: string; everywhere?: boolean; invalid?: boolean; describedBy?: string }) {
   const v = value ?? { type: 'none', target: '' };
+  const sectionId = useId();
+  const missingId = useId();
+  // While a section ID is being typed, the note about the saved one waits: the typed one may replace it.
+  const [typingSection, setTypingSection] = useState(false);
+  const pendingId = useId();
   const currentPageId = useStore((s) => s.pageId);
   // A link in the shared header or footer shows on every page that shows that part.
   const shared = useStore((s) => (s.selection?.owner.kind === 'shell' && isShellPart(s.selection.owner.id) ? s.selection.owner.id : undefined));
@@ -231,53 +302,97 @@ export function LinkEditor({ value, onChange, state, label, everywhere }: { valu
     else if (t === 'anchor' && anchor && currentPageId && (shared ? sharedPageIds(state, shared) : pageIds(state, currentPageId)).has(anchor)) onChange({ type: t, target: anchor });
     else setPending(t);
   };
+  // A section the link jumps to that is no longer there: the picker keeps it, and says so under it.
+  const sectionPage = type === 'anchor' ? currentPageId : type === 'page' ? v.target : null;
+  const sectionValue = pending ? '' : type === 'anchor' && !everywhere ? target : type === 'page' ? (v.anchor ?? '') : '';
+  const missing = !!sectionValue && !sectionOptions(state, sectionPage, type === 'anchor' ? shared : undefined).ids.has(sectionValue);
+  // The same, for the saved link while another kind is being set up: what it does now is what the hint says.
+  const savedSection = v.type === 'anchor' && !everywhere ? v.target : v.type === 'page' ? (v.anchor ?? '') : '';
+  const savedSectionGone = !!savedSection && !sectionOptions(state, v.type === 'anchor' ? currentPageId : v.target, v.type === 'anchor' ? shared : undefined).ids.has(savedSection);
+  const onPage = type === 'page' && state.pages[v.target] ? state.pages[v.target].title : null;
+  const missingText = !missing || typingSection
+    ? null
+    : onPage
+      ? `“#${sectionValue}” isn’t on ${onPage} any more, so the link opens the top of the page. Choose another section.`
+      : shared
+        ? `“#${sectionValue}” isn’t on every page with this ${shared}, so the link does nothing there. Choose another section.`
+        : `“#${sectionValue}” isn’t on this page any more, so the link does nothing. Choose another section.`;
   return (
-    <div className="col" style={{ gap: 6 }}>
-      <div className="insp-link-row">
-        <select className={`select sm${type === 'none' ? ' grow' : ' insp-link-type'}`} value={type} aria-label={named('Link type')} onChange={(e) => pickType(e.target.value as LinkValue['type'])}>
-          <option value="none">No link</option>
-          <option value="page">Page</option>
-          <option value="url">Web address</option>
-          <option value="document">Document</option>
-          <option value="email">Email</option>
-          <option value="tel">Phone</option>
-          {(!everywhere || type === 'anchor') && <option value="anchor">On this page</option>}
+    <div className="insp-link">
+      <select className="select sm" value={type} aria-label={named('Link type')} aria-invalid={invalid || undefined} aria-describedby={describedBy} onChange={(e) => pickType(e.target.value as LinkValue['type'])}>
+        <option value="none">No link</option>
+        <option value="page">Page</option>
+        <option value="url">Web address</option>
+        <option value="document">Document</option>
+        <option value="email">Email</option>
+        <option value="tel">Phone</option>
+        {(!everywhere || type === 'anchor') && <option value="anchor">On this page</option>}
+      </select>
+      {/* The destination gets the panel's full width, so where the link goes can be read without opening it. */}
+      {type === 'page' ? (
+        <select className="select sm" value={v.target} title={state.pages[v.target] ? `${state.pages[v.target].title} (${state.pages[v.target].route})` : undefined} aria-label={named('Page')} onChange={(e) => onChange(withAnchor({ ...v, target: e.target.value }, e.target.value === v.target ? v.anchor : undefined))}>
+          {state.site.pageOrder.map((id) => (
+            <option key={id} value={id}>
+              {state.pages[id].title} ({state.pages[id].route})
+            </option>
+          ))}
         </select>
-        {type === 'page' ? (
-          <select className="select sm grow" value={v.target} aria-label={named('Page')} onChange={(e) => onChange(withAnchor({ ...v, target: e.target.value }, e.target.value === v.target ? v.anchor : undefined))}>
-            {state.site.pageOrder.map((id) => (
-              <option key={id} value={id}>
-                {state.pages[id].title} ({state.pages[id].route})
-              </option>
-            ))}
-          </select>
-        ) : type === 'document' ? (
-          <DocumentPicker state={state} value={target} label={named('Document')} onPick={(id) => onChange({ type: 'document', target: id })} />
-        ) : type === 'anchor' && everywhere ? (
-          // A design's section "on this page" is one every page placing it must have: shown, not re-picked here.
-          <span className="faint ellipsis grow">#{target}</span>
-        ) : type === 'anchor' ? (
-          <SectionPicker state={state} pageId={currentPageId} value={target} label={named('Section')} shared={shared} onPick={(a, edit) => a && onChange({ type: 'anchor', target: a }, edit)} />
-        ) : type !== 'none' ? (
-          <DraftInput
-            key={type}
-            className="input sm grow"
-            value={target}
-            autoFocus={!!pending}
-            ariaLabel={named(type === 'url' ? 'Web address' : type === 'email' ? 'Email address' : 'Phone number')}
-            placeholder={type === 'url' ? 'https://example.com' : type === 'email' ? 'hello@example.com' : '+1 555 0100'}
-            onCommit={(t) => {
-              if (!t.trim()) return;
-              onChange({ type, target: t.trim(), newTab: type === 'url' ? v.newTab : undefined });
-            }}
-          />
-        ) : null}
-      </div>
-      {type === 'document' && !pending && linkedDocument && <p className="faint insp-link-file">{documentDetails(linkedDocument)}. Visitors download it.</p>}
+      ) : type === 'document' ? (
+        <DocumentPicker
+          state={state}
+          value={target}
+          label={named('Document')}
+          importFor={base && base.toLowerCase() !== 'link' ? base.toLowerCase() : 'this link'}
+          invalid={!pending && !linkedDocument && !!v.target}
+          describedBy={!pending && !linkedDocument && v.target ? missingId : pending && v.type !== 'none' ? pendingId : undefined}
+          onPick={(id) => onChange({ type: 'document', target: id })}
+          details={
+            pending ? null : linkedDocument ? (
+              <p className="insp-link-file">{documentDetails(linkedDocument)}. Visitors download it.</p>
+            ) : v.target ? (
+              <div className="field-error" id={missingId}>
+                This document is no longer in Assets, so the link goes nowhere. Choose another, or import it again.
+              </div>
+            ) : null
+          }
+        />
+      ) : type === 'anchor' && everywhere ? (
+        // A design's section "on this page" is one every page placing it must have: shown, not re-picked here.
+        <span className="insp-link-fixed">#{target}</span>
+      ) : type === 'anchor' ? (
+        <SectionPicker state={state} pageId={currentPageId} value={target} label={named('Section')} shared={shared} invalid={missing} describedBy={missing ? missingId : pending && v.type !== 'none' ? pendingId : undefined} onTyping={setTypingSection} onPick={(a, edit) => a && onChange({ type: 'anchor', target: a }, edit)} />
+      ) : type !== 'none' ? (
+        <DraftInput
+          key={type}
+          className="input sm"
+          value={target}
+          autoFocus={!!pending}
+          aria-describedby={[pending && v.type !== 'none' ? pendingId : '', describedBy ?? ''].filter(Boolean).join(' ') || undefined}
+          ariaLabel={named(type === 'url' ? 'Web address' : type === 'email' ? 'Email address' : 'Phone number')}
+          placeholder={type === 'url' ? 'https://example.com' : type === 'email' ? 'hello@example.com' : '+1 555 0100'}
+          onCommit={(t) => {
+            if (!t.trim()) return;
+            onChange({ type, target: t.trim(), newTab: type === 'url' ? v.newTab : undefined });
+          }}
+        />
+      ) : null}
+      {/* A kind of link that still needs its destination: until it has one, the saved link is the one visitors get. */}
+      {pending && v.type !== 'none' && (
+        <div className="field-hint" id={pendingId}>
+          Until you choose where it goes, the link still {savedDestination(v, state, savedSectionGone)}.
+        </div>
+      )}
       {type === 'page' && (
         <div className="insp-link-row">
-          <span className="insp-link-type faint insp-link-sub">Section</span>
-          <SectionPicker state={state} pageId={v.target} value={v.anchor ?? ''} label={named('Section on the page')} top onPick={(a, edit) => onChange(withAnchor(v, a || undefined), edit)} />
+          <label className="insp-link-sub" htmlFor={sectionId}>
+            Section
+          </label>
+          <SectionPicker state={state} pageId={v.target} value={v.anchor ?? ''} label={named('Section on the page')} top id={sectionId} invalid={missing} describedBy={missing ? missingId : undefined} onTyping={setTypingSection} onPick={(a, edit) => onChange(withAnchor(v, a || undefined), edit)} />
+        </div>
+      )}
+      {missingText && (
+        <div className="field-error" id={missingId}>
+          {missingText}
         </div>
       )}
       {/* A new tab only means something for pages and web addresses; mail and phone links open their own apps. */}
@@ -286,12 +401,42 @@ export function LinkEditor({ value, onChange, state, label, everywhere }: { valu
   );
 }
 
+/** Where a saved link takes visitors, as the end of "the link still …", for while another kind of link is being set up. */
+function savedDestination(v: LinkValue, state: ProjectState, sectionGone: boolean): string {
+  const page = v.type === 'page' && Object.hasOwn(state.pages, v.target) ? state.pages[v.target] : null;
+  // A section by the name the picker gives it, when it has one.
+  const section = (pageId: string | null | undefined, id: string) => sectionOptions(state, pageId, undefined).options.find((o) => o.value === `#${id}`)?.text ?? `#${id}`;
+  if (page) return `goes to ${sectionGone || !v.anchor ? 'the top of ' : ''}${page.title}${v.anchor && !sectionGone ? `, ${section(page.id, v.anchor)}` : ''}`;
+  if (v.type === 'document') return Object.hasOwn(state.assets.assets, v.target) && isLibraryDocument(state.assets.assets[v.target]) ? `downloads ${state.assets.assets[v.target].name}` : 'goes nowhere';
+  if (v.type === 'email') return `emails ${v.target}`;
+  if (v.type === 'tel') return `calls ${v.target}`;
+  if (v.type === 'anchor') return sectionGone ? 'does nothing' : `goes to #${v.target}`;
+  if (v.type === 'url' && v.target) return `goes to ${v.target}`;
+  return 'goes nowhere';
+}
+
 /** The value for a newly chosen image, from the one it replaces: its suggested description, else the old one,
  *  which is then `carried` (flagged until it is checked), and whether it is decorative. */
 function chosen(from: ImageValue, assetId: string, suggestion?: string): { value: ImageValue; carried: boolean } {
   const cur = from ?? { assetId: null, alt: '' };
-  return { value: { assetId, alt: suggestion || cur.alt || '', decorative: cur.decorative }, carried: !suggestion && !!cur.alt && !!cur.assetId };
+  // A description kept with no image (after Remove) was still written for another picture.
+  return { value: { assetId, alt: suggestion || cur.alt || '', decorative: cur.decorative }, carried: !suggestion && !!cur.alt };
 }
+
+/** Scrolls a picker grid (only the grid, never the Inspector around it) so its chosen tile is in view. */
+function revealInGrid(grid: HTMLElement | null) {
+  const tile = grid?.querySelector<HTMLElement>('[aria-selected="true"]');
+  if (!grid || !tile) return;
+  const g = grid.getBoundingClientRect();
+  const r = tile.getBoundingClientRect();
+  if (r.bottom > g.bottom) grid.scrollTop += r.bottom - g.bottom + 4;
+  else if (r.top < g.top) grid.scrollTop -= g.top - r.top + 4;
+}
+
+/** Images whose description was kept from the picture they replaced and not yet checked, by image and description:
+ *  the flag outlives the editor (a list item closed and opened again) until the description is checked or changed. */
+const carriedDescriptions = new Set<string>();
+const carryKey = (x: ImageValue | null | undefined, project: string | undefined) => (x?.assetId ? `${project ?? ''}\u0000${x.assetId}\u0000${x.alt}` : '');
 
 /**
  * Image editor: one card holding the picture, its description and whether it is decorative. `title` puts the
@@ -303,19 +448,31 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
   const snapshot = useStore((s) => s.snapshot);
   const altId = useId();
   const titleId = useId();
-  // A description carried over from the previous image may no longer be true; say so until it is edited.
-  const [carried, setCarried] = useState(false);
   const v = value ?? { assetId: null, alt: '' };
   const asset = v.assetId ? state.assets.assets[v.assetId] : null;
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   // The value as it is now, for work that finishes later (an import).
   const latest = useRef(v);
   latest.current = v;
+  // A description carried over from the previous image may no longer be true; say so until it is checked or edited.
+  const [, redraw] = useState(0);
+  const project = snapshot?.workspaceKey;
+  const carried = carriedDescriptions.has(carryKey(v, project));
+  // Said once when a pick keeps the old description, since the note appears away from where focus goes.
+  const [carriedSaid, setCarriedSaid] = useState({ text: '', count: 0 });
+  const setCarried = (on: boolean, of: ImageValue = latest.current) => {
+    const k = carryKey(of, project);
+    if (on && !of.decorative && !carriedDescriptions.has(k)) setCarriedSaid((s) => announcementText('The description was kept from the previous image. Check it still describes this one.', s.count) ?? s);
+    if (!k) return;
+    if (on) carriedDescriptions.add(k);
+    else carriedDescriptions.delete(k);
+    redraw((n) => n + 1);
+  };
   const pick = (id: string, suggestion?: string) => {
     const cur = latest.current;
     if (id === cur.assetId) return;
     const next = chosen(cur, id, suggestion);
-    setCarried(next.carried);
+    setCarried(next.carried, next.value);
     onChange(next.value);
   };
   const [browsing, setBrowsing] = useState(false);
@@ -343,6 +500,12 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
   // The grid's one tab stop: the tile last moved to while it is still shown, else the image chosen, else the first.
   const [rover, setRover] = useState<string | null>(null);
   const tabStop = shown.some((a) => a.id === rover) ? rover : shown.some((a) => a.id === v.assetId) ? v.assetId : (shown[0]?.id ?? null);
+  const noMatch = q.trim() ? `No images ${series.key ? `in ${series.label} ` : ''}match “${q.trim()}”.` : `No images in ${series.label} yet.`;
+  // The browser opens on the image chosen, scrolled into view when it is further down.
+  const grid = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (browsing) requestAnimationFrame(() => revealInGrid(grid.current));
+  }, [browsing]);
   const closeBrowser = (focus = true) => {
     setBrowsing(false);
     setQ('');
@@ -361,7 +524,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
     setImporting(true);
     const start = latest.current;
     const write = onChange;
-    let carry: boolean | null = null;
+    let carry: { on: boolean; value: ImageValue } | null = null;
     // Where focus may come back to the chooser from: the image browser this closes, the chooser, or nowhere.
     const fromChooser = () => {
       const at = document.activeElement;
@@ -378,13 +541,14 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
           // The same picture again: the field is checked, not written.
           if (a.id === start.assetId) return write(start);
           const next = chosen(start, a.id, a.altSuggestion);
-          carry = next.carried;
+          carry = { on: next.carried, value: next.value };
           write(next.value);
-          if (next.carried) return 'Check its description still fits.';
+          if (next.carried && !start.decorative) return 'Check its description still fits.';
         }
       });
       if (r.kind !== 'placed' || !alive.current) return;
-      if (carry !== null) setCarried(carry);
+      const placed = carry as { on: boolean; value: ImageValue } | null;
+      if (placed) setCarried(placed.on, placed.value);
       // Never from a field the author has moved to meanwhile, the description included; checked again when the
       // browser has closed, in case focus moved in between.
       const refocus = fromChooser();
@@ -415,6 +579,17 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
   };
   // Until there is an image (or something already set about it), the chooser is the only thing to do.
   const details = !!asset || !!v.alt || !!v.decorative;
+  // An image the field still names but Assets no longer has: said, and removable, rather than shown as empty.
+  const gone = !!v.assetId && !asset;
+  // Remove takes its own button away: focus that was on it goes to the chooser once the image is gone.
+  const removedAt = useRef(0);
+  useEffect(() => {
+    if (asset || !removedAt.current) return;
+    const recent = Date.now() - removedAt.current < MOVE_PENDING_MS;
+    removedAt.current = 0;
+    const at = document.activeElement;
+    if (recent && (!at || at === document.body)) chooseBtn.current?.focus();
+  }, [asset]);
   return (
     <div
       className={`insp-image${over ? ' drop-over' : ''}`}
@@ -430,18 +605,31 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
           {title}
         </div>
       )}
+      <span className="sr-only" role="status">
+        {carriedSaid.text}
+      </span>
       <div className="insp-image-top">
-        <div className={`insp-image-thumb${asset ? '' : ' empty'}`}>{asset && devUrl ? <AssetImage key={missingKey(snapshot, asset.id)} asset={asset} devUrl={devUrl} cover alt="" /> : <ImageOff aria-hidden="true" />}</div>
+        <div className={`insp-image-thumb${asset ? '' : ' empty'}`}>{asset && devUrl ? <AssetImage key={missingKey(snapshot, asset.id)} asset={asset} devUrl={devUrl} cover alt="" /> : gone ? <ImageOff aria-hidden="true" /> : <ImageIcon aria-hidden="true" />}</div>
         <div className="col grow" style={{ gap: 4, minWidth: 0 }}>
-          <span className={`ellipsis insp-image-name${asset ? '' : ' none'}`} title={asset?.name}>{asset ? asset.name : over ? 'Drop to use this image' : 'No image chosen'}</span>
+          <span className={`insp-image-name${asset ? '' : gone ? ' gone' : ' none'}`} id={`${titleId}-now`} title={asset?.name}>
+            {asset ? (labels.get(asset.id)?.label ?? asset.name) : over ? 'Drop to use this image' : gone ? 'This image is no longer in Assets' : 'No image chosen'}
+          </span>
           <span className="row" style={{ gap: 4 }}>
-            <button ref={chooseBtn} className="btn btn-sm" aria-expanded={browsing} aria-controls={browsing ? browseId : undefined} onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))} disabled={importing}>
+            <button ref={chooseBtn} className="btn btn-sm" aria-describedby={gone ? `${titleId}-now` : undefined} aria-expanded={browsing} aria-controls={browsing ? browseId : undefined} onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))} disabled={importing}>
               <ImagePlus />
-              {importing ? 'Adding…' : asset ? 'Change…' : 'Choose image…'}
+              {importing ? 'Adding…' : asset || gone ? 'Change…' : 'Choose image…'}
             </button>
-            {asset && (
-              <button className="icon-btn sm" aria-label={`Remove ${title ? title.toLowerCase() : 'image'}`} title="Remove image" onClick={() => onChange({ assetId: null, alt: v.alt, decorative: v.decorative })}>
-                <ImageOff />
+            {(asset || gone) && (
+              <button
+                className="btn btn-sm insp-image-remove"
+                aria-label={`Remove ${title ? title.toLowerCase() : 'image'}`}
+                onClick={() => {
+                  setCarried(false);
+                  removedAt.current = Date.now();
+                  onChange({ assetId: null, alt: v.alt, decorative: v.decorative });
+                }}
+              >
+                Remove
               </button>
             )}
           </span>
@@ -465,7 +653,7 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
           {/* Kept while a series is chosen, so it can always be cleared. */}
           {(images.length > 6 || !!series.key) && <AssetOrderControls series={series.list} value={series.key} onSeries={series.choose} />}
           {shown.length > 0 ? (
-            <div className="insp-pick-grid" role="listbox" aria-label="Your images" onKeyDown={(e) => pickGridKeys(e, (to) => setRover(shown[to]?.id ?? null))}>
+            <div ref={grid} className="insp-pick-grid" role="listbox" aria-label="Your images" onKeyDown={(e) => pickGridKeys(e, (to) => setRover(shown[to]?.id ?? null))}>
               {shown.map((a) => (
                 <button
                   key={a.id}
@@ -487,9 +675,13 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
               ))}
             </div>
           ) : (
-            <p className="faint insp-note">{images.length ? `No images ${series.key ? `in ${series.label} ` : ''}match “${q.trim()}”.` : 'No images yet. Import one, or drop an image file here.'}</p>
+            <p className="faint insp-note">{images.length ? noMatch : 'No images yet. Import one, or drop an image file here.'}</p>
           )}
-          {images.length > 0 && <p className="faint insp-note">You can also drop an image file on this card.</p>}
+          {/* Mounted with the browser, so the first time a search finds nothing it is announced. */}
+          <span className="sr-only" role="status">
+            {shown.length || !images.length ? '' : noMatch}
+          </span>
+          {images.length > 0 && <p className="faint insp-note">You can also drop an image file here.</p>}
         </div>
       )}
       {details && !v.decorative && (
@@ -505,10 +697,29 @@ export function ImageEditor({ value, onChange, state, title }: { value: ImageVal
             aria-describedby={`${altId}-h`}
             onCommit={(alt) => (setCarried(false), onChange({ ...v, alt }))}
           />
-          <span className={`field-hint${carried ? ' insp-check' : ''}`} id={`${altId}-h`}>
-            {carried && <TriangleAlert aria-hidden="true" />}
-            {carried ? 'Kept from the previous image. Check it still describes this one.' : 'For screen readers, and shown if the image can’t load.'}
-          </span>
+          {carried ? (
+            // The problem and its one repair read as one note; a description that still fits is confirmed as it stands.
+            <div className="insp-check-note">
+              <span className="field-hint insp-check" id={`${altId}-h`}>
+                <TriangleAlert aria-hidden="true" />
+                Kept from the previous image. Check it still describes this one.
+              </span>
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => {
+                  setCarried(false);
+                  requestAnimationFrame(() => document.getElementById(altId)?.focus());
+                }}
+              >
+                It still fits
+              </button>
+            </div>
+          ) : (
+            <span className="field-hint" id={`${altId}-h`}>
+              For screen readers, and shown if the image can’t load.
+            </span>
+          )}
         </div>
       )}
       {details && <SwitchRow checked={!!v.decorative} onChange={(d) => onChange({ ...v, decorative: d })} label="Decorative image" hint={v.decorative ? 'Screen readers skip it, so it needs no description.' : undefined} />}
@@ -535,6 +746,10 @@ const iconName = (k: string) => sentence(k.replace(/-/g, ' '));
 export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }: { value: string; onChange: (v: string) => void; label?: string; id?: string; describedBy?: string }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
+  // The grid's one tab stop: the tile last moved to while it is still shown, else the chosen icon, else the first.
+  const [rover, setRover] = useState<string | null>(null);
+  // The icon named under the grid: the one pointed at or moved to, else the chosen one.
+  const [peek, setPeek] = useState<string | null>(null);
   const gridId = useId();
   const btn = useRef<HTMLButtonElement>(null);
   const grid = useRef<HTMLDivElement>(null);
@@ -545,23 +760,28 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
   const close = (focus = true) => {
     setOpen(false);
     setQ('');
+    setRover(null);
+    setPeek(null);
     if (focus) requestAnimationFrame(() => btn.current?.focus());
   };
   useEffect(() => {
-    if (open) requestAnimationFrame(() => grid.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' }));
+    if (open) requestAnimationFrame(() => revealInGrid(grid.current));
   }, [open]);
   const keys = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const tiles = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]')];
     const i = tiles.indexOf(document.activeElement as HTMLElement);
     if (i < 0) return;
     const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: COLS, ArrowUp: -COLS }[e.key];
-    const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step !== undefined ? Math.max(0, Math.min(tiles.length - 1, i + step)) : -1;
+    // Up and down stay in their column: at the top or bottom row they stay put.
+    const vertical = e.key === 'ArrowUp' || e.key === 'ArrowDown';
+    const to = e.key === 'Home' ? 0 : e.key === 'End' ? tiles.length - 1 : step !== undefined ? (vertical && (i + step < 0 || i + step >= tiles.length) ? i : Math.max(0, Math.min(tiles.length - 1, i + step))) : -1;
     if (to < 0) return;
     e.preventDefault();
-    tiles.forEach((t, k) => (t.tabIndex = k === to ? 0 : -1));
+    setRover(shown[to] ?? null);
     tiles[to].focus();
   };
-  const current = shown.includes(value) ? value : shown[0];
+  const tabStop = rover && shown.includes(rover) ? rover : shown.includes(value) ? value : shown[0];
+  const named = peek && shown.includes(peek) ? peek : shown.includes(value) ? value : (tabStop ?? null);
   return (
     <div
       className="insp-icon-picker"
@@ -593,7 +813,15 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
         >
           <input type="search" className="input sm" placeholder="Search icons" aria-label="Search icons" value={q} autoFocus onChange={(e) => setQ(e.target.value)} />
           {shown.length ? (
-            <div ref={grid} className="insp-icon-grid" role="listbox" aria-label={label} onKeyDown={keys}>
+            <div
+              ref={grid}
+              className="insp-icon-grid"
+              role="listbox"
+              aria-label={label}
+              onKeyDown={keys}
+              onMouseLeave={() => setPeek(null)}
+              onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setPeek(null)}
+            >
               {shown.map((k) => (
                 <button
                   key={k}
@@ -602,8 +830,10 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
                   aria-selected={k === value}
                   aria-label={iconName(k)}
                   title={iconName(k)}
-                  tabIndex={k === current ? 0 : -1}
+                  tabIndex={k === tabStop ? 0 : -1}
                   className={`insp-icon-tile${k === value ? ' current' : ''}`}
+                  onFocus={() => setPeek(k)}
+                  onMouseEnter={() => setPeek(k)}
                   onClick={() => {
                     if (k !== value) onChange(k);
                     close();
@@ -615,6 +845,17 @@ export function IconPicker({ value, onChange, label = 'Icon', id, describedBy }:
             </div>
           ) : (
             <p className="faint insp-note">No icons match “{q.trim()}”.</p>
+          )}
+          {/* Mounted with the picker, so the first time a search finds nothing it is announced. */}
+          <span className="sr-only" role="status">
+            {shown.length ? '' : `No icons match “${q.trim()}”.`}
+          </span>
+          {/* Names the icon pointed at or moved to; each tile already names itself to assistive tech. */}
+          {named && (
+            <p className="insp-icon-name" aria-hidden="true">
+              {iconName(named)}
+              {named === value && <span className="faint"> · current</span>}
+            </p>
           )}
         </div>
       )}
@@ -681,7 +922,7 @@ const choiceRows = (value: unknown) => (Array.isArray(value) ? value : []).filte
 /** How a choice change ended: saved, refused, or refused because the choice was renamed meanwhile (to `changedTo`). */
 type ChoiceDone = boolean | { changedTo: string };
 
-function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceOption; index: number; describedBy?: string; onRename: (label: string, from: string[]) => Promise<ChoiceDone> }) {
+function ChoiceLabel({ choice, index, describedBy, onRename, clash, onClash }: { choice: ChoiceOption; index: number; describedBy?: string; onRename: (label: string, from: string[]) => Promise<ChoiceDone>; clash?: (label: string) => boolean; onClash?: (label: string | null) => void }) {
   const [draft, setDraft] = useState(choice.label);
   const saved = useRef(choice.label);
   saved.current = choice.label;
@@ -731,6 +972,12 @@ function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceO
     const text = choiceText(draft);
     // An emptied label puts the saved one back: a choice is removed with its own button.
     if (!text || text === over.shown) return setDraft(sent.current ?? saved.current);
+    // Another choice already has this label: the row keeps its own, and says why under it.
+    if (clash?.(text)) {
+      onClash?.(text);
+      return setDraft(sent.current ?? saved.current);
+    }
+    onClash?.(null);
     sent.current = text;
     const attempt = ++attempts.current;
     void onRename(text, over.labels).then((done) => {
@@ -755,13 +1002,14 @@ function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceO
   };
   return (
     <input
-      className="input"
+      className="input sm"
       value={draft}
       aria-label={`Choice ${index + 1}`}
       aria-describedby={describedBy}
       title={kept.current ? 'Not saved. Press Enter to save it, or Escape to keep the label the project has.' : undefined}
       data-choice-focus={`input-${choice.id}`}
       onChange={(e) => {
+        onClash?.(null);
         from.current ??= { shown: sent.current ?? saved.current, labels: sent.current === null ? [saved.current] : [saved.current, sent.current] };
         // Typing again after a refusal is editing again: leaving the field commits, as it always does.
         if (kept.current) keep(false);
@@ -800,6 +1048,14 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
   const addId = useId();
   const [draft, setDraft] = useState('');
   const [problem, setProblem] = useState('');
+  // A rename refused because another choice has that label: which row, and the label it was refused.
+  const [clashAt, setClashAt] = useState<{ id: string; label: string } | null>(null);
+  // A duplicate the author was told about stops being one once the other choice is renamed or removed.
+  const labelsKey = choices.map((c) => c.label).join('\u0000');
+  useEffect(() => {
+    setProblem('');
+    setClashAt(null);
+  }, [labelsKey]);
   const rootRef = useRef<HTMLDivElement>(null);
   const shownRef = useRef(choices);
   shownRef.current = choices;
@@ -862,7 +1118,12 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
   const add = () => {
     const text = choiceText(draft);
     if (!text || full) return;
-    if (choices.some((c) => sameChoice(c.label, text))) return setProblem(`“${text}” is already a choice.`);
+    if (choices.some((c) => sameChoice(c.label, text))) {
+      setProblem(`“${text}” is already a choice.`);
+      // Add goes disabled with the problem: focus goes to the box that fixes it.
+      requestAnimationFrame(() => document.getElementById(addId)?.focus());
+      return;
+    }
     setProblem('');
     setDraft('');
     // A refused choice comes back to the box, unless something else has been typed there since.
@@ -870,10 +1131,19 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
       if (!ok) setDraft((d) => d || text);
     });
   };
+  // A move is announced once it lands, as a list item's is.
+  const [said, setSaid] = useState({ text: '', count: 0 });
   const move = (c: ChoiceOption, by: -1 | 1) => {
     const direction = by < 0 ? 'up' : 'down';
     refocus.current = { target: `${direction}-${c.id}`, fallback: `input-${c.id}` };
-    void act({ kind: 'move', id: c.id, by });
+    void act({ kind: 'move', id: c.id, by }).then((ok) => {
+      if (!ok) return;
+      // Where it landed, in the order the project now holds (a queued change may have moved others first).
+      const now = read?.();
+      const order = now ? choiceRows(now.value) : shownRef.current;
+      const at = order.findIndex((x) => x.id === c.id);
+      if (at >= 0) setSaid((s) => announcementText(moveAnnouncement(`“${c.label}”`, at, order.length), s.count) ?? s);
+    });
   };
   const remove = (c: ChoiceOption, i: number) => {
     const after = choices[i + 1] ?? choices[i - 1];
@@ -884,7 +1154,10 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
     <div className="field choices-editor" role="group" aria-labelledby={labelId} aria-describedby={schema.description ? hintId : undefined} ref={rootRef}>
       <div className="field-label" id={labelId}>
         <span className="grow">{shown}</span>
-        <span className="insp-count">{countText(choices.length, MAX_CHOICE_ROWS)}</span>
+        <span className="insp-count">
+          <span aria-hidden="true">{countText(choices.length, MAX_CHOICE_ROWS)}</span>
+          <span className="sr-only">{`${choices.length} of at most ${MAX_CHOICE_ROWS} choices`}</span>
+        </span>
       </div>
       {choices.length > 0 ? (
         <ol className="choices-list">
@@ -893,17 +1166,29 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
             return (
               <li key={c.id} className="choices-row">
                 <div className="choices-row-controls">
-                  <ChoiceLabel choice={c} index={i} describedBy={c.value !== c.label ? `${hintId}-${i}` : undefined} onRename={(text, from) => act({ kind: 'rename', id: c.id, label: text, from })} />
+                  <ChoiceLabel
+                    choice={c}
+                    index={i}
+                    describedBy={[clashAt?.id === c.id ? `${hintId}-clash` : '', c.value !== c.label ? `${hintId}-${i}` : ''].filter(Boolean).join(' ') || undefined}
+                    clash={(text) => choices.some((o) => o.id !== c.id && sameChoice(o.label, text))}
+                    onClash={(text) => setClashAt(text ? { id: c.id, label: text } : null)}
+                    onRename={(text, from) => act({ kind: 'rename', id: c.id, label: text, from })}
+                  />
                   <button type="button" className="icon-btn sm" aria-label={`Move ${name} up`} data-choice-focus={`up-${c.id}`} disabled={i === 0} onClick={() => move(c, -1)}>
                     <ArrowUp />
                   </button>
                   <button type="button" className="icon-btn sm" aria-label={`Move ${name} down`} data-choice-focus={`down-${c.id}`} disabled={i === choices.length - 1} onClick={() => move(c, 1)}>
                     <ArrowDown />
                   </button>
-                  <button type="button" className="icon-btn sm" aria-label={`Remove ${name}`} onClick={() => remove(c, i)}>
+                  <button type="button" className="icon-btn sm list-editor-remove" aria-label={`Remove ${name}`} onClick={() => remove(c, i)}>
                     <Trash2 />
                   </button>
                 </div>
+                {clashAt?.id === c.id && (
+                  <div className="field-error" id={`${hintId}-clash`} role="alert">
+                    “{clashAt.label}” is already a choice, so this one keeps its name.
+                  </div>
+                )}
                 {/* Renaming keeps what the choice is sent as, so answers to it stay together. */}
                 {c.value !== c.label && (
                   <div className="field-hint" id={`${hintId}-${i}`}>
@@ -915,19 +1200,19 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
           })}
         </ol>
       ) : (
-        <p className="field-hint insp-note">Add the answers a visitor picks one of.</p>
+        <p className="field-hint insp-note">No choices yet.</p>
       )}
       <div className="choices-add">
         <input
-          className="input"
+          className="input sm"
           id={addId}
           data-choice-focus="add"
           value={draft}
           placeholder={full ? `At most ${MAX_CHOICE_ROWS} choices` : 'Add a choice'}
           aria-label="New choice"
           aria-invalid={problem ? true : undefined}
-          aria-describedby={problem ? `${addId}-problem` : undefined}
-          disabled={full}
+          readOnly={full}
+          aria-describedby={problem ? `${addId}-problem` : full ? `${addId}-full` : undefined}
           onChange={(e) => {
             setDraft(e.target.value);
             setProblem('');
@@ -938,7 +1223,7 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
             add();
           }}
         />
-        <button type="button" className="btn btn-sm" onClick={add} disabled={full || !draft.trim()}>
+        <button type="button" className="btn btn-sm" onClick={add} disabled={full || !draft.trim() || !!problem}>
           <Plus /> Add
         </button>
       </div>
@@ -947,11 +1232,15 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
           {problem}
         </div>
       )}
+      {full && <p className="field-hint insp-note" id={`${addId}-full`}>This question has the most choices it can hold, {MAX_CHOICE_ROWS}. Remove one to add another.</p>}
       {schema.description && (
         <div className="field-hint" id={hintId}>
           {schema.description}
         </div>
       )}
+      <span className="sr-only" role="status">
+        {said.text}
+      </span>
     </div>
   );
 }
@@ -980,7 +1269,7 @@ export interface FieldAction {
  * link can also offer an `action` that fixes its problem. `everywhere` is for a value in a component's design,
  * which shows on every page that places it (see LinkEditor).
  */
-export function ScalarField({ schema, value, onChange, read, state, label, hint, error, action, onLive, placeholder, everywhere }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean }) {
+export function ScalarField({ schema, value, onChange, read, state, label, hint, error, action, onLive, placeholder, everywhere, notedBy }: { schema: ScalarPropSchema; value: unknown; onChange: (v: unknown, edit?: PendingEdit) => unknown; read?: () => ReadValue | undefined; state: ProjectState; label?: string; hint?: ReactNode; error?: string; action?: FieldAction; onLive?: (text: string) => void; placeholder?: string; everywhere?: boolean; notedBy?: string }) {
   const id = useId();
   const shown = label ?? schema.label;
   const note = hint ?? schema.description;
@@ -1003,7 +1292,7 @@ export function ScalarField({ schema, value, onChange, read, state, label, hint,
         <div className="field-label" id={`${id}-l`}>
           {shown}
         </div>
-        <LinkEditor value={value as LinkValue} onChange={onChange} state={state} label={schema.label} everywhere={everywhere} />
+        <LinkEditor value={value as LinkValue} onChange={onChange} state={state} label={schema.label} everywhere={everywhere} invalid={!!error} describedBy={[error ? `${id}-note` : '', notedBy ?? ''].filter(Boolean).join(' ') || undefined} />
         {error ? (
           <div className="field-error" id={`${id}-note`}>
             {error}
@@ -1199,20 +1488,45 @@ export function FieldGroups<T>({ groups, render }: { groups: Array<PropGroup<T>>
  * Visible contact text and a link that open different addresses or numbers: both are shown, with one explicit
  * repair that points the link at what visitors see. Nothing shows for a deliberate label ("Call reception").
  */
-export function ContactMismatch({ text, link, onRepair }: { text: unknown; link: unknown; onRepair: (link: LinkValue, label: string, revision: number | undefined) => void }) {
+export function ContactMismatch({ text, link, onRepair, field, id }: { text: unknown; link: unknown; onRepair: (link: LinkValue, label: string, revision: number | undefined) => void; field?: string; id?: string }) {
   // The repair is planned on the project this render shows, and applies only to it.
   const revision = useStore((s) => s.snapshot?.revision);
+  const note = useRef<HTMLDivElement>(null);
+  // A repair asked for here: when it lands the note goes, and focus that went with its button moves to the link it
+  // fixed (`field`), never away from somewhere the author has gone since.
+  const repaired = useRef<{ host: HTMLElement | null; at: number } | null>(null);
   const m = contactMismatch(text, link);
+  const showing = !!m;
+  useEffect(() => {
+    const r = repaired.current;
+    if (showing || !r) return;
+    repaired.current = null;
+    const at = document.activeElement;
+    if (field && Date.now() - r.at < MOVE_PENDING_MS && (!at || at === document.body)) r.host?.querySelector<HTMLElement>(`[data-field="${CSS.escape(field)}"] select`)?.focus();
+  }, [showing, field]);
   if (!m) return null;
   const action = m.kind === 'email' ? 'Use displayed email as destination' : 'Use displayed number as destination';
+  // What the link opens, as people write it: the address or number, without its mailto: or tel:.
+  const opens = m.opens.replace(/^(mailto|tel):/i, '');
+  const verb = /^mailto:/i.test(m.opens) ? 'Link emails' : /^tel:/i.test(m.opens) ? 'Link calls' : 'Link opens';
+  const repair = () => {
+    repaired.current = { host: note.current?.parentElement ?? null, at: Date.now() };
+    onRepair(m.repair, action, revision);
+  };
   return (
-    <div className="scope-note site contact-mismatch" role="note">
-      <TriangleAlert aria-hidden="true" />
+    <div className="scope-note site contact-mismatch" role="note" ref={note} id={id}>
+      <div className="contact-mismatch-head">
+        <TriangleAlert aria-hidden="true" />
+        <p className="insp-note">The link doesn’t open what visitors see.</p>
+      </div>
       <div className="grow">
-        <p className="insp-note">
-          Visitors see <strong>{m.shown}</strong>, but the link opens <strong>{m.opens}</strong>.
-        </p>
-        <button className="btn btn-sm" onClick={() => onRepair(m.repair, action, revision)}>
+        <dl className="contact-mismatch-pair">
+          <dt>Visitors see</dt>
+          <dd>{m.shown}</dd>
+          <dt>{verb}</dt>
+          <dd>{opens}</dd>
+        </dl>
+        <button className="btn btn-sm" onClick={repair}>
           {action}
         </button>
       </div>
@@ -1318,7 +1632,12 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
       if (!added) return;
       after.current = null;
       setOpen(added.id);
-      requestAnimationFrame(() => focusRow(added.id));
+      requestAnimationFrame(() => {
+        // From Add, or nowhere (the page); an author who has gone to another field keeps their place.
+        const active = document.activeElement;
+        if (active && active !== document.body && !root?.contains(active)) return;
+        focusRow(added.id);
+      });
     } else if (a.kind === 'moved') {
       // The move lands with a later saved revision. Until then the item is still where it was (another item's move
       // may land first) and the request stays pending. Once the item is anywhere but where the move put it, or the
@@ -1339,7 +1658,11 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
       setSaid((p) => announcementText(moveAnnouncement(a.title, a.index, items.length), p.count) ?? p);
     } else {
       after.current = null;
-      requestAnimationFrame(() => focusRow(a.focus));
+      requestAnimationFrame(() => {
+        const active = document.activeElement;
+        if (active && active !== document.body && !root?.contains(active)) return;
+        focusRow(a.focus);
+      });
     }
   }, [ids]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -1364,17 +1687,31 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
   // title is named by the image it shows.
   const imageOf = (raw: ListItem) => listItemImage(schema, effectiveItem(state, schema, raw), state.assets.assets);
   const titleOf = (raw: ListItem, i: number) => listRowTitle(schema, effectiveItem(state, schema, raw), i, imageOf(raw)?.name);
+  // The text a row is named by when it has some (see listRowTitle), so a blank row is told from one titled "Card 4".
+  const ownTitle = (x: ListItem) => {
+    const t = schema.titleField ? x[schema.titleField] : Object.values(x).find((v) => typeof v === 'string' && v && v !== x.id);
+    return typeof t === 'string' ? t.trim() : '';
+  };
   const runtime = useStore((st) => st.runtime);
   const snapshot = useStore((st) => st.snapshot);
   const devUrl = runtime.state === 'ready' ? runtime.url : null;
   const [picking, setPicking] = useState(false);
   const pickBtn = useRef<HTMLButtonElement>(null);
+  const pickerId = useId();
   const closePicker = (refocus: boolean) => {
     setPicking(false);
     if (refocus) requestAnimationFrame(() => pickBtn.current?.focus());
   };
+  // While picked images are being added, the picker stays open: its own Cancel waits too (see ImagesPicker).
+  const addingPicks = useRef(false);
+  const [savingPicks, setSavingPicks] = useState(false);
   const addPicks = async (assetIds: string[], replace: string[]) => {
-    const r = (await L({ kind: 'pick', assetIds, replace })) as { added: string[]; replaced: number } | null | undefined;
+    addingPicks.current = true;
+    setSavingPicks(true);
+    const r = (await Promise.resolve(L({ kind: 'pick', assetIds, replace })).finally(() => {
+      addingPicks.current = false;
+      setSavingPicks(false);
+    })) as { added: string[]; replaced: number } | null | undefined;
     if (!r) return false;
     setLanded({ ids: r.added, said: pickAnnouncement(r.added.length, r.replaced), at: Date.now() });
     return true;
@@ -1416,51 +1753,75 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
     <div className="field" role="group" aria-labelledby={labelId} data-list={name} ref={rootRef}>
       <div className="field-label" id={labelId}>
         <span className="grow">{schema.label}</span>
-        <span className="insp-count" aria-label={countLabel(items.length, schema.itemLabel, schema.max)}>
-          {countText(items.length, schema.max)}
+        <span className="insp-count">
+          <span aria-hidden="true">{countText(items.length, schema.max)}</span>
+          <span className="sr-only">{countLabel(items.length, schema.itemLabel, schema.max)}</span>
         </span>
       </div>
       <div className="list-editor">
-        {pickImages &&
-          (picking ? (
-            <ImagesPicker schema={schema} items={items} state={state} onAdd={addPicks} onClose={closePicker} />
-          ) : (
-            <>
-              {(items.length === 0 || samplesOnly) && <p className="insp-note muted">{items.length ? `These are sample ${schema.itemLabel.toLowerCase()}s. Choose images from Assets to replace them.` : 'Choose the images for this gallery from Assets.'}</p>}
-              <button ref={pickBtn} className={`btn btn-sm insp-pick-open${items.length === 0 || samplesOnly ? ' btn-primary' : ''}`} aria-disabled={pickFull ? true : undefined} aria-describedby={pickFull && addNote ? addNoteId : undefined} title={pickFull ? (addNote ?? undefined) : undefined} onClick={() => {
-                  if (pickFull) return;
-                  setPicking(true);
-                }}>
-                <Images /> Choose images…
-              </button>
-            </>
-          ))}
+        {pickImages && (
+          <>
+            {!picking && (items.length === 0 || samplesOnly) && <p className="insp-note muted">{items.length ? `These are sample ${schema.itemLabel.toLowerCase()}s. Choose images from Assets to replace them.` : 'Choose the images for this gallery from Assets.'}</p>}
+            {/* Stays while the picker is open, as the disclosure that shows and hides it. */}
+            <button
+              ref={pickBtn}
+              className={`btn btn-sm insp-pick-open${!picking && (items.length === 0 || samplesOnly) ? ' btn-primary' : ''}`}
+              aria-expanded={picking}
+              aria-controls={picking ? pickerId : undefined}
+              aria-disabled={(pickFull && !picking) || savingPicks ? true : undefined}
+              aria-busy={savingPicks || undefined}
+              aria-describedby={pickFull && !picking && addNote ? addNoteId : undefined}
+              title={pickFull && !picking ? (addNote ?? undefined) : undefined}
+              onClick={() => {
+                if (picking) return addingPicks.current ? undefined : closePicker(true);
+                if (pickFull) return;
+                setPicking(true);
+              }}
+            >
+              <Images /> Choose images…
+            </button>
+            {picking && (
+              <div id={pickerId}>
+                <ImagesPicker schema={schema} items={items} state={state} onAdd={addPicks} onClose={closePicker} />
+              </div>
+            )}
+          </>
+        )}
         {items.map((it, i) => {
           const note = annotate?.(it, i);
           const thumb = imageOf(it);
+          const title = titleOf(it, i);
+          // A row with nothing to name it by says so, rather than passing its place in the list off as a title.
+          const untitled = !thumb && !ownTitle(effectiveItem(state, schema, it));
+          // A contact link that opens something other than its text is flagged on the closed row too.
+          const flag = note?.error ?? (linkPairs?.some((p) => contactMismatch(it[p.text], it[p.link])) ? 'The link doesn’t open what visitors see.' : undefined);
           return (
           <div key={it.id} className={`list-editor-item${focusItem === it.id ? ' focused' : ''}`}>
             <div className="list-editor-head">
               {/* The chevron and title are one disclosure button, so the whole leading area opens the item. */}
-              <button className="title" id={`list-head-${it.id}`} aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} aria-describedby={note?.error ? `list-flag-${it.id}` : undefined} onClick={() => setOpen(openId === it.id ? null : it.id)}>
-                <ChevronRight size={12} className="faint" style={{ transform: openId === it.id ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
+              <button className="title" id={`list-head-${it.id}`} aria-expanded={openId === it.id} aria-controls={`list-item-${it.id}`} aria-describedby={flag ? `list-flag-${it.id}` : undefined} onClick={() => setOpen(openId === it.id ? null : it.id)}>
+                <ChevronRight size={12} style={{ transform: openId === it.id ? 'rotate(90deg)' : undefined, transition: 'transform 120ms' }} />
                 {thumb && devUrl && (
                   <span className="list-editor-thumb" aria-hidden="true">
                     <AssetImage key={missingKey(snapshot, thumb.id)} asset={thumb} devUrl={devUrl} cover alt="" loading="lazy" />
                   </span>
                 )}
-                <span className="ellipsis">{titleOf(it, i)}</span>
+                <span className={`list-editor-name${untitled ? ' untitled' : ''}`}>
+                  {untitled ? `Untitled ${schema.itemLabel.toLowerCase()}` : title}
+                  {/* Its place in the list, which its move and remove buttons are named by. */}
+                  {untitled && <span className="sr-only">, {title}</span>}
+                </span>
                 {/* A closed item still shows it needs attention. */}
-                {note?.error && (
-                  <span className="list-editor-flag" title={note.error} aria-hidden="true">
+                {flag && (
+                  <span className="list-editor-flag" title={flag} aria-hidden="true">
                     <TriangleAlert />
                   </span>
                 )}
               </button>
               {/* Outside the button, so the problem describes the row without becoming part of its name. */}
-              {note?.error && (
+              {flag && (
                 <span className="sr-only" id={`list-flag-${it.id}`}>
-                  {note.error}
+                  {flag}
                 </span>
               )}
               <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} up`} id={`list-up-${it.id}`} disabled={i === 0} onClick={() => move(it, i, 'up')}>
@@ -1469,7 +1830,7 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
               <button className="icon-btn sm" aria-label={`Move ${titleOf(it, i)} down`} id={`list-down-${it.id}`} disabled={i === items.length - 1} onClick={() => move(it, i, 'down')}>
                 <ArrowDown />
               </button>
-              <button className="icon-btn sm" aria-label={`Remove ${titleOf(it, i)}`} aria-disabled={removeNote ? true : undefined} aria-describedby={removeNote ? (removeNoteShared ? addNoteId : removeNoteId) : undefined} title={removeNote ?? undefined} onClick={() => {
+              <button className="icon-btn sm list-editor-remove" aria-label={`Remove ${titleOf(it, i)}`} aria-disabled={removeNote ? true : undefined} aria-describedby={removeNote ? (removeNoteShared ? addNoteId : removeNoteId) : undefined} title={removeNote ?? undefined} onClick={() => {
                   if (removeNote) return;
                   after.current = { kind: 'removed', focus: (items[i + 1] ?? items[i - 1])?.id ?? null };
                   L({ kind: 'remove', itemId: it.id });
@@ -1499,13 +1860,14 @@ function ListEditor({ name, schema, items, onList, read, state, focusItem, openI
                           error={note?.field === key ? note.error : undefined}
                           action={note?.field === key ? note.action : undefined}
                           onLive={fs.type === 'string' ? reveal.typed(key) : undefined}
+                          notedBy={linkPairs?.some((p) => p.link === key && contactMismatch(it[p.text], it[p.link])) ? `contact-${it.id}-${key}` : undefined}
                           everywhere={everywhere}
                         />
                       );
                     }}
                   />
                   {linkPairs?.map((p) => (
-                    <ContactMismatch key={p.link} text={it[p.text]} link={it[p.link]} onRepair={(link, label, revision) => L({ kind: 'repair', itemId: it.id, field: p.link, value: link, label, revision })} />
+                    <ContactMismatch key={p.link} id={`contact-${it.id}-${p.link}`} field={p.link} text={it[p.text]} link={it[p.link]} onRepair={(link, label, revision) => L({ kind: 'repair', itemId: it.id, field: p.link, value: link, label, revision })} />
                   ))}
                 </>
               )}
