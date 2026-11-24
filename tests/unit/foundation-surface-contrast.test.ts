@@ -47,6 +47,8 @@ interface Placement {
 }
 
 const INNER = "[class$='__inner']";
+/** A part a tone styles carries the tone's class after its own, so its class is matched anywhere in the list. */
+const PANEL = ":is([class$='__panel'], [class*='__panel '])";
 const at = (selector: string, ink: Ink, rich = false): Spot => ({ selector, ink, rich });
 const PLACEMENTS: Placement[] = [
   { name: 'hero.centered default', component: 'hero.centered', tone: 'default', spots: [at(INNER, 'theme')] },
@@ -56,9 +58,9 @@ const PLACEMENTS: Placement[] = [
   { name: 'hero.split inverse', component: 'hero.split', tone: 'inverse', spots: [at(INNER, 'on-inverse')], ownInk: 'on-inverse' },
   { name: 'contact.details inverse', component: 'contact.details', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at("[class$='__method']", 'theme')] },
   // The Call to action's panel is the brand ground by default, dark or soft in its other tones; around it is the page.
-  { name: 'cta.banner default', component: 'cta.banner', tone: 'default', spots: [at("[class$='__panel']", 'on-brand')], ownInk: 'on-brand' },
-  { name: 'cta.banner inverse', component: 'cta.banner', tone: 'inverse', spots: [at("[class$='__panel']", 'on-inverse'), at(INNER, 'theme')], ownInk: 'on-inverse' },
-  { name: 'cta.banner muted', component: 'cta.banner', tone: 'muted', spots: [at("[class$='__panel']", 'theme')], ownInk: 'theme' },
+  { name: 'cta.banner default', component: 'cta.banner', tone: 'default', spots: [at(PANEL, 'on-brand')], ownInk: 'on-brand' },
+  { name: 'cta.banner inverse', component: 'cta.banner', tone: 'inverse', spots: [at(PANEL, 'on-inverse'), at(INNER, 'theme')], ownInk: 'on-inverse' },
+  { name: 'cta.banner muted', component: 'cta.banner', tone: 'muted', spots: [at(PANEL, 'theme')], ownInk: 'theme' },
   { name: 'content.text inverse', component: 'content.text', tone: 'inverse', spots: [at(INNER, 'on-inverse'), at('.so-rich', 'on-inverse', true)] },
   { name: 'layout.section inverse', component: 'layout.section', tone: 'inverse', spots: [at(INNER, 'on-inverse')] },
   // A light section placed in a dark one starts afresh.

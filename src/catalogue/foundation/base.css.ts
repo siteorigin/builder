@@ -11,10 +11,12 @@ const ctaPanel = (tone: string) => `${ends(`-cta-banner--tone-${tone}`)} ${ends(
  * colours. The cards are known by their list-item part names (features and testimonials cards, pricing plans,
  * contact methods), which a copy of the section keeps, in the part class the generator writes first; the sections'
  * transparent listing cards are not list items, and a code component's own list items keep the ground's colours.
+ * A part a tone styles carries the tone's class as well as the section root, so the parts inside a Call to action's
+ * panel (its button, its supporting text) are not started afresh: they keep the panel's colours.
  * All three lists match with no specificity, in this order: light, dark, brand.
  */
 const SURFACES = `:where(
-  [class*='--tone-'], li[class^='so-']:is(${ends('__card')}, ${ends('__plan')}, ${ends('__method')}),
+  [class*='--tone-']:not(${ends('-cta-banner__panel')} *), li[class^='so-']:is(${ends('__card')}, ${ends('__plan')}, ${ends('__method')}),
   .so-header, .so-form, .so-search, .so-table, .so-video-section
 ) { --so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; }
 :where(
