@@ -25,6 +25,7 @@ import type {
   ProjectState,
   PropSchema,
   ResponsiveScope,
+  StyleState,
   ResponsiveStyles,
   SlotDef,
   TextStyleValue,
@@ -33,13 +34,15 @@ import type {
   TokenValue,
   UiStateSchema
 } from '@shared/types';
-import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
+import { ELEMENT_TAGS, GENERATOR_VERSION, LIST_FEEDS, RESPONSIVE_SCOPES, STYLE_STATES, TEXT_TAGS, conditionRef, isAppearPreset, isBinding, isBindingRef, isComparison, isStateRef, slotChildren, stateInitial, styleScopeKey, type Condition } from '@shared/types';
 import {
   MEDIA_QUERIES,
   REDUCED_MOTION_QUERY,
   TRANSLATE_DECL,
   gridTemplateShares,
+  hasStateStyles,
   isSafeCssValue,
+  isStateStyleProp,
   isValidGradient,
   linkOf,
   resolveVisibility,
@@ -446,11 +449,19 @@ export function generateTokensCss(state: ProjectState): string {
 
 /**
  * `wide` holds rules for tablet and desktop together (everything above phone width); `reduced`, the rules for
- * visitors who ask for reduced motion.
+ * visitors who ask for reduced motion; `states`, the rules for each interactive state at each size.
  */
-type RuleSet = { base: string[]; wide: string[]; phone: string[]; tablet: string[]; desktop: string[]; reduced: string[] };
-const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], reduced: [] });
+type RuleSet = { base: string[]; wide: string[]; phone: string[]; tablet: string[]; desktop: string[]; reduced: string[]; states: Record<StyleState, Record<ResponsiveScope, string[]>> };
+const sizeLists = (): Record<ResponsiveScope, string[]> => ({ base: [], phone: [], tablet: [], desktop: [] });
+const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], desktop: [], reduced: [], states: { hover: sizeLists(), focus: sizeLists(), active: sizeLists() } });
 const WIDE_QUERY = '(min-width: 768px)';
+/**
+ * Where each interactive state applies. `:where()` adds no weight, so a state rule is exactly as strong as the rule it
+ * changes, and wins by coming after every resting rule. Focus is the keyboard's (`:focus-visible`), not a click's.
+ */
+const STATE_PSEUDO: Record<StyleState, string> = { hover: ':hover', focus: ':focus-visible', active: ':active' };
+/** Hover rules apply only where a pointer can hover, so a tap on a touch screen never leaves one stuck on. */
+const HOVER_QUERY = '(hover: hover)';
 
 /** Declarations that could escape their rule or load remote content are never written. */
 function safeDecl(decl: string): boolean {
@@ -477,6 +488,12 @@ interface RuleOpts {
    * classes (an id, a long descendant chain), so every declaration is important. Only its own important ones win.
    */
   important?: boolean;
+  /**
+   * The selector interactive state rules are written for, when not the resting rules' own: one that names only the
+   * styled element, where the resting selector reaches it through an ancestor (and so could also reach a copy of it
+   * nested inside). `null` writes no state rules.
+   */
+  stateSelector?: string | null;
 }
 
 /** A declaration made important, unless it already is (custom CSS may say so itself). */
@@ -601,6 +618,34 @@ function addRules(rules: RuleSet, raw: string, input: ResponsiveStyles | undefin
     if (wide.length && props.customCss !== undefined) wide.push(...styleToCss('customCss', props.customCss).filter(safeDecl));
     if (wide.length) rules.wide.push(rule(wide));
   }
+  addStateRules(rules, raw, input, opts);
+}
+
+/**
+ * The rules for each interactive state at each size, on the element itself. Only appearance properties are written
+ * (validation reports any other). A link's or button's background also goes through its own variables, so the theme's
+ * hover rule for a button, which is stronger, paints the same colour.
+ */
+function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opts: RuleOpts) {
+  if (opts.stateSelector === null) return;
+  const wrap = opts.wrap ?? ((sel: string) => sel);
+  const base = opts.stateSelector ?? raw;
+  for (const state of STYLE_STATES)
+    for (const scope of RESPONSIVE_SCOPES) {
+      const props = input[styleScopeKey(scope, state)];
+      if (!props || typeof props !== 'object') continue;
+      const decls: string[] = [];
+      for (const k of Object.keys(props).sort((a, b) => ORDER(a) - ORDER(b) || a.localeCompare(b))) {
+        if (!isStateStyleProp(k)) continue;
+        const out = styleToCss(k, props[k]);
+        if (opts.link && k === 'background') out.push(...out.flatMap((d) => (d.startsWith('background:') ? [d.replace(/^background:/, '--so-btn-bg:'), d.replace(/^background:/, '--so-btn-bg-hover:')] : [])));
+        if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
+        decls.push(...out.filter(safeDecl));
+      }
+      if (!decls.length) continue;
+      const selector = wrap(`${base}:where(${STATE_PSEUDO[state]})`);
+      rules.states[state][scope].push(`${selector} {\n${lastCopies(decls).map((d) => `\t${opts.important ? important(d) : d};`).join('\n')}\n}`);
+    }
 }
 
 function emitRules(rules: RuleSet): string {
@@ -611,6 +656,17 @@ function emitRules(rules: RuleSet): string {
     if (!rules[scope].length) continue;
     out.push(block(MEDIA_QUERIES[scope], rules[scope]));
   }
+  // Every state after every resting rule, so a state beats the resting style at every size, as hand-written `:hover`
+  // does; within a state, a size's own rule after the rule for all sizes; and active after focus after hover, so the
+  // state a visitor is in last wins while several hold.
+  for (const state of STYLE_STATES)
+    for (const scope of RESPONSIVE_SCOPES) {
+      const list = rules.states[state][scope];
+      if (!list.length) continue;
+      const query = [scope === 'base' ? null : MEDIA_QUERIES[scope], state === 'hover' ? HOVER_QUERY : null].filter(Boolean).join(' and ');
+      if (query) out.push(block(query, list));
+      else out.push(...list);
+    }
   // Last, and with !important as the theme's own rule has, so no duration set for any size outlasts it.
   if (rules.reduced.length) out.push(block(REDUCED_MOTION_QUERY, [...new Set(rules.reduced)]));
   return out.join('\n');
@@ -708,9 +764,10 @@ function definitionRules(state: ProjectState, def: ComponentDefinition, standalo
         addRules(rules, sel, v.styles![nid], opts);
         // First-format converted code marks only its root with the option, so its nodes are still matched through
         // the root, except a node that carries option classes of its own: one of a placement inside it.
+        // Its state rules stay on the node's own classes: through the root they would also reach a copy nested inside.
         if (legacy && nid !== rootId) {
           const own = Object.keys(a.options).sort().map((o) => `.${variantClass(def, axis, o)}`).join(', ');
-          addRules(rules, `${vc} .${nodeClass(def, nid)}:not(:where(${own}))`, v.styles![nid], opts);
+          addRules(rules, `${vc} .${nodeClass(def, nid)}:not(:where(${own}))`, v.styles![nid], { ...opts, stateSelector: null });
         }
       }
     }
@@ -755,8 +812,21 @@ function addOverrideRules(rules: RuleSet, state: ProjectState, owner: ComponentD
     // Doubled root selector: nested overrides must beat the nested definition's variant rules.
     const isRoot = partId === 'root' || !part || part.nodeId === def.tree?.rootIds[0];
     const sel = isRoot ? `${rootSelector}${rootSelector}${rootSelector}` : `${rootSelector}${rootSelector} .${nodeClass(def, part.nodeId)}`;
-    addRules(rules, sel, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId), wrap });
+    // An inner part is reached through the placement's root, which also reaches that part in a copy of the component
+    // placed inside this one (in its slot). Its state rules name the class the part takes for this override instead,
+    // as strong as the resting rule.
+    const marker = nestedStateMarker(owner, def, inst, partId);
+    addRules(rules, sel, inst.overrides![partId], { ...overrideOpts(state, def, inst, partId), wrap, ...(marker ? { stateSelector: `.${marker}`.repeat(3) } : {}) });
   }
+}
+
+/**
+ * The class an inner part of a managed component placed in a design takes (through `so_o`) for the design's state
+ * rules on it: none for its root, which the design's own class reaches directly, or a part with no state rules.
+ */
+function nestedStateMarker(owner: ComponentDefinition, def: ComponentDefinition, inst: InstanceNode, partId: string): string | undefined {
+  if (def.kind !== 'managed' || partId === 'root' || !Object.hasOwn(def.parts, partId) || def.parts[partId].nodeId === def.tree?.rootIds[0]) return undefined;
+  return hasStateStyles(inst.overrides?.[partId]) ? nestedOverrideClass(owner, inst.id, partId) : undefined;
 }
 
 /**
@@ -2177,6 +2247,15 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
     const map: Record<string, string> = {};
     // A part its code hides is shown again through the same marker classes a page's placement passes.
     for (const partId of Object.keys(node.overrides ?? {}).sort()) if (partId !== 'root' && Object.hasOwn(def.parts, partId)) map[partId] = nestedOverrideClass(ctx.def, node.id, partId) + shownClasses(def, node.overrides![partId]);
+    if (Object.keys(map).length) attrs.push(`so_o={${js(map)}}`);
+  }
+  // A managed component's inner parts take a class of the design's only for its state rules (see nestedStateMarker).
+  if (ctx.def && def.kind === 'managed') {
+    const map: Record<string, string> = {};
+    for (const partId of Object.keys(node.overrides ?? {}).sort()) {
+      const marker = nestedStateMarker(ctx.def, def, node, partId);
+      if (marker) map[partId] = marker;
+    }
     if (Object.keys(map).length) attrs.push(`so_o={${js(map)}}`);
   }
   if (ctx.instrument && def.kind === 'managed') {

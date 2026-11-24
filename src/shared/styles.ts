@@ -1,5 +1,6 @@
 import { isFocusValue } from './focus';
-import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import type { ComponentDefinition, ResponsiveScope, ResponsiveStyles, StyleProps, StyleState, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import { parseStyleScopeKey, STYLE_STATES, styleScopeKey } from './types';
 
 /**
  * The finite set of visual style properties the editor and AI can set.
@@ -168,6 +169,25 @@ export const STYLE_PROPS: StylePropDef[] = [
 ];
 
 export const STYLE_PROP_MAP: Record<string, StylePropDef> = Object.fromEntries(STYLE_PROPS.map((p) => [p.id, p]));
+
+/**
+ * The style properties a rule for an interactive state (hover, focus, pressed) may set: how the element looks (its
+ * colors, background, borders, corners, shadow and opacity), never its layout, size, visibility or motion, which
+ * would move what is around it, or the transition that animates the change (that belongs on its resting style).
+ */
+export const STATE_STYLE_PROPS: readonly string[] = STYLE_PROPS.filter((p) => p.group === 'appearance').map((p) => p.id);
+const STATE_STYLE_PROP_SET = new Set(STATE_STYLE_PROPS);
+export const isStateStyleProp = (prop: string): boolean => STATE_STYLE_PROP_SET.has(prop);
+/** Why a state rule cannot set `prop`, or null when it can. */
+export function stateStyleError(prop: string): string | null {
+  if (isStateStyleProp(prop)) return null;
+  const label = Object.hasOwn(STYLE_PROP_MAP, prop) ? STYLE_PROP_MAP[prop].label : prop;
+  return `${label} cannot change on hover, focus or press: a state changes only ${STATE_STYLE_PROPS.map((p) => STYLE_PROP_MAP[p].label.toLowerCase()).join(', ')}. Set it on the resting style.`;
+}
+/** Words for an interactive state, after a size ("on hover", "with keyboard focus", "while pressed"). */
+export const STATE_WORDS: Record<StyleState, string> = { hover: 'on hover', focus: 'with keyboard focus', active: 'while pressed' };
+/** Whether a set of styles holds any rule for an interactive state. */
+export const hasStateStyles = (styles: ResponsiveStyles | undefined): boolean => Object.keys(styles ?? {}).some((k) => !!parseStyleScopeKey(k)?.state);
 
 /** The style properties that do something on a node of this kind; undefined offers all of them. */
 export function styleSetFor(node: { kind: string }): string[] | undefined {
@@ -1408,6 +1428,72 @@ export function flattenStyles(layers: StyleLayer[], opts: FlattenOptions = {}): 
     bySize[size] = props;
   }
   return packSizes(bySize, !!opts.wideColumns);
+}
+
+/** The side borders `border` also sets: inside one rule each of them comes after it, and so beats it. */
+const BORDER_EDGES = SHORTHANDS.border;
+
+/**
+ * The interactive state rules of layers of rules on one element, folded into the state rules of the one set of styles
+ * `flattenStyles` makes of their resting rules. The stylesheet writes every resting rule, then each state's rules in
+ * turn (hover, focus, active), so within one layer, and among layers as strong as each other, a state beats every
+ * resting value at every size; a stronger layer still beats a weaker one's state with its resting value. At each size
+ * and in each state, a property keeps the value of the state rule that wins there, from a layer of the result's own
+ * (one beneath stays in force as it is); where a resting value wins, the result's resting rule already shows it.
+ * Each state is folded on its own: while two hold at once (pressed while hovered), the result's later state wins, where
+ * a stronger layer's earlier state may have before.
+ */
+export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, 'beneath'> = {}): ResponsiveStyles {
+  const beneath = opts.beneath ?? 0;
+  const out: ResponsiveStyles = {};
+  for (const state of STYLE_STATES) {
+    const bySize = {} as Record<Size, StyleProps>;
+    let any = false;
+    for (const size of CASCADE_SIZES) {
+      type Win = { value: StyleValue; rank: number[]; inState: boolean; index: number };
+      const best = new Map<string, Win>();
+      layers.forEach((layer, index) => {
+        const raw = layer.styles;
+        if (!raw) return;
+        for (const [bucket, inState] of [['base', false], [size, false], ['base', true], [size, true]] as const) {
+          const props = raw[styleScopeKey(bucket, inState ? state : undefined)];
+          if (!props || typeof props !== 'object') continue;
+          for (const [prop, value] of Object.entries(props)) {
+            if (value === undefined || !isStateStyleProp(prop)) continue;
+            // Stronger first; as strong (one stylesheet block), a state rule after every resting one; then the size's
+            // own rule after the rule for all sizes; then the later layer.
+            const rank = [layer.strength, inState ? 1 : 0, bucket === 'base' ? 0 : 1, index];
+            const held = best.get(prop);
+            if (!held || later(rank, held.rank)) best.set(prop, { value, rank, inState, index });
+          }
+        }
+      });
+      const props: StyleProps = {};
+      for (const [prop, w] of best) if (w.inState && w.index >= beneath) props[prop] = w.value;
+      // A border sets every side: a side's state value a later border overrode goes. The state's own rule writes its
+      // border before the sides, so a resting side that beat that border is written again after it.
+      const border = best.get('border');
+      if (border)
+        for (const edge of BORDER_EDGES) {
+          const side = best.get(edge);
+          if (!side) continue;
+          if (later(border.rank, side.rank)) delete props[edge];
+          else if (props.border !== undefined && !side.inState && side.index >= beneath) props[edge] = side.value;
+        }
+      bySize[size] = props;
+      if (Object.keys(props).length) any = true;
+    }
+    if (!any) continue;
+    const packed = packSizes(bySize, false);
+    for (const scope of ['base', ...CASCADE_SIZES] as const) if (packed[scope]) out[styleScopeKey(scope, state)] = packed[scope];
+  }
+  return out;
+}
+
+/** Whether rank `a` comes after rank `b` in the cascade, so `a` wins. */
+function later(a: number[], b: number[]): boolean {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
 }
 
 /**

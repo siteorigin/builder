@@ -34,7 +34,7 @@ import {
   Users
 } from 'lucide-react';
 import type { ComponentDefinition, ElementNode, ElementRef, GraphNode, ImageValue, InstanceNode, LinkValue, ListItem, ListProp, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles, ScalarPropSchema, StyleValue, TextNode } from '@shared/types';
-import { isBinding } from '@shared/types';
+import { isBinding, parseStyleScopeKey } from '@shared/types';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
@@ -2064,8 +2064,12 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
             original
               ? (only) => {
                   const ops: EditOperation[] = [];
-                  for (const sc of (only ? [only] : Object.keys(changed ?? {})) as Array<keyof ResponsiveStyles>)
-                    for (const prop of Object.keys(changed?.[sc] ?? {})) ops.push({ type: 'node.setStyle', owner, nodeId: node.id, scope: sc, property: prop, value: (original[sc]?.[prop] ?? null) as StyleValue | null });
+                  // A size restores its resting style and its states; without one, every rule that changed.
+                  for (const key of Object.keys(changed ?? {}) as Array<keyof ResponsiveStyles>) {
+                    const at = parseStyleScopeKey(key);
+                    if (!at || (only && at.scope !== only)) continue;
+                    for (const prop of Object.keys(changed?.[key] ?? {})) ops.push({ type: 'node.setStyle', owner, nodeId: node.id, scope: at.scope, ...(at.state ? { state: at.state } : {}), property: prop, value: (original[key]?.[prop] ?? null) as StyleValue | null });
+                  }
                   if (ops.length) void applyOps(ops, `Restore ${def.name} design`);
                 }
               : (sc) => void applyOps([{ type: 'node.resetStyles', owner, nodeId: node.id, scope: sc }], 'Clear element styles')

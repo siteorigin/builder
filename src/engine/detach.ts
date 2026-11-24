@@ -12,7 +12,7 @@ import type { Op } from '@shared/ops';
 import { newId } from '@shared/ids';
 import { richTextToPlain, toRichText } from '@shared/richtext';
 import { isArticleDate } from '@shared/articles';
-import { flattenStyles, type StyleLayer } from '@shared/styles';
+import { flattenStates, flattenStyles, type StyleLayer } from '@shared/styles';
 import { designLayers, selectedVariants } from '@shared/variants';
 import { liveItemStyles } from '@shared/item-styles';
 import { defKey, keepWeakerHides, naturalDisplay, nodeAxes } from '@generator/index';
@@ -235,7 +235,8 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
         if (n.ariaLabel !== undefined) setOptional(n, 'ariaLabel', text(value(n.ariaLabel, at)));
         break;
     }
-    const styles = flattenStyles(layersFor(src.id, at, 0), { link: src.kind === 'link', shownDisplay: () => naturalDisplay(src), tooMuch });
+    const layers = layersFor(src.id, at, 0);
+    const styles = { ...flattenStyles(layers, { link: src.kind === 'link', shownDisplay: () => naturalDisplay(src), tooMuch }), ...flattenStates(layers) };
     if (Object.keys(styles).length) n.styles = styles;
     const from = provenance(src);
     // An action repeated in a list moved through the viewer with the list's other items (in each outer item apart).
@@ -340,6 +341,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       // What the stylesheet shows a placed component's root with: its own kind in this design (an instance: the browser's).
       shownDisplay: () => naturalDisplay(src)
     });
+    Object.assign(root, flattenStates(layers, { beneath: beneath.length }));
     const overrides = { ...(src.overrides ?? {}) };
     delete overrides.root;
     if (Object.keys(root).length) overrides.root = root;

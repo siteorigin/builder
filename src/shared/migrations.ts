@@ -391,6 +391,12 @@ export const MIGRATIONS: Migration[] = [
     description:
       'Managed components can declare UI state (state), read it in conditions and variants ($state) and change it from buttons (stateAction). Nothing in the documents changes; the new version only keeps an older editor, which would show every state-dependent element at once and drop what buttons do, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'style-states',
+    description:
+      'Style rules can apply on hover, keyboard focus or while pressed ("base:hover", "phone:focus" beside each size). Nothing in the documents changes; the new version only keeps an older editor, which would drop those rules from the site, from copies and from detached sections, from opening the project for editing.',
+    migrate() {}
   }
 ];
 
