@@ -10,6 +10,7 @@ import { partsShown } from '@shared/page-shell';
 import { findParent } from '@engine/tree';
 import { renderedImages, repeatsAbove, type ImageField } from '@generator/checks';
 import { descOf, encodeItemId, parseCtx, resolveRef, type BridgeDesc } from './model';
+import { insertOps, type InsertAt } from './insert-at';
 
 /** One image on the page (or the header or footer it shows) a dragged image can be dropped on. */
 export interface ImageTarget {
@@ -213,4 +214,12 @@ export function imageDropOps(owner: OwnerRef, field: ImageField, assetId: string
       value: assetId
     }
   ];
+}
+
+/**
+ * The change a drop between content makes (#506), the one Place on page makes: a new Image element at `at` (in a Section
+ * of its own at a page's top level), named `nodeId`, showing the library image with its suggested alt text.
+ */
+export function imageInsertOps(at: InsertAt, assetId: string, nodeId: string): EditOperation[] {
+  return [...insertOps(at, { primitive: 'image' }, 'element', nodeId), { type: 'node.setContent', owner: at.owner, nodeId, field: 'image', value: assetId }];
 }
