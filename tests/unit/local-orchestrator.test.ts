@@ -645,7 +645,8 @@ describe('a request that fails on the local setup (#83)', () => {
   it('does the same for a listed model that rejects the chat request', async () => {
     const { session, run, header } = await setup();
     const before = headerName(session, header);
-    server.script(rejected('studio-b cannot generate chat completions'));
+    // Refused with the compact schema and again with the full one (#364).
+    server.script(rejected('studio-b cannot generate chat completions'), rejected('studio-b cannot generate chat completions'));
     const { result } = await run('Rename the site to Harbor Coffee');
     expect(result).toMatchObject({ status: 'failed', repair: 'settings', summary: 'The AI request failed: studio-b cannot generate chat completions Nothing in the site was changed.' });
     expect(headerName(session, header)).toBe(before);
@@ -662,7 +663,7 @@ describe('a request that fails on the local setup (#83)', () => {
   it('says the project was restored when the model failed after changing it', async () => {
     const { session, run, header } = await setup();
     const before = headerName(session, header);
-    server.script(envelopeReply('update_site_brand', rename('Harbor Coffee'), 'Renaming the site'), rejected('the model crashed'));
+    server.script(envelopeReply('update_site_brand', rename('Harbor Coffee'), 'Renaming the site'), rejected('the model crashed'), rejected('the model crashed'));
     const { result } = await run('Rename the site to Harbor Coffee');
     expect(result).toMatchObject({ status: 'failed', repair: 'settings', summary: 'The AI request failed: the model crashed The project was restored to how it was before this request.' });
     expect(headerName(session, header)).toBe(before);

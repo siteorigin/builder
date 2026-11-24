@@ -243,10 +243,11 @@ try {
   second = await new MockOpenAIServer().start(secondPort);
   second.models = secondModels;
   const rejection = () => ({ status: 400, body: JSON.stringify({ error: { message: 'studio-b cannot generate chat completions' } }) });
-  second.script(rejection());
+  // Refused with the compact schema, then with the same schema written out in full.
+  second.script(rejection(), rejection());
   await listen();
   await down.getByRole('button', { name: 'Try again', exact: true }).click();
-  await eventually(async () => assert.equal(second.requests.filter((r) => r.method === 'POST').length, 1), 30000, 200);
+  await eventually(async () => assert.equal(second.requests.filter((r) => r.method === 'POST').length, 2), 30000, 200);
   assert.match(JSON.stringify(second.requests.find((r) => r.method === 'POST').body.messages), /Rename the site to Harbor Tea/, 'the same request was sent again');
   const rejected = win.locator('.result-card').last();
   await rejected.getByText('studio-b cannot generate chat completions', { exact: false }).waitFor({ timeout: 30000 });

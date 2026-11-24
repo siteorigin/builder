@@ -783,7 +783,9 @@ describe('what a chat request shows about the setup', () => {
     expect(down.checks).toEqual([{ ok: false, stage: 'server', message: expect.stringMatching(/Is your local server running/) }]);
 
     // A key the chat request needs is a chat failure: the model list may not need one, so listing cannot clear it.
-    server.script({ status: 401, body: '{}' }, { status: 400, body: JSON.stringify({ error: { message: 'model cannot chat' } }) });
+    // A refusal it cannot place gets the full schema once (#364), and is reported once that is refused too.
+    const cannotChat = { status: 400, body: JSON.stringify({ error: { message: 'model cannot chat' } }) };
+    server.script({ status: 401, body: '{}' }, cannotChat, cannotChat);
     const refused = reported();
     expect(errorOf(await run(refused.a))).toMatchObject({ code: 'auth', setup: 'chat' });
     expect(errorOf(await run(refused.a))).toMatchObject({ code: 'invalid_request', setup: 'chat' });
