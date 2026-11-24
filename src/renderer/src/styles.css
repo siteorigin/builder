@@ -595,13 +595,18 @@ body.dialog-open .toast { pointer-events: none; }
 
 .status-bar { display: flex; align-items: center; gap: 12px; padding: 0 12px 0 14px; font-size: 12px; color: var(--text-2); background: var(--panel); border-top: 1px solid var(--border); }
 .status-bar > button, .status-bar .crumbs button { border: 0; background: transparent; color: inherit; display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 6px; border-radius: var(--r-sm); font-size: 12px; transition: background 120ms, color 120ms; }
+/* The bar's own items never wrap or squeeze: the selection path is what gives way in a narrow window. */
+.status-bar > button, .status-bar > .preview-status { flex: none; white-space: nowrap; }
+/* A working or starting preview is reported as text; it becomes a button (with the chevron) once there is something to do. */
+.status-bar > span.preview-status { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px; }
 .status-bar > button:hover, .status-bar .crumbs button:hover { background: var(--hover); color: var(--text); }
 .status-bar > button svg, .status-bar .crumbs svg, .status-bar > .row svg { width: 13px; height: 13px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
 .status-dot.ready { background: var(--green); }
 .status-dot.stopped { background: var(--text-3); }
-/* Busy is a ring, ready and broken are solid: the dots differ in shape as well as hue. */
-.status-dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--amber); }
+/* Busy is a ring, ready and broken are solid: the dots differ in shape as well as hue. Busy takes the accent, like
+   every spinner, so a preview that is still starting never reads as a warning. */
+.status-dot.busy { background: transparent; box-shadow: inset 0 0 0 2px var(--accent); }
 .status-dot.error { background: var(--red); }
 .crumbs { display: flex; align-items: center; min-width: 0; overflow: hidden; }
 .crumbs ol { display: flex; align-items: center; gap: 2px; min-width: 0; margin: 0; padding: 0; list-style: none; }
@@ -614,22 +619,33 @@ body.dialog-open .toast { pointer-events: none; }
 .status-bar .crumbs button { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 24px; color: var(--text-2); }
 .status-bar .crumbs button:hover { color: var(--text); }
 .status-bar .crumbs button[aria-current] { color: var(--text); font-weight: 600; }
-.status-bar .problems svg { color: var(--green); }
-.status-bar .problems.error, .status-bar .problems.error svg { color: var(--red); font-weight: 600; }
-.status-bar .problems.warn, .status-bar .problems.warn svg { color: var(--amber); font-weight: 600; }
-.status-bar .problems.error:hover { background: var(--red-soft); color: var(--red); }
-.status-bar .problems.warn:hover { background: var(--amber-soft); color: var(--amber); }
-.status-bar .read-only { color: var(--amber); font-weight: 600; }
-.status-bar .problems.error .go, .status-bar .problems.warn .go { color: var(--text-3); }
-.status-bar .problems .also { margin-left: -5px; font-weight: 400; color: var(--text-2); }
+/* Project health: each severity has its own glyph and words. Problems (and a failed preview) rest on a soft red
+   ground with a full ring, so a blocker stands apart from a warning before anything is hovered; warnings stay text. */
+.status-bar .problems .tally ~ .tally { margin-left: 5px; }
+.status-bar .problems .tally { display: inline-flex; align-items: center; gap: 5px; }
+.status-bar .problems .tally.ok svg { color: var(--green); }
+.status-bar .tally.error, .status-bar .tally.error svg { color: var(--red); font-weight: 600; }
+.status-bar .tally.warn, .status-bar .tally.warn svg { color: var(--amber); font-weight: 600; }
+.status-bar .problems.error .tally.warn { font-weight: 500; }
+/* The ring is the control's edge: 3:1 or more against the fill and the bar in both themes; hover takes it to full red. */
+.status-bar .problems.error, .status-bar .preview-status.error { background: var(--red-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 75%, transparent); }
+.status-bar .problems.error:hover, .status-bar .preview-status.error:hover { background: var(--red-soft); box-shadow: inset 0 0 0 1px var(--red); }
+.status-bar .problems.warn:hover { background: var(--amber-soft); }
+.status-bar .preview-status.error, .status-bar .preview-status.error > svg:not(.go) { color: var(--red); font-weight: 600; }
+.status-bar > button.read-only, .status-bar > button.read-only > svg:not(.go) { color: var(--amber); font-weight: 600; }
+.status-bar > button.read-only:hover { background: var(--amber-soft); }
 .status-bar .preview-status .status-dot { margin: 0 3px; }
-.status-bar .problems .go { width: 11px; height: 11px; margin-left: -2px; }
-.status-bar .problems:not(.error):not(.warn) .go { color: var(--text-3); }
+.status-bar > button .go { width: 11px; height: 11px; margin-left: -2px; color: var(--text-3); }
 .status-sep { flex: none; width: 1px; height: 14px; background: var(--border-strong); }
 .status-bar .crumbs button.more { display: inline-grid; place-items: center; width: 26px; padding: 0; }
 .crumbs li:has(> .more) { flex: none; }
-.status-bar .preview-status.error, .status-bar .preview-status.error svg { color: var(--red); font-weight: 600; }
-.status-bar .preview-status.error:hover { background: var(--red-soft); color: var(--red); }
+/* High contrast keeps the frame on a blocker and the preview's dot, which are otherwise drawn with fills and shadows. */
+@media (forced-colors: active) {
+  .status-bar .problems.error, .status-bar .preview-status.error { box-shadow: none; border: 1px solid ButtonText; }
+  .status-dot { forced-color-adjust: none; border: 1px solid CanvasText; background: Canvas; }
+  .status-dot.ready, .status-dot.error { background: CanvasText; }
+  .status-dot.busy { box-shadow: none; border: 2px solid Highlight; }
+}
 .width-field:has([aria-invalid='true']) { border-color: var(--red); }
 .status-bar .crumbs button.more svg { width: 14px; height: 14px; color: var(--text-2); }
 
@@ -2624,69 +2640,138 @@ button.asset-use:hover svg.go { color: var(--text); }
 /* Several layers selected together: how many, and their commands. */
 .layers-picked { display: flex; align-items: center; gap: 6px; margin: 0 10px 6px 14px; padding: 2px 4px 2px 10px; flex: none; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text); font-size: 12px; font-weight: 500; }
 .status-bar .crumbs-count { flex: none; margin-left: 6px; padding: 0 6px; border-radius: var(--r-sm); background: var(--accent-soft); color: var(--accent-text); font-size: 12px; line-height: 20px; white-space: nowrap; }
-.outline-view { padding: 0 10px 12px 10px; }
-.outline-summary { padding: 0 0 8px 4px; }
-.outline-summary-action { display: block; height: auto; min-height: 26px; max-width: 100%; margin-top: 6px; padding-block: 4px; white-space: normal; text-align: start; }
+/* The heading outline: the page's headings in the order screen readers list them, indented by level. Its right
+   padding gives way to the panel's stable scrollbar gutter, so the summary lines up with Layers | Headings above. */
+.outline-view { padding: 0 2px 12px 10px; }
+.outline-summary { padding: 0 0 10px 4px; }
+.outline-summary-action { display: block; height: auto; min-height: 26px; max-width: 100%; margin-top: 8px; padding-block: 4px; white-space: normal; text-align: start; }
 .outline-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
-/* Indented by level, so the outline reads as the nesting a screen reader announces. */
-.outline-list > li { padding-inline-start: calc((min(var(--level), 6) - 1) * 12px); }
-.outline-group { display: block; margin: 10px 0 2px 6px; font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
-/* A flagged heading keeps its words on their own line, with its flag and next step below them. */
-.outline-item { display: flex; flex-direction: column; min-width: 0; }
+/* Indented by level, so the outline reads as the nesting a screen reader announces. The shared header's or footer's
+   label sits outside the indent: it names a part of the site, not a level. */
+.outline-item { display: flex; flex-direction: column; min-width: 0; margin-inline-start: calc((min(var(--level), 6) - 1) * 12px); }
+.outline-group { display: block; margin: 4px 0 3px 6px; font-size: 11px; font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.outline-list > li:not(:first-child) > .outline-group { margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
 .outline-row { width: 100%; min-width: 0; display: flex; align-items: flex-start; gap: 8px; min-height: 30px; padding: 4px 6px; border: 0; border-radius: var(--r-sm); background: transparent; color: var(--text); font-size: 13px; text-align: start; }
 .outline-row:hover { background: var(--hover); }
 .outline-row[aria-current='true'] { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
 .outline-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.outline-level { flex: none; min-width: 26px; height: 20px; padding: 0 5px; border-radius: 5px; background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
+.outline-level { flex: none; min-width: 26px; height: 20px; padding: 0 5px; border-radius: var(--r-xs); background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; font-variant-numeric: tabular-nums; }
 .outline-row.warn .outline-level { background: var(--amber-soft); color: var(--amber); }
 /* On a selected row the amber tints sit on an opaque ground, so their text keeps 4.5:1 over the selection's fill. */
 .outline-row.warn[aria-current='true'] :is(.outline-level, .badge.amber) { background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--raised); }
+.outline-row:not(.warn)[aria-current='true'] .outline-level { background: linear-gradient(var(--active), var(--active)), var(--panel); }
 .outline-text { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
-.outline-words { display: block; width: 100%; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.outline-row.warn .outline-words { white-space: normal; overflow-wrap: anywhere; }
+/* Up to two lines for every heading, three for a flagged one, so headings tell apart at rest and a long flagged one
+   doesn't push its next step away; the row's tooltip holds the full words. */
+.outline-words { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; width: 100%; line-height: 20px; overflow: hidden; overflow-wrap: anywhere; text-wrap: pretty; }
+.outline-row.warn .outline-words { -webkit-line-clamp: 3; }
 .outline-words.empty { color: var(--text-3); font-style: italic; }
+.outline-row[aria-current='true'] .outline-words.empty { color: var(--text-2); }
 .outline-row .badge { flex: none; max-width: 100%; }
 /* Lines up under the heading's words: the row's padding, its level chip and their gap. */
-.outline-next { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 1px 6px 6px 40px; }
+.outline-next { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 4px 6px 6px 40px; }
 .outline-hint { font-size: 12px; line-height: 1.4; color: var(--text-2); }
 .outline-view:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .outline-note { margin: 10px 6px 0; font-size: 12px; }
-.outline-view .layers-empty { padding: 6px 6px 8px 4px; }
+.outline-summary .scope-note .grow { text-wrap: pretty; }
+@media (forced-colors: active) { .outline-row[aria-current='true'] { border: 1px solid Highlight; } }
 
-/* ---------- Project health dialog: a summary, then one list per severity, most urgent first ---------- */
-.health-summary { display: flex; align-items: flex-start; gap: 10px; width: fit-content; max-width: calc(100% + 12px); margin: 0 -6px 11px; padding: 3px 6px; font-size: 13px; line-height: 1.45; color: var(--text-2); }
-.modal .health-summary[data-autofocus]:focus { outline: none; }
-.modal .health-summary[data-autofocus]:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; border-radius: var(--r-sm); }
-.health-summary > svg { width: 18px; height: 18px; flex: none; margin-top: 1px; }
-.health-summary strong { display: block; font-size: 14px; font-weight: 600; color: var(--text); }
-.health-summary.error > svg { color: var(--red); }
-.health-summary.warn > svg { color: var(--amber); }
-.health-summary.ok > svg { color: var(--green); }
-.health-callout { align-items: center; margin-bottom: 14px; padding: 10px 12px; }
-.health-group + .health-group { margin-top: 14px; }
-.health-group h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
-.health-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--r-xs); background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.health-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--raised); overflow: hidden; }
-.health-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; padding: 10px 12px; font-size: 13px; line-height: 1.45; color: var(--text); }
-.health-row + .health-row { border-top: 1px solid var(--border); }
-.health-row.stacked { grid-template-columns: 16px minmax(0, 1fr); }
-.health-icon { display: flex; height: 19px; align-items: center; color: var(--text-3); }
-.health-icon svg { width: 14px; height: 14px; }
+/* ---------- Project health dialog: a summary, then one list per severity, most urgent first ----------
+   The summary's badge carries the overall state with its glyph (red problems, amber warnings, green fine), in the
+   shape of the confirmation badge. Group titles carry their count in the same hue. Problems sit in a card with a
+   red-tinted ring, warnings in a plain raised card, and the quiet groups (notes, updates, saved copies, the website
+   tools) flat on the panel, so the eye reaches what blocks work first and a healthy row never competes with it. */
+.health-body { display: flex; flex-direction: column; gap: 18px; }
+.health-summary { display: flex; align-items: flex-start; gap: 12px; padding: 12px 14px; border-radius: var(--r-md); background: var(--panel-2); border: 1px solid var(--border-strong); font-size: 13px; line-height: 1.45; color: var(--text-2); outline: none; }
+.modal .health-summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.health-badge { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--green-soft); color: var(--green); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 24%, transparent); }
+.health-summary.danger .health-badge { background: var(--red-soft); color: var(--red); }
+.health-summary.warn .health-badge { background: var(--amber-soft); color: var(--amber); }
+.health-summary.busy .health-badge { background: var(--accent-soft); color: var(--accent-text); }
+.health-badge svg { width: 17px; height: 17px; }
+.health-badge .spinner { width: 16px; height: 16px; border-color: color-mix(in srgb, var(--accent) 22%, transparent); border-top-color: var(--accent); }
+.health-summary-text { min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+.health-summary-text p { margin: 0; text-wrap: pretty; }
+.health-summary strong { display: block; margin-bottom: 1px; font-size: 15px; font-weight: 600; line-height: 1.4; color: var(--text); }
+/* With several lists, the summary leads to each: a control, so it takes the 3:1 control edge. */
+.health-jumps { display: flex; flex-wrap: wrap; gap: 6px; }
+.health-jump { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border-radius: var(--r-sm); border: 1px solid var(--border-control); background: var(--raised); color: var(--text); font-size: 12px; font-weight: 500; transition: background 120ms; }
+.health-jump:hover { background: var(--hover); }
+.health-jump svg { width: 13px; height: 13px; flex: none; }
+.health-jump.danger svg { color: var(--red); }
+.health-jump.warn svg { color: var(--amber); }
+.health-jump-count { font-variant-numeric: tabular-nums; color: var(--text-2); }
+.health-jump svg.health-jump-go { width: 12px; height: 12px; margin-right: -2px; color: var(--text-3); }
+.health-jump:hover svg.health-jump-go { color: var(--text-2); }
+.health-callout { align-items: flex-start; padding: 10px 14px; border-radius: var(--r-md); }
+.health-callout > svg { margin-top: 2px; }
+.health-callout .btn { flex: none; align-self: center; }
+.health-group h3 { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--text); scroll-margin-top: 8px; }
+.health-group h3:focus { outline: none; }
+.health-group h3:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--r-xs); }
+.health-count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 18px; padding: 0 6px; border-radius: 99px; background: var(--active); color: var(--text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.health-group.danger .health-count { background: var(--red-soft); color: var(--red); }
+.health-group.warn .health-count { background: var(--amber-soft); color: var(--amber); }
+.health-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--raised); box-shadow: var(--shadow-sm); overflow: hidden; }
+.health-group.danger .health-list { border-color: color-mix(in srgb, var(--red) 40%, var(--border-strong)); }
+:root:where([data-appearance='dark']) .health-group.danger .health-list { border-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.health-group.quiet .health-list { background: transparent; box-shadow: none; border-color: var(--border-strong); }
+.health-list > li + li, .health-place .health-row + .health-row { border-top: 1px solid var(--border); }
+/* Items about one page or component are listed under its name, so the name is read once, not on every row. */
+.health-place > h4 { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; margin: 0; padding: 6px 14px; font-size: 12px; font-weight: 600; line-height: 18px; color: var(--text-2); background: var(--panel-2); border-bottom: 1px solid var(--border); }
+.health-place > h4 svg { width: 13px; height: 13px; flex: none; color: var(--text-3); }
+.health-place > ul { list-style: none; margin: 0; padding: 0; }
+.health-place-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; padding: 0 14px 7px; font-size: 12px; line-height: 1.45; color: var(--text-2); background: var(--panel-2); border-bottom: 1px solid var(--border); }
+.health-place-note svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+.health-place:has(> .health-place-note) > h4 { border-bottom: 0; padding-bottom: 2px; }
+.health-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 6px 12px; align-items: start; padding: 11px 14px; font-size: 13px; line-height: 1.5; color: var(--text); }
+.health-icon { display: flex; height: 20px; align-items: center; color: var(--text-3); }
+.health-icon svg { width: 15px; height: 15px; }
+.health-icon .spinner { width: 13px; height: 13px; }
 .health-row.danger .health-icon { color: var(--red); }
 .health-row.warn .health-icon { color: var(--amber); }
-.health-text { min-width: 0; }
+.health-text { min-width: 0; max-width: 72ch; text-wrap: pretty; overflow-wrap: anywhere; }
 .health-text strong { font-weight: 600; }
-.health-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; }
-.health-row.stacked .health-actions { grid-column: 2; justify-content: flex-start; margin-top: 4px; }
-.health-path { display: block; margin-top: 2px; font-family: var(--mono); font-size: 11px; color: var(--text-3); overflow-wrap: anywhere; user-select: text; }
-.health-hint { display: block; margin-top: 2px; font-size: 12px; color: var(--text-2); }
-.health-note { margin: 0 0 6px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
-.health-below { grid-column: 2 / -1; min-width: 0; }
+.health-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 6px; margin-top: -3px; }
+:is(.health-actions, .health-choice, .health-copy) .btn svg { width: 13px; height: 13px; }
+.health-path { display: block; width: fit-content; max-width: 100%; margin-top: 5px; padding: 1px 6px; border-radius: var(--r-xs); background: var(--panel-2); font-family: var(--mono); font-size: 11px; line-height: 1.6; color: var(--text-2); overflow-wrap: anywhere; user-select: text; }
+.health-hint { display: block; margin: 4px 0 0; font-size: 12px; color: var(--text-2); }
+.health-note { display: flex; align-items: flex-start; gap: 6px; max-width: 72ch; margin: -2px 0 8px; font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+.health-note svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+.health-below { grid-column: 2 / -1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.health-below:empty { display: none; }
+.health-below > .health-path { margin-top: -2px; }
+.health-inline-result { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.health-inline-result > .health-hint { margin: 0; }
+.health-recheck { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; }
+/* A file conflict's two choices, each beside what it does, on equal footing: either version can be recovered. */
+.health-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; }
+.health-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 9px 10px 10px; border-radius: var(--r-sm); background: var(--panel-2); border: 1px solid var(--border); }
+.health-choice > span { font-size: 12px; line-height: 1.45; color: var(--text-2); text-wrap: pretty; }
+/* A generated file has one way back: its button and what it does share a line rather than a half-empty card. */
+.health-choices:has(> :only-child) { grid-template-columns: minmax(0, 1fr); }
+.health-choice:only-child { flex-direction: row; align-items: center; gap: 12px; }
+.health-choice:only-child > .btn { flex: none; }
 .health-details { font-size: 12px; color: var(--text-2); }
-.health-details summary { width: fit-content; padding: 3px 0; font-weight: 600; line-height: 18px; }
-.health-details ul { margin: 2px 0 0; padding-inline-start: 16px; list-style: disc; line-height: 1.45; }
-.health-details pre { max-height: 200px; overflow: auto; margin: 4px 0 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--text-2); }
-.health-copy-state { margin-inline-start: 8px; }
+.health-details > summary { display: inline-flex; align-items: center; gap: 4px; margin-left: -6px; padding: 2px 8px 2px 4px; border-radius: var(--r-sm); font-weight: 600; line-height: 20px; list-style: none; color: var(--text-2); transition: background 120ms, color 120ms; }
+.health-details > summary::-webkit-details-marker { display: none; }
+.health-details > summary:hover { background: var(--hover); color: var(--text); }
+.health-details > summary svg { width: 14px; height: 14px; flex: none; transition: transform 120ms; }
+.health-details[open] > summary svg { transform: rotate(90deg); }
+.health-details-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 6px; }
+.health-details pre { display: flex; flex-direction: column; align-self: stretch; max-height: 200px; overflow: auto; margin: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--text-2); }
+/* One block per log line: a long line wraps under its own start, never as if it were a new line. */
+.health-log-line { display: block; padding-left: 2ch; text-indent: -2ch; }
+.health-terms { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 0; line-height: 1.45; }
+.health-terms dt { grid-column: 1; font-weight: 600; color: var(--text); }
+.health-terms dd { grid-column: 2; margin: 0; }
+.health-copy { display: flex; align-items: center; gap: 8px; }
+.health-inline-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 1px; }
+.health-inline-actions .btn svg { width: 13px; height: 13px; }
+/* Held while an action runs: it keeps focus, takes the shared unavailable face, and does nothing. */
+.health-body .btn[aria-disabled='true'] { cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) { .health-details > summary svg, .health-jump { transition: none; } }
+@media (forced-colors: active) { .health-badge, .health-count { box-shadow: none; border: 1px solid CanvasText; } }
 
 /* ---------- Inspector: selection header and content (scoped to .insp, the Inspector tab's body) ----------
    Every selection gets the same header: a kind tile (neutral, green for the shared header and footer, plum

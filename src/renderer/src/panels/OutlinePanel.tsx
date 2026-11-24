@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import { CircleCheck, Info, TriangleAlert } from 'lucide-react';
 import { sameRef } from '@shared/types';
 import type { OutlineHeading } from '@generator/checks';
-import { applyOps, getState, setState, useStore } from '../store';
+import { applyOps, getState, setState, useStore, type InspectorFocus } from '../store';
 import { headingLevelOps, headingTarget, headingWords, pageOutline, type OutlineRow } from '../lib/outline';
 
 const WHERE: Record<string, string> = { header: 'Shared header', footer: 'Shared footer' };
@@ -53,6 +53,19 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
 
   const select = (h: OutlineHeading) => setState({ mode: 'edit', selection: headingTarget(state, h), rightTab: 'inspect', dockOpen: true });
   /**
+   * Edit a flagged heading's level where it is set: select it, and when a placement's field sets it, open that field in
+   * the Inspector with focus on it. A heading in rich text is changed in its text, which the row's hint says.
+   */
+  const editLevel = (h: OutlineHeading) => {
+    const target = headingTarget(state, h);
+    const src = h.levelSource;
+    const focus: InspectorFocus | undefined =
+      src?.kind === 'prop' && target.nodeId === h.nodeId && target.instancePath.length === 0
+        ? { seq: Date.now(), at: Date.now(), opening: snap.workspaceKey, owner: h.owner, nodeId: h.nodeId, prop: src.prop, ...(src.itemId !== undefined ? { itemId: src.itemId, field: src.field } : {}), label: 'Heading level' }
+      : undefined;
+    setState({ mode: 'edit', selection: target, rightTab: 'inspect', dockOpen: true, ...(focus ? { inspectorFocus: focus } : {}) });
+  };
+  /**
    * Give a heading another level. Focus stays in the outline, on the same heading's row once it has its new level,
    * unless the edit did not land or another page is shown by then.
    */
@@ -67,18 +80,36 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
     });
   };
 
-  const flagged = rows.filter((r) => r.extraTitle || r.skip).length;
+  const flaggedRows = rows.filter((r) => r.extraTitle || r.skip);
+  const flagged = flaggedRows.length;
+  // Lead to the first heading to check: select it on the page, and put focus on its row with its next step below.
+  const goToFirst = () => {
+    const first = flaggedRows[0];
+    if (!first) return;
+    select(first.heading);
+    requestAnimationFrame(() => {
+      const row = document.querySelector<HTMLElement>(`.outline-list .outline-row[data-heading="${CSS.escape(first.key)}"]`);
+      row?.focus();
+      row?.scrollIntoView({ block: 'nearest' });
+    });
+  };
   const promise = readOnly ? 'This project is read-only, so levels can’t be changed here.' : 'Changing a level never changes how a heading looks.';
   const summary = review.missingTitle ? (
     <div className="scope-note site" role="note">
       <TriangleAlert aria-hidden="true" />
       <span className="grow">
         <strong>No main heading.</strong> Screen readers have no Heading 1 to start from. {promise}
-        {titleFix && !readOnly && (
+        {!titleFix && !readOnly && rows.length > 0 && ' Select the heading that titles this page, then make it Heading 1 in the Inspector or in its text.'}
+        {(!titleFix || readOnly) && flagged > 0 && ` ${flagged === 1 ? 'One heading also skips a level' : `${flagged} headings also skip a level`}.`}
+        {titleFix && !readOnly ? (
           <button className="btn btn-sm outline-summary-action" onClick={() => setLevel(titleFix, 1)}>
             Make “{headingWords(titleFix.heading)}” Heading 1
           </button>
-        )}
+        ) : flagged > 0 ? (
+          <button className="btn btn-sm outline-summary-action" onClick={goToFirst}>
+            {flagged === 1 ? 'Go to it' : 'Go to the first one'}
+          </button>
+        ) : null}
       </span>
     </div>
   ) : flagged ? (
@@ -89,8 +120,8 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
           {flagged} heading{flagged === 1 ? '' : 's'} to check.
         </strong>{' '}
         {promise}
-        <button className="btn btn-sm outline-summary-action" onClick={() => document.querySelector<HTMLElement>('.outline-list .outline-row.warn')?.focus()}>
-          Go to the first one
+        <button className="btn btn-sm outline-summary-action" onClick={goToFirst}>
+          {flagged === 1 ? 'Go to it' : 'Go to the first one'}
         </button>
       </span>
     </div>
@@ -113,10 +144,15 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
 
   return (
     <div className="panel-body outline-view" aria-label={`Headings on ${page.title}`} role="region" tabIndex={-1}>
-      <div className="outline-summary">{summary}</div>
+      {summary && <div className="outline-summary">{summary}</div>}
       {rows.length === 0 ? (
-        <div className="layers-empty">
-          <p>No headings on this page yet</p>
+        <div className="outline-summary">
+          <div className="scope-note instance outline-empty" role="note">
+            <Info aria-hidden="true" />
+            <span className="grow">
+              <strong>No headings on this page yet.</strong> A page reads best with one Heading 1 as its title, then Heading 2s for its sections. They’ll be listed here as you add them.
+            </span>
+          </div>
         </div>
       ) : (
         <ol className="outline-list">
@@ -133,14 +169,22 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
             const shellName = h.owner.kind === 'shell' ? WHERE[h.owner.id] : null;
             return (
               <li key={i} className={h.owner.kind === 'shell' ? 'shared' : undefined} style={{ '--level': h.level } as React.CSSProperties}>
-                {group && <span className="outline-group">{group}</span>}
+                {/* Each of its rows says it is shared, so the label is for the eye only. */}
+                {group && (
+                  <span className="outline-group" aria-hidden="true">
+                    {group}
+                  </span>
+                )}
                 <div className="outline-item">
                   <button
                     className={`outline-row${note?.warn ? ' warn' : ''}`}
                     data-heading={r.key}
+                    data-node={h.nodeId}
+                    data-level={h.level}
                     aria-current={sameRef(selection, target) ? 'true' : undefined}
                     aria-label={`Heading ${h.level}, ${words}${note ? `. ${note.text}` : ''}${h.repeated && !r.extraTitle ? '. Shown more than once' : ''}${hint ? `. ${hint}` : ''}${shellName ? `. ${shellName}` : ''}`}
-                    title={why || words}
+                    // The full words, which a long heading's row clamps; why its level is set elsewhere only where it can be changed.
+                    title={why && !readOnly ? `${words}\n${why}` : words}
                     onClick={() => select(h)}
                   >
                     <span className="outline-level" aria-hidden="true">
@@ -165,7 +209,7 @@ export function OutlinePanel({ pageId }: { pageId: string }) {
                         </button>
                       )}
                       {editable(r) && (
-                        <button className="btn btn-sm" aria-label={`Edit heading: ${words}`} onClick={() => select(h)}>
+                        <button className="btn btn-sm" aria-label={`Edit heading: ${words}`} onClick={() => editLevel(h)}>
                           Edit heading
                         </button>
                       )}
