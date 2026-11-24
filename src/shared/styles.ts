@@ -6,7 +6,7 @@ import type { ComponentDefinition, ResponsiveStyles, StyleValue, TextStyleValue,
  * Anything outside this list belongs in a code component.
  */
 
-export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'focus' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css';
+export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'focus' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css' | 'tracks';
 
 export interface StylePropDef {
   id: string;
@@ -35,6 +35,14 @@ export const TRANSLATE_LIMITS = { px: 500, rem: 32, em: 32, '%': 100 } as const;
 const INLINE_NOTE = ' Plain inline text, such as a link inside a sentence, does not move.';
 const TRANSFORM_ORIGINS = ['center', 'top', 'bottom', 'left', 'right', 'top left', 'top right', 'bottom left', 'bottom right'];
 
+/** The most tracks a column-size list can make, and the most rows an item can span. */
+export const MAX_GRID_TRACKS = 12;
+export const MAX_ROW_SPAN = 6;
+const GRID_TEMPLATE_HELP =
+  'Overrides Columns. A preset, or your own list of up to 12 column widths: fr shares, lengths, auto, minmax(min, max) and repeat(count, …), ' +
+  'such as "16rem 1fr 14rem" or "2fr repeat(2, 1fr)". For as many columns as fit, give the narrowest a column may get: ' +
+  '"repeat(auto-fit, minmax(18rem, 1fr))", or auto-fill to keep empty columns. Applies from tablet up unless a phone value is set.';
+
 const edge = (id: string, label: string, group: StylePropDef['group'], kind: 'length' | 'border', tokenGroup: TokenGroup | TokenGroup[], placeholder: string): StylePropDef => ({ id, label, group, kind, tokenGroup, placeholder, advanced: true });
 
 export const STYLE_PROPS: StylePropDef[] = [
@@ -55,7 +63,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   ] },
   { id: 'order', label: 'Order', group: 'layout', kind: 'number', min: -10, max: 10, step: 1, description: 'Visual order within its parent.' },
   { id: 'wrap', label: 'Wrap', group: 'layout', kind: 'boolean' },
-  { id: 'gridTemplate', label: 'Column sizes', group: 'layout', kind: 'enum', description: 'Uneven columns, or as many as fit. Overrides Columns.', options: [
+  { id: 'gridTemplate', label: 'Column sizes', group: 'layout', kind: 'tracks', placeholder: '16rem 1fr 14rem', description: GRID_TEMPLATE_HELP, options: [
     { value: '1fr 1fr', label: 'Equal halves' }, { value: '1fr 2fr', label: 'Narrow, wide' }, { value: '2fr 1fr', label: 'Wide, narrow' },
     { value: '1fr 1.5fr', label: 'Slightly wider second' }, { value: '1.5fr 1fr', label: 'Slightly wider first' },
     { value: 'auto-fit-sm', label: 'As many as fit (small)' }, { value: 'auto-fit-md', label: 'As many as fit (medium)' }
@@ -66,6 +74,9 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'columnSpan', label: 'Column span', group: 'layout', kind: 'enum', advanced: true, description: 'Columns this takes up inside a grid. Applies from tablet up unless a phone value is set.', options: [
     ...Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: String(i + 1) })), { value: 'full', label: 'Full width' }
   ] },
+  { id: 'rowSpan', label: 'Row span', group: 'layout', kind: 'enum', advanced: true, description: 'Rows this takes up inside a grid, for a tall featured card. Applies from tablet up unless a phone value is set.', options:
+    Array.from({ length: MAX_ROW_SPAN }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }))
+  },
   { id: 'alignSelf', label: 'Align self', group: 'layout', kind: 'enum', advanced: true, description: 'Overrides how its parent aligns this one item.', options: [
     { value: 'auto', label: 'Auto' }, { value: 'start', label: 'Start' }, { value: 'center', label: 'Center' }, { value: 'end', label: 'End' }, { value: 'stretch', label: 'Stretch' }
   ] },
@@ -165,7 +176,7 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
   const borders = ['border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd'];
   const appearance = ['color', 'background', ...borders, 'radius', 'shadow', 'opacity'];
   // How an item sits inside a grid or stack parent.
-  const child = ['columnSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'order'];
+  const child = ['columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'order'];
   const placed = ['position', 'inset', 'zIndex'];
   const motion = ['translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing'];
   const end = [...motion, 'hidden', 'customCss'];
@@ -409,6 +420,119 @@ export function isTokenLength(value: string, { negative = true }: { negative?: b
   const m = TOKEN_LENGTH_RE.exec(s);
   if (m) return negative || m[1] !== '-';
   return /^(calc|min|max|clamp)\(/i.test(s) && balanced(s) && isMathLength(s);
+}
+
+// ---------------------------------------------------------------------------
+// Column sizes: grid track lists
+// ---------------------------------------------------------------------------
+
+const FR_RE = new RegExp(`^${CSS_NUMBER}fr$`, 'i');
+const TRACK_KEYWORDS = new Set(['auto', 'min-content', 'max-content']);
+const MAX_TRACKS_TEXT = 300;
+/** The column-size presets that are not a track list of their own. */
+const AUTO_FIT_PRESETS: Record<string, string> = {
+  'auto-fit-sm': 'repeat(auto-fit, minmax(min(100%, 14rem), 1fr))',
+  'auto-fit-md': 'repeat(auto-fit, minmax(min(100%, 20rem), 1fr))'
+};
+const isSpace = (ch: string) => ch === ' ' || ch === '\t' || ch === '\n';
+
+/** The arguments of one whole `name(...)` call, split at its top-level commas; null when the value is not one. */
+function callArgs(value: string, name: string): string[] | null {
+  if (value.slice(0, name.length + 1).toLowerCase() !== `${name}(` || !wholeCall(value)) return null;
+  const args: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of value.slice(name.length + 1, -1)) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    if (depth === 0 && ch === ',') (args.push(cur.trim()), (cur = ''));
+    else cur += ch;
+  }
+  args.push(cur.trim());
+  return args.every(Boolean) ? args : null;
+}
+
+type Breadth = { css: string; kind: 'fr' | 'length' | 'keyword'; fr?: number };
+
+/** One size a track can take: a positive fr share, a length that is not negative, or auto / min-content / max-content. */
+function trackBreadth(raw: string): Breadth | null {
+  const t = raw.trim();
+  if (FR_RE.test(t)) {
+    const fr = parseFloat(t);
+    return fr > 0 ? { css: t.toLowerCase(), kind: 'fr', fr } : null;
+  }
+  if (TRACK_KEYWORDS.has(t.toLowerCase())) return { css: t.toLowerCase(), kind: 'keyword' };
+  return isTokenLength(t, { negative: false }) ? { css: t, kind: 'length' } : null;
+}
+
+/**
+ * One column: a size, or minmax(least, most) whose least is not an fr share. A bare fr share is written as
+ * minmax(0, share) so the column can shrink below its content, as Columns does. `fr` is its share when the column
+ * is only that, for sizing images.
+ */
+function gridTrack(raw: string): { css: string; fr: number | null } | null {
+  const size = trackBreadth(raw);
+  if (size) return size.kind === 'fr' ? { css: `minmax(0, ${size.css})`, fr: size.fr! } : { css: size.css, fr: null };
+  const args = callArgs(raw.trim(), 'minmax');
+  if (args?.length !== 2) return null;
+  const [least, most] = args.map(trackBreadth);
+  if (!least || !most || least.kind === 'fr') return null;
+  return { css: `minmax(${least.css}, ${most.css})`, fr: most.kind === 'fr' && TOKEN_ZERO_RE.test(least.css) ? most.fr! : null };
+}
+
+/** A column-size value as the stylesheet writes it, with each column's fr share (null for any other size). */
+type GridTemplate = { css: string; fr: Array<number | null> };
+
+/**
+ * Parse a column-size value: a preset, a list of up to MAX_GRID_TRACKS columns (each a size or minmax(), with
+ * repeat(count, columns) counted as every column it makes), or, for as many columns as fit,
+ * repeat(auto-fit | auto-fill, minimum) with minimum a length or minmax(length, size). That length is capped at
+ * the grid's own width, so a card never overflows a narrow screen. A message for anything else.
+ */
+export function parseGridTemplate(raw: string): GridTemplate | string {
+  const value = raw.trim();
+  const preset = Object.hasOwn(AUTO_FIT_PRESETS, value) ? AUTO_FIT_PRESETS[value] : undefined;
+  if (preset) return { css: preset, fr: [] };
+  const bad = `"${value.slice(0, 60)}" is not a list of column sizes. Use up to ${MAX_GRID_TRACKS} of: 1fr, a length such as 16rem, auto, minmax(12rem, 1fr) or repeat(3, 1fr); or repeat(auto-fit, minmax(18rem, 1fr)) for as many as fit.`;
+  if (!value || value.length > MAX_TRACKS_TEXT || !isSafeCssValue(value)) return bad;
+  const auto = callArgs(value, 'repeat');
+  if (auto && /^auto-(fit|fill)$/i.test(auto[0])) {
+    if (auto.length !== 2) return bad;
+    const fill = auto[0].toLowerCase();
+    const least = (len: string) => (isTokenLength(len, { negative: false }) && !TOKEN_ZERO_RE.test(len.trim()) ? `min(100%, ${len.trim()})` : null);
+    const single = least(auto[1]);
+    if (single) return { css: `repeat(${fill}, ${single})`, fr: [] };
+    const args = callArgs(auto[1], 'minmax');
+    const min = args?.length === 2 ? least(args[0]) : null;
+    const most = args?.length === 2 ? trackBreadth(args[1]) : null;
+    return min && most ? { css: `repeat(${fill}, minmax(${min}, ${most.css}))`, fr: [] } : `${bad} As many as fit takes one minimum column width greater than 0.`;
+  }
+  const css: string[] = [];
+  const fr: Array<number | null> = [];
+  for (const part of splitTop(value, isSpace)) {
+    const rep = callArgs(part, 'repeat');
+    if (rep) {
+      const count = Number(rep[0]);
+      const inner = rep.length === 2 && /^\d+$/.test(rep[0]) && count >= 1 ? splitTop(rep[1], isSpace).map(gridTrack) : [];
+      if (!inner.length || inner.some((t) => !t) || count * inner.length > MAX_GRID_TRACKS) return bad;
+      css.push(`repeat(${count}, ${inner.map((t) => t!.css).join(' ')})`);
+      for (let i = 0; i < count; i++) fr.push(...inner.map((t) => t!.fr));
+    } else {
+      const track = gridTrack(part);
+      if (!track) return bad;
+      css.push(track.css);
+      fr.push(track.fr);
+    }
+    if (fr.length > MAX_GRID_TRACKS) return `"${value.slice(0, 60)}" makes more than ${MAX_GRID_TRACKS} columns.`;
+  }
+  return css.length ? { css: css.join(' '), fr } : bad;
+}
+
+/** Each column's fr share when a column-size value is only fr shares (for sizing images), else null. */
+export function gridTemplateShares(value: unknown): number[] | null {
+  const parsed = typeof value === 'string' ? parseGridTemplate(value) : null;
+  if (!parsed || typeof parsed === 'string' || !parsed.fr.length || parsed.fr.some((f) => f === null)) return null;
+  return parsed.fr as number[];
 }
 
 /**
@@ -671,6 +795,11 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       if (!length && !number) return `"${s}" is not a valid length. Use values such as 24px, 1.5rem or 50%.`;
       if (NON_NEGATIVE_LENGTHS.has(propId) && s.startsWith('-') && /[1-9]/.test(s)) return `${def.label} cannot be negative.`;
       return length ? null : `"${s}" needs a unit, such as ${s}px or ${s}rem.`;
+    case 'tracks': {
+      if (typeof value !== 'string') return `${def.label} must be text, such as "1fr 2fr".`;
+      const parsed = parseGridTemplate(s);
+      return typeof parsed === 'string' ? parsed : null;
+    }
     case 'textStyle':
       // Text styles are token references. A bare token ID ("text.h2") is read as one; anything else is refused.
       return TEXT_TOKEN_RE.test(s) ? null : `${def.label} must be a text token reference such as { "token": "text.h2" }, not "${s.slice(0, 40)}".`;
@@ -689,7 +818,7 @@ function cssValue(v: StyleValue): string {
 
 /** Fixed-grammar properties: a hand-edited document that breaks the grammar writes nothing. */
 const CHECKED_AT_OUTPUT = new Set([
-  'gridTemplate', 'columnSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
+  'gridTemplate', 'columnSpan', 'rowSpan', 'alignSelf', 'flexGrow', 'flexShrink', 'objectPosition', 'overflow', 'position', 'inset', 'zIndex', 'fontStyle', 'textTransform',
   'translateX', 'translateY', 'scale', 'rotate', 'transformOrigin', 'transition', 'transitionDuration', 'transitionEasing'
 ]);
 
@@ -715,13 +844,14 @@ export function styleToCss(propId: string, raw: StyleValue): string[] {
       return [`order: ${Number(value)}`];
     case 'wrap':
       return [`flex-wrap: ${value ? 'wrap' : 'nowrap'}`];
-    case 'gridTemplate':
-      if (value === 'auto-fit-sm') return ['grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr))'];
-      if (value === 'auto-fit-md') return ['grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr))'];
-      // minmax(0, ...) lets a track shrink below its content, as `columns` does.
-      return [`grid-template-columns: ${v.replace(/[\d.]+fr/g, (t) => `minmax(0, ${t})`)}`];
+    case 'gridTemplate': {
+      const parsed = parseGridTemplate(v);
+      return typeof parsed === 'string' ? [] : [`grid-template-columns: ${parsed.css}`];
+    }
     case 'columnSpan':
       return [value === 'full' ? 'grid-column: 1 / -1' : `grid-column: span ${Number(value)} / span ${Number(value)}`];
+    case 'rowSpan':
+      return [`grid-row: span ${Number(value)} / span ${Number(value)}`];
     case 'alignSelf':
       return [`align-self: ${v}`];
     case 'flexGrow':
@@ -913,11 +1043,13 @@ export function scopeForWidth(width: number): 'phone' | 'tablet' | 'desktop' {
 
 /**
  * A base-scope value that would break a narrower layout if it also applied on phones, so the generated CSS sets it
- * from tablet up only. A span wider than a phone's single column always is; `wideColumns` layers (variants and
+ * from tablet up only. A span wider than a phone's single column, or taller than one row, always is; `wideColumns` layers (variants and
  * placement overrides) also keep a multi-column grid off phones, so the component's own phone layout still applies.
  */
 export function wideOnlyStyle(prop: string, value: unknown, wideColumns = false): boolean {
   if (prop === 'columnSpan') return value !== 'full' && Number(value) > 1;
+  // A phone's single column has no room to lay a tall card beside others: it keeps one row.
+  if (prop === 'rowSpan') return Number(value) > 1;
   // Column sizes for all sizes are uneven or as-many-as-fit tracks: a phone keeps its own column count.
   if (prop === 'gridTemplate') return true;
   if (!wideColumns) return false;
