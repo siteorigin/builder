@@ -70,7 +70,8 @@ function heroWithFixedContent() {
     { type: 'node.insert', owner: o, parentId: root, primitive: 'paragraph', text: 'Open late\non Fridays', newNodeId: 'n_para01' },
     { type: 'node.insert', owner: o, parentId: root, primitive: 'button', text: 'Visit us', newNodeId: 'n_btn001' },
     { type: 'node.insert', owner: o, parentId: root, primitive: 'icon', newNodeId: 'n_icon01' },
-    { type: 'node.insert', owner: o, parentId: root, primitive: 'richtext', newNodeId: 'n_rich01' }
+    { type: 'node.insert', owner: o, parentId: root, primitive: 'richtext', newNodeId: 'n_rich01' },
+    { type: 'node.insert', owner: o, parentId: root, primitive: 'image', newNodeId: 'n_img001' }
   ]).state;
   s = applyOperations(s, [{ type: 'node.duplicate', owner: pageOwner(s), nodeId: placed(s, hero.defId)[0].id }]).state;
   return { ...hero, s, node: (st: ProjectState, id: string): GraphNode => hero.def(st).tree!.nodes[id] };
@@ -117,6 +118,8 @@ describe('making a field of the design one each placement fills in', () => {
     expect(newPropSchema(para, 'text', (para as TextNode).text, 'Note')).toEqual({ type: 'string', label: 'Note', default: 'Open late\non Fridays', multiline: true });
     const rich = h.node(h.s, 'n_rich01');
     expect(newPropSchema(rich, 'text', (rich as TextNode).text, 'Body')).toMatchObject({ type: 'richtext', label: 'Body' });
+    // A button label with a line break keeps it.
+    expect(newPropSchema(h.node(h.s, 'n_btn001'), 'label', 'Open\nFridays', 'Label')).toEqual({ type: 'string', label: 'Label', default: 'Open\nFridays', multiline: true });
     const btn = h.node(h.s, 'n_btn001');
     expect(suggestedPropLabel(def, btn, 'label')).toBe('Button label');
     expect(suggestedPropLabel(def, btn, 'link')).toBe('Button link');
@@ -126,21 +129,23 @@ describe('making a field of the design one each placement fills in', () => {
 
     // Each one binds, validates and saves.
     let s = h.s;
-    for (const [id, field] of [
-      ['n_para01', 'text'],
-      ['n_rich01', 'text'],
-      ['n_btn001', 'label'],
-      ['n_btn001', 'link'],
-      ['n_icon01', 'icon']
+    for (const [id, field, type] of [
+      ['n_para01', 'text', 'string'],
+      ['n_rich01', 'text', 'richtext'],
+      ['n_btn001', 'label', 'string'],
+      ['n_btn001', 'link', 'link'],
+      ['n_icon01', 'icon', 'icon'],
+      ['n_img001', 'image', 'image']
     ] as const) {
       const node = h.node(s, id);
       const shown = (node as unknown as Record<string, unknown>)[field];
       const plan = bindNewProperty(s, h.def(s), node, field, suggestedPropLabel(h.def(s), node, field))!;
       s = apply(s, plan.operations);
       const schema = h.def(s).properties[plan.prop];
-      if (field === 'text' && id === 'n_rich01') expect(schema.type).toBe('richtext');
-      else if (field === 'link') expect(schema.default).toEqual(shown ?? { type: 'none', target: '' });
-      else expect(schema.default).toEqual(shown);
+      expect(schema.type).toBe(type);
+      // What every placement now shows is what the design showed.
+      expect(schema.default).toEqual(field === 'link' ? (shown ?? { type: 'none', target: '' }) : shown);
+      for (const p of placed(s, h.defId)) expect(Object.hasOwn(p.props, plan.prop)).toBe(false);
     }
     expect(errors(s)).toEqual([]);
     // A button's label and link read as one pair on each placement.
@@ -166,8 +171,20 @@ describe('making a field of the design one each placement fills in', () => {
     let s = applyOperations(h.s, [{ type: 'component.setState', definitionId: h.defId, state: 'open', schema: { type: 'boolean' } }]).state;
     expect(bindNewProperty(s, h.def(s), h.node(s, 'n_head01'), 'text', 'Open')!.prop).toBe('open2');
     expect(bindNewProperty(s, h.def(s), h.node(s, 'n_head01'), 'text', 'Class')!.prop).toBe('headingText');
+    // A name every operation refuses wherever it names something.
+    const proto = bindNewProperty(s, h.def(s), h.node(s, 'n_head01'), 'text', 'Prototype')!;
+    expect(proto.prop).toBe('prototype2');
+    for (const op of proto.operations) expect(validateOperation(op)).toMatchObject({ ok: true });
     s = apply(s, bindNewProperty(s, h.def(s), h.node(s, 'n_head01'), 'text', 'Default')!.operations);
     expect(errors(s)).toEqual([]);
+  });
+
+  it('leaves a field a property or list item already fills in alone', () => {
+    const hero = forked('hero.split');
+    expect(bindNewProperty(hero.s, hero.def(hero.s), hero.def(hero.s).tree!.nodes.heading, 'text', 'Heading')).toBeNull();
+    const grid = forked('features.grid');
+    const g = grid.def(grid.s);
+    expect(bindNewProperty(grid.s, g, g.tree!.nodes['card-icon'], 'icon', 'Icon')).toBeNull();
   });
 
   it('refuses a new property once the component has as many as it can', () => {
@@ -219,13 +236,16 @@ describe('showing an existing property, and making a field the same everywhere a
     }
     // A rich text only takes rich text.
     expect(bindChoices(s, def, h.node(s, 'n_rich01'), 'text').every((c) => def.properties[c.binding.$prop].type === 'richtext')).toBe(true);
-    // The image field of the hero offers its image property.
+    // The hero's picture already shows its only image property, so there is no other to offer.
     expect(bindChoices(s, def, def.tree!.nodes.media, 'image')).toEqual([]);
-    const lead = bindChoices(s, def, heading, 'text').find((c) => c.binding.$prop === 'lead');
-    if (lead) {
-      const t = apply(s, [bindExistingOp(def, 'n_head01', 'text', lead.binding)]);
-      expect((h.node(t, 'n_head01') as TextNode).text).toEqual({ $prop: 'lead' });
-    }
+    expect(bindChoices(s, def, h.node(s, 'n_img001'), 'image').map((c) => c.binding.$prop)).toEqual(['image']);
+    // The hero's own text properties are offered, and showing one works.
+    const lead = choices.find((c) => c.binding.$prop === 'lead' && c.binding.field === undefined)!;
+    expect(lead).toBeTruthy();
+    const shown = apply(s, [bindExistingOp(def, 'n_head01', 'text', lead.binding)]);
+    expect((h.node(shown, 'n_head01') as TextNode).text).toEqual({ $prop: 'lead' });
+    // A text property is never offered to rich text.
+    expect(bindChoices(s, def, h.node(s, 'n_rich01'), 'text').map((c) => c.binding.$prop)).not.toContain('lead');
     const field = choices.find((c) => c.binding.field === 'label')!;
     const t = apply(s, [bindExistingOp(def, 'n_head01', 'text', field.binding)]);
     expect((h.node(t, 'n_head01') as TextNode).text).toEqual({ $prop: 'cta', field: 'label' });
@@ -272,6 +292,12 @@ describe('the component’s properties', () => {
     const renamed = apply(withIcon, [renamePropOp(h.def(withIcon), plan.prop, 'Badge icon')!]);
     expect(h.def(renamed).properties[plan.prop].label).toBe('Badge icon');
     expect((home(renamed).nodes[p.id] as InstanceNode).props[plan.prop]).toBe('retired-icon');
+    // Fields in another order are another schema: the full write keeps the new order.
+    const withObject = apply(s, [{ type: 'component.setPropSchema', definitionId: hero.defId, prop: 'cta', schema: { type: 'object', label: 'Call to action', fields: { title: { type: 'string', label: 'Title' }, link: { type: 'link', label: 'Link' } } } }]);
+    const cta = hero.def(withObject).properties.cta as unknown as { fields: Record<string, unknown> };
+    const swapped = { ...cta, fields: { link: cta.fields.link, title: cta.fields.title } };
+    const reordered = apply(withObject, [{ type: 'component.setPropSchema', definitionId: hero.defId, prop: 'cta', schema: swapped as Record<string, unknown> }]);
+    expect(Object.keys((hero.def(reordered).properties.cta as unknown as { fields: object }).fields)).toEqual(['link', 'title']);
     // A real schema change still goes through the full checks.
     expect(() => applyOperations(s, [{ type: 'component.setPropSchema', definitionId: hero.defId, prop: 'heading', schema: { type: 'image', label: 'Heading' } }])).toThrow(/Unbind it first/);
   });
@@ -315,12 +341,39 @@ describe('the component’s properties', () => {
     expect(placementOrder(hero.def(apply(s, [op])))).toEqual([shown[1], shown[0], ...shown.slice(2)]);
   });
 
-  it('keeps the order through save and reopen', () => {
+  it('keeps the order through save, undo and reopen, and is the editor’s alone', async () => {
     const hero = forked('hero.split');
     const keys = Object.keys(hero.def(hero.s).properties);
     const reversed = [...keys].reverse();
-    const s = apply(hero.s, [{ type: 'component.orderProperties', definitionId: hero.defId, order: reversed }]);
-    expect(Object.keys(JSON.parse(JSON.stringify(hero.def(s))).properties)).toEqual(reversed);
+    const dir = mkdtempSync(join(tmpdir(), 'so-contract-'));
+    dirs.push(dir);
+    const op: EditOperation = { type: 'component.orderProperties', definitionId: hero.defId, order: reversed };
+    let session = await ProjectSession.create(dir, hero.s);
+    try {
+      expect((await session.apply({ operations: [op] }, { label: 'Reorder', source: 'ai' })).ok).toBe(false);
+      expect((await session.apply({ operations: [op] }, { label: 'Reorder', source: 'user' })).ok).toBe(true);
+      await session.undo();
+      expect(Object.keys(session.state.components[hero.defId].properties)).toEqual(keys);
+      await session.redo();
+    } finally {
+      await session.close();
+    }
+    session = await ProjectSession.open(dir, 'reopen');
+    try {
+      expect(Object.keys(session.state.components[hero.defId].properties)).toEqual(reversed);
+    } finally {
+      await session.close();
+    }
+  });
+
+  it('reorders a component with more properties than a new one may have', () => {
+    const hero = forked('hero.split');
+    const s = structuredClone(hero.s);
+    const def = hero.def(s);
+    for (let i = Object.keys(def.properties).length; i < 70; i++) def.properties[`extra${i}`] = { type: 'string', label: `Extra ${i}`, default: '' };
+    const op = movePropOp(def, 'extra69', -1)!;
+    expect(validateOperation(op)).toMatchObject({ ok: true });
+    expect(placementOrder(hero.def(apply(s, [op]))).indexOf('extra69')).toBeLessThan(placementOrder(def).indexOf('extra69'));
   });
 
   it('names what shows a property, so one still shown is not removed', () => {
@@ -351,11 +404,11 @@ describe('parts each placement styles', () => {
     expect(canExposePart(def, root)).toBe(false);
     const heading = h.node(h.s, 'n_head01');
     expect(canExposePart(def, heading)).toBe(true);
-    let s = apply(h.s, [exposePartOp(def, heading, 'Hours')]);
+    let s = apply(h.s, [exposePartOp(h.s, def, heading, 'Hours')]);
     expect(h.def(s).parts.hours).toMatchObject({ nodeId: 'n_head01', label: 'Hours' });
     expect(canExposePart(h.def(s), h.node(s, 'n_head01'))).toBe(false);
     // A second part by the same name gets a name of its own.
-    const second = exposePartOp(h.def(s), h.node(s, 'n_para01'), 'Hours');
+    const second = exposePartOp(s, h.def(s), h.node(s, 'n_para01'), 'Hours');
     expect(second).toMatchObject({ partId: 'hours2', label: 'Hours' });
     // Custom controls survive a rename.
     s = apply(s, [{ type: 'component.setPart', definitionId: h.defId, partId: 'hours', nodeId: 'n_head01', label: 'Hours', styleControls: ['color'] }]);
@@ -371,16 +424,51 @@ describe('parts each placement styles', () => {
   });
 });
 
+describe('names older documents use', () => {
+  it('renames a property, part or option whose name today’s rules would not give a new one', () => {
+    const h = heroWithFixedContent();
+    const s = structuredClone(h.s);
+    const def = h.def(s);
+    def.properties.Hero_Title = { type: 'string', label: 'Hero title', default: '' };
+    def.parts['card-title'] = { nodeId: 'n_head01', label: 'Card title' };
+    def.variantAxes = { ...def.variantAxes, mood: { label: 'Mood', default: '2Col', options: { '2Col': { label: 'Two columns' }, plain: { label: 'Plain' } } } };
+    let t = apply(s, [renamePropOp(def, 'Hero_Title', 'Title')!, renamePartOp(def, 'card-title', 'Title')!, renameVariantOp(def, 'mood', '2Col', 'Wide')!]);
+    expect(h.def(t).properties.Hero_Title.label).toBe('Title');
+    expect(h.def(t).parts['card-title'].label).toBe('Title');
+    expect(h.def(t).variantAxes!.mood.options['2Col'].label).toBe('Wide');
+    t = apply(t, [renameVariantGroupOp(h.def(t), 'mood', 'Layout mood')!, defaultVariantOp(h.def(t), 'mood', 'plain')!, defaultVariantOp(h.def(t), 'mood', '2Col')!]);
+    expect(h.def(t).variantAxes!.mood).toMatchObject({ label: 'Layout mood', default: '2Col' });
+    // A new one still needs a plain name.
+    expect(() => applyOperations(t, [{ type: 'component.setPart', definitionId: h.defId, partId: 'new-part', nodeId: 'n_para01', label: 'X' }])).toThrow(/camelCase/);
+    expect(() => applyOperations(t, [{ type: 'component.setVariant', definitionId: h.defId, axis: 'mood', variant: '3Col', label: 'X' }])).toThrow(/lowercase/);
+  });
+
+  it('never gives a new part or choice a name a placement still keeps styles or a choice under', () => {
+    const h = heroWithFixedContent();
+    const s = structuredClone(h.s);
+    const [first] = placed(s, h.defId);
+    const p = home(s).nodes[first.id] as InstanceNode;
+    p.overrides = { ...p.overrides, badge: { base: { color: '#ff0000' } } };
+    p.variants = { ...p.variants, mood: 'dark' };
+    expect(exposePartOp(s, h.def(s), h.node(s, 'n_head01'), 'Badge')).toMatchObject({ partId: 'badge2' });
+    expect(addVariantGroupOp(s, h.def(s), 'Mood', 'Dark')).toMatchObject({ axis: 'mood2', variant: 'dark' });
+    const t = apply(h.s, [addVariantGroupOp(h.s, h.def(h.s), 'Mood', 'Plain')]);
+    const u = structuredClone(t);
+    ((home(u).nodes[first.id] as InstanceNode).variants ??= {}).mood = 'dark';
+    expect(addVariantOp(u, h.def(u), 'mood', 'Dark')).toMatchObject({ variant: 'dark-2' });
+  });
+});
+
 describe('variants placements choose between', () => {
   it('adds a choice with a default every placement keeps, options, renames, a new default and removal', () => {
     const h = heroWithFixedContent();
     const had = axesOf(h.def(h.s)).map(([a]) => a);
-    let s = apply(h.s, [addVariantGroupOp(h.def(h.s), 'Mood', 'Dark')]);
+    let s = apply(h.s, [addVariantGroupOp(h.s, h.def(h.s), 'Mood', 'Dark')]);
     const tone = axesOf(h.def(s)).find(([a]) => !had.includes(a))!;
     expect(tone[0]).toBe('mood');
     expect(tone[1]).toMatchObject({ label: 'Mood', default: 'default', options: { default: { label: 'Default' }, dark: { label: 'Dark' } } });
     for (const p of placed(s, h.defId)) expect(p.variants?.mood).toBeUndefined();
-    s = apply(s, [addVariantOp(h.def(s), 'mood', 'Dark')!]);
+    s = apply(s, [addVariantOp(s, h.def(s), 'mood', 'Dark')!]);
     expect(Object.keys(h.def(s).variantAxes!.mood.options)).toEqual(['default', 'dark', 'dark-2']);
     s = apply(s, [renameVariantOp(h.def(s), 'mood', 'dark-2', 'Midnight')!, renameVariantGroupOp(h.def(s), 'mood', 'Feel')!]);
     expect(h.def(s).variantAxes!.mood).toMatchObject({ label: 'Feel', options: { 'dark-2': { label: 'Midnight' }, default: { label: 'Default' } } });
@@ -397,19 +485,33 @@ describe('variants placements choose between', () => {
 
   it('never names a new option "default" or an inherited key, and finds a free choice name', () => {
     const h = heroWithFixedContent();
-    expect(addVariantGroupOp(h.def(h.s), 'Default', 'Default')).toMatchObject({ axis: 'style', variant: 'default-2', label: 'Default' });
-    let s = apply(h.s, [addVariantGroupOp(h.def(h.s), 'Mood', 'Constructor')]);
+    expect(addVariantGroupOp(h.s, h.def(h.s), 'Default', 'Default')).toMatchObject({ axis: 'style', variant: 'default-2', label: 'Default' });
+    let s = apply(h.s, [addVariantGroupOp(h.s, h.def(h.s), 'Mood', 'Constructor')]);
     expect(Object.keys(h.def(s).variantAxes!.mood.options)).toContain('constructor-2');
-    s = apply(s, [addVariantGroupOp(h.def(s), 'Mood', '123 Bold!')]);
+    s = apply(s, [addVariantGroupOp(s, h.def(s), 'Mood', '123 Bold!')]);
     expect(h.def(s).variantAxes!.mood2.options).toHaveProperty('bold');
+    // Not on a choice whose default option was removed either.
+    s = apply(s, [removeVariantOp(h.def(s), 'mood', 'default')]);
+    expect(addVariantOp(s, h.def(s), 'mood', 'Default')).toMatchObject({ variant: 'default-2' });
+    expect(addVariantOp(s, h.def(s), 'mood', 'Prototype')).toMatchObject({ variant: 'prototype-2' });
+    // Long names collide within 40 characters.
+    const long = 'A very long option name that goes on and on';
+    s = apply(s, [addVariantOp(s, h.def(s), 'mood', long)!]);
+    const again = addVariantOp(s, h.def(s), 'mood', long)! as { variant: string };
+    expect(again.variant.length).toBeLessThanOrEqual(40);
+    s = apply(s, [again as EditOperation]);
     expect(errors(s)).toEqual([]);
   });
 
   it('styles one option of one element, which only placements showing it get, and clears it', () => {
     const h = heroWithFixedContent();
-    let s = apply(h.s, [addVariantGroupOp(h.def(h.s), 'Mood', 'Dark')]);
+    let s = apply(h.s, [addVariantGroupOp(h.s, h.def(h.s), 'Mood', 'Dark')]);
     const heading = h.node(s, 'n_head01');
     expect(variantStylable(h.def(s), heading)).toBe(true);
+    const grid = forked('features.grid');
+    const repeat = Object.values(grid.def(grid.s).tree!.nodes).find((n) => n.kind === 'repeat')!;
+    expect(variantStylable(grid.def(grid.s), repeat)).toBe(false);
+    expect(variantStylable(grid.def(grid.s), grid.def(grid.s).tree!.nodes.card)).toBe(true);
     const o = { kind: 'component' as const, id: h.defId };
     s = apply(s, [{ type: 'node.setStyle', owner: o, nodeId: 'n_head01', variant: 'dark', axis: 'mood', scope: 'base', property: 'color', value: '#ffffff' }]);
     expect(h.def(s).variantAxes!.mood.options.dark.styles).toEqual({ n_head01: { base: { color: '#ffffff' } } });
@@ -421,7 +523,7 @@ describe('variants placements choose between', () => {
 
   it('falls back to the base design when the option styled is gone', () => {
     const h = heroWithFixedContent();
-    const s = apply(h.s, [addVariantGroupOp(h.def(h.s), 'Mood', 'Dark')]);
+    const s = apply(h.s, [addVariantGroupOp(h.s, h.def(h.s), 'Mood', 'Dark')]);
     expect(liveStyleTarget(h.def(s), { axis: 'mood', variant: 'dark' })).toEqual({ axis: 'mood', variant: 'dark' });
     const t = apply(s, [removeVariantOp(h.def(s), 'mood', 'dark')]);
     expect(liveStyleTarget(h.def(t), { axis: 'mood', variant: 'dark' })).toBeNull();

@@ -47,17 +47,20 @@ export function nodeWord(node: GraphNode): string {
 /** A node's own name, or what it is. */
 export const nodeName = (node: GraphNode): string => node.name?.trim() || nodeWord(node);
 
-/** `base`, or `base2`, `base3`… as a valid camelCase name that `taken` does not hold. */
+/** Names an operation refuses wherever it names something (see validateOperation): they would reach the prototype. */
+const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** `base`, or `base2`, `base3`… as a valid camelCase name that `taken` does not hold, never longer than 40. */
 function freeName(base: string, taken: Set<string>, valid: (name: string) => boolean): string {
-  for (let n = 1; n < 1000; n++) {
+  for (let n = 1; ; n++) {
     const suffix = n === 1 ? '' : String(n);
     const name = base.slice(0, 40 - suffix.length) + suffix;
-    if (!taken.has(name) && valid(name)) return name;
+    // A base no suffix makes valid is the engine's to refuse, with its reason.
+    if ((!taken.has(name) && valid(name)) || n > 9999) return name;
   }
-  return `${base.slice(0, 30)}${Date.now().toString(36).slice(-6)}`;
 }
 
-const validPropName = (name: string) => toCodeName(name) === name;
+const validPropName = (name: string) => toCodeName(name) === name && !RESERVED_IDS.has(name);
 
 /**
  * Names a new property must not take: the component's properties and UI state, and every name a placement or an
@@ -92,8 +95,10 @@ export function newPropSchema(node: GraphNode, field: ContentField, value: unkno
       const text = Array.isArray(value) ? richTextToPlain(toRichText(value)) : String(value ?? '');
       return { type: 'string', label, default: text, ...(text.includes('\n') ? { multiline: true } : {}) };
     }
-    case 'label':
-      return { type: 'string', label, default: String(value ?? '') };
+    case 'label': {
+      const text = String(value ?? '');
+      return { type: 'string', label, default: text, ...(text.includes('\n') ? { multiline: true } : {}) };
+    }
     case 'link':
       return { type: 'link', label, default: value ?? { type: 'none', target: '' } };
     case 'image':
@@ -105,10 +110,12 @@ export function newPropSchema(node: GraphNode, field: ContentField, value: unkno
 
 /**
  * Turn one field fixed in the design into a new property each placement fills in, starting from what the design
- * shows: the property, then the binding, in one change (one Undo). Null when the component has no room for another.
+ * shows: the property, then the binding, in one change (one Undo). Null when the field is not fixed in the design (a
+ * property or a list item fills it in already) or the component has no room for another property.
  */
 export function bindNewProperty(state: ProjectState, def: ComponentDefinition, node: GraphNode, field: ContentField, label: string): { prop: string; operations: EditOperation[] } | null {
   if (Object.keys(def.properties).length >= MAX_PROPERTIES) return null;
+  if (isBinding((node as unknown as Record<string, unknown>)[field])) return null;
   const text = label.trim() || suggestedPropLabel(def, node, field);
   const base = toCodeName(text) ?? toCodeName(`${nodeWord(node)} ${field}`) ?? field;
   const prop = freeName(base, takenPropNames(state, def), validPropName);
@@ -235,11 +242,16 @@ export function canExposePart(def: ComponentDefinition, node: GraphNode): boolea
   return def.tree.rootIds[0] !== node.id && !partOf(def, node.id);
 }
 
-/** Let each placement style a node of the design, as a part called `label`. */
-export function exposePartOp(def: ComponentDefinition, node: GraphNode, label: string): EditOperation {
+/**
+ * Let each placement style a node of the design, as a part called `label`. Its name is one no placement still keeps
+ * styles under (for a part removed long ago), so none of them restyles it before the author does.
+ */
+export function exposePartOp(state: ProjectState, def: ComponentDefinition, node: GraphNode, label: string): EditOperation {
   const text = label.trim() || nodeName(node);
   const base = toCodeName(text) ?? toCodeName(nodeWord(node)) ?? 'part';
-  const partId = freeName(base, new Set([...Object.keys(def.parts), 'root']), validPropName);
+  const taken = new Set([...Object.keys(def.parts), 'root']);
+  for (const { node: p } of instancesOf(state, def.id)) for (const k of [...Object.keys(p.overrides ?? {}), ...Object.keys(p.itemOverrides ?? {})]) taken.add(k);
+  const partId = freeName(base, taken, validPropName);
   return { type: 'component.setPart', definitionId: def.id, partId, nodeId: node.id, label: text };
 }
 
@@ -262,32 +274,48 @@ function optionSlug(label: string): string {
     .replace(/-+$/, '');
 }
 
+/**
+ * A free option ID from a label, never "default" (which an axis falls back to) or a name an operation refuses, and
+ * at most 40 characters with its suffix.
+ */
 function freeOption(label: string, taken: Set<string>): string {
   const base = optionSlug(label) || 'option';
-  for (let n = 1; n < 1000; n++) {
-    const id = n === 1 ? base : `${base}-${n}`;
-    if (!taken.has(id) && !isProtoKey(id)) return id;
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? '' : `-${n}`;
+    const id = `${base.slice(0, 40 - suffix.length).replace(/-+$/, '')}${suffix}`;
+    if ((!taken.has(id) && id !== 'default' && !isProtoKey(id) && !RESERVED_IDS.has(id)) || n > 9999) return id;
   }
-  return `${base}-${Date.now().toString(36).slice(-6)}`;
+}
+
+/** What placements of the component still choose on each axis, valid or not: a new axis or option must not take a name one of them holds. */
+function storedChoices(state: ProjectState, def: ComponentDefinition): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const { node } of instancesOf(state, def.id))
+    for (const [axis, v] of Object.entries(node.variants ?? {})) {
+      if (!out.has(axis)) out.set(axis, new Set());
+      if (typeof v === 'string') out.get(axis)!.add(v);
+    }
+  return out;
 }
 
 /**
  * A new group of looks placements choose between ("Tone"), with its first option ("Dark"). The group starts with a
  * plain Default option that every placement keeps, so nothing changes until a placement picks the new one.
  */
-export function addVariantGroupOp(def: ComponentDefinition, groupLabel: string, optionLabel: string): EditOperation {
+export function addVariantGroupOp(state: ProjectState, def: ComponentDefinition, groupLabel: string, optionLabel: string): EditOperation {
   const group = groupLabel.trim() || 'Style';
-  const axis = freeName(toCodeName(group) ?? 'style', new Set(Object.keys(def.variantAxes ?? {})), validPropName);
+  const axis = freeName(toCodeName(group) ?? 'style', new Set([...Object.keys(def.variantAxes ?? {}), ...storedChoices(state, def).keys()]), validPropName);
   const label = optionLabel.trim() || 'Option';
-  return { type: 'component.setVariant', definitionId: def.id, axis, axisLabel: group, variant: freeOption(label, new Set(['default'])), label };
+  return { type: 'component.setVariant', definitionId: def.id, axis, axisLabel: group, variant: freeOption(label, new Set()), label };
 }
 
 /** A new option of a group. */
-export function addVariantOp(def: ComponentDefinition, axis: string, label: string): EditOperation | null {
+export function addVariantOp(state: ProjectState, def: ComponentDefinition, axis: string, label: string): EditOperation | null {
   const a = def.variantAxes?.[axis];
   if (!a) return null;
   const text = label.trim() || 'Option';
-  return { type: 'component.setVariant', definitionId: def.id, axis, variant: freeOption(text, new Set(Object.keys(a.options))), label: text };
+  const taken = new Set([...Object.keys(a.options), ...(storedChoices(state, def).get(axis) ?? [])]);
+  return { type: 'component.setVariant', definitionId: def.id, axis, variant: freeOption(text, taken), label: text };
 }
 
 /** Rename an option; its styles and every placement's choice of it stay. */

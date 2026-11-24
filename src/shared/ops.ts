@@ -414,7 +414,7 @@ export const OPERATION_SCHEMAS = {
   'component.orderProperties': z.object({
     type: z.literal('component.orderProperties'),
     definitionId: z.string(),
-    order: z.array(z.string()).max(60).describe('Every property name of the component, each once, in the order placements list them.')
+    order: z.array(z.string()).describe('Every property name of the component, each once, in the order placements list them.')
   }),
   'component.setPropDefault': z.object({
     type: z.literal('component.setPropDefault'),

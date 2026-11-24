@@ -258,21 +258,31 @@ function removeProp(state: ProjectState, def: ComponentDefinition, name: string)
   for (const { node } of instancesOf(state, def.id)) delete node.props[name];
 }
 
-/** JSON with object keys in order, so two values that differ only in key order compare equal. */
-const sortedJson = (v: unknown): string =>
-  JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+/**
+ * A schema as JSON without its label, its own settings in any order. What they hold keeps its order: a list's or an
+ * object's fields in another order are another schema.
+ */
+const settingsJson = (schema: object): string => {
+  const rec = schema as Record<string, unknown>;
+  return JSON.stringify(
+    Object.keys(rec)
+      .filter((k) => k !== 'label' && rec[k] !== undefined)
+      .sort()
+      .map((k) => [k, rec[k]])
+  );
+};
 
 export function setPropSchema(state: ProjectState, op: Op<'component.setPropSchema'>): OpResult {
   const def = projectDef(state, op.definitionId);
-  checkPropName(op.prop);
   // A schema that differs from the stored one only in its label renames what authors see and nothing else: the
-  // property keeps its name, its bindings and every placement's value exactly as stored.
+  // property keeps its name (even one older rules allowed), its bindings and every placement's value as stored.
   const prev = own(def.properties, op.prop);
-  if (prev && sortedJson({ ...op.schema, label: undefined }) === sortedJson({ ...prev, label: undefined })) {
+  if (prev && settingsJson(op.schema) === settingsJson(prev)) {
     const label = typeof op.schema.label === 'string' ? op.schema.label.trim().slice(0, 80) : '';
     prev.label = label || op.prop;
     return {};
   }
+  checkPropName(op.prop);
   applyPropSchema(state, def, op.prop, normalizePropSchema(op.schema, state, op.prop));
   return {};
 }
@@ -399,8 +409,9 @@ export function replaceProperties(state: ProjectState, def: ComponentDefinition,
 
 export function setPart(state: ProjectState, op: Op<'component.setPart'>): OpResult {
   const def = projectDef(state, op.definitionId);
-  if (!validId(op.partId)) fail(`Part IDs must be camelCase identifiers ("${op.partId}").`);
   const prev = own(def.parts, op.partId);
+  // A part the component has keeps the name it was loaded with; a new one needs a plain name.
+  if (!prev && !validId(op.partId)) fail(`Part IDs must be camelCase identifiers ("${op.partId}").`);
   let node: GraphNode | undefined;
   if (def.kind === 'managed' && def.tree) {
     node = getNode(def.tree, op.nodeId);
@@ -433,12 +444,14 @@ export function removePart(state: ProjectState, op: Op<'component.removePart'>):
 
 export function setVariant(state: ProjectState, op: Op<'component.setVariant'>): OpResult {
   const def = projectDef(state, op.definitionId);
-  if (!validId(op.variant, /^[a-z][a-z0-9-]{0,39}$/)) fail(`Variant IDs use lowercase letters, numbers and hyphens ("${op.variant}").`);
   const existing = Object.keys(def.variantAxes ?? {});
   const holding = existing.filter((a) => Object.hasOwn(def.variantAxes![a].options, op.variant));
   // Without a named axis: the axis that already has this option, the only axis, or a first one.
   const axisId = op.axis ?? (holding.length === 1 ? holding[0] : existing.length === 1 ? existing[0] : existing.length ? fail(`"${def.name}" has several variant axes (${existing.join(', ')}). Name the axis.`) : 'style');
-  if (!validId(axisId)) fail(`Variant axis names must be camelCase identifiers ("${axisId}").`);
+  // An axis or option the component has keeps the ID it was loaded with; a new one needs a plain ID.
+  const had = own(def.variantAxes, axisId);
+  if (!had && !validId(axisId)) fail(`Variant axis names must be camelCase identifiers ("${axisId}").`);
+  if (!(had && own(had.options, op.variant)) && !validId(op.variant, /^[a-z][a-z0-9-]{0,39}$/)) fail(`Variant IDs use lowercase letters, numbers and hyphens ("${op.variant}").`);
   def.variantAxes ??= {};
   // A new axis starts with a plain base option as its default, so placements keep the look they had and can choose the
   // new option (a picker needs two to choose between).

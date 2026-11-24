@@ -72,7 +72,7 @@ import { hideAt, hideButtonOp, unlinkedAt, unlinkedField, unlinkedNote } from '.
 import { teaserFieldNote } from '../lib/page-teasers';
 import { defaultReach, designContent, designContentOp, forwardedBinding, propDefaultOp, reachText, type ContentField, type DesignContent } from '../lib/design-content';
 import { pickImagesField, pickOperations, planChoice } from '../lib/gallery-picks';
-import { BindingControl, PartSection, PropertiesSection, StyleTargetField, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
+import { BindingControl, PartSection, PropertiesSection, StyleTargetField, TagBindingControl, VariantsSection, styleVariant, useVariantStyle } from './ContractControls';
 import { LivePreview } from './InsertPanel';
 import { isHeadingLevel, placementOrder, variantStylable, type StyleTarget } from '../lib/component-contract';
 
@@ -446,7 +446,7 @@ function InspectorBody() {
     // placed in the design (its row in Layers) shows that part, as this design sets it.
     const view = definitionView(st, editingDef.id, selection);
     return (
-      <div className="panel-body insp" key={selection ? JSON.stringify(selection) : 'def-overview'}>
+      <div className="panel-body insp" key={selection ? JSON.stringify(selection) : `def-overview:${editingDef.id}`}>
         {view.kind === 'node' ? (
           <DefinitionNodeInspector state={st} def={editingDef} node={view.node} tokens={tokens} />
         ) : view.kind === 'nested-part' ? (
@@ -1706,14 +1706,21 @@ function DefinitionOverview({ state, def, nested }: { state: ProjectState; def: 
   );
 }
 
-/** Style one look of a component (or its base design): its whole design is selected, with Style open on it. */
+/**
+ * Style one look of a component (or its base design again). From the overview, the whole design is selected so its
+ * Style section is there to open; Style then opens once, where focus goes.
+ */
 function styleLook(def: ComponentDefinition, target: StyleTarget) {
   styleVariant(def, target);
+  if (!target) return;
   const rootId = def.tree?.rootIds[0];
-  const sel = getState().selection;
-  const onDesign = sel?.owner.kind === 'component' && sel.owner.id === def.id && !sel.instancePath.length;
-  if (rootId && !onDesign) selectAndFocus({ owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: rootId });
-  if (target) setTimeout(() => openSection('def-style', { scroll: true }));
+  const snap = getState().snapshot;
+  const onNode = !!snap && definitionView(snap.state, def.id, getState().selection).kind === 'node';
+  if (!onNode && rootId) setState({ selection: { owner: { kind: 'component', id: def.id }, instancePath: [], nodeId: rootId } });
+  const chosen = getState().selection;
+  setTimeout(() => {
+    if (getState().selection === chosen) openSection('def-style', { scroll: true });
+  });
 }
 
 /** Who a change made while editing a component everywhere reaches. */
@@ -1777,13 +1784,19 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
   return (
     <Section title="Content" id="def-content" level={LEVEL} scope={scope}>
       {tag?.source === 'design' && <TagField state={state} owner={{ kind: 'component', id: def.id }} node={tag.node} onChange={(v) => setTag(v)} hint={sources.size > 1 ? 'Same in every placement.' : undefined} />}
-      {tag?.source === 'default' && <DefaultField state={state} def={def} prop={tag.prop} schema={tag.schema} label="Default tag" onChange={setTag} />}
+      {tag?.source === 'default' && (
+        <>
+          <DefaultField state={state} def={def} prop={tag.prop} schema={tag.schema} label="Default tag" onChange={setTag} />
+          <TagBindingControl def={def} node={node} prop={tag.prop} />
+        </>
+      )}
       {fields.map((f) => {
         if (f.source === 'item') return null;
         return (
           <Fragment key={f.field}>
             {editor(f)}
-            <BindingControl state={state} def={def} node={node} content={f} />
+            {/* Keyed by where the field's content comes from, so a form opened for one never shows for the other. */}
+            <BindingControl key={f.source === 'default' ? `default:${f.prop}` : f.source} def={def} node={node} content={f} />
           </Fragment>
         );
       })}
@@ -1930,6 +1943,21 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const look = target && lookable ? target : null;
   const lookAxis = look ? def.variantAxes![look.axis] : undefined;
   const lookOption = look ? lookAxis!.options[look.variant] : undefined;
+  // Under a look's own rules: what the design gives this element at each size without them (its own styles and the
+  // default of every other choice), and for a component placed in the design, that component's design and the
+  // changes this design makes to it.
+  const lookInherited = look
+    ? node.kind === 'instance'
+      ? (() => {
+          const placed = state.components[node.definitionId];
+          const rootId = placed?.parts.root?.nodeId ?? placed?.tree?.rootIds[0];
+          const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, startingVariants(node.variants, def)) : [];
+          return cascadeStyles([...inner, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }]);
+        })()
+      : cascadeStyles(designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles !== lookOption!.styles?.[node.id]))
+    : undefined;
+  // The look's preview renders only while the Inspector is on screen: a hidden one would prepare it again on every change.
+  const inspecting = useStore((s) => s.dockOpen && s.rightTab === 'inspect');
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
   // Several layers selected together in Layers: Create would package only this one, so it is not offered.
   const several = useStore((s) => (s.layerSet ? (liveGroup(s)?.ids.length ?? 0) > 1 : false));
@@ -2056,7 +2084,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
       <DesignContentSection state={state} def={def} node={node} />
       {/* A component placed in the design: what it is given here, the same in every placement. */}
       {node.kind === 'instance' && placedDef && <NestedInputs state={state} def={def} node={node} placedDef={placedDef} />}
-      <PartSection state={state} def={def} node={node} level={LEVEL} />
+      <PartSection def={def} node={node} level={LEVEL} />
       {isRoot && <PropertiesSection def={def} level={LEVEL} />}
       {isRoot && <VariantsSection def={def} level={LEVEL} onStyle={(t) => styleLook(def, t)} />}
       <ConditionControls def={def} node={node} level={LEVEL} />
@@ -2072,21 +2100,18 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         </Section>
       )}
       <Section title="Style" id="def-style" level={LEVEL} scope={[look ? `${lookAxis!.label}: ${lookOption!.label}` : '', repeated ? `Every ${itemWord ?? 'item'}` : '', placements].filter(Boolean).join(' · ')}>
-        <StyleTargetField def={def} target={look} disabledReason={target && !lookable ? 'A look styles the elements inside this, not this itself.' : undefined} />
+        <StyleTargetField def={def} target={look} disabledReason={lookable ? undefined : 'A look styles the elements inside this, not this itself.'} />
         {look ? (
           <>
-            <div className="contract-preview" aria-label={`${def.name} with ${lookOption!.label}`}>
-              <LivePreview
-                spec={{ definitionId: def.id, variants: { [look.axis]: look.variant } }}
-                label={lookOption!.label}
-                maxH={180}
-                fallback={<span className="faint insp-note">{def.name}</span>}
-              />
-            </div>
+            {inspecting && (
+              <div className="contract-preview" aria-label={`${def.name} with ${lookOption!.label}`}>
+                <LivePreview spec={{ definitionId: def.id, variants: { [look.axis]: look.variant } }} label={lookOption!.label} maxH={180} fallback={<span className="faint insp-note">{def.name}</span>} />
+              </div>
+            )}
             <StyleControls
               key={`${look.axis}:${look.variant}`}
               styles={lookOption!.styles?.[node.id]}
-              inherited={node.kind === 'instance' ? node.overrides?.root : node.styles}
+              inherited={lookInherited}
               wideColumns
               tokens={tokens}
               allowed={node.kind === 'instance' ? (placedDef?.parts.root?.styleControls ?? styleSetFor(node)) : styleSetFor(node)}
