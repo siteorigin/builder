@@ -441,7 +441,7 @@ export function Editor() {
       {modal?.kind === 'settings' && <SettingsModal />}
       {modal?.kind === 'export' && <ExportModal />}
       {modal?.kind === 'cmdk' && <CommandMenu />}
-      {modal?.kind === 'find' && <FindReplaceModal initial={modal.query} />}
+      {modal?.kind === 'find' && <FindReplaceModal initial={modal.query} sample={modal.sample} />}
       {modal?.kind === 'source' && <SourceModal definitionId={modal.definitionId} />}
       {modal?.kind === 'page-source' && <PageSourceModal pageId={modal.pageId} />}
       {modal?.kind === 'new-code' && <NewCodeComponentModal />}

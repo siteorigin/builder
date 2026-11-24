@@ -6,7 +6,7 @@ import type { GraphNode, InstanceNode, LinkValue, ListItem, ProjectState, RichTe
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
 import { missingSectionLinks, renderedContent } from '@generator/checks';
-import { contentFields, contentTarget, findContent, placedSections, planReplace, sectionMatches, type ContentMatch } from '../../src/renderer/src/lib/find-content';
+import { contentFields, contentTarget, findContent, placedSections, planReplace, sampleContactMatches, sectionMatches, type ContentMatch } from '../../src/renderer/src/lib/find-content';
 import { ProjectSession } from '../../src/main/project/session';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -529,6 +529,86 @@ describe('opening a match', () => {
     expect(new Set(keys).size).toBe(keys.length);
     const { after } = apply(s, findContent(s, 'Test Studio'), 'Bookshop');
     expect(contentFields(after).map((f) => f.key)).toEqual(keys);
+  });
+});
+
+describe('the starter’s sample contact details (#15)', () => {
+  const rows = (ms: ContentMatch[]) => ms.map((m) => [m.field.where, m.field.label, m.kind, m.match]);
+  const group = (s: ProjectState, kind: string) => sampleContactMatches(s).find((g) => g.kind === kind)?.matches ?? [];
+
+  it('finds the sample email, phone and street address the business starter publishes, as words and as destinations', () => {
+    const s = fresh();
+    expect(sampleContactMatches(s).map((g) => [g.kind, g.value, g.matches.length])).toEqual([
+      ['email', 'hello@example.com', 5],
+      ['phone', '+1 555 0134', 4],
+      ['address', '12 Harbour Lane, Millbrook', 1]
+    ]);
+    // The visible address, the contact method's link, the section's call to action, and the shared footer.
+    expect(rows(group(s, 'email'))).toEqual([
+      ['Contact', 'Action link', 'link', 'hello@example.com'],
+      ['Contact', 'Contact methods › Email › Value', 'text', 'hello@example.com'],
+      ['Contact', 'Contact methods › Email › Link', 'link', 'hello@example.com'],
+      ['Footer', 'Contact links › hello@example.com › Label', 'text', 'hello@example.com'],
+      ['Footer', 'Contact links › hello@example.com › Destination', 'link', 'hello@example.com']
+    ]);
+    // The number as written and as its links dial it are the same sample.
+    expect(rows(group(s, 'phone'))).toEqual([
+      ['Contact', 'Contact methods › Phone › Value', 'text', '+1 555 0134'],
+      ['Contact', 'Contact methods › Phone › Link', 'link', '+15550134'],
+      ['Footer', 'Contact links › +1 555 0134 › Label', 'text', '+1 555 0134'],
+      ['Footer', 'Contact links › +1 555 0134 › Destination', 'link', '+15550134']
+    ]);
+    // The header's call to action goes to the Contact page, not to a sample address.
+    expect(sampleContactMatches(s).flatMap((g) => g.matches).some((m) => m.field.where === 'Header')).toBe(false);
+  });
+
+  it('leaves out a blank site, which starts with no sample details', () => {
+    expect(sampleContactMatches(createStarterState('blank', 'Kloof', false))).toEqual([]);
+  });
+
+  it('finds the details in rich text and inline links, written any way, and not in a longer address or another kind of link', () => {
+    const { s } = withParagraph([
+      {
+        type: 'p',
+        spans: [
+          { text: 'Write to Hello@Example.com, ' },
+          { text: 'email us', link: { type: 'email', target: 'hello@example.com?subject=Hi' } },
+          { text: ', call +1\u00a0555-0134 or visit 12 Harbour  Lane,Millbrook. Not myhello@example.com, hello@example.com.au or +1 555 01345. ' },
+          { text: 'Directions', link: { type: 'url', target: 'https://maps.example.org/?q=+15550134' } }
+        ]
+      }
+    ]);
+    const on = (kind: string) => group(s, kind).filter((m) => m.field.where === 'About').map((m) => [m.kind, m.match]);
+    expect(on('email')).toEqual([
+      ['text', 'Hello@Example.com'],
+      ['link', 'hello@example.com']
+    ]);
+    // Listed on one line, as the result list shows them.
+    expect(on('phone')).toEqual([['text', '+1 555-0134']]);
+    expect(on('address')).toEqual([['text', '12 Harbour Lane,Millbrook']]);
+  });
+
+  it('counts what the published website shows: not a draft, and the shared footer only while a published page shows it', () => {
+    const s = fresh();
+    const contact = pageAt(s, '/contact/');
+    contact.draft = true;
+    expect(group(s, 'email').map((m) => m.field.where)).toEqual(['Footer', 'Footer']);
+    for (const p of Object.values(s.pages)) if (p.id !== contact.id) p.showFooter = false;
+    expect(sampleContactMatches(s)).toEqual([]);
+  });
+
+  it('replaces each detail everywhere in one step, the number as written and as dialled, and finds none left', () => {
+    let s = fresh();
+    s = apply(s, group(s, 'email'), 'studio@kloof.example').after;
+    s = apply(s, group(s, 'phone'), '+27 21 555 0199').after;
+    expect(sampleContactMatches(s).map((g) => g.kind)).toEqual(['address']);
+    const details = instanceOf(s, 'contact.details', pageAt(s, '/contact/').id);
+    expect(details.props.actionLink).toEqual({ type: 'email', target: 'studio@kloof.example' });
+    expect(item(details, 'items', 'Phone')).toMatchObject({ value: '+27 21 555 0199', link: { type: 'tel', target: '+27 21 555 0199' } });
+    expect((footerOf(s).props.contact as ListItem[]).map((i) => [i.label, (i.link as LinkValue).target])).toEqual([
+      ['studio@kloof.example', 'studio@kloof.example'],
+      ['+27 21 555 0199', '+27 21 555 0199']
+    ]);
   });
 });
 

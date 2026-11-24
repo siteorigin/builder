@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Component, Copy, Ellipsis, Eye, GripVertical, Image, Link2, PanelRight, Pencil, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Users } from 'lucide-react';
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Component, Copy, Ellipsis, Eye, GripVertical, Image, Link2, PanelRight, Pencil, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
 import { applyOps } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
@@ -870,6 +870,25 @@ export function Canvas() {
           <div className="canvas-card compact">
             <Spinner />
             <span>Opening {page?.title ?? 'the page'}…</span>
+          </div>
+        </div>
+      )}
+      {/* A page with nothing on it says how to start, here in the editor only: the website shows an empty page. */}
+      {!runtimeCard && url && frameReady && !frameError && mode === 'edit' && !definitionMode && page && !page.rootIds.length && (
+        <div className="canvas-state empty-page">
+          <div className="canvas-card" role="group" aria-labelledby="canvas-empty-title" data-testid="canvas-empty-page">
+            <h3 id="canvas-empty-title">This page has no sections yet</h3>
+            <p>Add a first section to start building it. Visitors never see this note.</p>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                setState({ leftTab: 'insert' });
+                // Into the Insert panel, where the first section is chosen; it goes on this page.
+                requestAnimationFrame(() => document.querySelector<HTMLElement>('.side-panel-view:not([hidden]) :is(input, button, [tabindex="0"])')?.focus());
+              }}
+            >
+              <Plus size={14} /> Add a section
+            </button>
           </div>
         </div>
       )}

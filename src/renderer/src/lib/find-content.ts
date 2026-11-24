@@ -12,6 +12,8 @@ import { normalizeLink } from '@engine/values';
 import { childLists, displayName, itemLinkPairs } from '@engine/tree';
 import { partIdFor } from './model';
 import { pageShowing, pagesShowing } from '@shared/page-shell';
+import { SAMPLE_CONTACT, SAMPLE_CONTACT_VALUES, type SampleContactKind } from '@shared/sample-contact';
+import { publishedState } from '@generator/index';
 
 /** One field of the site that shows content: a text, a button's label, a list item's field, or a destination. */
 export interface ContentField {
@@ -313,27 +315,91 @@ export function findContent(state: ProjectState, query: string, opts: FindOption
     for (const part of partsOf(state, f)) {
       for (const m of part.text.matchAll(re)) {
         if (out.length >= limit) return out;
-        const start = m.index ?? 0;
-        const end = start + m[0].length;
-        const from = Math.max(0, start - 40);
-        const to = Math.min(part.text.length, end + 60);
-        const blocked = blockedReason(f, part, start, end);
-        out.push({
-          id: `${f.key}|${part.path}|${start}`,
-          field: f,
-          part: part.path,
-          kind: part.kind,
-          start,
-          end,
-          before: (from > 0 ? '…' : '') + oneLine(part.text.slice(from, start)),
-          match: oneLine(m[0]),
-          after: oneLine(part.text.slice(end, to)) + (to < part.text.length ? '…' : ''),
-          ...(blocked ? { blocked } : {})
-        });
+        out.push(matchAt(f, part, m.index ?? 0, (m.index ?? 0) + m[0].length));
       }
     }
   }
   return out;
+}
+
+/** The match of the range `start`–`end` of a part of a field, with the words around it. */
+function matchAt(f: ContentField, part: Part, start: number, end: number): ContentMatch {
+  const from = Math.max(0, start - 40);
+  const to = Math.min(part.text.length, end + 60);
+  const blocked = blockedReason(f, part, start, end);
+  return {
+    id: `${f.key}|${part.path}|${start}`,
+    field: f,
+    part: part.path,
+    kind: part.kind,
+    start,
+    end,
+    before: (from > 0 ? '…' : '') + oneLine(part.text.slice(from, start)),
+    match: oneLine(part.text.slice(start, end)),
+    after: oneLine(part.text.slice(end, to)) + (to < part.text.length ? '…' : ''),
+    ...(blocked ? { blocked } : {})
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sample contact details
+// ---------------------------------------------------------------------------
+
+/** What may stand between the digits of a written telephone number: spaces (\s covers the non-breaking ones), dots, dashes and brackets. */
+const DIAL_GAP = '[\\s().\\u2010\\u2011-]*';
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Each sample detail as visitors may read it: the whole email address only (myhello@example.com is someone else's),
+ * the number with any spacing or punctuation, and the street address with any spacing.
+ */
+const SAMPLE_PATTERNS: Record<SampleContactKind, RegExp> = {
+  email: new RegExp(`(?<![\\w.+-])${escapeRe(SAMPLE_CONTACT.email)}(?![\\w-]|\\.\\w)`, 'giu'),
+  phone: new RegExp(`(?<![\\w+])\\+?${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?!\\d)`, 'gu'),
+  address: new RegExp(`(?<!\\w)${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?!\\w)`, 'giu')
+};
+
+/** The kind of contact a destination reaches, when it reaches one: only email and phone links send anything. */
+function linkKind(f: ContentField, part: Part): 'email' | 'tel' | null {
+  const link = part.span !== undefined ? part.spans?.[part.span]?.link : f.kind === 'link' && isLink(f.value) ? f.value : undefined;
+  return link?.type === 'email' || link?.type === 'tel' ? link.type : null;
+}
+
+export interface SampleContactGroup {
+  kind: SampleContactKind;
+  /** The detail as the review names it. */
+  value: string;
+  label: string;
+  /** Every text and destination the published website shows it in. */
+  matches: ContentMatch[];
+}
+
+/**
+ * The catalogue's sample contact details the published website still shows (see @shared/sample-contact), one group
+ * for each that it does: in words visitors read, and in the email and phone links they use. Drafts are left out, as
+ * the website leaves them out, and the shared header and footer count when a published page shows them. The matches
+ * are ordinary find results, so Find and Replace changes a group in one step and the inspector opens each one.
+ */
+export function sampleContactMatches(state: ProjectState): SampleContactGroup[] {
+  const live = publishedState(state);
+  const fields = contentFields(live);
+  const groups: SampleContactGroup[] = [];
+  for (const sample of SAMPLE_CONTACT_VALUES) {
+    const re = SAMPLE_PATTERNS[sample.kind];
+    const matches: ContentMatch[] = [];
+    for (const f of fields) {
+      for (const part of partsOf(live, f)) {
+        if (part.kind === 'link') {
+          // A destination counts when it sends to the sample: an email link to the address, a phone link to the number.
+          const kind = linkKind(f, part);
+          if (!(kind === 'email' && sample.kind === 'email') && !(kind === 'tel' && sample.kind === 'phone')) continue;
+        }
+        for (const m of part.text.matchAll(re)) matches.push(matchAt(f, part, m.index ?? 0, (m.index ?? 0) + m[0].length));
+      }
+    }
+    if (matches.length) groups.push({ ...sample, matches });
+  }
+  return groups;
 }
 
 // ---------------------------------------------------------------------------

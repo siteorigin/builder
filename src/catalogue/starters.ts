@@ -10,7 +10,7 @@ export type StarterId = 'business' | 'blank';
 
 export const STARTERS: Array<{ id: StarterId; name: string; description: string }> = [
   { id: 'business', name: 'Business starter', description: 'Home, About and Contact pages with shared navigation, ready to make your own.' },
-  { id: 'blank', name: 'Blank site', description: 'A single Home page with one empty section and the shared header and footer.' }
+  { id: 'blank', name: 'Blank site', description: 'A single empty Home page with the shared header and footer, ready for its first section.' }
 ];
 
 export interface StarterAsset {
@@ -97,15 +97,13 @@ export function createStarterState(starter: StarterId, siteName: string, withSam
   const contact = newId('pg');
 
   if (starter === 'blank') {
-    const heading: GraphNode & { _child?: boolean } = { id: newId('n'), kind: 'text', tag: 'h1', text: `Welcome to ${siteName}`, styles: { base: { textStyle: { token: 'text.h1' } } }, _child: true };
-    const para: GraphNode & { _child?: boolean } = { id: newId('n'), kind: 'text', tag: 'p', text: 'Select this text to edit it, or add sections from the Insert panel.', styles: { base: { textStyle: { token: 'text.lead' }, color: { token: 'color.muted' } } }, _child: true };
-    const section = inst(s, 'layout.section');
-    section.slots = { content: [heading.id, para.id] };
-    s.pages[home] = page(home, 'Home', '/', [section, heading, para]);
+    // Nothing the author did not write is published: the page starts with no sections (the canvas offers to add the
+    // first one, in the editor only), and the footer has no tagline or contact links to fill in.
+    s.pages[home] = page(home, 'Home', '/', []);
     s.site.homePageId = home;
     s.site.pageOrder = [home];
     s.site.shell.header = tree(inst(s, 'shell.header', { siteName, links: [{ id: 'i1', label: 'Home', link: pageLink(home) }] }));
-    s.site.shell.footer = tree(inst(s, 'shell.footer', { siteName, tagline: 'A short sentence about what you do.', links: [{ id: 'i1', label: 'Home', link: pageLink(home) }], copyright: `© ${new Date().getFullYear()} ${siteName}.` }));
+    s.site.shell.footer = tree(inst(s, 'shell.footer', { siteName, tagline: '', links: [{ id: 'i1', label: 'Home', link: pageLink(home) }], contact: [], copyright: `© ${new Date().getFullYear()} ${siteName}.` }));
     return s;
   }
 
