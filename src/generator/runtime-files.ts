@@ -1,5 +1,6 @@
 import type { ProjectState } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
+import { derived } from './cache';
 
 /**
  * Small, ordinary Svelte helpers written into every generated project.
@@ -256,7 +257,8 @@ export function usedIcons(state: ProjectState): string[] {
 
 /** Icon data for the icons the project uses. */
 export function iconsJs(state: ProjectState): string {
-  const used = Object.fromEntries(usedIcons(state).map((n) => [n, ICONS[n]]));
+  // Any string in any document may name an icon: a file that depends on the answer, not on every document.
+  const used = Object.fromEntries(derived(state, 'icons', usedIcons).map((n) => [n, ICONS[n]]));
   return `${ICON_NOTICE}\nexport const ICONS = ${JSON.stringify(used)};\n`;
 }
 

@@ -38,6 +38,7 @@ import { effectiveItem } from '@shared/page-teasers';
 import { brokenCardKeys, cardKey, isCardLink } from './card-links';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
+import { derived, isTracked, type GenerationCache } from './cache';
 
 export interface GenerateOptions {
   instrument?: boolean;
@@ -441,13 +442,28 @@ export function nodeClass(def: ComponentDefinition, nodeId: string): string {
 export function variantClass(def: ComponentDefinition, axis: string, option: string): string {
   return `so-${defKey(def.id)}--${axis}-${option}`;
 }
-/** Code converted before conversions carried their own CSS still uses the definition's one-class-per-variant names. */
+/**
+ * Code converted before conversions carried their own CSS still uses the definition's one-class-per-variant names.
+ * In a cached run it is worked out once for the project's own definitions, so editing a code component reaches only
+ * the definitions whose answer changes; otherwise, and for a definition made from outside the project (a converted
+ * copy), each definition is looked up on its own.
+ */
 function usesLegacyVariantClass(state: ProjectState, def: ComponentDefinition): boolean {
+  if (isTracked(state) && state.components[def.id] === def) return derived(state, 'legacyVariantClass', legacyVariantClassUsers).includes(def.id);
+  return legacyVariantClassUser(state, def);
+}
+const legacyVariantClassUsers = (state: ProjectState) => sortedDefs(state).flatMap((def) => (legacyVariantClassUser(state, def) ? [def.id] : []));
+function legacyVariantClassUser(state: ProjectState, def: ComponentDefinition): boolean {
   const prefix = `so-${defKey(def.id)}--`;
   return Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && !!d.source?.includes(prefix));
 }
 /** Code converted in the first format still places this component with a single `variant` attribute. */
 function hasLegacyVariantCaller(state: ProjectState, def: ComponentDefinition): boolean {
+  if (isTracked(state) && state.components[def.id] === def) return derived(state, 'legacyVariantCaller', legacyVariantCallees).includes(def.id);
+  return legacyVariantCallee(state, def);
+}
+const legacyVariantCallees = (state: ProjectState) => sortedDefs(state).flatMap((def) => (legacyVariantCallee(state, def) ? [def.id] : []));
+function legacyVariantCallee(state: ProjectState, def: ComponentDefinition): boolean {
   const file = `/${defFile(def).split('/').pop()}`;
   return Object.values(state.components).some((d) => d.id !== def.id && d.kind === 'code' && !!d.source?.includes(file) && /\bvariant=/.test(d.source));
 }
@@ -563,6 +579,9 @@ export function generateSiteCss(state: ProjectState): string {
   }
   return `/* Page content styles and instance overrides. Generated from siteorigin/pages and siteorigin/site.json. */\n${emitRules(rules)}\n`;
 }
+
+/** The cards that must render as their plain container, in a stable order so an unchanged answer compares equal. */
+const sortedBrokenCards = (state: ProjectState) => [...brokenCardKeys(state)].sort();
 
 function sortedDefs(state: ProjectState): ComponentDefinition[] {
   return Object.values(state.components).sort((a, b) => a.id.localeCompare(b.id));
@@ -831,7 +850,7 @@ function perTag(ctx: EmitCtx, choices: { value?: string; tags: string[] }, rende
 /** Whether an element renders as a card link: it has a destination and nothing interactive renders inside it. */
 function rendersAsCard(ctx: EmitCtx, node: GraphNode): boolean {
   if (!isCardLink(node)) return false;
-  ctx.brokenCards ??= brokenCardKeys(ctx.state);
+  ctx.brokenCards ??= new Set(derived(ctx.state, 'brokenCards', sortedBrokenCards));
   const owner = ctx.def ? { kind: 'component' as const, id: ctx.def.id } : { kind: ctx.ctxExpr.split(':')[0] as 'page' | 'shell', id: ctx.ctxExpr.split(':').slice(1).join(':') };
   return !ctx.brokenCards.has(cardKey({ owner, cardId: node.id }));
 }
@@ -1492,6 +1511,11 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   );
 }
 
+/** The font packages the layout imports: every installed font the tokens or any document names. */
+function layoutFonts(state: ProjectState): string[] {
+  return usedFontPackages(state, effectiveTokens(state).map((t) => t.value));
+}
+
 export function generateLayout(state: ProjectState, opts: GenerateOptions): string {
   const file = 'src/routes/+layout.svelte';
   const mk = (tree: NodeTree, part: 'header' | 'footer'): EmitCtx => ({
@@ -1524,7 +1548,8 @@ export function generateLayout(state: ProjectState, opts: GenerateOptions): stri
   const favicon = state.site.favicon && state.assets.assets[state.site.favicon];
   const iconHref = favicon ? favicon.file.replace(/^static\//, '') : DEFAULT_FAVICON;
   const iconType = favicon ? favicon.mime : 'image/svg+xml';
-  const fontImports = usedFontPackages(state, effectiveTokens(state).map((t) => t.value)).map((f) => `\timport '${f}';`).join('\n');
+  // Any string in any document may name a font: a file that depends on the answer, not on every document.
+  const fontImports = derived(state, 'fonts', layoutFonts).map((f) => `\timport '${f}';`).join('\n');
   // Until the bridge is running, no form on the page can be sent: the editor never sends a message from the site on
   // the author's behalf (issue #193). The hold is in place before any form's own code, and the bridge removes it.
   const devBridge = opts.instrument
@@ -1758,44 +1783,54 @@ export function generatePathsJson(state: ProjectState): string {
 // Whole project
 // ---------------------------------------------------------------------------
 
-/** Generate every derived file. Paths are project-relative with forward slashes. */
-export function generateProject(state: ProjectState, opts: GenerateOptions = {}): FileMap {
+/**
+ * Generate every derived file. Paths are project-relative with forward slashes. With a `cache` from earlier runs on
+ * this project, a file whose inputs are unchanged since then is given back instead of being made again; the result
+ * is the same bytes either way.
+ */
+export function generateProject(state: ProjectState, opts: GenerateOptions = {}, cache?: GenerationCache): FileMap {
   const files: FileMap = new Map();
   const theme = getTheme(state.site.themeId);
+  const run = cache?.run(state, !!opts.instrument);
+  // Content that differs between the clean and instrumented output is kept apart by its key; the rest is shared.
+  const mode = opts.instrument ? '#dev' : '#clean';
+  const file = (key: string, make: (state: ProjectState) => string): string => (run ? run.file(key, make) : make(state));
   files.set(`${RUNTIME_DIR}/Link.svelte`, linkSvelte(!!opts.instrument));
   files.set(`${RUNTIME_DIR}/Image.svelte`, IMAGE_SVELTE);
   files.set(`${RUNTIME_DIR}/RichText.svelte`, RICHTEXT_SVELTE);
   files.set(`${RUNTIME_DIR}/Icon.svelte`, iconSvelte());
-  files.set(`${RUNTIME_DIR}/icons.js`, iconsJs(state));
+  files.set(`${RUNTIME_DIR}/icons.js`, file('icons.js', iconsJs));
   files.set(`${RUNTIME_DIR}/util.js`, UTIL_JS);
   files.set(`${RUNTIME_DIR}/drafts.js`, DRAFTS_JS);
   // Site search and the pages it finds, while a component of the site searches. Written before the components and
-  // pages that import them, so a preview never loads a component whose search code is not there yet.
+  // pages that import them, so a preview never loads a component whose search code is not there yet. Whether the
+  // site searches decides only which files exist, so it is asked of the plain state, as for redirects and the favicon.
   if (usesSiteSearch(state)) {
     files.set(`${RUNTIME_DIR}/${SEARCH_HELPER_FILE}`, SEARCH_JS);
-    files.set(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, generateSearchIndex(state));
+    files.set(`${RUNTIME_DIR}/${SEARCH_INDEX_FILE}`, file('search-index.js', generateSearchIndex));
   }
-  files.set(`${STYLES_DIR}/tokens.css`, generateTokensCss(state));
+  files.set(`${STYLES_DIR}/tokens.css`, file('tokens.css', generateTokensCss));
   files.set(`${STYLES_DIR}/theme.css`, theme.baseCss);
-  files.set(`${STYLES_DIR}/components.css`, generateComponentsCss(state));
-  files.set(`${STYLES_DIR}/site.css`, generateSiteCss(state));
+  files.set(`${STYLES_DIR}/components.css`, file('components.css', generateComponentsCss));
+  files.set(`${STYLES_DIR}/site.css`, file('site.css', generateSiteCss));
   for (const def of sortedDefs(state)) {
-    if (def.kind === 'managed' && def.tree) files.set(defFile(def), generateManagedComponent(state, def, opts));
+    if (def.kind === 'managed' && def.tree) files.set(defFile(def), file(`component:${def.id}${mode}`, (s) => generateManagedComponent(s, s.components[def.id], opts)));
     else if (def.kind === 'code' && def.source) files.set(defFile(def), def.source);
   }
-  files.set('src/routes/+layout.svelte', generateLayout(state, opts));
+  files.set('src/routes/+layout.svelte', file(`layout${mode}`, (s) => generateLayout(s, opts)));
   files.set('src/routes/+layout.js', LAYOUT_TS);
-  files.set('src/app.html', generateAppHtml(state));
+  files.set('src/app.html', file('app.html', generateAppHtml));
   for (const id of state.site.pageOrder) {
     const page = state.pages[id];
-    if (page) files.set(pageFile(page), generatePage(state, page, opts));
+    if (page) files.set(pageFile(page), file(`page:${id}${mode}`, (s) => generatePage(s, s.pages[id], opts)));
   }
-  for (const { from, page } of liveRedirects(state)) files.set(redirectFile(from), generateRedirect(state, from, page));
-  files.set(`${GEN_ROOT}/paths.json`, generatePathsJson(state));
-  if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, generateFaviconSvg(state));
-  files.set('static/robots.txt', generateRobots(state));
-  const sitemap = generateSitemap(state);
+  for (const { from, page } of liveRedirects(state)) files.set(redirectFile(from), file(`redirect:${page.id}:${from}`, (s) => generateRedirect(s, from, s.pages[page.id])));
+  files.set(`${GEN_ROOT}/paths.json`, file('paths.json', generatePathsJson));
+  if (!state.site.favicon || !state.assets.assets[state.site.favicon]) files.set(`static/${DEFAULT_FAVICON}`, file('favicon', generateFaviconSvg));
+  files.set('static/robots.txt', file('robots.txt', generateRobots));
+  const sitemap = file('sitemap.xml', (s) => generateSitemap(s) ?? '');
   if (sitemap) files.set('static/sitemap.xml', sitemap);
+  run?.finish();
   return files;
 }
 
