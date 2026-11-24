@@ -2,29 +2,28 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Box, Check, LocateFixed, Component, Copy, Ellipsis, Eye, GripVertical, Image, Layers, LayoutTemplate, Link2, PanelRight, Pencil, Play, Plus, RefreshCcw, Rows3, Sparkles, Trash2, TriangleAlert, Type, Unlink, Users } from 'lucide-react';
 import { findParent } from '@engine/tree';
-import { applyOps, commitOps, undoAction } from '../store';
+import { applyOps, commitOps } from '../store';
 import { CANVAS_DRAFT, reportRefused, setCanvasCommit } from '../lib/pending';
 import { treeFor } from '../lib/model';
 import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
-import { newId } from '@shared/ids';
 import { refKey, sameRef } from '@shared/types';
 import { aiActivity, api, commitDraft, confirmDialog, getState, markDraft, saveLocal, setState, setViewport, toast, useStore, type Rect } from '../store';
 import { acceptMessage, newSessionId, postToFrame } from '../lib/bridge';
 import { chainOf, descOrNull, measuredRects, rectList, spaceSizes, spacingOf, type FrameSpacing } from '../lib/payload';
 import { blocksFromDom, richDom } from '../lib/richtext';
 import { dropAt, dropReaches, moveIndex, shownOrder } from '../lib/reorder';
-import { insertOps, insertRole, insertSelection, whereFor, type InsertAt } from '../lib/insert-at';
+import { insertOps, insertRole, whereFor, type InsertAt } from '../lib/insert-at';
 import { dropListSpecs, dropRefusal, dropTarget, incomingOrder, measuredLists, measureIds, savingProblems, type DropList, type Measured } from '../lib/insert-drop';
 import { setInsertDropTarget, type InsertDrag } from '../lib/insert-drag';
 import { askFrame, followed, followReport, newFrameNav, samePath } from '../lib/frame-nav';
 import { inlineLinkProblem } from '../lib/link-problems';
 import { revealTarget, sameTarget, type RevealTarget } from '../lib/reveal';
-import { ARRIVAL_MS, arrivalShown, markArrival, takeArrival } from '../lib/arrival';
+import { ARRIVAL_MS, arrivalShown, takeArrival } from '../lib/arrival';
 import { externalLink } from '@shared/links';
 import { richTextToMarkdown } from '@shared/richtext';
 import { boundaryOf, computedAt, createComponentTarget, definitionPick, descOf, designCtx, inDefinition, needsStudio, placementsOn, refExists, refLabel, resolveRef, selectionFromChain, studioDescOf, studioDesignCtx, studioPick, throughPlacement, toDefinitionRef, type BridgeDesc } from '../lib/model';
 import { NEW_STUDIO, StudioLoads, studioSpec } from '../lib/studio';
-import { askAiAbout, canInlineEdit, commitText, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
+import { askAiAbout, canInlineEdit, commitText, deleteSelection, detachable, detachPlacement, duplicateLayers, duplicateSelection, insertHere, liveGroup, moveLayers, moveSelection, setMode, showsInlineText, structuralTarget, takeUnscrolled } from '../lib/actions';
 import { handleShortcut } from '../Editor';
 import { notePointerInput, openMenus, Spinner, useMenu } from '../components/ui';
 import { AppMark } from '../components/AppMark';
@@ -34,6 +33,8 @@ import { clampViewport, frameKeyResize, VIEWPORT_LIMITS, type PanelSide } from '
 import { formSendOf, formsOf, sendSettled, type FormSend, type PracticeResult, type PreviewForm } from '../lib/form-practice';
 import { FormPractice } from './FormPractice';
 import { SpacingHandles } from './SpacingHandles';
+import { QuickInsert } from './QuickInsert';
+import { addPoints, offeredAt, pointLabel, resolvePoint, type AddPoint, type QuickItem } from '../lib/inline-insert';
 import { copyPasteItems, PasteHere } from './CopyPaste';
 import { copySelection, pasteFromMenu } from '../lib/clipboard';
 import { isShellPart, showsPart } from '@shared/page-shell';
@@ -221,8 +222,12 @@ export function Canvas() {
   /** The canvas itself: where focus goes when the chip control that had it goes away. */
   const canvasRef = useRef<HTMLElement>(null);
   const [chipW, setChipW] = useState(0);
-  /** The pointer is on the name of a short hovered element, which sits outside it, off the page. */
+  /** The pointer is on the name of a short hovered element, which sits outside it, off the page, or on one of the
+   *  hover's Add buttons. */
   const overTag = useRef(false);
+  /** The page said the pointer left it while the pointer rested on the hover's name or Add button, and the hover was
+   *  kept (see the 'hover' report). */
+  const heldHover = useRef(false);
   /** Escape hides the hover tag (WCAG 1.4.13) until the pointer moves to another element. */
   const [tagHidden, setTagHidden] = useState(false);
   useEffect(() => setTagHidden(false), [hover && refKey(hover)]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -231,7 +236,8 @@ export function Canvas() {
     overTag.current = false;
   }, [hover && refKey(hover), tagHidden]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && getState().hover && setTagHidden(true);
+    // An open menu or Add list takes its own Escape.
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !openMenus.count && getState().hover && setTagHidden(true);
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, []);
@@ -242,6 +248,26 @@ export function Canvas() {
    *  line and the outline of the container it goes into; `refused` says why it can't go there). */
   const [insertDrop, setInsertDrop] = useState<{ name: string; x: number; y: number; over: boolean; line: Rect | null; outline: Rect | null; label: string; refused: string | null } | null>(null);
   const insertDrag = useRef<{ end: (commit: boolean) => void; remeasure: () => void } | null>(null);
+  /** What the page measured the selected and hovered boxes for, so an Add button is drawn only on the box of what it
+   *  belongs to, never on one measured for the selection before. */
+  const rectsFor = useRef<{ selected: BridgeDesc | null; hovered: BridgeDesc | null }>({ selected: null, hovered: null });
+  /**
+   * The Add button whose list is open (#387): its place, its button, where the button was drawn (in the overlay) and
+   * its box on screen as it opened, what it offers, and the project, page and revision it was opened on (any change
+   * puts it away). `refused`: why the last choice can't go there.
+   */
+  const [adding, setAdding] = useState<{ point: AddPoint; trigger: HTMLElement; at: { left: number; top: number }; box: AddBox; anchor: { left: number; top: number; width: number; height: number }; items: QuickItem[]; opening: string; view: string; revision: number; refused: string | null } | null>(null);
+  /** Set while a choice from it is being added, so a second Enter adds nothing more. */
+  const choosing = useRef(false);
+  /** An Add button has keyboard focus. One that goes away with it (its hover moved on, its section scrolled out of
+   *  view) hands focus to the canvas rather than dropping it on the document. */
+  const addFocused = useRef(false);
+  useLayoutEffect(() => {
+    if (!addFocused.current || canvasRef.current?.querySelector('.ov-add:focus')) return;
+    addFocused.current = false;
+    const a = document.activeElement;
+    if (!a || a === document.body) canvasRef.current?.focus({ preventScroll: true });
+  });
   const url = runtime.state === 'ready' ? runtime.url : null;
   const origin = url ? new URL(url).origin : null;
   const state = snapshot?.state;
@@ -714,17 +740,28 @@ export function Canvas() {
         }
         case 'hover': {
           const chain = chainOf(p.chain);
-          // The pointer left the page for the name of what it was over: the hover stays (WCAG 1.4.13).
-          if (!chain.length && overTag.current) break;
+          // The pointer left the page for the name of what it was over, or for its Add button: the hover stays (WCAG 1.4.13).
+          if (!chain.length && overTag.current) {
+            heldHover.current = true;
+            break;
+          }
+          // Back on the page after a kept hover: the page dropped what it outlined when the pointer left, so it is told
+          // again even when the hover is the same.
+          const held = heldHover.current;
+          heldHover.current = false;
           hoverChain.current = chain;
           resolveHover();
+          if (held) syncTrack();
           break;
         }
         case 'rects': {
           const hovered = rectList(p.hovered);
           const selected = rectList(p.selected);
-          // The pointer is on the name of what it was over: that element keeps its outline while it rests there.
-          setState({ rects: { selected, hovered: !hovered.length && overTag.current ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
+          // The pointer is on the name of what it was over (or its Add button): that element keeps its outline while it
+          // rests there.
+          const kept = !hovered.length && overTag.current;
+          rectsFor.current = { selected: descOrNull(p.selectedDesc), hovered: kept ? rectsFor.current.hovered : descOrNull(p.hoveredDesc) };
+          setState({ rects: { selected, hovered: kept ? getState().rects.hovered : hovered, revealed: rectList(p.revealed) } });
           // An element just inserted now shows in view (mounted, and scrolled to): its outline arrives with a brief
           // highlight. Only for a report measured for it, on its own page, while its outline is drawn (editing, the
           // frame showing the page the editor has, Site styles closed).
@@ -1008,9 +1045,10 @@ export function Canvas() {
   // a panel) means the pointer has left the page and the page's hover ends. A hover a Layers row set stays.
   useEffect(() => {
     const leave = (e: PointerEvent) => {
-      // Resting on the name of what is hovered keeps it hovered.
-      if ((e.target as Element | null)?.closest?.('.ov-label.outside')) return;
+      // Resting on the name of what is hovered, or on one of its Add buttons, keeps it hovered.
+      if ((e.target as Element | null)?.closest?.('.ov-label.outside, .ov-add')) return;
       if (!hoverChain.current) return;
+      heldHover.current = false;
       hoverChain.current = null;
       const s = getState();
       if (s.hover && sameRef(s.hover, canvasHover.current)) setState({ hover: null });
@@ -1019,6 +1057,24 @@ export function Canvas() {
     window.addEventListener('pointermove', leave, true);
     return () => window.removeEventListener('pointermove', leave, true);
   }, []);
+
+  /**
+   * The pointer has left the hover's name or Add button. A hover kept while it rested there ends now: the page has
+   * already said the pointer left it, and says nothing more if it comes back to the same element or to none, so the
+   * hover would otherwise outlive the pointer, or lose its outline while the pointer is back on it. Back on the page, the
+   * page reports what it is over again.
+   */
+  function leaveHoverChrome(e: React.PointerEvent) {
+    // Straight onto another of them (two Add buttons of a short section): the hover is still being rested on.
+    if (e.relatedTarget instanceof Element && e.relatedTarget.closest('.ov-label.outside, .ov-add')) return;
+    overTag.current = false;
+    if (!heldHover.current) return;
+    heldHover.current = false;
+    hoverChain.current = null;
+    const s = getState();
+    if (s.hover && sameRef(s.hover, canvasHover.current)) setState({ hover: null });
+    canvasHover.current = null;
+  }
 
   function syncTrack() {
     const s = getState();
@@ -1455,8 +1511,6 @@ export function Canvas() {
     if (!snap || snap.readOnly || s.mode !== 'edit' || s.definitionMode || !s.pageId || !getState().frameReady || dragging || insertDrag.current || resizeDrag.current) return false;
     const st = snap.state;
     const owner: OwnerRef = s.templateMode ? templateOwner(s.templateMode) : { kind: 'page', id: s.pageId };
-    const opening = snap.workspaceKey;
-    const revision = snap.revision;
     const role = insertRole(st, drag.spec);
     const own = incomingOrder(st, drag.spec);
     const specs = dropListSpecs(st, owner);
@@ -1502,26 +1556,8 @@ export function Canvas() {
       }
       setInsertDrop({ name: drag.name, x: point.x, y: point.y, over, line, outline, label, refused: aim.refused });
     };
-    const drop = async (at: InsertAt) => {
-      if (getState().snapshot?.workspaceKey !== opening) return;
-      const w = whereFor(st, at, role);
-      // Named here, so what is selected is the thing dropped (or a new Grid's first column), not the last node the
-      // change made.
-      const named = newId('n');
-      const ops = insertOps(at, drag.spec, role, named);
-      const r = await commitOps(ops, `Insert ${drag.name}`, undefined, revision);
-      if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-      const id = r.results?.some((x) => x?.nodeId === named) ? insertSelection(ops, named) : undefined;
-      const now = getState();
-      // Selected while the author is still on the page (or layout) it went on, with the arrival cue once the page shows it.
-      const here = owner.kind === 'template' ? now.templateMode?.collectionId === owner.id : now.pageId === owner.id && !now.templateMode;
-      if (id && here && now.mode === 'edit' && !now.definitionMode) {
-        const ref: ElementRef = { owner, instancePath: [], nodeId: id };
-        markArrival(ref);
-        setState({ selection: ref, rightTab: 'inspect' });
-      }
-      toast(`Added ${drag.name}${w ? ` ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}` : ''}.`, 'info', undoAction(r));
-    };
+    // Planned on the project as the drag found it (see insertHere).
+    const drop = (at: InsertAt) => void insertHere(drag.spec, drag.name, role, at, snap);
     const requests: string[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
     // One measure on its way at a time; asked for again meanwhile (a burst of wheel steps), one more follows it.
@@ -1553,7 +1589,7 @@ export function Canvas() {
       setInsertDrop(null);
       if (!commit || !aim.over) return;
       if (aim.refused) return void toast(`${drag.name} wasn’t added: ${aim.refused}`, 'info');
-      if (aim.at) void drop(aim.at);
+      if (aim.at) drop(aim.at);
     };
     /** Measure the page's lists, in batches the page answers (it reads at most 200 at a time); a node it can't show
      *  measures as nothing. What was measured before no longer counts until it lands. */
@@ -1653,6 +1689,66 @@ export function Canvas() {
   // A drag in progress ends with the canvas, and with the page, project or editing it was planned on.
   useEffect(() => () => insertDrag.current?.end(false), []);
   useEffect(() => insertDrag.current?.end(false), [view?.key, mode, session, snapshot?.workspaceKey, !!definitionMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Open an Add button's list (#387), for the place it stands for in the project as it is now: what fits there, as the
+   * Insert panel would place each, less what the place would refuse (see offeredAt). `at`: where the button is drawn,
+   * on `box`.
+   */
+  function openAdd(p: AddPoint, trigger: HTMLElement, at: { left: number; top: number }, box: AddBox) {
+    const s = getState();
+    const snap = s.snapshot;
+    const to = snap && resolvePoint(snap.state, p);
+    if (!snap || !view || !to) return;
+    const r = trigger.getBoundingClientRect();
+    setAdding({ point: p, trigger, at, box, anchor: { left: r.left, top: r.top, width: r.width, height: r.height }, items: offeredAt(snap.state, to, p.role, !!s.settings?.developerMode), opening: snap.workspaceKey, view: view.key, revision: snap.revision, refused: null });
+  }
+  /** Put the list away; `back` hands focus back to its button (or the canvas, once the button has gone). */
+  function closeAdd(back: boolean) {
+    const trigger = adding?.trigger;
+    setAdding(null);
+    if (!back) return;
+    // Only focus the list left behind: anything that took focus meanwhile keeps it.
+    requestAnimationFrame(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body) (trigger?.isConnected ? trigger : canvasRef.current)?.focus({ preventScroll: true });
+    });
+  }
+  /**
+   * Add what was chosen at the list's place, as one change (see insertHere), on the project the list was made for: a
+   * list the project, page or editing has moved on from (its closing not yet drawn) adds nothing. A choice the place
+   * refuses stays in the list, saying why; a place that has gone says so.
+   */
+  function chooseAdd(it: QuickItem) {
+    const a = adding;
+    const s = getState();
+    const snap = s.snapshot;
+    if (!a || !snap || choosing.current) return;
+    if (!addListHolds(a, s)) return closeAdd(true);
+    const at = resolvePoint(snap.state, a.point);
+    if (!at) {
+      closeAdd(true);
+      toast(`That place has changed, so ${it.name} wasn’t added. Try again.`, 'info');
+      return;
+    }
+    const refused = dropRefusal(snap.state, insertOps(at, it.spec, a.point.role), () => savingProblems(snap.state));
+    if (refused) return setAdding({ ...a, refused: `${it.name} can’t go here. ${refused}` });
+    choosing.current = true;
+    setAdding(null);
+    // Focus stays on the canvas, where the new element is selected.
+    canvasRef.current?.focus({ preventScroll: true });
+    void insertHere(it.spec, it.name, a.point.role, at, snap).finally(() => (choosing.current = false));
+  }
+  // An open list goes with the page, project, revision or editing it was opened on, and in Preview. Focus its search
+  // had goes to the canvas.
+  useEffect(() => {
+    if (!adding || addListHolds(adding, getState())) return;
+    setAdding(null);
+    requestAnimationFrame(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body) canvasRef.current?.focus({ preventScroll: true });
+    });
+  }, [adding, mode, snapshot?.workspaceKey, snapshot?.revision, snapshot?.aiBusy, snapshot?.readOnly, view?.key, definitionMode]);
   // The page now shows a newer version: what a drag measured on it is measured again.
   useEffect(() => insertDrag.current?.remeasure(), [applied]);
 
@@ -1857,6 +1953,36 @@ export function Canvas() {
   // The page's report must be for this selection: one from before it changed measured something else.
   const spaceFor = !!spacing && !!spaceDesc && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
   const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
+  // The canvas's Add buttons (#387), on the box of the selection and of what is hovered, each only on a box the page
+  // measured for it (one copy: a repeated item's place would be every item's). Below one section and above the next
+  // are one place, drawn once, the selection's first. While a list is open, only its own button is drawn, where it was.
+  const addOwner: OwnerRef | null = templateMode ? templateOwner(templateMode) : pageId ? { kind: 'page', id: pageId } : null;
+  const addReady = mode === 'edit' && !!state && !!addOwner && frameReady && !staleFrame && !stylesOpen && !definitionMode && !editing && !reorder && !resizing && !insertDrop && !dragging && !snapshot?.readOnly && !snapshot?.aiBusy && !menu.isOpen;
+  const measuredFor = (a: BridgeDesc | null, b: BridgeDesc | null) => !!a && !!b && a.ctx === b.ctx && a.node === b.node && (a.items || '') === (b.items || '');
+  const addButtons: Array<{ p: AddPoint; box: AddBox }> = adding
+    ? [{ p: adding.point, box: adding.box }]
+    : !addReady
+    ? []
+    : [
+        ...(rects.selected.length === 1 && measuredFor(rectsFor.current.selected, spaceDesc) ? addPoints(state!, addOwner!, selection).map((p) => ({ p, box: toBox(rects.selected[0]) })) : []),
+        ...(hovering && rects.hovered.length === 1 && measuredFor(rectsFor.current.hovered, descFor(hover)) ? addPoints(state!, addOwner!, hover, true).map((p) => ({ p, box: toBox(rects.hovered[0]) })) : [])
+      ].filter((b, i, all) => all.findIndex((o) => o.p.key === b.p.key) === i);
+  /** Where an Add button sits, in the overlay: on its section's edge three quarters across (clear of the chip at the
+   *  start and the spacing handles at the middle), or inset in its container's lower trailing corner; kept on the page,
+   *  and not drawn for an edge scrolled out of view. Drawn before the spacing handles and the chip, which stay on top
+   *  where a small page brings them together. */
+  const addAt = (p: AddPoint, b: AddBox): { left: number; top: number } | null => {
+    const h = frameH * z;
+    if (b.top > h || b.top + b.height < 0 || b.left > frameW || b.left + b.width < 0) return null;
+    const inside = p.side === 'inside';
+    // A short or narrow container (a Row of one line) has it centred on that side instead, so it stays on the box.
+    const y = inside ? (b.height < 40 ? b.top + b.height / 2 : b.top + b.height - 16) : p.side === 'before' ? b.top : b.top + b.height;
+    if (!inside && (y < -2 || y > h + 2)) return null;
+    // On a narrow section, kept past the margin handle, which sits just after the middle (see SpacingHandles).
+    const edgeX = b.left + Math.max(b.width * 0.75, b.width / 2 + Math.min(28, b.width / 4) + 30);
+    const x = inside ? (b.width < 40 ? b.left + b.width / 2 : b.left + b.width - 16) : Math.min(edgeX, b.left + b.width - 14);
+    return { left: Math.max(14, Math.min(x, frameW - 14)), top: Math.max(14, Math.min(y, h - 14)) };
+  };
   const device = viewport < 768 ? 'Phone' : viewport < 1024 ? 'Tablet' : 'Desktop';
   const scalePct = Math.round(z * 100);
   // The width label shares the strip with a parked chip: in full, then the width and zoom, then just the width,
@@ -2132,7 +2258,7 @@ export function Canvas() {
                                   }
                             }
                             onPointerEnter={() => (overTag.current = true)}
-                            onPointerLeave={() => (overTag.current = false)}
+                            onPointerLeave={leaveHoverChrome}
                           >
                             {state && hover ? chromeLabel(state, hover) : ''}
                           </span>
@@ -2151,6 +2277,44 @@ export function Canvas() {
                     style={b}
                   />
                 ))}
+                {addButtons.map(({ p, box }) => {
+                  const at = adding ? adding.at : addAt(p, box);
+                  if (!at) return null;
+                  const label = pointLabel(p);
+                  return (
+                    <span key={p.key} className="ov-add-at">
+                      <button
+                        type="button"
+                        className={`ov-add ${p.side}`}
+                        style={at}
+                        aria-label={label}
+                        title={label}
+                        aria-haspopup="dialog"
+                        aria-expanded={!!adding}
+                        data-testid="canvas-add"
+                        data-side={p.side}
+                        data-node={p.nodeId}
+                        onPointerEnter={() => (overTag.current = true)}
+                        onPointerLeave={leaveHoverChrome}
+                        onFocus={() => (addFocused.current = true)}
+                        onBlur={(e) => {
+                          addFocused.current = false;
+                          // Gone with its focus (its hover moved on): focus goes to the canvas, as below.
+                          const el = e.currentTarget;
+                          requestAnimationFrame(() => {
+                            const a = document.activeElement;
+                            if (!el.isConnected && (!a || a === document.body)) canvasRef.current?.focus({ preventScroll: true });
+                          });
+                        }}
+                        onClick={(e) => (adding ? closeAdd(true) : openAdd(p, e.currentTarget, at, box))}
+                      >
+                        <Plus aria-hidden="true" />
+                      </button>
+                      {/* The edge it adds at, shown while the button is pointed at, focused or open. */}
+                      {p.side !== 'inside' && <span className="ov-add-line" style={{ left: box.left, top: p.side === 'before' ? box.top : box.top + box.height, width: box.width }} aria-hidden="true" />}
+                    </span>
+                  );
+                })}
                 {spaceShown && (
                   <SpacingHandles
                     // A drag belongs to one selection, at one size, zoom and page: any change ends it.
@@ -2228,6 +2392,7 @@ export function Canvas() {
         )}
       </div>
       {menu.node}
+      {adding && <QuickInsert point={adding.point} items={adding.items} anchor={adding.anchor} trigger={adding.trigger} refused={adding.refused} onChoose={chooseAdd} onClose={closeAdd} />}
       {/* What a drag from Insert carries, beside the pointer wherever it is in the window. */}
       {insertDrop &&
         createPortal(
@@ -2254,6 +2419,17 @@ function siblings(state: ProjectState, t: ElementRef | null): { index: number; c
   const tree = treeFor(state, t.owner);
   const info = tree && findParent(tree, t.nodeId);
   return info ? { index: info.index, count: info.list.length } : null;
+}
+
+/** A box in the overlay, in screen pixels from the page's top left. */
+type AddBox = { left: number; top: number; width: number; height: number };
+
+/** Whether an Add list opened on `list` (its project, revision and page) still stands for the editor as `s` has it:
+ *  editing that page, outside Component Studio, with the project writable and the AI not working. */
+function addListHolds(list: { opening: string; revision: number; view: string }, s: ReturnType<typeof getState>): boolean {
+  const snap = s.snapshot;
+  const shown = snap ? shownView(snap.state, s.pageId, s.templateMode) : null;
+  return !!snap && s.mode === 'edit' && !s.definitionMode && !snap.aiBusy && !snap.readOnly && snap.workspaceKey === list.opening && snap.revision === list.revision && shown?.key === list.view;
 }
 
 /** The name the canvas chrome uses: the shared header and footer say so, since the green alone cannot. */

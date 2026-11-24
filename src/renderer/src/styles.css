@@ -1168,6 +1168,33 @@ iframe { color-scheme: light dark; }
 /* A bridge over the gap to its element, so the pointer reaches the name without crossing other parts of the page. */
 .ov-label.outside::after { content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 8px; }
 .ov-label.outside.below::after { top: auto; bottom: 100%; }
+/* The canvas's Add buttons (#387): a small round + on a section's top or bottom edge, or inset in a container's lower
+   trailing corner, opening a short list of what fits there. The edge it adds at shows while it is pointed at. */
+.ov-add { position: absolute; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; margin: -11px 0 0 -11px; padding: 0; border: 0; border-radius: 50%; background: var(--select); color: #fff; box-shadow: 0 0 0 1.5px #fff, 0 2px 6px rgb(16 24 40 / 0.32); pointer-events: auto; cursor: pointer; opacity: 0.9; transition: transform 90ms ease-out, opacity 90ms ease-out; }
+.ov-add::after { content: ''; position: absolute; inset: -5px; border-radius: 50%; }
+.ov-add svg { width: 14px; height: 14px; stroke-width: 2.6; }
+.ov-add:is(:hover, :focus-visible, [aria-expanded='true']) { opacity: 1; transform: scale(1.14); }
+.ov-add:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.ov-add-line { position: absolute; height: 2px; margin-top: -1px; background: var(--select); box-shadow: 0 0 0 1px rgb(255 255 255 / 0.85); pointer-events: none; opacity: 0; transition: opacity 90ms ease-out; }
+.ov-add:is(:hover, :focus-visible, [aria-expanded='true']) + .ov-add-line { opacity: 1; }
+.quick-insert-veil { position: fixed; inset: 0; z-index: 999; }
+.quick-insert { position: fixed; z-index: 1000; display: flex; flex-direction: column; width: 288px; max-width: calc(100vw - 16px); padding: 6px; border-radius: var(--r-md); background: var(--raised); border: 1px solid var(--border-strong); box-shadow: var(--shadow-md); animation: pop-in 120ms ease-out; }
+.quick-insert .qi-title { padding: 3px 6px 7px; overflow: hidden; font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; text-overflow: ellipsis; }
+.quick-insert .qi-search { position: relative; }
+.quick-insert .qi-search > svg { position: absolute; left: 9px; top: 50%; translate: 0 -50%; width: 14px; height: 14px; color: var(--text-3); pointer-events: none; }
+.quick-insert input { width: 100%; height: 30px; padding: 0 8px 0 29px; border: 1px solid var(--border-control); border-radius: var(--r-sm); background: var(--panel); color: var(--text); font-size: 13px; user-select: text; }
+.quick-insert input:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
+.quick-insert .qi-list { margin: 6px 0 0; padding: 0; max-height: 264px; overflow-y: auto; list-style: none; }
+.quick-insert .qi-list:empty { display: none; }
+.quick-insert .qi-item { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; border-radius: var(--r-sm); color: var(--text); font-size: 13px; cursor: default; user-select: none; }
+.quick-insert .qi-item.active { background: var(--hover); }
+.quick-insert .qi-icon { display: inline-flex; flex: none; color: var(--text-3); }
+.quick-insert .qi-item.active .qi-icon { color: var(--accent-text); }
+.quick-insert .qi-name { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.quick-insert .qi-group { flex: none; color: var(--text-3); font-size: 11px; }
+.quick-insert .qi-note { margin: 6px 6px 2px; color: var(--text-2); font-size: 12px; }
+.quick-insert .qi-note:empty { display: none; }
+.quick-insert .qi-note.refused { color: var(--red-ink); }
 /* The selection chip: name, then grouped actions, as one toolbar. It is app chrome on the user's page, so
    it carries a complete white rim that separates it from any page colour, and its own shadow. Inner
    buttons are 24px targets with --r-xs corners, concentric with the chip's --r-sm. */

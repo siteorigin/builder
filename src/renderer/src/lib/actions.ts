@@ -16,7 +16,7 @@ import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import { endArrival, markArrival } from './arrival';
 import type { InsertSpec } from './insert-search';
-import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, type InsertAt, type InsertRole, type Where } from './insert-at';
+import { elementWhere, insertAt, insertOps, insertRole, insertSelection, nodeBefore, nodeLabel, whereFor, type InsertAt, type InsertRole, type Where } from './insert-at';
 import { boundaryOf, computedAt, followsPageAt, inDefinition, keepPagesValid, listPropFor, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
 import { NEW_STUDIO, type StudioView } from './studio';
 import { forgetPlace, placeOn, selectionBack } from './page-place';
@@ -381,6 +381,34 @@ export async function insert(spec: InsertSpec, label: string) {
   const ref: ElementRef = { owner: at.owner, instancePath: [], nodeId: insertSelection(ops, id) };
   if (getState().mode === 'edit') markArrival(ref);
   setState({ selection: ref, rightTab: 'inspect' });
+}
+
+/**
+ * Insert `spec` (called `name`) at `at`, a place the author pointed at on the canvas (a drop from Insert, or one of the
+ * canvas's Add buttons), as one change planned on the project as `snap` had it: refused if the project has moved on
+ * since. Selected while the author is still on the page (or layout) it went on, with the arrival cue once the page
+ * shows it, and said where it went, with an Undo. Returns whether it was inserted.
+ */
+export async function insertHere(spec: InsertSpec, name: string, role: InsertRole, at: InsertAt, snap: ProjectSnapshot): Promise<boolean> {
+  if (getState().snapshot?.workspaceKey !== snap.workspaceKey) return false;
+  const w = whereFor(snap.state, at, role);
+  // Named here, so what is selected is the thing inserted (or a new Grid's first column), not the last node the
+  // change made.
+  const named = newId('n');
+  const ops = insertOps(at, spec, role, named);
+  const r = await commitOps(ops, `Insert ${name}`, undefined, snap.revision);
+  if (!r?.ok || getState().snapshot?.workspaceKey !== r.workspaceKey) return false;
+  const id = r.results?.some((x) => x?.nodeId === named) ? insertSelection(ops, named) : undefined;
+  const now = getState();
+  const owner = at.owner;
+  const here = owner.kind === 'template' ? now.templateMode?.collectionId === owner.id : now.pageId === owner.id && !now.templateMode;
+  if (id && here && now.mode === 'edit' && !now.definitionMode) {
+    const ref: ElementRef = { owner, instancePath: [], nodeId: id };
+    markArrival(ref);
+    setState({ selection: ref, rightTab: 'inspect' });
+  }
+  toast(`Added ${name}${w ? ` ${w.lead} ${w.within ? `${w.target} in ${w.within}` : w.target}` : ''}.`, 'info', undoAction(r));
+  return true;
 }
 
 /** Where Place on page puts a library image (`key` tells two placements apart), or why it can't be placed now. */
