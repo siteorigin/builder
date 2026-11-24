@@ -1,4 +1,4 @@
-import { axesOf, designLayers, designStyles, selectedVariants, selectedVariantStyles } from '@shared/variants';
+import { axesOf, designLayers, designStyles, selectedVariants, selectedVariantStyles, startingVariants } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
 import { Children, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -1996,7 +1996,7 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
         {node.kind === 'instance' ? (
           <StyleControls
             styles={node.overrides?.root}
-            inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], node.variants) : undefined}
+            inherited={placedDef?.kind === 'managed' && placedDef.tree ? designStyles(placedDef, placedDef.parts.root?.nodeId ?? placedDef.tree.rootIds[0], startingVariants(node.variants, def)) : undefined}
             wideColumns
             tokens={tokens}
             allowed={placedDef?.parts.root?.styleControls ?? styleSetFor(node)}

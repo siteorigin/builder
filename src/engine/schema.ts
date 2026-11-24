@@ -488,7 +488,8 @@ export function enclosingList(def: ComponentDefinition, nodeId: string): ListPro
  * or choice property it behaves like, with its initial value as the default.
  */
 export function boundSchema(def: ComponentDefinition, nodeId: string, b: BindingRef): PropSchema | undefined {
-  if ('$state' in b) {
+  // Only a read of state alone: a value that also names a property or an item field is refused as malformed.
+  if (isStateRef(b)) {
     const s = declaredState(def, b.$state);
     return s ? stateAsProp(s) : undefined;
   }
@@ -532,6 +533,15 @@ export function uiStateProblem(def: Pick<ComponentDefinition, 'properties'>, nam
     values.add(value);
   }
   return typeof r.initial === 'string' && values.has(r.initial) ? null : `the UI state "${name}" starts as ${JSON.stringify(r.initial) ?? 'nothing'}, which is not one of its options.`;
+}
+
+/** A state map a hand edit made into something else is reported once, on its own, not again by everything that reads it. */
+const stateMapDamaged = (def: Pick<ComponentDefinition, 'state'>) => def.state !== undefined && (!def.state || typeof def.state !== 'object' || Array.isArray(def.state));
+
+/** Whether a definition declares this state, but in a form a hand edit damaged (reported on its own). */
+export function damagedState(def: Pick<ComponentDefinition, 'state' | 'properties'>, name: string): boolean {
+  if (stateMapDamaged(def)) return true;
+  return !!def.state && Object.hasOwn(def.state, name) && !declaredState(def, name);
 }
 
 /** A declared, well-formed UI state variable of a definition (one a hand edit damaged is reported on its own). */
@@ -579,9 +589,9 @@ export function normalizeUiState(raw: unknown, name: string): UiStateSchema {
 /** What is wrong with a read of UI state at a binding site, or null: state the definition lacks, a field that cannot read it, or a value it never holds. */
 export function stateRefProblem(state: ProjectState, def: ComponentDefinition, site: Pick<BindingSite, 'node' | 'field' | 'prop' | 'comparison'>, ref: StateRef): string | null {
   if (!STATE_FIELDS.has(site.field)) return `reads the UI state "${ref.$state}" as its ${site.field}; only conditions and the variants of a nested component read UI state.`;
-  const declared = def.state && Object.hasOwn(def.state, ref.$state) ? def.state[ref.$state] : undefined;
   // A declaration a hand edit damaged is reported once, on its own.
-  if (declared !== undefined && !declaredState(def, ref.$state)) return null;
+  if (damagedState(def, ref.$state)) return null;
+  const declared = declaredState(def, ref.$state);
   if (!declared) return `reads the UI state "${ref.$state}", which the component does not declare.`;
   return bindingProblem(state, site, stateAsProp(declared), 'state');
 }
@@ -595,8 +605,8 @@ export function stateActionProblem(def: ComponentDefinition, action: unknown): s
   const allowed = a.op === 'set' ? ['value'] : a.op === 'toggle' ? [] : ['wrap'];
   const extra = keys.filter((k) => !allowed.includes(k));
   if (extra.length) return `has a "${a.op}" UI state action that also says ${extra.map((k) => `"${k}"`).join(', ')}, which only ${extra.includes('value') ? 'set' : extra.includes('wrap') ? 'next and prev' : 'other actions'} take.`;
-  const declared = def.state && Object.hasOwn(def.state, a.state) ? def.state[a.state] : undefined;
-  if (declared !== undefined && !declaredState(def, a.state)) return null;
+  if (damagedState(def, a.state)) return null;
+  const declared = declaredState(def, a.state);
   if (!declared) return `changes the UI state "${a.state}", which the component does not declare.`;
   switch (a.op) {
     case 'toggle':

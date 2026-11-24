@@ -28,6 +28,7 @@ import {
   isProtoKey,
   normalizeProperties,
   normalizePropSchema,
+  damagedState,
   normalizeUiState,
   stateActionProblem,
   stateRefProblem,
@@ -413,6 +414,7 @@ export function removeVariant(state: ProjectState, op: Op<'component.removeVaria
   for (const { node, owner } of instancesOf(state, def.id)) {
     const chosen = node.variants?.[found.axis];
     const parent = owner.kind === 'component' ? state.components[owner.id] : undefined;
+    if (parent && isStateRef(chosen) && damagedState(parent, chosen.$state)) fail(`"${parent.name}" chooses the ${found.axis} through its UI state "${chosen.$state}", which is damaged. Declare it again there first.`);
     const from = parent && isBindingRef(chosen) ? boundSchema(parent, node.id, chosen) : undefined;
     if (from?.type === 'enum' && from.options.some((o) => o.value === found.id))
       fail(`"${parent!.name}" can choose the ${found.axis} "${found.id}" through its "${from.label}" ${isStateRef(chosen) ? 'UI state' : 'choice'}. Remove that option there first.`);
@@ -531,6 +533,13 @@ export function setState(state: ProjectState, op: Op<'component.setState'>): OpR
   checkStateName(def, op.state);
   if (!own(def.state, op.state) && Object.keys(def.state ?? {}).length >= MAX_UI_STATES) fail(`A component can have at most ${MAX_UI_STATES} UI state variables.`);
   const schema = normalizeUiState(op.schema, op.state);
+  // A change that leaves out the label or the starting value keeps the ones the state has, where they still fit:
+  // relabelling a choice never moves every placement to its first option.
+  const prev = own(def.state, op.state);
+  if (prev && !damagedState(def, op.state)) {
+    if (op.schema.label === undefined || !op.schema.label.trim()) schema.label = prev.label;
+    if (op.schema.initial === undefined && prev.type === schema.type && (schema.type === 'boolean' || schema.options.some((o) => o.value === prev.initial))) schema.initial = prev.initial as never;
+  }
   const next = withState(def, op.state, schema);
   for (const site of bindingSites(next)) {
     if (!isStateRef(site.binding) || site.binding.$state !== op.state) continue;
@@ -568,6 +577,7 @@ export function nodeSetStateAction(state: ProjectState, op: Op<'node.setStateAct
     return {};
   }
   const action = clone(op.action) as StateAction;
+  if (damagedState(def, action.state)) fail(`The UI state "${action.state}" of "${def.name}" is damaged. Declare it again with component.setState first.`);
   const problem = stateActionProblem(def, action);
   if (problem) fail(`${describeNode(node)} ${problem}`);
   node.stateAction = action;
@@ -676,8 +686,9 @@ export function nodeSetBinding(state: ProjectState, op: Op<'node.setBinding'>): 
       if (typeof d === 'string' && Object.hasOwn(axisDef!.options, d)) holder[key] = d;
       else delete holder[key];
       if (inst.variants && !Object.keys(inst.variants).length) delete inst.variants;
-    } else if (isBinding(current)) {
+    } else if (isBindingRef(current)) {
       // A field the node may leave out (a card destination, an accessible name) goes when nothing usable is left.
+      // State read where content belongs (a hand edit) leaves the value it starts at.
       const literal = literalFor(field, node, boundSchema(def, node.id, current), nested);
       if (literal === undefined) delete holder[key];
       else holder[key] = literal;

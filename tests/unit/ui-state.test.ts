@@ -14,7 +14,7 @@ import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
-import { blocksSaving, validateState } from '@engine/validate';
+import { blocksSaving, introducedDiagnostics, validateState } from '@engine/validate';
 import { generateProject, nodeClass } from '@generator/index';
 import { P, eq, prop, uiState, type ComponentSpec } from '@catalogue/dsl';
 import { FOUNDATION } from '@catalogue/foundation/pack';
@@ -23,7 +23,9 @@ import { MIGRATIONS, migrateProject } from '@shared/migrations';
 import { SCHEMA_VERSION } from '@shared/types';
 import { OP_REACH } from '@agent/scope';
 import { toolDefinitions } from '@agent/tools';
-import { conditionSources, describeConditions, readRule } from '../../src/renderer/src/lib/conditions';
+import { executeTool } from '@agent/tools';
+import { startingVariants } from '@shared/variants';
+import { conditionSources, describeConditions, readRule, ruleOp } from '../../src/renderer/src/lib/conditions';
 
 const { managed } = FOUNDATION;
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -186,6 +188,21 @@ describe('UI state a component declares', () => {
     r = apply(r, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: { type: 'enum', label: 'Plan period', options: ['annual', 'monthly'] } }]);
     expect(r.components[def.id].state!.billing).toMatchObject({ label: 'Plan period', initial: 'annual' });
     expect(errors(r)).toEqual([]);
+    // A change that leaves out the starting value or the label keeps them while they still fit: relabelling a choice
+    // never moves every placement to another option.
+    r = apply(r, [
+      { type: 'component.setState', definitionId: def.id, state: 'billing', schema: { type: 'enum', options: ['weekly', 'monthly', 'annual'], initial: 'monthly' } },
+      { type: 'component.setState', definitionId: def.id, state: 'open', schema: { type: 'boolean', label: 'Open', initial: true } }
+    ]);
+    r = apply(r, [
+      { type: 'component.setState', definitionId: def.id, state: 'billing', schema: { type: 'enum', options: ['annual', 'weekly', 'monthly'] } },
+      { type: 'component.setState', definitionId: def.id, state: 'open', schema: { type: 'boolean' } }
+    ]);
+    expect(r.components[def.id].state!.billing).toMatchObject({ label: 'Plan period', initial: 'monthly' });
+    expect(r.components[def.id].state!.open).toEqual({ type: 'boolean', label: 'Open', initial: true });
+    // Without its old starting value among the options, a choice starts at its first.
+    r = apply(r, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: { type: 'enum', options: ['weekly', 'annual'] } }]);
+    expect(r.components[def.id].state!.billing.initial).toBe('weekly');
     r = apply(r, [{ type: 'component.removeState', definitionId: def.id, state: 'open' }]);
     expect(Object.keys(r.components[def.id].state!)).toEqual(['billing']);
     r = apply(r, [{ type: 'component.removeState', definitionId: def.id, state: 'billing' }]);
@@ -202,6 +219,8 @@ describe('UI state a component declares', () => {
     expect(set('prototype', { type: 'boolean' })).toThrow(/reserved/);
     expect(set('title', { type: 'boolean' })).toThrow(/already has a property "title"/);
     expect(set('tab', { type: 'enum', options: ['one'] })).toThrow(/2 to 50 options/);
+    expect(set('tab', { type: 'enum', options: Array.from({ length: 51 }, (_, i) => `o${i}`) })).toThrow(/2 to 50 options/);
+    expect(set('tab', { type: 'enum', options: Array.from({ length: 50 }, (_, i) => `o${i}`) })).not.toThrow();
     expect(set('tab', { type: 'enum', options: ['one', 'one'] })).toThrow(/listed twice/);
     expect(set('tab', { type: 'enum', options: ['one', 'two'], initial: 'three' })).toThrow(/starts as "three", which is not one of its options \("one", "two"\)/);
     expect(set('open', { type: 'boolean', initial: 'false' })).toThrow(/true or false/);
@@ -224,6 +243,14 @@ describe('UI state a component declares', () => {
     expect(() => apply(code, [{ type: 'component.setState', definitionId: codeId, state: 'open', schema: { type: 'boolean' } }])).toThrow(/code component/);
     const theme = s.components[installComponent(s, 'features.grid')];
     expect(() => apply(s, [{ type: 'component.setState', definitionId: theme.id, state: 'open', schema: { type: 'boolean' } }])).toThrow(/belongs to the theme/);
+    // A fork carries the theme's state as its own.
+    theme.state = { open: structuredClone(OPEN) };
+    const forked = applyOperations(s, [{ type: 'component.fork', definitionId: theme.id }]);
+    const copy = forked.results[0].definitionId as string;
+    expect(copy).not.toBe(theme.id);
+    const changed = apply(forked.state, [{ type: 'component.setState', definitionId: copy, state: 'open', schema: { type: 'boolean', initial: true } }]);
+    expect(changed.components[copy].state!.open.initial).toBe(true);
+    expect(changed.components[theme.id].state!.open.initial).toBe(false);
   });
 });
 
@@ -256,6 +283,9 @@ describe('conditions and variants that read UI state', () => {
     expect(conditionSources(d, 'note').state.map((x) => x.key)).toEqual(['state:billing', 'state:open']);
     expect(readRule(d, d.tree!.nodes.note, 'when')).toMatchObject({ binding: { $state: 'billing' }, test: 'eq', value: 'annual', source: { key: 'state:billing' } });
     expect(describeConditions(d, d.tree!.nodes.note)).toEqual(['Show when Billing is Annual']);
+    // A rule the Inspector saves for state keeps its comparison.
+    const saved = apply(r, [ruleOp(owner(def), 'title', 'when', { binding: { $state: 'billing' }, test: 'ne', value: 'monthly' })]);
+    expect(node(saved, def, 'title').when).toEqual({ ref: { $state: 'billing' }, ne: 'monthly' });
   });
 
   it('chooses a nested variant from state whose options are all options of the axis, and keeps the option when unbound', () => {
@@ -273,8 +303,11 @@ describe('conditions and variants that read UI state', () => {
     expect((node(r, def, 'price') as InstanceNode).variants).toEqual({ period: { $state: 'billing' } });
     expect(errors(r)).toEqual([]);
     // Unbound, the placement keeps the option the state starts at.
+    const startsMonthly = apply(r, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: { ...BILLING, initial: 'monthly' } }]);
     r = apply(r, [{ type: 'node.setBinding', owner: owner(def), nodeId: 'price', field: 'variant', axis: 'period', binding: null }]);
     expect((node(r, def, 'price') as InstanceNode).variants).toEqual({ period: 'annual' });
+    const unboundMonthly = apply(startsMonthly, [{ type: 'node.setBinding', owner: owner(def), nodeId: 'price', field: 'variant', axis: 'period', binding: null }]);
+    expect((node(unboundMonthly, def, 'price') as InstanceNode).variants).toEqual({ period: 'monthly' });
   });
 
   it('keeps state in use: a removal or change that would leave a reader or a button behind is refused', () => {
@@ -290,6 +323,10 @@ describe('conditions and variants that read UI state', () => {
     delete (tree.nodes.price as InstanceNode).variants;
     delete (tree.nodes['annual-btn'] as LinkNode).stateAction;
     expect(() => apply(s, [{ type: 'component.removeState', definitionId: def.id, state: 'billing' }])).toThrow(/still used by Monthly \(changes it\)\. Unbind/);
+    // A "hide when" alone keeps it in use too.
+    delete tree.nodes.details.when;
+    delete (tree.nodes['toggle-btn'] as LinkNode).stateAction;
+    expect(() => apply(s, [{ type: 'component.removeState', definitionId: def.id, state: 'open' }])).toThrow(/"Open" is still used by a text element \(hides when it\)\. Unbind/);
     const t = fresh();
     const built = billingDef(t);
     const set = (state: string, schema: Record<string, unknown>) => () => apply(t, [{ type: 'component.setState', definitionId: built.def.id, state, schema } as EditOperation]);
@@ -333,6 +370,7 @@ describe('buttons that change UI state', () => {
     expect((node(act({ state: 'open', op: 'toggle' })(), def, 'btn') as LinkNode).stateAction).toEqual({ state: 'open', op: 'toggle' });
     expect((node(act({ state: 'billing', op: 'set', value: 'monthly' })(), def, 'btn') as LinkNode).stateAction).toEqual({ state: 'billing', op: 'set', value: 'monthly' });
     expect((node(act({ state: 'open', op: 'set', value: true })(), def, 'btn') as LinkNode).stateAction).toEqual({ state: 'open', op: 'set', value: true });
+    expect((node(act({ state: 'billing', op: 'prev', wrap: false })(), def, 'btn') as LinkNode).stateAction).toEqual({ state: 'billing', op: 'prev', wrap: false });
     expect(act({ state: 'billing', op: 'toggle' })).toThrow(/toggles the choice "billing"/);
     expect(act({ state: 'open', op: 'prev' })).toThrow(/steps the yes\/no state "open" to its prev option/);
     expect(act({ state: 'billing', op: 'set', value: 'weekly' })).toThrow(/sets "billing" to "weekly", which is not one of its options/);
@@ -361,6 +399,16 @@ describe('documents that declare, read and change UI state', () => {
     const s = fresh();
     const { def } = billingDef(s);
     place(s, def);
+    // The fixture holds every kind of read and change.
+    const n = s.components[def.id].tree!.nodes;
+    expect(Object.keys(s.components[def.id].state!)).toEqual(['billing', 'open']);
+    expect([n['annual-note'].when, n.details.when, n['closed-note'].unless, (n.price as InstanceNode).variants]).toEqual([
+      { ref: { $state: 'billing' }, eq: 'annual' },
+      { $state: 'open' },
+      { $state: 'open' },
+      { period: { $state: 'billing' } }
+    ]);
+    expect((n['toggle-btn'] as LinkNode).stateAction).toEqual({ state: 'open', op: 'toggle' });
     expect(errors(s)).toEqual([]);
   });
 
@@ -380,6 +428,14 @@ describe('documents that declare, read and change UI state', () => {
     expect(problems((_, d) => (nodes(d)['annual-note'].when = { ref: { $state: 'billing' }, ne: 'weekly' }))).toEqual([['BINDING_INVALID', 'annual-note', expect.stringMatching(/not one of its options/)]]);
     expect(problems((_, d) => (nodes(d).title.text = { $state: 'billing' }))).toEqual([['BINDING_INVALID', 'title', expect.stringMatching(/reads the UI state "billing" as its text; only conditions and the variants of a nested component read UI state/)]]);
     expect(problems((_, d) => (nodes(d).price.variants = { period: { $state: 'open' } }))).toEqual([['BINDING_INVALID', 'price', expect.stringMatching(/shows a boolean state as its variant/)]]);
+    expect(
+      problems((_, d) => {
+        d.state!.size = { type: 'enum', label: 'Size', options: [{ value: 'monthly', label: 'Monthly' }, { value: 'weekly', label: 'Weekly' }], initial: 'monthly' };
+        nodes(d).price.variants = { period: { $state: 'size' } };
+      })
+    ).toEqual([['BINDING_INVALID', 'price', expect.stringMatching(/options "weekly" are not options of "Price"/)]]);
+    // A read of state that also names a property is neither, wherever it is.
+    expect(problems((_, d) => (nodes(d).price.variants = { period: { $prop: 'title', $state: 'billing' } }))).toEqual([['BINDING_INVALID', 'price', expect.stringMatching(/reads UI state and something else at once/)]]);
     // Two sources in one condition is not a condition.
     expect(problems((_, d) => (nodes(d).details.when = { $state: 'open', $prop: 'title' }))).toEqual([['BINDING_INVALID', 'details', expect.stringMatching(/neither a property, a list item field, UI state/)]]);
   });
@@ -392,6 +448,10 @@ describe('documents that declare, read and change UI state', () => {
       ['STATE_INVALID', undefined, expect.stringMatching(/needs 2 to 50 options/)]
     ]);
     expect(problems((_, d) => (d.state!.title = OPEN))).toEqual([['STATE_INVALID', undefined, expect.stringMatching(/"title" is both a property and UI state/)]]);
+    expect(problems((_, d) => ((d.state!.billing as { options: unknown[] }).options = [{ value: 'annual', label: 'A' }, { value: 'annual', label: 'B' }]))).toEqual([
+      ['STATE_INVALID', undefined, expect.stringMatching(/lists the option "annual" twice/)]
+    ]);
+    expect(problems((_, d) => (d.state = null as never))).toEqual([['STATE_INVALID', undefined, expect.stringMatching(/its UI state is not in the expected form/)]]);
     expect(problems((_, d) => (nodes(d)['toggle-btn'].stateAction = { state: 'billing', op: 'toggle' }))).toEqual([['STATE_ACTION_INVALID', 'toggle-btn', expect.stringMatching(/toggles the choice "billing"/)]]);
     expect(problems((_, d) => (nodes(d)['monthly-btn'].stateAction = { state: 'billing', op: 'set', value: 'monthly', wrap: true }))).toEqual([
       ['STATE_ACTION_INVALID', 'monthly-btn', expect.stringMatching(/also says "wrap"/)]
@@ -414,6 +474,19 @@ describe('documents that declare, read and change UI state', () => {
     home(button).nodes[id] = { id, kind: 'link', link: NONE, label: 'Open', appearance: 'primary', stateAction: { state: 'open', op: 'toggle' } };
     home(button).rootIds.push(id);
     expect(errors(button).map((d) => [d.code, d.message])).toEqual([['BINDING_SCOPE', expect.stringMatching(/changes UI state, which only a button inside a component definition can/)]]);
+    // A read and an action on one button are two problems, so an action added beside a read is new.
+    const before = validateState(button);
+    home(button).nodes[id].when = { $state: 'open' };
+    const read = validateState(button);
+    delete (home(button).nodes[id] as LinkNode).stateAction;
+    const readOnly = validateState(button);
+    expect(introducedDiagnostics(readOnly, read).map((d) => d.code)).toEqual(['BINDING_SCOPE']);
+    expect(introducedDiagnostics(before, read).map((d) => d.code)).toEqual(['BINDING_SCOPE']);
+    // The shared header has no state either.
+    const shell = fresh();
+    const header = shell.site.shell.header;
+    header.nodes[header.rootIds[0]].when = { $state: 'open' };
+    expect(errors(shell).map((d) => [d.code, d.owner])).toEqual([['BINDING_SCOPE', { kind: 'shell', id: 'header' }]]);
   });
 });
 
@@ -424,16 +497,43 @@ describe('documents that declare, read and change UI state', () => {
 describe('state buttons inside cards that link', () => {
   it('refuses a button that changes state inside a card of the same design', () => {
     const s = fresh();
-    const { def } = billingDef(s, { extra: (b) => [b.el('card', 'article', { link: { type: 'url', target: 'https://example.com/plans' } }, [b.link('card-btn', NONE, 'Switch', 'secondary', { stateAction: { state: 'open', op: 'toggle' } })])] });
+    const { def } = billingDef(s, { extra: (b) => [b.el('card', 'article', { link: { type: 'url', target: 'https://example.com/plans' } }, [b.link('card-btn', NONE, 'Switch', 'secondary', { stateAction: { state: 'billing', op: 'set', value: 'monthly' } })])] });
     place(s, def);
     const found = errors(s);
     expect(found.map((d) => [d.code, d.nodeId])).toEqual([['CARD_LINK_INTERACTIVE', 'card']]);
     expect(found[0].message).toMatch(/Billing switch: a button that changes UI state sits inside a card that links somewhere/);
   });
 
+  it('tells two broken cards apart, and keeps a broken card the same problem when its button changes', () => {
+    const card = (b: Parameters<ComponentSpec['build']>[0], id: string) =>
+      b.el(id, 'article', { link: { type: 'url', target: `https://example.com/${id}` } }, [b.link(`${id}-btn`, NONE, 'Switch', 'secondary', { stateAction: { state: 'open', op: 'toggle' } })]);
+    const s = fresh();
+    const { def } = billingDef(s, { extra: (b) => [card(b, 'card-a'), card(b, 'card-b')] });
+    place(s, def);
+    const both = validateState(s);
+    const tree = s.components[def.id].tree!;
+    const root = tree.nodes[tree.rootIds[0]] as GraphNode & { children: string[] };
+    root.children = root.children.filter((c) => c !== 'card-b');
+    delete tree.nodes['card-b'];
+    delete tree.nodes['card-b-btn'];
+    const one = validateState(s);
+    expect(introducedDiagnostics(one, both).map((d) => [d.code, d.nodeId])).toEqual([['CARD_LINK_INTERACTIVE', 'card-b']]);
+    // Without its action the button is still a control in the card: the same problem, not a new one.
+    delete (tree.nodes['card-a-btn'] as LinkNode).stateAction;
+    expect(introducedDiagnostics(one, validateState(s))).toEqual([]);
+  });
+
   it('refuses a component with state buttons placed inside another design’s card, on that card', () => {
     const s = fresh();
-    const { def: inner } = billingDef(s);
+    // Its one button changes state and nothing else: it is what makes the design interactive.
+    const inner = addDef(s, {
+      componentId: 'test.disclosure',
+      name: 'Disclosure',
+      properties: {},
+      parts: {},
+      state: { open: structuredClone(OPEN) },
+      build: (b) => b.el('d-root', 'div', {}, [b.link('d-btn', NONE, 'More', 'text', { stateAction: { state: 'open', op: 'toggle' } }), b.text('d-body', 'p', 'Details', { when: uiState('open') })])
+    });
     const outer = addDef(s, {
       componentId: 'test.outer',
       name: 'Outer',
@@ -449,7 +549,10 @@ describe('state buttons inside cards that link', () => {
     place(s, outer);
     const found = errors(s);
     expect(found.map((d) => [d.code, d.owner?.id, d.nodeId])).toEqual([['CARD_LINK_INTERACTIVE', outer.id, 'card']]);
-    expect(found[0].message).toMatch(/“Billing switch”, which holds the “Monthly” button/);
+    expect(found[0].message).toMatch(/“Disclosure”, which holds a button that changes UI state/);
+    // Without its action, the button is an ordinary one that goes nowhere: still a control inside the card.
+    delete (s.components[inner.id].tree!.nodes['d-btn'] as LinkNode).stateAction;
+    expect(errors(s)[0].message).toMatch(/“Disclosure”, which holds a button or link/);
   });
 });
 
@@ -479,6 +582,21 @@ describe('the generated site', () => {
     expect(other).toContain('Billed monthly');
     expect(other).not.toContain('Billed yearly');
     expect(openTag(other, nodeClass(price, 'price-root'))).toContain(period('monthly'));
+    // A yes/no state that starts on shows what it guards and hides what it guards against.
+    const open = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'open', schema: { type: 'boolean', label: 'Open', initial: true } }]);
+    const shown = await renderHome(open);
+    expect(shown).toContain('Cancel any time');
+    expect(shown).not.toContain('Read the terms');
+  });
+
+  it('chooses the option a state starts at for readers of a placement’s styles', () => {
+    const s = fresh();
+    const { def } = billingDef(s);
+    const variants = (s.components[def.id].tree!.nodes.price as InstanceNode).variants;
+    expect(startingVariants(variants, s.components[def.id])).toEqual({ period: 'annual' });
+    // A state the design does not declare, or a choice bound to a property, stays bound.
+    expect(startingVariants({ period: { $state: 'nope' }, tone: { $prop: 'tone' } }, s.components[def.id])).toEqual({ period: { $state: 'nope' }, tone: { $prop: 'tone' } });
+    expect(startingVariants(variants, undefined)).toBe(variants);
   });
 
   it('decides the editor’s checks the way the site renders: a link behind state counts only while the state shows it', () => {
@@ -502,6 +620,7 @@ describe('copies and conversions', () => {
     const create = (nodeId: string) => () => apply(s, [{ type: 'component.createFromNode', owner: owner(def), nodeId, name: 'Part' }]);
     expect(create('annual-note')).toThrow(/reads or changes the UI state of the component around it/);
     expect(create('monthly-btn')).toThrow(/reads or changes the UI state of the component around it/);
+    expect(create('price')).toThrow(/reads or changes the UI state of the component around it/);
     // Content that uses no state still can, and the design is left as it was by the refusals.
     const made = create('title')();
     expect(errors(made)).toEqual([]);
@@ -516,10 +635,46 @@ describe('copies and conversions', () => {
     const r = applyOperations(s, [{ type: 'component.duplicate', definitionId: def.id, name: 'Billing copy' }]);
     const copy = r.state.components[r.results[0].definitionId as string];
     expect(copy.state).toEqual(def.state);
+    expect(copy.state!.billing).not.toBe(r.state.components[def.id].state!.billing);
+    expect((copy.state!.billing as { options: unknown[] }).options).not.toBe((r.state.components[def.id].state!.billing as { options: unknown[] }).options);
+    expect((copy.tree!.nodes['monthly-btn'] as LinkNode).stateAction).toEqual({ state: 'billing', op: 'set', value: 'monthly' });
     const changed = apply(r.state, [{ type: 'component.setState', definitionId: copy.id, state: 'open', schema: { type: 'boolean', initial: true } }]);
     expect(changed.components[copy.id].state!.open.initial).toBe(true);
     expect(changed.components[def.id].state!.open.initial).toBe(false);
     expect(errors(changed)).toEqual([]);
+  });
+
+  it('converts a design whose state map is empty, leaving the map out of the code copy', () => {
+    const s = fresh();
+    const { def } = plainDef(s);
+    s.components[def.id].state = {};
+    const inst = place(s, def);
+    const r = applyOperations(s, [{ type: 'component.convertToCode', owner: { kind: 'page', id: home(s).id }, nodeId: inst.id }]);
+    const code = r.state.components[r.results[0].definitionId as string];
+    expect(code.kind).toBe('code');
+    expect('state' in code).toBe(false);
+    expect(errors(r.state).filter((d) => d.code === 'STATE_INVALID')).toEqual([]);
+  });
+
+  it('unbinds state a hand edit put where content belongs, leaving the value it starts at', () => {
+    const s = fresh();
+    const { def } = billingDef(s);
+    s.components[def.id].tree!.nodes.title = { ...s.components[def.id].tree!.nodes.title, text: { $state: 'billing' } } as unknown as GraphNode;
+    const r = apply(s, [{ type: 'node.setBinding', owner: owner(def), nodeId: 'title', field: 'text', binding: null }]);
+    expect((node(r, def, 'title') as { text: unknown }).text).toBe('annual');
+    expect(errors(r)).toEqual([]);
+  });
+
+  it('refuses an edit that leans on a damaged declaration, until it is declared again', () => {
+    const s = fresh();
+    const { def, price } = billingDef(s);
+    (s.components[def.id].state!.billing as { initial: string }).initial = 'weekly';
+    expect(() => apply(s, [{ type: 'node.setStateAction', owner: owner(def), nodeId: 'toggle-btn', action: { state: 'billing', op: 'toggle' } }])).toThrow(/"billing" of "Billing switch" is damaged/);
+    expect(() => apply(s, [{ type: 'component.removeVariant', definitionId: price.id, variant: 'annual', axis: 'period' }])).toThrow(/UI state "billing", which is damaged/);
+    // Declared again, it is whole: the edits it guards are judged as usual.
+    const repaired = apply(s, [{ type: 'component.setState', definitionId: def.id, state: 'billing', schema: BILLING }]);
+    expect(errors(repaired)).toEqual([]);
+    expect(() => apply(repaired, [{ type: 'node.setStateAction', owner: owner(def), nodeId: 'toggle-btn', action: { state: 'billing', op: 'toggle' } }])).toThrow(/toggles the choice "billing"/);
   });
 });
 
@@ -536,7 +691,11 @@ describe('the document format and the assistant', () => {
     place(s, def);
     const docs = (p: ProjectState) => [p.manifest, p.site, p.tokens, p.assets, p.themeLock, ...Object.values(p.pages), ...Object.values(p.components)];
     for (const d of docs(s)) d.schemaVersion = SCHEMA_VERSION - 1;
+    const before = structuredClone(s);
     const out = migrateProject(s)!.state;
+    // Every document is as it was apart from its version, and the theme lock it keeps truthful.
+    const unversioned = (p: ProjectState) => JSON.parse(JSON.stringify({ ...p, themeLock: undefined }, (k, v) => (k === 'schemaVersion' ? undefined : v)));
+    expect(unversioned(out)).toEqual(unversioned(before));
     expect(docs(out).every((d) => d.schemaVersion === SCHEMA_VERSION)).toBe(true);
     // Nothing else changes: state stays as written, and no component gains a state it did not have.
     expect(out.components[def.id].state).toEqual(def.state);
@@ -546,9 +705,34 @@ describe('the document format and the assistant', () => {
 
   it('classifies the state operations, but offers none to the assistant until generated buttons work', () => {
     const types = ['component.setState', 'component.removeState', 'node.setStateAction'] as const;
-    for (const t of types) expect(Object.hasOwn(OPERATION_SCHEMAS, t) && OP_REACH[t]).toBeTruthy();
+    for (const t of types) expect(Object.hasOwn(OPERATION_SCHEMAS, t)).toBe(true);
+    // A new state is the design's own addition; removing one changes every placement; a button is one node.
+    expect(types.map((t) => OP_REACH[t])).toEqual(['definition', 'wider', 'node']);
     const offered = JSON.stringify(toolDefinitions({ codeEnabled: true, definitionOps: true }).find((t) => t.name === 'apply_operations')!.parameters);
     expect(offered).toContain('component.setPropSchema');
+    expect(offered).toContain('node.setBinding');
     for (const t of types) expect(offered).not.toContain(t);
+    expect(offered).not.toContain('$state');
+  });
+
+  it('refuses state the assistant sends anyway, before anything is applied', async () => {
+    const s = fresh();
+    const { def } = billingDef(s);
+    let applied = 0;
+    const host = { state: () => s, revision: () => 1, apply: async () => ((applied += 1), { ok: true, revision: 2, results: [] }) } as unknown as Parameters<typeof executeTool>[2];
+    const send = (operations: unknown[]) => executeTool('apply_operations', JSON.stringify({ expectedRevision: 1, operations }), host, 'c1');
+    for (const op of [
+      { type: 'component.setState', definitionId: def.id, state: 'tab', schema: { type: 'boolean' } },
+      { type: 'node.setStateAction', owner: owner(def), nodeId: 'toggle-btn', action: null },
+      { type: 'node.setBinding', owner: owner(def), nodeId: 'title', field: 'when', binding: { $state: 'open' } }
+    ]) {
+      const out = await send([op]);
+      expect(out.ok).toBe(false);
+      expect(JSON.stringify(out.content)).toMatch(/UI state cannot be changed by the assistant yet/);
+    }
+    expect(applied).toBe(0);
+    // Ordinary bindings still go through.
+    expect((await send([{ type: 'node.setBinding', owner: owner(def), nodeId: 'title', field: 'when', binding: { $prop: 'title' } }])).ok).toBe(true);
+    expect(applied).toBe(1);
   });
 });

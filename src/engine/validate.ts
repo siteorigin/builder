@@ -13,7 +13,7 @@ import { normalizeTable } from './table';
 import { normalizeObject } from './values';
 import { slotAccepts, slotDecl, slotDeclProblem, slotFill } from './slots';
 import { MAX_UI_STATES, bindingProblem, bindingSlots, boundSchema, stateActionProblem, stateRefProblem, uiStateProblem } from './schema';
-import { cardLinkProblems } from '@generator/card-links';
+import { cardKey, cardLinkProblems } from '@generator/card-links';
 import { declaredTokens, findTokenCycle, forEachTokenPropRef } from './tokens';
 import { missingSectionLinks, netlifyFormClashes, pageHeadings, unlinkedButtons, type FormNameClash } from '@generator/checks';
 import { choosesFontAtRunTime, declaresFonts, installedFonts, usedPackFonts } from '@catalogue/fonts';
@@ -162,7 +162,7 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         out.push({ severity: 'error', code: 'STATE_INVALID', message: `${def.name}: ${def.kind !== 'managed' ? 'a code component declares UI state, which only a managed design can read and change' : 'its UI state is not in the expected form'}.`, owner, site: 'state' });
       else {
         const names = Object.keys(declared);
-        if (names.length > MAX_UI_STATES) out.push({ severity: 'error', code: 'STATE_INVALID', message: `${def.name}: it declares ${names.length} UI state variables; a component can have at most ${MAX_UI_STATES}.`, owner, site: 'state:count' });
+        if (names.length > MAX_UI_STATES) out.push({ severity: 'error', code: 'STATE_INVALID', message: `${def.name}: it declares ${names.length} UI state variables; a component can have at most ${MAX_UI_STATES}.`, owner, site: 'state-limit' });
         for (const name of names) {
           const problem = uiStateProblem(def, name, (declared as Record<string, unknown>)[name]);
           if (problem) out.push({ severity: 'error', code: 'STATE_INVALID', message: `${def.name}: ${problem}`, owner, site: `state:${name}` });
@@ -192,6 +192,11 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
         const condition = slot.field === 'when' || slot.field === 'unless';
         if (condition && slot.value !== undefined && !conditionShapeValid(slot.value)) {
           out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: ${nodeLabel(n)} has a ${slot.field} condition that is neither a property, a list item field, UI state, nor a comparison of one with a value.`, owner, nodeId: id });
+          continue;
+        }
+        // A read of state that also names a property or an item field would be read as one by some and the other by others.
+        if (!condition && slot.value && typeof slot.value === 'object' && Object.hasOwn(slot.value, '$state') && !isStateRef(slot.value)) {
+          out.push({ severity: 'error', code: 'BINDING_INVALID', message: `${def.name}: ${nodeLabel(n)} reads UI state and something else at once as its ${slot.field}; read one of them.`, owner, nodeId: id, site: `${id}|${slot.field}|${slot.prop ?? ''}` });
           continue;
         }
         const b = condition ? conditionRef(slot.value) : isBindingRef(slot.value) ? slot.value : undefined;
@@ -383,7 +388,10 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
       code: 'CARD_LINK_INTERACTIVE',
       message: `${p.label}: ${p.what} sits inside a card that links somewhere, and a link or control cannot sit inside another. Move it out of the card, or remove the card's link.`,
       owner: p.owner,
-      nodeId: p.nodeId
+      nodeId: p.nodeId,
+      // Each card is its own problem, whatever the content inside it is called: a second card with the same kind of
+      // content is new, and a change to what the content is (a button losing its state action) is not.
+      site: `card:${p.nodeId}|${p.cards.map(cardKey).join(',')}`
     });
   for (const i of opts.sectionLinks === false ? [] : missingSectionLinks(state)) {
     const where = i.owner.kind === 'shell' ? (i.owner.id === 'header' ? 'Header' : 'Footer') : (state.pages[i.owner.id]?.title ?? 'A page');
@@ -674,10 +682,11 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
       else if (n.kind === 'repeat' && !def) out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: a repeat shows a component's list, so it can only be placed inside a component definition.`, owner, nodeId: n.id, site: n.id });
       else if (!def && bindingSlots(n).some((sl) => (sl.field === 'when' || sl.field === 'unless' ? conditionRef(sl.value) : isBindingRef(sl.value))))
         out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: ${nodeLabel(n)} shows a component property, list item field or UI state, which only an element inside a component definition can.`, owner, nodeId: n.id, site: n.id });
-      else if (!def && Object.hasOwn(n, 'stateAction'))
-        out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: ${nodeLabel(n)} changes UI state, which only a button inside a component definition can.`, owner, nodeId: n.id, site: n.id });
-      else if (n.kind === 'slot' && !Object.hasOwn(def!.slots ?? {}, n.slot))
+      else if (n.kind === 'slot' && def && !Object.hasOwn(def.slots ?? {}, n.slot))
         out.push({ severity: 'error', code: 'SLOT_INVALID', message: `${label}: the slot "${n.slot}" is not declared by the component.`, owner, nodeId: n.id });
+      // Checked on its own, so a read reported on the same button never hides an action added to it.
+      if (!def && Object.hasOwn(n, 'stateAction'))
+        out.push({ severity: 'error', code: 'BINDING_SCOPE', message: `${label}: ${nodeLabel(n)} changes UI state, which only a button inside a component definition can.`, owner, nodeId: n.id, site: `${n.id}|stateAction` });
       if (n.kind === 'instance') {
         const target = state.components[n.definitionId];
         for (const s of Object.keys(n.slots ?? {})) {

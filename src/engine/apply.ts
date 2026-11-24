@@ -2450,6 +2450,8 @@ function convertToCode(state: ProjectState, op: Op<'component.convertToCode'>): 
   const sourcePath = `${CUSTOM_DIR}/${pascal(name)}-${newId.slice(-5).replace(/[^A-Za-z0-9]/g, '')}.svelte`;
   // One working copy is both generated and stored, so the source shows exactly the properties the copy declares.
   const work: ComponentDefinition = { ...clone(def), id: newId, kind: 'code', sourcePath };
+  // An empty state map (all it can be here) means nothing to a code component, which keeps its own state.
+  delete work.state;
   // A code component takes `class` for its root's classes, so a property of that name (older documents may have
   // one) moves to a name of its own first, with the placement's value and every binding to it.
   moveCodeReservedProps(work, node);

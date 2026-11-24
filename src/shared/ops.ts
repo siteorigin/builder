@@ -49,7 +49,13 @@ const FONT_FACE = z.object({
 });
 const styleValue = z.union([z.string(), z.number(), z.boolean(), z.object({ token: z.string() })]);
 // Strict, so a value naming two sources ({ $prop, $state }) is refused rather than read as whichever comes first.
-const binding = z.union([z.object({ $prop: z.string(), field: z.string().optional() }).strict(), z.object({ $item: z.string() }).strict(), z.object({ $state: z.string() }).strict()]);
+const contentBinding = [z.object({ $prop: z.string(), field: z.string().optional() }).strict(), z.object({ $item: z.string() }).strict()] as const;
+const binding = z.union([...contentBinding, z.object({ $state: z.string() }).strict()]);
+/** node.setBinding's binding without UI state, as the assistant is offered it until it may author state. */
+export const PROP_OR_ITEM_BINDING = z
+  .union(contentBinding)
+  .nullable()
+  .describe('{"$prop": name}, {"$prop": name, "field": objectField} for one field of an object property, or {"$item": field}; null unbinds, keeping the current default.');
 /** What a button does to its component's UI state (see `StateAction` in shared/types). */
 const stateAction = z.discriminatedUnion('op', [
   z.object({ state: z.string(), op: z.literal('set'), value: z.union([z.boolean(), z.string()]).describe('true or false for a yes/no state; one of the options of a choice.') }).strict(),
@@ -550,7 +556,7 @@ export interface ApplyResult {
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Fields whose string values are used as lookup keys. Content (text, labels) may contain any words. */
-const KEY_FIELDS = /(^id$|Id$|^prop$|^field$|^property$|^variant$|^axis$|^slot$|^parentId$|^bind$|^state$|^\$prop$|^\$item$|^\$state$)/;
+const KEY_FIELDS = /(^id$|Id$|^prop$|^field$|^property$|^variant$|^axis$|^slot$|^parentId$|^bind$|^\$prop$|^\$item$|^\$state$)/;
 function hasForbidden(v: unknown, depth = 0): boolean {
   if (depth > 12) return true;
   if (Array.isArray(v)) return v.some((x) => hasForbidden(x, depth + 1));

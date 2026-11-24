@@ -16,7 +16,7 @@ import { variantIdsValid } from '@shared/variants';
 import { propBindingSchema } from '@shared/bindings';
 import { boundSchema } from '@engine/schema';
 import { defKey, slotIdent } from '@generator/index';
-import { stateActionProblem, uiStateProblem } from '@engine/schema';
+import { MAX_UI_STATES, stateActionProblem, stateRefProblem, uiStateProblem } from '@engine/schema';
 import { sha } from '../project/fsutil';
 import { readRegularFile, type PackFileSource } from './files';
 import type { PackRefusal } from '@shared/api';
@@ -193,9 +193,25 @@ function checkTree(def: ComponentDefinition) {
     }
     // A slot's content is elements of the same design.
     if (inst) for (const ids of Object.values(inst.slots ?? {})) for (const c of Array.isArray(ids) ? ids : []) if (!nodes[c]) refuse(`${where}: node "${id}" puts "${String(c).slice(0, 40)}" in a slot, which does not exist.`);
-    // UI state is read by conditions and nested variant axes, and changed by buttons: each names state the component declares.
-    const reads = [conditionRef(n.when), conditionRef(n.unless), ...Object.values((n as { variants?: Record<string, unknown> }).variants ?? {})];
-    for (const r of reads) if (isStateRef(r) && !(def.state && Object.hasOwn(def.state, r.$state))) refuse(`${where}: node "${id}" reads the UI state "${String(r.$state).slice(0, 40)}", which the component does not declare.`);
+    // UI state is read by conditions (checked as the project checks them) and nested variant axes, and changed by
+    // buttons; nothing else reads it.
+    for (const field of ['when', 'unless'] as const) {
+      const c = n[field];
+      const ref = conditionRef(c);
+      if (!isStateRef(ref)) continue;
+      const problem = typeof ref.$state === 'string' ? stateRefProblem({} as ProjectState, def, { node: n, field, comparison: c === ref ? undefined : (c as never) }, ref) : 'reads UI state without naming it.';
+      if (problem) refuse(`${where}: node "${id}" ${problem}`);
+    }
+    for (const [key, v] of Object.entries(n)) {
+      if (key === 'when' || key === 'unless' || !v || typeof v !== 'object' || !Object.hasOwn(v, '$state')) continue;
+      refuse(`${where}: node "${id}" reads UI state as its ${key.slice(0, 40)}; only conditions and the variants of a nested component read UI state.`);
+    }
+    for (const v of Object.values((n as { variants?: Record<string, unknown> }).variants ?? {})) {
+      if (!v || typeof v !== 'object' || !Object.hasOwn(v, '$state')) continue;
+      const name = isStateRef(v) ? v.$state : undefined;
+      const declared = typeof name === 'string' && def.state && Object.hasOwn(def.state, name) ? def.state[name] : undefined;
+      if (declared?.type !== 'enum') refuse(`${where}: node "${id}" takes a variant from UI state that is not a choice the component declares.`);
+    }
     if (Object.hasOwn(n, 'stateAction')) {
       const problem = n.kind === 'link' ? stateActionProblem(def, n.stateAction) : 'changes UI state, which only a button can.';
       if (problem) refuse(`${where}: node "${id}" ${problem}`);
@@ -247,6 +263,7 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
     }
     if (def.state !== undefined) {
       if (def.kind !== 'managed' || !def.state || typeof def.state !== 'object' || Array.isArray(def.state)) refuse(`${where} declares UI state that only a managed design can use.`);
+      if (Object.keys(def.state).length > MAX_UI_STATES) refuse(`${where} declares more than ${MAX_UI_STATES} UI state variables.`);
       for (const [name, decl] of Object.entries(def.state)) {
         const problem = uiStateProblem(def, name, decl);
         if (problem) refuse(`${where}: ${problem}`);

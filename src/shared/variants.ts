@@ -3,7 +3,7 @@
  * option on each, so tone and layout combine instead of multiplying into "dark-two-columns" style variants.
  */
 import type { BindingRef, ComponentDefinition, InstanceNode, NodeTree, ProjectState, ResponsiveStyles, VariantAxis, VariantDef } from './types';
-import { isBindingRef } from './types';
+import { isBindingRef, isStateRef, stateInitial } from './types';
 import { cascadeStyles, type StyleLayer } from './styles';
 
 /** Axis and option IDs become generated identifiers and class names, so only plain ones are ever used. */
@@ -42,6 +42,20 @@ export function selectedVariants(def: Pick<ComponentDefinition, 'variantAxes'>, 
   for (const [axis, a] of axesOf(def)) {
     const v = chosen && Object.hasOwn(chosen, axis) ? chosen[axis] : undefined;
     out[axis] = isBindingRef(v) ? v : typeof v === 'string' && Object.hasOwn(a.options, v) ? v : a.default;
+  }
+  return out;
+}
+
+/**
+ * A placement's choices with each axis bound to its design's UI state (`owner`, the design it is placed in) replaced
+ * by the option the state starts at, which is what the generated site shows. Other bound axes stay bound.
+ */
+export function startingVariants(chosen: InstanceNode['variants'], owner: Pick<ComponentDefinition, 'state'> | undefined): InstanceNode['variants'] {
+  if (!chosen || !owner?.state) return chosen;
+  let out = chosen;
+  for (const [axis, v] of Object.entries(chosen)) {
+    const start = isStateRef(v) ? stateInitial(owner, v.$state) : undefined;
+    if (typeof start === 'string') out = { ...out, [axis]: start };
   }
   return out;
 }

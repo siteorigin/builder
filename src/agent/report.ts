@@ -220,7 +220,8 @@ export function describeOps(ops: EditOperation[], before: ProjectState, after: P
           return plain(op, `${op.binding ? 'Set' : 'Cleared'} ${rule} for ${name(op.owner, op.nodeId)} in ${where(op.owner)}`, linkTo(op.owner, op.nodeId));
         }
         const field = op.field === 'prop' ? (op.prop ?? 'property') : (CONTENT_FIELDS[op.field] ?? op.field);
-        const label = `${op.binding ? 'Connected' : 'Disconnected'} the ${field} of ${name(op.owner, op.nodeId)} ${op.binding ? 'to a property' : 'from its property'} in ${where(op.owner)}`;
+        const source = op.binding && '$state' in op.binding ? 'to UI state' : 'to a property';
+        const label = `${op.binding ? 'Connected' : 'Disconnected'} the ${field} of ${name(op.owner, op.nodeId)} ${op.binding ? source : 'from its property'} in ${where(op.owner)}`;
         return plain(op, label, linkTo(op.owner, op.nodeId));
       }
       case 'instance.setProp': {

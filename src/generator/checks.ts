@@ -1,7 +1,7 @@
 /**
  * Checks on what a page will actually show, evaluated with the same rules the generated components use.
  */
-import type { Binding, ComponentDefinition, GraphNode, ImageValue, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
+import type { Binding, ComponentDefinition, GraphNode, ImageValue, InstanceNode, LinkValue, NodeTree, OwnerRef, PageDoc, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import { TEXT_TAGS, conditionHolds, conditionRef, isBinding, isStateRef, slotChildren, stateInitial, type Condition } from '@shared/types';
 import { isListBlock, richTextToPlain, toRichText, type RichSpan } from '@shared/richtext';
@@ -17,7 +17,7 @@ import { pagesShowing, partsShown, SHELL_PARTS, showsPart, type ShellPart } from
 import { actionWraps } from './card-links';
 import { parseVideoUrl } from '@shared/video';
 import { derived } from './cache';
-import { selectedVariantStyles } from '@shared/variants';
+import { selectedVariantStyles, startingVariants } from '@shared/variants';
 import { itemStylesOf } from '@shared/item-styles';
 
 const BUTTONS = new Set(['primary', 'secondary', 'text', 'light']);
@@ -26,6 +26,8 @@ interface Scope {
   props: Record<string, unknown>;
   /** The UI state of the definition being walked, at the values every placement starts with. */
   ui?: Record<string, unknown>;
+  /** The placement's variant choices, with axes bound to the enclosing design's UI state at the option it starts at. */
+  chosen?: InstanceNode['variants'];
   /** The placements this scope sits in, from the page down, to tell their links apart. */
   trail?: string;
   item?: Record<string, unknown>;
@@ -284,7 +286,8 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           const carried = { multiple: frame.scope.multiple, slots: frame.scope.slots, codeSlot: frame.scope.codeSlot };
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
           const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, stateInitial(def, k)])) : undefined;
-          const child: Frame = { tree: def.tree, def, scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          const chosen = startingVariants(n.variants, frame.def);
+          const child: Frame = { tree: def.tree, def, scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);
@@ -372,7 +375,7 @@ function hiddenInDesign(def: ComponentDefinition, nodeId: string, scope: Scope):
     seen.add(id);
     const part = Object.entries(def.parts).find(([, p]) => p.nodeId === id)?.[0];
     const own = part && inst ? [inst.overrides?.[part], itemId ? itemStylesOf(def, inst, part, itemId) : undefined] : [];
-    out.push(hiddenSizes([def.tree.nodes[id]?.styles, ...selectedVariantStyles(def, inst?.variants, id), ...own]));
+    out.push(hiddenSizes([def.tree.nodes[id]?.styles, ...selectedVariantStyles(def, scope.chosen ?? inst?.variants, id), ...own]));
   }
   return out;
 }
