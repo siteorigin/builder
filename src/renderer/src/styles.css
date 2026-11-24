@@ -1808,66 +1808,139 @@ textarea.code-view { width: 100%; resize: none; outline: none; }
 
 .composer textarea:focus-visible { box-shadow: none; }
 .md code { font-family: var(--mono); font-size: 12px; padding: 1px 4px; border-radius: var(--r-xs); background: var(--active); }
-/* The source dialogs: a fixed frame where the code takes the free height, so problems and actions stay on screen. */
+/* The source dialogs (SourceModal.tsx, CodeEditor.tsx): a fixed frame where the code takes the free height, so the
+   problems and the actions stay on screen. Editable code sits on the input surface (white in light, a darker well
+   in dark); read-only code is recessed on --panel-2 with no current-line band and says so in its strip. Both
+   take the 3:1 control edge, since both are focusable. The header badge is plum for a component definition (a save reaches every page that uses it) and
+   neutral for a page. One error has one home: the strip shows the live finding, and once a save is refused the
+   Not saved list takes over and the strip keeps to the count. */
 .modal:has(> .modal-body > .code-dialog) { width: min(1040px, calc(100vw - 48px)); height: calc(89vh - 32px); }
 .modal:has(> .modal-body > .code-dialog) > .modal-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding-bottom: 14px; }
-.modal:has(> .modal-body > .code-dialog) > .modal-head { align-items: flex-start; }
-.modal:has(> .modal-body > .code-dialog) > .modal-head > svg { margin-top: 1px; color: var(--text-2); }
+.modal:has(> .modal-body > .code-dialog) > .modal-head { gap: 12px; padding-top: 14px; }
+.code-badge { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: 50%; background: var(--panel-2); color: var(--text-2); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.code-badge.component { background: var(--plum-soft); color: var(--plum); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 24%, transparent); }
+.code-badge svg { width: 16px; height: 16px; }
 .code-dialog { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
 .code-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .code-panel[hidden] { display: none; }
 .code-panel > .code-view { flex: 1; height: auto; min-height: 0; }
-.code-props { flex: 1; min-height: 0; overflow: auto; }
+.code-props { flex: 1; min-height: 0; overflow: auto; margin: 0 -4px; padding: 4px; scrollbar-width: thin; scrollbar-color: var(--border-control) transparent; }
+.code-name { max-width: 420px; }
 .code-loading { flex: 1; display: flex; align-items: center; justify-content: center; gap: 10px; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--panel-2); color: var(--text-2); }
-.code-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.code-loading .spinner { border-top-color: var(--text-2); }
+.code-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .code-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .code-title-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .code-title-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; font-weight: 400; color: var(--text-2); user-select: text; }
-.code-chip { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 20px; padding: 0 7px; border-radius: var(--r-xs); background: var(--active); color: var(--text-2); font-size: 12px; font-weight: 500; }
+/* Unsaved is a raised chip with a control ring and an ink dot; read only is recessed with a lock. */
+.code-chip { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 20px; padding: 0 8px; border-radius: var(--r-sm); font-size: 12px; font-weight: 500; }
 .code-chip svg { width: 12px; height: 12px; }
-.code-dot { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text-2); }
-.code-dot.off { visibility: hidden; }
+.code-chip.readonly { background: var(--active); color: var(--text-2); }
+.code-chip.unsaved { background: var(--raised); color: var(--text); box-shadow: inset 0 0 0 1px var(--border-control); }
+.code-dot { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--text); }
+/* The tab's unsaved dot sits in its corner, as the dock tab's run dot does. These tabs keep room for it on the
+   right whether it shows or not, so neither the labels nor the underline move, and it stays inside the focus ring. */
+.code-dialog .tabs .tab { padding-right: 16px; }
+.code-dialog .tabs .tab[aria-selected='true']::after { right: 14px; }
+.tab .code-tab-dot { position: absolute; top: 8px; right: 6px; }
 .code-dialog > :not(.tabs) + .tabs { margin-top: 2px; }
-.code-frame { display: flex; flex-direction: column; min-height: 0; border-radius: var(--r-md); border: 1px solid var(--border-strong); background: var(--panel-2); overflow: hidden; }
+.code-frame { --code-bg: var(--raised); --code-selection: rgb(23 102 192 / 0.08); display: flex; flex-direction: column; min-height: 0; border-radius: var(--r-md); border: 1px solid var(--border-control); background: var(--code-bg); overflow: hidden; }
+.code-frame.readonly { --code-bg: var(--panel-2); }
+/* :where() keeps this at the light rule's weight, so .code-frame.readonly still wins in dark. */
+:where(:root[data-appearance='dark']) .code-frame { --code-bg: var(--bg); --code-selection: rgb(124 190 255 / 0.08); }
 .code-frame.focused { outline: 2px solid var(--focus); outline-offset: -1px; }
 .code-editor { flex: 1; min-height: 0; overflow: hidden; user-select: text; }
-/* The current-line tint never stacks on selected text, which would take it below 4.5:1. */
-.code-frame.selecting .cm-activeLine { background-color: transparent !important; }
-.code-status { display: flex; align-items: center; gap: 12px; flex: none; height: 28px; padding: 0 10px 0 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-2); white-space: nowrap; }
-.code-status-item { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 6px; border: 0; border-radius: var(--r-xs); background: none; color: inherit; font-size: 12px; }
-.code-status-item svg { width: 13px; height: 13px; flex: none; }
-.code-status-item .spinner { width: 11px; height: 11px; border-width: 1.5px; border-top-color: var(--text-2); }
-.code-status-problems { min-width: 0; overflow: hidden; }
-.code-status-count { flex: none; font-weight: 600; }
-.code-status-go { flex: none; color: var(--text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); }
-.code-status-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
-.code-status-problems.error, .code-status-problems.warning { color: var(--text); }
-.code-status-problems:hover { background: var(--active); }
-.code-status-problems.error svg { color: var(--red); }
-.code-status-problems.warning svg { color: var(--amber); }
-.code-status-hint { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); }
-.code-status-hint.active { flex: none; color: var(--text); font-weight: 500; }
-.code-status-item.unavailable svg { color: var(--amber); }
-.code-loading .spinner { border-top-color: var(--text-2); }
-.code-status-pos { flex: none; font-variant-numeric: tabular-nums; }
-.code-problems { flex: none; display: flex; flex-direction: column; gap: 4px; max-height: 30%; min-height: 0; overflow: auto; padding: 8px 10px; border-radius: var(--r-sm); background: var(--red-soft); color: var(--text); }
-.code-problems-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
-.code-problems-head svg { width: 14px; height: 14px; flex: none; color: var(--red); }
-.code-problems-list { margin: 0; padding: 0; list-style: none; }
-.code-problem { display: flex; align-items: baseline; gap: 10px; width: 100%; padding: 3px 6px 3px 20px; border: 0; border-radius: var(--r-xs); background: none; color: var(--text); font-size: 12px; line-height: 1.45; text-align: left; }
-button.code-problem:hover { background: var(--active); }
-.code-problem-line { flex: none; font-family: var(--mono); font-weight: 600; color: var(--text); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); }
-.code-problems-advice { margin: 0; padding-left: 20px; font-size: 12px; line-height: 1.45; color: var(--text-2); }
-.code-foot-note { display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-2); }
-.code-foot-note > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.code-foot-note svg { width: 14px; height: 14px; flex: none; color: var(--green); }
-.code-foot-note.saved { color: var(--text); }
-.code-save { min-width: 104px; }
+/* The current-line tint never stacks on selected text, which would take it below 4.5:1, and only shows while the
+   editor has focus: at rest the code is calm. */
+.code-frame.selecting .cm-activeLine, .code-frame:not(.focused) :is(.cm-activeLine, .cm-activeLineGutter) { background-color: transparent !important; }
+.code-frame:not(.focused) .cm-activeLineGutter { color: var(--text-3) !important; }
 :root { --cm-tag: #b02a6d; --cm-attr: #8a5a0c; --cm-str: #1d7347; --cm-kw: #5b46c9; --cm-num: #a94b17; --cm-fn: #2f62c9; }
 :root:where([data-appearance='dark']) { --cm-tag: #ff7ab8; --cm-attr: #f0c068; --cm-str: #6ad49a; --cm-kw: #a796ff; --cm-num: #ffa070; --cm-fn: #82aaff; }
-/* Selected code keeps every syntax colour above 4.5:1. */
-.code-frame { --code-selection: rgb(23 102 192 / 0.08); }
-:where(:root[data-appearance='dark']) { .code-frame { --code-selection: rgb(124 190 255 / 0.08); } }
+/* The status strip: the live finding on the left, then the keys, wrapping and the caret on the right. */
+.code-status { container-type: inline-size; display: flex; align-items: center; gap: 12px; flex: none; height: 30px; padding: 0 8px 0 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.code-status-item { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 6px; border: 0; border-radius: var(--r-sm); background: none; color: inherit; font-size: 12px; }
+.code-status-item:focus-visible { outline-offset: -2px; }
+.code-status-item svg { width: 13px; height: 13px; flex: none; }
+.code-status-item .spinner { width: 11px; height: 11px; border-width: 1.5px; border-top-color: var(--text-2); }
+.code-status-sep { width: 1px; height: 12px; margin: 0 2px; background: var(--border-strong); }
+.code-status-problems { min-width: 0; overflow: hidden; color: var(--text); }
+button.code-status-problems:hover { background: var(--active); }
+.code-status-problems.error svg { color: var(--red); }
+.code-status-problems.warning svg { color: var(--amber); }
+.code-status-count { flex: none; font-weight: 600; }
+.code-status-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); }
+.code-status-item.unavailable svg { color: var(--amber); }
+/* A line reference reads the same wherever it appears: mono, semibold, underlined as a jump. */
+.code-status-go, .code-problem-line { flex: none; font-family: var(--mono); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: color-mix(in srgb, currentColor 45%, transparent); }
+.code-status-hint { display: inline-flex; align-items: center; gap: 14px; flex: none; color: var(--text-3); }
+.code-status-keys { display: inline-flex; align-items: center; gap: 4px; }
+.code-status .kbd { padding: 0 4px; line-height: 15px; color: var(--text-2); background: var(--panel); }
+/* Armed: the one instruction that matters now, filled so it stands out from the quiet hints without reading as a
+   button. */
+.code-status-hint.active { gap: 4px; height: 22px; padding: 0 8px; border-radius: var(--r-sm); background: var(--panel-2); color: var(--text); font-weight: 500; }
+.code-status-hint.active .kbd { background: var(--raised); color: var(--text); border-color: var(--border-control); }
+/* Wrap is a toggle: pressed reads as the toolbar's pressed toggles do, raised with the control ring. */
+.code-status-toggle { color: var(--text-2); }
+.code-status-toggle:hover { background: var(--hover); color: var(--text); }
+.code-status-toggle[aria-pressed='true'] { background: var(--raised); color: var(--text); font-weight: 500; box-shadow: inset 0 0 0 1px var(--border-control); }
+.code-status-pos { flex: none; font-variant-numeric: tabular-nums; }
+/* In a narrow window the save hint gives way first; the way out of the editor (WCAG 2.1.2) always shows, and the
+   finding's message truncates before it does. */
+@container (max-width: 760px) { .code-status-keys.save { display: none; } }
+/* Not saved: one ringed panel. The head line is the announcement; each row jumps to its line; advice about the
+   AI repair carries the AI's icon. */
+.code-problems { flex: none; display: flex; flex-direction: column; gap: 2px; max-height: 32%; min-height: 0; overflow: auto; padding: 8px 8px 8px 12px; border-radius: var(--r-md); background: var(--red-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 30%, transparent); color: var(--text); scrollbar-width: thin; }
+.code-problems:focus-visible { outline-offset: 2px; }
+.code-problems-head { display: flex; align-items: center; gap: 8px; margin: 0; padding: 2px 0 4px; }
+.code-problems-head svg { width: 15px; height: 15px; flex: none; color: var(--red); }
+.code-problems-head strong { font-weight: 600; }
+.code-problems-count { color: var(--text-2); }
+.code-problems-count::before { content: '·'; margin-right: 8px; color: var(--text-3); }
+.code-problems-list { margin: 0; padding: 0; list-style: none; }
+/* A version conflict (the code or the properties changed under unsaved edits) takes the same ringed form. */
+.code-dialog > .source-stale { flex: none; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; border-radius: var(--r-md); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--red) 30%, transparent); font-size: 12px; }
+.code-dialog > .source-stale > svg { width: 15px; height: 15px; margin-top: 0; align-self: flex-start; margin-block: 1px; }
+.code-dialog > .source-stale .btn { flex: none; }
+.code-problem { display: flex; align-items: baseline; gap: 12px; width: 100%; padding: 4px 8px 4px 23px; border: 0; border-radius: var(--r-sm); background: none; color: var(--text); font-size: 12px; line-height: 1.5; text-align: left; }
+button.code-problem:hover { background: var(--active); }
+button.code-problem:focus-visible { outline-offset: -2px; }
+.code-problem-text { min-width: 0; overflow-wrap: anywhere; }
+.code-problems-advice { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 2px 0 1px; font-size: 12px; line-height: 1.45; color: var(--text); }
+/* After a list, advice is a footnote under a divider; on its own it is the message. */
+.code-problems-list + .code-problems-advice { margin-top: 4px; padding-top: 7px; border-top: 1px solid color-mix(in srgb, var(--red) 18%, transparent); color: var(--text-2); }
+.code-problems-advice svg { width: 15px; height: 15px; flex: none; color: var(--accent-text); }
+.code-problems-advice:not(:has(svg)) { padding-left: 23px; }
+/* The gutter tooltip: severity and line first, in words, then the compiler's message. */
+.code-diag { display: flex; flex-direction: column; gap: 3px; }
+.code-diag-head { display: flex; align-items: center; gap: 8px; }
+.code-diag-kind { font-weight: 600; }
+.code-diag-kind.error { color: var(--red); }
+.code-diag-kind.warning { color: var(--amber); }
+.code-diag-line { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--text-2); }
+.code-foot-note { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--text-2); }
+.code-foot-note > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-foot-note svg { width: 14px; height: 14px; flex: none; color: var(--green); }
+.code-foot-note .spinner { width: 12px; height: 12px; border-width: 1.5px; border-top-color: var(--text-2); }
+.code-foot-note.saved { color: var(--text); }
+.code-save { min-width: 104px; }
+/* While a save runs, the button keeps focus but reads as busy: the soft accent fill with the accent text (5.8:1
+   light, 7.1:1 dark), so its progress label stays legible and its focus ring keeps full strength. */
+.code-save[aria-disabled='true'] { pointer-events: none; box-shadow: none; background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 40%, transparent); color: var(--accent-text); }
+/* Short windows: the dialog's inset and padding give way, so the code keeps its lines. */
+@media (max-height: 760px) {
+  .overlay-backdrop:has(> .modal > .modal-body > .code-dialog) { padding-top: 16px; }
+  .modal:has(> .modal-body > .code-dialog) { height: calc(100vh - 32px); max-height: none; }
+  .modal:has(> .modal-body > .code-dialog) > .modal-head { padding-top: 10px; padding-bottom: 8px; }
+  .modal:has(> .modal-body > .code-dialog) > .modal-body { padding-bottom: 10px; }
+  .modal:has(> .modal-body > .code-dialog) > .modal-foot { padding-top: 9px; padding-bottom: 9px; }
+  .code-dialog { gap: 8px; }
+  .code-problems { max-height: 28%; padding-top: 6px; padding-bottom: 6px; }
+}
+@media (forced-colors: active) {
+  .code-badge, .code-chip, .code-problems, .code-dialog > .source-stale, .code-status-hint.active, .code-status-toggle[aria-pressed='true'] { box-shadow: none; border: 1px solid CanvasText; }
+  /* Dots and gutter glyphs are painted fills: keep them, in the system text colour. */
+  .code-dot, .cm-lint-marker { forced-color-adjust: none; background-color: CanvasText !important; }
+}
 .ov-drop { position: absolute; background: var(--select); border-radius: 2px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); pointer-events: none; }
 
 /* ---------- Tabs (dialog-level view switchers) ---------- */

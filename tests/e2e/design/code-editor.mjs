@@ -1,6 +1,7 @@
-// Design capture for the source and code editing dialogs (SourceModal.tsx, CodeEditor.tsx): a new component,
-// an editable component at rest, edited, with a live diagnostic, checking, failed and saved, the discard
-// prompt, the Properties tab, read-only managed source, generated page source and a small window.
+// Design capture for the source and code editing dialogs (SourceModal.tsx, CodeEditor.tsx): a new component at
+// rest and filled in, an editable component at rest, edited, leaving the editor, with a live diagnostic and its
+// tooltip, checking, refused and saved, the discard prompt, the Properties tab, a newer version arriving under
+// unsaved edits, read-only managed source, generated page source and a small window.
 // Opt-in only, never part of `npm run test:e2e`:
 //
 //   npm run build && DESIGN_CAPTURE=1 [DESIGN_CAPTURE_DIR=/abs/out] node tests/e2e/design/code-editor.mjs
@@ -92,11 +93,15 @@ const pause = (ms) => win.waitForTimeout(ms);
 const written = [];
 await win.evaluate(() => window.builder.app.setSettings({ appearance: 'system' }));
 
+/** The live check has reported on the code on screen, so both themes show the same result. */
+const settled = () => win.waitForFunction(() => !document.querySelector('.modal .code-status')?.textContent?.includes('Checking'), null, { timeout: 30000 });
+
 /** Capture the dialog (or the whole window) in each theme; every `checks` selector must be visible then. */
-async function shot(state, checks, { themes = THEMES, full = false } = {}) {
+async function shot(state, checks, { themes = THEMES, full = false, hover = false } = {}) {
+  await settled();
   for (const theme of themes) {
     await win.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
-    await win.mouse.move(2, 2);
+    if (!hover) await win.mouse.move(2, 2);
     await pause(350);
     for (const check of [].concat(checks)) {
       const visible = await win.locator(check).first().isVisible().catch(() => false);
@@ -166,6 +171,9 @@ await win.locator('.modal .cm-content').waitFor();
 await shot('new-rest', ['.modal .cm-content', 'input[placeholder="Booking widget"]']);
 await win.fill('input[placeholder="Booking widget"]', NAME);
 await setDoc(SOURCE);
+// Named and written: the draft shows as unsaved, and the action is ready.
+await win.locator('.modal .code-chip.unsaved').waitFor({ timeout: 5000 });
+await shot('new-filled', ['.modal .code-chip.unsaved', '.modal .tab .code-tab-dot']);
 await win.getByRole('button', { name: 'Create and insert' }).click();
 await win.locator('.modal').waitFor({ state: 'detached', timeout: 60000 });
 // The starter's Heading and Text properties keep their own defaults, so wait on text the source alone sets.
@@ -191,25 +199,18 @@ await shot('source-dirty', ['.modal .cm-content']);
 // Escape in the editor offers the way out instead of closing the dialog.
 await win.keyboard.press('Escape');
 await win.locator('.modal .code-status-hint', { hasText: 'Press Tab' }).waitFor({ timeout: 5000 });
-await shot('source-leave', ['.modal .code-status-hint'], { themes: ['light'] });
+await shot('source-leave', ['.modal .code-status-hint.active']);
 
-// A live compiler diagnostic, then its tooltip on the gutter marker.
+// A live compiler diagnostic: the strip names it, and its jump puts the caret on the line.
 await setDoc(BROKEN);
 await win.waitForSelector('.modal .cm-lint-marker-error', { timeout: 30000 });
+await win.locator('.modal button.code-status-problems').click();
 await pause(300);
-await shot('source-lint', ['.modal .cm-lint-marker-error']);
+await shot('source-lint', ['.modal .cm-lint-marker-error', '.modal button.code-status-problems']);
+// Its tooltip on the gutter mark names the severity and the line.
 await win.locator('.modal .cm-lint-marker-error').first().hover();
 await win.waitForSelector('.cm-tooltip-lint', { timeout: 10000 });
-for (const theme of THEMES) {
-  await win.emulateMedia({ colorScheme: theme, reducedMotion: 'reduce' });
-  await pause(300);
-  if (!(await win.locator('.cm-tooltip-lint').first().isVisible())) throw new Error('lint tooltip did not render; refusing to write');
-  const path = join(OUT, `source-lint-tooltip--${theme}.png`);
-  await win.locator('.modal').last().screenshot({ path });
-  written.push(path);
-  console.log('wrote', path);
-}
-await win.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
+await shot('source-lint-tooltip', ['.cm-tooltip-lint', '.cm-tooltip-lint .code-diag-kind'], { hover: true });
 await win.mouse.move(2, 2);
 await win.locator('.cm-tooltip-lint').waitFor({ state: 'detached', timeout: 10000 });
 
@@ -220,9 +221,10 @@ await win.locator('.modal').getByText('Checking your code').first().waitFor({ ti
 await shot('source-checking', ['.modal .cm-content']);
 await releaseValidation();
 
-// Save refused: no AI provider is connected, so the compiler's problems are listed.
+// Save refused: no AI provider is connected, so the compiler's problems are listed and focus goes to the list.
 await win.locator('.modal').getByText('Connect an AI provider').first().waitFor({ timeout: 30000 });
 await pause(300);
+if (!(await win.evaluate(() => !!document.activeElement?.closest('.code-problems')))) throw new Error('focus did not move to the problems list; refusing to write');
 await shot('source-save-error', ['.modal .cm-content', '.modal >> text=Connect an AI provider']);
 
 // The compact window keeps the code, the problems and the actions on screen.
@@ -251,6 +253,16 @@ await win.locator('.modal .schema-row').first().waitFor();
 await shot('source-properties', ['.modal .schema-row']);
 await win.getByRole('tab', { name: 'Svelte source' }).click();
 await win.locator('.modal .cm-content').waitFor();
+
+// A newer version arrives underneath unsaved edits (the AI, an undo): the dialog says so rather than save over it.
+await setDoc(SOURCE.replace('Request booking', 'Ask for a table'));
+const defId = await win.evaluate(async (name) => Object.entries((await window.builder.project.snapshot()).state.components).find(([, d]) => d.name === name)?.[0], NAME);
+if (!defId) throw new Error('the component definition was not found');
+await win.evaluate(([id, source]) => window.builder.project.apply({ operations: [{ type: 'component.updateSource', definitionId: id, source }] }, { label: 'Outside edit' }), [defId, SOURCE.replace('Request booking', 'Book now')]);
+await win.locator('.modal .source-stale', { hasText: 'This code changed' }).waitFor({ timeout: 15000 });
+await shot('source-conflict', ['.modal .source-stale', '.modal >> text=Use the newer code']);
+await win.getByRole('button', { name: 'Use the newer code' }).click();
+await win.locator('.modal .source-stale').waitFor({ state: 'detached' });
 await closeDialog();
 
 // ---- Read-only managed source ----
