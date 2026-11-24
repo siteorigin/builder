@@ -1260,6 +1260,7 @@ export class Controller {
    * written. Quitting waits for a copy under way.
    */
   async duplicate(opts: DuplicateProjectOptions): Promise<DuplicateProjectResult> {
+    if (this.quitting) return { ok: false, field: 'form', message: 'SiteOrigin Builder is quitting, so the project was not copied.' };
     const run = this.duplicateProject(opts);
     this.duplicates.add(run);
     try {
@@ -1271,7 +1272,7 @@ export class Controller {
 
   /** Wait for every copy under way (quitting): each finishes, or removes what it made. */
   async settleDuplicates(): Promise<void> {
-    await Promise.all([...this.duplicates].map((run) => run.catch(() => undefined)));
+    while (this.duplicates.size) await Promise.all([...this.duplicates].map((run) => run.catch(() => undefined)));
   }
 
   get isDuplicating(): boolean {
@@ -1300,10 +1301,16 @@ export class Controller {
       if (code === 'EEXIST') return taken;
       if (code === 'ENOENT' || code === 'ENOTDIR') return { ok: false, field: 'location', message: `${opts.parentDir} is no longer there. Choose another folder.` };
       if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') return { ok: false, field: 'location', message: `SiteOrigin Builder does not have permission to write to ${opts.parentDir}. Choose another folder.` };
+      if (code === 'ENOSPC') return { ok: false, field: 'form', message: 'Your disk is full. Free up some space and try again.' };
       return { ok: false, field: 'location', message: `The copy could not be made in ${opts.parentDir}: ${(e as Error).message}` };
     }
     const tmp = `${dest}.${randomUUID()}.tmp`;
+    // The claim is this attempt's to remove until the move begins: Windows lets go of it then, and a folder made in
+    // its place meanwhile is someone else's.
+    let claimed = true;
     try {
+      // Made beside the claim, never with folders above it: a parent moved meanwhile is not made again.
+      await fs.mkdir(tmp);
       // Read in turn with the project's own writes, so a save never lands halfway through the copy, and only while the
       // opening it was asked in is still the open one.
       await s.exclusive(async () => {
@@ -1317,13 +1324,16 @@ export class Controller {
       manifest.workingCopyName = name;
       manifest.createdAt = new Date().toISOString();
       await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
-      await replaceEmptyFolder(tmp, dest);
+      await replaceEmptyFolder(tmp, dest, () => {
+        if (process.platform === 'win32') claimed = false;
+      });
     } catch (e) {
       await fs.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
       // Only while it is still the empty folder claimed above.
-      await fs.rmdir(dest).catch(() => undefined);
+      if (claimed) await fs.rmdir(dest).catch(() => undefined);
       const err = e as NodeJS.ErrnoException;
       if (err.code === 'STALE_OPENING') return stale;
+      if (err.code === 'ENOENT' && !existsSync(opts.parentDir)) return { ok: false, field: 'location', message: `${opts.parentDir} is no longer there. Choose another folder.` };
       if (err.code === 'EEXIST') return taken;
       if (err.code === 'ENOSPC') return { ok: false, field: 'form', message: 'Your disk is full. Free up some space and try again.' };
       return { ok: false, field: 'form', message: `The project could not be copied: ${err.message}` };

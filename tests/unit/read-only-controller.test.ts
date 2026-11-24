@@ -204,7 +204,7 @@ describe('a project another app is editing', () => {
     // Through a linked folder that leads back into the project, to a folder not made yet.
     const link = join(temp('links'), 'back');
     symlinkSync(dir, link);
-    expect((await c.duplicate({ name: 'copy', parentDir: join(link, 'new'), opening: c.openingKey! })).ok).toBe(false);
+    expect(await c.duplicate({ name: 'copy', parentDir: join(link, 'new'), opening: c.openingKey! })).toEqual({ ok: false, field: 'location', message: 'Choose a folder outside the project folder.' });
     await c.close();
     expect(snapshotTree(dir)).toEqual(before);
     // A new folder elsewhere is still fine.

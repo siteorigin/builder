@@ -199,6 +199,17 @@ describe('a duplicated project (#176)', () => {
     expect(await recentName(join(sites, 'fall-campaign'))).toBeUndefined();
   });
 
+  it('copies nothing once quitting has begun', async () => {
+    const sites = temp('sites');
+    const original = await makeProject(sites, 'storefront', 'Storefront');
+    const c = controller();
+    expect((await c.trustAndOpen(original)).ok).toBe(true);
+    c.quitting = true;
+    expect(await c.duplicate({ name: 'Fall Campaign', parentDir: sites, opening: c.openingKey! })).toMatchObject({ ok: false, field: 'form' });
+    expect(readdirSync(sites)).toEqual(['storefront']);
+    expect(c.isDuplicating).toBe(false);
+  });
+
   it('is trusted only while the original’s setup files are the ones that were trusted', async () => {
     const sites = temp('sites');
     const original = await makeProject(sites, 'storefront', 'Storefront');
