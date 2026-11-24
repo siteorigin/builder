@@ -711,6 +711,10 @@ describe('page scope (#513)', () => {
   });
 
   it('ends a request whose page was removed before it started, without holding the project', async () => {
+    for (const failing of [false, true]) await removedBeforeStart(failing);
+  });
+
+  async function removedBeforeStart(abortFails: boolean) {
     const dir = mkdtempSync(join(tmpdir(), 'so-agent-'));
     dirs.push(dir);
     const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
@@ -730,14 +734,20 @@ describe('page scope (#513)', () => {
     const about = Object.values(session.state.pages).find((p) => p.route === '/about/')!.id;
     expect((await orch.send('Tidy this page', pageCtx(about, 'About'))).ok).toBe(true);
     expect((await session.apply({ operations: [{ type: 'page.remove', pageId: about, replacementPageId: session.state.site.homePageId }], expectedRevision: session.revision }, { label: 'Remove About', source: 'user' })).ok).toBe(true);
+    // Letting go of the project can fail (a disk that cannot be written): that is said, never a clean end.
+    if (abortFails) session.abortRun = async () => Promise.reject(new Error('disk full'));
     open();
     while (orch.busy) await new Promise((res) => setTimeout(res, 10));
     const result = [...events].reverse().find((e) => e.message?.result)?.message?.result;
-    expect(result).toMatchObject({ status: 'failed', summary: 'About is no longer in the site. Nothing in the site was changed.' });
     expect(adapter.requests).toHaveLength(0);
+    if (abortFails) {
+      expect(result).toMatchObject({ status: 'failed', summary: 'About is no longer in the site. The request could not let go of the project (disk full). Reopen the project before going on.' });
+      return;
+    }
+    expect(result).toMatchObject({ status: 'failed', summary: 'About is no longer in the site. Nothing in the site was changed.' });
     // Nothing is held: the author's next change goes straight in.
     expect((await session.apply({ operations: [{ type: 'site.update', name: 'Still mine' }], expectedRevision: session.revision }, { label: 'Rename', source: 'user' })).ok).toBe(true);
-  });
+  }
 
   it('keeps links an earlier request left on other pages for a run that may connect them', async () => {
     const env = await setup([
@@ -761,7 +771,9 @@ describe('page scope (#513)', () => {
     // Limited to Home, the run may not connect About's link: it says so, and keeps it.
     const second = await env.run('continue', pageCtx(home, 'Home'));
     expect(second.result).toMatchObject({ incomplete: true, pendingLinks: [expect.objectContaining({ route: '/contact-us/', pageId: about })] });
-    expect(second.result?.summary).toMatch(/Links to \/contact-us\/ on other pages are still waiting, because this request may change only the Home page\. To connect them, choose Whole site and reply "continue"\./);
+    expect(second.result?.summary).toMatch(/Links to \/contact-us\/ on other pages are still waiting, because this request may change only the Home page\. To connect them, choose Whole site and reply "continue"\.$/);
+    // Continue would send the same limited request again, so it is not offered as the way on.
+    expect(second.result?.summary).not.toMatch(/Press Continue/);
     expect(banner().props.primaryLink).toEqual({ type: 'none', target: '' });
     // The whole site connects it.
     const third = await env.run('continue', { ...pageCtx(home, 'Home'), scope: 'site' });

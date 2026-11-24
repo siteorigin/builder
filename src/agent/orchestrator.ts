@@ -778,8 +778,16 @@ export class Orchestrator {
     // A page removed since the request was sent (a removal already on its way lands before the lock) leaves nothing it
     // may change: the run lets go of the project and ends before anything is sent.
     if (!ask && userMsg.context?.scope === 'page' && !Object.hasOwn(session.state.pages, userMsg.context.pageId)) {
-      await session.abortRun().catch(() => undefined);
-      await finish('failed', `${userMsg.context.pageTitle || 'That page'} is no longer in the site. ${UNCHANGED}`, { error: 'page removed' });
+      const gone = `${userMsg.context.pageTitle || 'That page'} is no longer in the site.`;
+      try {
+        await session.abortRun();
+      } catch (e) {
+        // Nothing was changed, but the project may still be held: never reported as a clean end.
+        const why = (e as Error).message;
+        await finish('failed', `${gone} The request could not let go of the project (${why}). Reopen the project before going on.`, { error: why });
+        return;
+      }
+      await finish('failed', `${gone} ${UNCHANGED}`, { error: 'page removed' });
       return;
     }
     const startState = structuredClone(session.state);
@@ -1489,7 +1497,9 @@ export class Orchestrator {
             const committed = await session.completeRun(unfinished.length ? `AI (partial): ${requestText.slice(0, 60)}` : `AI: ${label}`);
             msg.text = finalText;
             // The model's own summary may call the request done; what is missing is the project's to say.
-            const summary = unfinished.length ? `This request is not finished yet. ${unfinished.join(' ')} The changes made so far are checked and kept. Press Continue, or reply "continue", to finish it.` : finalText || 'Done.';
+            // Links left on other pages say how to connect them: Continue would send the same limited request again.
+            const again = links.deferred.length ? '' : ' Press Continue, or reply "continue", to finish it.';
+            const summary = unfinished.length ? `This request is not finished yet. ${unfinished.join(' ')} The changes made so far are checked and kept.${again}` : finalText || 'Done.';
             await finish('completed', summary, { changes, checks, canUndo: committed, usage, ...(unfinished.length ? { incomplete: true, unfinished: unfinishedPages(), pendingLinks: macros.pendingLinks } : {}) });
           } else {
             await session.completeRun('AI (no changes)');
@@ -1497,7 +1507,7 @@ export class Orchestrator {
             // Nothing landed, but the request asked for pages that a rejected or skipped change never made.
             const unfinished = [...[...macros.drafts.keys()].map((r) => `The page ${r} was not built.`), ...waiting.map((r) => `Links to ${r} do not go anywhere yet.`), ...(carried?.deferred ?? []).map(leftWaiting), ...missing().map(notCreated)];
             if (unfinished.length)
-              await finish('no-changes', `This request is not finished: nothing was changed. ${unfinished.join(' ')} Press Continue, or reply "continue", to try again.`, {
+              await finish('no-changes', `This request is not finished: nothing was changed. ${unfinished.join(' ')}${carried?.deferred.length ? '' : ' Press Continue, or reply "continue", to try again.'}`, {
                 usage,
                 checks: [...inspections.checks(session.state), ...unfinished.map((text): ChatCheck => ({ status: 'issue', text }))],
                 incomplete: true,
