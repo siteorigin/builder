@@ -887,72 +887,136 @@ body.dialog-open .toast { pointer-events: none; }
 .canvas-scroll { position: absolute; inset: 0; overflow: auto; display: flex; justify-content: safe center; padding: 28px 28px 28px; scrollbar-width: thin; }
 .frame-wrap { position: relative; flex: none; }
 .frame-box { position: absolute; top: 0; left: 0; transform-origin: 0 0; border-radius: 6px; overflow: hidden; background: white; box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), var(--shadow-md); }
+/* On the dark pasteboard a dark page section would lose the page's edge: a faint light ring keeps it. */
+:where(:root[data-appearance='dark']) { .frame-box { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.14), var(--shadow-md); } }
 .frame-box iframe { display: block; border: 0; width: 100%; height: 100%; background: white; }
 /* Every frame in the editor shows the website. Chromium gives a frame's page the color scheme of its <iframe>
    element, which would otherwise inherit the editor's Appearance: this one lets the page follow this computer's
    setting, as a visitor's browser does. */
 iframe { color-scheme: light dark; }
-.frame-handle { position: absolute; top: 50%; width: 14px; height: 54px; margin-top: -27px; border-radius: var(--r-sm); cursor: ew-resize; display: grid; place-items: center; z-index: 4; }
-.frame-handle::after { content: ''; width: 4px; height: 34px; border-radius: var(--r-xs); background: var(--border-control); transition: background 120ms; }
+/* A 24px-wide target (WCAG 2.5.8) around a 4px bar, centred in the gutter beside the page. */
+.frame-handle { position: absolute; top: 50%; width: 24px; height: 54px; margin-top: -27px; border-radius: var(--r-sm); cursor: ew-resize; display: grid; place-items: center; z-index: 4; }
+.frame-handle::after { content: ''; width: 4px; height: 34px; border-radius: var(--r-xs); background: var(--text-3); transition: background 120ms; }
 .frame-handle:hover::after, .frame-handle.dragging::after, .frame-handle:focus-visible::after { background: var(--accent); }
-.frame-handle.right { right: -20px; }
-.frame-handle.left { left: -20px; }
-.frame-width-label { position: absolute; top: -19px; left: 0; right: 0; text-align: right; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.frame-handle.right { right: -25px; }
+.frame-handle.left { left: -25px; }
+/* The strip above the page: the same 28px row a parked chip uses, so the two sit on one line. The width label is
+   on the right (size, screen size, zoom); the page's own status, while another page opens, on the left. */
+.frame-width-label { position: absolute; top: -34px; right: 0; height: 28px; display: flex; align-items: center; justify-content: flex-end; font-size: 12px; color: var(--text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .frame-width-label b { color: var(--text); font-weight: 600; }
+.frame-width-label .sep { margin: 0 5px; color: var(--text-3); }
+/* While the frame is resized, the readout is the feedback (at Fit the page edge may not move): it takes the accent. */
+.frame-width-label.live, .frame-width-label.live b { color: var(--accent-text); }
+.frame-width-label.measure { visibility: hidden; pointer-events: none; }
+.frame-width-label.measure > span { position: absolute; right: 0; display: inline-flex; align-items: center; }
+.frame-status { position: absolute; top: -34px; left: 0; height: 28px; display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); white-space: nowrap; }
+.frame-status { overflow: hidden; }
+.frame-status .spinner { width: 13px; height: 13px; }
+.frame-status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.frame-status.empty { gap: 10px; color: var(--text); }
+.frame-status.empty .link-btn { display: inline-flex; flex: none; align-items: center; gap: 4px; min-height: 24px; }
+.frame-status.empty .link-btn svg { width: 13px; height: 13px; }
 .overlay-layer { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
 /* Outlines are clipped to the page so they never spill onto the pasteboard. */
 .overlay-clip { position: absolute; inset: 0; overflow: hidden; border-radius: 6px; }
 .ov-box { position: absolute; pointer-events: none; border-radius: 2px; }
-/* One selection colour (--select), drawn between opaque keylines (white inside, ink outside) so the outline
-   holds at 3:1 on any page, including one that uses the same blue. Hover is thinner than selection;
-   related repeated items get a dashed outline. */
-.ov-hover { --hover-c: #1766c0; box-shadow: inset 0 0 0 1px var(--hover-c), inset 0 0 0 2px #fff, 0 0 0 1px rgb(16 24 40 / 0.6); }
+/* One selection colour (--select), drawn between opaque keylines (ink outside, white inside) so the outline
+   holds at 3:1 on any page, including one that uses the same blue. All of it is drawn inside the box, so a
+   full-width section keeps its ink edge where the page clips it. Hover is thinner than selection; related
+   repeated items get a dashed outline. */
+/* Hover is a 2px hairline pair: white outside, a deep shade of the hover colour inside. On any page colour one of
+   the two holds 3:1, it stays lighter than the 4px selection, and the white outer edge keeps it a separate ring
+   where it meets a selection (whose ink is outside). */
+.ov-hover { --hover-c: #1766c0; box-shadow: inset 0 0 0 1px #fff, inset 0 0 0 2px color-mix(in srgb, var(--hover-c) 55%, #101828); }
 .editor.defining .ov-hover { --hover-c: var(--select); }
-.ov-selected { box-shadow: inset 0 0 0 2px var(--select), inset 0 0 0 3px #fff, 0 0 0 1px #101828; }
-.ov-selected.dim { box-shadow: inset 0 0 0 1px #fff, 0 0 0 1px rgb(16 24 40 / 0.6); outline: 1.5px dashed var(--select); outline-offset: -1.5px; }
+.ov-selected { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 3px var(--select), inset 0 0 0 4px #fff; }
+.ov-selected.dim { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 1.5px dashed var(--select); outline-offset: -2.5px; }
+/* Text being edited on the page: the selection gains a second, outer ring (white, its colour, ink), so "typing
+   here" reads apart from "selected" on any page, without covering the words. */
+.ov-selected.editing { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 3px var(--select), inset 0 0 0 4px #fff, 0 0 0 1px #fff, 0 0 0 3px var(--select), 0 0 0 4px #101828; }
+/* What a drag is moving stays marked in place: dashed, on a faint tint of the selection colour. */
+.ov-selected.moving { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 8%, transparent); }
 /* The list item open in the inspector: a dashed outline on a faint tint, so it reads as "being edited" inside the
    selected section without competing with the selection itself. */
-.ov-revealed { box-shadow: inset 0 0 0 1px #fff, 0 0 0 1px rgb(16 24 40 / 0.6); outline: 2px dashed var(--select); outline-offset: -2px; background: color-mix(in srgb, var(--select) 7%, transparent); }
+.ov-revealed { box-shadow: inset 0 0 0 1px #101828, inset 0 0 0 4px #fff; outline: 2px dashed var(--select); outline-offset: -3px; background: color-mix(in srgb, var(--select) 7%, transparent); }
 /* The hover label names what a click would select. It sits inside the hovered element's top-left corner, so
    the pointer can rest on it without leaving that element, and it is a light tag (solid fill is the
    selection's). It is the editor's blue (plum while defining), never the selection's scope colour. */
-.ov-label { position: absolute; top: 3px; left: 3px; display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-xs); font-size: 12px; font-weight: 600; color: var(--hover-c); background: #fff; box-shadow: inset 0 0 0 1px var(--hover-c), 0 1px 3px rgb(16 24 40 / 0.18); white-space: nowrap; pointer-events: none; }
+.ov-label { position: absolute; top: 4px; left: 4px; display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-xs); font-size: 12px; font-weight: 600; color: var(--hover-c); background: #fff; box-shadow: inset 0 0 0 1px var(--hover-c), 0 1px 3px rgb(16 24 40 / 0.18); white-space: nowrap; pointer-events: none; }
+/* A short element's name sits just outside it, above (or below, at the top of the page), so it covers nothing. */
+.ov-label.outside { left: 0; pointer-events: auto; cursor: default; }
+/* A bridge over the gap to its element, so the pointer reaches the name without crossing other parts of the page. */
+.ov-label.outside::after { content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 8px; }
+.ov-label.outside.below::after { top: auto; bottom: 100%; }
 /* The selection chip: name, then grouped actions, as one toolbar. It is app chrome on the user's page, so
    it carries a complete white rim that separates it from any page colour, and its own shadow. Inner
    buttons are 24px targets with --r-xs corners, concentric with the chip's --r-sm. */
 .ov-chip { position: absolute; display: flex; align-items: center; gap: 1px; height: 28px; padding: 2px; border-radius: var(--r-sm); background: var(--select); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.9), 0 4px 14px -4px rgb(16 24 40 / 0.45), 0 1px 3px rgb(16 24 40 / 0.25); pointer-events: auto; white-space: nowrap; z-index: 1; }
 .ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 2px 6px -2px rgb(16 24 40 / 0.35); }
-/* Parked on the dark pasteboard, not the user's page, the chip needs no bright rim to separate it. */
-:where(:root[data-appearance='dark']) { .ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.2), 0 2px 8px -2px rgb(0 0 0 / 0.5); } }
+/* Parked on the dark pasteboard the rim is quieter, but still a 3:1 edge (the green shared chip needs it). */
+:where(:root[data-appearance='dark']) { .ov-chip.strip { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.45), 0 2px 8px -2px rgb(0 0 0 / 0.5); } }
 .ov-chip .name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 1 auto; overflow: hidden; height: 24px; padding: 0 6px 0 4px; font-size: 12px; font-weight: 600; letter-spacing: 0.005em; }
 .ov-chip .grip + .name { padding-left: 0; }
 .ov-chip .name > svg { width: 14px; height: 14px; flex: none; opacity: 0.9; }
 .ov-chip .name .label { max-width: 220px; min-width: 24px; overflow: hidden; text-overflow: ellipsis; }
 .ov-chip .name .ellipsis { overflow: hidden; text-overflow: ellipsis; }
 .ov-chip .name .of { flex: 0 1 auto; min-width: 0; font-weight: 400; opacity: 0.88; }
-.ov-chip .name .of.link { display: inline-flex; align-items: center; height: 24px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; margin-left: -2px; padding: 0 4px; border: 0; border-radius: var(--r-sm); background: none; color: inherit; font: inherit; font-weight: 400; opacity: 0.9; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(255 255 255 / 0.6); }
+.ov-chip .name .of.link { display: inline-flex; align-items: center; height: 24px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; margin-left: -2px; padding: 0 4px; border: 0; border-radius: var(--r-xs); background: none; color: inherit; font: inherit; font-weight: 400; opacity: 0.9; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(255 255 255 / 0.6); }
 .ov-chip .name .of.link:hover { opacity: 1; background: rgb(16 24 40 / 0.22); text-decoration-color: #fff; }
 .ov-chip .chip-sep { width: 1px; height: 14px; margin: 0 3px; flex: none; background: rgb(255 255 255 / 0.3); }
-.ov-chip .icon-btn { width: 24px; height: 24px; flex: none; color: #fff; border-radius: var(--r-sm); }
+.ov-chip .icon-btn { width: 24px; height: 24px; flex: none; color: #fff; border-radius: var(--r-xs); }
 .ov-chip .icon-btn svg { width: 15px; height: 15px; }
 .ov-chip .icon-btn:hover:not([aria-disabled='true']) { background: rgb(255 255 255 / 0.18); color: #fff; }
 /* A disabled move dims its glyph only, so its keyboard focus ring keeps full strength. */
 .ov-chip .icon-btn[aria-disabled='true'] { cursor: default; }
 .ov-chip .icon-btn[aria-disabled='true'] svg { opacity: 0.45; }
-.ov-chip .icon-btn.grip { width: 20px; cursor: grab; }
+.ov-chip .icon-btn.grip { width: 24px; cursor: grab; }
 .ov-chip .icon-btn.grip svg { opacity: 0.85; }
 .ov-chip .icon-btn.grip:active { cursor: grabbing; }
 /* The open state of More actions: a dark well with a full white ring while its menu is showing. */
 .ov-chip .icon-btn[aria-expanded='true'] { background: rgb(16 24 40 / 0.32); box-shadow: inset 0 0 0 1.5px #fff; }
-.ov-chip .chip-text { display: inline-flex; flex: none; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 7px; border: 0; border-radius: var(--r-sm); background: rgb(16 24 40 / 0.24); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.4); color: #fff; font-size: 12px; font-weight: 600; }
+.ov-chip .chip-text { display: inline-flex; flex: none; align-items: center; gap: 5px; height: 24px; padding: 0 8px 0 7px; border: 0; border-radius: var(--r-xs); background: rgb(16 24 40 / 0.24); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.72); color: #fff; font-size: 12px; font-weight: 600; }
 .ov-chip .chip-text svg { width: 14px; height: 14px; }
 .ov-chip .chip-text:hover { background: rgb(16 24 40 / 0.36); }
 /* Focus on the filled chip: a white ring inside each control. */
 .ov-chip button:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+/* Editing text: the chip names the edit and its way out, and keeps its colour and place. */
+.ov-chip.editing .name > svg { opacity: 1; }
+.ov-chip.editing .chip-text { margin-left: 4px; }
+/* The way out never shrinks: the name gives way first. */
+.ov-chip.editing .name .of { flex: none; }
+/* At narrow widths the parent link keeps a 24px target and "2 of 3" never clips: the part's name gives way. */
+.ov-chip .name .of.link { min-width: 24px; }
+.ov-chip .name .of:not(.link) { flex: none; }
+.ov-chip .chip-text + .chip-text, .ov-chip .icon-btn + .chip-text { margin-left: 3px; }
+/* A text button's focus ring steps outside its resting rim, so focus is as plain a change as on the icon buttons. */
+.ov-chip .chip-text:focus-visible { outline-offset: 1px; background: rgb(16 24 40 / 0.42); }
+.ov-chip .chip-text kbd { margin-left: 2px; font: inherit; font-weight: 400; opacity: 0.8; }
+/* While a section is dragged, the strip above the page names what is moving and how to back out. */
+.ov-moving { position: absolute; top: -34px; left: 0; overflow: hidden; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 6px; border-radius: var(--r-sm); background: var(--select); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.65), 0 2px 6px -2px rgb(16 24 40 / 0.35); pointer-events: none; z-index: 1; }
+.ov-moving svg { width: 14px; height: 14px; opacity: 0.85; }
+.ov-moving svg { flex: none; }
+.ov-moving .what { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ov-moving .hint { flex: none; font-weight: 400; opacity: 0.88; }
+.ov-moving .sep, .ov-chip.editing .sep { flex: none; margin: 0 -1px; font-weight: 400; opacity: 0.7; }
+:where(:root[data-appearance='dark']) { .ov-moving { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.45), 0 2px 8px -2px rgb(0 0 0 / 0.5); } }
+/* While dragging a section or a frame edge, the pointer keeps the gesture's cursor wherever it goes. */
+.canvas.reordering, .canvas.reordering * { cursor: grabbing !important; }
+.canvas.resizing, .canvas.resizing * { cursor: ew-resize !important; }
+/* A page the editor has not confirmed (one leaving, or one that never arrived) takes no picks and, if the wait is
+   noticeable, steps back; the wait cursor shows only while something is actually on its way. */
+.frame-wrap.waiting { cursor: progress; }
+.frame-wrap.stale .frame-box { opacity: 0.7; transition: opacity 160ms ease 300ms; }
+/* A page with nothing on it: the first step, in the open space under the shared header and footer. App chrome
+   on the page, so it is clickable while the page around it stays the user's. */
+.canvas-empty { position: absolute; left: 0; right: 0; display: flex; justify-content: center; padding: 0 16px; pointer-events: none; }
+.canvas-empty .empty-card { pointer-events: auto; max-width: 340px; padding: 22px 24px; gap: 8px; border-color: var(--border-strong); }
+:where(:root[data-appearance='dark']) { .canvas-empty .empty-card { box-shadow: 0 0 0 1px rgb(255 255 255 / 0.1), var(--shadow-md); } }
+.canvas-empty .empty-card .btn { margin-top: 6px; }
 .canvas-state { position: absolute; inset: 0; display: grid; place-items: center; z-index: 6; }
-.canvas-card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 28px; text-align: center; border-radius: var(--r-lg); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
+.canvas-card { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 420px; padding: 28px; text-align: center; border-radius: var(--r-md); background: var(--panel); border: 1px solid var(--border); box-shadow: var(--shadow-md); }
 .canvas-card h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.canvas-card p { margin: 0; color: var(--text-2); }
+.canvas-card p { margin: 0; color: var(--text-2); text-wrap: balance; }
 .canvas-card pre { max-width: 100%; max-height: 140px; overflow: auto; margin: 0; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); font-family: var(--mono); font-size: 11px; text-align: left; white-space: pre-wrap; color: var(--text-2); user-select: text; }
 .preview-pill { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: calc(100% - 24px); white-space: nowrap; display: inline-flex; align-items: center; gap: 10px; height: 36px; padding: 0 5px 0 14px; border-radius: 99px; background: var(--ink); color: #fff; box-shadow: 0 0 0 1px rgb(255 255 255 / 0.18), var(--shadow-lg); font-size: 13px; font-weight: 500; }
 .preview-pill svg { width: 15px; height: 15px; }
@@ -2505,7 +2569,11 @@ button.code-problem:focus-visible { outline-offset: -2px; }
   /* Dots and gutter glyphs are painted fills: keep them, in the system text colour. */
   .code-dot, .cm-lint-marker { forced-color-adjust: none; background-color: CanvasText !important; }
 }
-.ov-drop { position: absolute; background: var(--select); border-radius: 2px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); pointer-events: none; }
+/* The drop line: 2px of the selection colour between opaque keylines (white, then ink), so it holds at 3:1 on any
+   page, with a ring at its start (inside the page, so the page edge never clips it). */
+.ov-drop { position: absolute; background: var(--select); border-radius: 1px; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828; pointer-events: none; }
+.ov-drop::before { content: ''; position: absolute; top: 50%; left: -5px; width: 6px; height: 6px; margin-top: -5px; border: 2px solid var(--select); border-radius: 50%; background: #fff; box-shadow: 0 0 0 1px #fff, 0 0 0 2px #101828; }
+.ov-drop.vertical::before { top: -5px; left: 50%; margin: 0 0 0 -5px; }
 
 /* ---------- Tabs (dialog-level view switchers) ---------- */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: -4px -18px 0; padding: 0 8px; }
@@ -2659,6 +2727,9 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .trust-path svg { flex: none; margin-top: 1px; color: var(--text-3); }
 .trust-path span { overflow-wrap: anywhere; }
 .ai-veil.issue { width: min(560px, calc(100% - 24px)); border-radius: 18px; background: color-mix(in srgb, var(--red) 6%, var(--raised)); border-color: color-mix(in srgb, var(--red) 45%, var(--border)); }
+/* While editing, the bar sits below the page as a status card: a card's corners and a 3:1 edge. Preview's is its own. */
+.canvas.edit-mode .ai-veil.issue:not(.retrying) { border-radius: var(--r-md); border-color: color-mix(in srgb, var(--red) 75%, var(--border-control)); }
+.canvas.edit-mode .ai-veil.issue.retrying { border-radius: var(--r-md); }
 .ai-veil.issue > span:not(.spinner) { flex: 1; min-width: 0; }
 .ai-veil.issue > .spinner { flex: none; }
 /* Restarting is progress, not a fresh failure. */
@@ -2971,11 +3042,6 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .status-bar .crumbs button.custom .crumb-mark { color: var(--plum); }
 .token-name { display: flex; flex-direction: column; gap: 1px; }
 .token-name small { font-size: 11px; color: var(--text-3); line-height: 1.3; }
-.canvas-state.soft { pointer-events: none; place-items: start center; padding-top: 80px; }
-/* An empty page's note leaves the header and footer around it to click. */
-.canvas-state.empty-page { pointer-events: none; z-index: 4; }
-.canvas-state.empty-page .canvas-card { pointer-events: auto; }
-.canvas-card.compact { flex-direction: row; gap: 10px; padding: 10px 16px; border-radius: 99px; font-size: 13px; color: var(--text-2); }
 /* Round 5 polish */
 /* Outside the filled exit button, in white, so the ring stands clear of both the fill and the pill. */
 .preview-pill button:focus-visible { outline-offset: 2px; }
@@ -2993,7 +3059,6 @@ button.code-problem:focus-visible { outline-offset: -2px; }
 .uses-toggle:hover { color: var(--text); }
 .uses-toggle[aria-expanded='true'] svg { transform: rotate(180deg); }
 .uses-list { color: var(--text-2) !important; }
-.frame-width-label.aside { text-align: right; }
 .chip.add { border: 1px dashed var(--border-control); background: none; color: var(--text-2); padding: 0 8px 0 4px; }
 .chip.add:hover { border-color: var(--accent); color: var(--accent-text); }
 /* Title bar: every empty stretch between controls is a window drag region, so double-clicking it does the
