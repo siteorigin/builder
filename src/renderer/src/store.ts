@@ -12,7 +12,7 @@ export const api = window.builder;
 
 export type LeftTab = 'pages' | 'layers' | 'insert' | 'assets';
 export type RightTab = 'inspect' | 'chat' | 'styles';
-export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] };
+export type Modal = null | { kind: 'settings'; tab?: string } | { kind: 'export' } | { kind: 'source'; definitionId: string } | { kind: 'page-source'; pageId: string } | { kind: 'cmdk' } | { kind: 'find'; query?: string } | { kind: 'create-component'; ref: ElementRef } | { kind: 'make-unique'; owner: OwnerRef; nodeId: string; definitionId: string } | { kind: 'rename-component'; definitionId: string } | { kind: 'delete-page'; pageId: string } | { kind: 'set-home'; pageId: string } | { kind: 'history'; entryId?: string; tab?: 'versions' } | { kind: 'new-code' } | { kind: 'edit-definition'; ref: ElementRef } | { kind: 'health' } | { kind: 'import-review'; id: number; opening: string; rows: ImportReviewRow[] };
 
 export interface Rect {
   x: number;

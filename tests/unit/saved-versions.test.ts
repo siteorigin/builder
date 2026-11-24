@@ -11,6 +11,8 @@ import { createStarterState } from '@catalogue/starters';
 import type { AssetRecord } from '@shared/types';
 import { ProjectSession } from '../../src/main/project/session';
 import { sha } from '../../src/main/project/fsutil';
+import { describeReview, restoredNotice } from '../../src/renderer/src/lib/versions';
+import type { VersionReview } from '@shared/api';
 
 const dirs: string[] = [];
 const open: ProjectSession[] = [];
@@ -326,5 +328,32 @@ describe('saved versions', () => {
     expect((await s.saveVersion('   ')).ok).toBe(false);
     expect((await s.saveVersion('x'.repeat(81))).ok).toBe(false);
     expect(s.versionsInfo().list).toEqual([]);
+  });
+});
+
+describe('the saved version wording', () => {
+  const base: VersionReview = { revision: 1, pages: { back: [], gone: [], changed: [] }, site: false, styles: false, components: 0, library: false, files: [], missing: [], unchanged: false };
+
+  it('names pages first, at most four a line, then what else changes', () => {
+    const lines = describeReview({
+      ...base,
+      pages: { back: ['About'], gone: ['Experiments', 'Lab'], changed: ['Home', 'Work', 'Team', 'Prices', 'Blog', 'FAQ'] },
+      styles: true,
+      components: 2,
+      files: ['static/assets/a-12345678.png']
+    });
+    expect(lines).toEqual([
+      'Brings back 1 page: “About”',
+      'Removes 2 pages it doesn’t have: “Experiments” and “Lab”',
+      'Changes 6 pages: “Home”, “Work”, “Team”, “Prices” and 2 more',
+      'Changes site styles: colors, fonts and spacing',
+      'Changes 2 components',
+      'Puts back 1 file the site uses'
+    ]);
+  });
+
+  it('says where the replaced work went after a restore', () => {
+    expect(restoredNotice('Approved', true)).toBe('Restored “Approved”. Your work from before is kept in Saved versions.');
+    expect(restoredNotice('Approved', false)).toBe('Restored “Approved”.');
   });
 });

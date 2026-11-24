@@ -18,6 +18,8 @@ export function useProjectStorage(): { info: StorageInfo | null; refresh: () => 
     const e = s.snapshot?.history.entries ?? [];
     return `${e.length}:${e[0]?.id ?? ''}:${e.at(-1)?.id ?? ''}:${e.filter((x) => x.applied).length}`;
   });
+  // Saving or deleting a version changes what versions take without touching the documents.
+  const versions = useStore((s) => `${s.snapshot?.versions?.list.length ?? 0}:${s.snapshot?.versions?.bytes ?? 0}`);
   // What else can change the figures or whether space can be freed: the AI, conflicts, the lock, files found missing.
   const busy = useStore((s) => `${!!s.snapshot?.aiBusy}:${s.snapshot?.conflicts.length ?? 0}:${!!s.snapshot?.readOnly}:${JSON.stringify(s.snapshot?.missingAssets ?? [])}`);
   const [got, setGot] = useState<{ opening: string; info: StorageInfo } | null>(null);
@@ -36,7 +38,7 @@ export function useProjectStorage(): { info: StorageInfo | null; refresh: () => 
       live = false;
       clearTimeout(t);
     };
-  }, [opening, visible, revision, history, busy, tick]);
+  }, [opening, visible, revision, history, versions, busy, tick]);
   return { info: got?.opening === opening ? got.info : null, refresh: () => setTick((n) => n + 1) };
 }
 
@@ -44,7 +46,7 @@ const files = (n: number) => plural(n, 'file', 'files');
 
 /** The footer of the Assets panel: what the project's media take, and what removed files kept for Undo take. */
 export function StorageSummary({ info, onFree }: { info: StorageInfo; onFree: () => void }) {
-  if (!info.media.files && !info.kept.files) return null;
+  if (!info.media.files && !info.kept.files && !info.versions.count) return null;
   return (
     <section className="asset-storage" aria-labelledby="asset-storage-title" data-testid="asset-storage">
       <h4 id="asset-storage-title">Storage</h4>
@@ -60,6 +62,14 @@ export function StorageSummary({ info, onFree }: { info: StorageInfo; onFree: ()
             <dt>Kept for Undo</dt>
             <dd>
               {files(info.kept.files)} · {formatBytes(info.kept.bytes)}
+            </dd>
+          </div>
+        )}
+        {info.versions.count > 0 && (
+          <div>
+            <dt>Saved versions</dt>
+            <dd>
+              {plural(info.versions.count, 'version', 'versions')} · {formatBytes(info.versions.bytes)}
             </dd>
           </div>
         )}
@@ -164,6 +174,13 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
               <td>{plural(shown.history.steps, 'step', 'steps')}</td>
               <td>{formatBytes(shown.history.bytes)}</td>
             </tr>
+            {shown.versions.count > 0 && (
+              <tr>
+                <th scope="row">Saved versions</th>
+                <td>{plural(shown.versions.count, 'version', 'versions')}</td>
+                <td>{formatBytes(shown.versions.bytes)}</td>
+              </tr>
+            )}
           </tbody>
         </table>
         {plan && trim ? (
@@ -177,6 +194,7 @@ export function FreeSpaceDialog({ info, onClose, refresh }: { info: StorageInfo;
             <p>
               <b>This can’t be undone.</b> To keep every step, close this and leave the files where they are.
             </p>
+            {shown.versions.count > 0 && <p className="muted">Saved versions keep their own copies, so they stay as they are. Delete the ones you no longer need in History.</p>}
           </>
         ) : (
           <p>There is nothing to free right now.</p>

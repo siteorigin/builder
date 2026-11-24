@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, TextSearch, Undo2, Settings, Sparkles, Upload, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
+import { BookmarkPlus, Component, FileText, FolderOpen, History, Link2, Plus, Redo2, Replace, Search, TextSearch, Undo2, Settings, Sparkles, Upload, Palette, Eye, LogOut, Monitor, PanelRight, Smartphone, Stethoscope, Tablet, House, ListTree } from 'lucide-react';
 import { useDialogFocus, sendCommand } from '../components/ui';
 import { closeProject } from '../lib/leave';
 import { catalogueEntries } from '@catalogue/index';
@@ -50,6 +50,7 @@ export function CommandMenu() {
       { id: 'export', kbd: '⌘E', label: 'Export or publish your website…', group: 'Project', icon: <Upload />, run: () => setState({ modal: { kind: 'export' } }) },
       { id: 'settings', label: 'Settings', group: 'Project', icon: <Settings />, run: () => setState({ modal: { kind: 'settings' } }) },
       { id: 'history', label: 'History…', group: 'Project', icon: <History />, run: () => setState({ modal: { kind: 'history' } }) },
+      { id: 'save-version', label: 'Save a version of the site…', group: 'Project', icon: <BookmarkPlus />, run: () => setState({ modal: { kind: 'history', tab: 'versions' } }) },
       { id: 'health', label: 'Project health', group: 'Project', icon: <Stethoscope />, run: () => setState({ modal: { kind: 'health' } }) },
       { id: 'outline', label: 'Show the page’s headings outline', group: 'View', icon: <ListTree />, run: () => openOutline() },
       { id: 'dock', kbd: '⇧⌘\\', label: 'Show or hide the right panel', group: 'View', icon: <PanelRight />, run: () => setState({ dockOpen: !useStore.getState().dockOpen }) },

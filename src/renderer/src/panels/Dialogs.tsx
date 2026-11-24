@@ -14,6 +14,7 @@ import { resolveRef, treeFor } from '../lib/model';
 import { goToShellPart, selectPage } from '../lib/actions';
 import { planPageRemoval, reviewPageRemoval, withoutCards } from '../lib/page-removal';
 import { sectionOptions } from '../lib/sections';
+import { HistoryTabs, SavedVersionsModal } from './SavedVersions';
 
 export function CreateComponentModal({ target }: { target: ElementRef }) {
   const [name, setName] = useState('');
@@ -581,6 +582,11 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
 }
 
 export function HistoryModal() {
+  const versions = useStore((s) => s.modal?.kind === 'history' && s.modal.tab === 'versions');
+  return versions ? <SavedVersionsModal /> : <ChangesModal />;
+}
+
+function ChangesModal() {
   const snap = useStore((s) => s.snapshot);
   // Opened from a notification whose change could not be undone on its own: show that change.
   const focusId = useStore((s) => (s.modal?.kind === 'history' ? s.modal.entryId : undefined));
@@ -606,8 +612,9 @@ export function HistoryModal() {
         </>
       }
     >
+      <HistoryTabs tab="changes" />
       <p className="muted" style={{ marginTop: 0 }}>
-        Your last 100 changes, newest first. Undo steps back one change at a time; anything undone can be redone until you make a new change.
+        Your last 100 changes, newest first. Undo steps back one change at a time; anything undone can be redone until you make a new change. To keep a version of the site for longer, save it in Saved versions.
       </p>
       {entries.length === 0 ? (
         <div className="empty-insp" style={{ padding: '28px 12px' }}>
