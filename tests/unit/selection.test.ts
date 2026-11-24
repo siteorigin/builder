@@ -80,6 +80,46 @@ describe('canvas selection steps in one level per click', () => {
     expect(strip(selectionFromChain(s, chain, { ...part('card-title'), partId: 'cardTitle' }, false))).toEqual(strip(part(text)));
   });
 
+  it('goes from a hero straight to its heading, past the design’s layout containers', () => {
+    const s: ProjectState = createStarterState('business', 'Test Studio', false);
+    const pageId = s.site.homePageId;
+    const owner = { kind: 'page' as const, id: pageId };
+    const hero = s.pages[pageId].nodes[s.pages[pageId].rootIds[0]] as InstanceNode;
+    expect(s.components[hero.definitionId].componentId).toBe('hero.split');
+    const part = (nodeId: string): ElementRef => ({ owner, instancePath: [hero.id], nodeId });
+    // What the bridge reports for a click on the h1: the heading, the design's Content and Layout, its Container
+    // part, then its root.
+    const chain = ['heading', 'content', 'grid', 'inner', 'root'].map((id) => descOf(s, part(id)));
+    const first = selectionFromChain(s, chain, null, false);
+    expect(first).toEqual({ owner, instancePath: [], nodeId: hero.id });
+    const second = selectionFromChain(s, chain, first, false);
+    expect(second).toEqual({ ...part('heading'), partId: 'heading' });
+    expect(selectionFromChain(s, chain, second, false)).toEqual(second);
+    expect(selectionFromChain(s, chain, null, true)).toEqual(second);
+    // A click on the Container's own space, with no content of it under the pointer, still selects it.
+    const padding = ['inner', 'root'].map((id) => descOf(s, part(id)));
+    expect(selectionFromChain(s, padding, first, false)).toEqual({ ...part('inner'), partId: 'container' });
+  });
+
+  it('goes from a component whose root places a hero straight to the hero’s heading', () => {
+    let s: ProjectState = createStarterState('business', 'Test Studio', false);
+    const pageId = s.site.homePageId;
+    const owner = { kind: 'page' as const, id: pageId };
+    const heroId = s.pages[pageId].rootIds[0];
+    // A project component made from the hero placement: its design's root is that placement.
+    const made = applyOperations(s, [{ type: 'component.createFromNode', owner, nodeId: heroId, name: 'Wrapped hero' }]);
+    s = made.state;
+    const wrap = made.results[0].nodeId as string;
+    const def = s.components[made.results[0].definitionId as string];
+    const inner = def.tree!.rootIds[0];
+    expect(def.tree!.nodes[inner].kind).toBe('instance');
+    const part = (nodeId: string): ElementRef => ({ owner, instancePath: [wrap, inner], nodeId });
+    const chain = ['heading', 'content', 'grid', 'inner', 'root'].map((id) => descOf(s, part(id)));
+    const first = selectionFromChain(s, chain, null, false);
+    expect(strip(first)).toEqual(strip({ owner, instancePath: [], nodeId: wrap }));
+    expect(strip(selectionFromChain(s, chain, first, false))).toEqual(strip(part('heading')));
+  });
+
   it('starts over from the outside when the selection is elsewhere', () => {
     const { s, section, card1, hero, at, chainTo } = cards();
     expect(strip(selectionFromChain(s, chainTo(card1), at([], hero), false))).toEqual(at([], section));
