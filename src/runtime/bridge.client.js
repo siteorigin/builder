@@ -3670,6 +3670,10 @@ style.textContent =
   // An empty slot, where the author can put content: a labelled drop area, never part of the site.
   ' html[data-so-editing] [data-so-slot-empty] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; box-sizing: border-box; min-height: 72px; padding: 12px 16px; border: 2px dashed rgba(100, 116, 139, 0.55); border-radius: 8px; background: rgba(148, 163, 184, 0.08); color: #475569; font: 13px/1.35 system-ui, -apple-system, sans-serif; text-align: center; }' +
   ' html[data-so-editing] [data-so-slot-empty] strong { font-weight: 600; } html[data-so-editing] [data-so-slot-empty] span { opacity: 0.8; }' +
+  // An empty list of images (a Gallery or Carousel with none chosen yet): the same box, where the images will go, on a
+  // light ground of its own so its words read on a dark section too.
+  ' html[data-so-editing] [data-so-list-empty] { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; box-sizing: border-box; min-height: 160px; padding: 16px; border: 2px dashed rgba(100, 116, 139, 0.55); border-radius: 8px; background: #f8fafc; color: #475569; font: 14px/1.4 system-ui, -apple-system, sans-serif; text-align: center; }' +
+  ' html[data-so-editing] [data-so-list-empty] strong { font-weight: 600; } html[data-so-editing] [data-so-list-empty] span { max-width: 46ch; opacity: 0.8; }' +
   // An empty container (a Grid, Row or Stack with nothing in it yet): a dashed frame naming its kind, tall enough to
   // see and pick, with a grid's columns ruled in its gaps where its items will go. The label spans every column, so
   // even columns that fit as many as they can are all there. In the container's own colours, so it shows on a dark

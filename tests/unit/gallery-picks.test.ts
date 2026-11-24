@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import type { EditOperation } from '@shared/ops';
 import type { AssetRecord, InstanceNode, ListItem, ListProp, OwnerRef, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
-import { gallery } from '@catalogue/foundation/content';
+import { carousel, gallery } from '@catalogue/foundation/content';
 import { team } from '@catalogue/foundation/people';
 import { applyOperations } from '@engine/apply';
 import { ProjectSession } from '../../src/main/project/session';
-import { mergeChoice, movePick, overNote, pickAnnouncement, pickedImage, pickImagesField, pickLabel, pickOperations, pickRoom, planChoice, planPicks, sampleRows, startingSamples, togglePick, type PickStep } from '../../src/renderer/src/lib/gallery-picks';
+import { emptyPickNote, mergeChoice, movePick, overNote, pickAnnouncement, pickedImage, pickImagesField, pickLabel, pickOperations, pickRoom, planChoice, planPicks, sampleRows, startingSamples, togglePick, type PickStep } from '../../src/renderer/src/lib/gallery-picks';
 
 /** Issue #60: build a gallery by choosing several library images in one pass. */
 
@@ -167,6 +167,17 @@ describe('choosing images', () => {
     expect(overNote(18, 18)).toBeNull();
     expect(overNote(20, 18)).toBe('This gallery has room for 18 more images. Leave out 2 images.');
     expect(overNote(1, 0)).toContain('This gallery is full.');
+  });
+
+  it('words an empty list’s prompt for its own field, never as a gallery when it is a carousel (#577)', () => {
+    expect(emptyPickNote(images)).toBe('No images yet. Choose images from Assets.');
+    const slides = carousel.properties.slides as ListProp;
+    expect(emptyPickNote(slides)).toBe('No slides yet. Choose images from Assets.');
+    expect(emptyPickNote(slides)).not.toMatch(/gallery/i);
+    // A label of the author's own is used as written; one left blank, or lost, falls back to images.
+    expect(emptyPickNote({ label: '  Project photos ' })).toBe('No project photos yet. Choose images from Assets.');
+    expect(emptyPickNote({ label: '   ' })).toBe('No images yet. Choose images from Assets.');
+    expect(emptyPickNote({} as ListProp)).toBe('No images yet. Choose images from Assets.');
   });
 
   it('uses each image’s suggested description, and names the change', () => {
