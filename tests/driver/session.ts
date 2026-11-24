@@ -691,9 +691,6 @@ export class Session {
   readonly assistant = new AssistantTracker();
   /** A real provider's setup, when the session was started with one (its key never leaves this object). */
   private live: LiveSetup | null = null;
-  /** Why a live session's assistant may do no more: its time ran out. */
-  private liveSpent: string | null = null;
-  private liveTimer: ReturnType<typeof setTimeout> | null = null;
 
   private readonly options: SessionOptions;
   private readonly appRoot: string;
@@ -994,9 +991,15 @@ export class Session {
         return { ...script.release(a.gate), script: script.state() };
       }
       case 'assistant.observe':
-        return this.scrubbed(await this.observeAssistant(parseObserveArgs(request.args)));
       case 'assistant.wait':
-        return this.scrubbed(await this.waitAssistant(parseAssistantWaitArgs(request.args), signal, deadline));
+        try {
+          if (request.op === 'assistant.observe') return this.scrubbed(await this.observeAssistant(parseObserveArgs(request.args), deadline));
+          return this.scrubbed(await this.waitAssistant(parseAssistantWaitArgs(request.args), signal, deadline));
+        } catch (e) {
+          // A failure can quote what it was given (a run ID) or what it read: nothing known as a credential goes back.
+          if (e instanceof DriverError && this.secrets.size) throw new DriverError(e.code, this.scrubbed(e.message), { retryable: e.retryable, ...(e.details ? { details: this.scrubbed(e.details) } : {}) });
+          throw e;
+        }
       default:
         throw new DriverError('UNKNOWN_OP', `There is no operation "${request.op}".`);
     }
@@ -1070,73 +1073,106 @@ export class Session {
     return this.secrets.size ? scrubDeep(value, [...this.secrets]) : value;
   }
 
+  /**
+   * `work`, or a TIMEOUT once `deadline` comes: a read of the app that stalls never outlives the request. What it
+   * would still have done is dropped (a late journal read changes nothing a later one will not do again).
+   */
+  private async within<T>(work: Promise<T>, deadline: number, what: string): Promise<T> {
+    work.catch(() => undefined);
+    const ms = deadline - Date.now();
+    if (ms <= 0) throw new DriverError('TIMEOUT', `${what} did not finish in time.`, { details: { phase: what, sessionState: this.state } });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([work, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new DriverError('TIMEOUT', `${what} did not finish in time.`, { details: { phase: what, sessionState: this.state } })), ms)))]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /** Bring the tracker up to date with the app's journal of the assistant's events. */
-  private async pull() {
+  private async pull(deadline: number) {
     for (let i = 0; i < 100; i++) {
-      const page = (await inMain(this.app!, journalInMain, { op: 'read', after: this.assistant.cursor, limit: 1000 } as JournalCall)) as { records: RawRecord[]; next: number; latest: number; missed: number };
+      const page = (await this.within(inMain(this.app!, journalInMain, { op: 'read', after: this.assistant.cursor, limit: 1000 } as JournalCall), deadline, 'reading the assistant’s events')) as {
+        records: RawRecord[];
+        next: number;
+        latest: number;
+        missed: number;
+      };
       this.assistant.ingest(page.records, page.missed);
       if (!page.records.length || page.next >= page.latest) return;
     }
   }
 
-  /** What the chat panel shows now, or null with no editor window to read. */
-  private async shownChat(): Promise<ShownChat | null> {
+  /** What the chat panel shows now, or null with no editor window to read (or none read before `deadline`). */
+  private async shownChat(deadline: number): Promise<ShownChat | null> {
     const b = this.bound;
     if (!b || b.closed || this.appExited) return null;
-    return b.page.evaluate(readChat).catch(() => null);
+    return this.within(b.page.evaluate(readChat), deadline, 'reading the chat').catch(() => null);
   }
 
-  /** A live session's limits and what is left of them. */
-  private async budget() {
+  /** A live session's limits, as the app keeps them, and what is used of them. */
+  private async budget(deadline: number) {
     if (!this.live) return undefined;
-    const turns = (await inMain(this.app!, journalInMain, { op: 'turns' } as JournalCall).catch(() => null)) as { used: number; limit: number | null } | null;
-    return { maxTurns: this.live.maxTurns, turnsUsed: turns?.used ?? null, timeoutMs: this.live.timeoutMs, ...(this.liveSpent ? { spent: this.liveSpent } : {}) };
+    const turns = (await this.within(inMain(this.app!, journalInMain, { op: 'turns' } as JournalCall), deadline, 'reading the limits').catch(() => null)) as { used: number; limit: number | null; deadline: number | null; spent: boolean } | null;
+    return { maxTurns: this.live.maxTurns, turnsUsed: turns?.used ?? null, timeoutMs: this.live.timeoutMs, ...(turns?.deadline ? { until: new Date(turns.deadline).toISOString() } : {}), spent: turns?.spent ?? null };
   }
 
-  private async observeAssistant(a: { after?: number; limit?: number; runId?: string; conversationId?: string }) {
-    await this.pull();
+  private async observeAssistant(a: { after?: number; limit?: number; runId?: string; conversationId?: string }, deadline: number) {
+    const end = deadline - 250;
+    await this.pull(end);
     const read = this.assistant.read(a);
     const after = a.after ?? 0;
-    // The runs this page is about: those that moved since the cursor, and any still going.
-    const runs = a.runId ? [this.assistant.runView(a.runId)].filter((r): r is RunView => !!r) : this.assistant.runViews(a.conversationId).filter((r) => r.lastSeq > after || r.state !== 'terminal');
-    const shown = await this.shownChat();
-    const budget = await this.budget();
+    // The runs this page is about: those that moved since the cursor, and any still going; within both filters.
+    const runs = (a.runId ? [this.assistant.runView(a.runId)].filter((r): r is RunView => !!r) : this.assistant.runViews()).filter(
+      (r) => (!a.conversationId || r.conversationId === a.conversationId) && (a.runId || r.lastSeq > after || r.state !== 'terminal')
+    );
+    const shown = await this.shownChat(end);
+    const budget = await this.budget(end);
     return { ...read, runs, shown, ...(this.script ? { script: this.script.state() } : {}), ...(budget ? { budget } : {}) };
   }
 
   private async waitAssistant(a: { runId: string; after?: number }, signal: AbortSignal, deadline: number) {
     const POLL = 100;
+    // Kept back from the request's deadline to say where the run stood: a fifth of a short wait, at most 750 ms.
+    const end = deadline - Math.min(750, Math.max(50, (deadline - Date.now()) / 5));
+    const timedOut = (run: RunView) =>
+      new DriverError('TIMEOUT', `Run ${a.runId} neither finished nor asked the author anything in time (it is ${run.state}${run.status ? `, ${run.status}` : ''}).`, {
+        details: { phase: 'assistant.wait', sessionState: this.state, runId: a.runId, state: run.state, status: run.status, lastSeq: run.lastSeq, next: this.assistant.cursor, ...(run.gap ? { gap: true } : {}) }
+      });
     let run: RunView | null;
     let settled: ReturnType<typeof settledState>;
+    let shown: ShownChat | null = null;
     for (;;) {
       if (signal.aborted) throw new DriverError('TIMEOUT', 'assistant.wait was stopped.');
-      await this.pull();
+      await this.pull(end);
       run = this.assistant.runView(a.runId);
-      if (!run) throw new DriverError('TARGET_NOT_FOUND', `No run "${a.runId}" has been seen in this session.`, { details: { runId: a.runId, hint: 'Take a runId from a run.started entry of assistant.observe.' } });
+      if (!run) throw new DriverError('TARGET_NOT_FOUND', `No run "${a.runId}" is known to this session: never seen, or let go after many newer runs.`, { details: { runId: a.runId, hint: 'Take a runId from a run.started entry of assistant.observe.' } });
       settled = settledState(run, a.after);
+      // After a gap in the journal, a question the run shows is trusted once the panel shows that very question.
+      if (!settled && run.gap && run.state === 'input' && (a.after === undefined || run.question!.askedSeq > a.after)) {
+        shown = await this.shownChat(end);
+        if (shown && rendered(shown, run, 'input')) settled = { reason: 'input' };
+      }
       if (settled) break;
-      // Ends itself just before the request's deadline, so the reply can say where the run stood.
-      if (Date.now() + POLL + 750 > deadline)
-        throw new DriverError('TIMEOUT', `Run ${a.runId} neither finished nor asked the author anything in time (it is ${run.state}${run.status ? `, ${run.status}` : ''}).`, {
-          details: { phase: 'assistant.wait', sessionState: this.state, runId: a.runId, state: run.state, status: run.status, lastSeq: run.lastSeq, next: this.assistant.cursor }
-        });
+      if (Date.now() + POLL >= end) throw timedOut(run);
       await new Promise((r) => setTimeout(r, POLL));
     }
     // The journal leads the panel by a moment: when the panel shows the run's conversation, wait (briefly) until it
     // shows the run where it stands, so the author's next action finds it there.
-    let shown = await this.shownChat();
-    const until = Math.min(deadline - 500, Date.now() + 5000);
-    while (shown?.visible && shown.conversationId === run.conversationId && !rendered(shown, run, settled.reason) && Date.now() < until && !signal.aborted) {
+    shown ??= await this.shownChat(end);
+    const until = Math.min(end, Date.now() + 5000);
+    while (shown?.visible && shown.conversationId === run.conversationId && !rendered(shown, run, settled.reason) && Date.now() + POLL < until && !signal.aborted) {
       await new Promise((r) => setTimeout(r, POLL));
-      shown = await this.shownChat();
+      shown = await this.shownChat(end);
     }
     const turn = shown ? shownTurn(shown, run) : null;
-    const budget = await this.budget();
+    const budget = await this.budget(end);
     return {
       reason: settled.reason,
       run,
       shown: turn,
-      ...(settled.reason === 'input' && shown?.question?.runId === run.runId ? { question: shown.question } : {}),
+      // The card, only when it is this run's and this question: never one the panel has not moved on from yet.
+      ...(settled.reason === 'input' && shown && rendered(shown, run, 'input') ? { question: shown.question } : {}),
       next: this.assistant.cursor,
       ...(budget ? { budget } : {})
     };
@@ -1990,31 +2026,21 @@ export class Session {
     await reach('provider.settings');
     const fixture = this.args.fixture ?? 'welcome';
     if (fixture !== 'welcome') await this.createFixture(page, fixture, left, reach);
-    // A live session's time runs from here: then its assistant is stopped and may start nothing more.
-    if (this.live) {
-      const live = this.live;
-      this.liveTimer = setTimeout(() => void this.spendLive(`its ${live.timeoutMs / 1000}s ran out`), live.timeoutMs);
-    }
     await reach('ready');
   }
 
-  /** Set the app up with the configured provider, and cap the requests its assistant may start. */
+  /**
+   * Set the app up with the configured provider, and cap what its assistant may do: the requests it may start, and
+   * the time from now. The app keeps both itself, so they hold whatever this process or the editor window is doing:
+   * past either, nothing more reaches a provider, and at the deadline the app stops what is running.
+   */
   private async useLiveProvider(page: Page, live: LiveSetup, left: () => number) {
-    await inMain(this.app!, journalInMain, { op: 'limitTurns', max: live.maxTurns } as JournalCall);
+    await inMain(this.app!, journalInMain, { op: 'limitTurns', max: live.maxTurns, withinMs: live.timeoutMs } as JournalCall);
     await page.evaluate((patch) => (globalThis as any).builder.app.setSettings(patch), liveSettings(live));
     await page.reload({ timeout: left() });
     await page.waitForSelector('.welcome', { timeout: left() });
     const ai = (await page.evaluate(() => (globalThis as any).builder.app.getSettings().then((s: any) => s.ai))) as { provider: string };
     if (ai.provider !== live.provider) throw new DriverError('LAUNCH_FAILED', `The app did not take the configured provider (it uses ${ai.provider}).`, { details: { phase: 'provider.settings' } });
-  }
-
-  /** A live session's assistant may do no more: no new request starts, and the one running is stopped. */
-  private async spendLive(reason: string) {
-    if (this.liveSpent || !this.app || this.appExited) return;
-    this.liveSpent = reason;
-    await bounded(inMain(this.app, journalInMain, { op: 'limitTurns', max: 0 } as JournalCall).catch(() => undefined), 5000, undefined);
-    const page = this.bound && !this.bound.closed ? this.bound.page : null;
-    if (page) await bounded(page.evaluate(() => Promise.all([(globalThis as any).builder.ai.stop(), (globalThis as any).builder.ai.cancelFix()])).catch(() => undefined), 10_000, undefined);
   }
 
   private async waitForWindow(timeoutMs: number): Promise<Page> {
@@ -2190,7 +2216,6 @@ export class Session {
 
   private async teardown(args: CloseArgs): Promise<CloseResult> {
     const wasStarted = this.state !== 'new';
-    if (this.liveTimer) clearTimeout(this.liveTimer);
     this.closeRequested = true;
     this.state = 'closing';
     this.keeping = this.keepsArtifacts(args);
@@ -2261,7 +2286,8 @@ export class Session {
     const processes = [...this.seen.keys()];
     // Held replies go before the server stops, so nothing waits on a gate after the session.
     this.script?.close();
-    if (this.liveTimer) clearTimeout(this.liveTimer);
+    // A live key leaves the run folder even when the folder is kept because cleanup could not account for everything.
+    if (this.live?.key && this.paths) await rm(join(this.paths.profile, 'api-keys.json'), { force: true }).catch(() => undefined);
     await this.mock?.stop().catch(() => undefined);
     // The app's output, once it can write no more: kept with the artifacts, or with a run folder that stays as evidence.
     if (this.logTimer) clearInterval(this.logTimer);

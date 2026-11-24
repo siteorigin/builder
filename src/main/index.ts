@@ -59,7 +59,7 @@ const { headless } = launchMode(process.env, globalThis);
 const desktop = desktopForLaunch(process.env, globalThis, { dialog, shell });
 // And they keep every assistant event in order, for a test to follow each run by its own IDs (ai-journal.ts).
 const aiJournal = launchMode(process.env, globalThis).automated ? installAiJournal(globalThis) : null;
-const AI_TURNS_SPENT = 'This test session has used every AI request it allows, so nothing was sent.';
+const AI_TURNS_SPENT = 'This test session allows no more AI requests (its limit or its time is used up), so nothing was sent.';
 if (headless) {
   // A hidden window must keep painting, running timers and animation frames at full speed.
   app.commandLine.appendSwitch('disable-background-timer-throttling');
@@ -225,6 +225,11 @@ const orchestrator = new Orchestrator({
 });
 // Only a request that may change the site holds it: a read-only question leaves the author editing, exporting
 // and resolving conflicts as usual.
+// A test's deadline for the assistant stops it from here, whatever the test or the window is doing then.
+aiJournal?.onSpent(() => {
+  orchestrator.stop();
+  fixAbort?.abort();
+});
 controller.aiBusy = () => orchestrator.editing;
 controller.aiRunId = () => (orchestrator.editing ? orchestrator.runId : null);
 controller.onSessionOpened = async (s) => {
@@ -437,6 +442,8 @@ function registerIpc() {
   // Tests the key and model as typed in Settings when given, so an unsaved key can be checked before saving.
   handle('ai:test', async (p: ProviderId, typedKey?: unknown, typedModel?: unknown) => {
     if (p !== 'openai' && p !== 'anthropic' && p !== 'local') return { ok: false, message: 'Unknown provider.' };
+    // A connection test asks the provider too: a test's cap counts it like any other request.
+    if (aiJournal && !aiJournal.admit()) return { ok: false, message: AI_TURNS_SPENT };
     const typed = typeof typedKey === 'string' ? typedKey.trim() : '';
     const custom = typeof typedModel === 'string' ? typedModel.trim() : '';
     if (typed.length > 1000 || custom.length > 200) return { ok: false, message: 'That key or model ID is too long.' };

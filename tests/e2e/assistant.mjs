@@ -11,15 +11,21 @@
 // the earlier thread reopened and the project closed and opened again, its transcript and preview as they were left.
 // A wait for a held run times out while other runs are finished: one run's events never end another's wait.
 import assert from 'node:assert/strict';
+import { LIVE_OPT_IN } from '../driver/assistant.ts';
 import { Session } from '../driver/session.ts';
+import { MockOpenAIServer, envelopeReply } from '../unit/mock-openai-server.ts';
 import { eventually, scratch, step } from './harness.mjs';
 
 const { WORK, cleanup } = scratch('assistant');
 const session = new Session({ parentDir: WORK });
+/** The session the helpers below talk to: the scripted one, then the one with a configured provider. */
+let current = session;
+let live = null;
+let provider = null;
 let passed = false;
 let n = 0;
 
-const call = (op, args, extra = {}) => session.call({ v: 1, id: `r${++n}`, op, ...(args ? { args } : {}), ...extra });
+const call = (op, args, extra = {}) => current.call({ v: 1, id: `r${++n}`, op, ...(args ? { args } : {}), ...extra });
 const explain = (reply) => (reply.ok ? '' : `${reply.error.code} ${reply.error.message} ${JSON.stringify(reply.error.details ?? {})}`);
 const ok = async (op, args, extra) => {
   const reply = await call(op, args, extra);
@@ -84,8 +90,16 @@ const previewLacks = async (role, name) => {
   assert.equal(r.ok ? 'found' : r.error.code, 'TARGET_NOT_FOUND', `the preview no longer shows ${role} "${name}"`);
 };
 
-// Read-only checks of the saved project: the steps History can undo.
-const applied = async () => (await session.page.evaluate(() => window.builder.project.snapshot())).history.entries.filter((e) => e.applied).length;
+// Read-only checks of the saved project: the steps History can undo, the site's name, and Home's sections.
+const saved = () => session.page.evaluate(() => window.builder.project.snapshot());
+const applied = async () => (await saved()).history.entries.filter((e) => e.applied).length;
+const siteName = async () => (await saved()).state.site.name;
+/** A prop of Home's first (the hero) or last (the call to action) section. */
+const homeProp = async (which, prop) => {
+  const { state } = await saved();
+  const home = state.pages[state.site.homePageId];
+  return home.nodes[which === 'hero' ? home.rootIds[0] : home.rootIds.at(-1)].props[prop];
+};
 
 const HERO = 'Calm, considered spaces for everyday life';
 const CTA = 'Let’s make your space work better';
@@ -116,13 +130,23 @@ try {
   await eventually(async () => assert.deepEqual((await shown()).composer.images, [assetId], 'the image goes with the message'));
   if ((await call('ui.locate', { role: 'menu', scope: 'editor' })).ok) await press('Escape');
   const historyBefore = await applied();
-  await script({ scenario: 'read-and-answer', params: { text: `The hero says “${HERO}”.` } });
+  const nameBefore = await siteName();
+  // The scripted model tries to change the site first, then reads the page and answers with what it read.
+  await script({
+    steps: [
+      { tool: 'update_site_brand', args: { siteName: 'Never Renamed' }, status: 'Trying a change' },
+      { tool: 'read_page', args: { pageId: { $context: 'pageId' } }, status: 'Reading the page' },
+      { tool: 'finish', args: { message: { $result: 'sections.0.props.heading' } }, status: 'Answering' }
+    ]
+  });
   const ask = await send('What does the hero heading say?');
   assert.equal(ask.conversationId, threadA);
   assert.deepEqual([ask.request.mode, ask.request.images], ['ask', [assetId]], 'a question, with its image');
   const asked = await wait(ask.runId);
   assert.equal(asked.reason, 'terminal');
-  assert.deepEqual([asked.run.status, asked.run.result.ask, asked.run.text], ['no-changes', true, `The hero says “${HERO}”.`]);
+  assert.deepEqual([asked.run.status, asked.run.result.ask, asked.run.text], ['no-changes', true, HERO], 'the answer is what the read returned');
+  assert.match(asked.run.steps.find((st) => st.status === 'error')?.detail ?? '', /Unknown tool/, 'a question cannot change the site');
+  assert.equal(await siteName(), nameBefore);
   assert.equal(asked.shown.reply.result.heading, 'Answered · site unchanged', 'the card says nothing changed');
   assert.match(asked.shown.request.caption, /Question · read only/);
   assert.deepEqual(asked.shown.request.images, [assetId], 'the request shows its image');
@@ -142,7 +166,7 @@ try {
   await click('menuitemradio', 'Edit', { exact: false });
   await click('button', 'Layers');
   await click('treeitem', 'Split hero', { exact: false });
-  await eventually(async () => assert.match((await shown()).composer.scope, /Split hero/, 'the composer is about the hero'));
+  await eventually(async () => assert.match((await shown()).composer.scopeLabel, /Split hero/, 'the composer is about the hero'));
   await script({
     steps: [
       { tool: 'update_selected_props', args: { props: { heading: 'Rooms that work' } }, status: 'Shortening the heading', gate: 'edit-held' },
@@ -151,16 +175,19 @@ try {
     ]
   });
   const historyBeforeEdit = await applied();
+  const originalLead = await homeProp('hero', 'lead');
   const edit = await send('Make the hero shorter');
-  assert.equal(edit.request.target, 'Split hero', 'the request names its target as it was sent');
+  assert.deepEqual([edit.request.target, edit.request.page], ['Split hero', 'Home'], 'the request names its target as it was sent');
   await eventually(async () => assert.equal(await gateState('edit-held'), 'reached'));
   await click('treeitem', 'Call to action', { exact: false });
-  await eventually(async () => assert.doesNotMatch((await shown()).composer.scope, /Split hero/, 'the selection moved on'));
+  await eventually(async () => assert.doesNotMatch((await shown()).composer.scopeLabel, /Split hero/, 'the selection moved on'));
   await ok('assistant.release', { gate: 'edit-held' });
   const edited = await wait(edit.runId);
   assert.deepEqual([edited.reason, edited.run.status], ['terminal', 'completed']);
   await previewHas('heading', 'Rooms that work');
   await previewHas('heading', CTA);
+  assert.deepEqual([await homeProp('hero', 'heading'), await homeProp('hero', 'lead')], ['Rooms that work', 'Plans, materials and light, done well.'], 'both changes landed on the hero');
+  assert.equal(await homeProp('cta', 'heading'), CTA, 'and none on what was selected meanwhile');
   assert.equal(await applied(), historyBeforeEdit + 1, 'both changes are one step in History');
   assert.ok(edited.shown.reply.result.buttons.includes('Undo turn'));
 
@@ -172,15 +199,15 @@ try {
     assert.match(reply.result.heading, /^Undone/, 'the turn reads as undone');
   });
   assert.equal(await applied(), historyBeforeEdit);
+  assert.equal(await homeProp('hero', 'lead'), originalLead, 'the lead is back too');
 
-  step('a wider change, declined: the run stays within the selection');
+  step('a wider change, declined: the run stays within the selection, and still edits it');
   // The Call to action is still selected; the request is limited to it. Changing the site's name is outside it.
-  const siteName = async () => (await session.page.evaluate(() => window.builder.project.snapshot())).state.site.name;
-  const nameBefore = await siteName();
   await script({
     steps: [
       { tool: 'request_wider_scope', args: { question: 'May I also rename the site?' }, status: 'Asking' },
       { tool: 'update_site_brand', args: { siteName: 'Harbour Light Studio' }, status: 'Renaming the site' },
+      { tool: 'update_selected_props', args: { props: { lead: 'A free first conversation, whenever suits you.' } }, status: 'Editing the call to action' },
       { tool: 'finish', args: { message: 'Kept to the call to action.' } }
     ]
   });
@@ -189,14 +216,15 @@ try {
   assert.equal(widen1.reason, 'input', 'the wait ends where the author must answer');
   assert.deepEqual([widen1.run.question.widen, widen1.run.question.choices], [true, ['Yes, allow changes beyond the selection', 'No, only change the selection']]);
   assert.equal(widen1.question.questionId, widen1.run.question.questionId, 'the card shows that question');
-  assert.match(widen1.question.scope, /change the whole site/);
+  assert.match(widen1.question.scopeNote, /change the whole site/);
   let at = await mark();
   await click('button', 'No, only change the selection');
   const declined = await wait(decline.runId, at);
   assert.deepEqual([declined.reason, declined.run.questions[0].answer], ['terminal', 'No, only change the selection']);
   assert.deepEqual(declined.shown.reply.answers, [{ question: 'May I also rename the site?', answer: 'No, only change the selection' }]);
-  assert.ok(declined.run.steps.some((s) => s.status === 'error'), `the change outside the selection was refused (${JSON.stringify(declined.run.steps)})`);
+  assert.match(declined.run.steps.find((st) => st.status === 'error')?.detail ?? '', /Unknown tool/, `the change outside the selection was refused (${JSON.stringify(declined.run.steps)})`);
   assert.equal(await siteName(), nameBefore, 'the site keeps its name');
+  assert.equal(await homeProp('cta', 'lead'), 'A free first conversation, whenever suits you.', 'the change inside it landed');
 
   step('a wider change, approved: the same change lands');
   await script({
@@ -225,7 +253,7 @@ try {
   // The Call to action is still selected; an interview is about the page, so the scope chip goes to This page.
   await click('button', 'What the AI may change', { exact: false });
   await click('menuitemradio', 'This page · Home');
-  await eventually(async () => assert.equal((await shown()).composer.scope, 'What the AI may change: Home'));
+  await eventually(async () => assert.equal((await shown()).composer.scopeLabel, 'What the AI may change: Home'));
   await script({
     scenario: 'interview',
     params: {
@@ -271,7 +299,7 @@ try {
   step('mid-run: switching threads is refused, the dock switches away and back, and the held run’s wait is its own');
   await click('button', 'What the AI may change', { exact: false });
   await click('menuitemradio', 'Call to action', { exact: false });
-  await eventually(async () => assert.match((await shown()).composer.scope, /Call to action/));
+  await eventually(async () => assert.match((await shown()).composer.scopeLabel, /Call to action/));
   await script({
     steps: [
       { tool: 'update_selected_props', args: { props: { heading: 'Talk to the studio' } }, status: 'Changing the heading' },
@@ -359,16 +387,15 @@ try {
     assert.ok(s.messages.length >= 8);
     return s;
   }, 30000);
+  const headings = Object.fromEntries(again.messages.filter((m) => m.role === 'assistant').map((m) => [m.runId, m.result?.heading]));
+  assert.deepEqual(Object.keys(headings), [ask.runId, edit.runId, decline.runId, approve.runId]);
+  assert.deepEqual([headings[ask.runId], headings[decline.runId], headings[approve.runId]], ['Answered · site unchanged', 'Completed', 'Completed']);
+  assert.match(headings[edit.runId], /^Undone/, 'the undone turn still reads undone');
   assert.deepEqual(
-    again.messages.filter((m) => m.role === 'assistant').map((m) => [m.runId, m.result?.heading]),
-    [
-      [ask.runId, 'Answered · site unchanged'],
-      [edit.runId, again.messages.find((m) => m.runId === edit.runId).result.heading],
-      [decline.runId, again.messages.find((m) => m.runId === decline.runId).result.heading],
-      [approve.runId, 'Completed']
-    ]
+    again.messages.filter((m) => m.role === 'user').map((m) => m.text),
+    ['What does the hero heading say?', 'Make the hero shorter', 'Match the site name to the call to action', 'Match the site name to the call to action, please'],
+    'every request, word for word'
   );
-  assert.match(again.messages.find((m) => m.runId === edit.runId).result.heading, /Undone/, 'the undone turn still reads undone');
   await previewHas('link', 'Harbour Light Studio');
   await previewHas('heading', HERO);
   await previewHas('heading', CTA);
@@ -376,10 +403,54 @@ try {
   assert.equal((await wait(approve.runId)).run.status, 'completed');
 
   assert.deepEqual(session.pageErrors, [], 'no page errors');
+  // Closing must account for everything the session started: a cleanup failure fails the run.
+  assert.equal((await ok('session.close')).ended, 'quit');
+
+  step('a configured provider, by explicit opt-in: requests capped and time bounded by the app itself');
+  // A real provider costs money, so this one is a local server in this process; the session treats it as any other.
+  provider = await new MockOpenAIServer().start();
+  process.env[LIVE_OPT_IN] = '1';
+  live = new Session({ parentDir: WORK });
+  current = live;
+  latest = 0;
+  const started = await ok('session.start', { fixture: 'business-v1', provider: 'configured', live: { provider: 'local', baseURL: provider.baseURL, model: 'test-model', maxTurns: 2, timeoutMs: 40000 } });
+  assert.deepEqual(started.session.provider, { kind: 'configured', provider: 'local', model: 'test-model', maxTurns: 2, timeoutMs: 40000 });
+  await refused('assistant.script', { scenario: 'answer', params: { text: 'x' } }, 'OP_FAILED');
+  await click('tab', 'AI', { exact: false, region: 'Right panel views' });
+  const posts = () => provider.requests.filter((r) => r.method === 'POST').length;
+  provider.script(envelopeReply('finish', { message: 'Hello from the local server.' }));
+  const first = await send('Say hello');
+  const greeted = await wait(first.runId);
+  assert.equal(greeted.reason, 'terminal');
+  assert.deepEqual([greeted.budget.maxTurns, greeted.budget.turnsUsed, greeted.budget.spent], [2, 1, false]);
+  // The second request is held at the server until the time runs out: the app stops it itself.
+  let letGo;
+  provider.script({ ...envelopeReply('finish', { message: 'Too late.' }), hold: new Promise((r) => (letGo = r)) });
+  const second = await send('Say more');
+  const stoppedLive = await wait(second.runId, undefined, 60000);
+  assert.deepEqual([stoppedLive.reason, stoppedLive.run.status], ['terminal', 'cancelled'], 'the deadline stopped the run');
+  assert.equal(stoppedLive.budget.spent, true);
+  letGo();
+  const before = posts();
+  const box = await find('textbox', 'Message');
+  await ok('ui.fill', { target: { ref: box.ref }, text: 'One more, please' });
+  const refusedAt = await mark();
+  await press('Enter');
+  await eventually(async () => assert.ok((await shown()).notices.some((x) => /allows no more AI requests/.test(x.text)), 'the editor says why nothing was sent'));
+  assert.equal((await observe({ after: refusedAt })).entries.filter((e) => e.type === 'run.started').length, 0, 'no run started');
+  // Nor does a connection test reach the provider once the limit is used (a read-only guard check, not a user step).
+  assert.match((await live.page.evaluate(() => window.builder.ai.testProvider('local'))).message, /allows no more AI requests/);
+  assert.equal(posts(), before, 'nothing more reached the provider');
+  assert.equal((await ok('session.close')).ended, 'quit');
+
   passed = true;
   console.log('\nassistant: all checks passed');
 } finally {
-  const closed = await session.close({ failed: !passed }).catch((e) => e);
-  if (!passed) console.log('session closed:', JSON.stringify(closed));
+  for (const s of [session, live]) {
+    const closed = await s?.close({ failed: !passed }).catch((e) => e);
+    if (!passed && closed) console.log('session closed:', JSON.stringify(closed));
+  }
+  await provider?.stop().catch(() => undefined);
+  delete process.env[LIVE_OPT_IN];
   if (passed) cleanup();
 }

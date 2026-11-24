@@ -81,7 +81,7 @@ export interface Entry {
   /** The assistant message of the run (the user's request has its own, in run.started). */
   messageId: string | null;
   /** run.started: the request, as the author sent it. */
-  request?: { messageId: string | null; text: string; mode: 'edit' | 'ask'; target?: string; images?: string[] };
+  request?: { messageId: string | null; text: string; mode: 'edit' | 'ask'; target?: string; page?: string; images?: string[] };
   status?: string;
   mode?: 'edit' | 'ask';
   text?: string;
@@ -107,8 +107,9 @@ export interface RunView {
   userMessageId: string | null;
   messageId: string | null;
   request: string | null;
-  /** What the request was about, as its caption names it, and the library images sent with it. */
+  /** What the request was about, as its caption names it, the page it was sent from, and the images sent with it. */
   target?: string;
+  page?: string;
   images?: string[];
   status: string | null;
   state: RunState;
@@ -123,6 +124,8 @@ export interface RunView {
   startedSeq: number;
   lastSeq: number;
   detached?: true;
+  /** Events of this run may have been dropped before they were read: until its next turn update, a question it shows may already be answered. */
+  gap?: true;
 }
 
 interface Run {
@@ -202,7 +205,7 @@ export class AssistantTracker {
 
   constructor(opts: TrackerOptions = {}) {
     this.maxEntries = opts.maxEntries ?? 5000;
-    this.maxRuns = opts.maxRuns ?? 200;
+    this.maxRuns = opts.maxRuns ?? 500;
   }
 
   /** The oldest seq whose entries are all still kept. */
@@ -217,6 +220,8 @@ export class AssistantTracker {
       const seq = (records[0]?.seq ?? this.cursor + missed + 1) - 1;
       this.push({ seq, at: new Date(at).toISOString(), type: 'gap', conversationId: null, runId: null, messageId: null, missed });
       this.cursor = Math.max(this.cursor, seq);
+      // What a run still going did meanwhile is unknown until it next sends its whole turn.
+      for (const r of this.runs.values()) if (r.view.state !== 'terminal') r.view.gap = true;
     }
     for (const r of records) {
       if (r.seq <= this.cursor) continue;
@@ -227,7 +232,12 @@ export class AssistantTracker {
 
   private push(e: Entry) {
     this.entries.push(e);
-    while (this.entries.length > this.maxEntries) this.dropped = this.entries.shift()!.seq;
+    // Entries go a whole seq at a time, so a page never holds part of one event.
+    while (this.entries.length > this.maxEntries && this.entries[0].seq !== e.seq) {
+      const seq = this.entries[0].seq;
+      while (this.entries[0]?.seq === seq) this.entries.shift();
+      this.dropped = seq;
+    }
   }
 
   private run(runId: string, conversationId: string, seq: number): Run {
@@ -304,11 +314,13 @@ export class AssistantTracker {
       if (base.detached) v.detached = true;
       if (!v.messageId) {
         v.messageId = str(m.id) || null;
-        const request = { messageId: v.userMessageId, text: v.request ?? '', mode: v.mode, ...(v.target ? { target: v.target } : {}), ...(v.images ? { images: v.images } : {}) };
+        const request = { messageId: v.userMessageId, text: v.request ?? '', mode: v.mode, ...(v.target ? { target: v.target } : {}), ...(v.page ? { page: v.page } : {}), ...(v.images ? { images: v.images } : {}) };
         this.push({ ...base, messageId: v.messageId, type: 'run.started', request });
       }
       this.diff(run, m, base);
       run.last = m;
+      // The whole turn, as it is now: whatever a gap hid of its questions and result is known again.
+      delete v.gap;
       this.settle(v);
       return;
     }
@@ -362,7 +374,8 @@ export class AssistantTracker {
         e({ type: 'answer', answer: { questionId: view.questionId, text: q.answered, ...(typeof q.answeredAssetId === 'string' ? { assetId: q.answeredAssetId } : {}) } });
       }
     });
-    if (typeof m.text === 'string' && m.text !== v.text && m.text) {
+    // An empty text counts too: a run that stops at a limit clears what it was writing.
+    if (typeof m.text === 'string' && m.text !== v.text) {
       v.text = m.text;
       e({ type: 'text', text: m.text });
     }
@@ -375,14 +388,14 @@ export class AssistantTracker {
   /** Work out where a run stands from its status, its questions and its result. */
   private settle(v: RunView) {
     const open = [...v.questions].reverse().find((q) => q.answer === undefined) ?? null;
-    if (v.status && TERMINAL.has(v.status)) {
-      v.state = v.result ? 'terminal' : 'ending';
-      v.question = null;
-    } else if (v.result && !v.status) {
-      // Read from the middle of a run whose status was dropped: its result says it is over.
+    if (v.result) {
+      // A turn has a result only once its run is over, whatever status was last read (one may have been dropped).
       v.state = 'terminal';
       v.question = null;
-    } else if (v.status === 'awaiting-input' && open && !v.result) {
+    } else if (v.status && TERMINAL.has(v.status)) {
+      v.state = 'ending';
+      v.question = null;
+    } else if (v.status === 'awaiting-input' && open) {
       v.state = 'input';
       v.question = open;
     } else {
@@ -396,8 +409,8 @@ export class AssistantTracker {
     const after = opts.after ?? 0;
     const limit = opts.limit ?? 200;
     const oldest = this.oldest;
-    // Journal events after the cursor whose entries are no longer kept.
-    const missed = Math.max(0, this.dropped - after);
+    // Journal events after the cursor whose entries are no longer kept, and those the journal dropped unread.
+    let missed = Math.max(0, this.dropped - after);
     const out: Entry[] = [];
     let next = after;
     for (const e of this.entries) {
@@ -405,8 +418,10 @@ export class AssistantTracker {
       // A page ends between seqs, never inside one.
       if (out.length >= limit && e.seq !== next) break;
       next = e.seq;
-      if (opts.runId && e.runId !== opts.runId) continue;
-      if (opts.conversationId && e.conversationId !== opts.conversationId) continue;
+      if (e.type === 'gap') missed += e.missed ?? 0;
+      // A gap is everyone's: no filter hides that something was missed.
+      if (e.type !== 'gap' && opts.runId && e.runId !== opts.runId) continue;
+      if (e.type !== 'gap' && opts.conversationId && e.conversationId !== opts.conversationId) continue;
       out.push(e);
     }
     // Read to the end: the cursor moves past what the journal has, even with nothing that matched.
@@ -428,11 +443,12 @@ export class AssistantTracker {
 }
 
 /** What a request message was about (its target, as the chat captions it) and the images sent with it. */
-export function requestDetails(m: Record<string, any>): { target?: string; images?: string[] } {
+export function requestDetails(m: Record<string, any>): { target?: string; page?: string; images?: string[] } {
   const ctx = isRecord(m.context) ? m.context : undefined;
   const target = targetOf(ctx);
+  const page = typeof ctx?.pageTitle === 'string' && ctx.pageTitle ? ctx.pageTitle : undefined;
   const images = Array.isArray(m.images) ? m.images.filter((i: unknown) => isRecord(i) && typeof i.assetId === 'string').map((i: Record<string, any>) => i.assetId as string) : [];
-  return { ...(target ? { target } : {}), ...(images.length ? { images } : {}) };
+  return { ...(target ? { target } : {}), ...(page ? { page } : {}), ...(images.length ? { images } : {}) };
 }
 
 /**
@@ -442,7 +458,8 @@ export function requestDetails(m: Record<string, any>): { target?: string; image
  */
 export function settledState(run: RunView, after?: number): { reason: 'terminal' | 'input' } | null {
   if (run.state === 'terminal') return { reason: 'terminal' };
-  if (run.state === 'input' && run.question && (after === undefined || run.question.askedSeq > after)) return { reason: 'input' };
+  // After a gap, the question it shows may already be answered: it waits for the run's next turn update.
+  if (run.state === 'input' && run.question && !run.gap && (after === undefined || run.question.askedSeq > after)) return { reason: 'input' };
   return null;
 }
 
@@ -479,11 +496,12 @@ export interface ShownChat {
   title: string | null;
   messages: ShownMessage[];
   /** The question waiting above the composer. */
-  question: { runId: string | null; messageId: string | null; questionId: string | null; text: string; scope?: string; hint?: string; choices: string[]; images: string[] } | null;
+  question: { runId: string | null; messageId: string | null; questionId: string | null; text: string; scopeNote?: string; hint?: string; choices: string[]; images: string[] } | null;
   /** The live run's strip: its phase, what it is about, the model, and its Stop button. */
   run: { runId: string | null; phase: string; target?: string; model?: string; stop?: string } | null;
-  /** The composer: what Enter does, the scope chip, the text in it and the images attached. */
-  composer: { present: boolean; answering: boolean; placeholder: string | null; value: string; mode?: string; scope?: string; images: string[]; send?: { label: string; disabled: boolean } } | null;
+  /** The composer: what the next message does, the scope chip, the text in it and the images attached. Display text
+   *  goes under names of its own, never a protocol word (mode, scope), so a credential in it is always scrubbed. */
+  composer: { present: boolean; answering: boolean; placeholder: string | null; value: string; modeLabel?: string; scopeLabel?: string; images: string[]; send?: { label: string; disabled: boolean } } | null;
   /** Notes and errors shown in or over the panel: notices beside the composer and toasts. */
   notices: Array<{ kind: string; text: string }>;
 }
@@ -558,7 +576,7 @@ export function readChat(): ShownChat {
         messageId: card.dataset.messageId ?? null,
         questionId: card.dataset.questionId ?? null,
         text: text(card.querySelector('.question-text')),
-        ...(card.querySelector('.question-scope') ? { scope: text(card.querySelector('.question-scope')) } : {}),
+        ...(card.querySelector('.question-scope') ? { scopeNote: text(card.querySelector('.question-scope')) } : {}),
         ...(card.querySelector('.question-hint') ? { hint: text(card.querySelector('.question-hint')) } : {}),
         choices: all(card, '.choices .choice').map(text),
         images: assets(card, '.image-choice')
@@ -586,8 +604,8 @@ export function readChat(): ShownChat {
         answering: box.classList.contains('answering'),
         placeholder: area?.getAttribute('placeholder') ?? null,
         value: area?.value ?? '',
-        ...(modeBtn ? { mode: String(modeBtn.getAttribute('aria-label')).replace(/^What your next message does:\s*/, '') } : {}),
-        ...(scopeChip ? { scope: scopeChip.getAttribute('aria-label') ?? text(scopeChip) } : {}),
+        ...(modeBtn ? { modeLabel: String(modeBtn.getAttribute('aria-label')).replace(/^What your next message does:\s*/, '') } : {}),
+        ...(scopeChip ? { scopeLabel: scopeChip.getAttribute('aria-label') ?? text(scopeChip) } : {}),
         images: assets(box, '.image-chip'),
         ...(send ? { send: { label: send.getAttribute('aria-label') ?? text(send), disabled: !!send.disabled } } : {})
       }
@@ -735,7 +753,8 @@ function strings(v: unknown): string[] {
 /** The editor context the latest request carries, as the model reads it. */
 export function requestContext(req: Pick<MockRequest, 'body'>): Record<string, unknown> | null {
   const said = strings(req.body?.messages).filter((t) => t.includes('<editor_context>')).at(-1);
-  const m = said && /<editor_context>\s*([\s\S]*?)\s*<\/editor_context>/.exec(said);
+  // The app appends the real one after the author's words, which may quote an example: the last block is the app's.
+  const m = said ? [...said.matchAll(/<editor_context>\s*([\s\S]*?)\s*<\/editor_context>/g)].at(-1) : undefined;
   if (!m) return null;
   try {
     const ctx = JSON.parse(m[1]);
@@ -748,7 +767,10 @@ export function requestContext(req: Pick<MockRequest, 'body'>): Record<string, u
 /** The latest tool result a request carries, parsed, with the tool it answered. */
 export function latestResult(req: Pick<MockRequest, 'body'>): { tool: string; value: unknown } | null {
   const messages: unknown[] = Array.isArray(req.body?.messages) ? req.body.messages : [];
-  for (let i = messages.length - 1; i >= 0; i--) {
+  // Only this request's own results: they come after its message (the one carrying the editor context). Anything
+  // before it, an author's message that reads like a result included, is not one.
+  const own = messages.map((m) => strings(m).some((t) => t.includes('<editor_context>'))).lastIndexOf(true);
+  for (let i = messages.length - 1; i > own; i--) {
     const m = messages[i];
     if (!isRecord(m)) continue;
     const content = typeof m.content === 'string' ? m.content : null;
@@ -786,23 +808,23 @@ export function pick(value: unknown, path: string): unknown {
 /** Context paths a scenario may use for things the app names differently. */
 const CONTEXT_ALIASES: Record<string, string[]> = { pageId: ['currentPage.id', 'page.id', 'pageId'] };
 
-/** A result's value at `path`, looked for at that path and then anywhere below it (a result nests what it returns). */
-function findIn(value: unknown, path: string): unknown {
+/**
+ * A result's value at `path`: at that path, or else the one value found at it anywhere below (a result nests what it
+ * returns). Several different values there are ambiguous: the step must name the one it means by its full path.
+ */
+function findIn(value: unknown, path: string, tool: string): unknown {
   const direct = pick(value, path);
   if (direct !== undefined) return direct;
-  const seen = new Set<unknown>();
-  const walk = (v: unknown): unknown => {
-    if (!v || typeof v !== 'object' || seen.has(v)) return undefined;
-    seen.add(v);
+  const found = new Map<string, unknown>();
+  const walk = (v: unknown) => {
+    if (!v || typeof v !== 'object') return;
     const here = pick(v, path);
-    if (here !== undefined) return here;
-    for (const x of Array.isArray(v) ? v : Object.values(v)) {
-      const found = walk(x);
-      if (found !== undefined) return found;
-    }
-    return undefined;
+    if (here !== undefined) found.set(JSON.stringify(here), here);
+    for (const x of Array.isArray(v) ? v : Object.values(v)) walk(x);
   };
-  return walk(value);
+  walk(value);
+  if (found.size > 1) throw new Error(`the result of ${tool} has ${found.size} different values at ${path}: name one by its full path`);
+  return found.values().next().value;
 }
 
 /**
@@ -829,7 +851,7 @@ export function resolveArgs(args: unknown, req: Pick<MockRequest, 'body'>): unkn
     if (keys.length === 1 && keys[0] === '$result' && typeof v.$result === 'string') {
       result ??= latestResult(req);
       if (!result) throw new Error('the request carries no tool result');
-      const found = findIn(result.value, v.$result);
+      const found = findIn(result.value, v.$result, result.tool);
       if (found === undefined) throw new Error(`the result of ${result.tool} has no ${v.$result}`);
       return found;
     }
@@ -862,6 +884,10 @@ export interface ScriptState {
 export class Script {
   private queue: Array<{ step: Step; n: number }> = [];
   private gates = new Map<string, { state: GateState; release: () => void; released: Promise<void> }>();
+  /** Every gate name ever scripted: a release meant for one can never open a later one of the same name. */
+  private used = new Set<string>();
+  /** Delays under way, each ended early when the script closes. */
+  private delays = new Set<{ timer: ReturnType<typeof setTimeout>; done: () => void }>();
   private count = 0;
   answered = 0;
   readonly errors: Array<{ step: number; message: string }> = [];
@@ -870,8 +896,9 @@ export class Script {
   /** Queue steps (or replace those waiting). A gate name already used is refused. */
   add(steps: Step[], mode: 'append' | 'replace' = 'append') {
     const names = steps.flatMap((s) => (s.gate ? [s.gate] : []));
-    const dup = names.find((g, i) => names.indexOf(g) !== i || this.gates.has(g));
-    if (dup) throw new DriverError('BAD_REQUEST', `The gate "${dup}" is already used; each gate is named once.`);
+    const dup = names.find((g, i) => names.indexOf(g) !== i || this.used.has(g));
+    if (dup) throw new DriverError('BAD_REQUEST', `The gate "${dup}" is already used; each gate is named once in a session.`);
+    for (const g of names) this.used.add(g);
     if (mode === 'replace') {
       for (const q of this.queue) if (q.step.gate) this.gates.delete(q.step.gate);
       this.queue = [];
@@ -917,15 +944,28 @@ export class Script {
     }
     const gate = item.step.gate ? this.gates.get(item.step.gate) : undefined;
     if (gate && gate.state === 'pending') gate.state = 'reached';
-    const waits = [gate?.released, item.step.delayMs ? new Promise((r) => setTimeout(r, item.step.delayMs)) : undefined].filter(Boolean);
+    const waits = [gate?.released, item.step.delayMs ? this.delay(item.step.delayMs) : undefined].filter(Boolean);
     return waits.length ? { ...reply, hold: Promise.all(waits) } : reply;
   }
 
-  /** Let every held reply go and drop what is left (the session is closing). */
+  private delay(ms: number): Promise<void> {
+    if (this.closed) return Promise.resolve();
+    return new Promise((done) => {
+      const d = { timer: setTimeout(() => (this.delays.delete(d), done()), ms), done };
+      this.delays.add(d);
+    });
+  }
+
+  /** Let every held reply go, end every delay and drop what is left (the session is closing). */
   close() {
     if (this.closed) return;
     this.closed = true;
     for (const g of this.gates.values()) g.release();
+    for (const d of this.delays) {
+      clearTimeout(d.timer);
+      d.done();
+    }
+    this.delays.clear();
     this.queue = [];
   }
 }
@@ -934,14 +974,14 @@ export class Script {
 // The journal, read in the app's main process
 // ---------------------------------------------------------------------------
 
-export type JournalCall = { op: 'read'; after: number; limit: number } | { op: 'limitTurns'; max: number | null } | { op: 'turns' };
+export type JournalCall = { op: 'read'; after: number; limit: number } | { op: 'limitTurns'; max: number | null; withinMs?: number } | { op: 'turns' };
 
 /** Runs in the app's main process (app.evaluate): self-contained. */
 export function journalInMain(_electron: unknown, call: JournalCall): any {
   const journal = (globalThis as any)[Symbol.for('siteorigin.aiJournal')];
   if (!journal) throw new Error('[not-installed] This build keeps no record of the assistant’s events: it predates them, or was not launched by a test. Rebuild it (npm run build).');
   if (call.op === 'read') return journal.read(call.after, call.limit);
-  if (call.op === 'limitTurns') return journal.limitTurns(call.max);
+  if (call.op === 'limitTurns') return journal.limitTurns(call.max, call.withinMs);
   return journal.turns();
 }
 
@@ -958,7 +998,7 @@ export interface LiveArgs {
   baseURL?: string;
   /** The most requests the assistant may start in the session (default 1, at most 5). */
   maxTurns?: number;
-  /** How long the assistant may work, from the session being ready (default 120000, at most 900000). */
+  /** How long the assistant may work, from the app being set up with the provider (default 120000, at most 900000). */
   timeoutMs?: number;
 }
 
@@ -978,11 +1018,13 @@ export function parseLive(v: unknown): LiveArgs {
     if (v.provider !== 'local') throw new DriverError('BAD_REQUEST', '"live.baseURL" is for a local server.');
     let ok = false;
     try {
-      ok = typeof v.baseURL === 'string' && /^https?:$/.test(new URL(v.baseURL).protocol);
+      const u = typeof v.baseURL === 'string' ? new URL(v.baseURL) : null;
+      // Nothing secret in an address: it is saved as it is, and Settings shows it in plain sight.
+      ok = !!u && /^https?:$/.test(u.protocol) && !u.username && !u.password && !u.search && !u.hash;
     } catch {
       ok = false;
     }
-    if (!ok) throw new DriverError('BAD_REQUEST', '"live.baseURL" is the server\'s http(s) address.');
+    if (!ok) throw new DriverError('BAD_REQUEST', '"live.baseURL" is the server\'s http(s) address, with no credentials, query or fragment.');
   } else if (v.provider === 'local') throw new DriverError('BAD_REQUEST', 'A local server needs "live.baseURL".');
   if (v.maxTurns !== undefined && (!Number.isInteger(v.maxTurns) || (v.maxTurns as number) < 1 || (v.maxTurns as number) > LIVE_LIMITS.turns.max)) throw new DriverError('BAD_REQUEST', `"live.maxTurns" is a whole number from 1 to ${LIVE_LIMITS.turns.max}.`);
   if (v.timeoutMs !== undefined && (!Number.isInteger(v.timeoutMs) || (v.timeoutMs as number) < 1000 || (v.timeoutMs as number) > LIVE_LIMITS.timeoutMs.max)) throw new DriverError('BAD_REQUEST', `"live.timeoutMs" is a whole number of milliseconds from 1000 to ${LIVE_LIMITS.timeoutMs.max}.`);

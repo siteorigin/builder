@@ -10,8 +10,13 @@
  * Bounded by count and by size: the oldest events go first, and a reader asking from before them is told how many it
  * missed rather than given a gap it cannot see.
  *
- * A test that lets the assistant reach a real provider also caps how many requests it may start (`limitTurns`): the
- * main process asks `admit()` before a request reaches the orchestrator, so one past the cap never reaches a model.
+ * A run's streamed text is sent whole each time it grows, so only the latest of a run's text events in a row is kept:
+ * it holds everything the earlier ones did.
+ *
+ * A test that lets the assistant reach a real provider also caps how many requests it may start and until when
+ * (`limitTurns`): the main process asks `admit()` before anything reaches a provider, so one past the cap or the
+ * deadline never does, and at the deadline the journal stops what is running itself (`onSpent`), whatever the test
+ * or the editor window is doing then.
  */
 
 /** Where the installed journal is found on the main process's globalThis. */
@@ -45,7 +50,7 @@ export interface AiJournalOptions {
 }
 
 export class AiJournal {
-  private records: Array<{ seq: number; at: number; json: string }> = [];
+  private records: Array<{ seq: number; at: number; json: string; bytes: number; text?: string }> = [];
   private bytes = 0;
   private seq = 0;
   private readonly maxRecords: number;
@@ -53,6 +58,10 @@ export class AiJournal {
   private readonly now: () => number;
   private turnLimit: number | null = null;
   private turnsUsed = 0;
+  private deadline: number | null = null;
+  private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  private spent = false;
+  private stopAll: (() => void) | null = null;
 
   constructor(opts: AiJournalOptions = {}) {
     this.maxRecords = opts.maxRecords ?? 5000;
@@ -68,27 +77,60 @@ export class AiJournal {
     } catch {
       json = JSON.stringify({ unreadable: true });
     }
-    this.records.push({ seq: ++this.seq, at: this.now(), json });
-    this.bytes += json.length;
-    while (this.records.length > 1 && (this.records.length > this.maxRecords || this.bytes > this.maxBytes)) this.bytes -= this.records.shift()!.json.length;
+    const e = event as { kind?: unknown; runId?: unknown; conversationId?: unknown } | null;
+    // A run's text, sent whole each time it grows: the latest replaces the one just before it.
+    const text = e && e.kind === 'text' && typeof e.runId === 'string' ? `${e.runId}|${String(e.conversationId)}` : undefined;
+    const last = this.records.at(-1);
+    if (text && last?.text === text) this.bytes -= this.records.pop()!.bytes;
+    const bytes = Buffer.byteLength(json);
+    this.records.push({ seq: ++this.seq, at: this.now(), json, bytes, ...(text ? { text } : {}) });
+    this.bytes += bytes;
+    while (this.records.length > 1 && (this.records.length > this.maxRecords || this.bytes > this.maxBytes)) this.bytes -= this.records.shift()!.bytes;
   }
 
-  /** Cap the requests the assistant may start from now on, counting those it has (null: no cap). */
-  limitTurns(max: number | null) {
+  /** What stops the assistant (its running request and any code fix) when a deadline passes. */
+  onSpent(stop: () => void) {
+    this.stopAll = stop;
+  }
+
+  /**
+   * Cap the requests the assistant may start, counting those it has (null: no cap), and optionally the time it may work
+   * for (`withinMs` from now): once it passes, nothing more is admitted and what is running is stopped.
+   */
+  limitTurns(max: number | null, withinMs?: number) {
     this.turnLimit = max === null ? null : Math.max(0, Math.floor(max));
+    if (withinMs !== undefined) {
+      if (this.deadlineTimer) clearTimeout(this.deadlineTimer);
+      this.deadline = this.now() + Math.max(0, withinMs);
+      this.deadlineTimer = setTimeout(() => this.spend(), Math.max(0, withinMs));
+      // A test's deadline never keeps the app running.
+      (this.deadlineTimer as { unref?: () => void }).unref?.();
+    }
     return this.turns();
   }
 
-  /** How many requests have been admitted, and the cap. */
-  turns(): { used: number; limit: number | null } {
-    return { used: this.turnsUsed, limit: this.turnLimit };
+  /** How many requests have been admitted, the cap and deadline, and whether the deadline has passed. */
+  turns(): { used: number; limit: number | null; deadline: number | null; spent: boolean } {
+    return { used: this.turnsUsed, limit: this.turnLimit, deadline: this.deadline, spent: this.spent || (this.deadline !== null && this.now() >= this.deadline) };
   }
 
-  /** Take one request's turn, or refuse it when the cap is reached. */
+  /** Take one request's turn, or refuse it when the cap is reached or the deadline has passed. */
   admit(): boolean {
+    if (this.turns().spent) return false;
     if (this.turnLimit !== null && this.turnsUsed >= this.turnLimit) return false;
     this.turnsUsed++;
     return true;
+  }
+
+  /** The deadline passed: admit nothing more, and stop what is running. */
+  private spend() {
+    this.spent = true;
+    this.deadlineTimer = null;
+    try {
+      this.stopAll?.();
+    } catch {
+      // Stopping is best effort; nothing more is admitted either way.
+    }
   }
 
   /** Give back the turn of a request that was refused before it started. */
