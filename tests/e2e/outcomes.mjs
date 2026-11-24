@@ -239,7 +239,7 @@ try {
   assert.match(record.evidence.pageErrors.latest[0], /<host-path>/);
   const text = JSON.stringify(record);
   for (const leak of ['OUTCOMES-SENTINEL', '4b8e1d', paths.root, REPO_ROOT, homedir(), 'nobody-here', '/Volumes/']) assert.ok(!text.includes(leak), `the record does not hold ${leak}`);
-  assert.ok(text.includes('<session>') || text.includes('<repo>') || text.includes('~'), 'host paths are named by label');
+  assert.ok(text.includes('"path": "<host-path>"') || text.includes('"path":"<host-path>"'), 'the outside path is in the record, hidden');
 
   step('the edit journey replays in a fresh session, finding its targets again');
   replayed = await replay(journey, { session: { parentDir: WORK } });
