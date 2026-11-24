@@ -67,6 +67,7 @@ import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { HTML_ATTR, HTML_START, isLanguageCode, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
+import { pageSharing } from '@shared/sharing';
 import { siteVisitorText, visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
@@ -2643,8 +2644,8 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
     .join('\n');
   ctx.firstSection = false;
   const site = state.site;
-  const title = page.seo.title || (page.id === site.homePageId ? site.name : `${page.title} · ${site.name}`);
-  const description = page.seo.description || site.description;
+  // What the page says about itself when its link is shared; the editor's Search & sharing preview reads the same.
+  const { title, description, image: social } = pageSharing(state, page);
   // User text is emitted as Svelte string literals, never as template text, so "{" cannot become code.
   const head: string[] = [`\t<title>{${js(title)}}</title>`];
   if (description) head.push(`\t<meta name="description" content={${js(description)}} />`);
@@ -2654,8 +2655,6 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
   if (article) head.push(`\t<meta property="article:published_time" content={${js(article.date)}} />`);
   head.push(`\t<meta property="og:title" content={${js(title)}} />`);
   if (description) head.push(`\t<meta property="og:description" content={${js(description)}} />`);
-  const socialId = page.seo.socialImage ?? site.socialImage;
-  const social = socialId ? state.assets.assets[socialId] : undefined;
   const base = publicUrl(site);
   if (base) {
     head.push(`\t<link rel="canonical" href={${js(base + page.route)}} />`);
