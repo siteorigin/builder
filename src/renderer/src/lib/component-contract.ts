@@ -47,8 +47,11 @@ export function nodeWord(node: GraphNode): string {
 /** A node's own name, or what it is. */
 export const nodeName = (node: GraphNode): string => node.name?.trim() || nodeWord(node);
 
-/** Names an operation refuses wherever it names something (see validateOperation): they would reach the prototype. */
-const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype']);
+/**
+ * Names never given to something new: the ones an operation refuses wherever it names something (see
+ * validateOperation), and `slot`, which Svelte reads as slot syntax on a component placed in another's slot.
+ */
+const RESERVED_IDS = new Set(['__proto__', 'constructor', 'prototype', 'slot']);
 
 /** `base`, or `base2`, `base3`… as a valid camelCase name that `taken` does not hold, never longer than 40. */
 function freeName(base: string, taken: Set<string>, valid: (name: string) => boolean): string {

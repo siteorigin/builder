@@ -1772,7 +1772,9 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
   const iconId = useId();
   const fields = designContent(def, node);
   const tag = designTag(def, node);
-  if (!fields.length && !tag) return null;
+  // A tag each placement chooses, through whatever property: it can be made the design's own again.
+  const tagBinding = (node.kind === 'element' || (node.kind === 'text' && !node.rich)) && isBinding(node.tag) && '$prop' in node.tag ? node.tag : null;
+  if (!fields.length && !tag && !tagBinding) return null;
   const kind = elementKind(node).name;
   const set = (f: DesignContent, label: string) => (v: unknown, edit?: PendingEdit) => void applyWith(edit, [designContentOp(def, node.id, f.field, v)], label, `${def.id}:${node.id}:${f.field}`);
   // The design's own tag, or the default of the choice each placement makes: either way the node's tag edit.
@@ -1784,12 +1786,8 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
   return (
     <Section title="Content" id="def-content" level={LEVEL} scope={scope}>
       {tag?.source === 'design' && <TagField state={state} owner={{ kind: 'component', id: def.id }} node={tag.node} onChange={(v) => setTag(v)} hint={sources.size > 1 ? 'Same in every placement.' : undefined} />}
-      {tag?.source === 'default' && (
-        <>
-          <DefaultField state={state} def={def} prop={tag.prop} schema={tag.schema} label="Default tag" onChange={setTag} />
-          <TagBindingControl def={def} node={node} prop={tag.prop} />
-        </>
-      )}
+      {tag?.source === 'default' && <DefaultField state={state} def={def} prop={tag.prop} schema={tag.schema} label="Default tag" onChange={setTag} />}
+      {tagBinding && <TagBindingControl key={`${tagBinding.$prop}:${tagBinding.field ?? ''}`} def={def} node={node} binding={tagBinding} />}
       {fields.map((f) => {
         if (f.source === 'item') return null;
         return (
@@ -1952,7 +1950,9 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
           const placed = state.components[node.definitionId];
           const rootId = placed?.parts.root?.nodeId ?? placed?.tree?.rootIds[0];
           const inner = placed?.kind === 'managed' && rootId ? designLayers(placed, rootId, startingVariants(node.variants, def)) : [];
-          return cascadeStyles([...inner, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }]);
+          // The other choices of this design style the placed component too, as their defaults.
+          const outer = designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles && l.styles !== lookOption!.styles?.[node.id]);
+          return cascadeStyles([...inner, { styles: node.overrides?.root, strength: 3, wideColumns: true, unhides: inner.map((l) => l.styles) }, ...outer]);
         })()
       : cascadeStyles(designLayers(def, node.id, { [look.axis]: look.variant }).filter((l) => l.styles !== lookOption!.styles?.[node.id]))
     : undefined;

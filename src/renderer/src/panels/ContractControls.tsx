@@ -10,6 +10,7 @@ import type { ProjectSnapshot } from '@shared/api';
 import type { ComponentDefinition, GraphNode, PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { isBinding } from '@shared/types';
+import { propBindingSchema } from '@shared/bindings';
 import { axesOf, selectedVariants } from '@shared/variants';
 import { instancesOf } from '@engine/tree';
 import { applyOps, confirmDialog, getState, setState, useStore } from '../store';
@@ -95,9 +96,14 @@ export function BindingControl({ def, node, content }: { def: ComponentDefinitio
     if (!plan) return;
     if (await apply(plan.operations, `Fill in ${what.toLowerCase()} on each placement`, now.snap.revision)) setOpen(false);
   };
+  /** Whether the field still comes from where this control showed it coming from. */
+  const unchanged = (now: ReturnType<typeof current>) => {
+    const c = now && contentNow(now.def, now.node, field);
+    return !!c && c.source === content.source && (c.source !== 'default' || content.source !== 'default' || c.prop === content.prop);
+  };
   const use = async (key: string) => {
     const now = current(def.id, node.id);
-    if (!now?.node) return;
+    if (!now?.node || !unchanged(now)) return;
     // The property chosen, as the project has it now: one removed or retyped since the menu was drawn is not offered.
     const choice = bindChoices(now.snap.state, now.def, now.node, field).find((c) => choiceKey(c) === key);
     if (!choice) return;
@@ -118,7 +124,7 @@ export function BindingControl({ def, node, content }: { def: ComponentDefinitio
   if (content.source === 'default') {
     const unbind = () => {
       const now = current(def.id, node.id);
-      if (now && contentNow(now.def, now.node, field)?.source === 'default') void apply([unbindOp(now.def, node.id, field)], `Make ${what.toLowerCase()} the same in every placement`, now.snap.revision);
+      if (now && unchanged(now)) void apply([unbindOp(now.def, node.id, field)], `Make ${what.toLowerCase()} the same in every placement`, now.snap.revision);
     };
     return (
       <div className="contract-bind" data-contract={field}>
@@ -180,17 +186,22 @@ export function BindingControl({ def, node, content }: { def: ComponentDefinitio
   );
 }
 
-/** Under a tag each placement chooses: make it the design's own again, the one it shows now. */
-export function TagBindingControl({ def, node, prop }: { def: ComponentDefinition; node: GraphNode; prop: string }) {
+/**
+ * Under a tag each placement chooses (a choice property, or one field of an object property): make it the design's
+ * own again, the one it shows now.
+ */
+export function TagBindingControl({ def, node, binding }: { def: ComponentDefinition; node: GraphNode; binding: { $prop: string; field?: string } }) {
+  const same = (b: unknown) => isBinding(b) && '$prop' in b && b.$prop === binding.$prop && b.field === binding.field;
   const unbind = () => {
     const now = current(def.id, node.id);
-    const tag = (now?.node as { tag?: unknown } | undefined)?.tag;
-    if (now && isBinding(tag) && '$prop' in tag) void apply([{ type: 'node.setBinding', owner: { kind: 'component', id: def.id }, nodeId: node.id, field: 'tag', binding: null }], `Make ${nodeName(node).toLowerCase()} tag the same in every placement`, now.snap.revision);
+    if (now && same((now.node as { tag?: unknown } | undefined)?.tag))
+      void apply([{ type: 'node.setBinding', owner: { kind: 'component', id: def.id }, nodeId: node.id, field: 'tag', binding: null }], `Make ${nodeName(node).toLowerCase()} tag the same in every placement`, now.snap.revision);
   };
+  const label = propBindingSchema(def.properties, binding)?.label ?? binding.field ?? binding.$prop;
   return (
     <div className="contract-bind" data-contract="tag">
       <div className="contract-bind-line">
-        <span className="faint">Each placement chooses “{def.properties[prop]?.label ?? prop}”.</span>
+        <span className="faint">Each placement chooses its tag, as “{label}”.</span>
         <button className="insp-mini" onClick={unbind} title="Every placement uses the tag this default gives it now. The property stays, in case you need it again.">
           Same everywhere
         </button>

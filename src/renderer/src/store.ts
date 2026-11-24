@@ -1066,6 +1066,12 @@ useStore.subscribe((s, prev) => {
   if (s.heldEdits !== prev.heldEdits) markDraft(HELD_DRAFT, s.heldEdits.length > 0);
 });
 
+// The look Edit everywhere styles belongs to that one visit: leaving the component, or editing another, starts again
+// on its base design.
+useStore.subscribe((s, prev) => {
+  if (s.variantStyle && s.definitionMode?.definitionId !== prev.definitionMode?.definitionId) useStore.setState({ variantStyle: null });
+});
+
 export function markDraft(key: string, on: boolean, note?: string) {
   if (!setDraft(key, on, note)) return;
   useStore.setState({ drafting: draftCount(), refusedDrafts: refusedDraftCount() });
