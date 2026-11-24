@@ -3,7 +3,10 @@
  * for the frame the preview draws while editing, a click on that frame selects it, and nothing of either reaches an
  * exported file. An empty slot's placeholder is rendered only while editing, so Preview has none of it.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { compile } from 'svelte/compiler';
 import type { ElementNode, InstanceNode, ProjectState } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
@@ -13,6 +16,7 @@ import { generateProject } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { generateComponentPreview } from '@generator/preview';
 import { descOf, selectionFromChain } from '../../src/renderer/src/lib/model';
+import { ProjectSession } from '../../src/main/project/session';
 
 const HOME = 'src/routes/+page.svelte';
 const LAYOUT = 'src/routes/+layout.svelte';
@@ -194,5 +198,35 @@ describe('a click on an empty container’s frame', () => {
     const chain = [descOf(s, at([placement], root)), descOf(s, at([section], inner)), descOf(s, at([], section))];
     const strip = (r: ReturnType<typeof selectionFromChain>) => r && { owner: r.owner, instancePath: r.instancePath, nodeId: r.nodeId };
     expect(strip(selectionFromChain(s, chain, null, false))).toEqual(at([], section));
+  });
+});
+
+describe('a change only the editor’s variant shows, in a project the preview reads directly', () => {
+  const dirs: string[] = [];
+  afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+
+  it('touches the visitor’s file, unchanged, so the preview loads the new variant', async () => {
+    const { s: start, owner, ids } = site();
+    const dir = mkdtempSync(join(tmpdir(), 'so-frames-'));
+    dirs.push(dir);
+    const session = await ProjectSession.create(dir, start);
+    const file = join(dir, HOME);
+    const variant = join(dir, '.siteorigin/cache/dev', HOME);
+    expect(readFileSync(variant, 'utf8')).toContain('data-so-empty-layout="Grid"');
+    const before = readFileSync(file, 'utf8');
+    const long = new Date('2001-01-01T00:00:00Z');
+    utimesSync(file, long, long);
+    // Arranged as a Row: the visitor's file is the same (its styles are in the stylesheet), the editor's names a Row.
+    const r = await session.apply({ operations: [{ type: 'node.setStyle', owner, nodeId: ids.grid, scope: 'base', property: 'layout', value: 'row' }] }, { label: 'Arrange' });
+    expect(r.ok).toBe(true);
+    expect(readFileSync(variant, 'utf8')).toContain('data-so-empty-layout="Row"');
+    expect(readFileSync(file, 'utf8')).toBe(before);
+    expect(statSync(file).mtimeMs).toBeGreaterThan(long.getTime());
+    // A change the variant does not show either leaves the file alone.
+    utimesSync(file, long, long);
+    const token = await session.apply({ operations: [{ type: 'token.create', group: 'color', label: 'Teal', value: '#008080' }] }, { label: 'Add style' });
+    expect(token.ok).toBe(true);
+    expect(statSync(file).mtimeMs).toBe(long.getTime());
+    await session.close();
   });
 });
