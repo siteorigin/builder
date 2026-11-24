@@ -1263,7 +1263,7 @@ export class ProjectSession extends EventEmitter {
     // reading, where the change leaves each AI step is kept in its place, not where it stood before (issue 276).
     const historyPath = this.local('history', 'history.json');
     if (usableJournalHistory(journal.history)) await atomicWrite(historyPath, toJson(journal.history));
-    else if (readableJournalHistory(journal.history) && olderFormat(journal.history.schemaVersion)) {
+    else if (readableJournalHistory(journal.history) && olderFormat((journal.history as HistoryFile).schemaVersion)) {
       // Only History that is surely gone or surely older is replaced: one that cannot be read is left as it is.
       const saved = await fs.readFile(historyPath, 'utf8').then(
         (t) => ({ absent: false, file: JSON.parse(t) as unknown }),
