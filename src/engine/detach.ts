@@ -63,6 +63,9 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
   const label = inst.name ?? def.name;
   if (def.kind !== 'managed' || !def.tree) fail(`“${label}” is a code component: its markup is in its source, so it cannot be detached into elements.`);
   // Elements on a page have no UI state: they would only ever show where it starts, and its buttons would change nothing.
+  // Its cards would become fixed links to posts, which only a post's own text can hold for now.
+  if (Object.values(def.properties).some((p) => p.type === 'list' && p.feed === 'entries'))
+    fail(`“${label}” lists posts that come and go with their collection, so it cannot be detached into elements. Use Make unique to change its design on this page alone.`);
   if (Object.keys(def.state ?? {}).length) fail(`“${label}” has UI state its buttons change, which elements on a page would not keep. Remove its UI state first.`);
   const design = def.tree;
   if (!settledRoot(design)) fail(`“${label}” has no single element at the top of its design, so it cannot be detached. Fix its design first.`);

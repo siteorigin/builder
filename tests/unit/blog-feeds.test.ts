@@ -17,7 +17,11 @@ import { GenerationCache } from '@generator/cache';
 import { archivePages } from '@shared/archives';
 import { entryQuery, entryRows } from '@shared/entry-feed';
 import { upsertToolSchema } from '@agent/macros';
-import { propSchemaSummary } from '@agent/context';
+import { retrieveExamples } from '@agent/examples';
+import { TreeBuilder } from '@catalogue/dsl';
+import { publicationPlan, sharedPageIds } from '@generator/checks';
+import { thumbKey } from '../../src/main/runtime/component-thumbs';
+import { projectSummary, propSchemaSummary } from '@agent/context';
 import { placedFeedRows } from '../../src/renderer/src/lib/model';
 
 const run = (s: ProjectState, ...ops: EditOperation[]) => applyOperations(s, ops).state;
@@ -345,5 +349,219 @@ describe('the AI and the editor', () => {
     const placed = onHome(s, 'blog.grid', { count: 2 });
     const home = placed.s.pages[placed.home].nodes[placed.nodeId] as InstanceNode;
     expect(placedFeedRows(placed.s, def.properties.items as ListProp, page(placed.home), def.properties, home.props).map((r) => r.id)).toEqual(['en_kiln', 'en_glaze']);
+  });
+});
+
+describe('after the review', () => {
+  const sized = (n: number) => run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: n } as EditOperation);
+  /** A hand-edited project: a page at `route`, made before archive pages. */
+  const legacyPage = (s: ProjectState, route: string, draft = false) => {
+    const out = structuredClone(s);
+    const pg = structuredClone(Object.values(out.pages).find((p) => p.id !== out.site.homePageId)!);
+    Object.assign(pg, { id: 'pg_legacy', title: 'Legacy', route, ...(draft ? { draft: true } : {}) });
+    out.pages[pg.id] = pg;
+    out.site.pageOrder.push(pg.id);
+    return out;
+  };
+
+  it('shows the author, and matches every filter at once', () => {
+    const { s, home } = onHome(blog(), 'blog.grid');
+    expect(generateProject(publishedState(s)).get(pageFile(s.pages[home]))).toContain('"byline":"Ana Ruiz"');
+    const q = (props: Record<string, unknown>) => titles(entryRows(blog(), { collection: '', category: '', tag: '', ...props }) as never);
+    expect(q({ category: 'News', tag: 'Glaze' })).toEqual([]);
+    // Several categories, as a layout reads an entry's: any of them.
+    expect(q({ category: 'News, Craft' })).toEqual(['New kiln', 'Glaze night', 'Open studio', 'Wheel basics', 'Hello']);
+    const def = Object.values(s.components).find((d) => d.componentId === 'blog.grid')!;
+    expect(entryQuery(def.properties, { tag: ' glaze ', count: 7 })).toEqual({ collection: '', category: '', tag: 'glaze', count: 7 });
+  });
+
+  it('lists the posts in the same categories under each post, through the layout’s binding', () => {
+    let s = run(blog(), { type: 'node.insert', owner: POSTS, parentId: null, componentId: 'blog.list', props: { heading: 'More like this' } } as EditOperation);
+    const n = Object.values(s.collections.posts.settings.template.nodes).find((x) => x.kind === 'instance' && s.components[x.definitionId]?.componentId === 'blog.list')!;
+    s = run(s, { type: 'node.setBinding', owner: POSTS, nodeId: n.id, field: 'prop', prop: 'category', binding: { $entry: 'categories' } } as EditOperation);
+    const kiln = generateProject(publishedState(s)).get(route('/blog/new-kiln/'))!;
+    expect(kiln).toContain('"title":"Open studio"');
+    expect(kiln).toContain('"title":"Hello"');
+    expect(kiln).not.toContain('"title":"Glaze night"');
+    expect(kiln).not.toContain('"title":"New kiln"');
+    // The editor shows the rows of the entry the canvas has the layout on, and its selection keeps every row any entry's page can show.
+    const def = s.components[(n as InstanceNode).definitionId];
+    const props = (s.collections.posts.settings.template.nodes[n.id] as InstanceNode).props;
+    expect(placedFeedRows(s, def.properties.items as ListProp, POSTS, def.properties, props, { entryId: 'en_kiln', nodeId: n.id }).map((r) => r.id)).toEqual(['en_open', 'en_first']);
+    expect(placedFeedRows(s, def.properties.items as ListProp, POSTS, def.properties, props).map((r) => r.id)).toEqual(['en_kiln', 'en_glaze', 'en_open', 'en_wheel', 'en_first']);
+  });
+
+  it('says so on a populated index, names each page link apart in any wording, and ends the links at the last page', () => {
+    const s = sized(2);
+    expect(generateProject(publishedState(s)).get(route('/blog/'))).not.toContain('Nothing has been published');
+    const worded = run(s, { type: 'site.update', visitorText: { language: 'en', text: { archivePage: 'Page' } } } as EditOperation);
+    const second = generateProject(publishedState(worded)).get(route('/blog/page/2/'))!;
+    expect(second).toContain('aria-label={"Page 1"}');
+    expect(second).toContain('aria-label={"Page 3"}');
+    expect(pageLinks(12, 12)).toEqual([1, null, 10, 11, 12]);
+  });
+
+  it('refuses a page size over 100', () => {
+    expect(validateOperation({ type: 'collection.update', collectionId: 'posts', pageSize: 101 }).ok).toBe(false);
+    expect(() => run(blog(), { type: 'collection.update', collectionId: 'posts', pageSize: 101 } as EditOperation)).toThrow(/1 to 100/);
+  });
+
+  it('keeps every address deeper in the archive folders, and refuses a collection whose folders hold an old address', () => {
+    expect(() => run(blog(), { type: 'page.create', pageId: 'pg_deep', title: 'Deep', route: '/blog/category/news/more/' } as EditOperation)).toThrow(/archive pages/);
+    const s = structuredClone(createStarterState('business', 'Riverside Studio', false));
+    s.site.redirects = [{ from: '/news/page/2/', pageId: s.site.homePageId }];
+    expect(() => run(s, { type: 'collection.create', collectionId: 'posts', route: '/news/' } as EditOperation)).toThrow(/archive pages/);
+  });
+
+  it('refuses a collection at another’s archive folder, whichever is made first', () => {
+    const child = run(createStarterState('business', 'Riverside Studio', false), { type: 'collection.create', collectionId: 'projects', route: '/blog/category/' } as EditOperation);
+    expect(() => run(child, { type: 'collection.create', collectionId: 'posts', route: '/blog/' } as EditOperation)).toThrow(/archive pages/);
+  });
+
+  it('refuses a move that would keep a published entry’s old address inside its own archive folders', () => {
+    const s = run(
+      createStarterState('business', 'Riverside Studio', false),
+      { type: 'collection.create', collectionId: 'posts', route: '/blog/page/' } as EditOperation,
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_two', title: 'Two', slug: '2', publishedAt: '2026-01-01', draft: false, body: ['Two.'] } as EditOperation
+    );
+    expect(() => run(s, { type: 'collection.update', collectionId: 'posts', route: '/blog/' } as EditOperation)).toThrow(/archive pages/);
+  });
+
+  it('never gives a collection’s index to another collection’s archive', () => {
+    const s = structuredClone(blog());
+    s.collections.child = structuredClone(s.collections.posts);
+    s.collections.child.settings = { ...s.collections.child.settings, id: 'child', name: 'Child', route: '/blog/category/news/', entryOrder: undefined };
+    s.collections.child.entries = {};
+    const pages = archivePages(s);
+    expect(pages.filter((p) => p.route === '/blog/category/news/').map((p) => p.collectionId)).toEqual(['child']);
+    expect(pages.some((p) => p.collectionId === 'posts' && p.category === 'news')).toBe(false);
+  });
+
+  it('refuses to number a duplicate inside an archive folder, rather than trying forever', () => {
+    const s = legacyPage(blog(), '/blog/page/2/');
+    expect(() => run(s, { type: 'page.duplicate', pageId: 'pg_legacy' } as EditOperation)).toThrow(/archive pages/);
+  });
+
+  it('warns about a page made before archive pages inside their folders', () => {
+    const s = legacyPage(sized(2), '/blog/page/3/', true);
+    const found = validateState(s).filter((d) => d.code === 'ARCHIVE_ADDRESS_TAKEN');
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ severity: 'warning', owner: { kind: 'collection', id: 'posts' } });
+    expect(found[0].message).toMatch(/\/blog\/page\/3\/.*archive pages/);
+  });
+
+  it('hands the rows on to code converted from a design', () => {
+    const { s: placed } = onHome(blog(), 'blog.grid');
+    const s = structuredClone(placed);
+    const grid = Object.values(s.components).find((d) => d.componentId === 'blog.grid')!;
+    s.components['project.wrapper'] = {
+      schemaVersion: 1,
+      id: 'project.wrapper',
+      componentId: 'project.wrapper',
+      contractVersion: 1,
+      kind: 'managed',
+      owner: 'project',
+      name: 'Craft strip',
+      description: '',
+      category: 'custom',
+      tags: [],
+      properties: {},
+      parts: { root: { nodeId: 'root', label: 'Root' } },
+      tree: { rootIds: ['root'], nodes: { root: { id: 'root', kind: 'element', tag: 'div', children: ['inner'] }, inner: { id: 'inner', kind: 'instance', definitionId: grid.id, props: { category: 'craft' } } } }
+    } as ComponentDefinition;
+    const home = s.site.homePageId;
+    s.pages[home].nodes.n_wrapper = { id: 'n_wrapper', kind: 'instance', definitionId: 'project.wrapper', props: {} };
+    s.pages[home].rootIds.push('n_wrapper');
+    const code = run(s, { type: 'component.convertToCode', owner: page(home), nodeId: 'n_wrapper' } as EditOperation);
+    const source = generateProject(publishedState(code)).get(pageFile(code.pages[home]))!;
+    expect(source).toMatch(/so_pages=\{\{[^\n]*"entries":\{[^\n]*"title":"Glaze night"/);
+    expect(source).toMatch(/so_pages=\{\{[^\n]*"title":"Wheel basics"/);
+  });
+
+  it('cannot detach a post list into fixed links', () => {
+    const { s, home, nodeId } = onHome(blog(), 'blog.grid');
+    expect(() => run(s, { type: 'component.detachInstance', owner: page(home), nodeId } as EditOperation)).toThrow(/cannot be detached/);
+  });
+
+  it('works out a layout’s post list as each entry’s page has it when checking links to drafts', () => {
+    // A related list whose cards also link to a page kept as a draft: with one published post, its page lists no other.
+    let s = run(
+      createStarterState('business', 'Riverside Studio', false),
+      { type: 'collection.create', collectionId: 'posts' } as EditOperation,
+      post('en_only', 'Only post', '2026-01-01'),
+      { type: 'page.create', pageId: 'pg_plans', title: 'Plans' } as EditOperation,
+      { type: 'page.update', pageId: 'pg_plans', draft: true } as EditOperation
+    );
+    expect(s.pages.pg_plans.draft).toBe(true);
+    const b = new TreeBuilder();
+    const root = b.el('root', 'div', {}, [b.repeat('cards', 'items', [b.link('more', { type: 'page', target: 'pg_plans' }, { $item: 'title' }, 'plain')])]);
+    s = structuredClone(s);
+    s.components['project.related'] = {
+      schemaVersion: 1,
+      id: 'project.related',
+      componentId: 'project.related',
+      contractVersion: 1,
+      kind: 'managed',
+      owner: 'project',
+      name: 'Related',
+      description: '',
+      category: 'custom',
+      tags: [],
+      properties: { items: { type: 'list', label: 'Posts', itemLabel: 'Post', fields: { pageLink: { type: 'link', label: 'Post', default: { type: 'none', target: '' } }, title: { type: 'string', label: 'Title', default: '' } }, default: [], feed: 'entries' } },
+      parts: { root: { nodeId: root, label: 'Root' } },
+      tree: { rootIds: [root], nodes: b.nodes }
+    } as ComponentDefinition;
+    s = run(s, { type: 'node.insert', owner: POSTS, parentId: null, definitionId: 'project.related' } as EditOperation);
+    expect(publicationPlan(s).draftLinks).toEqual([]);
+    // A second post: each page now lists the other, whose card links to the draft.
+    s = run(s, post('en_next', 'Next post', '2026-02-01'));
+    expect(publicationPlan(s).draftLinks.length).toBeGreaterThan(0);
+  });
+
+  it('offers a header jump only to sections a collection’s index has too', () => {
+    let s = createStarterState('business', 'Riverside Studio', false);
+    const home = s.pages[s.site.homePageId];
+    s = run(s, { type: 'node.setContent', owner: page(home.id), nodeId: home.rootIds[1], field: 'anchor', value: 'intro' } as EditOperation);
+    s = structuredClone(s);
+    for (const id of s.site.pageOrder) if (id !== home.id) s.pages[id].showHeader = false;
+    expect(sharedPageIds(s, 'header').has('intro')).toBe(true);
+    expect(sharedPageIds(run(s, { type: 'collection.create', collectionId: 'posts' } as EditOperation), 'header').has('intro')).toBe(false);
+  });
+
+  it('suggests and offers post sections only with a collection, of any name, and says what each collection can filter by', () => {
+    const fresh = createStarterState('business', 'Riverside Studio', false);
+    expect(retrieveExamples(fresh, 'latest blog posts').some((e) => e.componentId.startsWith('blog.'))).toBe(false);
+    expect(retrieveExamples(blog(), 'latest blog posts').some((e) => e.componentId.startsWith('blog.'))).toBe(true);
+    const projects = run(fresh, { type: 'collection.create', collectionId: 'projects' } as EditOperation);
+    for (const id of ['blog.featured', 'blog.grid', 'blog.list']) expect(JSON.stringify(upsertToolSchema(projects))).toContain(`"${id}"`);
+    expect(projectSummary(blog(), 1).collections).toEqual([
+      { id: 'posts', name: 'Posts', route: '/blog/', published: 5, categories: { news: 'News', craft: 'Craft', events: 'Events' }, tags: { glaze: 'Glaze' } }
+    ]);
+    expect(projectSummary(fresh, 1)).not.toHaveProperty('collections');
+  });
+
+  it('pictures a saved component with a post list again when a post’s tags change', () => {
+    const { s: placed } = onHome(blog(), 'blog.grid');
+    const s = structuredClone(placed);
+    const grid = Object.values(s.components).find((d) => d.componentId === 'blog.grid')!;
+    s.components['project.wrapper'] = {
+      schemaVersion: 1,
+      id: 'project.wrapper',
+      componentId: 'project.wrapper',
+      contractVersion: 1,
+      kind: 'managed',
+      owner: 'project',
+      name: 'Glaze strip',
+      description: '',
+      category: 'custom',
+      tags: [],
+      properties: {},
+      parts: { root: { nodeId: 'root', label: 'Root' } },
+      tree: { rootIds: ['root'], nodes: { root: { id: 'root', kind: 'element', tag: 'div', children: ['inner'] }, inner: { id: 'inner', kind: 'instance', definitionId: grid.id, props: { tag: 'glaze' } } } }
+    } as ComponentDefinition;
+    const before = thumbKey(s, 'project.wrapper');
+    const after = thumbKey(run(s, { type: 'entry.update', collectionId: 'posts', entryId: 'en_wheel', terms: { tags: ['glaze'] } } as EditOperation), 'project.wrapper');
+    expect(before).not.toBeNull();
+    expect(after).not.toBe(before);
   });
 });

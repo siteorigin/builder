@@ -7,6 +7,7 @@ import { childLists, displayName, enclosingRepeatProp, getTree } from '@engine/t
 import { TABLE_LIMITS } from '@engine/table';
 import { effectiveTokens, isDraftPage } from '@generator/index';
 import { catalogueEntries, getTheme } from '@catalogue/index';
+import { hasCollections } from '@shared/entry-feed';
 import { teaserFields } from '@shared/page-teasers';
 import { pageParents } from '@shared/page-tree';
 import { notFoundCopy } from '@shared/not-found';
@@ -153,8 +154,21 @@ export function projectSummary(state: ProjectState, revision: number) {
     projectComponents: Object.values(state.components)
       .filter((d) => d.owner === 'project')
       .map((d) => ({ definitionId: d.id, name: d.name, kind: d.kind, description: d.description })),
+    // What a post section's collection, category and tag can name.
+    ...(hasCollections(state) ? { collections: collectionsSummary(state) } : {}),
     assets: Object.keys(state.assets.assets).length
   };
+}
+
+/** Each collection by ID, with its address, how many entries it publishes, and its categories' and tags' IDs and names. */
+function collectionsSummary(state: ProjectState) {
+  return Object.keys(state.collections)
+    .sort()
+    .map((id) => {
+      const c = state.collections[id];
+      const terms = (t: string) => Object.fromEntries(Object.entries(c.settings?.taxonomies?.[t]?.terms ?? {}).map(([k, v]) => [k, v?.label]));
+      return { id, name: c.settings?.name, route: c.settings?.route, published: Object.values(c.entries ?? {}).filter((e) => e?.draft === false).length, categories: terms('categories'), tags: terms('tags') };
+    });
 }
 
 /** For a selection edit: what the run needs to know about the site, without the header and footer trees. */

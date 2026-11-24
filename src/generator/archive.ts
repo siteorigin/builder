@@ -106,7 +106,9 @@ export function generateArchive(state: ProjectState, collectionId: string, route
       .map((n) => {
         if (n === null) return `\t\t\t\t<li aria-hidden="true">…</li>`;
         const to = series.find((p) => p.category === here.category && p.page === n)!.route;
-        return `\t\t\t\t<li><a href=${href(to)} aria-label={${js(fill(words.archivePage, { page: n }))}}${n === here.page ? ' aria-current="page"' : ''}>${n}</a></li>`;
+        // Wording that leaves the number out still names each link apart.
+        const name = words.archivePage.includes('{page}') ? fill(words.archivePage, { page: n }) : `${words.archivePage} ${n}`;
+        return `\t\t\t\t<li><a href=${href(to)} aria-label={${js(name)}}${n === here.page ? ' aria-current="page"' : ''}>${n}</a></li>`;
       })
       .join('\n');
     body.push(

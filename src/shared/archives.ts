@@ -47,8 +47,9 @@ export function categoryTerms(collection: Collection): Array<{ id: string; label
  * Every archive page of the site, collections by ID, each one's index first and then its categories in the order they
  * are offered. A collection's index always has its first page, even with nothing to list yet; a category archive
  * exists only while the category has a published entry. An archive page never takes an address something else holds
- * (a page, an entry, an old address kept working, another archive page, as a hand-edited project may have): its series
- * stops before it, so no Previous or Next link leads somewhere else.
+ * (a page, an entry, an old address kept working, another collection's own address, another archive page, as a
+ * project made before archives or edited by hand may have): its series stops before it, so no Previous or Next link
+ * leads somewhere else.
  */
 export function archivePages(state: ProjectState): ArchivePage[] {
   const held = new Set<string>();
@@ -56,6 +57,13 @@ export function archivePages(state: ProjectState): ArchivePage[] {
   for (const e of siteEntries(state)) held.add(e.route.toLowerCase());
   const kept: unknown = state.site?.redirects;
   for (const r of Array.isArray(kept) ? (kept as Array<{ from?: unknown }>) : []) if (typeof r?.from === 'string') held.add(r.from.toLowerCase());
+  // Each collection's own address is its index's, whichever collection's series comes first.
+  const indexes = new Set(
+    Object.values(state.collections ?? {})
+      .map((c) => c?.settings?.route)
+      .filter((r): r is string => typeof r === 'string')
+      .map((r) => r.toLowerCase())
+  );
   const out: ArchivePage[] = [];
   for (const id of Object.keys(state.collections ?? {}).sort()) {
     const collection = state.collections[id];
@@ -67,7 +75,8 @@ export function archivePages(state: ProjectState): ArchivePage[] {
       const wanted = Math.max(1, Math.ceil(entries.length / size));
       // The series ends before the first address something else holds.
       let pages = 0;
-      while (pages < wanted && !held.has(archiveRoute(prefix, category, pages + 1).toLowerCase())) pages++;
+      const free = (route: string) => !held.has(route.toLowerCase()) && (!indexes.has(route.toLowerCase()) || route.toLowerCase() === prefix.toLowerCase());
+      while (pages < wanted && free(archiveRoute(prefix, category, pages + 1))) pages++;
       for (let n = 1; n <= pages; n++) {
         const route = archiveRoute(prefix, category, n);
         held.add(route.toLowerCase());

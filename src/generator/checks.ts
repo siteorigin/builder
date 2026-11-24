@@ -227,6 +227,8 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
   // footer for none.
   const treeId = (tree as Partial<PageDoc>).id;
   const pageId = typeof treeId === 'string' && 'route' in tree && Object.hasOwn(state.pages, treeId) ? treeId : undefined;
+  // An entry's page: its feeds default to its collection and leave it out, as the generator writes them.
+  const entry = entryTrees.get(tree);
   // A slot a definition renders once per list item shows the same content, in the same frame, each time: it is
   // walked once per frame, which keeps nested placements of such a component from multiplying the walk.
   const slotsWalked = new WeakMap<Frame, Set<string>>();
@@ -309,7 +311,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
         const def = state.components[n.definitionId];
         if (!def || frame.defs.has(def.id)) break;
         // Designs placed from a page get that page's rows handed down (`so_pages`), as the generator writes them.
-        const props = effectiveProps(state, def, n, frame.scope, pageId);
+        const props = effectiveProps(state, def, n, frame.scope, pageId, entry);
         if (def.kind === 'managed' && def.tree) {
           const trail = `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`;
           // A component inside a design reads the placement's own fields only through the bindings it is given.
@@ -1003,6 +1005,8 @@ export function sharedPageIds(state: ProjectState, part: ShellPart): Set<string>
   if (!pages.length) return new Set(LAYOUT_IDS);
   const shell = shellIds(state);
   const sets = pages.map((p) => pageIds(state, p.id, shell));
+  // A collection's index and archive pages show the header and footer around a list of posts, and no page's sections.
+  if (archivePages(state).length) sets.push(new Set([...LAYOUT_IDS, ...shell.header, ...shell.footer]));
   return new Set([...sets[0]].filter((id) => sets.every((x) => x.has(id))));
 }
 
@@ -1404,8 +1408,8 @@ export function publicationPlan(state: ProjectState): PublicationPlan {
       r.page ? (draftIds.has(r.page.id) ? [[r.from.toLowerCase(), { pageId: r.page.id }]] : []) : isDraftEntry(r.entry.entry) ? [[r.from.toLowerCase(), { entryId: r.entry.entry.id }]] : []
     )
   ]);
-  // An entry shows both shared parts, and its collection's layout.
-  const entryShown = entries.length > draftEntries.length;
+  // An entry shows both shared parts, and its collection's layout; so does a collection's index (an archive page).
+  const entryShown = entries.length > draftEntries.length || archivePages(state).length > 0;
   const draftEntryIds = new Set(draftEntries.map((e) => e.entry.id));
   // A layout's links go where the layout says, whatever the entry, apart from Previous and Next, which never lead to a
   // draft: one with no link to a page, an entry or an address has none to a draft on any entry's page.
@@ -1867,8 +1871,13 @@ export function pageHeadings(state: ProjectState, pageId: string, opts: { shell?
  * itself is left out, since its links are checked as the entry's own.
  */
 function entryArticle(state: ProjectState, collection: Collection, entry: EntryDoc): NodeTree {
-  return materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: false });
+  const tree = materializeTemplate(state, collection, entry, entryNeighbours(state, collection.settings.id, entry.id), { body: false });
+  entryTrees.set(tree, { collectionId: collection.settings.id, entryId: entry.id });
+  return tree;
 }
+
+/** The entry each entry's page read by these checks is for, so its feeds are worked out as that page has them. */
+const entryTrees = new WeakMap<NodeTree, { collectionId: string; entryId: string }>();
 
 /** A collection's layout as stored, when it is a tree at all (a damaged one is reported with its settings). */
 function storedLayout(state: ProjectState, collectionId: string): NodeTree | undefined {

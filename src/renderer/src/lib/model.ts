@@ -3,13 +3,14 @@ import type { ComponentDefinition, ElementRef, GraphNode, InstanceNode, ListProp
 import { propBindingValue } from '@shared/bindings';
 import { feedLimit } from '@shared/articles';
 import { entryQuery, feedRows } from '@shared/entry-feed';
-import { isBinding, refKey } from '@shared/types';
+import { isBinding, isEntryBinding, refKey } from '@shared/types';
 import { displayName, enclosingRepeatProp, findParent, isEmptyLayout } from '@engine/tree';
 import { effectiveItem, followsPage, inheritedValue } from '@shared/page-teasers';
 import type { InspectionDesc, InspectionRef } from '@shared/inspection';
 import { placementItems, repeatedPartList } from '@shared/item-styles';
 import { isShellPart, pagesShowing, partsShown, showsPart } from '@shared/page-shell';
 import { isDraftPage } from '@generator/index';
+import { entryNeighbours, materializeTemplate } from '@generator/entry-template';
 import { PREVIEW_NODE_ID, previewCtx } from '@shared/component-preview';
 import { layerLabel } from './layers';
 import { keepTemplateValid, type TemplateMode } from './template-view';
@@ -101,13 +102,38 @@ export function resolveRef(state: ProjectState, ref: ElementRef): { tree?: NodeT
  * shown on each of its entries' pages without that entry, so there an entry feed holds the rows any of them can show:
  * the collection's, one more than it lists, none left out.
  */
-export function placedFeedRows(state: ProjectState, schema: ListProp, owner: OwnerRef | undefined, properties: Record<string, PropSchema>, props: Record<string, unknown>): Array<Record<string, unknown>> {
+export function placedFeedRows(
+  state: ProjectState,
+  schema: ListProp,
+  owner: OwnerRef | undefined,
+  properties: Record<string, PropSchema>,
+  props: Record<string, unknown>,
+  sample?: { entryId: string | null; nodeId: string }
+): Array<Record<string, unknown>> {
   const query = entryQuery(properties, props);
   if (schema.feed === 'entries' && owner?.kind === 'template') {
+    const entry = { collectionId: owner.id, entryId: '' };
+    // On the entry the canvas shows the layout on (`sample`, the placement's node there): exactly that page's rows,
+    // what the placement reads of the entry read for it.
+    const shown = sample?.entryId ? sampleQuery(state, owner.id, sample.entryId, sample.nodeId, properties) : undefined;
+    if (shown) return feedRows(state, schema, { entry: { ...entry, entryId: sample!.entryId! }, query: shown });
+    // A filter read from each entry can show any of the collection's entries on one page or another.
+    const bound = (k: string) => isEntryBinding(props[k]);
+    if (['collection', 'category', 'tag', 'count'].some(bound))
+      return feedRows(state, { feed: 'entries' }, { entry, query: { collection: bound('collection') ? '' : query.collection, category: bound('category') ? '' : query.category, tag: bound('tag') ? '' : query.tag } });
     const limit = Math.min(feedLimit(schema), query.count ?? Infinity);
-    return feedRows(state, { feed: 'entries' }, { entry: { collectionId: owner.id, entryId: '' }, query: { ...query, count: Number.isFinite(limit) ? limit + 1 : undefined } });
+    return feedRows(state, { feed: 'entries' }, { entry, query: { ...query, count: Number.isFinite(limit) ? limit + 1 : undefined } });
   }
   return feedRows(state, schema, { pageId: owner?.kind === 'page' ? owner.id : undefined, query });
+}
+
+/** What a layout's placement `nodeId` chose, as the layout is shown on entry `entryId`: its reads of the entry read for it. */
+function sampleQuery(state: ProjectState, collectionId: string, entryId: string, nodeId: string, properties: Record<string, PropSchema>) {
+  const collection = own(state.collections ?? {}, collectionId);
+  const entry = collection ? own(collection.entries, entryId) : undefined;
+  if (!collection || !entry) return undefined;
+  const n = own(materializeTemplate(state, collection, entry, entryNeighbours(state, collectionId, entryId)).nodes, nodeId);
+  return n?.kind === 'instance' ? entryQuery(properties, n.props as Record<string, unknown>) : undefined;
 }
 
 export function nodeAt(state: ProjectState, ref: ElementRef): GraphNode | undefined {

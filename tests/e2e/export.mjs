@@ -380,7 +380,7 @@ const feedSetup = await win.evaluate(
     window.builder.project.apply(
       {
         operations: [
-          { type: 'collection.update', collectionId: 'posts', pageSize: 2, taxonomies: { categories: { label: 'Categories', terms: { news: { label: 'News' }, craft: { label: 'Craft' }, events: { label: 'Events' } } }, tags: { label: 'Tags', terms: {} } } },
+          { type: 'collection.update', collectionId: 'posts', taxonomies: { categories: { label: 'Categories', terms: { news: { label: 'News' }, craft: { label: 'Craft' }, events: { label: 'Events' } } }, tags: { label: 'Tags', terms: {} } } },
           { type: 'entry.create', collectionId: 'posts', entryId: 'en_kiln01', title: 'New kiln', publishedAt: '2026-05-01', draft: false, excerpt: 'A bigger kiln for bigger pots.', featuredImage: picture, body: ['It arrives in May.'], terms: { categories: ['news'] } },
           { type: 'entry.update', collectionId: 'posts', entryId: 'en_hours01', terms: { categories: ['news'] } },
           { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring01', terms: { categories: ['craft'] } },
@@ -396,6 +396,12 @@ assert.equal(feedSetup.ok, true, `the feed is placed and the posts sorted: ${fee
 // Backdated in a change of its own: it moves from newest to oldest, in the feed and in the index.
 const backdated = await win.evaluate(() => window.builder.project.apply({ operations: [{ type: 'entry.update', collectionId: 'posts', entryId: 'en_kiln01', publishedAt: '2025-11-20' }] }, { label: 'Backdate the post' }));
 assert.equal(backdated.ok, true, `the post is backdated: ${backdated.error?.message}`);
+// Two posts to a page, set where the collection is listed in Pages.
+await openRail('Pages');
+const perPage = win.getByLabel('Posts entries per index page');
+await perPage.fill('2');
+await perPage.press('Tab');
+await eventually(async () => assert.equal((await win.evaluate(() => window.builder.project.snapshot())).state.collections.posts.settings.pageSize, 2, 'the page size set in Pages is saved'), 10000);
 
 /** The published posts as a built website has them, wherever it was built (`root`, served under `base`). */
 function checkBuiltPosts(root, label, base = '') {
@@ -454,9 +460,10 @@ function checkBuiltArchives(root, label, base = '') {
   const second = page('blog', 'page', '2');
   assert.ok(!files(root).some((f) => f.split('/').join('/').includes('blog/page/1/')), `${label}: the index has no /page/1/`);
   assert.ok(!files(root).some((f) => f.includes('blog/page/3')), `${label}: three published posts make two pages`);
-  assert.deepEqual(order(index, ['Spring open studio', 'Opening hours']).map((i) => i > 0), [true, true], `${label}: the index's first page has the two newest posts`);
-  assert.ok(!index.includes('>New kiln<') && !index.includes('Secret plans'), `${label}: the first page has neither the oldest post nor the draft`);
-  assert.ok(second.includes('>New kiln<') && !second.includes('>Opening hours<'), `${label}: the second page has the backdated post alone`);
+  const cards = (html) => [...html.matchAll(/<h2 class="so-archive__title[^"]*"><a [^>]*>([^<]*)<\/a><\/h2>/g)].map((m) => m[1]);
+  assert.deepEqual(cards(index), ['Spring open studio', 'Opening hours'], `${label}: the index's first page has the two newest posts, newest first`);
+  assert.ok(!index.includes('Secret plans'), `${label}: the first page leaves the draft out`);
+  assert.deepEqual(cards(second), ['New kiln'], `${label}: the second page has the backdated post alone`);
   const head = (html, rel) => html.match(new RegExp(`<link rel="${rel}" href="([^"]*)"`))?.[1];
   assert.equal(at(index, '/blog/')(head(index, 'next')), `${base}/blog/page/2/`, `${label}: the index's first page names the next in its head`);
   assert.equal(head(index, 'prev'), undefined, `${label}: the first page has no previous page`);
@@ -468,8 +475,8 @@ function checkBuiltArchives(root, label, base = '') {
 
   const news = page('blog', 'category', 'news');
   assert.match(news, /<h1[^>]*>News<\/h1>/, `${label}: the category archive is headed with its category`);
-  assert.ok(news.includes('>Opening hours<') && news.includes('>New kiln<') && !news.includes('>Spring open studio<'), `${label}: the News archive lists the News posts alone`);
-  assert.ok(page('blog', 'category', 'craft').includes('>Spring open studio<'), `${label}: the Craft archive lists its post`);
+  assert.deepEqual(cards(news), ['Opening hours', 'New kiln'], `${label}: the News archive lists the News posts alone, newest first`);
+  assert.deepEqual(cards(page('blog', 'category', 'craft')), ['Spring open studio'], `${label}: the Craft archive lists its post`);
   assert.ok(!files(root).some((f) => f.includes('category/events')), `${label}: a category with only a draft has no archive`);
 }
 
@@ -545,6 +552,10 @@ checkBuiltArchives(staticOut, 'website export');
   await eventually(async () => assert.equal(await tab.getByRole('link', { name: 'New kiln', exact: true }).count(), 1, 'the second page lists the backdated post'));
   await tab.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Previous page' }).click();
   await eventually(async () => assert.equal(new URL(tab.url()).pathname, '/blog/', `Previous page goes back to the first: ${tab.url()}`));
+  await tab.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Page 2', exact: true }).click();
+  await eventually(async () => assert.equal(new URL(tab.url()).pathname, '/blog/page/2/', `the numbered link goes to its page: ${tab.url()}`));
+  await tab.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Page 1', exact: true }).click();
+  await eventually(async () => assert.equal(new URL(tab.url()).pathname, '/blog/', `the first page's numbered link goes back: ${tab.url()}`));
   await tab.getByRole('link', { name: 'Craft', exact: true }).first().click();
   await eventually(async () => assert.equal(new URL(tab.url()).pathname, '/blog/category/craft/', `a card's category goes to its archive: ${tab.url()}`));
   await eventually(async () => assert.equal((await tab.locator('main h1').first().textContent())?.trim(), 'Craft', 'the archive is headed with its category'));

@@ -1192,6 +1192,7 @@ function renderedCode(state: ProjectState, node: GraphNode): ComponentDefinition
  * component placed in its design: changes then go to that design, for every placement of it.
  */
 function PartInspector({ state, selection, tokens, everywhere }: { state: ProjectState; selection: ElementRef; tokens: Tokens; everywhere?: ComponentDefinition }) {
+  const templateMode = useStore((s) => s.templateMode);
   const scope = useStore((s) => s.styleScope);
   const styleItems = useStyleCopyItems(selection);
   const devUrl = useDevUrl();
@@ -1236,7 +1237,9 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
   const listProp = (repeatList && def.properties[repeatList]?.type === 'list' ? repeatList : undefined) ?? contentList;
   const listSchema = listProp ? (def.properties[listProp] as Extract<ComponentDefinition['properties'][string], { type: 'list' }>) : undefined;
   // A computed list's items are the pages it shows where it is placed (each row's ID is its page's).
-  const feedRows = listSchema?.feed ? placedFeedRows(state, listSchema, parent?.owner, def.properties, inst.props as Record<string, unknown>) : undefined;
+  // In a collection's layout, the rows of the entry the canvas shows it on.
+  const sample = templateMode && parent.owner.kind === 'template' && !parent.instancePath.length ? { entryId: templateMode.entryId, nodeId: parent.nodeId } : undefined;
+  const feedRows = listSchema?.feed ? placedFeedRows(state, listSchema, parent?.owner, def.properties, inst.props as Record<string, unknown>, sample) : undefined;
   // A list the outer design fills in from one of its own properties is not this placement's to list here.
   const ownList = listProp ? (inst.props[listProp] ?? listSchema?.default) : undefined;
   const listItems = feedRows ?? (Array.isArray(ownList) ? (ownList as Array<Record<string, unknown>>) : []);

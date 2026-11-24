@@ -14,6 +14,7 @@ import { formNameClashMessage, runtimeFontDiagnostics, validateState } from '@en
 import { brotliCompressSync, gzipSync } from 'node:zlib';
 import { displayName } from '@engine/tree';
 import { describeDraftLink, draftTarget, netlifyFormClashes, publicationPlan, unlinkedButtons, unlinkedMenuLinks } from '@generator/checks';
+import { archivePages } from '@shared/archives';
 import { RUNTIME_DIR, SERVER_HOOK_FILE, defFile, draftOnlyComponents, generateProject, generateServerHook, liveRedirects, publishedState, routeLanguages, siteEntries, isDraftEntry } from '@generator/index';
 import { SEARCH_INDEX_FILE } from '@generator/search';
 import { atomicWrite, readIfExists, removeEmptyDirs, safeJoin, sha, toJson } from './project/fsutil';
@@ -863,7 +864,8 @@ const UNLINKED_LISTED = 6;
  */
 function siteTrees(state: ProjectState): Array<{ tree: NodeTree; label: string }> {
   const pages = state.site.pageOrder.map((id) => state.pages[id]).filter(Boolean);
-  const entryShown = siteEntries(state).some((e) => !isDraftEntry(e.entry));
+  // A collection's index (an archive page) shows both too.
+  const entryShown = siteEntries(state).some((e) => !isDraftEntry(e.entry)) || archivePages(state).length > 0;
   const shell = SHELL_PARTS.filter((part) => entryShown || pages.some((p) => showsPart(p, part))).map((part) => ({ tree: state.site.shell[part], label: part === 'header' ? 'Header' : 'Footer' }));
   return [...pages.map((p) => ({ tree: p, label: p.title })), ...shell];
 }

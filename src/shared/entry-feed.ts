@@ -18,9 +18,9 @@ export const ENTRY_QUERY_PROPS = ['collection', 'category', 'tag', 'count'] as c
 export interface EntryQuery {
   /** A collection's ID, or empty for the one whose entry's page the list is on (else the blog, else the first by ID). */
   collection: string;
-  /** A term of the collection's `categories`, by ID or label, or empty for every entry. */
+  /** A term of the collection's `categories`, by ID or label (or several, separated by commas), or empty for every entry. */
   category: string;
-  /** A term of the collection's `tags`, by ID or label, or empty for every entry. */
+  /** A term of the collection's `tags`, by ID or label (or several, separated by commas), or empty for every entry. */
   tag: string;
   /** How many entries at most; undefined for no limit of the placement's own. */
   count?: number;
@@ -103,6 +103,23 @@ export function termNamed(collection: Collection, taxonomy: string, wanted: stri
   return Object.keys(terms).find((id) => id.toLowerCase() === key || (typeof terms[id]?.label === 'string' && terms[id].label.trim().toLowerCase() === key));
 }
 
+/**
+ * The terms of `taxonomy` that `wanted` names: one term by ID or label, or several separated by commas (an entry's
+ * categories as a layout reads them, "News, Craft"), any of which an entry may have. Those the collection lacks are
+ * left out.
+ */
+export function termsNamed(collection: Collection, taxonomy: string, wanted: string): string[] {
+  const whole = termNamed(collection, taxonomy, wanted.trim());
+  if (whole) return [whole];
+  const found = wanted
+    .split(',')
+    .map((w) => w.trim())
+    .filter(Boolean)
+    .map((w) => termNamed(collection, taxonomy, w))
+    .filter((t): t is string => !!t);
+  return [...new Set(found)];
+}
+
 /** Whether an entry has the term `termId` of `taxonomy`. */
 export function hasTerm(entry: EntryDoc, taxonomy: string, termId: string): boolean {
   const ids = own(entry.terms, taxonomy);
@@ -133,12 +150,14 @@ export function listedEntries(state: ProjectState, query: EntryQuery, place: Pic
   const limit = Math.min(max ?? Infinity, query.count ?? Infinity);
   const collection = feedCollection(state, query, place);
   if (!collection || limit <= 0) return { collection, entries: [] };
-  const category = query.category ? termNamed(collection, 'categories', query.category) : undefined;
-  const tag = query.tag ? termNamed(collection, 'tags', query.tag) : undefined;
+  const categories = query.category ? termsNamed(collection, 'categories', query.category) : [];
+  const tags = query.tag ? termsNamed(collection, 'tags', query.tag) : [];
   // A term the collection does not have matches nothing, rather than every entry.
-  if ((query.category && !category) || (query.tag && !tag)) return { collection, entries: [] };
+  if ((query.category && !categories.length) || (query.tag && !tags.length)) return { collection, entries: [] };
   const except = place.entry?.entryId;
-  const entries = publishedEntries(state, collection).filter((e) => e.id !== except && (!category || hasTerm(e, 'categories', category)) && (!tag || hasTerm(e, 'tags', tag)));
+  const entries = publishedEntries(state, collection).filter(
+    (e) => e.id !== except && (!categories.length || categories.some((t) => hasTerm(e, 'categories', t))) && (!tags.length || tags.some((t) => hasTerm(e, 'tags', t)))
+  );
   return { collection, entries: Number.isFinite(limit) ? entries.slice(0, limit) : entries };
 }
 
@@ -167,6 +186,16 @@ export function entryRow(state: ProjectState, collection: Collection, entry: Ent
 export function entryRows(state: ProjectState, query: EntryQuery, place: Pick<FeedPlace, 'entry'> = {}, max?: number): EntryRow[] {
   const { collection, entries } = listedEntries(state, query, place, max);
   return collection ? entries.map((e) => entryRow(state, collection, e)) : [];
+}
+
+/** Whether a definition lists a collection's entries (a list of posts). */
+export function listsEntries(def: { properties: Record<string, PropSchema> }): boolean {
+  return Object.values(def.properties ?? {}).some((p) => p?.type === 'list' && p.feed === 'entries');
+}
+
+/** Whether a project has a collection, so a section that lists posts has something to show. */
+export function hasCollections(state: Pick<ProjectState, 'collections'>): boolean {
+  return Object.keys(state.collections ?? {}).length > 0;
 }
 
 /** The query an entry feed uses without a placement of its own: every entry of the default collection. */

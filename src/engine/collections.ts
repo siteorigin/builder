@@ -117,7 +117,9 @@ function refuseArchiveClash(state: ProjectState, route: string, collectionId: st
   const inside = archiveRouteOwner(state, route, collectionId);
   if (inside) fail(`${route} is inside ${inside.label}. Choose another address for the collection.`);
   const mine = (o: RouteOwner) => (o.kind === 'collection' || o.kind === 'entry') && o.collectionId === collectionId;
-  const clash = routeOwners(state).find((o) => !mine(o) && underArchiveFolder(route, o.route));
+  // Another collection may not sit at an archive folder itself either: its entries would be in it.
+  const inFolder = (o: RouteOwner) => underArchiveFolder(route, o.route) || (o.kind === 'collection' && ARCHIVE_FOLDERS.some((f) => o.route.toLowerCase() === `${route.toLowerCase()}${f}/`));
+  const clash = routeOwners(state).find((o) => !mine(o) && inFolder(o));
   if (clash)
     fail(`${clash.route} is the address of ${clash.label}, and the addresses under ${route}page/ and ${route}category/ are kept for the collection's archive pages. Choose another address for the collection, or move that first.`);
 }
@@ -327,6 +329,10 @@ export function collectionUpdate(state: ProjectState, op: Op<'collection.update'
     const under = Object.values(c.entries).find((e) => entryRoute(c, e).toLowerCase() === route.toLowerCase());
     if (under) fail(`${route} is the address of the entry “${under.title}”. Choose another address for the collection.`);
     refuseArchiveClash(state, route, c.settings.id);
+    // A published entry's address is kept working after the move: never in the archive folders the move gives the collection.
+    const stranded = Object.values(c.entries).find((e) => e.draft === false && underArchiveFolder(route, entryRoute(c, e)));
+    if (stranded)
+      fail(`Moving the collection to ${route} would keep “${stranded.title}”'s address ${entryRoute(c, stranded)} working inside ${route}${ARCHIVE_FOLDERS.find((f) => entryRoute(c, stranded).toLowerCase().startsWith(`${route.toLowerCase()}${f}/`))}/, which is kept for the collection's archive pages. Choose another address for the collection.`);
     for (const e of Object.values(c.entries)) {
       const holder = held(`${route}${e.slug}/`, { ...except, entryIds: new Set([e.id]) });
       if (holder) fail(`Moving the collection to ${route} would give “${e.title}” the address ${route}${e.slug}/, which is ${holder.label}'s. Change that entry's slug first, or choose another address.`);
@@ -661,6 +667,20 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
       out.push(...bodyLinkProblems(state, e.body, what, eo));
       out.push(...bodyImageProblems(state, e.body, what, eo));
     }
+  }
+  // A page or old address made before archive pages, inside a collection's archive folders: the collection's index or
+  // a category archive stops before it, and the website leaves its later pages out.
+  for (const o of routeOwners(state)) {
+    if (o.kind !== 'page' && o.kind !== 'redirect') continue;
+    const archive = archiveRouteOwner(state, o.route);
+    if (!archive || archive.kind !== 'collection') continue;
+    out.push({
+      severity: 'warning',
+      code: 'ARCHIVE_ADDRESS_TAKEN',
+      message: `${o.label[0].toUpperCase()}${o.label.slice(1)} is at ${o.route}, an address kept for ${archive.label}, so they stop before it. ${o.kind === 'page' ? 'Give the page another address.' : 'Stop keeping that old address working.'}`,
+      owner: { kind: 'collection', id: archive.collectionId },
+      site: o.route.toLowerCase()
+    });
   }
   return out;
 }

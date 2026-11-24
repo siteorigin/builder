@@ -74,16 +74,17 @@ export const blogFeatured = managed({
     tone: toneAxis(['lead', 'card-meta', 'card-text']),
     layout: layoutAxis({
       default: { label: 'Image beside text' },
-      stacked: { label: 'Image above text', styles: { card: { tablet: { columns: 1 }, desktop: { columns: 1 } } } }
+      stacked: { label: 'Image above text', styles: { card: { tablet: { layout: 'stack' }, desktop: { layout: 'stack' } } } }
     })
   },
   build: (b) =>
     sectionShell(b, [
       headingBlock(b),
       b.repeat('featured', 'items', [
-        b.el('card', 'article', { name: 'Card', when: { $item: 'pageLink' }, styles: { base: { layout: 'grid', columns: 1, gap: tok('space.xl'), align: 'center' }, tablet: { columns: 2 } } }, [
+        // Side by side from tablets, each half the card; a post without a picture has its text across the whole card.
+        b.el('card', 'article', { name: 'Card', when: { $item: 'pageLink' }, styles: { base: { layout: 'stack', gap: tok('space.xl') }, tablet: { layout: 'row', align: 'center' } } }, [
           b.image('card-image', { $item: 'image' }, { name: 'Featured image', when: { $item: 'image' }, styles: { width: 'fill', aspectRatio: '3/2', radius: tok('radius.lg'), objectFit: 'cover' } }),
-          b.el('card-body', 'div', { name: 'Text', styles: { layout: 'stack', gap: tok('space.md') } }, [
+          b.el('card-body', 'div', { name: 'Text', styles: { layout: 'stack', width: 'fill', gap: tok('space.md') } }, [
             b.text('card-category', 'p', { $item: 'category' }, { name: 'Category', when: { $item: 'category' }, styles: eyebrowStyles }),
             b.link('card-title', { $item: 'pageLink' }, { $item: 'title' }, 'plain', { name: 'Title', styles: { textStyle: tok('text.h2') } }),
             meta(b, 'card-meta'),
@@ -169,7 +170,8 @@ export const blogList = managed({
     root: { nodeId: 'root', label: 'Section', styleControls: ['paddingBlock', 'background'] },
     heading: { nodeId: 'heading', label: 'Heading', styleControls: ['textStyle', 'color'] },
     list: { nodeId: 'list', label: 'List', styleControls: ['gap', 'maxWidth'] },
-    row: { nodeId: 'row', label: 'Row', styleControls: ['border', 'paddingBlock', 'gap'] },
+    row: { nodeId: 'row', label: 'Row', styleControls: ['borderBlockEnd', 'paddingBlock', 'gap'] },
+    rowCategory: { nodeId: 'row-category', label: 'Category', styleControls: ['textStyle', 'color'] },
     rowTitle: { nodeId: 'row-title', label: 'Title', styleControls: ['textStyle', 'color'] },
     rowMeta: { nodeId: 'row-meta', label: 'Date and author', styleControls: ['textStyle', 'color'] },
     rowText: { nodeId: 'row-text', label: 'Excerpt', styleControls: ['textStyle', 'color'] }

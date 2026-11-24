@@ -38,7 +38,7 @@ import { PROJECT_DEFINITION_ID, projectDefinitionId } from '@shared/component-id
 import { checkPublicUrl } from '@shared/public-url';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { feedRowFields } from '@shared/entry-feed';
-import { collectionRouteOwner } from '@shared/collections';
+import { archiveRouteOwner, collectionRouteOwner } from '@shared/collections';
 import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
 import { isListBlock, toRichText } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
@@ -702,6 +702,9 @@ function routeReserved(state: ProjectState, route: string, forPageId?: string): 
  * pages' routes the same way.
  */
 function autoRoute(state: ProjectState, title: string, fallback: string, forPageId?: string, folder = '/'): string {
+  // Inside a collection's archive folders every address is kept for its archive pages: no number would free one.
+  const archive = folder !== '/' ? archiveRouteOwner(state, `${folder}${slugify(title) || fallback}/`) : undefined;
+  if (archive) fail(`Pages inside ${folder} would use addresses kept for ${archive.label}. Move the page there to another address first.`);
   return suggestRoute(title, (r) => routeReserved(state, r, forPageId), fallback, folder).route;
 }
 

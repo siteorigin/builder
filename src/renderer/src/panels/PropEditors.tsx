@@ -1532,7 +1532,10 @@ function ComputedList({ name, schema, state, place }: { name: string; schema: Li
   const node = place ? resolveRef(state, place.ref).node : undefined;
   const instance = node?.kind === 'instance' ? node : undefined;
   const properties = (instance && state.components[instance.definitionId]?.properties) || {};
-  const rows = placedFeedRows(state, schema, place?.ref.owner, properties, (instance?.props ?? {}) as Record<string, unknown>) as unknown as Array<{ id: string; title: string; date?: string; dateLabel?: string }>;
+  // In a collection's layout, the rows of the entry the canvas shows it on.
+  const templateMode = useStore((s) => s.templateMode);
+  const sample = templateMode && place?.ref.owner.kind === 'template' && !place.ref.instancePath.length ? { entryId: templateMode.entryId, nodeId: place.ref.nodeId } : undefined;
+  const rows = placedFeedRows(state, schema, place?.ref.owner, properties, (instance?.props ?? {}) as Record<string, unknown>, sample) as unknown as Array<{ id: string; title: string; date?: string; dateLabel?: string }>;
   const page = pageId && Object.hasOwn(state.pages, pageId) ? state.pages[pageId] : undefined;
   const hintId = useId();
   if (schema.feed === 'entries') {

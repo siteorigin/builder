@@ -2511,8 +2511,31 @@ interface RowNeeds {
  * decides; entry feeds are chosen by a placement's properties, which code does not have, so it gets none.
  */
 function pageRowNeeds(state: ProjectState, def: ComponentDefinition, memo: Map<string, RowNeeds | null> = new Map(), path: Set<string> = new Set()): RowNeeds | null {
-  if (def.kind === 'code') return !Object.hasOwn(def.properties, 'so_pages') && /\bso_pages\b/.test(def.source ?? '') ? { articles: Infinity, currentPage: true, entries: new Map() } : null;
+  if (def.kind === 'code') return !Object.hasOwn(def.properties, 'so_pages') && /\bso_pages\b/.test(def.source ?? '') ? { articles: Infinity, currentPage: true, entries: codeEntryNeeds(def.source ?? '') } : null;
   return treeRowNeeds(state, def, memo, path);
+}
+
+/**
+ * The entry feeds code reads from `so_pages`, by the keys its source names: code converted from a design keeps the
+ * reads its design's feeds were written with (`so_pages?.entries?.["…"]`), each naming what its placement chose.
+ */
+function codeEntryNeeds(source: string): RowNeeds['entries'] {
+  const out: RowNeeds['entries'] = new Map();
+  for (const m of source.matchAll(/so_pages\?\.entries\?\.\[("(?:[^"\\]|\\.)*")\]/g)) {
+    try {
+      const key: unknown = JSON.parse(m[1]);
+      const parts: unknown = typeof key === 'string' ? JSON.parse(key) : null;
+      if (!Array.isArray(parts) || parts.length !== 5) continue;
+      const [collection, category, tag, count, max] = parts;
+      if (![collection, category, tag].every((v) => typeof v === 'string') || ![count, max].every((v) => v === null || (typeof v === 'number' && Number.isInteger(v) && v >= 0))) continue;
+      const query: EntryQuery = { collection, category, tag, ...(typeof count === 'number' ? { count } : {}) };
+      // Read back under the key it was written with, so the rows land where the code looks.
+      if (entryQueryKey(query, max ?? undefined) === key) out.set(key, { query, ...(typeof max === 'number' ? { max } : {}) });
+    } catch {
+      // Not a key this version wrote: nothing to hand down for it.
+    }
+  }
+  return out;
 }
 
 /** What a definition's tree needs of its page's rows, whatever kind the definition is (a copy being converted to code is written from its tree). */

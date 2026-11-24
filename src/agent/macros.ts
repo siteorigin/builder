@@ -14,6 +14,7 @@ import { normalizeRoute, validateRoute } from '@shared/routes';
 import { newId } from '@shared/ids';
 import { isLanguageCode } from '@shared/languages';
 import { catalogueComponent, catalogueEntries } from '@catalogue/index';
+import { hasCollections, listsEntries } from '@shared/entry-feed';
 import { applyOperation } from '@engine/apply';
 import { headerMenuSlot, itemLinkPairs } from '@engine/tree';
 import { followText, joinedLines } from '@shared/contact-links';
@@ -952,8 +953,7 @@ async function compileAndApply(rawArgs: UpsertArgs, host: ToolHost, callId: stri
 /** `only`: the route of the one page a run may build; the call then cannot link the page to a translation either. */
 export function upsertToolSchema(state: ProjectState, only?: string): JsonSchema {
   // A section that lists a collection's posts shows nothing until the project has a collection: it is offered from then.
-  const collections = Object.keys(state.collections ?? {}).length > 0;
-  const offered = (d: ComponentDefinition) => collections || !Object.values(d.properties).some((p) => p.type === 'list' && p.feed === 'entries');
+  const offered = (d: ComponentDefinition) => hasCollections(state) || !listsEntries(d);
   const defs: ComponentDefinition[] = [
     // A theme component already in the project is typed as installed, as the section check reads it: a newer
     // theme's properties (a heading level, say) are not there until Project health updates it.

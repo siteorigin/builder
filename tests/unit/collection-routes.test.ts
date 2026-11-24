@@ -285,6 +285,7 @@ describe('a renamed entry in a cached run', () => {
     // A change to the collection's name makes only its index again, whose heading it is (#397): no entry's page shows it.
     s = run(s, { type: 'collection.update', collectionId: 'posts', name: 'Journal' });
     expect(made()).toEqual(['archive:posts:/blog/']);
+    expect(generateProject(s, {}, cache).get('src/routes/blog/+page.svelte')).toContain('{"Journal"}</h1>');
   });
 });
 
