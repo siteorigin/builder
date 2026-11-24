@@ -1,5 +1,5 @@
 /**
- * The site's brand in one call: name, tagline, contact details, colors and fonts. It compiles to one validated
+ * The site's brand in one call: name, tagline, contact details, colors, fonts and type scale. It compiles to one validated
  * batch that keeps site settings, the shared header and footer, and the derived color tokens in step.
  */
 import { z } from 'zod';
@@ -9,6 +9,8 @@ import { importedFontStack, projectFontFamilies } from '@shared/fonts';
 import { READABLE_TEXT_COLORS, contrastBetween } from '@shared/contrast';
 import { installedFonts, resolveFontStack } from '@catalogue/fonts';
 import { effectiveTokens } from '@generator/index';
+import { getTheme } from '@catalogue/index';
+import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale';
 import { normalizeLink } from '@engine/values';
 import { contactInText } from '@shared/contact-links';
 import { fieldError, type FieldIssue } from './macros';
@@ -23,6 +25,7 @@ export const BRAND_ARGS = z.object({
   accentColor: z.string().max(9).optional(),
   headingFont: z.string().max(60).optional(),
   bodyFont: z.string().max(60).optional(),
+  typeScale: z.enum(TYPE_SCALE_CHOICES).optional(),
   contactEmail: z.string().max(120).optional(),
   contactPhone: z.string().max(30).optional(),
   copyright: z.string().max(200).optional()
@@ -30,7 +33,7 @@ export const BRAND_ARGS = z.object({
 export type BrandArgs = z.infer<typeof BRAND_ARGS>;
 
 export const BRAND_DESCRIPTION =
-  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer), the brand color with its derived colors, and fonts. Send only what changes. Fonts must be installed; an error lists the choices.';
+  'Update the site brand in one call: the site name, tagline and contact details everywhere they appear (site settings, header, footer), the brand color with its derived colors, fonts, and the type scale (the size of every heading and text style at once). Send only what changes. Fonts must be installed; an error lists the choices.';
 
 export function brandToolSchema(state: ProjectState): JsonSchema {
   const fonts = installedFontNames(state);
@@ -46,6 +49,11 @@ export function brandToolSchema(state: ProjectState): JsonSchema {
       accentColor: color('Accent color as hex.'),
       headingFont: font('Font for headings.'),
       bodyFont: font('Font for body text.'),
+      typeScale: {
+        type: 'string',
+        enum: [...TYPE_SCALE_CHOICES],
+        description: "Sizes of every heading and text style at once; fonts are kept. compact: modest and dense. balanced: clear steps, for most sites. editorial: large headings, roomy reading text. bold-display: dramatic headlines. theme: the theme's own sizes."
+      },
       contactEmail: { type: 'string', maxLength: 120 },
       contactPhone: { type: 'string', maxLength: 30 },
       copyright: { type: 'string', maxLength: 200, description: 'Footer copyright line. Follows the site name if omitted.' }
@@ -171,6 +179,12 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
     const font = fontStackFor(state, name);
     if ('error' in font) issues.push({ field, message: font.error });
     else setToken(tokenId, font.stack);
+  }
+  if (args.typeScale !== undefined) {
+    const themeTokens = getTheme(state.site.themeId).tokens;
+    // The scale keeps each style's font, so a font changed in this same call still shows in every style.
+    if (!scaleRoles(themeTokens).length) issues.push({ field: 'typeScale', message: "this site's theme has none of the text styles a type scale sets" });
+    else ops.push(...typeScaleOps([...tokens.values()], themeTokens, args.typeScale));
   }
 
   const contactLink = (field: 'contactEmail' | 'contactPhone', value: string | undefined, type: 'email' | 'tel'): LinkValue | null => {

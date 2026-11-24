@@ -207,7 +207,7 @@ function focusedPrompt(state: ProjectState, mode: RunTools['mode'], images = fal
 ${shared}`;
   return `You build and edit small business websites made of ready-made section components.
 - upsert_page_with_sections creates or updates a whole page in one call, with all its sections, and adds it to the navigation. Build one page per call, each with several sections: an opening section, the content the page is for, and usually a closing call to action.
-- update_site_brand sets the site name, tagline, contact details, colors and fonts everywhere at once.
+- update_site_brand sets the site name, tagline, contact details, colors, fonts and type scale everywhere at once.
 - read_project with sections ["catalogue"] lists every component with its properties. read_page shows a page.
 - Internal links use routes such as /contact/, even for pages you have not built yet.
 - request_clarification asks the user one question and waits for the answer. ${ASKING}
@@ -237,7 +237,7 @@ function systemPrompt(state: ProjectState, run: RunTools): string {
   const theme = getTheme(state.site.themeId);
   const preferred =
     run.mode === 'site'
-      ? `\n\nPreferred tools: build or rewrite a page with one upsert_page_with_sections call (all its sections, navigation included, no IDs or revisions), and change the name, contact details, colors or fonts with update_site_brand. Several of these calls may run in one step. Use apply_operations for finer edits they cannot express.`
+      ? `\n\nPreferred tools: build or rewrite a page with one upsert_page_with_sections call (all its sections, navigation included, no IDs or revisions), and change the name, contact details, colors, fonts or type scale with update_site_brand. Several of these calls may run in one step. Use apply_operations for finer edits they cannot express.`
       : run.mode === 'selection'
         ? `\n\nPreferred tools: update_selected_props, edit_selected_list, edit_selected_table and style_selected_element change the selected element directly, with no IDs or revisions. Use apply_operations only for what they cannot express.`
         : '';

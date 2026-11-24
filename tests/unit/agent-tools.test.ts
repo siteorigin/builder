@@ -17,6 +17,7 @@ import { applyContextBudget, estimateRequestTokens } from '@agent/budget';
 import { findStubPages } from '@agent/completeness';
 import { checkExample, retrieveExamples } from '@agent/examples';
 import { contrastRatio, derivedBrandTokens } from '@agent/brand';
+import { TYPE_SCALE_CHOICES, TYPE_SCALE_ROLES, scaleMetrics } from '@shared/type-scale';
 import { ProjectSession } from '../../src/main/project/session';
 import { validateState } from '@engine/validate';
 import { installComponent, makeInstance } from '@engine/install';
@@ -664,6 +665,34 @@ describe('update_site_brand', () => {
     expect(r.fields.map((f: { field: string }) => f.field).sort()).toEqual(['brandColor', 'headingFont']);
     expect(r.message).toContain('not installed');
     expect(session.state.site.name).toBe('Test Studio');
+    expect(session.state.tokens.overrides).toEqual({});
+  });
+
+  it('sets a type scale with a new heading font in one batch, undone in one step', async () => {
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { headingFont: 'Lora', typeScale: 'editorial' })], () => finish()]);
+    await run('Use Lora for headings, with an editorial feel');
+    const schema = adapter.requests[0].tools.find((t) => t.name === 'update_site_brand')!.parameters as { properties: Record<string, { enum?: string[] }> };
+    expect(schema.properties.typeScale.enum).toEqual([...TYPE_SCALE_CHOICES]);
+    const s = session.state;
+    expect(String(s.tokens.overrides['font.display'])).toContain('Lora Variable');
+    const want = scaleMetrics('editorial');
+    for (const role of TYPE_SCALE_ROLES) expect(s.tokens.overrides[role], role).toMatchObject(want[role]);
+    // The styles keep following the fonts, so the new heading font shows in every heading.
+    expect(s.tokens.overrides['text.display']).toMatchObject({ family: { token: 'font.display' }, weight: 480 });
+    expect(s.tokens.overrides['text.body']).toMatchObject({ family: { token: 'font.body' } });
+    expect(lastResult(adapter.requests[1])).toMatchObject({ ok: true, changed: TYPE_SCALE_ROLES.length + 1 });
+    expect(await compileProject(s)).toEqual([]);
+    await session.undo();
+    expect(session.state.tokens.overrides).toEqual({});
+  });
+
+  it('refuses a type scale it does not have, naming the field, and changes nothing', async () => {
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { headingFont: 'Lora', typeScale: 'huge' })], () => finish()]);
+    await run('Make the type huge');
+    const r = lastResult(adapter.requests[1]);
+    expect(r.error).toBe('INVALID_ARGUMENT');
+    // The message names the field and the scales it can take.
+    expect(r.message).toMatch(/^typeScale: .*editorial/);
     expect(session.state.tokens.overrides).toEqual({});
   });
 
