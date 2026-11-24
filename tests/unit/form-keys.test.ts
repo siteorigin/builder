@@ -17,7 +17,7 @@ import { contactForm, formFieldKey, formKeyClashes, formKeyNote, namesFormFields
 import { installComponent, makeInstance } from '@engine/install';
 import { applyOperations } from '@engine/apply';
 import { validateState } from '@engine/validate';
-import { generateProject } from '@generator/index';
+import { RUNTIME_DIR, generateProject } from '@generator/index';
 import { ProjectSession } from '../../src/main/project/session';
 
 const LEGACY: ComponentDefinition = JSON.parse(readFileSync(join(__dirname, 'fixtures/v1-project/siteorigin/components/foundation.contact.form/component.json'), 'utf8'));
@@ -71,9 +71,13 @@ describe('the editor computes the keys the exported form sends', () => {
   beforeAll(async () => {
     mkdirSync(resolve('.tmp'), { recursive: true });
     dir = mkdtempSync(join(resolve('.tmp'), 'form-keys-'));
+    // Beside the runtime the current form imports, as in the exported site.
+    mkdirSync(join(dir, 'components'));
+    mkdirSync(join(dir, 'runtime'));
+    writeFileSync(join(dir, 'runtime', 'visitor-text.js'), generateProject(fresh()).get(`${RUNTIME_DIR}/visitor-text.js`)!);
     for (const [name, def] of [['current', contactForm], ['legacy', LEGACY]] as const) {
-      writeFileSync(join(dir, `${name}.js`), compile(def.source!, { filename: `${name}.svelte`, generate: 'server', runes: true }).js.code);
-      forms[name] = (await import(/* @vite-ignore */ join(dir, `${name}.js`))).default;
+      writeFileSync(join(dir, 'components', `${name}.js`), compile(def.source!, { filename: `${name}.svelte`, generate: 'server', runes: true }).js.code);
+      forms[name] = (await import(/* @vite-ignore */ join(dir, 'components', `${name}.js`))).default;
     }
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
