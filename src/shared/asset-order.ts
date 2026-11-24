@@ -110,7 +110,7 @@ export interface AssetSeries {
 export function numberedSeries(images: readonly AssetRecord[]): AssetSeries[] {
   const groups = new Map<string, { label: string; count: number; numbers: Set<string> }>();
   for (const a of sortAssets(images, 'name')) {
-    const s = seriesOf(nameOf(a));
+    const s = seriesOf(text(a.name));
     if (!s) continue;
     const g = groups.get(s.key) ?? { label: s.stem, count: 0, numbers: new Set<string>() };
     g.count++;
@@ -123,7 +123,7 @@ export function numberedSeries(images: readonly AssetRecord[]): AssetSeries[] {
     .sort((x, y) => compareAssetNames(x.label, y.label) || raw(x.key, y.key));
 }
 
-export const inSeries = (a: AssetRecord, key: string) => seriesOf(nameOf(a))?.key === key;
+export const inSeries = (a: AssetRecord, key: string) => seriesOf(text(a.name))?.key === key;
 
 /**
  * What to call each image in a picker or menu: its name, and as its label the name with its ID when another image has

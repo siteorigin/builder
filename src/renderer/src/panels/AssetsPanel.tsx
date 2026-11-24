@@ -589,8 +589,8 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
     // While choosing a replacement picture, only pictures come in.
     const { ids, added, reviewed } = await importFiles(paths, replacing ? 'image' : undefined);
     if (replacing && replaceSession.current === session) {
-      // A file that was already here is a candidate too: the search and series make way for it.
-      const next = (added.length ? added : ids).find((id) => id !== sel?.id);
+      // A file that was already here is a candidate too: the search and series make way for the first file given.
+      const next = ids.find((id) => id !== sel?.id);
       if (!next) return;
       setPickQ('');
       pickSeries.choose('');
@@ -869,7 +869,7 @@ export function AssetsPanel({ narrow }: { narrow: boolean }) {
               // Applied only while the picker is still open for this image, and only for the one file chosen, come in cleanly.
               if (r.chosen === 1 && r.ids.length === 1 && !r.failed) void replaceWith(r.ids[0]);
               else {
-                const next = (r.added.length ? r.added : r.ids).find((id) => id !== sel.id);
+                const next = r.ids.find((id) => id !== sel.id);
                 if (!next) return;
                 setPickQ('');
                 pickSeries.choose('');

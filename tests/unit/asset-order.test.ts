@@ -165,6 +165,14 @@ describe('numbered series', () => {
     expect(seriesOf('Cafe\u0301 3')).toMatchObject({ key: 'café', number: '3' });
   });
 
+  it('finds the number of a name that grows when normalized, near the length limit', () => {
+    // 133 characters as stored; normalizing turns each U+0344 into two accents, past 240 characters.
+    const stem = `a${'\u0344'.repeat(130)}`;
+    const list = [asset('a_1', `${stem} 1`, at(0)), asset('a_2', `${stem} 2`, at(0))];
+    expect(numberedSeries(list)).toHaveLength(1);
+    expect(list.every((a) => inSeries(a, numberedSeries(list)[0].key))).toBe(true);
+  });
+
   it('stays quick on very long names, even ones built of thousands of accents', () => {
     const digits = `a${'1'.repeat(20_000)}${'_'.repeat(20_000)}x`;
     const accents = `a${'\u0315'.repeat(32_000)}${'\u0300'.repeat(32_000)} 7`;
@@ -180,6 +188,7 @@ describe('numbered series', () => {
 
   it('a series needs two different numbers: one image, or one number twice, is not a series', () => {
     expect(numberedSeries([asset('a_1', 'hero 1', at(0)), asset('a_2', 'hero 1', at(1)), asset('a_3', 'Hero 01', at(2)), asset('a_4', 'logo 2', at(0))])).toEqual([]);
+    expect(numberedSeries([asset('a_1', 'swatch 1', at(0)), asset('a_2', 'SWATCH 2', at(1)), asset('a_3', 'Swatch 001', at(2))])).toEqual([{ key: 'swatch', label: 'Swatch', count: 3 }]);
     expect(numberedSeries([asset('a_1', 'swatch 1', at(0)), asset('a_2', 'SWATCH 2', at(1)), asset('a_3', 'Swatch 001', at(2)), asset('a_4', 'Swatch 3', at(3))])).toEqual([{ key: 'swatch', label: 'Swatch', count: 4 }]);
   });
 
