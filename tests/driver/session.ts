@@ -932,6 +932,7 @@ export class Session {
         const checkpoint = await this.takeCheckpoint(entry?.seq ?? this.journal.last);
         // Reading the app took time: an input whose request ran out of it, or whose session is closing, is not sent.
         aborted(signal);
+        if (Date.now() >= deadline) throw new DriverError('TIMEOUT', `${request.op} ran out of time before anything was sent.`, { details: { phase: request.op, dispatched: 'none' } });
         if (this.closeRequested) throw new DriverError('CLOSED', 'The session is closing; nothing was sent.');
         try {
           const result = await this.runOp(request, signal, deadline, entry);
@@ -1012,7 +1013,7 @@ export class Session {
         if (a.after !== undefined && (!Number.isInteger(a.after) || (a.after as number) < 0)) throw new DriverError('BAD_REQUEST', '"after" is a cursor: a whole number from 0.');
         if (a.limit !== undefined && (!Number.isInteger(a.limit) || (a.limit as number) < 1 || (a.limit as number) > 200)) throw new DriverError('BAD_REQUEST', '"limit" is a whole number from 1 to 200.');
         // Up to the request reading it: its own entry is not finished yet.
-        return this.present(this.journal.read(a.after as number | undefined, (a.limit as number | undefined) ?? 100, entry?.seq ?? Infinity));
+        return this.present(this.journal.read(a.after as number | undefined, (a.limit as number | undefined) ?? 100, entry?.seq ?? Infinity), true);
       }
       case 'evidence.save': {
         const a = request.args ?? {};
@@ -1056,8 +1057,9 @@ export class Session {
       if (request.op === 'ui.press' && printableKey(raw.key)) delete raw.key;
       // The caller's own folder is not the session's to show.
       if (request.op === 'session.start' && raw.artifactsDir !== undefined) raw.artifactsDir = '<caller folder>';
-      args = clipJson(raw, ARG_CLIP) as Record<string, unknown>;
-      if (JSON.stringify(args) !== JSON.stringify(raw)) unreplayable = 'its arguments were too long to keep whole';
+      const cut = { cut: false };
+      args = clipJson(raw, ARG_CLIP, 0, cut) as Record<string, unknown>;
+      if (cut.cut) unreplayable = 'its arguments were too long to keep whole';
     }
     if (args && request.op === 'desktop.setAnswers' && Array.isArray(args.answers) && this.paths) {
       // Absolute session paths as session paths, which mean the same in a fresh session.
@@ -1133,7 +1135,7 @@ export class Session {
       case 'project.summary':
         return { revision: r.revision, ...(r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {}) };
       case 'exports.inspect':
-        return { type: r.type, ...(r.find ? { found: r.find.matches.length, complete: r.find.complete } : {}) };
+        return { type: r.type, ...(typeof r.files === 'number' ? { files: r.files } : {}), ...(r.find ? { found: r.find.matches.length, complete: r.find.complete } : typeof r.complete === 'boolean' ? { complete: r.complete } : {}) };
       case 'evidence.save':
         return { file: 'replay.json' };
       default:
@@ -1171,12 +1173,12 @@ export class Session {
     return {
       seq,
       // With no window there is nothing to read, and nothing is unknown: no project is open.
-      known: !b || !!probe,
+      known: !b || (!!probe && !probe.unreadable),
       generation: b?.ref.generation ?? null,
       opening: probe?.opening ?? null,
       revision: probe?.revision ?? null,
       newestExport: probe?.exports.newest ?? null,
-      exportReport: probe?.exportView?.result?.report ?? null,
+      exportReport: probe?.exportView?.kept ?? null,
       pageErrors: this.pageErrorCount
     };
   }
@@ -1236,16 +1238,22 @@ export class Session {
    * Run a look with its own stop, for at most `ms`: one that takes longer is told to stop and is waited for before the
    * next request observes (it could still replace what the page's last snapshot holds). Null when it did not finish.
    */
-  private async boundedLook<T>(look: (signal: AbortSignal) => Promise<T>, ms: number, parent: AbortSignal): Promise<T | null> {
+  private async boundedLook<T>(look: (signal: AbortSignal) => Promise<T>, ms: number, parent: AbortSignal, keep?: (e: unknown) => boolean): Promise<T | null> {
     const ctl = new AbortController();
     const stop = () => ctl.abort();
+    if (parent.aborted) return null;
     parent.addEventListener('abort', stop, { once: true });
     const work = look(ctl.signal).then(
       (v) => ({ v }),
-      () => null
+      (e: unknown) => ({ e })
     );
     try {
       const done = await bounded(work, Math.max(0, ms), null);
+      // A failure the caller must hear of (a window gone) is passed on; any other is a look that found nothing.
+      if (done && 'e' in done) {
+        if (keep?.(done.e)) throw done.e;
+        return null;
+      }
       if (done) return done.v;
       ctl.abort();
       const settling: Promise<unknown> = work.finally(() => this.lingering.delete(settling));
@@ -1277,7 +1285,9 @@ export class Session {
         aborted(sig);
         if (e instanceof DriverError && (!e.retryable || WAIT_FATAL.has(e.code))) throw e;
         const info = errorInfo(e);
-        return { verdict: { met: false, pending: `the last look was cut short (${info.message.split('\n')[0].slice(0, 200)})` }, last: { error: { code: info.code, message: info.message.slice(0, 300) } } };
+        // Scrubbed whole before it is cut, so no part of a credential it quotes is left.
+        const said = scrubText(info.message, [...this.secrets]);
+        return { verdict: { met: false, pending: `the last look was cut short (${said.split('\n')[0].slice(0, 200)})` }, last: { error: { code: info.code, message: said.slice(0, 300) } } };
       }
     };
     try {
@@ -1293,15 +1303,15 @@ export class Session {
         if (Date.now() + POLL_MS >= deadline - reserve) break;
         await pause(POLL_MS, signal);
       }
-      // One last look, in the time kept back: what held by then still counts.
-      const last = await this.boundedLook(look, Math.floor((deadline - Date.now()) / 3), signal).catch(() => null);
-      if (last) {
+      // The evidence first, then one last look with what time is left: what held by the very end still counts.
+      const details = await this.waitEvidence(progress, request, signal, deadline - Math.min(400, Math.floor(reserve / 3)), since, began);
+      const fatal = (e: unknown) => e instanceof DriverError && (!e.retryable || WAIT_FATAL.has(e.code));
+      const final = await this.boundedLook(look, deadline - Date.now() - 100, signal, fatal);
+      if (final) {
         progress.samples++;
-        progress.last = last.last;
-        if (last.verdict.met) return met(last.verdict);
-        progress.pending = last.verdict.pending ?? progress.pending;
+        if (final.verdict.met) return met(final.verdict);
+        details.samples = progress.samples;
       }
-      const details = await this.waitEvidence(progress, request, signal, deadline, since, began);
       throw new DriverError('TIMEOUT', `${c.condition} did not hold within ${Math.round((deadline - began) / 100) / 10}s: ${String(details.pending)}.`, { retryable: true, details });
     } finally {
       if (this.waiting === progress) this.waiting = null;
@@ -1482,6 +1492,8 @@ export class Session {
   private async saveReplay(signal: AbortSignal, screenshot: boolean) {
     if (!this.paths) throw new DriverError('NOT_STARTED', 'The session has no artifacts folder yet: start it first.');
     const record = await this.replayRecord(signal, screenshot);
+    // A request that ran out of time writes nothing after its reply.
+    aborted(signal);
     const file = join(this.paths.artifacts, 'replay.json');
     await writeFile(file, JSON.stringify(record, null, 2));
     return { file, record };
@@ -1676,8 +1688,8 @@ export class Session {
       this.pageErrors.push(message.length > PAGE_ERROR_CHARS ? `${message.slice(0, PAGE_ERROR_CHARS)}…` : message);
       this.pageErrorCount++;
       if (this.pageErrors.length > MAX_PAGE_ERRORS) this.pageErrors.shift();
-      // Kept whole: the reply that carries it is scrubbed of credentials first, then cuts it to length.
-      this.event({ type: 'page.error', at: now(), generation: ref.generation, message: String(e) });
+      // Kept long: the reply that carries it is scrubbed of credentials first, then cuts it to a shorter length.
+      this.event({ type: 'page.error', at: now(), generation: ref.generation, message: this.pageErrors[this.pageErrors.length - 1] });
     });
     page.on('close', () => {
       bound.closed = true;

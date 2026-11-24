@@ -634,7 +634,8 @@ export function ExportModal() {
         <div className="sr-only" role="status">
           {announced}
         </div>
-        <div className="export-progress" role="status">
+        {/* The report kept, by its id, while it is hidden by a running export: what a test compares a new report with. */}
+        <div className="export-progress" role="status" data-kept-report={result?.report}>
           {busy && (
             <>
               <Spinner decorative />

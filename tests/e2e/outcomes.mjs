@@ -205,8 +205,9 @@ try {
   await until('ui.context', { dialog: 'Save the API key you entered?' });
   await click((await find({ role: 'button', name: 'Discard', scope: 'editor' })).ref);
   await until('ui.context', { dialog: null });
-  // The key, and a folder of the host's, sent later as arguments: the record keeps neither.
+  // The key, and a folder of the host's, sent later as arguments: the record keeps neither, whatever the field.
   ok(await call('project.summary', { find: KEY }), 'a search for the key');
+  failed(await call('ui.locate', { role: KEY }), 'TARGET_NOT_FOUND', 'the key as a role');
   failed(await call('exports.inspect', { path: '/Volumes/Backup/elsewhere-site' }), 'BAD_REQUEST', 'a path outside the session');
 
   step('the record: ordered, classed, bounded, without credentials or host paths');
@@ -222,6 +223,8 @@ try {
   assert.deepEqual(keyFill.args.textLeftOut, { length: KEY.length }, 'the typed credential is left out');
   const searched = log.entries.filter((e) => e.op === 'project.summary').at(-1);
   assert.equal(searched.args.find, '[redacted]', 'a credential sent as an argument is scrubbed');
+  const asRole = log.entries.filter((e) => e.op === 'ui.locate').at(-1);
+  assert.equal(asRole.args.role, '[redacted]', 'even in a field the protocol fixes, such as a role');
   const outside = log.entries.filter((e) => e.op === 'exports.inspect').at(-1);
   assert.equal(outside.args.path, '<host-path>', 'and a host path is hidden');
   const saved = ok(await call('evidence.save'), 'evidence.save at the end');

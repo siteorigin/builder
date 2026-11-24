@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import type { Dirent } from 'node:fs';
-import { lstat, open, opendir } from 'node:fs/promises';
+import { lstat, open, opendir, realpath } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Page } from 'playwright';
 import { resolveSessionPath } from './desktop.ts';
@@ -113,7 +113,7 @@ export interface Checkpoint {
   opening: string | null;
   revision: number | null;
   newestExport: ExportBrief | null;
-  /** The export report the dialog showed then (its id), if any. */
+  /** The export report the dialog kept then (its id, shown or hidden by a running export), if any. */
   exportReport: string | null;
   /** How many page errors the session had seen. */
   pageErrors: number;
@@ -153,8 +153,13 @@ export interface AppProbe {
   save: { kind: string; text: string } | null;
   history: { canUndo: boolean; canRedo: boolean; undoLabel?: string; redoLabel?: string; applied: number } | null;
   exports: { count: number; newest: ExportBrief | null };
-  /** The export dialog, while it is open: whether an export is running, and the report it shows (with its id). */
-  exportView: { busy: boolean; result: { ok: boolean; text: string; report: string | null } | null } | null;
+  /**
+   * The export dialog, while it is open: whether an export is running, the report it shows (with its id), and the id of
+   * the report it keeps, shown or not (a running export hides it; a cancelled one shows it again).
+   */
+  exportView: { busy: boolean; result: { ok: boolean; text: string; report: string | null } | null; kept?: string | null } | null;
+  /** The project snapshot could not be read (the request failed): nothing about the project is known. */
+  unreadable?: true;
   conflicts: number;
   readOnly: boolean;
 }
@@ -168,7 +173,11 @@ export async function probeApp(page: Page): Promise<AppProbe> {
   return (await page.evaluate(async () => {
       const g = globalThis as Dom;
       const d = g.document;
-      const snap = await Promise.resolve(g.builder?.project?.snapshot?.()).catch(() => null);
+      let unreadable = false;
+      const snap = await Promise.resolve(g.builder?.project?.snapshot?.()).catch(() => {
+        unreadable = true;
+        return null;
+      });
       const screen = d.querySelector('.welcome') ? 'welcome' : d.querySelector('.editor') ? 'editor' : 'other';
       const saveEl = d.querySelector('.toolbar .save-state');
       const kinds = ['saved', 'pending', 'ai', 'ask', 'wait', 'error'];
@@ -176,7 +185,7 @@ export async function probeApp(page: Page): Promise<AppProbe> {
       const progress = d.querySelector('.export-progress');
       const resultEl = d.querySelector('.export-result');
       const result = resultEl ? { ok: resultEl.getAttribute('role') !== 'alert', text: String(resultEl.textContent ?? '').replace(/\s+/g, ' ').trim(), report: resultEl.getAttribute('data-report') } : null;
-      const exportView = progress || resultEl ? { busy: !!progress && !!String(progress.textContent ?? '').trim(), result } : null;
+      const exportView = progress || resultEl ? { busy: !!progress && !!String(progress.textContent ?? '').trim(), result, kept: progress?.getAttribute('data-kept-report') || result?.report || null } : null;
       const recent = (snap?.recentExports ?? []) as { kind: string; format: string; path: string; revision: number; exportedAt: string }[];
       const newest = recent.length ? [...recent].sort((a, b) => (a.exportedAt < b.exportedAt ? 1 : a.exportedAt > b.exportedAt ? -1 : 0))[0] : null;
       const h = snap?.history;
@@ -191,7 +200,8 @@ export async function probeApp(page: Page): Promise<AppProbe> {
         exports: { count: recent.length, newest: newest ? { kind: newest.kind, format: newest.format, path: newest.path, revision: newest.revision, exportedAt: newest.exportedAt } : null },
         exportView,
         conflicts: snap?.conflicts?.length ?? 0,
-        readOnly: !!snap?.readOnly
+        readOnly: !!snap?.readOnly,
+        ...(unreadable ? { unreadable: true } : {})
       };
   })) as AppProbe;
 }
@@ -200,6 +210,7 @@ const sameExport = (a: ExportBrief | null, b: ExportBrief | null) => (!a && !b) 
 
 /** Judge an app condition against a probe and the checkpoint of the last input (null when none was sent). */
 export function judgeApp(c: Extract<Condition, { condition: 'save.settled' | 'project.revision' | 'export.finished' }>, p: AppProbe, base: Checkpoint | null): Verdict {
+  if (p.unreadable) return { met: false, pending: 'the project could not be read' };
   if (p.screen !== 'editor' || p.opening === null || p.revision === null) return { met: false, pending: `no project is open (the app shows ${p.screen === 'welcome' ? 'Welcome' : 'something else'})` };
   // A checkpoint that could not be read says nothing about what was there: no change is judged against it.
   const unread = !!base && !base.known;
@@ -346,6 +357,8 @@ async function readPlain(root: string, rel: string, limit: number): Promise<Buff
   try {
     const st = await fh.stat();
     if (st.ino !== before.ino || st.dev !== before.dev || !st.isFile()) return null;
+    // A folder on the way swapped for a link after the check: the file opened is not the one inside `root`.
+    if (!(await stillInside(root, rel, st))) return null;
     if (st.size > limit) return 'too-large';
     const buf = Buffer.alloc(Math.min(st.size, limit) + 1);
     const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
@@ -354,6 +367,15 @@ async function readPlain(root: string, rel: string, limit: number): Promise<Buff
   } finally {
     await fh.close().catch(() => undefined);
   }
+}
+
+/** Whether `root/rel` still really is inside `root`, and is the file `st` describes (when given). */
+async function stillInside(root: string, rel: string, st?: { ino: number; dev: number }): Promise<boolean> {
+  const real = await realpath(join(root, rel)).catch(() => null);
+  if (!real || real !== join(root, rel)) return false;
+  if (!st) return true;
+  const now = await lstat(real).catch(() => null);
+  return !!now && now.ino === st.ino && now.dev === st.dev;
 }
 
 interface Walk {
@@ -373,7 +395,7 @@ async function walkFiles(root: string, rel: string, keep: (name: string) => bool
   let visits = 0;
   const walk = async (dirRel: string): Promise<void> => {
     if (signal?.aborted) throw new DriverError('TIMEOUT', 'The request ran out of time.');
-    const dir = await opendir(join(root, dirRel)).catch(() => null);
+    const dir = (await stillInside(root, dirRel)) ? await opendir(join(root, dirRel)).catch(() => null) : null;
     if (!dir) {
       out.complete = false;
       out.skipped.push(`${dirRel || '.'} (could not be read)`);
@@ -475,18 +497,27 @@ function findInJson(v: unknown, text: string, file: string, out: DocMatch[], lim
  */
 export async function readProjectDocs(dir: string, opts: { find?: string; signal?: AbortSignal } = {}): Promise<ProjectDocs> {
   let budget = DOC_LIMITS.totalBytes;
+  /** Each document read once, for the summary and the search alike. */
+  const read = new Map<string, { doc?: unknown; why?: string }>();
   /** A document as JSON: undefined when missing, not JSON, too large, or past the budget (and why, in `why`). */
   const readJson = async (rel: string): Promise<{ doc?: unknown; why?: string }> => {
+    const known = read.get(rel);
+    if (known) return known;
     if (opts.signal?.aborted) throw new DriverError('TIMEOUT', 'The request ran out of time.');
     const buf = await readPlain(dir, rel, Math.min(DOC_LIMITS.fileBytes, budget));
-    if (buf === null) return { why: 'missing or not a plain file' };
-    if (buf === 'too-large') return { why: 'too large to read' };
-    budget -= buf.length;
-    try {
-      return { doc: JSON.parse(buf.toString('utf8')) };
-    } catch {
-      return { why: 'not JSON' };
+    let out: { doc?: unknown; why?: string };
+    if (buf === null) out = { why: 'missing or not a plain file' };
+    else if (buf === 'too-large') out = { why: 'too large to read' };
+    else {
+      budget -= buf.length;
+      try {
+        out = { doc: JSON.parse(buf.toString('utf8')) };
+      } catch {
+        out = { why: 'not JSON' };
+      }
     }
+    read.set(rel, out);
+    return out;
   };
   const manifest = (await readJson('siteorigin.project.json')).doc as Record<string, unknown> | undefined;
   const site = (await readJson('siteorigin/site.json')).doc as Record<string, unknown> | undefined;
@@ -515,11 +546,16 @@ export async function readProjectDocs(dir: string, opts: { find?: string; signal
   };
   if (opts.find !== undefined) {
     const docs = await walkFiles(dir, 'siteorigin', (n) => n.endsWith('.json'), DOC_LIMITS.files, opts.signal);
-    const manifestThere = !!(await lstat(join(dir, 'siteorigin.project.json')).catch(() => null))?.isFile();
-    const files = [...(manifestThere ? [{ file: 'siteorigin.project.json', bytes: 0 }] : []), ...docs.files];
+    const manifest = await lstat(join(dir, 'siteorigin.project.json')).catch(() => null);
+    const files = [...(manifest && !manifest.isSymbolicLink() ? [{ file: 'siteorigin.project.json', bytes: 0 }] : []), ...docs.files];
     const matches: DocMatch[] = [];
     const skipped = [...docs.skipped];
     let complete = docs.complete;
+    // A manifest that is a link was not read: the search cannot say the text is not in it.
+    if (manifest?.isSymbolicLink()) {
+      complete = false;
+      skipped.unshift('siteorigin.project.json (a link)');
+    }
     let more = false;
     for (const f of files) {
       const { doc, why } = await readJson(f.file);

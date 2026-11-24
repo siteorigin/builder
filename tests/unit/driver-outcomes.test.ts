@@ -101,6 +101,8 @@ describe('save and revision', () => {
     expect(judgeApp(saved, probe({ revision: 9 }), base({ known: false, revision: null, opening: null }))).toMatchObject({ met: false, pending: expect.stringMatching(/could not be read/) });
     // Lower than before is not past it either.
     expect(judgeApp(saved, probe({ revision: 4 }), base()).met).toBe(false);
+    // A snapshot the app could not give says nothing, even for the indicator alone.
+    expect(judgeApp({ condition: 'save.settled', changed: false }, probe({ unreadable: true }), null)).toEqual({ met: false, pending: 'the project could not be read' });
   });
 
   it('waits for a revision past the last input, or at least a given one', () => {
@@ -269,6 +271,18 @@ describe('the project on disk', () => {
     expect(r.pagesComplete).toBe(false);
   });
 
+  it('says a search is not complete when the manifest is a link it did not follow', async () => {
+    const dir = project();
+    const outside = temp('outside-manifest');
+    write(outside, 'siteorigin.project.json', { name: 'work beautifully' });
+    rmSync(join(dir, 'siteorigin.project.json'));
+    symlinkSync(join(outside, 'siteorigin.project.json'), join(dir, 'siteorigin.project.json'));
+    const r = await readProjectDocs(dir, { find: 'work beautifully' });
+    expect(r.name).toBeNull();
+    expect(r.find).toMatchObject({ complete: false, skipped: expect.arrayContaining(['siteorigin.project.json (a link)']) });
+    expect(r.find?.matches.map((m) => m.file)).toEqual(['siteorigin/pages/home.json']);
+  });
+
   it('finds text inside lists, orders other pages by route, and cuts long titles', async () => {
     const dir = project();
     write(dir, 'siteorigin/pages/a-zebra.json', { id: 'zebra', title: 'Z'.repeat(500), route: '/zebra/', rootIds: [], nodes: {}, items: ['first', 'work beautifully in a list'] });
@@ -383,6 +397,17 @@ describe('the journal', () => {
     for (let i = 0; i < 40; i++) j.admit({ id: `b${i}`, op: 'ui.snapshot', class: 'observation', t: i, window: 1, args: { note: 'y'.repeat(200) } });
     expect(JSON.stringify(j.entries()).length).toBeLessThanOrEqual(2000 + 400);
     expect(j.dropped).toBeGreaterThan(0);
+  });
+
+  it('says whether it cut anything', () => {
+    const cut = { cut: false };
+    clipJson({ a: 'short', list: [1, 2] }, undefined, 0, cut);
+    expect(cut.cut).toBe(false);
+    for (const v of [{ a: 'x'.repeat(301) }, { list: Array.from({ length: 51 }) }, { ['k'.repeat(101)]: 1 }, { a: { b: { c: { d: { e: { f: { g: 1 } } } } } } }]) {
+      const c = { cut: false };
+      clipJson(v, undefined, 0, c);
+      expect(c.cut, JSON.stringify(v).slice(0, 40)).toBe(true);
+    }
   });
 
   it('cuts long values, long keys and deep nesting to length', () => {
@@ -531,6 +556,13 @@ describe('the session\'s record', () => {
     expect(entries[3].args.artifactsDir).toBe('<caller folder>');
     expect(entries[4].unreplayable).toMatch(/too long to keep whole/);
     expect(JSON.stringify(entries)).not.toMatch(/hunter2|private-runs/);
+    // An argument nested deeper than any record keeps is recorded cut, and the request is still answered.
+    let deep: Record<string, unknown> = {};
+    for (let i = 0; i < 100_000; i++) deep = { d: deep };
+    const answered = await call('ui.click', { target: deep });
+    expect(answered.ok).toBe(false);
+    const last = ((await call('evidence.log', { after: 6 })) as unknown as { result: { entries: any[] } }).result.entries[0]; // eslint-disable-line @typescript-eslint/no-explicit-any
+    expect([last.op, last.unreplayable]).toEqual(['ui.click', expect.stringMatching(/too long to keep whole/)]);
   });
 
   it('tells a replay record from anything else', () => {
@@ -565,11 +597,13 @@ describe('replay', () => {
     step(5, { op: 'project.summary', class: 'observation', args: { find: 'Harbour' }, outcome: { ok: true, summary: { found: 1, complete: true } } }),
     step(6, { op: 'wait.for', class: 'observation', args: { condition: 'export.finished' }, outcome: { ok: true, summary: { condition: 'export.finished', met: true, outcome: 'failed' } } }),
     step(7, { op: 'ui.click', class: 'input', args: { target: { ref: 'old:2' } }, targets: [layers], outcome: { ok: false, code: 'NOT_ACTIONABLE', dispatched: 'none' } }),
-    step(8, { op: 'menu.invoke', class: 'input', window: null, args: { path: ['File', 'Open Project…'] }, outcome: { ok: true, summary: { status: 'dispatched' } } })
+    step(8, { op: 'menu.invoke', class: 'input', window: null, args: { path: ['File', 'Open Project…'] }, outcome: { ok: true, summary: { status: 'dispatched' } } }),
+    step(9, { op: 'wait.for', class: 'observation', args: { condition: 'ui.present', role: 'heading' }, outcome: { ok: true, summary: { condition: 'ui.present', met: true, count: 1 } } })
   ];
-  const answers = (o: { found?: number; outcome?: string; missing?: boolean; locate?: string } = {}) => (f: Frame) => {
+  const answers = (o: { found?: number; outcome?: string; missing?: boolean; locate?: string; count?: number } = {}) => (f: Frame) => {
     if (f.op === 'wait.for' && f.args?.name === 'Missing') return o.missing ? reply(f, { met: true }) : failure(f, 'TIMEOUT');
     if (f.op === 'wait.for' && f.args?.condition === 'export.finished') return reply(f, { condition: 'export.finished', met: true, outcome: o.outcome ?? 'failed' });
+    if (f.op === 'wait.for' && f.args?.role === 'heading') return reply(f, { condition: 'ui.present', met: true, count: o.count ?? 1 });
     if (f.op === 'ui.locate') return o.locate ? failure(f, o.locate, { count: 2 }) : reply(f, { node: { ref: 'new:1' } });
     if (f.op === 'project.summary') return reply(f, { project: { find: { matches: Array.from({ length: o.found ?? 1 }), complete: true } } });
     if (f.op === 'ui.click') return reply(f, { dispatched: 'complete', target: { role: 'button', name: 'Layers' } });
@@ -588,7 +622,8 @@ describe('replay', () => {
       [5, 'replayed'],
       [6, 'replayed'],
       [7, 'skipped'],
-      [8, 'replayed']
+      [8, 'replayed'],
+      [9, 'replayed']
     ]);
     const click = s.sent.find((f) => f.op === 'ui.click')!;
     expect(click.args).toEqual({ target: { ref: 'new:1' } });
@@ -605,7 +640,8 @@ describe('replay', () => {
       [{ found: 2 }, 5, /found is 2 where the recording had 1/],
       [{ outcome: 'exported' }, 6, /outcome is exported where the recording had failed/],
       [{ missing: true }, 4, /succeeded where the recording failed with TIMEOUT/],
-      [{ locate: 'AMBIGUOUS_TARGET' }, 2, /was not found as one element/]
+      [{ locate: 'AMBIGUOUS_TARGET' }, 2, /was not found as one element/],
+      [{ count: 3 }, 9, /count is 3 where the recording had 1/]
     ] as const) {
       const r = await replay(record(journey), { make: () => fake(answers(o)) });
       expect(r.ok).toBe(false);
@@ -625,5 +661,13 @@ describe('replay', () => {
     expect(s.sent).toEqual([]);
     const typed = [journey[0], step(2, { op: 'ui.fill', class: 'input', args: { textLeftOut: { length: 7 } }, targets: [layers], unreplayable: 'its typed text was left out of the record', outcome: { ok: true } })];
     expect((await replay(record(typed), { make: () => fake(answers()) })).divergence?.reason).toMatch(/typed text was left out/);
+    // What the record scrubbed or hid is not sent in its place.
+    for (const args of [{ find: 'a [redacted] key' }, { path: '<host-path>' }]) {
+      const hidden = [journey[0], step(2, { op: 'project.summary', class: 'observation', args, outcome: { ok: true, summary: { found: 0, complete: true } } })];
+      const s2 = fake(answers());
+      const r2 = await replay(record(hidden), { make: () => s2 });
+      expect([r2.divergence?.seq, r2.divergence?.reason]).toEqual([2, expect.stringMatching(/the record holds/)]);
+      expect(s2.sent.map((f) => f.op)).toEqual(['session.start']);
+    }
   });
 });

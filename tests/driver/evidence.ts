@@ -80,23 +80,33 @@ const KEY_CHARS = 100;
  * A copy of a JSON value cut to the limits: long strings and keys, long lists, deep nesting and wide objects are
  * shortened. A string cut short ends in `…` (scrubText checks that end for part of a credential).
  */
-export function clipJson(v: unknown, limits = CLIP, depth = 0): unknown {
-  if (typeof v === 'string') return v.length > limits.string ? `${v.slice(0, limits.string)}…` : v;
+export function clipJson(v: unknown, limits = CLIP, depth = 0, cut?: { cut: boolean }): unknown {
+  const mark = () => {
+    if (cut) cut.cut = true;
+  };
+  if (typeof v === 'string') return v.length > limits.string ? (mark(), `${v.slice(0, limits.string)}…`) : v;
   if (v === null || typeof v === 'number' || typeof v === 'boolean') return v;
   if (v === undefined || typeof v === 'function' || typeof v === 'symbol' || typeof v === 'bigint') return undefined;
-  if (depth >= limits.depth) return '…';
+  if (depth >= limits.depth) return mark(), '…';
   if (Array.isArray(v)) {
-    const out = v.slice(0, limits.items).map((x) => clipJson(x, limits, depth + 1));
-    if (v.length > limits.items) out.push(`… ${v.length - limits.items} more`);
+    const out = v.slice(0, limits.items).map((x) => clipJson(x, limits, depth + 1, cut));
+    if (v.length > limits.items) {
+      mark();
+      out.push(`… ${v.length - limits.items} more`);
+    }
     return out;
   }
   const entries = Object.entries(v as Record<string, unknown>);
   const out: Record<string, unknown> = {};
   for (const [k, x] of entries.slice(0, limits.keys)) {
-    const c = clipJson(x, limits, depth + 1);
+    const c = clipJson(x, limits, depth + 1, cut);
+    if (k.length > KEY_CHARS) mark();
     if (c !== undefined) out[k.length > KEY_CHARS ? `${k.slice(0, KEY_CHARS)}…` : k] = c;
   }
-  if (entries.length > limits.keys) out['…'] = `${entries.length - limits.keys} more keys`;
+  if (entries.length > limits.keys) {
+    mark();
+    out['…'] = `${entries.length - limits.keys} more keys`;
+  }
   return out;
 }
 

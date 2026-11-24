@@ -9,10 +9,11 @@
  * that is met where it timed out or the other way round, an export that fails where it succeeded), and says which and
  * why, with the reply.
  */
-import { REPLAY_KIND, REPLAY_VERSION } from './evidence.ts';
+import { HOST_PATH_LABEL, REPLAY_KIND, REPLAY_VERSION } from './evidence.ts';
 import type { JournalEntry, ReplayRecord, TargetDescriptor } from './evidence.ts';
 import type { Reply, StartArgs } from './protocol.ts';
 import { Session } from './session.ts';
+import { REDACTED } from './snapshot.ts';
 import type { SessionOptions } from './session.ts';
 
 export interface ReplayOptions {
@@ -62,17 +63,24 @@ function factsOf(op: string, result: unknown): Record<string, unknown> {
   const r = result as Record<string, any> | null; // eslint-disable-line @typescript-eslint/no-explicit-any
   if (!r) return {};
   if (op === 'project.summary') return r.project?.find ? { found: r.project.find.matches.length, complete: r.project.find.complete } : {};
-  if (op === 'exports.inspect') return r.find ? { found: r.find.matches.length, complete: r.find.complete } : {};
-  if (op === 'wait.for') return r.outcome ? { outcome: r.outcome } : {};
+  if (op === 'exports.inspect') return { ...(typeof r.files === 'number' ? { files: r.files } : {}), ...(r.find ? { found: r.find.matches.length, complete: r.find.complete } : typeof r.complete === 'boolean' ? { complete: r.complete } : {}) };
+  if (op === 'wait.for') return { ...(r.outcome ? { outcome: r.outcome } : {}), ...(typeof r.count === 'number' ? { count: r.count } : {}) };
   return {};
 }
+
+/** Words the record put in place of what it would not keep: a step that holds one cannot be sent as it was. */
+const LEFT_OUT = [REDACTED, HOST_PATH_LABEL, '<caller folder>', '<session>', '<repo>', '<artifacts>', '<tmp>'];
+const leftOut = (e: JournalEntry) => {
+  const text = JSON.stringify([e.args ?? {}, e.targets ?? []]);
+  return LEFT_OUT.find((w) => text.includes(w)) ?? null;
+};
 
 /** Where a repeat differs from the recording: the same matches found, as completely; the same way an export ended. */
 function differs(e: JournalEntry, reply: Reply): string | null {
   if (!reply.ok) return null;
   const was = e.outcome?.summary ?? {};
   const now = factsOf(e.op, reply.result);
-  for (const k of ['found', 'complete', 'outcome'] as const) if (k in was && was[k] !== now[k]) return `its ${k} is ${String(now[k])} where the recording had ${String(was[k])}`;
+  for (const k of ['found', 'complete', 'outcome', 'count', 'files'] as const) if (k in was && was[k] !== now[k]) return `its ${k} is ${String(now[k])} where the recording had ${String(was[k])}`;
   return null;
 }
 
@@ -139,6 +147,8 @@ export async function replay(record: unknown, opts: ReplayOptions = {}): Promise
       return diverge(e, `it failed in the recording (${e.outcome.code}) after it may have sent input`);
     }
     if (e.unreplayable) return diverge(e, `it cannot be replayed: ${e.unreplayable}`);
+    const hidden = leftOut(e);
+    if (hidden) return diverge(e, `it cannot be replayed: the record holds ${hidden} in place of what it was given`);
     const args: Record<string, unknown> = { ...(e.args ?? {}) };
     if (e.class === 'input') {
       for (const d of e.targets ?? []) {
