@@ -90,6 +90,12 @@ interface Visit {
    * disclosure), not only what shows at first.
    */
   everyState?: boolean;
+  /**
+   * Walk the markup a page ships: what shows at first, and the panels a component keeps in the page while its state
+   * hides them (see keptPanels). For checks of the HTML itself (its IDs, its forms, the links the build follows);
+   * what visitors see at first is walked without it.
+   */
+  kept?: boolean;
   /** Every node about to render, before its kind's own callback; `def` is the definition it belongs to, for a component's node. */
   node?: (n: GraphNode, scope: Scope, reportId: string, inDef: boolean, def?: ComponentDefinition) => void;
   /**
@@ -219,8 +225,10 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
   // A slot a definition renders once per list item shows the same content, in the same frame, each time: it is
   // walked once per frame, which keeps nested placements of such a component from multiplying the walk.
   const slotsWalked = new WeakMap<Frame, Set<string>>();
+  // Worked out once per definition per walk, sharing the site's card analysis between definitions.
   const keptIn = new Map<string, ReadonlySet<string>>();
-  const keptOf = (def: ComponentDefinition) => keptIn.get(def.id) ?? keptIn.set(def.id, keptPanels(state, def)).get(def.id)!;
+  const keptMemo = {};
+  const keptOf = (def: ComponentDefinition) => keptIn.get(def.id) ?? keptIn.set(def.id, keptPanels(state, def, keptMemo)).get(def.id)!;
   const walk = (frame: Frame, id: string, path: Set<string>) => {
     const n = frame.tree.nodes[id];
     const key = `${frame.n}:${id}`;
@@ -314,7 +322,7 @@ function walkRendered(state: ProjectState, tree: NodeTree, visit: Visit) {
           const where = frame.def ? { forwarded, repeats: frame.scope.repeats, occurrence: frame.scope.occurrence, ...carried } : { placement: n.id, ...carried };
           const ui = def.state ? Object.fromEntries(Object.keys(def.state).map((k) => [k, stateInitial(def, k)])) : undefined;
           const chosen = startingVariants(n.variants, frame.def);
-          const child: Frame = { tree: def.tree, def, kept: keptOf(def), scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
+          const child: Frame = { tree: def.tree, def, ...(visit.kept ? { kept: keptOf(def) } : {}), scope: { props, trail, instance: n, ...(ui ? { ui } : {}), ...(visit.everyState ? { everyState: true } : {}), ...(chosen !== n.variants ? { chosen } : {}), ...where, ...(feedProps.size ? { feedProps } : {}), ...(fedLists.size ? { fedLists } : {}) }, soId: ownId, slots: { content: n.slots ?? {}, frame, owner: n.id }, reportId, n: ++frames, defs: new Set(frame.defs).add(def.id) };
           for (const r of def.tree.rootIds) walk(child, r, inner);
         } else {
           visit.code?.(def, props, reportId, `${frame.scope.trail ?? ''}/${n.id}${frame.scope.item ? `[${String(frame.scope.item.id ?? '')}]` : ''}`, n, frame.scope, !!frame.def);
@@ -508,7 +516,9 @@ export function netlifyFormClashes(state: ProjectState): FormNameClash[] {
     // Content shown through a slot the receiving design renders more than once (inside its list) is walked once;
     // each further rendering shows its forms again.
     const bySlot = new Map<string, Array<[string, FormNameClash['forms'][number]]>>();
+    // Forms in a panel a component keeps in the page are in its HTML, where Netlify finds them.
     walkRendered(state, tree, {
+      kept: true,
       code: (def, props, reportId, _placement, _n, scope) => {
         const name = netlifyFormName(def, props);
         if (!name) return;
@@ -881,9 +891,12 @@ function literalIds(def: ComponentDefinition): string[] {
 /** The trees a page renders, in order: the shared header when it shows it, its own content, the shared footer when it shows it. */
 const renderedTrees = (state: ProjectState, page: PageDoc): NodeTree[] => [...(showsPart(page, 'header') ? [state.site.shell.header] : []), page, ...(showsPart(page, 'footer') ? [state.site.shell.footer] : [])];
 
-/** The element IDs a tree renders. Code components add the IDs their markup writes out literally. */
-function treeIds(state: ProjectState, trees: NodeTree[], out = new Set<string>()): Set<string> {
-  const visit: Visit = { id: (id) => out.add(id), code: (def) => literalIds(def).forEach((id) => out.add(id)) };
+/**
+ * The element IDs a tree renders. Code components add the IDs their markup writes out literally. With \`kept\`, the IDs
+ * of panels a component keeps in the page hidden too: IDs taken, though not sections a visitor can see.
+ */
+function treeIds(state: ProjectState, trees: NodeTree[], out = new Set<string>(), kept = false): Set<string> {
+  const visit: Visit = { kept, id: (id) => out.add(id), code: (def) => literalIds(def).forEach((id) => out.add(id)) };
   for (const tree of trees) walkRendered(state, tree, visit);
   return out;
 }
@@ -892,7 +905,8 @@ function treeIds(state: ProjectState, trees: NodeTree[], out = new Set<string>()
 function idCounts(state: ProjectState, pageId: string): Map<string, number> {
   const out = new Map<string, number>();
   const page = state.pages[pageId];
-  const visit: Visit = { id: (id) => out.set(id, (out.get(id) ?? 0) + 1) };
+  // An ID in a panel kept in the page hidden is in its HTML all the same.
+  const visit: Visit = { kept: true, id: (id) => out.set(id, (out.get(id) ?? 0) + 1) };
   if (page) for (const tree of renderedTrees(state, page)) walkRendered(state, tree, visit);
   return out;
 }
@@ -913,12 +927,12 @@ const shellIds = (state: ProjectState): ShellIds => ({ header: partIds(state, 'h
  * The element IDs a page's generated HTML will hold: its layout's, its own sections' and elements', and those of the
  * shared header and footer it shows. `shell` passes the header and footer's IDs when already known.
  */
-export function pageIds(state: ProjectState, pageId: string, shell?: ShellIds): Set<string> {
+export function pageIds(state: ProjectState, pageId: string, shell?: ShellIds, kept = false): Set<string> {
   const out = new Set(LAYOUT_IDS);
   const page = state.pages[pageId];
   if (!page) return out;
-  for (const part of partsShown(page)) for (const id of shell?.[part] ?? partIds(state, part)) out.add(id);
-  return treeIds(state, [page], out);
+  for (const part of partsShown(page)) for (const id of shell?.[part] ?? treeIds(state, [state.site.shell[part]], new Set(), kept)) out.add(id);
+  return treeIds(state, [page], out, kept);
 }
 
 /** The IDs a page's elements render, those of the shared header and footer it shows included: not the layout's. */
@@ -998,11 +1012,12 @@ function codeLinks(def: ComponentDefinition, props: Record<string, unknown>, rep
 }
 
 /** Every link a page or shell tree renders: buttons, links inside rich text, and the links code components receive. */
-function renderedLinks(state: ProjectState, tree: NodeTree, everyState = false): RenderedLink[] {
+function renderedLinks(state: ProjectState, tree: NodeTree, everyState = false, kept = false): RenderedLink[] {
   const out: RenderedLink[] = [];
   const at = (n: GraphNode, scope: Scope) => `${scope.trail ?? ''}:${n.id}:${String(scope.item?.id ?? '')}`;
   walkRendered(state, tree, {
     everyState,
+    kept,
     link: (n, scope, reportId) => {
       const link = evaluate(n.link, scope);
       if (isLinkValue(link)) out.push({ link, label: String(evaluate(n.label, scope) ?? '').trim(), reportId, key: at(n, scope), inText: false });
@@ -1112,8 +1127,10 @@ export function missingSectionLinks(state: ProjectState): SectionLinkIssue[] {
   ];
   const out: SectionLinkIssue[] = [];
   const seen = new Set<string>();
+  // Links in a panel kept in the page hidden are in its HTML, where the build follows them; the sections they go to
+  // count only where a visitor can see them.
   for (const src of sources)
-    for (const { link, label, reportId, key, inText } of renderedLinks(state, src.tree)) {
+    for (const { link, label, reportId, key, inText } of renderedLinks(state, src.tree, false, true)) {
       let issue: SectionLinkIssue | null = null;
       if (link.type === 'page' && link.anchor && Object.hasOwn(state.pages, link.target)) {
         if (!idsOf(link.target).has(link.anchor)) issue = { owner: src.owner, nodeId: reportId, key, label, inText, fragment: link.anchor, pageId: link.target };
@@ -1371,7 +1388,8 @@ export function planSectionPick(state: ProjectState, pageId: string, nodeId: str
   // An ID the section already renders with is reused, never replaced: other links may jump to it.
   if (section.anchor) return { anchor: section.anchor, operations: [] };
   const owner = { kind: 'page' as const, id: pageId };
-  const anchor = sectionAnchorFor(section.label, new Set([...anchorsInUse(state, owner), ...pageIds(state, pageId), ...reserved]));
+  // Not one a panel kept in the page hidden already has: the page's HTML would hold it twice.
+  const anchor = sectionAnchorFor(section.label, new Set([...anchorsInUse(state, owner), ...pageIds(state, pageId, undefined, true), ...reserved]));
   return { anchor, operations: [{ type: 'node.setContent', owner, nodeId, field: 'anchor', value: anchor }] };
 }
 

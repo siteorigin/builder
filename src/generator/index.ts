@@ -1130,11 +1130,14 @@ function stateWidgets(ctx: EmitCtx): StateWidgets {
  * The nodes of a design kept in the page while its UI state hides them (see stateWidgets): markup the page holds
  * besides what the state shows at first, for the checks that read what a page ships.
  */
-export function keptPanels(state: ProjectState, def: ComponentDefinition): ReadonlySet<string> {
+export function keptPanels(state: ProjectState, def: ComponentDefinition, memo: { brokenCards?: Set<string> } = {}): ReadonlySet<string> {
   const states = def.kind === 'managed' && def.tree ? stateLocals(def) : new Map<string, UiStateLocal>();
   if (!states.size) return new Set();
-  const ctx: EmitCtx = { state, file: defFile(def), imports: new Map(), instrument: false, def, tree: def.tree!, ctxExpr: '', items: [], rctx: { state }, indent: 0, locals: propLocals(def), states };
-  return new Set(stateWidgets(ctx).panels.keys());
+  // \`memo\` carries the site's card analysis from one definition to the next within a check.
+  const ctx: EmitCtx = { state, file: defFile(def), imports: new Map(), instrument: false, def, tree: def.tree!, ctxExpr: '', items: [], rctx: { state }, indent: 0, locals: propLocals(def), states, brokenCards: memo.brokenCards };
+  const panels = new Set(stateWidgets(ctx).panels.keys());
+  memo.brokenCards = ctx.brokenCards;
+  return panels;
 }
 
 /** Whether an element always renders as \`tag\` (no property chooses its tag). */
@@ -1990,7 +1993,7 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
       const name = nameAttr(ctx, 'aria-label', node.ariaLabel);
       // A button that changes UI state is a real button wherever it has nowhere to go (see the Link helper).
       const handler = ctx.def ? stateActionHandler(ctx, node.stateAction) : null;
-      const click = handler ? ` control onclick={${handler}}${stateButtonAttrs(ctx, node)}` : '';
+      const click = handler ? ` so_control onclick={${handler}}${stateButtonAttrs(ctx, node)}` : '';
       return `${p}<SoLink link={${link}} appearance={${appearance}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${name}${click}${ids}>${linkContent(ctx, node, label)}</SoLink>`;
     }
     case 'icon': {

@@ -702,6 +702,7 @@ function tabsDef(
           b.el(`panel-${v}`, opts.panelTag ?? 'div', { when: eq(uiState('plan'), v), styles: { layout: 'grid' }, ...(v === 'a' && opts.panelAnchor ? { anchor: opts.panelAnchor } : {}) }, [b.text(`text-${v}`, 'p', `${label[v]} plan details`), ...(v === 'a' ? (opts.panelExtra?.(b) ?? []) : [])])
         ),
         b.link('next', NONE, 'Next plan', 'text', { stateAction: { state: 'plan', op: 'next', wrap: true } }),
+        b.link('prev', NONE, 'Previous plan', 'text', { stateAction: { state: 'plan', op: 'prev' } }),
         b.link('more', NONE, 'More', 'secondary', { stateAction: { state: 'open', op: 'toggle' } }),
         b.el('wrap', 'div', { collapseEmpty: true }, [b.el('details', 'div', { when: uiState('open') }, [b.text('details-text', 'p', 'Cancel any time')])]),
         ...(opts.extra?.(b) ?? [])
@@ -724,6 +725,7 @@ describe('generated buttons, tabs and disclosures', () => {
     expect(source).toContain('onclick={() => (so_state_plan = "a")}');
     expect(source).toContain('onclick={() => (so_state_open = !so_state_open)}');
     expect(source).toContain('onclick={() => (so_state_plan = stepState(["a","b","c"], so_state_plan, 1, true))}');
+    expect(source).toContain('onclick={() => (so_state_plan = stepState(["a","b","c"], so_state_plan, -1, false))}');
     // Nothing of the editor's: no Builder runtime, only the site's own helpers.
     expect(source).not.toMatch(/data-so-|__so/);
     expect(errors(s)).toEqual([]);
@@ -747,7 +749,7 @@ describe('generated buttons, tabs and disclosures', () => {
 
   it('compiles a design whose properties are named like its own helpers or like Svelte runes', async () => {
     const s = fresh();
-    const def = tabsDef(s, { properties: { state: P.str('State', 'Ready'), tabKey: P.str('Tab key', 'k'), props: P.str('Props', 'p') }, extra: (b) => [b.text('note', 'p', prop('state'))] });
+    const def = tabsDef(s, { properties: { state: P.str('State', 'Ready'), tabKey: P.str('Tab key', 'k'), props: P.str('Props', 'p'), derived: P.str('Derived', 'd') }, extra: (b) => [b.text('note', 'p', prop('state'))] });
     place(s, def);
     expect(errors(s)).toEqual([]);
     expect(compileErrors(s)).toEqual([]);
@@ -809,12 +811,21 @@ describe('generated buttons, tabs and disclosures', () => {
     expect(tagsWith(await renderHome(s), 'role', 'tablist').map((t) => attrOf(t, 'aria-label'))).toEqual(['Plan', 'Choose a plan']);
   });
 
-  it('checks what kept panels put in the page, as the site’s build does', () => {
+  it('checks what kept panels put in the page, as the site’s build does, and what a visitor sees at first', async () => {
     const s = fresh();
     // A jump to a section the page lacks, inside the panel of a tab not chosen at first: the build would stop on it.
     const def = tabsDef(s, { panelExtra: (b) => [b.link('jump', { type: 'anchor', target: 'nowhere' }, 'Compare', 'link')] });
     place(s, def);
-    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING')).toHaveLength(1);
+    expect(validateState(s).filter((d) => d.code === 'LINK_SECTION_MISSING').map((d) => d.nodeId)).toHaveLength(1);
+    // A section inside that hidden panel is in the HTML, but a jump to it from outside lands on nothing to see.
+    const t = fresh();
+    const hidden = tabsDef(t, { panelExtra: (b) => [b.text('terms', 'p', 'Starter terms', { anchor: 'starter-terms' })], extra: (b) => [b.link('to-terms', { type: 'anchor', target: 'starter-terms' }, 'Terms', 'link')] });
+    place(t, hidden);
+    expect(await renderHome(t)).toContain('id="starter-terms"');
+    expect(validateState(t).filter((d) => d.code === 'LINK_SECTION_MISSING')).toHaveLength(1);
+    // Chosen at first, the section shows and the jump is fine.
+    const shown = apply(t, [{ type: 'component.setState', definitionId: hidden.id, state: 'plan', schema: { ...PLAN, initial: 'a' } }]);
+    expect(validateState(shown).filter((d) => d.code === 'LINK_SECTION_MISSING')).toEqual([]);
   });
 
   it('renders a tab list whose tabs and panels name each other in every placement, every panel in the page', async () => {
@@ -935,7 +946,7 @@ describe('generated buttons, tabs and disclosures', () => {
     const o = ['a', 'b', 'c'];
     expect([stepState(o, 'a', 1, false), stepState(o, 'c', 1, false), stepState(o, 'a', -1, false), stepState(o, 'b', -1, false)]).toEqual(['b', 'c', 'a', 'a']);
     expect([stepState(o, 'c', 1, true), stepState(o, 'a', -1, true)]).toEqual(['a', 'c']);
-    expect([stepState(o, 'gone', 1, true), stepState(o, 'gone', -1, true)]).toEqual(['a', 'a']);
+    expect([stepState(o, 'gone', 1, true), stepState(o, 'gone', -1, true), stepState(o, 'gone', -1, false)]).toEqual(['a', 'a', 'a']);
   });
 
   it('hides content a state hides on screen only, and prints every panel under its tab’s label', () => {

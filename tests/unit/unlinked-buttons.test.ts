@@ -180,7 +180,8 @@ describe('buttons without a destination in the editor preview', () => {
       for (const appearance of ['link', 'plain']) {
         const shown = (props: Record<string, unknown>) => render(Link, { props: { link: null, appearance, onclick: () => undefined, ...props } }).body;
         expect(shown({})).not.toContain('<button');
-        expect(shown({ control: true })).toMatch(/<button\b[^>]*type="button"/);
+        expect(shown({ control: true })).not.toContain('<button');
+        expect(shown({ so_control: true })).toMatch(/<button\b[^>]*type="button"/);
       }
     }
   });
