@@ -18,6 +18,7 @@ import { selectionTarget } from './selection';
 import { applyContextBudget, contextVerdict, estimateRequestTokens } from './budget';
 import { completenessNudge, describePage, findStubPages, missingPages, pageCreatesIn, rememberPage, savedPage, type MissingPage, type WantedPage } from './completeness';
 import { exampleSection, retrieveExamples } from './examples';
+import { changedComponents, introducedReusability, reusabilityNudge } from './reusability';
 
 /**
  * Budgets for one run. They are sized for building a whole multi-page site in one request; a run that
@@ -34,6 +35,9 @@ export const LIMITS = {
   providerRetries: 3,
   truncationRetries: 2
 };
+
+/** How many places in components that are not reusable yet the result card names; the rest are counted. */
+const REUSABILITY_CHECKS = 5;
 
 /** Tools that ask the user a question and wait for the answer. */
 const QUESTION_TOOLS = new Set(['request_clarification', 'request_wider_scope']);
@@ -700,8 +704,9 @@ export class Orchestrator {
     // Problems the project already had (including components that already fail to build) are not the run's. Each is
     // known by where it is (`diagnosticKey`, as the save gate tells them, so a rename is not one) and counted: the same
     // message somewhere new is a new problem.
+    const startDiagnostics: Diagnostic[] = ask ? [] : session.diagnostics();
     const baseline = new Map<string, number>();
-    if (!ask) for (const d of [...session.diagnostics(), ...(await this.deps.compileAll().catch(() => []))]) if (d.severity === 'error') baseline.set(diagnosticKey(d), (baseline.get(diagnosticKey(d)) ?? 0) + 1);
+    if (!ask) for (const d of [...startDiagnostics, ...(await this.deps.compileAll().catch(() => []))]) if (d.severity === 'error') baseline.set(diagnosticKey(d), (baseline.get(diagnosticKey(d)) ?? 0) + 1);
     /** The errors among `diags` the run introduced, and those it found already there (each one matched once). */
     const sortErrors = (diags: Diagnostic[]) => {
       const left = new Map(baseline);
@@ -717,6 +722,8 @@ export class Orchestrator {
       }
       return { fresh, known };
     };
+    /** Reusability warnings the run brought in on the components it made or changed. */
+    const freshReusability = (diags: Diagnostic[]) => introducedReusability(startDiagnostics, diags, changedComponents(startState, session.state));
 
     const codeEnabled = (await this.deps.codeEnabled?.()) ?? true;
     const selected = selectionTarget(userMsg.context?.selection);
@@ -838,10 +845,14 @@ export class Orchestrator {
     const buildChecks = (diags: Diagnostic[]): ChatCheck[] => {
       // Errors that were there before the run and still are: one the run fixed is not reported as remaining.
       const remaining = sortErrors(diags).known.length;
+      // A component the run left showing the same fixed content everywhere still works, so it is said, not refused.
+      const reuse = freshReusability(diags);
       return [
         ...inspections.checks(session.state),
         { status: 'pass', text: 'Project structure, links and references are valid.' },
         { status: 'pass', text: baseline.size ? 'No new build errors.' : 'All components build without errors.' },
+        ...reuse.slice(0, REUSABILITY_CHECKS).map((d): ChatCheck => ({ status: 'issue', text: d.message })),
+        ...(reuse.length > REUSABILITY_CHECKS ? [{ status: 'issue' as const, text: `${reuse.length - REUSABILITY_CHECKS} more places in the changed components show the same fixed content or styles in every placement. Open Project health to see them.` }] : []),
         ...(remaining ? [{ status: 'issue' as const, text: `${remaining} pre-existing issue${remaining === 1 ? '' : 's'} remain.` }] : [])
       ];
     };
@@ -855,6 +866,8 @@ export class Orchestrator {
     let finalText = '';
     let truncations = 0;
     let nudged = false;
+    /** Told once about components that are not reusable yet; apart from `nudged`, so neither nudge uses up the other. */
+    let reuseNudged = false;
 
     const host: ToolHost = {
       macros,
@@ -1302,6 +1315,18 @@ export class Orchestrator {
             const absent = missing();
             if ((stubs.length || links.missing.length || rejected.length || absent.length) && !nudged) {
               resumeForNudge(completenessNudge(stubs, links.missing, current.tools.some((t) => t.name === 'upsert_page_with_sections'), rejected, absent));
+              continue outer;
+            }
+            // A component it made or changed would show the same sample in every placement: it is sent back once to bind
+            // its content, link site styles and expose its parts. What it leaves is listed on the result, never refused.
+            const unreusable = freshReusability(diags);
+            if (unreusable.length && !reuseNudged) {
+              reuseNudged = true;
+              finalText = '';
+              msg.text = '';
+              this.setStatus('running');
+              addActivity('Checking the components can be reused', 'reusability').status = 'done';
+              items.push({ kind: 'user', text: reusabilityNudge(unreusable) });
               continue outer;
             }
             const unfinished = [

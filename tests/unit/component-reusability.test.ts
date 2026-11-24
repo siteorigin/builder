@@ -257,3 +257,24 @@ describe('as diagnostics', () => {
     expect(introducedDiagnostics(validateState(after), validateState(more)).map((d) => d.nodeId)).toEqual(['sub']);
   });
 });
+
+describe('what an AI run is told', () => {
+  it('names only what a change brought in on the components it changed', async () => {
+    const { changedComponents, introducedReusability, reusabilityNudge } = await import('@agent/reusability');
+    const s = fresh();
+    const spec = (componentId: string) => ({ componentId, name: componentId, properties: {}, parts: { root: { nodeId: 'root', label: 'Section' } }, build: (b: Parameters<ComponentSpec['build']>[0]) => b.el('root', 'section', {}, [b.text('title', 'h2', 'Spring')]) });
+    const a = addDef(s, spec('custom.a'));
+    addDef(s, spec('custom.b'));
+    const before = validateState(s);
+    const after = structuredClone(s);
+    const tree = after.components[a.id].tree!;
+    tree.nodes.more = { id: 'more', kind: 'text', tag: 'p', text: 'Every engagement is different, and so is every home.' };
+    (tree.nodes.root as { children: string[] }).children.push('more');
+    // A new site style of a kind the project lacked would also bring warnings to the component left alone; they are not the run's.
+    const changed = changedComponents(s, after);
+    expect([...changed]).toEqual([a.id]);
+    const found = introducedReusability(before, validateState(after), changed);
+    expect(found.map((d) => [d.owner?.id, d.nodeId])).toEqual([[a.id, 'more']]);
+    expect(reusabilityNudge(found)).toContain(`(component ${a.id}, node more)`);
+  });
+});

@@ -2525,5 +2525,112 @@ describe('part scope rules (#132)', () => {
     const inDef: Authority = { kind: 'selection', owner: { kind: 'component', id }, nodeId: def.tree!.rootIds[0], label: 'Banner' };
     expect(checkAuthority(state, [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: heading.id, field: 'text', value: 'New default' }], inDef)).toMatch(/default of the "heading" property/);
     expect(checkAuthority(state, [{ type: 'node.setContent', owner: { kind: 'component', id }, nodeId: button.id, field: 'appearance', value: 'secondary' }], inDef)).toBeNull();
+describe('components that are not reusable yet (#363)', () => {
+  const lastTool = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const lastSaid = (req: CanonicalModelRequest) => (req.items.at(-1) as { text?: string }).text ?? '';
+  const SAMPLE = 'We design calm, practical homes for growing families.';
+
+  /** "Edit everywhere" on the home hero: a project copy every placement uses, which raises no warning of its own. */
+  async function projectHero(session: ProjectSession) {
+    const home = session.state.pages[session.state.site.homePageId];
+    const hero = home.nodes[home.rootIds[0]] as InstanceNode;
+    const r = await session.apply({ operations: [{ type: 'component.fork', definitionId: hero.definitionId }] }, { label: 'Edit everywhere', source: 'user' });
+    const id = (r.results?.[0] as { definitionId: string }).definitionId;
+    expect(session.diagnostics().filter((d) => d.owner?.id === id && d.severity === 'warning')).toEqual([]);
+    return { id, owner: { kind: 'component' as const, id }, root: session.state.components[id].tree!.rootIds[0] };
+  }
+  const insertSample = (def: { owner: { kind: 'component'; id: string }; root: string }, expectedRevision: number) =>
+    call('i1', 'apply_operations', { expectedRevision, operations: [{ type: 'node.insert', owner: def.owner, parentId: def.root, primitive: 'paragraph', text: SAMPLE }] });
+  const component = { selection: null, selectionLabel: null };
+
+  it('says what a change left fixed, sends the model back once, and lists what it ignored on the result', async () => {
+    let def = { id: '', owner: { kind: 'component' as const, id: '' }, root: '' };
+    let inserted: { results?: Array<{ nodeId?: string }>; componentWarnings?: Array<{ code: string; definitionId: string; nodeId: string; message: string }> } = {};
+    let nudge = '';
+    const env = await setup(
+      [
+        () => [insertSample(def, 1)],
+        (req) => {
+          inserted = lastTool(req);
+          return finish('Added a line about the studio.');
+        },
+        (req) => {
+          nudge = lastSaid(req);
+          return finish('Left the line as it is.');
+        }
+      ],
+      { codeEnabled: false }
+    );
+    def = await projectHero(env.session);
+    const { result } = await env.run('Add a line about the studio to this hero', { ...component, component: { id: def.id, name: 'Split hero' } });
+    const nodeId = inserted.results!.find((x) => x?.nodeId)!.nodeId!;
+    // The change that made it says so, with the node to fix.
+    expect(inserted.componentWarnings).toEqual([expect.objectContaining({ code: 'COMPONENT_UNBOUND_CONTENT', definitionId: def.id, nodeId })]);
+    expect(nudge).toContain('not reusable yet');
+    expect(nudge).toContain(`(component ${def.id}, node ${nodeId})`);
+    expect(nudge).toContain('node.setBinding');
+    // Once: the model's second finish ends the run, kept and undoable, with the warning on the result.
+    expect(env.adapter.requests).toHaveLength(3);
+    expect(result?.status).toBe('completed');
+    expect(result?.canUndo).toBe(true);
+    expect(result?.incomplete).toBeUndefined();
+    expect(result?.checks?.filter((c) => c.status === 'issue').map((c) => c.text)).toEqual([inserted.componentWarnings![0].message]);
+    expect(env.session.state.components[def.id].tree!.nodes[nodeId]).toBeDefined();
+  });
+
+  it('finishes cleanly once the model binds what it left fixed', async () => {
+    let def = { id: '', owner: { kind: 'component' as const, id: '' }, root: '' };
+    let nodeId = '';
+    const env = await setup(
+      [
+        () => [insertSample(def, 1)],
+        (req) => {
+          nodeId = (lastTool(req) as { results: Array<{ nodeId?: string }> }).results.find((x) => x?.nodeId)!.nodeId!;
+          return finish('Added a line about the studio.');
+        },
+        () => [
+          call('b1', 'apply_operations', {
+            expectedRevision: 2,
+            operations: [
+              { type: 'component.setPropSchema', definitionId: def.id, prop: 'studio', schema: { type: 'string', label: 'Studio line', default: SAMPLE } },
+              { type: 'node.setBinding', owner: def.owner, nodeId, field: 'text', binding: { $prop: 'studio' } }
+            ]
+          })
+        ],
+        () => finish('Made the line editable in each placement.')
+      ],
+      { codeEnabled: false }
+    );
+    def = await projectHero(env.session);
+    const { result } = await env.run('Add a line about the studio to this hero', { ...component, component: { id: def.id, name: 'Split hero' } });
+    expect(env.adapter.requests).toHaveLength(4);
+    expect(result?.status).toBe('completed');
+    expect(result?.checks?.filter((c) => c.status === 'issue')).toEqual([]);
+    expect(env.session.diagnostics().filter((d) => d.owner?.id === def.id && d.severity === 'warning')).toEqual([]);
+  });
+
+  it('leaves alone what the component already had before the request', async () => {
+    let def = { id: '', owner: { kind: 'component' as const, id: '' }, root: '' };
+    let restyled: { componentWarnings?: unknown } = {};
+    const env = await setup(
+      [
+        () => [call('s1', 'apply_operations', { expectedRevision: 2, operations: [{ type: 'node.setStyle', owner: def.owner, nodeId: def.root, scope: 'base', property: 'background', value: { token: 'color.surface-alt' } }] })],
+        (req) => {
+          restyled = lastTool(req);
+          return finish('Changed the background.');
+        }
+      ],
+      { codeEnabled: false }
+    );
+    def = await projectHero(env.session);
+    // The author's own fixed line, made before this request.
+    const own = await env.session.apply({ operations: [{ type: 'node.insert', owner: def.owner, parentId: def.root, primitive: 'paragraph', text: SAMPLE }] }, { label: 'Add text', source: 'user' });
+    expect(own.ok).toBe(true);
+    expect(env.session.diagnostics().filter((d) => d.code === 'COMPONENT_UNBOUND_CONTENT')).toHaveLength(1);
+    const { result } = await env.run('Use the alternate background on this hero', { ...component, component: { id: def.id, name: 'Split hero' } });
+    expect(restyled.componentWarnings).toBeUndefined();
+    expect(env.adapter.requests).toHaveLength(2);
+    expect(result?.status).toBe('completed');
+    expect(result?.checks?.filter((c) => c.status === 'issue')).toEqual([]);
   });
 });
