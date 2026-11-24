@@ -9,8 +9,7 @@ import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
 import { slugify } from '@shared/routes';
-import { assetUsages, sourceHash } from '@engine/apply';
-import { themeUpdates } from '@engine/theme-updates';
+import { sourceHash } from '@engine/apply';
 import { basePath, generateManagedComponent, generatePage, defFile, liveRedirects, publishedState } from '@generator/index';
 import { placeholderImageCount } from '@generator/checks';
 import type { BuildFailureContext } from './build-failure';
@@ -240,7 +239,7 @@ export class Controller {
       missingAssets: s.missingAssets,
       conflicts: s.conflicts,
       readOnly: s.readOnly,
-      themeUpdates: s.readOnly ? undefined : themeUpdates(s.state),
+      themeUpdates: s.readOnly ? undefined : s.themeUpdates(),
       localState: this.localState,
       workspaceKey: this.workspaceKey ?? '',
       recentExports: this.recentExports
@@ -1858,7 +1857,7 @@ export function isInside(dir: string, path: string): boolean {
 /** Asset usage counts; a project from a newer version (read-only) may not have shapes this version can count. */
 function safeUsages(s: ProjectSession): Record<string, number> {
   try {
-    return assetUsages(s.state);
+    return s.assetUsages();
   } catch (e) {
     if (s.readOnly) return {};
     throw e;

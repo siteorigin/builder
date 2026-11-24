@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { promises as fs, existsSync, type Dirent } from 'node:fs';
+import { promises as fs, constants as fsConstants, existsSync, type BigIntStats, type Dirent } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import type { PageDoc, ProjectState } from '@shared/types';
@@ -8,7 +9,7 @@ import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { StorageInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
-import { applyOperations, captureClipboard, type Clipboard } from '@engine/apply';
+import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '@engine/apply';
 import { listThemes } from '@catalogue/index';
 import { anchorsInUse, displayName, EngineError } from '@engine/tree';
 import { findRemoval, restoreRemoval } from '@engine/restore';
@@ -16,6 +17,8 @@ import { blocksSaving, validateState, type Diagnostic } from '@engine/validate';
 import { findMissingAssetFiles } from './asset-files';
 import type { MissingAssetFiles } from '@shared/api';
 import { generateProject, GENERATOR_VERSION } from '@generator/index';
+import { GenerationCache } from '@generator/cache';
+import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
 import { checkSvelteSource, componentSources } from '../codecheck';
 import { atomicWrite, ensureDir, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
@@ -23,6 +26,94 @@ import { CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, Projec
 export const LOCAL_DIR = '.siteorigin';
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
 export const CLEAN_HASHES = '.clean-hashes.json';
+
+/**
+ * `fn` over every item, a few at a time: enough to overlap the disk's waits, never so many open files that one fails
+ * to open (and an unreadable file would look like a missing one).
+ */
+async function inBatches<T, R>(items: T[], fn: (item: T) => Promise<R> | R, size = 16): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += size) out.push(...(await Promise.all(items.slice(i, i + size).map(fn))));
+  return out;
+}
+
+/** What a generated file that is there but cannot be read hashes to: never ours, never missing. */
+const UNREADABLE = 'unreadable';
+const UNREADABLE_REASON = 'Generated file could not be read, so SiteOrigin Builder left it as it is. Check that it is a file you can open, then restore it.';
+
+/** Opened for reading without waiting: a pipe at the path must never hold a save up. */
+const OPEN_READ = fsConstants.O_RDONLY | (fsConstants.O_NONBLOCK ?? 0);
+
+/** The path's stat, or whether nothing is there or it could not be looked at. */
+async function lookAt(abs: string): Promise<BigIntStats | 'missing' | 'failed'> {
+  try {
+    return await fs.stat(abs, { bigint: true });
+  } catch (e) {
+    return isMissing(e) ? 'missing' : 'failed';
+  }
+}
+
+/** A regular file's bytes, read through one handle, with that handle's stat; 'changed' when it changed while read. */
+async function readFileAt(abs: string): Promise<{ bytes: Buffer; stamp: string } | 'missing' | 'failed' | 'changed'> {
+  let handle: FileHandle;
+  try {
+    handle = await fs.open(abs, OPEN_READ);
+  } catch (e) {
+    return isMissing(e) ? 'missing' : 'failed';
+  }
+  try {
+    const before = await handle.stat({ bigint: true });
+    // Only a regular file is read: a pipe or device could block, or never end.
+    if (!before.isFile()) return 'failed';
+    const bytes = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    return stampOf(after) === stampOf(before) ? { bytes, stamp: stampOf(before) } : 'changed';
+  } catch {
+    return 'failed';
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/** The stat of whatever a new handle on the path reaches, taken as `readFileAt` takes it; null when nothing can be. */
+async function handleStamp(abs: string): Promise<string | null> {
+  let handle: FileHandle;
+  try {
+    handle = await fs.open(abs, OPEN_READ);
+  } catch {
+    return null;
+  }
+  try {
+    return stampOf(await handle.stat({ bigint: true }));
+  } catch {
+    return null;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/** Nothing at the path: the file, or a folder above it, is not there. */
+function isMissing(e: unknown): boolean {
+  const code = (e as NodeJS.ErrnoException)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+/** What a file's stat says about its bytes: any write to it, or a new file in its place, changes this. */
+function stampOf(st: BigIntStats): string {
+  return `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`;
+}
+
+/**
+ * Whether a file's stat, taken at `now` (ms), can stand for its bytes later. It must have been last changed more
+ * than `settleMs` before, so a later change cannot share its timestamps. A change time that only repeats a
+ * whole-second modification time (SSHFS, FAT) is no change time at all: an edit that puts the old modification time
+ * back would go unseen, so such files are always read.
+ */
+export function statTrusted(st: Pick<BigIntStats, 'mtimeNs' | 'ctimeNs'>, now: number, settleMs: number): boolean {
+  if (st.mtimeNs === st.ctimeNs && st.mtimeNs % 1_000_000_000n === 0n) return false;
+  const settled = (ns: bigint) => now - Number(ns / 1_000_000n) > settleMs;
+  return settled(st.mtimeNs) && settled(st.ctimeNs);
+}
 const HISTORY_LIMIT = 100;
 /** How often an open project refreshes its lock, and how long an unrefreshed lock is still trusted. */
 export const LOCK_HEARTBEAT_MS = 30_000;
@@ -230,6 +321,22 @@ export class ProjectSession extends EventEmitter {
   private docs = new Map<string, string>();
   private history: HistoryFile = emptyHistory();
   private generated: GeneratedManifest = { generator: GENERATOR_VERSION, files: {} };
+  /** Generated files kept between generations, each given back while what it was made from is unchanged. */
+  private generation = new GenerationCache();
+  /**
+   * Generated files as last read from disk, by absolute path: the file's stat then and the hash of its bytes. A file
+   * whose stat has not changed since is not read again.
+   */
+  private seenOnDisk = new Map<string, { stamp: string; hash: string }>();
+  /** The hash of each generated file's latest content, by absolute path, so unchanged content is not hashed again. */
+  private contentHashes = new Map<string, { content: string; hash: string }>();
+  /**
+   * How long a file must have been left alone before its stat alone is trusted to show a later change: well past the
+   * coarsest timestamps (two seconds on FAT), so a change in the same tick as the last one is never missed.
+   */
+  settleMs = 3000;
+  /** Checks worked out from a state, kept for as long as it is the session's: the state is replaced, never changed. */
+  private derived = new WeakMap<ProjectState, { diagnostics?: Diagnostic[]; saving?: Diagnostic[]; usages?: Record<string, number>; updates?: ThemeUpdates }>();
   conflicts: Conflict[] = [];
   /**
    * For each canonical document in conflict, the version SiteOrigin Builder holds (null = the document should not
@@ -719,9 +826,10 @@ export class ProjectSession extends EventEmitter {
           if (bad.length) return { ok: false, message: `The external code for "${def.name}" has problems, so it was not kept: ${bad[0].message}` };
         }
         if (builder !== null) await atomicWrite(this.local('recovery', `${stamp}.builder`), builder);
-        changed = await this.diffDocs(this.docs, stateToDocs(next));
+        const nextDocs = stateToDocs(next);
+        changed = await this.diffDocs(this.docs, nextDocs);
         this.state = next;
-        this.docs = stateToDocs(next);
+        this.docs = nextDocs;
         this.migrationDue ||= migrated;
         this.releaseConflict(path);
       }
@@ -972,7 +1080,7 @@ export class ProjectSession extends EventEmitter {
    */
   private async persist(next: ProjectState, opts: CommitOptions & { runId?: string; cursor?: number }): Promise<SessionEvent> {
     // Generate first: a generator failure must not leave canonical documents half-published.
-    const generated = { clean: generateProject(next, { instrument: false }), dev: generateProject(next, { instrument: true }) };
+    const generated = { clean: this.generate(next, false), dev: this.generate(next, true) };
     const nextDocs = stateToDocs(next);
     const changed: Record<string, { before: string | null; after: string | null }> = {};
     const writes: Array<{ path: string; blob: string; content: string; before: string | null }> = [];
@@ -1037,10 +1145,58 @@ export class ProjectSession extends EventEmitter {
     await atomicWrite(this.local('journal.json'), toJson({ schemaVersion: SCHEMA_VERSION, ...j } satisfies Journal));
   }
 
+  /** Every generated file for `state`, reusing what earlier generations made from inputs that are unchanged. */
+  private generate(state: ProjectState, instrument: boolean): Map<string, string> {
+    return generateProject(state, { instrument }, this.generation);
+  }
+
+  /**
+   * The hash a generated file's bytes had when last read, while its stat is still what it was then: looking costs a
+   * stat, never a read. Undefined when the file has to be read to be known.
+   */
+  private async seenHash(abs: string): Promise<string | undefined> {
+    const seen = this.seenOnDisk.get(abs);
+    if (!seen) return undefined;
+    const st = await fs.stat(abs, { bigint: true }).catch(() => null);
+    return st && stampOf(st) === seen.stamp ? seen.hash : undefined;
+  }
+
+  /**
+   * What is at a generated file's path now: the SHA-256 of its bytes, null when nothing is there, or UNREADABLE when
+   * something is there that cannot be read as it is (no access, a folder or pipe, a file swapped under every read),
+   * which is someone else's and never passes for missing. `stamp` is the path's stat the hash belongs to, so a
+   * decision made on it can be checked again just before it is acted on. Stats are only ever compared with stats
+   * taken the same way (path with path, handle with handle), since the two can differ in form on some systems.
+   * Remembered by its stat when it can stand for its bytes.
+   */
+  private async readHash(abs: string): Promise<{ hash: string | null; stamp: string | null }> {
+    this.seenOnDisk.delete(abs);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const started = Date.now();
+      const before = await lookAt(abs);
+      if (before === 'missing') return { hash: null, stamp: null };
+      if (before === 'failed') return { hash: UNREADABLE, stamp: null };
+      const read = await readFileAt(abs);
+      if (read === 'failed') return { hash: UNREADABLE, stamp: null };
+      if (read === 'missing' || read === 'changed') continue;
+      // The path still reaches the file that was read, and its stat did not change meanwhile. Where a path's stat and a
+      // handle's are taken the same way (everywhere but Windows), they must name the same file too.
+      const after = await lookAt(abs);
+      if ((await handleStamp(abs)) !== read.stamp || typeof after === 'string' || stampOf(after) !== stampOf(before)) continue;
+      if (process.platform !== 'win32' && stampOf(before) !== read.stamp) continue;
+      const hash = sha(read.bytes);
+      const stamp = stampOf(before);
+      if (statTrusted(before, started, this.settleMs)) this.seenOnDisk.set(abs, { stamp, hash });
+      return { hash, stamp };
+    }
+    // Changing under every read: someone else is writing it.
+    return { hash: UNREADABLE, stamp: null };
+  }
+
   /** Regenerate derived files. Files edited externally since the last generation are preserved and reported. */
   private async publishGenerated(initial: boolean, pre?: { clean: Map<string, string>; dev: Map<string, string> }): Promise<string[]> {
-    const clean = pre?.clean ?? generateProject(this.state, { instrument: false });
-    const dev = pre?.dev ?? generateProject(this.state, { instrument: true });
+    const clean = pre?.clean ?? this.generate(this.state, false);
+    const dev = pre?.dev ?? this.generate(this.state, true);
     const devRoot = this.local('cache', 'dev');
     const changedFiles: string[] = [];
     const prev = this.generated.files;
@@ -1049,77 +1205,135 @@ export class ProjectSession extends EventEmitter {
     const ours = (path: string, hash: string | null) => hash !== null && (hash === prev[path] || hash === inflight[path]);
     const nextFiles: Record<string, string> = {};
     const authored = new Set(stateToAuthoredSources(this.state).keys());
+    const hashes = new Map<string, { content: string; hash: string }>();
+    const hashOf = (abs: string, content: string) => {
+      const was = this.contentHashes.get(abs);
+      const hash = was && was.content === content ? was.hash : sha(content);
+      hashes.set(abs, { content, hash });
+      return hash;
+    };
     this.conflicts = this.conflicts.filter((c) => c.kind !== 'generated');
+    // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.
+    const project = [...clean].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(this.dir, path) }));
+    const seen = await inBatches(project, (f) => this.seenHash(f.abs));
     // Decide first which project files are someone else's now, so no editor variant shadows them in the preview.
-    const plan: Array<{ path: string; content: string; abs: string }> = [];
-    for (const [path, content] of clean) {
-      if (authored.has(path)) continue;
-      const h = sha(content);
+    const plan: Array<{ path: string; content: string; abs: string; hash: string; stamp: string | null }> = [];
+    const desired: Record<string, string> = {};
+    for (const [i, { path, content, abs }] of project.entries()) {
+      const was = this.contentHashes.get(abs)?.hash;
+      const h = hashOf(abs, content);
+      desired[path] = h;
       nextFiles[path] = h;
-      const abs = safeJoin(this.dir, path);
-      const disk = await readIfExists(abs);
-      const diskHash = disk === null ? null : sha(disk);
+      // Generated the same as last time, and still the bytes it was then: nothing to decide.
+      if (seen[i] === h && was === h) continue;
+      // To be replaced, kept as someone else's, or found already right: decided on its bytes as they are now, read
+      // one file at a time so each decision is as close to the write as the old full pass made it.
+      const { hash: diskHash, stamp } = await this.readHash(abs);
       if (diskHash === h) continue;
-      if (!initial && disk !== null && known(path) && !ours(path, diskHash)) {
-        // Edited outside the app: keep the external version.
+      if (!initial && diskHash !== null && known(path) && !ours(path, diskHash)) {
+        // Edited outside the app (or no longer readable by it): keep the external version.
         nextFiles[path] = prev[path] ?? inflight[path];
-        this.conflicts.push({ path, reason: 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
+        this.conflicts.push({ path, reason: diskHash === UNREADABLE ? UNREADABLE_REASON : 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
         continue;
       }
-      if (!initial && disk !== null && !known(path)) {
+      if (!initial && diskHash !== null && !known(path)) {
         // A file we never wrote already lives here: never overwrite someone's own work.
         delete nextFiles[path];
         this.conflicts.push({ path, reason: 'Generated file would replace a file that SiteOrigin Builder did not create. Move or delete that file, then restore.', kind: 'generated' });
         continue;
       }
-      plan.push({ path, content, abs });
+      plan.push({ path, content, abs, hash: h, stamp });
     }
     const keptExternal = new Set(this.conflicts.filter((c) => c.kind === 'generated').map((c) => c.path));
     // Dev variants (with editor identity attributes, never part of the portable source) are written before the
     // project files, so the dev server never loads a stale instrumented file. A file kept as edited outside the
     // app has no variant: the preview shows the external version, as the exported site would.
-    for (const [path, content] of dev) {
-      if (authored.has(path)) continue;
-      const abs = safeJoin(devRoot, path);
+    const variants = [...dev].filter(([path]) => !authored.has(path)).map(([path, content]) => ({ path, content, abs: safeJoin(devRoot, path) }));
+    // A variant that cannot be read is written again: only the app writes them.
+    const variantsOnDisk = await inBatches(variants, async (f) => (keptExternal.has(f.path) ? null : ((await this.seenHash(f.abs)) ?? (await this.readHash(f.abs)).hash)));
+    for (const [i, { path, content, abs }] of variants.entries()) {
       if (keptExternal.has(path)) {
         if (existsSync(abs)) {
           await fs.rm(abs, { force: true });
+          this.seenOnDisk.delete(abs);
           // The preview may have cached the variant; touching the real file makes it load that file instead.
           const now = new Date();
           await fs.utimes(safeJoin(this.dir, path), now, now).catch(() => undefined);
         }
         continue;
       }
-      const disk = await readIfExists(abs);
       // Rebuilt from the documents on every publication, so a power loss costs nothing here.
-      if (disk !== content) await atomicWrite(abs, content, { durable: false });
+      const hash = hashOf(abs, content);
+      if (variantsOnDisk[i] !== hash) {
+        this.seenOnDisk.delete(abs);
+        await atomicWrite(abs, content, { durable: false });
+        // Only the app writes its preview variants, so the file now on disk is this one.
+        const st = await fs.stat(abs, { bigint: true }).catch(() => null);
+        if (st) this.seenOnDisk.set(abs, { stamp: stampOf(st), hash });
+      }
     }
     // The preview serves a variant only while the project file is the one generated here; written before the
     // project files, so a file mid-publication is never mistaken for an edit made outside the app.
-    const cleanHashes: Record<string, string> = {};
-    for (const [path, content] of clean) if (!authored.has(path)) cleanHashes[path] = sha(content);
-    await atomicWrite(join(devRoot, CLEAN_HASHES), JSON.stringify(cleanHashes), { durable: false });
+    await atomicWrite(join(devRoot, CLEAN_HASHES), JSON.stringify(desired), { durable: false });
     // Claimed before they are written: a publication that stops part way (a crash, an AI run being rolled back)
     // leaves files the next one recognises as its own, to replace or remove, never as someone else's.
-    if (plan.length) await this.writeManifest(prev, { ...inflight, ...Object.fromEntries(plan.map((f) => [f.path, sha(f.content)])) });
-    for (const { path, content, abs } of plan) {
-      await atomicWrite(abs, content);
-      changedFiles.push(path);
+    if (plan.length) await this.writeManifest(prev, { ...inflight, ...Object.fromEntries(plan.map((f) => [f.path, f.hash])) });
+    for (const { path, content, abs, hash: h, stamp } of plan) {
+      this.seenOnDisk.delete(abs);
+      let theirs = false;
+      // Checked again once the new file is ready, just before it takes the path: a file that changed since it was
+      // looked at (saved by an editor meanwhile, say) is decided again on what is there now.
+      const replace = async () => {
+        if (initial) return true;
+        const now = await lookAt(abs);
+        if ((now === 'missing' ? null : now === 'failed' ? UNREADABLE : stampOf(now)) === stamp) return true;
+        const { hash: there } = await this.readHash(abs);
+        if (there === h) return false;
+        // Nothing readable there may still be something: a link to nowhere is someone else's too.
+        if (there === null && !(await fs.lstat(abs).catch(() => null))) return true;
+        if (there !== null && ours(path, there)) return true;
+        theirs = true;
+        return false;
+      };
+      let written = false;
+      try {
+        written = await atomicWrite(abs, content, { beforeReplace: replace });
+      } catch (e) {
+        // A folder on the way that is now a file: what is in the way is someone else's, never a reason to stop.
+        if (initial || !['ENOTDIR', 'EEXIST'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e;
+        theirs = true;
+      }
+      if (written) changedFiles.push(path);
+      else if (theirs) {
+        if (known(path)) nextFiles[path] = prev[path] ?? inflight[path];
+        else delete nextFiles[path];
+        this.conflicts.push({ path, reason: 'Generated file was edited outside SiteOrigin Builder. Restore it to resume generation.', kind: 'generated' });
+        const variant = safeJoin(devRoot, path);
+        await fs.rm(variant, { force: true });
+        this.seenOnDisk.delete(variant);
+      }
     }
     // Remove files that are no longer generated, for good before the manifest stops claiming them.
     for (const path of new Set([...Object.keys(prev), ...Object.keys(inflight)])) {
       if (path in nextFiles) continue;
       const abs = safeJoin(this.dir, path);
-      const disk = await readIfExists(abs);
-      await fs.rm(safeJoin(devRoot, path), { force: true });
+      const variant = safeJoin(devRoot, path);
+      await fs.rm(variant, { force: true });
+      this.seenOnDisk.delete(variant);
+      // Read just before it goes, so a save made meanwhile is never removed.
+      const { hash: diskHash } = await this.readHash(abs);
       // An obsolete file that was edited outside the app is left alone and no longer owned.
-      if (disk !== null && ours(path, sha(disk))) {
+      if (ours(path, diskHash)) {
+        this.seenOnDisk.delete(abs);
         await removeDurable(abs);
         await removeEmptyDirs(dirname(abs), join(this.dir, 'src'));
         changedFiles.push(path);
       }
     }
     await this.writeManifest(nextFiles);
+    this.contentHashes = hashes;
+    // Only files still generated are worth remembering.
+    for (const abs of this.seenOnDisk.keys()) if (!hashes.has(abs)) this.seenOnDisk.delete(abs);
     return changedFiles;
   }
 
@@ -1154,13 +1368,21 @@ export class ProjectSession extends EventEmitter {
   }
 
   private async restoreGeneratedLocked(path: string) {
-    const clean = generateProject(this.state, { instrument: false });
+    const clean = this.generate(this.state, false);
     const content = clean.get(path);
     if (content === undefined) throw new Error('That file is no longer generated.');
     const abs = safeJoin(this.dir, path);
-    const disk = await readIfExists(abs);
-    if (disk !== null) await atomicWrite(this.local('recovery', `${Date.now()}-${path.replace(/[\\/]/g, '__')}`), disk);
-    await atomicWrite(abs, content);
+    // Kept byte for byte before it is replaced; a file that cannot be read is never replaced unkept.
+    const disk = await readFileAt(abs);
+    if (disk === 'failed' || disk === 'changed') throw new Error(`${path} could not be read, so it was not restored. Check that it is a file you can open, then try again.`);
+    if (disk !== 'missing') await atomicWrite(this.local('recovery', `${Date.now()}-${path.replace(/[\\/]/g, '__')}`), disk.bytes);
+    this.seenOnDisk.delete(abs);
+    // Saved again while the copy was kept: that save is not replaced unkept either.
+    const unchanged = async () => {
+      if ((await handleStamp(abs)) === (disk === 'missing' ? null : disk.stamp)) return true;
+      throw new Error(`${path} changed while it was being restored, so it was not restored. Try again.`);
+    };
+    await atomicWrite(abs, content, { beforeReplace: unchanged });
     this.generated.files[path] = sha(content);
     this.conflicts = this.conflicts.filter((c) => c.path !== path);
     await this.publishGenerated(false);
@@ -1276,8 +1498,8 @@ export class ProjectSession extends EventEmitter {
         if (errors.length)
           return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: `The code for "${def.name}" has problems: ${errors.map((e) => (e.line ? `line ${e.line}: ` : '') + e.message).join(' ')}`, recoverable: true, details: errors } };
       }
-      const before = validateState(this.state, { sectionLinks: false }).filter(blocksSaving).map((d) => d.message);
-      const introduced = validateState(next, { sectionLinks: false }).filter((d) => blocksSaving(d) && !before.includes(d.message));
+      const before = this.savingProblems(this.state).map((d) => d.message);
+      const introduced = this.savingProblems(next).filter((d) => !before.includes(d.message));
       if (introduced.length)
         return { ok: false, revision: this.revision, error: { code: 'VALIDATION_FAILED', message: introduced.map((d) => d.message).join(' '), recoverable: true, details: introduced } };
       let ev: SessionEvent;
@@ -1312,12 +1534,42 @@ export class ProjectSession extends EventEmitter {
   /** Document problems. File conflicts are reported separately (`conflicts`), with their actions, never twice. */
   diagnostics(): Diagnostic[] {
     try {
-      return validateState(this.state);
+      return this.memo(this.state, 'diagnostics', validateState);
     } catch (e) {
       // A project from a newer version may not follow this version's shapes; it is open read-only anyway.
       if (this.readOnly) return [];
       throw e;
     }
+  }
+
+  /** How many places use each library asset. */
+  assetUsages(): Record<string, number> {
+    return this.memo(this.state, 'usages', assetUsages);
+  }
+
+  /** Theme components with a newer version available. */
+  themeUpdates(): ThemeUpdates {
+    return this.memo(this.state, 'updates', themeUpdates);
+  }
+
+  /** Problems that stop a state from being saved. */
+  private savingProblems(state: ProjectState): Diagnostic[] {
+    return this.memo(state, 'saving', (st) => validateState(st, { sectionLinks: false }).filter(blocksSaving));
+  }
+
+  /**
+   * A check of `state`, worked out once. Only states the session holds or is about to hold come here, and those are
+   * never changed after they are made; a check that throws is not kept.
+   */
+  private memo<K extends 'diagnostics' | 'saving' | 'usages' | 'updates'>(state: ProjectState, key: K, compute: (state: ProjectState) => NonNullable<ReturnType<ProjectSession['checksOf']>[K]>) {
+    const checks = this.checksOf(state);
+    return (checks[key] ??= compute(state));
+  }
+
+  private checksOf(state: ProjectState) {
+    let checks = this.derived.get(state);
+    if (!checks) this.derived.set(state, (checks = {}));
+    return checks;
   }
 
   // -------------------------------------------------------------------------
@@ -2225,6 +2477,9 @@ export class ProjectSession extends EventEmitter {
     await this.writing.catch(() => undefined);
     await this.releaseLock();
     this.removeAllListeners();
+    this.generation.clear();
+    this.seenOnDisk.clear();
+    this.contentHashes.clear();
   }
 }
 

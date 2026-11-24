@@ -54,8 +54,11 @@ export async function ensureDir(dir: string, opts: { durable?: boolean } = {}): 
  * Durable by default: the data is flushed before the rename and the folder after it, so when this returns the new
  * file survives a power loss, and a later write that depends on it cannot reach the disk first. `durable: false`
  * is for files that are rebuilt from others anyway (the preview's editor variants).
+ *
+ * `beforeReplace` runs once the new file is ready, immediately before it takes the path; when it says no, nothing
+ * is replaced. It says whether the file was replaced.
  */
-export async function atomicWrite(path: string, data: string | Buffer, opts: { mode?: number; durable?: boolean } = {}): Promise<void> {
+export async function atomicWrite(path: string, data: string | Buffer, opts: { mode?: number; durable?: boolean; beforeReplace?: () => Promise<boolean> } = {}): Promise<boolean> {
   const durable = opts.durable !== false;
   const dir = dirname(path);
   await ensureDir(dir, { durable });
@@ -75,12 +78,17 @@ export async function atomicWrite(path: string, data: string | Buffer, opts: { m
       await fs.writeFile(tmp, data, opts.mode === undefined ? undefined : { mode: opts.mode });
       if (opts.mode !== undefined) await fs.chmod(tmp, opts.mode);
     }
+    if (opts.beforeReplace && !(await opts.beforeReplace())) {
+      await fs.rm(tmp, { force: true });
+      return false;
+    }
     await fs.rename(tmp, path);
   } catch (e) {
     await fs.rm(tmp, { force: true }).catch(() => undefined);
     throw e;
   }
   if (durable) await syncDir(dir);
+  return true;
 }
 
 /** Remove a file and flush its folder, so the removal is on disk before anything that depends on it. */
