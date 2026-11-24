@@ -314,7 +314,12 @@ function registerIpc() {
   handle('projects:cancelOpen', () => controller.cancelUnpacking());
   handle('projects:trustAndOpen', (dir: string) => controller.trustAndOpen(dir));
   handle('projects:close', () => controller.closeProject());
-  handle('projects:duplicate', () => controller.duplicate());
+  handle('projects:duplicate', (opts?: unknown) => {
+    const o = (opts ?? {}) as { name?: unknown; parentDir?: unknown; opening?: unknown };
+    if (typeof o.name !== 'string' || typeof o.parentDir !== 'string' || typeof o.opening !== 'string')
+      return { ok: false, field: 'form', message: 'The project could not be copied: no name or folder was given.' };
+    return controller.duplicate({ name: o.name, parentDir: o.parentDir, opening: o.opening });
+  });
   handle('projects:reveal', (p?: string) => controller.revealInFinder(p));
   handle('project:snapshot', () => controller.snapshot());
   handle('project:reloadFromDisk', () => controller.reloadFromDisk());

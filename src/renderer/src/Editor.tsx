@@ -25,7 +25,7 @@ import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/So
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, NewComponentModal, RenameComponentModal, SetHomeModal } from './panels/Dialogs';
 import { ImportReviewModal } from './panels/ImportReview';
 import { PasteStyleModal } from './panels/StylePaste';
-import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
+import { DuplicateProjectModal, NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { askAiAbout, deleteLayers, duplicateLayers, moveLayers, openComponentStudio, openSiteStyles, planLayers, setMode } from './lib/actions';
 import { StudioControls } from './panels/StudioControls';
 import { copySelection, pasteCopy } from './lib/clipboard';
@@ -372,7 +372,33 @@ export function Editor() {
   const leaving = useStore((s) => s.leaving);
   // New project, or a project to trust, chosen from here: asked over this project, which stays open until the new
   // one has opened (#80).
-  const [switching, setSwitching] = useState<null | { kind: 'new' } | { kind: 'trust'; dir: string; name: string }>(null);
+  const [switching, setSwitching] = useState<null | { kind: 'new' } | { kind: 'duplicate' } | { kind: 'trust'; dir: string; name: string }>(null);
+  // A project being opened from here takes no second Open or New project until it has answered: its reply (a
+  // trust prompt, the switch itself) must not land over a dialog started meanwhile.
+  const openingProject = useRef(false);
+  // Open a project from here (a chooser with no `dir`): cancelling, or a project that cannot be opened, leaves this
+  // one as it is. Duplicate's Open copy uses it too.
+  const openProject = (dir?: string, opts?: { folder?: boolean }) => {
+    if (openingProject.current) return;
+    openingProject.current = true;
+    void api.projects
+      .open(dir, opts)
+      .then(
+        (r) => {
+          if (r.needsTrust) setSwitching({ kind: 'trust', ...r.needsTrust });
+          else if (!r.ok) {
+            // Leaving was agreed but the switch did not happen: this project takes input again.
+            endEditingHold();
+            if (r.message) toast(r.message, 'error');
+          }
+        },
+        (e: unknown) => {
+          endEditingHold();
+          toast(`Could not open the project: ${errorText(e)}`, 'error');
+        }
+      )
+      .finally(() => (openingProject.current = false));
+  };
   // Joined, so each new snapshot (a fresh array over IPC) does not repeat the same notes.
   const recovery = useStore((s) => s.snapshot?.recoveryNotes.join('\n') ?? '');
 
@@ -411,39 +437,18 @@ export function Editor() {
       if (mod && ['c', 'v'].includes(e.key.toLowerCase()) && !clipKeyIsEditors(e.key.toLowerCase() === 'c' ? 'copy' : 'paste', e.target as HTMLElement, document.body)) return;
       if (handleShortcut(e.key, mod, e.shiftKey)) e.preventDefault();
     };
-    // A project being opened from here takes no second Open or New project until it has answered: its reply (a
-    // trust prompt, the switch itself) must not land over a dialog started meanwhile.
-    let opening = false;
     const onCmd = (e: Event) => {
       if (openDialogs.length || openMenus.count || getState().leaving) return;
       const cmd = (e as CustomEvent).detail;
-      if (opening && (cmd === 'open-project' || cmd === 'open-project-folder' || cmd === 'new-project')) return;
+      if (openingProject.current && (cmd === 'open-project' || cmd === 'open-project-folder' || cmd === 'new-project' || cmd === 'duplicate-project')) return;
       if (cmd === 'export') setState({ modal: { kind: 'export' } });
       // Leaving the project saves what is being typed first (the main process asks; see lib/leave.ts).
       if (cmd === 'close-project') void closeProject();
       // Switching projects from the editor uses the same New project and Trust dialogs as Welcome, shown over
       // this project: cancelling them, or a project that cannot be made or opened, leaves it as it is.
-      if (cmd === 'open-project' || cmd === 'open-project-folder') {
-        opening = true;
-        void api.projects
-          .open(undefined, cmd === 'open-project-folder' ? { folder: true } : undefined)
-          .then(
-          (r) => {
-            if (r.needsTrust) setSwitching({ kind: 'trust', ...r.needsTrust });
-            else if (!r.ok) {
-              // Leaving was agreed but the switch did not happen: this project takes input again.
-              endEditingHold();
-              if (r.message) toast(r.message, 'error');
-            }
-          },
-          (e: unknown) => {
-            endEditingHold();
-            toast(`Could not open the project: ${errorText(e)}`, 'error');
-          }
-          )
-          .finally(() => (opening = false));
-      }
+      if (cmd === 'open-project' || cmd === 'open-project-folder') openProject(undefined, cmd === 'open-project-folder' ? { folder: true } : undefined);
       if (cmd === 'new-project') setSwitching({ kind: 'new' });
+      if (cmd === 'duplicate-project') setSwitching({ kind: 'duplicate' });
     };
     // The project behind a switch dialog has closed (the switch happened): the dialog was about it, so it goes too.
     const offClosed = api.on('project:closed', () => setSwitching(null));
@@ -702,6 +707,15 @@ export function Editor() {
       {modal?.kind === 'import-review' && <ImportReviewModal key={modal.id} id={modal.id} rows={modal.rows} />}
       {modal?.kind === 'paste-style' && <PasteStyleModal target={modal.ref} opening={modal.opening} />}
       {switching?.kind === 'new' && <NewProjectModal onClose={() => setSwitching(null)} />}
+      {switching?.kind === 'duplicate' && (
+        <DuplicateProjectModal
+          onClose={() => setSwitching(null)}
+          onOpen={(dir) => {
+            setSwitching(null);
+            openProject(dir);
+          }}
+        />
+      )}
       {switching?.kind === 'trust' && <TrustProjectModal project={switching} onClose={() => setSwitching(null)} />}
     </div>
   );

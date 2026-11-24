@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Check, CircleAlert, CloudAlert, CloudDownload, FileArchive, FolderOpen, Info, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
-import type { ProgressEvent, WebsiteTools } from '@shared/api';
+import { Check, CircleAlert, CloudAlert, CloudDownload, Copy, FileArchive, FolderOpen, Info, LayoutTemplate, ShieldAlert, TriangleAlert } from 'lucide-react';
+import type { DuplicateProjectResult, ProgressEvent, WebsiteTools } from '@shared/api';
+import { MAX_COPY_NAME, projectDisplayName, projectFolderName } from '@shared/project-name';
 import { getTheme } from '@catalogue/index';
 import { isImeComposing } from '../lib/ime';
 import { endEditingHold } from '../lib/leave';
-import { api, errorText, toast } from '../store';
+import { api, errorText, toast, useStore } from '../store';
 import { usePackPreview, usePreviewExtent } from './PackPreview';
 import { Field, Modal, Spinner, SwitchRow } from './ui';
 
@@ -275,6 +276,190 @@ export function TrustProjectModal({ project, onClose, onOpened }: { project: { d
           <PathReadout path={project.dir} className="trust-path" />
         </div>
         <p className="trust-why">It was made on another computer, or its setup files changed since you last opened it. If you’re unsure, choose Cancel: the project stays closed and nothing is changed.</p>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------- Duplicate ----------
+
+/** The folder a path sits in, in the path's own style ("/Users/ana/Sites" for "/Users/ana/Sites/storefront"). */
+function parentFolder(path: string): string {
+  const sep = isWindowsPath(path) ? '\\' : '/';
+  const trimmed = path.length > 1 && path.endsWith(sep) ? path.slice(0, -1) : path;
+  const at = trimmed.lastIndexOf(sep);
+  if (at < 0) return trimmed;
+  // The root keeps its separator ("/", "C:\\").
+  return at === 0 || (sep === '\\' && at === 2 && trimmed[1] === ':') ? trimmed.slice(0, at + 1) : trimmed.slice(0, at);
+}
+
+/**
+ * Duplicate project (#176), over the open project: the copy's own name, which Recent projects and the toolbar show in
+ * place of the site's (the site's visitor-facing name is copied as it is), and the folder it is made in. A destination
+ * that cannot be used is explained beside the folder, with the form kept to correct it. Once made, the copy is
+ * offered to open; until then, and unless it is opened, every change stays in the project open now.
+ */
+export function DuplicateProjectModal({ onClose, onOpen }: { onClose: () => void; onOpen: (dir: string) => void }) {
+  const snap = useStore((s) => s.snapshot);
+  // The project as it was when Duplicate was chosen: the copy is of that opening, and of no other.
+  const [source] = useState(() => (snap ? { opening: snap.workspaceKey, name: projectDisplayName(snap.state), site: snap.state.site.name, dir: snap.dir } : null));
+  const [name, setName] = useState(() => (source ? `${source.name} copy`.slice(0, MAX_COPY_NAME) : ''));
+  const [parent, setParent] = useState(() => (source ? parentFolder(source.dir) : ''));
+  const [problem, setProblem] = useState<{ field: 'name' | 'location' | 'form'; text: string; target: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<{ dir: string; name: string } | null>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const openRef = useRef<HTMLButtonElement>(null);
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (done) openRef.current?.focus();
+  }, [done]);
+  useEffect(() => {
+    if (problem) nameRef.current?.focus();
+  }, [problem]);
+
+  const trimmed = name.replace(/\s+/g, ' ').trim();
+  const sep = isWindowsPath(parent) ? '\\' : '/';
+  const target = parent && trimmed ? `${parent.endsWith(sep) ? parent : parent + sep}${projectFolderName(trimmed)}` : parent;
+  // A problem with the destination stays while the name and folder still lead to it; one with the copy itself stays
+  // until the next try.
+  const shown = problem && problem.field !== 'form' && problem.target !== target ? null : problem;
+  const canDuplicate = !!source && !!trimmed && !!parent && !busy && shown?.field !== 'location';
+
+  const duplicate = async () => {
+    if (!source || !canDuplicate) return;
+    keepFocusInDialog(nameRef.current);
+    setBusy(true);
+    setProblem(null);
+    let r: DuplicateProjectResult;
+    try {
+      r = await api.projects.duplicate({ name: trimmed, parentDir: parent, opening: source.opening });
+    } catch (e) {
+      r = { ok: false, field: 'form', message: `The project could not be copied: ${errorText(e)}` };
+    }
+    // The dialog went with the project it was over: what happened is told as a notice.
+    if (!live.current) {
+      if (r.ok) toast(`${r.name} was copied to ${r.dir}. Open it from Recent projects.`, 'success');
+      else toast(r.message, 'error');
+      return;
+    }
+    setBusy(false);
+    if (r.ok) setDone({ dir: r.dir, name: r.name });
+    else setProblem({ field: r.field, text: r.message, target });
+  };
+
+  if (done && source)
+    return (
+      <Modal
+        title="Copy created"
+        icon={<Copy />}
+        onClose={onClose}
+        describedBy="duplicate-done"
+        footer={
+          <>
+            <button className="btn" onClick={onClose}>
+              Keep editing here
+            </button>
+            <button ref={openRef} className="btn btn-primary" onClick={() => onOpen(done.dir)}>
+              Open copy
+            </button>
+          </>
+        }
+      >
+        <div className="duplicate-form">
+          <p id="duplicate-done" className="duplicate-note">
+            <strong>{done.name}</strong> is ready, in its own folder. You’re still editing <strong>{source.name}</strong>: changes made here stay in this project until you open the copy.
+          </p>
+          <div className="field">
+            <div className="field-label" id="duplicate-done-path-label">
+              Copy’s folder
+            </div>
+            <PathReadout id="duplicate-done-path" path={done.dir} />
+          </div>
+        </div>
+      </Modal>
+    );
+
+  const onName = shown?.field === 'name';
+  const onLocation = shown?.field === 'location';
+  return (
+    <Modal
+      title="Duplicate project"
+      icon={<Copy />}
+      onClose={onClose}
+      busy={busy}
+      footer={
+        <>
+          <span className="foot-note" role="status">
+            {busy ? (
+              <>
+                <Spinner decorative /> Copying {source?.name}…
+              </>
+            ) : null}
+          </span>
+          <button className="btn" disabled={busy} onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" disabled={!canDuplicate} onClick={() => void duplicate()}>
+            Duplicate
+          </button>
+        </>
+      }
+    >
+      <div className="duplicate-form">
+        <Field label="Copy name" controlId="duplicate-name">
+          <input
+            ref={nameRef}
+            id="duplicate-name"
+            className="input"
+            autoFocus
+            maxLength={MAX_COPY_NAME}
+            value={name}
+            disabled={busy}
+            aria-invalid={onName ? true : undefined}
+            aria-describedby={shown && shown.field !== 'location' ? 'duplicate-name-hint duplicate-error' : 'duplicate-name-hint'}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void duplicate()}
+          />
+        </Field>
+        <p id="duplicate-name-hint" className="duplicate-note muted">
+          Shown in Recent projects and the toolbar, so you can tell the copy from {source?.name ?? 'the original'}. Visitors still see the site name{source ? <> “{source.site}”</> : null}.
+        </p>
+        <div className="field">
+          <div className="field-label" id="duplicate-path-label">
+            Copy’s folder
+          </div>
+          <div className="np-path-row">
+            <PathReadout id="duplicate-path" path={target} pending={trimmed ? undefined : 'copy-name'} className={onLocation ? 'invalid' : ''} />
+            <button
+              className="btn"
+              disabled={busy}
+              aria-describedby={onLocation ? 'duplicate-path-label duplicate-path duplicate-error' : 'duplicate-path-label duplicate-path'}
+              onClick={async () => {
+                const d = await api.dialogs.chooseFolder('Choose where to put the copy', parent || undefined);
+                if (d && live.current) {
+                  setParent(d);
+                  // Choosing a folder again asks afresh, in case it was emptied meanwhile.
+                  if (problem?.field === 'location') setProblem(null);
+                }
+              }}
+            >
+              Choose…
+            </button>
+          </div>
+        </div>
+        {shown && (
+          <div id="duplicate-error" className="scope-note danger" role="alert">
+            <CircleAlert aria-hidden="true" />
+            <span>{shown.text}</span>
+          </div>
+        )}
       </div>
     </Modal>
   );
