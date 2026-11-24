@@ -1394,61 +1394,156 @@ iframe { color-scheme: light dark; }
 /* A closed section that keeps its fields (Section keepMounted) hides them: its flex layout must not show them. */
 .section-body[hidden] { display: none; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-/* Component authoring. Where a shared design is used, and the property editor: one compact row per property
-   (label, code name, type, a summary of its settings), with the rest behind the row's disclosure. */
-.placement-list { list-style: none; margin: 0; padding: 0; max-height: 168px; overflow: auto; border: 1px solid var(--border); border-radius: var(--r-sm); }
-.placement-list li { display: flex; align-items: center; gap: 12px; min-height: 28px; padding: 3px 10px; }
+/* ---------- Component authoring (Dialogs.tsx: Create component, Rename, Make unique, Edit definition) ----------
+   The dialogs follow the confirmation family's order (.confirm-*): a badge for the action, the component or element
+   it acts on set apart, a line for each thing that changes or stays safe, then the one field it asks for. Plum marks
+   only Edit everywhere, the one action that changes every placement at once. */
+.authoring-badge[data-tone='definition'] { background: var(--plum-soft); color: var(--plum); }
+.authoring-badge[data-tone='caution'] { background: var(--panel-2); color: var(--red); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.authoring-form { display: flex; flex-direction: column; gap: 12px; }
+.authoring-form > .field { margin-top: 4px; }
+.authoring-subject[data-tone='definition'] { background: var(--plum-soft); border-color: color-mix(in srgb, var(--plum) 32%, transparent); }
+.authoring-subject[data-tone='definition'] > svg { color: var(--plum); }
+.authoring-details li { overflow-wrap: anywhere; }
+.authoring-details li[data-kind='change'] { color: var(--text); }
+.authoring-details strong { font-weight: 600; color: var(--text); }
+.authoring-count { flex: none; font-size: 12px; font-weight: 500; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.authoring-count[data-full] { font-weight: 600; color: var(--text); }
+.authoring-optional { font-weight: 400; color: var(--text-2); }
+/* A hint and the error that replaces it take the same height, so nothing below moves. */
+.authoring-form :is(.field-hint, .field-error) { min-height: 17px; line-height: 1.4; text-wrap: pretty; }
+.authoring-gone { padding: 9px 11px; border: 1px solid color-mix(in srgb, var(--red) 28%, transparent); text-wrap: pretty; }
+.authoring-gone > svg { width: 15px; height: 15px; margin-top: 2px; }
+.authoring-gone strong { overflow-wrap: anywhere; }
+/* Where a shared design is used: one row per page, part or component, each with its kind and its count. */
+.placement-block { display: flex; flex-direction: column; gap: 6px; }
+.placement-list { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--raised); }
+.placement-list:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.placement-list li { display: flex; align-items: flex-start; gap: 9px; min-height: 32px; padding: 6px 11px; line-height: 1.45; }
 .placement-list li + li { border-top: 1px solid var(--border); }
-.placement-count { flex: none; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.placement-icon { display: grid; flex: none; margin-top: 2px; color: var(--text-2); }
+.placement-icon svg { width: 15px; height: 15px; }
+.placement-count { flex: none; margin-top: 1px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .placement-list li .grow { overflow-wrap: anywhere; }
 .placement-reach { color: var(--text-2); }
-/* Errors in these forms carry the danger icon with their words, and mark the field they belong to. */
-.authoring-form :is(.input, .textarea)[aria-invalid='true']:not(:focus) { border-color: var(--red); }
+/* Errors in these forms carry the danger glyph with their words (the shared .field-error) and mark the field they
+   belong to, focused or not (the shared invalid border, inside the focus outline). */
 /* A schema row's error reads in body ink; its glyph keeps the danger red. */
 .schema-row .field-error::before { background: var(--red); }
 .schema-row .field-error { color: var(--text); }
-.schema-editor { display: flex; flex-direction: column; gap: 4px; padding: 2px 4px 4px; }
-.schema-head { position: sticky; top: 0; z-index: 2; display: flex; flex-direction: column; gap: 6px; padding: 2px 0 4px; background: var(--panel); }
-.schema-intro .mono { white-space: nowrap; }
-.schema-label { font-weight: 500; }
-.schema-name:not(:focus) { color: var(--text-2); }
-.schema-bar { display: flex; align-items: center; gap: 8px; min-height: 28px; }
-.schema-intro { flex: 1; min-width: 0; margin: 0; font-size: 12px; line-height: 1.4; color: var(--text-2); }
+
+/* ---------- Property table (PropSchemaEditor.tsx) ----------
+   A list, not a grid of cards: one row per property separated by hairlines, read across as label, code name, type
+   (with its glyph) and what its settings hold. Values in the summary are full-strength and what they are is quiet, so
+   set defaults stand out down the column and unset ones recede. A row opens into a raised panel of its settings. */
+.schema-editor { display: flex; flex-direction: column; padding: 2px 4px 8px; }
+.schema-head { position: sticky; top: 0; z-index: 5; display: flex; flex-direction: column; gap: 8px; padding: 2px 0 0; background: var(--panel); }
+.schema-bar { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+.schema-intro { flex: 1; min-width: 0; margin: 0; font-size: 12px; line-height: 18px; color: var(--text-2); }
+.schema-intro strong { font-weight: 600; color: var(--text); }
+.schema-code { padding: 1px 5px; border: 1px solid var(--border); border-radius: var(--r-xs); background: var(--panel-2); font-family: var(--mono); font-size: 11.5px; color: var(--text); white-space: nowrap; }
 .schema-problems { flex: none; border-color: var(--red); background: var(--red-soft); color: var(--red); }
 .schema-problems:hover:not(:disabled) { background: var(--raised); }
 .schema-add { flex: none; }
-.schema-undo { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 3px 4px 3px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text); }
-.schema-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) 112px minmax(0, 1.3fr); align-items: center; gap: 6px; }
-.schema-cols { padding: 0 5px 5px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 500; color: var(--text-2); }
-.schema-cols > span { padding-left: 9px; }
-.schema-cols > span:last-child { padding-left: 8px; }
-.schema-row { min-width: 0; margin: 0; padding: 4px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); transition: background-color 120ms; }
+.schema-undo { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 3px 4px 3px 12px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--panel-2); font-size: 12px; color: var(--text); }
+.schema-grid { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 0.8fr) 140px minmax(0, 1.7fr); align-items: center; gap: 8px; }
+/* A row's label, code name and type join into one strip with shared seams, so each row reads as one property
+   rather than three loose boxes. Every field keeps its own 3:1 edge; a hovered, invalid or focused one sits on top. */
+.schema-row > .schema-grid { column-gap: 0; isolation: isolate; }
+.schema-row > .schema-grid > .schema-row-toggle { margin-left: 8px; width: calc(100% - 8px); }
+.schema-row > .schema-grid > .schema-label { position: relative; border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.schema-row > .schema-grid > .schema-name { position: relative; margin-left: -1px; width: calc(100% + 1px); border-radius: 0; }
+.schema-row > .schema-grid > .schema-type { margin-left: -1px; }
+.schema-row > .schema-grid > .schema-type .select { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.schema-row > .schema-grid :is(.input, .select):hover { z-index: 1; }
+.schema-row > .schema-grid :is(.input, .select)[aria-invalid='true'] { z-index: 2; }
+.schema-row > .schema-grid :is(.input, .select):focus { z-index: 3; }
+.schema-row > .schema-grid > .schema-type .select { position: relative; }
+.schema-type > svg { z-index: 4; }
+.schema-cols { column-gap: 0; }
+.schema-cols > span:last-child { margin-left: 8px; }
+.schema-cols { padding: 0 8px 6px; border-bottom: 1px solid var(--border-strong); font-size: 12px; font-weight: 500; line-height: 18px; color: var(--text-2); }
+.schema-cols > span { padding-left: 10px; }
+.schema-row { min-width: 0; margin: 0; padding: 6px 8px; border: 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); border-radius: 0; background: transparent; transition: background-color 120ms; }
+/* The open panel draws its own edge, so the row above it drops its divider. */
+.schema-row:has(+ .schema-row.open) { border-bottom-color: transparent; }
+.schema-row:hover { background: var(--hover); }
 .schema-row:has(:focus-visible) { background: var(--accent-soft); }
-.schema-row.open { margin-block: 2px; border-color: var(--border-strong); background: var(--panel-2); }
+.schema-row.open { margin: 8px -4px; padding: 7px 11px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--panel-2); box-shadow: var(--shadow-sm); }
 .schema-row.open:has(:focus-visible) { background: color-mix(in srgb, var(--accent) 4%, var(--panel-2)); }
-.schema-row.invalid { border-color: var(--red); }
-.schema-row :is(.input, .select, .textarea)[aria-invalid='true'] { border-color: var(--red); }
-.schema-row-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 26px; padding: 0 5px 0 8px; border: 0; border-radius: var(--r-sm); background: var(--hover); font-size: 12px; color: var(--text-2); text-align: left; }
-.schema-row-toggle:hover:not(:disabled) { background: var(--active); color: var(--text); }
-.schema-row-toggle .ellipsis { flex: 1; min-width: 0; }
+/* A row with a problem keeps its place in the list and carries a red edge, so it is found by scanning down. Open,
+   the whole panel takes the red edge, since a partial bar would bend round its corners. */
+.schema-row.invalid { box-shadow: inset 3px 0 0 var(--red); background: color-mix(in srgb, var(--red) 4%, transparent); }
+.schema-row.open.invalid { border-color: var(--red); box-shadow: var(--shadow-sm); background: var(--panel-2); }
+.schema-grid > :is(.input, .select), .schema-type .select { height: 28px; }
+.schema-grid > .schema-label { font-size: 13px; font-weight: 500; }
+.schema-name { font-size: 12px; }
+.schema-name:not(:focus) { color: var(--text-2); }
+.schema-type { position: relative; display: block; min-width: 0; }
+.schema-type > svg { position: absolute; top: 50%; left: 9px; width: 14px; height: 14px; transform: translateY(-50%); color: var(--text-2); pointer-events: none; }
+.schema-type .select { width: 100%; padding-left: 29px; font-size: 12px; }
+.schema-row-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; height: 28px; padding: 0 6px 0 10px; border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; font-size: 12px; color: var(--text); text-align: left; }
+.schema-row-toggle:hover:not(:disabled), .schema-row-toggle[aria-expanded='true'] { background: var(--active); }
+/* Parts sit on one line; only a free-text default gives way when the column is narrow, so settings stay readable. */
+.schema-summary { display: flex; flex: 1; min-width: 0; margin-right: 4px; overflow: hidden; white-space: nowrap; }
+.schema-sum-part { display: inline-flex; flex: none; min-width: 0; }
+.schema-sum-part.long { flex: 0 1 auto; }
+.schema-sum-part.long .schema-sum-value { overflow: hidden; text-overflow: ellipsis; }
+.schema-sum-key { margin-right: 4px; color: var(--text-2); }
+.schema-sum-sep { margin: 0 6px; color: var(--text-3); }
+.schema-sum-part.quiet { color: var(--text-3); }
+.schema-sum-part.error { font-weight: 500; color: var(--text); }
 .schema-chevron { width: 14px; height: 14px; flex: none; color: var(--text-2); transition: transform 120ms; }
 .schema-row-toggle[aria-expanded='true'] .schema-chevron { transform: rotate(180deg); }
 .schema-toggle-alert { width: 13px; height: 13px; flex: none; color: var(--red); }
-.schema-row-error { display: flex; align-items: flex-start; gap: 5px; padding: 5px 3px 2px; font-size: 12px; line-height: 1.4; color: var(--text); }
-.schema-row-error svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--red); }
-.schema-row-settings:not([hidden]) { display: flex; flex-direction: column; gap: 8px; margin-top: 5px; padding: 10px 6px 4px; border-top: 1px solid var(--border); }
+/* Messages about a code name sit under the code name column. */
+.schema-row-msg { margin-top: 5px; }
+.schema-row-msg > * { grid-column: 2 / -1; }
+.schema-row-error, .schema-row-note { display: flex; align-items: flex-start; gap: 6px; padding: 0 2px; font-size: 12px; line-height: 18px; color: var(--text); }
+.schema-row-note { color: var(--text-2); }
+.schema-row-error > svg, .schema-row-note > svg { width: 13px; height: 13px; flex: none; margin-top: 2px; color: var(--text-3); }
+.schema-row-error > svg, .schema-row-note.warn > svg { color: var(--red); }
+.schema-row-note.warn { color: var(--text); }
+.schema-fix { display: inline-flex; align-items: center; gap: 4px; height: 22px; margin: -2px 0 0 4px; padding: 0 7px; border: 1px solid var(--border-control); border-radius: var(--r-xs); background: var(--raised); color: var(--text); font-size: 12px; font-weight: 500; vertical-align: middle; }
+.schema-fix .mono { font-size: 11.5px; }
+.schema-fix:hover:not(:disabled) { background: var(--panel-2); }
+.schema-row-settings:not([hidden]) { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; padding: 12px 0 0; border-top: 1px solid var(--border); }
 .schema-row-settings .textarea { min-height: 54px; font-size: 12px; }
-.schema-row-note { padding: 5px 3px 2px; font-size: 12px; line-height: 1.4; color: var(--text-2); }
-.schema-fields { display: flex; flex-direction: column; gap: 4px; }
-.schema-fields-head { display: flex; align-items: center; gap: 8px; min-height: 26px; font-size: 12px; font-weight: 500; color: var(--text-2); }
-.schema-field { background: var(--panel); }
 .schema-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .schema-grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.schema-numbers { grid-template-columns: repeat(4, minmax(0, 180px)); }
+/* Settings are as wide as what they hold: a long text gets room, a single word or number does not. */
+.schema-pair { display: grid; gap: 8px; }
+.schema-pair-choice { grid-template-columns: minmax(0, 440px) minmax(0, 220px); }
+.schema-pair-list { grid-template-columns: minmax(0, 260px) minmax(0, 200px); }
+.schema-narrow { max-width: 240px; }
+.schema-pair-icon { grid-template-columns: minmax(0, 240px); }
 .schema-check { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; min-height: 26px; font-size: 12px; color: var(--text); }
 .schema-check input { margin: 0; accent-color: var(--accent); }
-.schema-row-foot { display: flex; align-items: center; gap: 8px; min-height: 26px; }
-.schema-empty { padding: 36px 24px; }
+.schema-row-foot { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+.schema-remove { flex: none; }
+/* A neutral hover keeps the red label above 4.5:1. */
+.schema-remove:hover:not(:disabled) { background: var(--hover); }
+/* A list's item fields: a nested table of their own, under their own head. */
+.schema-fields { display: flex; flex-direction: column; padding: 8px 0 2px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel); }
+.schema-fields-head { display: flex; align-items: center; gap: 8px; min-height: 28px; margin-bottom: 4px; padding: 0 8px; font-size: 12px; font-weight: 600; color: var(--text); }
+.schema-list-problem { margin: 0 0 8px; padding: 0 10px; outline-offset: 2px; }
+.schema-field.open { margin: 6px 0; padding: 7px 7px 9px; }
+.schema-fields-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; margin-left: 5px; padding: 0 5px; border-radius: 9px; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); font-size: 11px; font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; vertical-align: 1px; }
+.schema-fields > .schema-row:last-child { border-bottom: 0; }
+.schema-field.open { background: var(--panel-2); }
+.schema-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 48px 24px; text-align: center; }
+.schema-empty-icon { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 6px; border-radius: 50%; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border-strong); color: var(--text-2); }
+.schema-empty-icon svg { width: 18px; height: 18px; }
+.schema-empty-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--text); }
+.schema-empty-text { max-width: 380px; margin: 0 0 8px; font-size: 12px; line-height: 1.5; color: var(--text-2); }
 .schema-empty .btn svg { width: 15px; height: 15px; }
+@media (forced-colors: active) {
+  :is(.authoring-form, .schema-row) .field-error::before { forced-color-adjust: none; background: CanvasText; }
+  .schema-row-toggle { border-color: ButtonText; }
+  .schema-row.invalid { border-left: 3px solid CanvasText; }
+  .authoring-gone { border-color: CanvasText; }
+}
 /* A changed value is marked by a small reset button beside its label (the mark is the action), so unset
    rows keep their controls at full width. */
 .reset-dot { display: inline-grid; place-items: center; width: 24px; height: 24px; margin: -4px 0; flex: none; border: 0; border-radius: var(--r-xs); background: none; color: var(--accent-text); }

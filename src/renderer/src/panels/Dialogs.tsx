@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CircleAlert, Component, History, House, Pencil, Redo2, Sparkles, Split, Trash2, Undo2, User } from 'lucide-react';
-import type { ElementRef, OwnerRef } from '@shared/types';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Box, CircleAlert, Component, FileText, History, House, Info, Package, PanelBottom, PanelTop, Pencil, Redo2, ShieldCheck, Sparkles, Split, Trash2, Undo2, User } from 'lucide-react';
+import type { ElementRef, OwnerRef, ProjectState } from '@shared/types';
 import { displayName, placesOf } from '@engine/tree';
 import { planHomeChange } from '@engine/apply';
 import { uniqueCopyName } from '@engine/definitions';
@@ -8,7 +8,7 @@ import type { PageLinkUse } from '@engine/page-links';
 import { shellPageLinks, type ShellPageLink } from '@generator/checks';
 import { isDraftPage } from '@generator/index';
 import { applyOps, api, getState, projectHistory, setState, toast, useStore } from '../store';
-import { Field, Modal, openSection } from '../components/ui';
+import { Field, Modal, openMenus, openSection } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { createComponentTarget, resolveRef, treeFor } from '../lib/model';
 import { goToShellPart, selectPage } from '../lib/actions';
@@ -18,11 +18,171 @@ import { HistoryTabs, SavedVersionsModal } from './SavedVersions';
 
 /** The longest name a component can have. */
 const NAME_MAX = 60;
+/** The longest description a component can have. */
+const DESCRIPTION_MAX = 300;
 const WHERE_NAMES_SHOW = 'Shown in Insert under Your components.';
 /** The note under a name field: where the name shows, until it reaches the limit. */
 const nameHint = (name: string, hint: string) => (name.length >= NAME_MAX ? `Names can be up to ${NAME_MAX} characters.` : hint);
 
 const GONE_ID = 'component-dialog-gone';
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/*
+ * The component dialogs share the confirmation dialogs' order (ConfirmDialog.tsx): a badge for the action, what it
+ * acts on set apart, one line for each thing that changes or stays safe, then the one field it asks for. Plum, the
+ * colour of a component's design, marks only Edit everywhere, the one that changes every placement at once.
+ */
+
+/** The title's badge: the action's glyph in a tinted disc. `caution` once the dialog's subject has gone. */
+function Badge({ icon, tone = 'neutral' }: { icon: React.ReactNode; tone?: 'neutral' | 'definition' | 'caution' }) {
+  return (
+    <span className="confirm-icon authoring-badge" data-tone={tone} aria-hidden="true">
+      {icon}
+    </span>
+  );
+}
+
+/** What the dialog acts on, with how far it reaches. */
+function Subject({ id, icon, name, note, tone }: { id?: string; icon: React.ReactNode; name: React.ReactNode; note?: React.ReactNode; tone?: 'definition' }) {
+  return (
+    <div id={id} className="confirm-subject authoring-subject" data-tone={tone}>
+      {icon}
+      <span className="confirm-subject-text">
+        <span className="confirm-subject-name">{name}</span>
+        {note && <span className="confirm-subject-note">{note}</span>}
+      </span>
+    </div>
+  );
+}
+
+interface Detail {
+  /** `change`: what the action does. `keep`: what stays as it is. `note`: anything else worth knowing. */
+  kind: 'change' | 'keep' | 'note';
+  icon: React.ReactNode;
+  text: React.ReactNode;
+}
+function Details({ id, items }: { id?: string; items: Detail[] }) {
+  return (
+    <ul id={id} className="confirm-details authoring-details">
+      {items.map((d, i) => (
+        <li key={i} data-kind={d.kind}>
+          {d.icon}
+          <span>{d.text}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** A name field's length beside its label, once it is close to the limit. The hint says the limit in words. */
+function Count({ length, max }: { length: number; max: number }) {
+  if (length < max * 0.8) return null;
+  return (
+    <span className="authoring-count" data-full={length >= max || undefined} aria-hidden="true">
+      {length}/{max}
+    </span>
+  );
+}
+
+/** A list that can be scrolled by keyboard, with a tab stop only when it actually overflows. */
+function ScrollList({ className, labelledBy, children }: { className: string; labelledBy: string; children: React.ReactNode }) {
+  const ref = useRef<HTMLUListElement>(null);
+  const [scrolls, setScrolls] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el) setScrolls(el.scrollHeight > el.clientHeight + 1);
+  });
+  return (
+    <ul ref={ref} className={className} aria-labelledby={labelledBy} tabIndex={scrolls ? 0 : undefined}>
+      {children}
+    </ul>
+  );
+}
+
+/** How far a placement inside a shared part or another component shows: the copy shows there too. */
+function whereItShows(st: ProjectState, owner: OwnerRef): string {
+  if (owner.kind === 'shell') return ', on every page';
+  if (owner.kind !== 'component') return '';
+  const r = reachOf(st, placesOf(st, owner.id));
+  return r.everyPage ? ', on every page' : r.pages ? `, on ${listAll(r.titles)}${r.appears > 1 ? `, ${r.appears} times` : ''}` : '';
+}
+
+/** Said aloud once a field reaches its limit, since the counter beside it is only seen. */
+const limitSaid = (length: number, max: number, what: string) => (length >= max ? `${what} can be up to ${max} characters.` : undefined);
+
+/** Where a placement or element is: a page, a shared part, or inside another component. */
+function placeOf(st: ProjectState, owner: OwnerRef): string {
+  if (owner.kind === 'shell') return `In the shared ${owner.id}`;
+  if (owner.kind === 'component') return `Inside ${st.components[owner.id]?.name ?? 'another component'}`;
+  return `On ${st.pages[owner.id]?.title ?? 'this page'}`;
+}
+
+/**
+ * How far a component reaches: its placements, and the pages they show on. A placement in a shared part shows on
+ * every page; one inside another component shows wherever that component is placed, followed all the way out.
+ */
+function reachOf(st: ProjectState, places: ReturnType<typeof placesOf>) {
+  const pages = new Set<string>();
+  let everyPage = false;
+  const seen = new Set<string>();
+  const walk = (list: ReturnType<typeof placesOf>) => {
+    for (const p of list) {
+      if (p.owner.kind === 'page') pages.add(p.owner.id);
+      else if (p.owner.kind === 'shell') everyPage = true;
+      else if (!seen.has(p.owner.id)) {
+        seen.add(p.owner.id);
+        walk(placesOf(st, p.owner.id));
+      }
+    }
+  };
+  walk(places);
+  const placements = places.reduce((n, p) => n + p.nodeIds.length, 0);
+  // How many times it actually shows: a placement inside a component shows once for each time that one does.
+  const shows = (list: ReturnType<typeof placesOf>, depth = 0): number =>
+    list.reduce((n, p) => n + p.nodeIds.length * (p.owner.kind === 'component' ? (depth > 8 ? 1 : shows(placesOf(st, p.owner.id), depth + 1)) : 1), 0);
+  const appears = shows(places);
+  // When nesting makes it show more often than it is placed, say how often, so a wide reach is never unexplained.
+  const times = !everyPage && appears > placements ? `, shown ${appears} times` : '';
+  const where = everyPage ? 'shown on every page' : pages.size ? `on ${plural(pages.size, 'page')}` : 'on no page yet';
+  const titles = [...pages].map((id) => st.pages[id]?.title ?? 'a page');
+  return { placements, appears, pages: pages.size, titles, everyPage, text: placements ? `${plural(placements, 'placement')}${times} ${where}` : 'Not placed anywhere yet' };
+}
+
+/** Every page title, as a phrase: "Home, About and Contact". The list it sits in scrolls, so none is left out. */
+function listAll(titles: string[]): string {
+  return titles.length > 1 ? `${titles.slice(0, -1).join(', ')} and ${titles.at(-1)}` : (titles[0] ?? '');
+}
+
+/** A dialog's safe button, holding focus past a closing menu like the name fields do. */
+function SafeButton({ onClick, disabled, children }: { onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  useHeldFocus(ref);
+  return (
+    <button ref={ref} className="btn" data-autofocus onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Keep focus on `ref` while the menu that opened the dialog finishes closing: the menu hands focus back to its
+ * trigger as it goes, which would leave the dialog open with nothing focused.
+ */
+function useHeldFocus(ref: React.RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    let settled = 0;
+    let raf = 0;
+    const hold = () => {
+      const el = ref.current;
+      if (!el) return;
+      if (!el.closest('.modal')?.contains(document.activeElement)) el.focus();
+      settled = openMenus.count ? 0 : settled + 1;
+      if (settled < 6) raf = requestAnimationFrame(hold);
+    };
+    raf = requestAnimationFrame(hold);
+    return () => cancelAnimationFrame(raf);
+  }, [ref]);
+}
 
 /** Says a required-name error or a save in progress aloud, since neither moves focus. */
 function FormStatus({ text }: { text?: string }) {
@@ -36,7 +196,7 @@ function FormStatus({ text }: { text?: string }) {
 /** Why a dialog can no longer do what it was opened for. It replaces the form, so nothing dead stays editable. */
 function GoneNotice({ children }: { children: React.ReactNode }) {
   return (
-    <div id={GONE_ID} className="scope-note danger" role="alert">
+    <div id={GONE_ID} className="scope-note danger authoring-gone" role="alert">
       <CircleAlert />
       <span>{children}</span>
     </div>
@@ -45,13 +205,7 @@ function GoneNotice({ children }: { children: React.ReactNode }) {
 
 /** The only way out of a dialog whose subject has gone. It takes focus, because the field that had it is removed. */
 function GoneClose({ onClose }: { onClose: () => void }) {
-  const ref = useRef<HTMLButtonElement>(null);
-  useEffect(() => ref.current?.focus(), []);
-  return (
-    <button ref={ref} data-autofocus className="btn" onClick={onClose}>
-      Close
-    </button>
-  );
+  return <SafeButton onClick={onClose}>Close</SafeButton>;
 }
 
 export function CreateComponentModal({ target }: { target: ElementRef }) {
@@ -64,6 +218,9 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
   // Still there, but no longer something to make a component from (a section emptied while the dialog was open).
   const unfit = !busy && !gone && !!st && !createComponentTarget(snap, target);
   const [targetName] = useState(() => (st && targetNode ? displayName(st, targetNode) : null));
+  const [where] = useState(() => (st ? `${placeOf(st, target.owner)}${whereItShows(st, target.owner)}` : ''));
+  const input = useRef<HTMLInputElement>(null);
+  useHeldFocus(input);
   const [name, setName] = useState('');
   // Asked for only once the author has typed or pressed Enter, so the dialog never opens on an error.
   const [touched, setTouched] = useState(false);
@@ -89,10 +246,10 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
   return (
     <Modal
       title="Create component"
-      icon={<Component />}
+      icon={<Badge icon={<Component />} tone={gone || unfit ? 'caution' : 'neutral'} />}
       onClose={close}
       busy={busy}
-      describedBy={gone || unfit ? GONE_ID : 'create-component-desc'}
+      describedBy={gone || unfit ? GONE_ID : 'create-component-desc create-component-subject create-component-details'}
       footer={
         gone || unfit ? (
           <GoneClose onClose={close} />
@@ -109,23 +266,30 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
       }
     >
       {gone ? (
-        <GoneNotice>This element is no longer on the page, so no component was made.</GoneNotice>
+        <GoneNotice>{targetName ? <><strong>{targetName}</strong> was removed, so no component was made.</> : 'This element was removed, so no component was made.'}</GoneNotice>
       ) : unfit ? (
         <GoneNotice>
-          {snap?.readOnly
-            ? 'This project is open read-only, so no component was made.'
-            : targetNode?.kind === 'instance'
-              ? `${targetName ?? 'This section'} no longer holds any content of its own, so no component was made.`
-              : 'This element can no longer be made into a component, so none was made.'}
+          {snap?.readOnly ? (
+            'This project is open read-only, so no component was made.'
+          ) : targetNode?.kind === 'instance' ? (
+            <>
+              {targetName ? <strong>{targetName}</strong> : 'This section'} no longer holds any content of its own, so no component was made.
+            </>
+          ) : (
+            'This element can no longer be made into a component, so none was made.'
+          )}
         </GoneNotice>
       ) : (
-        <div className="col authoring-form" style={{ gap: 12 }}>
-          <FormStatus text={busy ? 'Creating component' : nameError} />
-          <p id="create-component-desc" className="muted" style={{ margin: 0 }}>
-            Turn {targetName ? <strong>{targetName}</strong> : 'this'} into a component you can reuse. Each placement keeps its own text, images and buttons, while its layout and style stay in step everywhere.
+        <div className="authoring-form">
+          <FormStatus text={busy ? 'Creating component' : (nameError ?? limitSaid(name.length, NAME_MAX, 'Names'))} />
+          <p id="create-component-desc" className="confirm-lead">
+            This element becomes the component’s first placement. Its layout and style then stay in step wherever you place it.
           </p>
-          <Field label="Component name" hint={nameHint(name, WHERE_NAMES_SHOW)} error={nameError}>
+          <Subject id="create-component-subject" icon={<Box />} name={targetName ?? 'This element'} note={where} />
+          <Details id="create-component-details" items={[{ kind: 'keep', icon: <ShieldCheck />, text: 'Each placement keeps its own text, images and buttons.' }]} />
+          <Field label="Component name" hint={nameHint(name, WHERE_NAMES_SHOW)} error={nameError} extra={<Count length={name.length} max={NAME_MAX} />}>
             <input
+              ref={input}
               className="input"
               autoFocus
               readOnly={busy}
@@ -150,6 +314,7 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
 function useSelectedOnOpen() {
   const ref = useRef<HTMLInputElement>(null);
   useEffect(() => ref.current?.select(), []);
+  useHeldFocus(ref);
   return ref;
 }
 
@@ -177,6 +342,9 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
   const [busy, setBusy] = useState(false);
   // The placement moves to its new copy as the save lands: the form stays until the dialog closes.
   const def = current ?? (busy && st ? st.components[definitionId] : undefined);
+  // The name, kept for the notice if the placement goes. The reach is the project's as it is now.
+  const [opened] = useState(() => (current ? { name: current.name } : null));
+  const reach = st && def ? reachOf(st, placesOf(st, definitionId)) : null;
   const input = useSelectedOnOpen();
   const close = useCloseOwn();
   const ready = !!def && !!name.trim() && !busy;
@@ -198,10 +366,10 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
   return (
     <Modal
       title="Make unique"
-      icon={<Split />}
+      icon={<Badge icon={<Split />} tone={def ? 'neutral' : 'caution'} />}
       onClose={close}
       busy={busy}
-      describedBy={def ? 'make-unique-desc' : GONE_ID}
+      describedBy={def ? 'make-unique-desc make-unique-subject make-unique-details' : GONE_ID}
       footer={
         def ? (
           <>
@@ -218,17 +386,38 @@ export function MakeUniqueModal({ owner, nodeId, definitionId }: { owner: OwnerR
       }
     >
       {def ? (
-        <div className="col authoring-form" style={{ gap: 12 }}>
-          <FormStatus text={busy ? 'Making a unique copy' : nameError} />
-          <p id="make-unique-desc" className="muted" style={{ margin: 0 }}>
-            This placement{owner.kind === 'shell' ? `, in the shared ${owner.id},` : ''} gets its own copy of <strong>{def.name}</strong>, so its design can change on its own. Every other {def.name} stays as it is.
+        <div className="authoring-form">
+          <FormStatus text={busy ? 'Making a unique copy' : (nameError ?? limitSaid(name.length, NAME_MAX, 'Names'))} />
+          <p id="make-unique-desc" className="confirm-lead">
+            This placement switches to its own copy and stops following {def.name}.
           </p>
-          <Field label="Name for the copy" hint={nameHint(name, WHERE_NAMES_SHOW)} error={nameError}>
+          <Subject id="make-unique-subject" icon={<Component />} name={def.name} note={st ? `${placeOf(st, owner)}${whereItShows(st, owner)} · ${reach && reach.placements > 1 ? `1 of ${reach.placements} placements` : 'its only placement'}` : undefined} />
+          <Details
+            id="make-unique-details"
+            items={[
+              {
+                kind: 'keep',
+                icon: <ShieldCheck />,
+                text: reach && reach.placements > 1 ? `${reach.placements === 2 ? 'The other placement keeps' : `The other ${reach.placements - 1} placements keep`} following ${def.name}.` : `${def.name} stays in Insert, ready to place again.`
+              }
+            ]}
+          />
+          <Field label="Name for the copy" hint={nameHint(name, WHERE_NAMES_SHOW)} error={nameError} extra={<Count length={name.length} max={NAME_MAX} />}>
             <input ref={input} className="input" autoFocus readOnly={busy} aria-required="true" maxLength={NAME_MAX} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isImeComposing(e) && void make()} />
           </Field>
         </div>
       ) : (
-        <GoneNotice>{node?.kind === 'instance' ? 'This placement now shows a different component, so no copy was made. Select it again to make it unique.' : 'This placement was removed, so there is nothing to make unique.'}</GoneNotice>
+        <GoneNotice>
+          {node?.kind === 'instance' ? (
+            'This placement now shows a different component, so no copy was made. Select it again to make it unique.'
+          ) : opened ? (
+            <>
+              This placement of <strong>{opened.name}</strong> was removed, so there is nothing to make unique.
+            </>
+          ) : (
+            'This placement was removed, so there is nothing to make unique.'
+          )}
+        </GoneNotice>
       )}
     </Modal>
   );
@@ -241,6 +430,8 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
   // What the fields showed when the dialog opened: only a field the author changed is saved, so a change made
   // meanwhile (by the AI) to the other one is kept.
   const [shown] = useState(() => ({ name: def?.name.trim() ?? '', description: def?.description?.trim() ?? '' }));
+  const st = useStore((s) => s.snapshot?.state);
+  const reach = st && def ? reachOf(st, placesOf(st, definitionId)).text : undefined;
   const [name, setName] = useState(def?.name ?? '');
   const [description, setDescription] = useState(def?.description ?? '');
   const [busy, setBusy] = useState(false);
@@ -274,10 +465,10 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
   return (
     <Modal
       title="Rename component"
-      icon={<Pencil />}
+      icon={<Badge icon={<Pencil />} tone={def ? 'neutral' : 'caution'} />}
       onClose={close}
       busy={busy}
-      describedBy={def ? 'rename-component-desc' : GONE_ID}
+      describedBy={def ? 'rename-component-desc rename-component-subject' : GONE_ID}
       footer={
         def ? (
           <>
@@ -294,20 +485,31 @@ export function RenameComponentModal({ definitionId }: { definitionId: string })
       }
     >
       {def ? (
-        <div className="col authoring-form" style={{ gap: 12 }}>
-          <FormStatus text={busy ? 'Renaming component' : nameError} />
-          <p id="rename-component-desc" className="muted" style={{ margin: 0 }}>
-            Updates <strong>{shown.name}</strong> in Insert and on every placement. Its design and content stay as they are.
+        <div className="authoring-form">
+          <FormStatus text={busy ? 'Renaming component' : (nameError ?? ([limitSaid(name.length, NAME_MAX, 'Names'), limitSaid(description.length, DESCRIPTION_MAX, 'Descriptions')].filter(Boolean).join(' ') || undefined))} />
+          <p id="rename-component-desc" className="confirm-lead">
+            The new name shows in Insert and on every placement. Its design and content stay as they are.
           </p>
-          <Field label="Component name" hint={name.length >= NAME_MAX ? nameHint(name, '') : undefined} error={nameError}>
+          <Subject id="rename-component-subject" icon={<Component />} name={shown.name} note={reach} />
+          <Field label="Component name" hint={nameHint(name, WHERE_NAMES_SHOW)} error={nameError} extra={<Count length={name.length} max={NAME_MAX} />}>
             <input ref={input} className="input" autoFocus readOnly={busy} aria-required="true" maxLength={NAME_MAX} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={onKey} />
           </Field>
-          <Field label="Description" hint={description.length >= 300 ? 'Descriptions can be up to 300 characters.' : 'Optional. Shown when you point at it in Insert, and found by search.'}>
-            <textarea className="textarea" rows={2} readOnly={busy} maxLength={300} value={description} placeholder="What this component is for" onChange={(e) => setDescription(e.target.value.replace(/\s*\n\s*/g, ' '))} onKeyDown={onKey} />
+          <Field
+            label={
+              <>
+                Description <span className="authoring-optional">(optional)</span>
+              </>
+            }
+            hint={description.length >= DESCRIPTION_MAX ? `Descriptions can be up to ${DESCRIPTION_MAX} characters.` : 'Shown when you point at it in Insert, and found by search.'}
+            extra={<Count length={description.length} max={DESCRIPTION_MAX} />}
+          >
+            <textarea className="textarea" rows={2} readOnly={busy} maxLength={DESCRIPTION_MAX} value={description} placeholder="What this component is for" onChange={(e) => setDescription(e.target.value.replace(/\s*\n\s*/g, ' '))} onKeyDown={onKey} />
           </Field>
         </div>
       ) : (
-        <GoneNotice>This component has been deleted, so there is nothing to rename.</GoneNotice>
+        <GoneNotice>
+          <strong>{shown.name || 'This component'}</strong> has been deleted, so there is nothing to rename.
+        </GoneNotice>
       )}
     </Modal>
   );
@@ -644,13 +846,24 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
   const node = r.node?.kind === 'instance' ? r.node : null;
   // The component this dialog was opened for: if the placement comes to show another, the dialog never moves to it.
   const [openedId] = useState(() => node?.definitionId);
+  const [openedName] = useState(() => (node ? st.components[node.definitionId]?.name : undefined));
   const [busy, setBusy] = useState(false);
   const def = node && openedId && (node.definitionId === openedId || busy) ? st.components[openedId] : undefined;
   const close = () => setState({ modal: null });
   if (!def || !node)
     return (
-      <Modal title="Edit component" icon={<Component style={{ color: 'var(--plum)' }} />} onClose={close} describedBy={GONE_ID} footer={<GoneClose onClose={close} />}>
-        <GoneNotice>{node ? 'This placement now shows a different component. Select it again to edit its design.' : 'This placement was removed, so there is nothing to edit.'}</GoneNotice>
+      <Modal title="Edit component" icon={<Badge icon={<Component />} tone="caution" />} onClose={close} describedBy={GONE_ID} footer={<GoneClose onClose={close} />}>
+        <GoneNotice>
+          {node ? (
+            'This placement now shows a different component. Select it again to edit its design.'
+          ) : openedName ? (
+            <>
+              This placement of <strong>{openedName}</strong> was removed, so there is nothing to edit.
+            </>
+          ) : (
+            'This placement was removed, so there is nothing to edit.'
+          )}
+        </GoneNotice>
       </Modal>
     );
   const isTheme = def.owner === 'theme';
@@ -660,6 +873,7 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
   const countOf = (list: typeof places) => list.reduce((n, p) => n + p.nodeIds.length, 0);
   const count = countOf(places);
   const staying = countOf(allPlaces) - count;
+  const reach = reachOf(st, places);
   const pageTitles = places.filter((p) => p.owner.kind === 'page').map((p) => p.label);
   // Pages that share a title are told apart by their address.
   const placeName = (p: (typeof places)[number]) => {
@@ -667,34 +881,17 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
     if (p.owner.kind === 'component') return `Inside ${p.label}`;
     return pageTitles.indexOf(p.label) !== pageTitles.lastIndexOf(p.label) ? `${p.label} (${st.pages[p.owner.id]?.route ?? ''})` : p.label;
   };
+  const placeIcon = (p: (typeof places)[number]) => (p.owner.kind === 'shell' ? p.owner.id === 'footer' ? <PanelBottom /> : <PanelTop /> : p.owner.kind === 'component' ? <Component /> : <FileText />);
   /** The pages a shared or nested placement actually reaches, so the list never leaves them to be inferred. */
-  const reachOf = (p: (typeof places)[number]) => {
-    if (p.owner.kind === 'shell') return 'across your pages';
+  const reachOfPlace = (p: (typeof places)[number]) => {
+    if (p.owner.kind === 'shell') return 'shows on every page';
     if (p.owner.kind !== 'component') return '';
-    const pages = placesOf(st, p.owner.id).filter((x) => x.owner.kind === 'page').map((x) => x.label);
-    if (!pages.length) return 'not on a page yet';
-    return pages.length > 2 ? `${pages[0]}, ${pages[1]} and ${pages.length - 2} more` : pages.join(' and ');
+    const nested = reachOf(st, placesOf(st, p.owner.id));
+    const times = p.nodeIds.length * Math.max(nested.appears, 1);
+    return nested.everyPage ? 'shows on every page' : nested.pages ? `shows on ${listAll(nested.titles)}${times > 1 ? `, ${times} times` : ''}` : 'not on a page yet';
   };
-  /** Where the one placement is, and how far that reaches: a shared part or another component shows in many places. */
-  const onePlace = (p: (typeof places)[number] | undefined) => {
-    if (p?.owner.kind === 'shell')
-      return (
-        <>
-          in the <strong>shared {p.label.toLowerCase()}</strong>, which shows across your pages
-        </>
-      );
-    if (p?.owner.kind === 'component')
-      return (
-        <>
-          inside <strong>{p.label}</strong>, so it shows wherever that is placed
-        </>
-      );
-    return (
-      <>
-        on <strong>{p ? placeName(p) : 'this page'}</strong>
-      </>
-    );
-  };
+  // One placement in a shared part, or inside a component placed on several pages, still changes many pages.
+  const wide = count > 1 || reach.everyPage || reach.pages > 1 || reach.appears > 1;
   const go = async () => {
     if (busy) return;
     let defId = def.id;
@@ -717,74 +914,70 @@ export function EditDefinitionModal({ target }: { target: ElementRef }) {
       rightTab: 'inspect'
     });
   };
-  const keeps = count > 1 ? 'Each keeps its own text, images and changes made on the page.' : 'That placement keeps its own text, images and changes made on the page.';
-  const title = isTheme ? `Edit a copy of ${def.name}?` : count > 1 ? `Edit ${def.name} everywhere?` : `Edit the ${def.name} design?`;
+  const title = isTheme ? (wide ? `Edit a copy of ${def.name} everywhere?` : `Edit a copy of ${def.name}?`) : wide ? `Edit ${def.name} everywhere?` : `Edit the ${def.name} design?`;
+  // Says what the button does (opens the design for editing) and where those edits land.
+  const lead = isTheme
+    ? count > 1
+      ? `You edit a copy, added to Your components. ${staying ? `These ${count} placements` : `All ${count} placements`} switch to it and follow its layout, styles and starting content.`
+      : wide
+        ? 'You edit a copy, added to Your components. This placement switches to it, so its layout, styles and starting content apply everywhere it shows, below.'
+        : 'You edit a copy, added to Your components. This placement switches to it and follows its layout, styles and starting content.'
+    : count > 1
+      ? 'Changes you make to its layout, styles and starting content apply to every placement below.'
+      : wide
+        ? 'Changes you make to its layout, styles and starting content apply everywhere it shows, below.'
+        : 'Changes you make to its layout, styles and starting content apply here, and anywhere you place it later.';
+  const once = places[0];
+  const note = count === 1 && !wide ? (once?.owner.kind === 'component' ? `Used once, inside ${once.label}` : `Used once, on ${once ? placeName(once) : 'this page'}`) : reach.text.replace(/^./, (c) => c.toUpperCase());
+  const details: Detail[] = [{ kind: 'keep', icon: <ShieldCheck />, text: count > 1 ? 'Each placement keeps its own text, images and changes made on the page.' : 'This placement keeps its own text, images and changes made on the page.' }];
+  if (isTheme) details.push({ kind: 'keep', icon: <Package />, text: `The original ${def.name} stays in Insert, as it came with the Foundation theme.` });
+  if (isTheme && staying > 0) details.push({ kind: 'note', icon: <Info />, text: `${staying === 1 ? 'One use' : `${staying} uses`} inside other theme components stay${staying === 1 ? 's' : ''} on the original.` });
   return (
     <Modal
       title={title}
-      icon={<Component style={{ color: 'var(--plum)' }} />}
+      icon={<Badge icon={<Component />} tone="definition" />}
       onClose={close}
       busy={busy}
-      describedBy={isTheme ? 'edit-definition-desc edit-definition-theme' : 'edit-definition-desc'}
+      describedBy="edit-definition-desc edit-definition-subject edit-definition-details"
       footer={
         <>
-          <button className="btn" data-autofocus onClick={close} disabled={busy}>
+          <SafeButton onClick={close} disabled={busy}>
             Cancel
-          </button>
+          </SafeButton>
           <button className="btn btn-primary" disabled={busy} onClick={() => void go()}>
-            {busy ? 'Making a copy…' : isTheme ? 'Make a copy and edit' : 'Edit everywhere'}
+            {busy ? 'Making a copy…' : isTheme ? 'Make a copy and edit' : wide ? 'Edit everywhere' : 'Edit design'}
           </button>
         </>
       }
     >
-      <div className="col" style={{ gap: 10 }}>
+      <div className="authoring-form">
         <FormStatus text={busy ? 'Making a copy' : undefined} />
-        <p id="edit-definition-desc" style={{ margin: 0 }}>
-          {isTheme ? (
-            count > 1 ? (
-              <>
-                <strong>{staying ? `${count} placements` : `All ${count} placements`}</strong> switch to your copy and follow its layout, styles and starting content. {keeps}
-              </>
-            ) : (
-              <>
-                The placement {onePlace(places[0])} switches to your copy and follows its layout, styles and starting content. {keeps}
-              </>
-            )
-          ) : count > 1 ? (
-            <>
-              This changes the layout, styles and starting content of <strong>all {count} placements</strong>. {keeps}
-            </>
-          ) : (
-            <>
-              Used once, {onePlace(places[0])}. This changes its layout, styles and starting content, here and anywhere you place it later. {keeps}
-            </>
-          )}
-          {isTheme && staying > 0 && ` ${staying === 1 ? 'One use' : `${staying} uses`} inside other theme components stay${staying === 1 ? 's' : ''} on the original.`}
+        <p id="edit-definition-desc" className="confirm-lead">
+          {lead}
         </p>
-        {count > 1 && (
-          <div className="col" style={{ gap: 4 }}>
+        <Subject id="edit-definition-subject" icon={<Component />} tone="definition" name={def.name} note={isTheme ? `Foundation theme · ${note}` : note} />
+        {(count > 1 || wide) && (
+          <div className="placement-block">
             <div className="field-label" id="edit-definition-places">
               Used on
             </div>
-            <ul className="placement-list" aria-labelledby="edit-definition-places" tabIndex={places.length > 5 ? 0 : undefined}>
+            <ScrollList className="placement-list" labelledBy="edit-definition-places">
               {places.map((p) => (
                 <li key={`${p.owner.kind}:${p.owner.id}`}>
+                  <span className="placement-icon" aria-hidden="true">
+                    {placeIcon(p)}
+                  </span>
                   <span className="grow">
                     {placeName(p)}
-                    {reachOf(p) && <span className="placement-reach"> · {reachOf(p)}</span>}
+                    {reachOfPlace(p) && <span className="placement-reach"> · {reachOfPlace(p)}</span>}
                   </span>
-                  {p.nodeIds.length > 1 && <span className="placement-count">{p.nodeIds.length} placements</span>}
+                  <span className="placement-count">{plural(p.nodeIds.length, 'placement')}</span>
                 </li>
               ))}
-            </ul>
+            </ScrollList>
           </div>
         )}
-        {isTheme && (
-          <div id="edit-definition-theme" className="scope-note definition">
-            <Component />
-            <span>{def.name} comes with the Foundation theme, so you edit your own copy. The original stays in Insert.</span>
-          </div>
-        )}
+        <Details id="edit-definition-details" items={details} />
       </div>
     </Modal>
   );
