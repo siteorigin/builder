@@ -97,6 +97,8 @@ describe('copy style', () => {
     s = made.state;
     const inst = Object.values(s.pages[homeId(s)].nodes).find((n) => n.kind === 'instance' && s.components[n.definitionId]?.name === 'Title') as InstanceNode;
     const def = s.components[inst.definitionId];
+    // A component made from one element before #185 also named its root element after its content.
+    def.parts.heading = { nodeId: def.parts.root.nodeId, label: 'Heading' };
     const [named] = Object.entries(def.parts).filter(([id, p]) => id !== 'root' && p.nodeId === def.parts.root.nodeId);
     expect(named).toBeDefined();
     const pick = styleSelection(s, { owner: owner(s), instancePath: [inst.id], nodeId: named[1].nodeId, partId: named[0] })!;
