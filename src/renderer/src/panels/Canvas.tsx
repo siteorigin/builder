@@ -68,9 +68,9 @@ let visitWanted: string | null = null;
  * is not ready to be asked.
  */
 export function visitAddress(path: string): boolean {
-  const asked = frameVisit?.(path) ?? false;
-  if (asked) visitWanted = path;
-  return asked;
+  // Wanted either way: a preview still starting opens it once its frame is ready.
+  visitWanted = path;
+  return frameVisit?.(path) ?? false;
 }
 /** Back to the page the editor shows, from an address visitAddress opened. */
 export function showEditedPage(): void {
@@ -1012,8 +1012,11 @@ export function Canvas() {
   const shownBefore = useRef<string | null>(null);
   useEffect(() => {
     const key = `${view?.key}\n${view?.route}`;
+    const first = shownBefore.current === null;
     const moved = shownBefore.current !== key;
     shownBefore.current = key;
+    // Another page chosen is what the frame shows from now on, even before it is ready.
+    if (moved && !first) visitWanted = null;
     if (ready && view?.route && (moved || !visitWanted)) openShownPage();
   }, [view?.key, view?.route, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 

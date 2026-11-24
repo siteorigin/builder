@@ -4,9 +4,12 @@ import type { ImageValue, LinkValue, ProjectState, RichText } from '@shared/type
 import type { ProjectSnapshot } from '@shared/api';
 import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
-import { linkFromTarget, sameRichText } from '@shared/richtext';
+import { linkFromTarget, linkToTarget, sameRichText } from '@shared/richtext';
+import { newId } from '@shared/ids';
+import { normalizeRichText } from '@engine/values';
+import { EngineError } from '@engine/tree';
 import { assetLabels, sortAssets } from '@shared/asset-order';
-import { api, applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
+import { applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
 import { DraftInput, Field, Modal } from '../components/ui';
 import { AssetImage } from '../components/AssetImage';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -49,7 +52,7 @@ function problemText(p: DraftProblem): string {
     case 'changed':
       return 'This post’s text was changed somewhere else while you were writing. Keep yours, or show the saved text instead.';
     case 'gone':
-      return 'This post is no longer in the project. Your text is still here: save it as a new post, or copy it.';
+      return 'This post is no longer in the project. Your text is still here: copy it to keep it, or let it go.';
     default:
       return `Your text could not be saved${p.message ? `: ${p.message}` : '.'} Change it and it is tried again.`;
   }
@@ -102,6 +105,11 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const rootEl = useRef<HTMLDivElement | null>(null);
   /** The project this writer was opened in. */
   const opening = useRef(snap.workspaceKey);
+  /** This writer, among every one opened for the post: its undo steps never join another's. */
+  const instance = useRef(newId('w'));
+  /** The changes to the post's fields (title, date, address…) on their way, and how many have been refused. */
+  const fieldCommits = useRef(new Set<Promise<unknown>>());
+  const fieldRefusals = useRef(0);
   /** Why the stored text cannot be edited here, if it cannot. */
   const unreadable = articleProblem(entry.body);
   /** The text the writer and the project last agreed on: what it showed from the project, or what it saved. */
@@ -120,11 +128,20 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
           const el = root.current ?? rootEl.current;
           return el ? readArticle(el, getState().snapshot?.state ?? state) : agreed.current;
         },
-        save: async (body, step) => {
+        save: async (read, step) => {
           const from = checkedBase();
           if (!from) return { kind: 'closed' };
+          // Sent as the project stores it (a link's address trimmed, say), so the writer's own save never later looks
+          // like a change made somewhere else; text the project would refuse is said here, and kept.
+          let body: RichText;
+          try {
+            body = normalizeRichText(read, from.state, 'The post’s text', undefined, { entries: true });
+          } catch (e) {
+            return { kind: 'failed', message: e instanceof EngineError ? e.message.replace(/^The post’s text: /, '') : undefined };
+          }
           let committed: Promise<unknown> = Promise.resolve();
-          const outcome = commitIfUnchanged(from, () => (committed = commitOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, body }], 'Edit post text', `post-text:${post.entryId}:${step}`)));
+          // One writer's steps are its own: a post opened again starts steps no earlier writer's typing joins.
+          const outcome = commitIfUnchanged(from, () => (committed = commitOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, body }], 'Edit post text', `post-text:${post.entryId}:${instance.current}:${step}`)));
           // Followed as a save in flight: Save and leaving the project wait for it.
           trackApply(outcome.then((o) => (o.kind === 'applied' || o.kind === 'unchanged' ? { ok: true } : { ok: false, message: o.kind === 'failed' ? o.message : undefined })));
           const o = await outcome;
@@ -146,10 +163,12 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const checkedBase = (): ProjectSnapshot | null => {
     const now = getState().snapshot;
     if (!now || now.workspaceKey !== opening.current) return null;
-    const c = now.state.collections[post.collectionId];
-    const e = c && Object.hasOwn(c.entries, post.entryId) ? c.entries[post.entryId] : undefined;
-    if (!c || !e) return last.current.snap;
-    return { ...now, state: { ...now.state, collections: { ...now.state.collections, [c.settings.id]: { ...c, entries: { ...c.entries, [e.id]: { ...e, body: agreed.current } } } } } };
+    const agreedIn = (s: ProjectSnapshot): ProjectSnapshot | null => {
+      const c = s.state.collections[post.collectionId];
+      const e = c && Object.hasOwn(c.entries, post.entryId) ? c.entries[post.entryId] : undefined;
+      return c && e ? { ...s, state: { ...s.state, collections: { ...s.state.collections, [c.settings.id]: { ...c, entries: { ...c.entries, [e.id]: { ...e, body: agreed.current } } } } } } : null;
+    };
+    return agreedIn(now) ?? agreedIn(last.current.snap);
   };
 
   // Show the post's text once, then only when it changes in the project while nothing here is unsaved (an Undo).
@@ -173,11 +192,14 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     agreed.current = entry.body;
     if (focused) placeCaret(el, caret);
   }, [entry.body]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Gone from the project: unsaved text is saved, which says the post has gone and offers to keep it; with nothing
-  // unsaved, the writer lets go of the post.
+  // Gone from the project: unsaved text stays, with a way to copy it or let it go; with nothing unsaved, the writer lets
+  // go of the post. Back again (an Undo of its removal): its text is saved as usual.
   useEffect(() => {
-    if (live) return;
-    if (draft.dirty) void draft.flush();
+    if (live) {
+      if (draft.problem?.kind === 'gone') void draft.back();
+      return;
+    }
+    if (draft.dirty) draft.markGone();
     else setState({ post: null, postView: 'write' });
   }, [!!live, status.dirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -243,7 +265,21 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     return () => document.removeEventListener('selectionchange', onSel);
   }, []);
 
-  const update = (fields: Record<string, unknown>, label: string) => applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label);
+  /** Change fields of the post, followed so Publish and Save draft know whether it was saved. */
+  const update = (fields: Record<string, unknown>, label: string) => {
+    const p = applyOps([{ type: 'entry.update', collectionId: post.collectionId, entryId: post.entryId, ...fields } as never], label).then((r) => {
+      if (!r) fieldRefusals.current++;
+      return r;
+    });
+    fieldCommits.current.add(p);
+    void p.finally(() => fieldCommits.current.delete(p));
+    return p;
+  };
+  /** A field's text the writer refuses itself (an empty title, a date that is not one): said, and counted. */
+  const refuse = () => {
+    fieldRefusals.current++;
+    return false;
+  };
 
   /** Undo or Redo the project, with what was typed saved first as its own step. */
   async function history(action: 'undo' | 'redo') {
@@ -295,8 +331,15 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
     const range = sel?.rangeCount && root.current?.contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
     const a = (sel?.anchorNode instanceof Element ? sel.anchorNode : sel?.anchorNode?.parentElement)?.closest('a');
     const href = a && root.current?.contains(a) ? (a.getAttribute('href') ?? '') : '';
-    const pageLink = href ? linkFromTarget(href, state.pages) : null;
-    const entryLink = href.startsWith('entry:') ? href.slice(6) : '';
+    // The destination the link keeps, while its address is the one shown with it (see post-dom).
+    let kept: LinkValue | null = null;
+    try {
+      kept = a?.dataset.link && a.dataset.href === href ? (JSON.parse(a.dataset.link) as LinkValue) : null;
+    } catch {
+      kept = null;
+    }
+    const pageLink = kept?.type === 'page' && Object.hasOwn(state.pages, kept.target) ? kept : href && !kept ? linkFromTarget(href, state.pages) : null;
+    const entryLink = kept?.type === 'entry' ? kept.target : href.startsWith('entry:') ? href.slice(6) : '';
     const firstPage = state.site.pageOrder[0] ?? Object.keys(state.pages)[0] ?? '';
     const posts = allPosts(state).filter((p) => p.id !== post.entryId);
     setDialog({
@@ -306,7 +349,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       to: entryLink ? 'post' : pageLink?.type === 'page' ? 'page' : href ? 'url' : 'page',
       page: pageLink?.type === 'page' ? pageLink.target : firstPage,
       entry: entryLink || posts[0]?.id || '',
-      url: pageLink || entryLink ? '' : href
+      url: pageLink || entryLink ? '' : kept ? linkToTarget(kept, state.pages) : href
     });
   };
   const applyLink = (d: Extract<Dialog, { kind: 'link' }>) => {
@@ -383,11 +426,14 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
    * it loses focus. False, said beside the field or above the text, when any of it could not be.
    */
   const saveAll = async (): Promise<boolean> => {
+    const refusedBefore = fieldRefusals.current;
     const at = document.activeElement;
     if (at instanceof HTMLElement && at.closest('.post-page') && !at.closest('.post-body')) at.blur();
     const saved = await draft.flush();
+    await Promise.allSettled([...fieldCommits.current]);
     await appliesLanded();
-    return saved && !getState().refusedDrafts;
+    // A field refused just now (an address another page has, an empty title), or text kept for being too long.
+    return saved && fieldRefusals.current === refusedBefore && !getState().refusedDrafts;
   };
   const publish = async (draftOn: boolean) => {
     if (!(await saveAll())) return toast(draftOn ? 'Part of the post is not saved yet, so it stays as it is. See the note beside it.' : 'Part of the post is not saved yet, so it was not published. See the note beside it.', 'error');
@@ -401,17 +447,13 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const preview = async () => {
     // The preview shows what is saved: text that could not be saved stays in view with its note.
     if (!(await saveAll())) return toast('Part of the post is not saved yet, so the preview would not show it. See the note beside it.', 'error');
-    if (getState().runtime.state !== 'ready') return toast('The preview is still starting. Try again in a moment.', 'info');
     setState({ postView: 'preview' });
     setMode('preview');
-    // Once the canvas shows again.
+    // Once the canvas shows again; a preview still starting opens the post once it is ready.
     requestAnimationFrame(() => {
       const c = getState().snapshot?.state.collections[post.collectionId];
-      const e = c?.entries[post.entryId];
-      if (!c || !e || !visitAddress(entryRoute(c, e))) {
-        setState({ postView: 'write' });
-        toast('The preview is still starting. Try again in a moment.', 'info');
-      }
+      const e = c && Object.hasOwn(c.entries, post.entryId) ? c.entries[post.entryId] : undefined;
+      if (c && e && !visitAddress(entryRoute(c, e))) toast('The preview is starting: the post opens in it once it is ready.', 'info');
     });
   };
 
@@ -433,19 +475,6 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   };
   /** The post is gone and the author lets its unsaved text go too. */
   const discard = () => draft.reset();
-  const saveAsNew = async () => {
-    const el = root.current;
-    const now = getState().snapshot;
-    if (!el || !now) return;
-    const body = readArticle(el, now.state);
-    const c = now.state.collections[post.collectionId];
-    if (!c) return;
-    const r = await commitOps([{ type: 'entry.create', collectionId: post.collectionId, title: `${entry.title} (recovered)`.slice(0, MAX_POST_TITLE), body }], 'Recover post');
-    const id = r?.results?.[0]?.entryId;
-    if (typeof id !== 'string') return;
-    draft.reset();
-    setState({ post: { collectionId: post.collectionId, entryId: id }, postView: 'write' });
-  };
 
   const route = entryRoute(collection, entry);
   const published = entry.draft === false;
@@ -497,7 +526,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
       </div>
       <div className="post-scroll">
         <article className="post-page">
-          <DraftInput className="input post-title-input" ariaLabel="Post title" value={entry.title} limit={MAX_POST_TITLE} placeholder="Title" onCommit={(v) => (v.trim() ? (v.trim() !== entry.title ? void update({ title: v.trim() }, 'Rename post') : undefined) : false)} />
+          <DraftInput className="input post-title-input" ariaLabel="Post title" value={entry.title} limit={MAX_POST_TITLE} placeholder="Title" onCommit={(v) => (v.trim() ? (v.trim() !== entry.title ? update({ title: v.trim() }, 'Rename post') : undefined) : refuse())} />
           <details className="post-details">
             <summary>
               {formatArticleDate(entry.publishedAt, state.site.language)}
@@ -505,16 +534,16 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
             </summary>
             <div className="post-fields">
               <Field label="Publication date" hint="A date in the past backdates the post.">
-                <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? void update({ publishedAt: v }, 'Change post date') : undefined) : false)} />
+                <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? update({ publishedAt: v }, 'Change post date') : undefined) : refuse())} />
               </Field>
               <Field label="Address" hint={`The last part of ${route}`}>
-                <DraftInput value={entry.slug} onCommit={(v) => (v.trim() ? (v.trim() !== entry.slug ? void update({ slug: v.trim() }, 'Change post address') : undefined) : false)} />
+                <DraftInput value={entry.slug} onCommit={(v) => (v.trim() ? (v.trim() !== entry.slug ? update({ slug: v.trim() }, 'Change post address') : undefined) : refuse())} />
               </Field>
               <Field label="Author">
-                <DraftInput value={entry.author ?? ''} limit={MAX_AUTHOR} placeholder="Who wrote it" onCommit={(v) => (v.trim() !== (entry.author ?? '') ? void update({ author: v.trim() || null }, 'Change post author') : undefined)} />
+                <DraftInput value={entry.author ?? ''} limit={MAX_AUTHOR} placeholder="Who wrote it" onCommit={(v) => (v.trim() !== (entry.author ?? '') ? update({ author: v.trim() || null }, 'Change post author') : undefined)} />
               </Field>
               <Field label="Excerpt" hint="A sentence or two for lists of posts and for search engines.">
-                <DraftInput multiline rows={3} value={entry.excerpt ?? ''} limit={MAX_EXCERPT} onCommit={(v) => (v.trim() !== (entry.excerpt ?? '') ? void update({ excerpt: v.trim() || null }, 'Change post excerpt') : undefined)} />
+                <DraftInput multiline rows={3} value={entry.excerpt ?? ''} limit={MAX_EXCERPT} onCommit={(v) => (v.trim() !== (entry.excerpt ?? '') ? update({ excerpt: v.trim() || null }, 'Change post excerpt') : undefined)} />
               </Field>
               <Field label="Featured image" controlId={`${uid}-featured`}>
                 <select id={`${uid}-featured`} className="select" value={entry.featuredImage ?? ''} onChange={(e) => void update({ featuredImage: e.target.value || null }, 'Change featured image')}>
@@ -563,10 +592,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               )}
               {status.problem.kind === 'gone' && (
                 <div className="post-problem-actions">
-                  <button className="btn btn-sm btn-primary" onClick={() => void saveAsNew()}>
-                    Save as a new post
-                  </button>
-                  <button className="btn btn-sm" onClick={() => void navigator.clipboard?.writeText(root.current?.innerText ?? '').catch(() => undefined)}>
+                  <button className="btn btn-sm btn-primary" onClick={() => void navigator.clipboard?.writeText(root.current?.innerText ?? '').catch(() => undefined)}>
                     Copy text
                   </button>
                   <button className="btn btn-sm btn-danger" onClick={discard}>

@@ -245,10 +245,13 @@ describe('pictures in posts as uses of the library', () => {
   it('warns about a section heading or picture in a page\'s text, which only a post holds', () => {
     const s = blog();
     const home = s.pages[s.site.homePageId];
-    const node = Object.values(home.nodes).find((n) => n.kind === 'text' && n.rich);
-    if (!node || node.kind !== 'text') return;
-    (node as { text: unknown }).text = [{ type: 'h2', spans: [{ text: 'Sneaked in' }] }];
-    expect(validateState(s).filter((d) => d.code === 'ARTICLE_BLOCK').map((d) => d.nodeId)).toEqual([node.id]);
+    const node = home.nodes[home.rootIds[0]] as unknown as { id: string; props: Record<string, unknown> };
+    expect(validateState(s).filter((d) => d.code === 'ARTICLE_BLOCK')).toEqual([]);
+    node.props.sneaked = [{ type: 'h2', spans: [{ text: 'Sneaked in' }] }, { type: 'image', assetId: 'img_a', alt: 'x' }];
+    expect(validateState(s).filter((d) => d.code === 'ARTICLE_BLOCK').map((d) => [d.nodeId, /section heading|picture/.exec(d.message)?.[0]])).toEqual([
+      [node.id, 'section heading'],
+      [node.id, 'picture']
+    ]);
   });
 
   it('reports a picture that is no longer in the library, and one left undescribed', () => {

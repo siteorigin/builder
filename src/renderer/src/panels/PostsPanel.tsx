@@ -7,6 +7,7 @@ import { Field, Modal } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { POST_SORTS, duplicatePostOps, newPostOps, postAt, postRows, postsCollection, MAX_POST_TITLE, type PostRef, type PostSort } from '../lib/posts';
 import { orderedEntries } from '@shared/collections';
+import type { ProjectState } from '@shared/types';
 import { flushOpenPost } from '../lib/post-draft';
 
 /**
@@ -17,6 +18,12 @@ async function openSaved(): Promise<boolean> {
   if (await flushOpenPost()) return true;
   toast('The post you are writing has text that is not saved yet. See the note above its text.', 'error');
   return false;
+}
+
+/** How many old addresses of a post are kept working, sending visitors on to it. */
+function keptAddresses(state: ProjectState, entryId: string): number {
+  const kept: unknown = state.site.redirects;
+  return Array.isArray(kept) ? kept.filter((r) => (r as { entryId?: unknown })?.entryId === entryId).length : 0;
 }
 
 /** Remove a post, letting go of it in the writer only once it is gone. */
@@ -42,10 +49,13 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
   const e = state && postAt(state, target);
   if (!state || !e) return null;
   const uses = entryLinkUses(state, target.entryId);
+  const kept = keptAddresses(state, target.entryId);
   const where = [...new Set(uses.map((u) => u.where))];
+  // Only somewhere visitors can go: a draft is left out of the website, and so would be the links sent to it.
+  const pages = state.site.pageOrder.filter((id) => Object.hasOwn(state.pages, id) && (state.pages[id].draft !== true || id === state.site.homePageId));
   const posts = Object.keys(state.collections)
     .sort()
-    .flatMap((id) => orderedEntries(state.collections[id]).filter((x) => x.id !== target.entryId));
+    .flatMap((id) => orderedEntries(state.collections[id]).filter((x) => x.id !== target.entryId && x.draft === false));
   const confirm = async () => {
     const [kind, id] = [to.slice(0, to.indexOf(':')), to.slice(to.indexOf(':') + 1)];
     setBusy(true);
@@ -71,15 +81,22 @@ function DeletePostDialog({ target, onClose }: { target: PostRef; onClose: () =>
       }
     >
       <p>
-        <strong>{e.title}</strong> is linked from {where.slice(0, 3).join(', ')}
-        {where.length > 3 ? ' and more' : ''} ({uses.length === 1 ? 'one link' : `${uses.length} links`}). Those links, and any old address of the post kept working, go here instead:
+        {uses.length ? (
+          <>
+            <strong>{e.title}</strong> is linked from {where.slice(0, 3).join(', ')}
+            {where.length > 3 ? ' and more' : ''} ({uses.length === 1 ? 'one link' : `${uses.length} links`}).{' '}
+          </>
+        ) : (
+          <>
+            <strong>{e.title}</strong> has {kept === 1 ? 'an old address' : `${kept} old addresses`} kept working for visitors.{' '}
+          </>
+        )}
+        {uses.length && kept ? 'Those links, and its old addresses kept working, go here instead:' : uses.length ? 'Those links go here instead:' : 'They go here instead:'}
       </p>
       <Field label="Send its links to" controlId={`${uid}-to`}>
         <select id={`${uid}-to`} className="select" value={to} onChange={(ev) => setTo(ev.target.value)}>
           <optgroup label="Pages">
-            {state.site.pageOrder
-              .filter((id) => Object.hasOwn(state.pages, id))
-              .map((id) => (
+            {pages.map((id) => (
                 <option key={id} value={`page:${id}`}>
                   {state.pages[id].title} ({state.pages[id].route})
                 </option>
@@ -125,7 +142,7 @@ export function PostsPanel() {
   const uid = useId();
   // A title typed for a new post is a change not made yet: Save and leaving the project say so.
   const newKey = `posts-new:${uid}`;
-  useEffect(() => markDraft(newKey, adding && !!title.trim(), 'A new post has a title but was not created. Create it, or cancel it.'), [newKey, adding, title]);
+  useEffect(() => markDraft(newKey, adding && !!title.trim()), [newKey, adding, title]);
   useEffect(() => () => markDraft(newKey, false), [newKey]);
   const state = snap?.state;
   const collection = state ? postsCollection(state, collectionId ?? post?.collectionId) : undefined;
@@ -188,7 +205,9 @@ export function PostsPanel() {
     const s = getState().snapshot;
     const e = s && postAt(s.state, { collectionId: collection.settings.id, entryId });
     if (!s || !e) return;
-    if (entryLinkUses(s.state, entryId).length) return setDeleting({ collectionId: collection.settings.id, entryId });
+    // Text the open post could not save is part of it: dealt with first, so an Undo of the delete brings back all of it.
+    if (post?.entryId === entryId && !(await openSaved())) return;
+    if (entryLinkUses(s.state, entryId).length || keptAddresses(s.state, entryId)) return setDeleting({ collectionId: collection.settings.id, entryId });
     const ok = await confirmDialog({
       title: 'Delete this post?',
       body: 'The post and its text are removed from the project.',

@@ -188,6 +188,42 @@ describe('the post draft', () => {
     expect(h.draft.dirty).toBe(false);
   });
 
+  it('lets corrected text replace a refused step, and ignores a save that answers after the text was shown again', async () => {
+    const h = harness();
+    h.type('Too long');
+    h.draft.checkpoint(true);
+    const first = h.draft.flush();
+    h.saves[0].answer({ kind: 'failed', message: 'text is too long.' });
+    await first;
+    // The correction is what goes, not the refused step again.
+    h.type('Short');
+    h.tick();
+    expect(h.saves.map((s) => s.body)).toEqual([para('Too long'), para('Short')]);
+    // Shown again from the project while that save is on its way: its answer is not about the text now.
+    h.draft.reset();
+    h.type('Fresh');
+    h.saves[1].answer({ kind: 'failed', message: 'late' });
+    await h.settled();
+    expect(h.draft.problem).toBeNull();
+    expect(h.saves.map((s) => s.body).at(-1)).toEqual(para('Fresh'));
+  });
+
+  it('says the post has gone whatever it said before, and saves again once the post is back', async () => {
+    const h = harness();
+    h.type('Mine');
+    const first = h.draft.flush();
+    h.saves[0].answer({ kind: 'changed' });
+    await first;
+    h.draft.markGone();
+    expect(h.draft.problem).toEqual({ kind: 'gone' });
+    // Nothing is sent for a post that is not there, however the author asks.
+    expect(await h.draft.retry()).toBe(false);
+    expect(h.saves).toHaveLength(1);
+    const back = h.draft.back();
+    h.saves[1].answer({ kind: 'applied' });
+    expect(await back).toBe(true);
+  });
+
   it('starts a new undo step when asked (the writer was left, an Undo ran), saving what it holds as the step before', async () => {
     const h = harness();
     h.type('Before leaving');

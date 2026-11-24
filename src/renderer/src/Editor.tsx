@@ -489,12 +489,19 @@ export function Editor() {
         } else if (s.postView === 'preview' && prev.mode === 'preview' && s.mode === 'edit') setState({ postView: 'write' });
         // Preview chosen in the toolbar while writing: the post open is what is previewed, once what was typed is saved.
         else if (prev.mode === 'edit' && s.mode === 'preview' && s.leftTab === 'posts' && s.postView === 'write') {
-          setState({ postView: 'preview' });
-          void flushOpenPost().then(() => {
+          if (!s.post) return setState({ postView: 'preview' });
+          // The writer stays until what it holds is saved: text that could not be stays in view, with its note.
+          void flushOpenPost().then((saved) => {
             const now = getState();
+            if (now.mode !== 'preview' || now.leftTab !== 'posts' || now.postView !== 'write') return;
+            if (!saved) {
+              setMode('edit');
+              return toast('Part of the post is not saved yet, so the preview would not show it. See the note above its text.', 'error');
+            }
+            setState({ postView: 'preview' });
             const c = now.post && now.snapshot?.state.collections[now.post.collectionId];
             const e = c && now.post && Object.hasOwn(c.entries, now.post.entryId) ? c.entries[now.post.entryId] : undefined;
-            if (c && e && now.postView === 'preview' && now.mode === 'preview') visitAddress(entryRoute(c, e));
+            if (c && e) requestAnimationFrame(() => visitAddress(entryRoute(c, e)));
           });
         }
       }),

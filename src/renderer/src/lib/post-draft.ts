@@ -61,6 +61,8 @@ export class PostDraft {
   private stepNow = 0;
   /** Text read at a step's end (a formatting command), saved in order before the text as it is now. */
   private queued: Array<{ body: RichText; step: number; gen: number }> = [];
+  /** Bumped by reset: a save that was on its way before it answers for text the writer no longer shows. */
+  private epoch = 0;
 
   constructor(private readonly deps: PostDraftDeps) {}
 
@@ -100,7 +102,11 @@ export class PostDraft {
     if (this.closed) return;
     this.gen++;
     // A refusal is answered by the next change: the text is tried again (a description shortened, a picture removed).
-    if (this.problemNow?.kind === 'failed') this.problemNow = null;
+    // Steps ended before it hold the refused text, so the corrected text takes their place.
+    if (this.problemNow?.kind === 'failed') {
+      this.problemNow = null;
+      this.queued = [];
+    }
     this.emit();
     if (!this.composing) this.schedule();
   }
@@ -141,6 +147,20 @@ export class PostDraft {
     return this.flush();
   }
 
+  /** The post is no longer in the project: nothing is saved, and the problem says so, whatever it said before. */
+  markGone(): void {
+    this.cancelTimer();
+    this.problemNow = { kind: 'gone' };
+    this.emit();
+  }
+
+  /** The post is back (an Undo of its removal): its text is saved again as usual. */
+  back(): Promise<boolean> {
+    if (this.problemNow?.kind === 'gone') this.problemNow = null;
+    this.emit();
+    return this.flush();
+  }
+
   /**
    * The writer shows the project's text again (another post, an Undo, the saved version chosen): nothing it holds is
    * unsaved. Text typed meanwhile was read into the DOM already, so the caller only does this when it is clean or the
@@ -148,6 +168,7 @@ export class PostDraft {
    */
   reset(): void {
     this.cancelTimer();
+    this.epoch++;
     this.queued = [];
     this.stepNow++;
     this.saved = this.gen;
@@ -168,6 +189,7 @@ export class PostDraft {
       const item = this.queued[0];
       if (!item && this.composing) return false;
       const gen = item?.gen ?? this.gen;
+      const epoch = this.epoch;
       let outcome: DraftSaveOutcome;
       this.savingNow = true;
       this.emit();
@@ -178,9 +200,12 @@ export class PostDraft {
       } finally {
         this.savingNow = false;
       }
+      // Gone meanwhile, or the writer showed the project's text again: this answer is about text it no longer holds.
+      if (this.closed) return false;
+      if (epoch !== this.epoch) continue;
       if (outcome.kind === 'applied' || outcome.kind === 'unchanged') {
         // Only what was read is saved: text typed while it was on its way goes in the next turn of the loop.
-        if (item) this.queued.shift();
+        if (item && this.queued[0] === item) this.queued.shift();
         this.saved = Math.max(this.saved, gen);
         this.problemNow = null;
         this.emit();
