@@ -174,6 +174,8 @@ await dialog.getByLabel('Component name').fill('Hall hours band');
 await dialog.getByLabel('Component name').press('Enter');
 await dialog.waitFor({ state: 'detached' });
 await eventually(async () => assert.equal((await library())['Hall hours band'], 1, 'the section is now a placement of the new component'));
+// The canvas finds the placement by the section it renders, so the new selection keeps its outline and chip.
+await eventually(async () => assert.match(await win.locator('.ov-chip .label').first().innerText(), /Hall hours band/, 'the canvas chip names the new placement'), 30000);
 const hall = Object.values((await snapshot()).components).find((d) => d.name === 'Hall hours band');
 const homeNodes = (await snapshot()).pages[pageId].nodes;
 for (const id of [band, ...filled.map((r) => r.nodeId)]) assert.equal(homeNodes[id], undefined, 'the section and its content moved into the component');

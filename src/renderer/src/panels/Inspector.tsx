@@ -1466,8 +1466,10 @@ function DefinitionNodeInspector({ state, def, node, tokens }: { state: ProjectS
   const partId = Object.entries(def.parts).find(([, p]) => p.nodeId === node.id)?.[0];
   const isRoot = def.tree?.rootIds[0] === node.id;
   const readOnly = useStore((s) => !!s.snapshot?.readOnly);
+  // Several layers selected together in Layers: Create would package only this one, so it is not offered.
+  const several = useStore((s) => (s.layerSet ? (liveGroup(s)?.ids.length ?? 0) > 1 : false));
   // The design's own node, even when it was reached through a placement on the page.
-  const create = createComponentTarget({ state, readOnly }, { owner, instancePath: [], nodeId: node.id });
+  const create = several ? null : createComponentTarget({ state, readOnly }, { owner, instancePath: [], nodeId: node.id });
   const title = partId && partId !== 'root' ? def.parts[partId].label : isRoot ? def.name : refLabel(state, { owner, instancePath: [], nodeId: node.id });
   // A copy of a theme component compares against the theme's design, so only real changes show as changes.
   const original = def.componentId ? catalogueComponent(state.site.themeId, def.componentId)?.tree?.nodes[node.id]?.styles : undefined;

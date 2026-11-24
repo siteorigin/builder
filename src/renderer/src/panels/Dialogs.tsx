@@ -73,10 +73,14 @@ export function CreateComponentModal({ target }: { target: ElementRef }) {
   const create = async () => {
     setTouched(true);
     if (!ready) return;
+    // Checked against the project as it is now, and made only if nothing changed it before the change lands (a
+    // removal of the section's last element still saving would otherwise leave an empty component).
+    const now = getState().snapshot;
+    if (!createComponentTarget(now, target)) return;
     setBusy(true);
     let r: Awaited<ReturnType<typeof applyOps>> = null;
     try {
-      r = await applyOps([{ type: 'component.createFromNode', owner: target.owner, nodeId: target.nodeId, name: name.trim() }], `Create component ${name.trim()}`);
+      r = await applyOps([{ type: 'component.createFromNode', owner: target.owner, nodeId: target.nodeId, name: name.trim() }], `Create component ${name.trim()}`, undefined, now?.revision);
     } finally {
       if (!r?.[0]?.nodeId) setBusy(false);
     }

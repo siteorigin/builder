@@ -37,7 +37,7 @@ import { codeTakesBlocks, effectiveTokens, generateStandaloneComponent, CUSTOM_D
 import { slotsInsideCards } from '@generator/card-links';
 import { NO_SHELL_IDS, labelKeyFor, pageIds } from '@generator/checks';
 import { pageLinkUses, type PageLinkUse } from './page-links';
-import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
+import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
 import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
@@ -2150,12 +2150,13 @@ function withControls(node: GraphNode): { styleControls?: string[] } {
 function rootControls(state: ProjectState, node: InstanceNode): { styleControls?: string[] } {
   const def = own(state.components, node.definitionId);
   const controls = def ? partStyleControls(def, 'root') : undefined;
-  return controls?.length ? { styleControls: [...controls] } : {};
+  // Kept as listed, an empty list included: it offers only Hidden on a placement, never every property.
+  return controls ? { styleControls: [...controls] } : {};
 }
 
 /**
- * A code component takes a placement's styles on its inner parts only on a page: inside a component's design they
- * would no longer apply, so a selection holding such styles is refused rather than quietly losing them.
+ * A code component takes a placement's styles on its inner parts only on a page, and on its root inside a design only
+ * through the class it places: styles that would no longer apply are refused rather than quietly lost.
  */
 function refuseCodePartStylesInto(state: ProjectState, tree: NodeTree, ids: string[]) {
   for (const id of ids) {
@@ -2163,8 +2164,9 @@ function refuseCodePartStylesInto(state: ProjectState, tree: NodeTree, ids: stri
     if (n?.kind !== 'instance' || !n.overrides) continue;
     const def = own(state.components, n.definitionId);
     if (def?.kind !== 'code') continue;
-    const styled = Object.keys(n.overrides).find((p) => p !== 'root' && Object.keys(n.overrides![p] ?? {}).length);
-    if (styled) fail(`"${n.name ?? def.name}" has its own styles on its ${own(def.parts, styled)?.label ?? styled} part, which a code component takes only on a page. Reset them first, or create the component from a different element.`);
+    const sets = (p: string) => Object.values(n.overrides![p] ?? {}).some((scope) => !!scope && Object.keys(scope).length > 0);
+    const styled = Object.keys(n.overrides).find((p) => sets(p) && (p !== 'root' || !codePlacesClass(def)));
+    if (styled) fail(`"${n.name ?? def.name}" has its own styles on its ${styled === 'root' ? 'root' : `${own(def.parts, styled)?.label ?? styled} part`}, which this code component takes only on a page. Reset them first, or create the component from a different element.`);
   }
 }
 

@@ -131,7 +131,7 @@ export function boundaryOf(state: ProjectState, ref: ElementRef): ElementRef {
  * package), or anything while the project is read-only. Canvas, Layers and the inspector all ask this, so the
  * command is offered on the same things everywhere.
  */
-export function createComponentTarget(snap: { state: ProjectState; readOnly?: boolean } | null | undefined, ref: ElementRef | null): ElementRef | null {
+export function createComponentTarget(snap: { state: ProjectState; readOnly?: unknown } | null | undefined, ref: ElementRef | null): ElementRef | null {
   if (!snap || !ref || snap.readOnly || ref.instancePath.length || ref.owner.kind === 'shell') return null;
   const { state } = snap;
   const tree = treeFor(state, ref.owner);
