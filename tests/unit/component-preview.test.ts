@@ -153,7 +153,12 @@ describe('isolated component preview files', () => {
   it('records the site’s language for the preview’s page', () => {
     const state = starter();
     state.site.language = 'fr-CA';
-    expect(JSON.parse(preview(state, { componentId: 'content.media' }).files.get(PREVIEW_META)!)).toEqual({ lang: 'fr-CA' });
+    expect(JSON.parse(preview(state, { componentId: 'content.media' }).files.get(PREVIEW_META)!)).toEqual({ lang: 'fr-CA', dir: 'ltr' });
+    // A site in Arabic runs right to left, unless its author says otherwise (issue #71).
+    state.site.language = 'ar';
+    expect(JSON.parse(preview(state, { componentId: 'content.media' }).files.get(PREVIEW_META)!)).toEqual({ lang: 'ar', dir: 'rtl' });
+    state.site.direction = 'ltr';
+    expect(JSON.parse(preview(state, { componentId: 'content.media' }).files.get(PREVIEW_META)!)).toEqual({ lang: 'ar', dir: 'ltr' });
   });
 
   it('uses the project’s own copy of a catalogue component it already has', () => {
@@ -240,7 +245,7 @@ describe('serving an isolated preview', () => {
     expect(res.headers['content-type']).toMatch(/text\/html/);
     expect(res.headers['cache-control']).toBe('no-store');
     expect(res.body).toContain('<!--transformed-->');
-    expect(res.body).toContain('<html lang="de-AT">');
+    expect(res.body).toContain('<html lang="de-AT" dir="ltr">');
     expect(res.body).toContain('<meta name="viewport" content="width=device-width, initial-scale=1" />');
     expect(res.body).toContain('<meta name="robots" content="noindex" />');
     const head = await request(path, 'HEAD');

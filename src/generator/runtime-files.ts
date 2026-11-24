@@ -144,7 +144,10 @@ export const ACTION_SVELTE = `<script>
 	 */
 	import { asset, resolve } from '$app/paths';
 	import { beforeNavigate } from '$app/navigation';
+	import { fill, visitorText } from './visitor-text.js';
 	let { mode = 'none', link = null, image = null, group = '', children } = $props();
+	// The viewer's own words, in the language of the page.
+	const text = visitorText();
 	const local = (path) => (path.startsWith('/') && !path.startsWith('//') ? asset(path.slice(1)) : path);
 	const safe = $derived(typeof link?.href === 'string' && /^(https?:|mailto:|tel:|#|\\/)/i.test(link.href) ? link.href : null);
 	const href = $derived(mode === 'link' && safe ? (safe.startsWith('/') && !safe.startsWith('//') ? resolve(safe) : safe) : null);
@@ -217,7 +220,9 @@ export const ACTION_SVELTE = `<script>
 	function keydown(event) {
 		if (slides.length < 2 || event.altKey || event.ctrlKey || event.metaKey || (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight')) return;
 		event.preventDefault();
-		go(event.key === 'ArrowLeft' ? -1 : 1);
+		// The arrow pointing back the way the text runs goes back: the right arrow on a right-to-left page.
+		const back = getComputedStyle(dialog).direction === 'rtl' ? 'ArrowRight' : 'ArrowLeft';
+		go(event.key === back ? -1 : 1);
 	}
 
 	function backdrop(event) {
@@ -239,21 +244,21 @@ export const ACTION_SVELTE = `<script>
 		data-width={image?.width}
 		data-height={image?.height}
 		data-sveltekit-reload
-		onclick={open}>{@render children?.()}<span class="so-visually-hidden">View full image</span></a
+		onclick={open}>{@render children?.()}<span class="so-visually-hidden">{text().imageOpen}</span></a
 	>
 	{#if current}
 		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
 		<dialog
 			bind:this={dialog}
 			class="so-viewer"
-			aria-label={current.caption || current.alt || 'Full image'}
+			aria-label={current.caption || current.alt || text().imageDialog}
 			onclose={() => close()}
 			onkeydown={keydown}
 			onclick={backdrop}
 		>
 			<button type="button" class="so-viewer__close" onclick={() => close()}>
 				<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
-				<span class="so-visually-hidden">Close</span>
+				<span class="so-visually-hidden">{text().imageClose}</span>
 			</button>
 			<figure class="so-viewer__figure">
 				<img class="so-viewer__img" src={current.src} alt={current.alt} width={current.width} height={current.height} decoding="async" />
@@ -263,12 +268,12 @@ export const ACTION_SVELTE = `<script>
 				<div class="so-viewer__nav">
 					<button type="button" class="so-viewer__step" onclick={() => go(-1)}>
 						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6" /></svg>
-						<span class="so-visually-hidden">Previous image</span>
+						<span class="so-visually-hidden">{text().imagePrevious}</span>
 					</button>
-					<p class="so-viewer__count" aria-live="polite">{index + 1} of {slides.length}</p>
+					<p class="so-viewer__count" aria-live="polite">{fill(text().imageCount, { index: index + 1, count: slides.length })}</p>
 					<button type="button" class="so-viewer__step" onclick={() => go(1)}>
 						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
-						<span class="so-visually-hidden">Next image</span>
+						<span class="so-visually-hidden">{text().imageNext}</span>
 					</button>
 				</div>
 			{/if}

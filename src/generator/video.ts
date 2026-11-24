@@ -164,12 +164,15 @@ export function videoPlayerSvelte(instrument = false): string {
 	 */
 	import { ${instrument ? 'onMount, ' : ''}tick } from 'svelte';
 	import { VIDEO_PROVIDERS, parseVideoUrl, videoEmbedUrl } from './${VIDEO_HELPER_FILE}';
+	import { fill, visitorText } from './visitor-text.js';
 	let { url = '', title = '', class: className = '' } = $props();
+	// The player's own words, in the language of the page.
+	const text = visitorText();
 	const video = $derived(parseVideoUrl(url));
 	const host = $derived(video ? VIDEO_PROVIDERS[video.provider].name : '');
 	const src = $derived(video ? videoEmbedUrl(video, { autoplay: true }) : '');
 	// The video's name for screen readers and the player's title; the host's name stands in until it has one.
-	const name = $derived((typeof title === 'string' ? title.replace(/\\s+/g, ' ').trim() : '') || 'Video from ' + host);
+	const name = $derived((typeof title === 'string' ? title.replace(/\\s+/g, ' ').trim() : '') || fill(text().videoFrom, { host }));
 	/** The player address the visitor chose to play: another address shows its own button again. */
 	let playing = $state('');
 	let frame = $state();
@@ -198,9 +201,9 @@ export function videoPlayerSvelte(instrument = false): string {
 		{:else}
 			<button type="button" class="so-video__play" onclick={play}>
 				<svg class="so-video__icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor" /></svg>
-				<span class="so-video__label">Play video</span>
+				<span class="so-video__label">{text().videoPlay}</span>
 				<span class="so-video__title">{name}</span>
-				<span class="so-video__note">Loads the player from {host}</span>
+				<span class="so-video__note">{fill(text().videoLoads, { host })}</span>
 			</button>
 		{/if}
 	</div>${empty}

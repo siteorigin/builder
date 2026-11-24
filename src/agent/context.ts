@@ -11,7 +11,8 @@ import { teaserFields } from '@shared/page-teasers';
 import { pageParents } from '@shared/page-tree';
 import { notFoundCopy } from '@shared/not-found';
 import { itemStylesOf, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
-import { isLanguageCode, pageLanguage, translationPeers } from '@shared/languages';
+import { isLanguageCode, pageLanguage, siteDirection, translationPeers } from '@shared/languages';
+import { ownVisitorTextFor } from '@shared/visitor-text';
 
 const clip = (s: string, n = 160) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 
@@ -108,13 +109,36 @@ function pageLanguageSummary(state: ProjectState, p: PageDoc): { language?: stri
   return { ...(isLanguageCode(p.language) ? { language: p.language } : {}), ...(peers.length ? { translations: peers.map((t) => t.id) } : {}) };
 }
 
+/** The pieces of visitor text with the author's own wording, by language, or nothing when there are none. */
+function visitorTextSummary(state: ProjectState): { visitorTextSet?: Record<string, string[]> } {
+  const all = state.site.visitorText;
+  if (!all || typeof all !== 'object' || Array.isArray(all)) return {};
+  const set = Object.fromEntries(
+    Object.keys(all)
+      .filter(isLanguageCode)
+      .map((code) => [code.toLowerCase(), Object.keys(ownVisitorTextFor(state.site, code))] as const)
+      .filter(([, keys]) => keys.length)
+  );
+  return Object.keys(set).length ? { visitorTextSet: set } : {};
+}
+
 export function projectSummary(state: ProjectState, revision: number) {
   const theme = getTheme(state.site.themeId);
   // The page each page is inside, by route (see shared/page-tree.ts).
   const parents = pageParents(Object.values(state.pages));
   return {
     revision,
-    site: { name: state.site.name, description: state.site.description, language: state.site.language, baseUrl: state.site.baseUrl ?? null, notFoundPage: notFoundCopy(state.site) },
+    site: {
+      name: state.site.name,
+      description: state.site.description,
+      language: state.site.language,
+      // Which way its text runs, and whether that is the author's choice or follows the language.
+      direction: { runs: siteDirection(state.site), automatic: state.site.direction !== 'ltr' && state.site.direction !== 'rtl' },
+      baseUrl: state.site.baseUrl ?? null,
+      notFoundPage: notFoundCopy(state.site),
+      // Which pieces of visitor text have the author's own wording, by language; their words are not repeated here.
+      ...visitorTextSummary(state)
+    },
     theme: { id: theme.id, name: theme.name },
     homePageId: state.site.homePageId,
     pages: state.site.pageOrder.map((id) => {

@@ -57,6 +57,8 @@ const FORM_SOURCE = `<script>
 	 * data-keep-draft and data-draft-field let the site's layout keep a message the visitor has not sent with
 	 * its place in the tab's history (src/lib/siteorigin/runtime/drafts.js), so Back brings it back.
 	 */
+	import { visitorText } from '../runtime/visitor-text.js';
+
 	let {
 		eyebrow = '',
 		heading = '',
@@ -66,15 +68,17 @@ const FORM_SOURCE = `<script>
 		accessKey = '',
 		formName = 'contact',
 		fields = [],
-		submitLabel = 'Send message',
-		successMessage = 'Thank you. Your message has been sent.',
-		errorMessage = 'Sorry, your message could not be sent. Please try again or contact us directly.',
+		submitLabel = '',
+		successMessage = '',
+		errorMessage = '',
 		variant = 'default',
 		class: className = ''
 	} = $props();
 
 	const uid = $props.id();
 	let status = $state('idle');
+	// What the form says of its own progress, in the language of the page.
+	const text = visitorText();
 
 	const HONEYPOT = { endpoint: '_gotcha', web3forms: 'botcheck', netlify: 'bot-field' };
 ${RESERVED_SOURCE}
@@ -256,17 +260,17 @@ ${FIELD_NAME_SOURCE}
 			</div>
 			<div class="so-form__actions">
 				<button class="so-btn so-btn--primary" type="submit" disabled={!ready || status === 'sending'}>
-					{status === 'sending' ? 'Sending…' : submitLabel}
+					{status === 'sending' ? text().formSending : submitLabel || text().formSubmit}
 				</button>
 			</div>
 		</form>
 		<!-- Live regions stay in the page, outside the busy form, so their changes are announced. -->
 		<div class="so-form__messages">
 			<p class="so-form__status" role="status">
-				{#if !connected}This form is not connected to a form service yet, so it cannot be sent.{:else if ambiguous}Two fields of this form have the same name, so it cannot be sent.{:else if unchoosable}A question in this form has no answers to choose from yet, so it cannot be sent.{:else if status === 'sending'}Sending your message…{:else if status === 'sent'}{successMessage}{/if}
+				{#if !connected}{text().formNotConnected}{:else if ambiguous}{text().formDuplicateNames}{:else if unchoosable}{text().formNoChoices}{:else if status === 'sending'}{text().formSendingStatus}{:else if status === 'sent'}{successMessage || text().formSent}{/if}
 			</p>
 			<p class="so-form__status so-form__status--error" role="alert">
-				{#if status === 'error'}{errorMessage}{/if}
+				{#if status === 'error'}{errorMessage || text().formFailed}{/if}
 			</p>
 		</div>
 	</div>
@@ -364,6 +368,14 @@ ${FIELD_NAME_SOURCE}
 	.so-form__field textarea {
 		resize: vertical;
 	}
+	/* Email addresses and phone numbers are typed left to right, whichever way the page runs, and start at the side
+	   the page's text does. */
+	.so-form__field input:is([type='email'], [type='tel']) {
+		direction: ltr;
+	}
+	.so-form__field:dir(rtl) input:is([type='email'], [type='tel']) {
+		text-align: right;
+	}
 	.so-form__field input:focus-visible,
 	.so-form__field textarea:focus-visible {
 		outline: 2px solid var(--so-surface-ink, var(--so-color-focus));
@@ -412,8 +424,9 @@ ${FIELD_NAME_SOURCE}
 		color-scheme: dark;
 	}
 	.so-form__trap {
+		/* Off the start edge: off the end, a right-to-left page would scroll to it. */
 		position: absolute;
-		left: -10000px;
+		inset-inline-start: -10000px;
 		width: 1px;
 		height: 1px;
 		overflow: hidden;
@@ -497,10 +510,12 @@ export const contactForm: ComponentDefinition = {
       ],
       { titleField: 'label', max: 12 }
     ),
+    // Empty, these use the site's visitor text for the page's language (Site styles > Visitor text). The button shows
+    // on the page, so it starts with words of its own, as the fields do; the messages only show once a message is sent.
     ...P.group('Messages', {
-      submitLabel: P.str('Button label', 'Send message'),
-      successMessage: P.text('Sent message', 'Thank you. Your message has been sent.'),
-      errorMessage: P.text('Error message', 'Sorry, your message could not be sent. Please try again or contact us directly.')
+      submitLabel: { ...P.str('Button label', 'Send message'), description: 'Empty: the send button of the site’s visitor text, in the page’s language.' },
+      successMessage: { ...P.text('Sent message', ''), description: 'Empty: the sent message of the site’s visitor text, in the page’s language.' },
+      errorMessage: { ...P.text('Error message', ''), description: 'Empty: the not-sent message of the site’s visitor text, in the page’s language.' }
     })
   },
   parts: { root: { nodeId: 'root', label: 'Form section' } },

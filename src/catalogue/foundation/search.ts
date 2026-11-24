@@ -18,6 +18,7 @@ const SEARCH_SOURCE = `<script>
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { loadPages, searchPages, searchWords } from '../runtime/site-search.js';
+	import { fill, fillParts, visitorText } from '../runtime/visitor-text.js';
 
 	let {
 		eyebrow = '',
@@ -26,8 +27,8 @@ const SEARCH_SOURCE = `<script>
 		label = 'Search for',
 		placeholder = '',
 		buttonLabel = 'Search',
-		emptyMessage = 'Type a word or phrase to search for.',
-		noResultsMessage = 'Try fewer or different words.',
+		emptyMessage = '',
+		noResultsMessage = '',
 		variant = 'default',
 		class: className = ''
 	} = $props();
@@ -101,6 +102,12 @@ const SEARCH_SOURCE = `<script>
 	});
 
 	const shown = $derived(found ? found.results.length : 0);
+	// What the search says on its own, in the language of the page.
+	const text = visitorText();
+	// How many pages matched, in pieces: the words searched for are set apart, keeping their own direction.
+	const outcome = $derived(
+		found ? fillParts(found.total === 0 ? text().searchNone : found.total === 1 ? text().searchOne : found.total > shown ? text().searchLimited : text().searchMany, { count: found.total, query: found.words, shown }) : []
+	);
 </script>
 
 <section class={['so-search', 'so-search--' + variant, className]}>
@@ -113,8 +120,8 @@ const SEARCH_SOURCE = `<script>
 			</div>
 		{/if}
 		<div class="so-search__body">
-			<form class="so-search__form" role="search" aria-labelledby={heading ? uid + '-heading' : undefined} aria-label={heading ? undefined : 'Site search'} onsubmit={submit}>
-				<label class="so-search__label" for={uid + '-q'}>{label || 'Search for'}</label>
+			<form class="so-search__form" role="search" aria-labelledby={heading ? uid + '-heading' : undefined} aria-label={heading ? undefined : text().searchLandmark} onsubmit={submit}>
+				<label class="so-search__label" for={uid + '-q'}>{label || text().searchLabel}</label>
 				<div class="so-search__row">
 					<input
 						id={uid + '-q'}
@@ -128,14 +135,14 @@ const SEARCH_SOURCE = `<script>
 						bind:value={query}
 						onkeydown={keydown}
 					/>
-					<button class="so-btn so-btn--primary so-search__button" type="submit">{buttonLabel || 'Search'}</button>
+					<button class="so-btn so-btn--primary so-search__button" type="submit">{buttonLabel || text().searchButton}</button>
 				</div>
 			</form>
 			<p class="so-search__status" id={uid + '-status'} role="status">
-				{#if status === 'empty'}{emptyMessage}{:else if status === 'searching'}Searching…{:else if status === 'failed'}The search could not load. Reload the page and try again.{:else if status === 'done' && found}{#if found.total === 0}No pages match “{found.words}”. {noResultsMessage}{:else if found.total === 1}1 page matches “{found.words}”.{:else if found.total > shown}{found.total} pages match “{found.words}”. The first {shown} are shown; add words to narrow the search.{:else}{found.total} pages match “{found.words}”.{/if}{/if}
+				{#if status === 'empty'}{emptyMessage || text().searchEmpty}{:else if status === 'searching'}{text().searchSearching}{:else if status === 'failed'}{text().searchFailed}{:else if status === 'done' && found}{#each outcome as part}{#if part.name === 'query'}<bdi>{part.text}</bdi>{:else}{part.text}{/if}{/each}{#if found.total === 0}{' '}{noResultsMessage || text().searchAdvice}{/if}{/if}
 			</p>
 			{#if status === 'done' && found && shown}
-				<ol class="so-search__results" aria-label={'Pages matching ' + found.words}>
+				<ol class="so-search__results" aria-label={fill(text().searchResults, { query: found.words })}>
 					{#each found.results as result (result.route)}
 						<li class="so-search__result">
 							<a class="so-search__link" href={resolve(result.route)}>
@@ -328,8 +335,8 @@ export const siteSearch: ComponentDefinition = {
       buttonLabel: P.str('Button label', 'Search')
     }),
     ...P.group('Messages', {
-      emptyMessage: P.text('Message for an empty search', 'Type a word or phrase to search for.'),
-      noResultsMessage: P.text('Advice when nothing matches', 'Try fewer or different words.')
+      emptyMessage: { ...P.text('Message for an empty search', ''), description: 'Empty: the empty-search message of the site’s visitor text, in the page’s language.' },
+      noResultsMessage: { ...P.text('Advice when nothing matches', ''), description: 'Empty: the no-results advice of the site’s visitor text, in the page’s language.' }
     })
   },
   parts: { root: { nodeId: 'root', label: 'Search section' } },

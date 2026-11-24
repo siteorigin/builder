@@ -7,6 +7,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, posix, relative, sep } from 'node:path';
+import { languageDirection } from '@shared/languages';
 import { ISOLATED_DIR, PREVIEW_COMPONENT_STYLES, PREVIEW_KEY, PREVIEW_META, PREVIEW_MODULE, PREVIEW_PROJECT_STYLES, previewKeyOf } from '@shared/component-preview';
 import bridgeSource from './bridge.client.js?raw';
 import { realFileInside } from './policy';
@@ -45,9 +46,9 @@ function editedOutside(dir: string, rel: string): boolean {
 const PREVIEW_ENTRY = 'virtual:siteorigin-component-preview/';
 
 /** The page a component preview is shown on: nothing but the module that mounts it. */
-export function previewDocument(key: string, lang: string): string {
+export function previewDocument(key: string, lang: string, dir: 'ltr' | 'rtl' = 'ltr'): string {
   return `<!doctype html>
-<html lang="${lang}">
+<html lang="${lang}" dir="${dir}">
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -124,13 +125,15 @@ export function previewModuleKey(url: string | undefined, dirs: string[] = []): 
 }
 
 /** The language a preview's page is in: the site's, as its editor recorded it beside the preview. */
-function previewLanguage(meta: string | null): string {
+function previewLanguage(meta: string | null): { lang: string; dir: 'ltr' | 'rtl' } {
   try {
-    if (!meta || statSync(meta).size > 4096) return 'en';
-    const lang = (JSON.parse(readFileSync(meta, 'utf8')) as { lang?: unknown }).lang;
-    return typeof lang === 'string' && /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(lang) ? lang : 'en';
+    if (!meta || statSync(meta).size > 4096) return { lang: 'en', dir: 'ltr' };
+    const { lang, dir } = JSON.parse(readFileSync(meta, 'utf8')) as { lang?: unknown; dir?: unknown };
+    const code = typeof lang === 'string' && /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(lang) ? lang : 'en';
+    // Written before previews knew the way the text runs: the language says.
+    return { lang: code, dir: dir === 'ltr' || dir === 'rtl' ? dir : languageDirection(code) };
   } catch {
-    return 'en';
+    return { lang: 'en', dir: 'ltr' };
   }
 }
 
@@ -222,7 +225,8 @@ export function devPlugin(dir: string) {
           return;
         }
         forgetReleased();
-        server.transformIndexHtml(req.url!, previewDocument(key, previewLanguage(previewFile(key, PREVIEW_META)))).then((html) => {
+        const { lang, dir } = previewLanguage(previewFile(key, PREVIEW_META));
+        server.transformIndexHtml(req.url!, previewDocument(key, lang, dir)).then((html) => {
           res.statusCode = 200;
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
           res.end(req.method === 'HEAD' ? undefined : html);

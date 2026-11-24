@@ -220,6 +220,40 @@ describe('held edit field check', () => {
   });
 });
 
+describe('held visitor text (issue #71)', () => {
+  const set = (language: string, text: Record<string, string>): EditOperation => ({ type: 'site.update', visitorText: { language, text } });
+
+  it('reads and checks only the piece typed, in its language', () => {
+    const base = apply(fresh(), [set('ar', { menu: 'اعرض القائمة' })]);
+    const op = set('AR', { menu: 'افتح القائمة' });
+    expect(readFields(base, [op])).toEqual([{ found: true, value: { visitorText: 'اعرض القائمة' } }]);
+    expect(typedText(op)).toBe('افتح القائمة');
+    expect(shownField(op, { visitorText: 'اعرض القائمة' })).toBe('اعرض القائمة');
+    // Another piece, or the same piece in another language, changing meanwhile is no conflict.
+    expect(check(base, apply(base, [set('ar', { skipLink: 'إلى المحتوى' }), set('he', { menu: 'תפריט' })]), [op])).toEqual({ kind: 'apply' });
+    // The piece itself changing is.
+    expect(check(base, apply(base, [set('ar', { menu: '' })]), [op])).toEqual({ kind: 'changed', current: [{ visitorText: undefined }] });
+    // Several pieces at once are read one by one, and any of them changing is a conflict.
+    const both = set('ar', { menu: 'x', skipLink: 'y' });
+    expect(readFields(base, [both])).toEqual([{ found: true, value: { visitorText: { menu: 'اعرض القائمة', skipLink: undefined } } }]);
+    expect(check(base, apply(base, [set('ar', { skipLink: 'إلى المحتوى' })]), [both]).kind).toBe('changed');
+    // Wording kept by hand under another case is read as the editor shows it.
+    const hand = structuredClone(base);
+    hand.site.visitorText = { AR: { menu: 'يدوي' } };
+    expect(readFields(hand, [op])).toEqual([{ found: true, value: { visitorText: 'يدوي' } }]);
+    expect(check(base, hand, [op]).kind).toBe('changed');
+    // The direction is a field of its own.
+    expect(readFields(base, [{ type: 'site.update', direction: 'rtl' }])).toEqual([{ found: true, value: { direction: undefined } }]);
+    expect(check(base, apply(base, [{ type: 'site.update', direction: 'ltr' }]), [{ type: 'site.update', direction: 'rtl' }]).kind).toBe('changed');
+  });
+
+  it('keeps edits of different pieces apart, and lets a newer edit of the same piece replace an older one', () => {
+    expect(fieldKey([set('ar', { menu: 'a' })])).not.toBe(fieldKey([set('ar', { skipLink: 'a' })]));
+    expect(fieldKey([set('ar', { menu: 'a' })])).not.toBe(fieldKey([set('he', { menu: 'a' })]));
+    expect(fieldKey([set('ar', { menu: 'a' })])).toBe(fieldKey([set('AR', { menu: 'b' })]));
+  });
+});
+
 describe('held edit row', () => {
   it('offers to stop the AI while it works, and to apply once it has finished', () => {
     expect(heldPrompt({ phase: 'waiting', text: 'x' }, true).actions).toEqual(['stop-apply', 'discard']);

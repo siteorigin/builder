@@ -7,7 +7,7 @@ import type { ComponentDefinition, InstanceNode, ListItem, ProjectState } from '
 import { isBinding } from '@shared/types';
 import { PREVIEW_COMPONENT_STYLES, PREVIEW_META, PREVIEW_MODULE, type ComponentPreviewSpec } from '@shared/component-preview';
 import { axesOf } from '@shared/variants';
-import { siteLanguage } from '@shared/languages';
+import { siteDirection, siteLanguage } from '@shared/languages';
 import { catalogueComponent } from '@catalogue/index';
 import { namesFormFields } from '@catalogue/foundation/form';
 import { installComponent, makeInstance } from '@engine/install';
@@ -85,7 +85,7 @@ export function generateComponentPreview(state: ProjectState, spec: ComponentPre
   }
   files.set(`${RUNTIME_DIR}/icons.js`, iconsJs(shown, node.props));
   files.set(PREVIEW_MODULE, generateIsolatedInstance(shown, PREVIEW_MODULE, node, previewCtx(def.id)));
-  // What the preview's page needs to know of the site: the language its text is in.
-  files.set(PREVIEW_META, JSON.stringify({ lang: siteLanguage(shown.site) }));
+  // What the preview's page needs to know of the site: the language its text is in, and the way that text runs.
+  files.set(PREVIEW_META, JSON.stringify({ lang: siteLanguage(shown.site), dir: siteDirection(shown.site) }));
   return { files, definitionId: def.id, name: def.name };
 }

@@ -61,6 +61,9 @@ p { text-wrap: pretty; }
 ul, ol { margin: 0; padding: 0; list-style: none; }
 img, svg { display: block; max-width: 100%; }
 a { color: inherit; }
+/* A phone number or email address keeps its own order inside right-to-left text: what the link says decides which
+   way it runs, so "+1 555 0134" reads left to right while an Arabic "Call us" still reads right to left. */
+a:is([href^='tel:' i], [href^='mailto:' i]) { unicode-bidi: plaintext; }
 address, cite { font-style: normal; }
 /* Jump links land 1rem below the sticky site header instead of under it. The header publishes the height it
    occupies (0 when it does not stick); before it has, the default assumes one 72px row. */
@@ -71,7 +74,7 @@ ${SURFACES}
 ::selection { background: color-mix(in srgb, var(--so-color-brand) 22%, transparent); }
 
 /* Moved up by its own height, so it stays out of sight at any text size until it is focused. */
-.so-skip-link { position: absolute; left: 12px; top: 12px; transform: translateY(calc(-100% - 12px)); z-index: 100; padding: 10px 16px; border-radius: var(--so-radius-sm); background: var(--so-color-text); color: var(--so-color-background); text-decoration: none; }
+.so-skip-link { position: absolute; inset-inline-start: 12px; top: 12px; transform: translateY(calc(-100% - 12px)); z-index: 100; padding: 10px 16px; border-radius: var(--so-radius-sm); background: var(--so-color-text); color: var(--so-color-background); text-decoration: none; }
 .so-skip-link:focus { transform: none; }
 
 .so-rich > * + * { margin-top: 1em; }
@@ -124,6 +127,8 @@ html:has(.so-viewer[open]) { overflow: hidden; }
 .so-viewer__img { width: auto; height: auto; max-width: 100%; max-height: 100%; object-fit: contain; }
 .so-viewer__caption { max-width: 60ch; max-height: 25vh; overflow-y: auto; text-align: center; font-size: 0.95rem; line-height: 1.5; color: rgb(244 244 245 / 0.86); }
 .so-viewer__nav { display: flex; align-items: center; justify-content: center; gap: 1.25rem; }
+/* Previous sits at the start of the row: right to left, its arrow and Next's point the other way. */
+.so-viewer__step:dir(rtl) svg { transform: scaleX(-1); }
 .so-viewer__count { min-width: 4.5em; text-align: center; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
 @media (min-width: 768px) { .so-viewer { padding: 1.5rem; } }
 
@@ -149,6 +154,9 @@ html:has(.so-viewer[open]) { overflow: hidden; }
 .so-btn--text { min-height: 0; padding: 0.2em 0; border-radius: 0; --so-btn-fg: var(--so-surface-ink, var(--so-color-brand)); background: none; }
 .so-btn--text::after { content: '→'; transition: transform 160ms ease; }
 :is(a, button).so-btn--text:hover::after { transform: translateX(3px); }
+/* Right to left, the arrow points the way the text runs and moves that way. */
+.so-btn--text:dir(rtl)::after { content: '←'; }
+:is(a, button).so-btn--text:dir(rtl):hover::after { transform: translateX(-3px); }
 .so-btn--light { --so-btn-bg: var(--so-color-on-brand); --so-btn-fg: var(--so-color-brand-strong); --so-btn-bg-hover: color-mix(in srgb, var(--so-color-on-brand) 88%, var(--so-color-brand)); }
 :is(a, button).so-btn--light:hover { background: var(--so-btn-bg-hover, color-mix(in srgb, var(--so-btn-bg) 88%, var(--so-btn-fg))); }
 
@@ -168,18 +176,18 @@ html:has(.so-viewer[open]) { overflow: hidden; }
 
 .so-rich--check, .so-rich--bullet { display: grid; gap: 0.65em; }
 .so-rich--check > * + *, .so-rich--bullet > * + * { margin-top: 0; }
-.so-rich--check li { position: relative; padding-left: 1.75em; }
+.so-rich--check li { position: relative; padding-inline-start: 1.75em; }
 .so-rich--check li::before {
-  content: ''; position: absolute; left: 0; top: 0.32em; width: 1.05em; height: 1.05em; border-radius: 50%;
+  content: ''; position: absolute; inset-inline-start: 0; top: 0.32em; width: 1.05em; height: 1.05em; border-radius: 50%;
   background: color-mix(in srgb, var(--so-surface-ink, var(--so-color-brand)) 14%, transparent);
   -webkit-mask: none;
 }
 .so-rich--check li::after {
-  content: ''; position: absolute; left: 0.33em; top: 0.52em; width: 0.38em; height: 0.6em;
+  content: ''; position: absolute; inset-inline-start: 0.33em; top: 0.52em; width: 0.38em; height: 0.6em;
   border: solid var(--so-surface-ink, var(--so-color-brand)); border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
-.so-rich--bullet li { position: relative; padding-left: 1.25em; }
-.so-rich--bullet li::before { content: ''; position: absolute; left: 0.2em; top: 0.7em; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+.so-rich--bullet li { position: relative; padding-inline-start: 1.25em; }
+.so-rich--bullet li::before { content: ''; position: absolute; inset-inline-start: 0.2em; top: 0.7em; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.6; }
 
 details > summary { list-style: none; cursor: pointer; }
 details > summary::-webkit-details-marker { display: none; }

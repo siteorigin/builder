@@ -4,6 +4,7 @@ import { DOCUMENT_EXTENSIONS, DOCUMENT_FORMATS } from './document-files';
 import { sha256Hex } from './sha256';
 import { COMPONENT_CATEGORIES, SLOT_PRIMITIVES } from './types';
 import { TEXT_LIMITS, tooLongMessage } from './text-limits';
+import { VISITOR_TEXT_KEYS, VISITOR_TEXT_LIMIT } from './visitor-text';
 
 /**
  * The single, versioned operation union used by manual editing and by the AI agent.
@@ -321,13 +322,21 @@ export const OPERATION_SCHEMAS = {
     type: z.literal('site.update'),
     name: z.string().min(1).max(80).optional(),
     language: z.string().max(20).optional(),
+    direction: z.enum(['auto', 'ltr', 'rtl']).optional().describe('Which way the site\'s text runs. "auto" (the default) follows the language: right to left for Arabic, Hebrew, Persian or Urdu, left to right otherwise.'),
     description: limited(TEXT_LIMITS.siteDescription).optional(),
     baseUrl: z.string().max(200).optional(),
     favicon: z.string().nullable().optional(),
     socialImage: z.string().nullable().optional(),
     notFoundHeading: z.string().max(120).optional().describe('Heading of the page shown at an address the site does not have. "" restores the default.'),
     notFoundMessage: z.string().max(400).optional().describe('Message on that page, shown above its link to the Home page. "" restores the default.'),
-    notFoundLinkLabel: z.string().max(60).optional().describe('Text of that page\'s link to the Home page. "" restores the default.')
+    notFoundLinkLabel: z.string().max(60).optional().describe('Text of that page\'s link to the Home page. "" restores the default.'),
+    visitorText: z
+      .object({
+        language: z.string().max(20).describe('Language code, e.g. "ar": pages in it use this wording.'),
+        text: z.record(z.string(), z.string().max(VISITOR_TEXT_LIMIT)).describe(`Wording by key (${VISITOR_TEXT_KEYS.join(', ')}). "" goes back to the wording used without it. {braced} names are filled in.`)
+      })
+      .optional()
+      .describe('What the site says on its own (skip link, menu button, form progress, search, image viewer) in one language. Built in for en, ar, he.')
   }),
 
   'component.createFromNode': z.object({ type: z.literal('component.createFromNode'), owner, nodeId: z.string(), name: z.string().min(1).max(60) }),

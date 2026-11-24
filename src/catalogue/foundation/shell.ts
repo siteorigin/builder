@@ -17,6 +17,7 @@ const HEADER_SOURCE = `<script>
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import SoImage from '../runtime/Image.svelte';
+	import { fill, visitorText } from '../runtime/visitor-text.js';
 
 	let {
 		siteName = 'Studio',
@@ -34,6 +35,8 @@ const HEADER_SOURCE = `<script>
 		class: className = ''
 	} = $props();
 
+	// The names of the menu and submenu buttons and of the navigation, in the language of the page.
+	const text = visitorText();
 	// The item ID of the link whose submenu is open; one at a time.
 	let openSub = $state(null);
 	let header = $state();
@@ -289,7 +292,7 @@ const HEADER_SOURCE = `<script>
 	{/if}
 	<div class="so-header__inner">
 		<!-- Without the visible name, the link is still named for screen readers. -->
-		<a class="so-header__brand" href={resolve('/')} aria-label={nameShown || logoAlt ? undefined : name || 'Home'}>
+		<a class="so-header__brand" href={resolve('/')} aria-label={nameShown || logoAlt ? undefined : name || text().home}>
 			{#if logo?.src}
 				<SoImage image={nameShown ? { ...logo, decorative: true } : logo} class="so-header__logo" sizes={logoSizes} eager />
 			{/if}
@@ -302,7 +305,7 @@ const HEADER_SOURCE = `<script>
 		     or closing it folds any open submenu away. -->
 		<details class="so-header__menu" bind:this={menu} ontoggle={() => (openSub = null)}>
 			<summary bind:this={toggle} class="so-header__toggle" aria-controls="so-site-nav">
-				<span class="so-visually-hidden">Menu</span>
+				<span class="so-visually-hidden">{text().menu}</span>
 				<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
 					<path class="so-header__icon-open" d="M4 7h16M4 12h16M4 17h16" />
 					<path class="so-header__icon-close" d="M6 6l12 12M18 6L6 18" />
@@ -311,7 +314,7 @@ const HEADER_SOURCE = `<script>
 		</details>
 
 		<!-- A link with others under it keeps going to its own page; the button beside it shows and hides them. -->
-		<nav id="so-site-nav" class="so-header__nav" aria-label="Main">
+		<nav id="so-site-nav" class="so-header__nav" aria-label={text().mainNav}>
 			<ul class="so-header__list">
 				{#each groups as { item, children } (item.id)}
 					{#if children.length}
@@ -324,7 +327,7 @@ const HEADER_SOURCE = `<script>
 								aria-controls={subId(item.id)}
 								onclick={() => (openSub = openSub === item.id ? null : item.id)}
 							>
-								<span class="so-visually-hidden">{item.label} submenu</span>
+								<span class="so-visually-hidden">{fill(text().submenu, { link: item.label })}</span>
 								<svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
 									<path d="M4 6l4 4 4-4" />
 								</svg>
@@ -471,7 +474,7 @@ const HEADER_SOURCE = `<script>
 	.so-header__menu {
 		display: none;
 		flex: none;
-		margin-right: -10px;
+		margin-inline-end: -10px;
 	}
 	.so-header__toggle {
 		display: flex;
@@ -533,8 +536,7 @@ const HEADER_SOURCE = `<script>
 	.so-header__group--current > a::after {
 		content: '';
 		position: absolute;
-		left: 0;
-		right: 0;
+		inset-inline: 0;
 		bottom: -6px;
 		height: 2px;
 		border-radius: 2px;
@@ -553,7 +555,7 @@ const HEADER_SOURCE = `<script>
 		justify-content: center;
 		width: 28px;
 		height: 28px;
-		margin-right: -6px;
+		margin-inline-end: -6px;
 		padding: 0;
 		border: 0;
 		border-radius: var(--so-radius-sm);
@@ -576,7 +578,7 @@ const HEADER_SOURCE = `<script>
 	.so-header__sub {
 		position: absolute;
 		top: calc(100% + 12px);
-		left: -14px;
+		inset-inline-start: -14px;
 		z-index: 1;
 		display: flex;
 		flex-direction: column;
@@ -593,10 +595,11 @@ const HEADER_SOURCE = `<script>
 		color: var(--so-color-on-inverse);
 		border-color: transparent;
 	}
-	/* The last link's panel opens leftwards from its right edge, so it stays inside the window; a long one scrolls. */
+	/* The last link's panel opens back from its end edge (leftwards, or rightwards on a right-to-left page), so it
+	   stays inside the window; a long one scrolls. */
 	.so-header__list > .so-header__group:last-child .so-header__sub {
-		left: auto;
-		right: -10px;
+		inset-inline-start: auto;
+		inset-inline-end: -10px;
 	}
 	.so-header__sub {
 		max-height: min(70vh, 480px);
@@ -631,8 +634,7 @@ const HEADER_SOURCE = `<script>
 		.so-header__nav {
 			position: absolute;
 			top: 100%;
-			left: 0;
-			right: 0;
+			inset-inline: 0;
 			display: none;
 			flex-direction: column;
 			flex-wrap: nowrap;
@@ -687,7 +689,7 @@ const HEADER_SOURCE = `<script>
 		.so-header__sub-toggle {
 			width: 44px;
 			height: 44px;
-			margin-right: -10px;
+			margin-inline-end: -10px;
 		}
 		.so-header__sub,
 		.so-header__list > .so-header__group:last-child .so-header__sub {
@@ -698,10 +700,11 @@ const HEADER_SOURCE = `<script>
 			max-height: none;
 			overflow: visible;
 			margin: 0 0 10px;
-			padding: 0 0 0 var(--so-space-md);
+			padding: 0;
+			padding-inline-start: var(--so-space-md);
 			background: transparent;
 			border: 0;
-			border-left: 2px solid var(--so-color-border);
+			border-inline-start: 2px solid var(--so-color-border);
 			border-radius: 0;
 			box-shadow: none;
 		}
@@ -714,7 +717,8 @@ const HEADER_SOURCE = `<script>
 			color: inherit;
 		}
 		.so-header__nav .so-header__sub a {
-			padding: 11px 0 11px 4px;
+			padding: 11px 0;
+			padding-inline-start: 4px;
 			font-size: 1rem;
 		}
 		.so-header__nav .so-header__sub a:hover {
