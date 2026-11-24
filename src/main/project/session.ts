@@ -20,7 +20,7 @@ import { DOCUMENT_EXTENSIONS } from '@shared/document-files';
 import { generateProject, GENERATOR_VERSION, packFileCopies } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { themeUpdates, type ThemeUpdates } from '@engine/theme-updates';
-import { readPackFile } from '../packs/files';
+import { packFileInfo, readPackFile } from '../packs/files';
 import { checkSvelteSource, componentSources } from '../codecheck';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
@@ -1249,13 +1249,10 @@ export class ProjectSession extends EventEmitter {
         // A damaged or missing pack file costs that font's update, not the save: a copy already in the project stays,
         // still claimed, so it is neither replaced nor removed as obsolete.
         console.warn(`Not copying ${c.path}: ${(e as Error).message}`);
-        if (known(c.path)) {
-          // The claim is whichever of this app's hashes the file on disk has (a publication that stopped part way may
-          // have written the newer one).
-          const disk = await readBytesIfExists(safeJoin(this.dir, c.path));
-          const h = disk === null ? null : sha(disk);
-          nextFiles[c.path] = h !== null && ours(c.path, h) ? h : (prev[c.path] ?? inflight[c.path]);
-        }
+        // Only a copy that already is the pack's validated file is kept: another theme's file of the same name is not.
+        const disk = known(c.path) ? await readBytesIfExists(safeJoin(this.dir, c.path)) : null;
+        const h = disk === null ? null : sha(disk);
+        if (h !== null && ours(c.path, h) && h === packFileInfo(c.pack, c.file)?.sha256) nextFiles[c.path] = h;
       }
     }
     // Looked at together, a stat each: a file unchanged on disk since it was last read is not read again.

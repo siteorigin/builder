@@ -59,7 +59,7 @@ export function stackUsesFamily(stack: string, family: string): boolean {
  * Every place a font family is written: font tokens, text styles, and `fontFamily` styles on elements, overrides
  * and variants. Page titles and other text that merely match a font's name are not font uses.
  */
-function fontSlots(state: ProjectState, components: unknown = state.components): Array<{ get: () => string; set: (v: string) => void }> {
+function fontSlots(state: ProjectState, components: unknown = state.components, fontTokens: ReadonlySet<string> = new Set()): Array<{ get: () => string; set: (v: string) => void }> {
   const slots: Array<{ get: () => string; set: (v: string) => void }> = [];
   const add = (holder: Record<string, unknown>, key: string) => {
     if (typeof holder[key] === 'string') slots.push({ get: () => holder[key] as string, set: (v) => (holder[key] = v) });
@@ -72,7 +72,7 @@ function fontSlots(state: ProjectState, components: unknown = state.components):
   };
   const customGroup = new Map(state.tokens.custom.map((t) => [t.id, t.group]));
   const overrides = state.tokens.overrides as unknown as Record<string, unknown>;
-  for (const id of Object.keys(overrides)) token(overrides, id, customGroup.get(id) === 'font' || id.startsWith('font.'));
+  for (const id of Object.keys(overrides)) token(overrides, id, customGroup.get(id) === 'font' || id.startsWith('font.') || fontTokens.has(id));
   for (const t of state.tokens.custom) token(t as unknown as Record<string, unknown>, 'value', t.group === 'font');
   const walk = (v: unknown) => {
     if (Array.isArray(v)) v.forEach(walk);
@@ -91,15 +91,16 @@ function fontSlots(state: ProjectState, components: unknown = state.components):
 }
 
 /**
- * Whether the site itself chose this font family: in a site style or text style, as an element's font (on pages,
+ * Whether the site itself chose this font family: in a site style (the theme's font tokens are `fontTokens`, besides
+ * any named font.*) or text style, as an element's font (on pages,
  * the shared header and footer, or the given components), or in a project code component's source. Text that
  * merely mentions the name, and the theme's own defaults, are not choices.
  */
-export function siteChoosesFamily(state: ProjectState, family: string, components = Object.values(state.components).filter((d) => d.owner === 'project')): boolean {
+export function siteChoosesFamily(state: ProjectState, family: string, fontTokens: ReadonlySet<string> = new Set(), components = Object.values(state.components).filter((d) => d.owner === 'project')): boolean {
   // CSS reads a run of spaces in an unquoted name as one, and family names ignore case.
   const key = (name: string) => unquote(name).replace(/\s+/g, ' ').toLowerCase();
   const name = key(family);
-  if (fontSlots(state, components).some((s) => s.get().split(',').some((part) => key(part) === name))) return true;
+  if (fontSlots(state, components, fontTokens).some((s) => s.get().split(',').some((part) => key(part) === name))) return true;
   return components.some((d) => d.kind === 'code' && typeof d.source === 'string' && d.source.replace(/\s+/g, ' ').toLowerCase().includes(name));
 }
 

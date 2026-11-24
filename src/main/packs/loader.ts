@@ -12,9 +12,8 @@ import { SCHEMA_VERSION, isBinding } from '@shared/types';
 import { BUNDLED_PACK_IDS, PACK_FILE_RE, PACK_FORMAT, PACK_ID_RE, PACK_MANIFEST, PACK_VERSION_RE, type PackManifest, type ThemePack } from '@catalogue/pack';
 import { FONT_FAMILY_RE } from '@shared/fonts';
 import { variantIdsValid } from '@shared/variants';
-import { defKey } from '@generator/index';
+import { defKey, slotIdent } from '@generator/index';
 import { sha } from '../project/fsutil';
-import { checkSvelteSource } from '../codecheck';
 import { readRegularFile, type PackFileSource } from './files';
 import type { PackRefusal } from '@shared/api';
 
@@ -141,7 +140,7 @@ function checkCss(css: string, where: string) {
   // Read as a browser would. Strings and comments are found together, left to right: "/*" inside a string starts no
   // comment, and text inside either (even the word url()) loads nothing. An escaped letter ("\\75 rl(") is the letter.
   const plain = css
-    .replace(/("(?:[^"\\\n]|\\[\s\S])*"?|'(?:[^'\\\n]|\\[\s\S])*'?)|\/\*[\s\S]*?(?:\*\/|$)/g, (_, str: string | undefined) => (str ? '""' : ' '))
+    .replace(/(\\[\s\S])|("(?:[^"\\\n]|\\[\s\S])*"?|'(?:[^'\\\n]|\\[\s\S])*'?)|\/\*[\s\S]*?(?:\*\/|$)/g, (_, esc: string | undefined, str: string | undefined) => esc ?? (str ? '""' : ' '))
     .replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?/g, (_, hex: string) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff) || 0xfffd))
     .replace(/\\(.)/gs, '$1');
   if (/@import/i.test(plain)) refuse(`${where} imports another stylesheet (@import), which packs may not do.`);
@@ -196,7 +195,14 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
       if (prop.type === 'list' && (!prop.fields || typeof prop.fields !== 'object' || !Array.isArray(prop.default))) refuse(`${where}: the list property "${name}" has no fields or no default items.`);
       if (prop.type === 'enum' && !Array.isArray(prop.options)) refuse(`${where}: the choice property "${name}" has no options.`);
     }
-    for (const slot of Object.keys(def.slots ?? {})) if (!SAFE_ID.test(slot)) refuse(`${where}: the slot name "${slot.slice(0, 40)}" is not allowed.`);
+    const idents = new Map<string, string>();
+    for (const slot of Object.keys(def.slots ?? {})) {
+      if (!SAFE_ID.test(slot)) refuse(`${where}: the slot name "${slot.slice(0, 40)}" is not allowed.`);
+      // Each slot becomes a generated identifier; two that become the same one would not compile.
+      const ident = slotIdent(slot);
+      if (idents.has(ident)) refuse(`${where}: the slots "${idents.get(ident)}" and "${slot}" would generate the same name.`);
+      idents.set(ident, slot);
+    }
     if (def.provenance?.pack !== m.id || def.provenance?.packVersion !== m.version || def.provenance?.componentId !== def.componentId) refuse(`${where} says it comes from another pack or version.`);
     if (!COMPONENT_LICENSES.has(def.license ?? '')) refuse(`${where} has the licence "${def.license}", which does not allow it to be published in websites.`);
     if ('sourcePath' in def) refuse(`${where} names a source file; a pack's code is stored in the pack itself.`);
@@ -205,12 +211,9 @@ async function checkComponents(m: PackManifest, source: PackRoot['source'], revi
       checkTree(def);
     } else {
       if (typeof def.source !== 'string' || !def.source.trim()) refuse(`${where} is a code component without code.`);
-      // An installed pack's code runs in the preview without anyone here having written or reviewed it: it is either
-      // code the app ships (reused as it is), or held to the policy for code the assistant writes.
-      if (source === 'user' && !reviewed.has(def.source!)) {
-        const errors = (await checkSvelteSource(def.source!, { strict: true, filename: `src/lib/siteorigin/components/${def.componentId}.svelte`, resolve: () => null })).filter((p) => p.severity === 'error');
-        if (errors.length) refuse(`${where} has code that is not allowed in an installed pack: ${errors[0].message}`);
-      }
+      // Code runs in the preview's Node process, which no policy check can sandbox. An installed pack may reuse code
+      // the app itself ships, exactly as it ships it, and otherwise brings data only: its components are managed.
+      if (source === 'user' && !reviewed.has(def.source!)) refuse(`${where} has code of its own, which an installed pack may not bring. Make it a managed component, or reuse a code component SiteOrigin Builder ships, unchanged.`);
     }
   }
 }

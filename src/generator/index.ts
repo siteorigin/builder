@@ -686,6 +686,9 @@ function safeIdent(name: string): string {
   return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name) ? name : `_${name.replace(/[^a-zA-Z0-9_]/g, '_')}`;
 }
 
+/** The identifier a slot's snippet is generated under. */
+export const slotIdent = (slot: string) => `slot_${safeIdent(slot)}`;
+
 function idAttrs(ctx: EmitCtx, nodeId: string): string {
   if (!ctx.instrument) return '';
   const items = ctx.items.length ? ` data-so-items={[${ctx.items.map((i) => `${i}.id`).join(', ')}].join(',')}` : '';

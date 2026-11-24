@@ -211,6 +211,10 @@ describe('pinning an installed pack', () => {
   });
 });
 
+const inter = FOUNDATION_PACK.fonts.find((f) => f.name === 'Inter')!;
+// Studio ships Inter only, and sets its display font to it.
+const onlyInter = () => ({ fonts: [inter], tokens: FOUNDATION_PACK.tokens.map((t) => (t.id === 'font.display' ? { ...t, value: inter.stack } : t)) });
+
 describe('a new project', () => {
   it('records the theme it is made with when the default is not installed', () => {
     registerPacks([buildPack(FOUNDATION_ALT_PACK).pack]);
@@ -222,9 +226,6 @@ describe('a new project', () => {
 });
 
 describe('switching to a pack with other fonts', () => {
-  const inter = FOUNDATION_PACK.fonts.find((f) => f.name === 'Inter')!;
-  // Studio ships Inter only, and sets its display font to it.
-  const onlyInter = () => ({ fonts: [inter], tokens: FOUNDATION_PACK.tokens.map((t) => (t.id === 'font.display' ? { ...t, value: inter.stack } : t)) });
   it('takes the new theme’s fonts where the site kept the defaults', () => {
     const studioPack = withInstalled('d1', onlyInter());
     const next = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'theme.apply', themeId: 'studio' }]).state;
@@ -255,6 +256,19 @@ describe('switching to a pack with other fonts', () => {
     expect(() => applyOperations(styled, [{ type: 'theme.apply', themeId: 'studio' }])).toThrow(/Playfair Display: your site uses this font/);
   });
 
+  it('is refused for a font chosen in a font token the theme names otherwise', () => {
+    // "Serif" ships Lora and Inter, and keeps its body font in "type.body"; Studio ships Inter only.
+    const { components, ...meta } = FOUNDATION_PACK;
+    const serifAuthor = createPack({ ...meta, id: 'serif', name: 'Serif', version: '1.0.0', license: 'MIT', fonts: FOUNDATION_PACK.fonts.filter((f) => ['Inter', 'Lora'].includes(f.name)), tokens: [...FOUNDATION_PACK.tokens, { id: 'type.body', label: 'Body', group: 'font', value: inter.stack }] });
+    const serif: ThemePack = { ...buildPack(serifAuthor.define(components.map((c) => serifAuthor.adopt(c)))).pack, source: 'user', digest: 's1' };
+    const studioPack = withInstalled('d1', onlyInter());
+    registerPacks([...listThemes(), serif]);
+    const onSerif = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'theme.apply', themeId: 'serif' }]).state;
+    expect(studioPack.fonts.map((f) => f.name)).toEqual(['Inter']);
+    const chose = applyOperations(onSerif, [{ type: 'token.set', tokenId: 'type.body', value: 'Lora' }]).state;
+    expect(() => applyOperations(chose, [{ type: 'theme.apply', themeId: 'studio' }])).toThrow(/Lora: your site uses this font/);
+  });
+
   it('is refused for a font chosen in a text style', () => {
     withInstalled('d1', onlyInter());
     const styled = applyOperations(createStarterState('business', 'Fonts', false), [{ type: 'token.set', tokenId: 'text.h1', value: { family: 'Space Grotesk' } }]).state;
@@ -270,6 +284,19 @@ describe('switching to a pack with other fonts', () => {
     expect(applyOperations(back, [{ type: 'theme.apply', themeId: 'studio' }]).state.site.themeId).toBe('studio');
   });
 });
+
+/**
+ * Foundation's validated inventory, with Inter's Latin face now read from a copy that changed on disk after
+ * validation (as if the pack's file were replaced while the app ran).
+ */
+function changedOnDisk(scratch: string) {
+  const { files } = buildPack(FOUNDATION_PACK);
+  const changed = join(scratch, '.changed-inter.woff2');
+  const bytes = readFileSync(files.get('fonts/inter-latin-wght-normal.woff2')!);
+  bytes[bytes.length - 1] ^= 0xff;
+  writeFileSync(changed, bytes);
+  return new Map([...files].map(([rel, abs]) => [rel, rel === 'fonts/inter-latin-wght-normal.woff2' ? { ...fileSource(abs), abs: changed } : fileSource(abs)]));
+}
 
 describe("a site's theme fonts", () => {
   const fontPaths = (d: string, state: ProjectState) => packFileCopies(state).map((c) => join(d, c.path));
@@ -316,8 +343,7 @@ describe("a site's theme fonts", () => {
     m.files[path] = 'a'.repeat(64);
     m.pending = { [path]: disk };
     writeFileSync(join(d, 'siteorigin/generated-manifest.json'), JSON.stringify(m));
-    const { files } = buildPack(FOUNDATION_PACK);
-    registerPackFiles('foundation', new Map([...files].map(([rel, abs]) => [rel, { ...fileSource(abs), ...(rel === 'fonts/inter-latin-wght-normal.woff2' ? { sha256: '0'.repeat(64) } : {}) }])));
+    registerPackFiles('foundation', changedOnDisk(d));
     const s = await ProjectSession.open(d, 'test');
     expect(JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files[path]).toBe(disk);
     expect(await editedGeneratedFile(d)).toBeNull();
@@ -331,13 +357,25 @@ describe("a site's theme fonts", () => {
     const original = readFileSync(join(d, path));
     const before = JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files[path];
     // The pack's copy no longer matches what was validated (it changed on disk after startup).
-    const { files } = buildPack(FOUNDATION_PACK);
-    const broken = new Map([...files].map(([rel, abs]) => [rel, { ...fileSource(abs), ...(rel === 'fonts/inter-latin-wght-normal.woff2' ? { sha256: '0'.repeat(64) } : {}) }]));
-    registerPackFiles('foundation', broken);
+    registerPackFiles('foundation', changedOnDisk(d));
     expect((await s.apply({ operations: [{ type: 'site.update', name: 'Renamed' }] }, { label: 'Rename' })).ok).toBe(true);
     expect(readFileSync(join(d, path)).equals(original)).toBe(true);
     expect(JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files[path]).toBe(before);
     expect(await editedGeneratedFile(d)).toBeNull();
+    await s.close();
+  });
+
+  it("never keep another theme's file under a new theme's name", async () => {
+    const d = tmp();
+    // Studio's Inter face shares Foundation's file name, but is not the same file, and cannot be read.
+    const studioPack = withInstalled('d1', onlyInter());
+    const s = await ProjectSession.create(d, createStarterState('business', 'Fonts', false));
+    const path = `${FONTS_DIR}/inter-latin-wght-normal.woff2`;
+    expect(existsSync(join(d, path))).toBe(true);
+    registerPackFiles('studio', new Map(studioPack.fonts[0].faces.map((f) => [f.file, { abs: join(d, 'missing.woff2'), size: 1, sha256: 'b'.repeat(64) }])));
+    expect((await s.apply({ operations: [{ type: 'theme.apply', themeId: 'studio' }] }, { label: 'Studio' })).ok).toBe(true);
+    expect(existsSync(join(d, path))).toBe(false);
+    expect(JSON.parse(readFileSync(join(d, 'siteorigin/generated-manifest.json'), 'utf8')).files[path]).toBeUndefined();
     await s.close();
   });
 

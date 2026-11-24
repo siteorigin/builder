@@ -1886,9 +1886,11 @@ function themeApply(state: ProjectState, themeId: string): OpResult {
   }
   // Fonts ship with their theme. One the site chose itself (a site style, a text style, an element's font, a project
   // component's code) would silently fall back to a system font under a theme without it.
-  for (const f of getTheme(state.site.themeId).fonts)
+  const current = getTheme(state.site.themeId);
+  const fontTokens = new Set(current.tokens.filter((t) => t.group === 'font').map((t) => t.id));
+  for (const f of current.fonts)
     // A font the project imported itself stays whatever the theme.
-    if (!theme.fonts.some((n) => n.family.toLowerCase() === f.family.toLowerCase()) && !projectFontFamilies(state).some((p) => p.family.toLowerCase() === f.family.toLowerCase()) && siteChoosesFamily(state, f.family))
+    if (!theme.fonts.some((n) => n.family.toLowerCase() === f.family.toLowerCase()) && !projectFontFamilies(state).some((p) => p.family.toLowerCase() === f.family.toLowerCase()) && siteChoosesFamily(state, f.family, fontTokens))
       conflicts.push(`${f.name}: your site uses this font, which ${theme.name} does not include. Choose another font first.`);
   if (conflicts.length) throw new EngineError('CONFLICT', `${theme.name} is not compatible with this project: ${conflicts.join(' ')}`, { conflicts });
   const install = (next: ComponentDefinition) => {
