@@ -5,7 +5,7 @@ import { Welcome } from './Welcome';
 import { Editor } from './Editor';
 import { UnpackingModal } from './components/ProjectDialogs';
 import { ConfirmHost, Toasts, openDialogs, openMenus } from './components/ui';
-import { runInspection } from './lib/inspect';
+import { runComponentPreviews, runInspection } from './lib/inspect';
 import { restorePanelWidth } from './lib/layout';
 import { handleShortcut, projectHistory } from './Editor';
 import { forgetCopy } from './lib/clipboard';
@@ -69,6 +69,7 @@ export function App() {
       api.on('runtime:status', (runtime) => setState({ runtime })),
       api.on('ai:event', applyAiEvent),
       api.on('inspect:request', (req) => void runInspection(req)),
+      api.on('component-preview:request', (req) => void runComponentPreviews(req)),
       api.on('menu:command', ({ cmd, id }) => {
         // Confirmed at once, so the main process stops offering it. It may have offered it twice (a screen said it was
         // ready again before this confirmation arrived): it is acted on once.

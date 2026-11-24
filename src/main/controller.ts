@@ -27,6 +27,8 @@ import { photoMetadata } from './project/photo-metadata';
 import { DevServer, buildProject, dependenciesReady, prepareDependencies, starterTools } from './runtime/manager';
 import { NETWORK_CODES, ToolsDownloadError } from './runtime/availability';
 import { copyProjectTools, createPreviewStage, removePreviewStage, sweepPreviewStages, syncPreviewStage } from './runtime/stage';
+import { clearComponentPreviews, previewSpec, removeComponentPreview, writeComponentPreview } from './runtime/component-preview';
+import { generateComponentPreview } from '@generator/preview';
 import { canonicalDir } from '../runtime/policy';
 import { addRecent, isTrusted, loadSettings, trust, untrust } from './settings';
 import { newId } from '@shared/ids';
@@ -198,6 +200,8 @@ export class Controller {
   private restaged: ProjectSession | null = null;
   /** The last preview status sent while no preview process runs (setting up, copying, or why it cannot start). */
   private pendingStatus: RuntimeState | null = null;
+  /** Isolated component previews prepared for the preview server running now, by key, with the folder each is in. */
+  private componentPreviews = new Map<string, string>();
   /** Cancels a dependency install into the project when another app takes it over. */
   private prepareAbort: AbortController | null = null;
   private closing: Promise<void> | null = null;
@@ -801,6 +805,9 @@ export class Controller {
     const stage = session.readOnly ? await this.stagePreview(session) : null;
     if (session.readOnly && !stage) return;
     // A preview that crashes is started again in the same folder only while that is still this app's to use; a copy is.
+    // Previews an earlier run left behind (it crashed, or the app did not close) are never shown again. The project's
+    // are cleared only while it is this app's to write; a copy is new.
+    if (!stage) await clearComponentPreviews(session.dir).catch(() => undefined);
     const dev: DevServer = new DevServer(stage ?? session.dir, async (): Promise<boolean> => this.dev === dev && (!!stage || (await session.stillOwner())));
     this.dev = dev;
     this.stage = stage;
@@ -892,6 +899,10 @@ export class Controller {
   private async stopPreview() {
     const dev = this.dev;
     const stage = this.stage;
+    // Prepared for this preview server alone: a frame showing one fails to load once the server is gone anyway.
+    const previews = [...this.componentPreviews];
+    this.componentPreviews.clear();
+    await Promise.all(previews.map(([key, root]) => removeComponentPreview(root, key).catch(() => undefined)));
     for (const w of this.stageWatchers) w.close();
     this.stageWatchers = [];
     if (this.stageTimer) clearTimeout(this.stageTimer);
@@ -904,6 +915,44 @@ export class Controller {
     await this.stageSync;
     await removePreviewStage(stage).catch(() => undefined);
     if (dev) void dev.exited.then(() => removePreviewStage(stage)).catch(() => undefined);
+  }
+
+  /**
+   * Prepare an isolated preview of one component (see @shared/component-preview) for the preview server running now:
+   * its files are written under a new key, and the address the server shows it at is returned. Release it with
+   * releaseComponentPreview once it is no longer shown.
+   */
+  async prepareComponentPreview(request: unknown): Promise<{ ok: true; key: string; path: string; definitionId: string } | { ok: false; message: string }> {
+    const session = this.session;
+    const dev = this.dev;
+    if (!session || !dev || dev.status.state !== 'ready') return { ok: false, message: 'The preview is not running.' };
+    const spec = previewSpec(request);
+    if (!spec) return { ok: false, message: 'That is not a component preview request.' };
+    const made = generateComponentPreview(session.state, spec);
+    if ('error' in made) return { ok: false, message: made.error };
+    const root = this.stage ?? session.dir;
+    let written: { key: string; path: string };
+    try {
+      written = await writeComponentPreview(root, made.files);
+    } catch (e) {
+      return { ok: false, message: `The component preview could not be prepared: ${(e as Error).message}` };
+    }
+    // The preview server it was made for stopped meanwhile: its files go with it.
+    if (this.dev !== dev || this.session !== session || (this.stage ?? session.dir) !== root) {
+      await removeComponentPreview(root, written.key).catch(() => undefined);
+      return { ok: false, message: 'The preview is not running.' };
+    }
+    this.componentPreviews.set(written.key, root);
+    return { ok: true, ...written, definitionId: made.definitionId };
+  }
+
+  /** Remove a prepared component preview's files. */
+  async releaseComponentPreview(key: unknown): Promise<void> {
+    if (typeof key !== 'string') return;
+    const root = this.componentPreviews.get(key);
+    if (!root) return;
+    this.componentPreviews.delete(key);
+    await removeComponentPreview(root, key).catch(() => undefined);
   }
 
   /** Look for the library's image files again, and tell the window when what is missing changed. */

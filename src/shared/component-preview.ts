@@ -46,3 +46,27 @@ export function previewKeyOf(url: string | undefined): string | null {
   const key = rest.endsWith('/') ? rest.slice(0, -1) : rest;
   return PREVIEW_KEY.test(key) ? key : null;
 }
+
+/** A preview prepared by the editor for the preview server running now. */
+export type PreparedComponentPreview = { ok: true; key: string; path: string; definitionId: string } | { ok: false; message: string };
+
+/** One request to a component preview frame: show `spec` at `width` CSS pixels wide. */
+export interface ComponentPreviewStep {
+  spec: ComponentPreviewSpec;
+  width: number;
+  /** Which of a request's frames shows it (0 to 3), so several can be open at once. Default 0. */
+  frame?: number;
+}
+
+/** What a component preview frame reports once it has shown a request, or why it could not. */
+export interface ComponentPreviewResult {
+  state: 'ready' | 'error';
+  error?: string;
+  /** The definition shown: for a catalogue component, the ID it has in the project or would be given there. */
+  definitionId?: string;
+  width: number;
+  /** The component's box on the preview page in CSS pixels, or null when it renders nothing that takes up room. */
+  bounds?: { x: number; y: number; width: number; height: number } | null;
+  /** The bridge's inspection of the preview page: viewport and document size, layout and image findings, errors. */
+  report?: unknown;
+}

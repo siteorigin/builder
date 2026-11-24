@@ -8,6 +8,7 @@ import { constants, existsSync, lstatSync, mkdtempSync, readlinkSync, realpathSy
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { copyProjectSource, inProjectSource } from '../export';
 import { realFileInside } from '../../runtime/policy';
+import { ISOLATED_DIR } from '@shared/component-preview';
 
 const DEV_CACHE = ['.siteorigin', 'cache', 'dev'];
 /** Caches the copy builds for itself instead of carrying them over. */
@@ -76,11 +77,18 @@ function linkStaysWithin(root: string, p: string): boolean {
   }
 }
 
+/**
+ * Isolated component previews belong to the preview server they were made for: the project's are never copied, and
+ * the copy's own are never removed for not being in the project.
+ */
+const isolatedIn = (dev: string, p: string) => relative(dev, p).split(sep)[0] === ISOLATED_DIR;
+
 /** The editor's instrumented variants, only when the cache really is inside the project; links in it are skipped. */
 async function copyDevCache(project: string, stage: string): Promise<void> {
   const dev = join(project, ...DEV_CACHE);
   if (!existsSync(dev) || !realFileInside(project, dev)) return;
-  await fs.cp(await fs.realpath(dev), join(stage, ...DEV_CACHE), { recursive: true, filter: notLink });
+  const from = await fs.realpath(dev);
+  await fs.cp(from, join(stage, ...DEV_CACHE), { recursive: true, filter: (p) => notLink(p) && !isolatedIn(from, p) });
 }
 
 /**
@@ -92,7 +100,7 @@ export async function syncPreviewStage(project: string, stage: string): Promise<
   const dev = join(project, ...DEV_CACHE);
   // A cache that went, or now leads out of the project, takes its variants out of the copy too.
   const devFrom = existsSync(dev) && realFileInside(project, dev) ? await fs.realpath(dev) : null;
-  const variants = await mirror(devFrom, join(stage, ...DEV_CACHE), (_root, p) => notLink(p));
+  const variants = await mirror(devFrom, join(stage, ...DEV_CACHE), (root, p) => notLink(p) && !isolatedIn(root, p));
   // Compared without case: on a case-insensitive disk, another spelling is the same file.
   const sources = await mirror(project, stage, (root, p) => inProjectSource(root, p) && !(dirname(p) === root && BUILD_CONFIG.has(relative(root, p).toLowerCase())));
   const now = new Date();
