@@ -160,9 +160,12 @@ export function CodeEditor({
                 return true;
               }
               if (simplifySelection(v)) return true;
-              // The second Escape is the dialog's: it runs the same guarded close as every other way out.
+              // The second Escape is the dialog's: it runs the same guarded close as every other way out. The way
+              // out is put away once CodeMirror is done with this key: while it is still on, CodeMirror's own
+              // Escape starts no two-second spell in which Tab leaves the editor, so Tab indents again at once
+              // when Keep editing (or a close that cannot happen yet) leaves focus here.
               if (armed.current) {
-                stopLeaving();
+                queueMicrotask(stopLeaving);
                 return false;
               }
               // Stays armed until Tab, another key, a click or blur, so the instruction can be read first.
@@ -197,6 +200,12 @@ export function CodeEditor({
             return false;
           },
           mousedown: () => {
+            if (armed.current) stopLeaving();
+            return false;
+          },
+          // Leaving ends the way out at once: CodeMirror reports focus changes a moment late, and misses one
+          // that comes straight back, which would leave Tab moving focus instead of indenting.
+          blur: () => {
             if (armed.current) stopLeaving();
             return false;
           }
