@@ -1797,60 +1797,60 @@ function DesignContentSection({ state, def, node }: { state: ProjectState; def: 
 
   /** The editor of one field: its property's default, or the value fixed in the design. */
   function editor(f: Exclude<DesignContent, { source: 'item' }>) {
-        if (f.source === 'default') return <DefaultField key={f.field} state={state} def={def} prop={f.prop} schema={f.schema} label={f.field === 'label' ? `${kind} text` : undefined} onChange={set(f, `Edit ${f.schema.label} default`)} />;
-        const hint = sources.size > 1 ? 'Same in every placement.' : undefined;
-        switch (f.field) {
-          case 'text':
-            return (
-              <div key={f.field} data-field="text" style={{ display: 'contents' }}>
-                {node.kind === 'text' && node.rich ? (
-                  <Field label="Text" hint={hint} controlId={`${def.id}-${node.id}-text`}>
-                    <RichTextField id={`${def.id}-${node.id}-text`} describedBy={hint ? `${def.id}-${node.id}-text-note` : undefined} value={richTextToMarkdown(toRichText(f.value), state.pages)} onCommit={(v, edit) => void applyWith(edit, [designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} pages={state.pages} />
-                  </Field>
-                ) : (
-                  <Field label="Text" hint={hint}>
-                    <DraftInput multiline rows={2} value={Array.isArray(f.value) ? richTextToMarkdown(toRichText(f.value), state.pages) : String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} />
-                  </Field>
-                )}
-              </div>
-            );
-          case 'label':
-            return (
-              <div key={f.field} data-field="label" style={{ display: 'contents' }}>
-                <Field label={`${kind} text`} hint={hint}>
-                  <DraftInput value={String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'label', v)], 'Edit button text everywhere', `${def.id}:${node.id}:label`)} />
-                </Field>
-              </div>
-            );
-          case 'link':
-            // A destination fixed in the design: a button without one is left out of every placement.
-            return (
-              <div key={f.field} className="field" data-field="link" role="group" aria-labelledby={`${node.id}-def-dest`}>
-                <div className="field-label" id={`${node.id}-def-dest`}>
-                  Link
-                </div>
-                <LinkEditor value={f.value as LinkValue} onChange={set(f, 'Edit button link everywhere')} state={state} label={kind} everywhere />
-                {hint && <div className="field-hint">{hint}</div>}
-              </div>
-            );
-          case 'image':
-            return (
-              <div key={f.field} className="field" data-field="image" role="group" aria-label="Image">
-                <FieldHome root={`component:${def.id}:${node.id}:image`} alive={nodeAlive({ kind: 'component', id: def.id }, node.id)}>
-                  <ImageEditor value={f.value as ImageValue} onChange={set(f, 'Edit image everywhere')} state={state} />
-                </FieldHome>
-                {hint && <div className="field-hint">{hint}</div>}
-              </div>
-            );
-          case 'icon':
-            return (
-              <div key={f.field} data-field="icon" style={{ display: 'contents' }}>
-                <Field label="Icon" controlId={iconId} hint={hint}>
-                  <IconPicker id={iconId} value={String(f.value ?? '')} onChange={set(f, 'Edit icon everywhere')} />
-                </Field>
-              </div>
-            );
-        }
+    if (f.source === 'default') return <DefaultField key={f.field} state={state} def={def} prop={f.prop} schema={f.schema} label={f.field === 'label' ? `${kind} text` : undefined} onChange={set(f, `Edit ${f.schema.label} default`)} />;
+    const hint = sources.size > 1 ? 'Same in every placement.' : undefined;
+    switch (f.field) {
+      case 'text':
+        return (
+          <div key={f.field} data-field="text" style={{ display: 'contents' }}>
+            {node.kind === 'text' && node.rich ? (
+              <Field label="Text" hint={hint} controlId={`${def.id}-${node.id}-text`}>
+                <RichTextField id={`${def.id}-${node.id}-text`} describedBy={hint ? `${def.id}-${node.id}-text-note` : undefined} value={richTextToMarkdown(toRichText(f.value), state.pages)} onCommit={(v, edit) => void applyWith(edit, [designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} pages={state.pages} />
+              </Field>
+            ) : (
+              <Field label="Text" hint={hint}>
+                <DraftInput multiline rows={2} value={Array.isArray(f.value) ? richTextToMarkdown(toRichText(f.value), state.pages) : String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'text', v)], 'Edit definition text', `${def.id}:${node.id}:text`)} />
+              </Field>
+            )}
+          </div>
+        );
+      case 'label':
+        return (
+          <div key={f.field} data-field="label" style={{ display: 'contents' }}>
+            <Field label={`${kind} text`} hint={hint}>
+              <DraftInput value={String(f.value ?? '')} onCommit={(v) => void applyOps([designContentOp(def, node.id, 'label', v)], 'Edit button text everywhere', `${def.id}:${node.id}:label`)} />
+            </Field>
+          </div>
+        );
+      case 'link':
+        // A destination fixed in the design: a button without one is left out of every placement.
+        return (
+          <div key={f.field} className="field" data-field="link" role="group" aria-labelledby={`${node.id}-def-dest`}>
+            <div className="field-label" id={`${node.id}-def-dest`}>
+              Link
+            </div>
+            <LinkEditor value={f.value as LinkValue} onChange={set(f, 'Edit button link everywhere')} state={state} label={kind} everywhere />
+            {hint && <div className="field-hint">{hint}</div>}
+          </div>
+        );
+      case 'image':
+        return (
+          <div key={f.field} className="field" data-field="image" role="group" aria-label="Image">
+            <FieldHome root={`component:${def.id}:${node.id}:image`} alive={nodeAlive({ kind: 'component', id: def.id }, node.id)}>
+              <ImageEditor value={f.value as ImageValue} onChange={set(f, 'Edit image everywhere')} state={state} />
+            </FieldHome>
+            {hint && <div className="field-hint">{hint}</div>}
+          </div>
+        );
+      case 'icon':
+        return (
+          <div key={f.field} data-field="icon" style={{ display: 'contents' }}>
+            <Field label="Icon" controlId={iconId} hint={hint}>
+              <IconPicker id={iconId} value={String(f.value ?? '')} onChange={set(f, 'Edit icon everywhere')} />
+            </Field>
+          </div>
+        );
+    }
   }
 }
 
