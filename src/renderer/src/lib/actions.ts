@@ -13,7 +13,7 @@ import { appliesLanded, trackApply, type ApplyOutcome } from './pending';
 import { storedEdit } from './richtext';
 import { showAsset } from './place';
 import { boundaryOf, computedAt, followsPageAt, listPropFor, ownerLabel, refLabel, resolveRef, shownOrDefault, treeFor } from './model';
-import { forgetPlace, placeOn, placeToKeep } from './page-place';
+import { forgetPlace, placeOn, selectionBack } from './page-place';
 import { duplicateOps, groupOf, layerRef, liveSet, moveIntoOps, moveStepOps, moveToPageOps, removeOps, type Group, type LayerSet } from './layer-set';
 
 export type Primitive = 'container' | 'stack' | 'row' | 'grid' | 'heading' | 'paragraph' | 'image' | 'button' | 'icon' | 'divider';
@@ -45,7 +45,8 @@ export async function deleteSelection() {
   const r = await commitOps([{ type: 'node.remove', owner: t.owner, nodeId: t.nodeId }], `Delete ${label}`);
   // A reply that arrives after its project closed has nothing left here to select or announce.
   if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
-  setState({ selection: null });
+  // What the author selected meanwhile (another page, opened at its place) is theirs, and stays.
+  if (getState().selection === s.selection) setState({ selection: null });
   toast(`Deleted ${label}`, 'info', undoAction(r));
 }
 
@@ -611,9 +612,10 @@ export function canInlineEdit(ref: ElementRef): boolean {
 export function selectPage(pageId: string, target?: ElementRef | null) {
   const s = getState();
   const st = s.snapshot?.state;
-  const itself = target === null || (target === undefined && pageId === s.pageId && !s.definitionMode);
+  const itself = target === null || (target === undefined && pageId === s.pageId && !s.definitionMode && s.mode === 'edit');
   const selection = target !== undefined ? target : s.mode === 'edit' && !itself && st ? placeOn(st, s.pagePlaces, pageId) : null;
-  setState({ pageId, selection, definitionMode: null, ...(itself && s.mode === 'edit' ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });
+  // A page opened while previewing is where Edit opens: what was selected before Preview is not selected again.
+  setState({ pageId, selection, definitionMode: null, previewReturn: null, ...(itself ? { pagePlaces: forgetPlace(s.pagePlaces, pageId) } : {}) });
   saveLocal({ pageId });
 }
 
@@ -648,17 +650,20 @@ export function askAiAbout(ref: ElementRef | null) {
  */
 export function setMode(mode: 'edit' | 'preview') {
   const s = getState();
-  if (s.mode === mode) return;
+  const editing = s.definitionMode?.definitionId ?? null;
   if (mode === 'preview') {
-    const back = s.selection && s.pageId && s.snapshot ? { pageId: s.pageId, ref: s.selection, revision: s.snapshot.revision } : null;
+    // What is selected is what Edit returns to: also one made while previewing (in Layers, a change shown from the
+    // chat), which choosing Preview again lets go of on the page, as entering it does.
+    const back = s.selection && s.pageId && s.snapshot ? { pageId: s.pageId, ref: s.selection, revision: s.snapshot.revision, definitionId: editing } : s.mode === 'preview' ? s.previewReturn : null;
     setState({ mode, selection: null, previewReturn: back });
     return;
   }
+  if (s.mode === 'edit') return;
   const back = s.previewReturn;
   const st = s.snapshot?.state;
-  // Unchanged since Preview was entered, the selection is as good as it was; after a change (the AI, another app),
-  // only an element still on the page is.
-  const ref = back && st && back.pageId === s.pageId ? (back.revision === s.snapshot?.revision ? back.ref : s.definitionMode ? null : placeToKeep(st, back.pageId, back.ref)) : null;
+  // A selection made while previewing is the author's latest choice and stays. Otherwise the one Preview was entered
+  // with, on the same page and in the same component edited everywhere (or none), while it is still there.
+  const ref = !s.selection && back && st && back.pageId === s.pageId && back.definitionId === editing ? selectionBack(st, back.pageId, back.ref, back.revision === s.snapshot?.revision) : null;
   unscrolled = ref;
   setState({ mode, previewReturn: null, ...(ref ? { selection: ref } : {}) });
 }

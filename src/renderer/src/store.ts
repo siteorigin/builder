@@ -115,10 +115,11 @@ export interface State {
   /** The element last selected on each page, resumed when the page is opened again (lib/page-place). Never in the site. */
   pagePlaces: PagePlaces;
   /**
-   * What was selected when Preview was entered, on which page and at which revision: Edit selects it again when the
-   * visitor stayed where they were. A visitor's link, Back or Forward lets it go (see Canvas).
+   * What was selected when Preview was entered, on which page, at which revision and in which component edited
+   * everywhere: Edit selects it again when the visitor stayed where they were. A visitor's link, Back or Forward lets
+   * it go (see Canvas), and so does opening a page.
    */
-  previewReturn: { pageId: string; ref: ElementRef; revision: number } | null;
+  previewReturn: { pageId: string; ref: ElementRef; revision: number; definitionId: string | null } | null;
   hover: ElementRef | null;
   viewport: number;
   zoom: number | 'fit';
@@ -375,7 +376,9 @@ export function persistPlaces(s: State, prev: State) {
   const places = notePlace(prev, s);
   if (places !== s.pagePlaces) return setState({ pagePlaces: places });
   const key = s.snapshot?.workspaceKey;
-  if (key && s.pagePlaces !== prev.pagePlaces && key === prev.snapshot?.workspaceKey) void api.project.saveLocalState({ pagePlaces: s.pagePlaces }, key);
+  // The page the author is working on is saved with it: a page a visitor's link opened becomes the one to reopen at
+  // once the author works there.
+  if (key && s.pagePlaces !== prev.pagePlaces && key === prev.snapshot?.workspaceKey) void api.project.saveLocalState({ pagePlaces: s.pagePlaces, ...(s.pageId ? { pageId: s.pageId } : {}) }, key);
 }
 
 /** The readable part of an error from the main process (Electron prefixes rejected IPC calls). */

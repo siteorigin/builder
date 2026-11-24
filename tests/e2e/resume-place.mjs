@@ -1,6 +1,6 @@
 // Resuming at the same section (#224): the last call to action on Home, selected and scrolled to, is selected again
 // after a Preview → Edit round trip (from the pill and from the toolbar) and stays where the visitor scrolled; a
-// visitor's link to About opens About in Edit with nothing selected; returning to Home from the page list, and
+// visitor's section jump on the page, or link to About, leaves Edit with nothing selected; returning to Home from the page list, and
 // reopening the project, selects it again and brings it into view. A section removed meanwhile selects nothing. None of
 // it is a change to the site or its Undo history: it is kept in the project's local workspace file.
 import assert from 'node:assert/strict';
@@ -65,7 +65,10 @@ async function showTab(name) {
 }
 const toolbarMode = (name) => win.locator(`.toolbar button[aria-label="${name}"]`);
 const backToEditing = () => win.getByRole('group', { name: 'Preview', exact: true }).getByRole('button', { name: 'Back to editing' });
-const ready = () => frame.locator('html').evaluate(() => document.readyState === 'complete');
+/** The page is loaded and in Preview, so a link is followed rather than picked. */
+const previewing = () => eventually(async () => assert.equal(await frame.locator('html').evaluate((html) => document.readyState === 'complete' && !html.hasAttribute('data-so-editing')), true, 'the page is ready for a visitor'));
+const before = await snapshot();
+const applied = (snap) => snap.history.entries.filter((e) => e.applied).length;
 
 step('select the last call to action on Home: it is scrolled into view');
 await showTab('Layers');
@@ -74,28 +77,38 @@ await ctaSelected('selected');
 await eventually(async () => assert.equal(await inView(cta), true, 'the call to action is in view'), 15000);
 const atCta = await settledScroll();
 assert.ok(atCta > 1000, `the page scrolled down to it (${atCta}px)`);
-const before = await snapshot();
-const applied = (snap) => snap.history.entries.filter((e) => e.applied).length;
 
 step('Preview, scroll as a visitor, Back to editing: selected again, the page stays where the visitor left it');
 await toolbarMode('Preview').click();
 await nothingSelected('in Preview');
-await scrollTo(atCta - 400);
-const visitorY = await settledScroll();
+// Back at the top, well away from the call to action, as a visitor reading the page from its start.
+await scrollTo(0);
+assert.equal(await settledScroll(), 0);
+assert.equal(await inView(cta), false, 'the call to action is out of view');
 await backToEditing().click();
 await ctaSelected('back from the pill');
-await win.waitForTimeout(800);
-assert.ok(Math.abs((await scrollY()) - visitorY) <= 2, `the page stays at ${visitorY}px (now ${await scrollY()}px)`);
+await win.waitForTimeout(1000);
+assert.equal(await scrollY(), 0, 'the page stays where the visitor left it');
 
 step('Preview and Edit from the toolbar do the same');
 await toolbarMode('Preview').click();
 await nothingSelected('in Preview again');
 await toolbarMode('Edit').click();
 await ctaSelected('back from the toolbar');
+await win.waitForTimeout(1000);
+assert.equal(await scrollY(), 0, 'still where the visitor left it');
+
+step('a visitor section jump on the page leaves Edit with nothing selected');
+await toolbarMode('Preview').click();
+await previewing();
+await frame.locator('html').evaluate(() => (location.hash = '#a-section-further-down'));
+await eventually(async () => assert.match(await win.getByRole('group', { name: 'Preview', exact: true }).locator('output').innerText(), /#a-section-further-down/, 'the pill shows the jump'));
+await toolbarMode('Edit').click();
+await nothingSelected('Home after the jump');
 
 step('a visitor link to About opens About in Edit with nothing selected');
 await toolbarMode('Preview').click();
-await eventually(async () => assert.equal(await ready(), true));
+await previewing();
 await frame.locator('header nav a', { hasText: 'About' }).first().evaluate((a) => a.click());
 await eventually(async () => assert.match(await pageShown.innerText(), /About/, 'the editor follows the visitor'), 15000);
 await toolbarMode('Edit').click();
@@ -145,6 +158,10 @@ await win.locator(`[role="tree"] [data-node="${section}"]`).click();
 await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${section}"]`).getAttribute('aria-selected'), 'true'));
 await openPage('Home');
 await ctaSelected('Home, before the removal');
+await openPage('About');
+await eventually(async () => assert.equal(await win.locator(`[role="tree"] [data-node="${section}"]`).getAttribute('aria-selected'), 'true', 'About resumes at its section'));
+await openPage('Home');
+await ctaSelected('Home again, before the removal');
 const removed = await apply([{ type: 'node.remove', owner: { kind: 'page', id: about }, nodeId: section }], 'Remove');
 assert.equal(removed.ok, true, removed.error?.message);
 await openPage('About');

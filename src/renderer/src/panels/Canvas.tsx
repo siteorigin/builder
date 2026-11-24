@@ -115,8 +115,10 @@ export function Canvas() {
   const previewFrom = useRef<FrameEntry | null>(null);
   function visitorAt(at: FrameEntry) {
     const from = previewFrom.current;
-    if (!from) previewFrom.current = at;
-    else if ((from.key !== at.key || from.address !== at.address) && getState().previewReturn) setState({ previewReturn: null });
+    // The first entry of the page being opened is where the visitor starts (a report of the page it replaces is not).
+    if (!from) {
+      if (!pendingNav.current || samePath(addressPath(at.address), pendingNav.current)) previewFrom.current = at;
+    } else if ((from.key !== at.key || from.address !== at.address) && getState().previewReturn) setState({ previewReturn: null });
   }
   const [dragging, setDragging] = useState(false);
   /** A frame resize in progress: the pointer, where it started, and the opening its width belongs to. */
@@ -399,6 +401,12 @@ export function Canvas() {
           setRetrying(false);
           markTimedOut(false);
           frameAt.current = path;
+          // A page loaded in full while the frame was already up (Try again, a load that could not go in place) shows the
+          // selection, as an arrival in place does (`navigated`); the first load scrolls to it once the frame is ready.
+          if (ready && getState().mode !== 'preview' && page && samePath(page.route, path)) {
+            const desc = descFor(getState().selection);
+            if (desc) post('scrollTo', { desc });
+          }
           frameTextFocus.active = false;
           endInlineEdit();
           post('mode', { mode: getState().mode });
@@ -808,6 +816,8 @@ export function Canvas() {
     if (!ready || !page) return;
     // The page already went there itself (a link clicked while previewing): leave it where it is.
     if (samePath(page.route, frameAt.current)) return;
+    // A page the editor opens while previewing (a new address, a page picked) is where the visitor starts again.
+    if (getState().mode === 'preview') previewFrom.current = null;
     // Until the page confirms the navigation, it is "opening", not ready. Focus in the leaving page moves to the
     // canvas, which stays.
     setState({ frameReady: false });

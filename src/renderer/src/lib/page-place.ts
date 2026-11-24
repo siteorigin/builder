@@ -49,6 +49,17 @@ export function placeToKeep(state: ProjectState, pageId: string, ref: ElementRef
   return kept && onPage(state, pageId, kept) ? kept : null;
 }
 
+/**
+ * What Edit selects again after Preview: the element selected when Preview was entered, while it is still there.
+ * `unchanged` says the site has not changed since, so a list item is as good as it was; after a change only its
+ * section is (see sectionOf). An element of a component edited everywhere is the component's.
+ */
+export function selectionBack(state: ProjectState, pageId: string, ref: ElementRef, unchanged: boolean): ElementRef | null {
+  if (ref.owner.kind === 'component') return resolveRef(state, ref).node ? ref : null;
+  if (ref.itemPath?.length && !unchanged) return placeToKeep(state, pageId, ref);
+  return onPage(state, pageId, ref) ? ref : null;
+}
+
 /** The element to resume at on a page, if the one remembered there is still on it. */
 export function placeOn(state: ProjectState, places: PagePlaces, pageId: string): ElementRef | null {
   const ref = Object.hasOwn(places, pageId) ? places[pageId] : undefined;
@@ -81,16 +92,19 @@ export interface PlaceView {
  */
 export function notePlace(prev: PlaceView, s: PlaceView): PagePlaces {
   const places = s.pagePlaces;
-  if (s.selection === prev.selection && s.pageId === prev.pageId) return places;
+  // Only a change of selection is a pick: the page shown changing under the same selection (an Undo took the page
+  // away and Home is shown) is not.
+  if (s.selection === prev.selection) return places;
   const st = s.snapshot?.state;
-  if (!st || !s.pageId || s.mode !== 'edit' || s.definitionMode || prev.definitionMode || s.snapshot?.workspaceKey !== prev.snapshot?.workspaceKey) return places;
+  if (!st || !s.pageId || s.mode !== 'edit' || s.definitionMode || s.snapshot?.workspaceKey !== prev.snapshot?.workspaceKey) return places;
   if (s.selection) {
     const kept = placeToKeep(st, s.pageId, s.selection);
     if (!kept) return places;
     const had = Object.hasOwn(places, s.pageId) ? places[s.pageId] : undefined;
     return had && refKey(had) === refKey(kept) && had.partId === kept.partId ? places : { ...places, [s.pageId]: kept };
   }
-  return prev.selection && prev.pageId === s.pageId && prev.mode === 'edit' ? forgetPlace(places, s.pageId) : places;
+  // Leaving Preview or a component edited everywhere with nothing selected is not letting go.
+  return prev.selection && prev.pageId === s.pageId && prev.mode === 'edit' && !prev.definitionMode ? forgetPlace(places, s.pageId) : places;
 }
 
 const isId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 200;
