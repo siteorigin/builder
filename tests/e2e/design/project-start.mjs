@@ -138,10 +138,6 @@ await shot('welcome-recents', '.recent-grid', BOTH, 'Harbour Lane Studio');
 await fresh({ recents: DENSE });
 await shot('welcome-dense', '.recent-grid', LIGHT);
 
-// Recurring clients pinned above the rest (#259), one of them missing; the newest project still leads the rest.
-await fresh({ recents: [...DENSE.slice(0, 18), { ...RECENTS[5], pinned: true }, { ...RECENTS[3], pinned: true }] });
-await shot('welcome-pinned', '.recent-group', BOTH, 'Pinned');
-
 // A long list can be filtered by name or folder; the twins both match.
 await win.locator('.recent-filter input').fill('marlow');
 await pause(150);
@@ -149,6 +145,10 @@ await shot('welcome-filter', '.recent-grid', LIGHT, 'marlow-dental-copy');
 await win.locator('.recent-filter input').fill('bakery');
 await pause(150);
 await shot('welcome-filter-none', '.recent-none', LIGHT, 'Clear filter');
+
+// Recurring clients pinned above the rest (#259), one of them missing; the newest project still leads the rest.
+await fresh({ recents: [...DENSE.slice(0, 18), { ...RECENTS[5], pinned: true }, { ...RECENTS[3], pinned: true }] });
+await shot('welcome-pinned', '.recent-group', BOTH, 'Pinned');
 
 await fresh({ recents: RECENTS }, SMALLEST);
 await shot('welcome-smallest', '.recent-grid', LIGHT);
