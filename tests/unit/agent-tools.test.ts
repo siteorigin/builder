@@ -969,15 +969,15 @@ describe('selection tools', () => {
   });
 
   it('keeps each list’s own shape for a field name two lists share (#195)', async () => {
-    const statsList = { type: 'list', label: 'Stats', itemLabel: 'Stat', fields: { title: { type: 'number', label: 'Value', default: 0 } }, default: [] } as unknown as PropSchema;
+    const statsList = { type: 'list', label: 'Stats', itemLabel: 'Stat', fields: { title: { type: 'image', label: 'Value', default: { assetId: null, alt: '' } } }, default: [] } as unknown as PropSchema;
     type List = Extract<PropSchema, { type: 'list' }>;
     let gridDef = '';
     const { session, adapter, run } = await setup(
       [
-        // The other list's shape for the same name is refused by field, and nothing is applied, even where the
-        // list's own check would have taken it.
-        () => [call('l0', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: '42' } })],
-        () => [call('l1', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: 42 } })],
+        // A shape the list's own check would quietly turn into an empty image is refused by field, and nothing
+        // is applied.
+        () => [call('l0', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: 42 } })],
+        () => [call('l1', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: { assetId: null, alt: 'Chart' } } })],
         () => [call('l2', 'edit_selected_list', { prop: 'items', action: 'insert', fields: { icon: 'leaf', title: 'Care', description: 'Weekly.' } })],
         () => finish()
       ],
@@ -997,16 +997,17 @@ describe('selection tools', () => {
     await run('Add a stat and a card', ref);
     const tool = adapter.requests[0].tools.find((t) => t.name === 'edit_selected_list')!;
     const title = ((tool.parameters.properties as Record<string, JsonSchemaLike>).fields.properties as Record<string, JsonSchemaLike>).title;
-    expect(title.anyOf?.map((b) => b.type)).toEqual(['string', 'number']);
-    expect(title.anyOf?.map((b) => b.description)).toEqual(['When prop is "items" or "notes": Title', 'When prop is "stats": Value']);
+    expect(title.anyOf?.map((b) => b.type)).toEqual(['string', 'object']);
+    // One shape the lists describe differently keeps each list's description.
+    expect(title.anyOf?.map((b) => b.description)).toEqual(['When prop is "items": Title. When prop is "notes": Note', 'When prop is "stats": Value']);
     const strict = toStrictSchema(tool.parameters);
     const strictTitle = ((strict.properties as Record<string, JsonSchemaLike>).fields.properties as Record<string, JsonSchemaLike>).title;
-    expect(JSON.stringify(strictTitle)).toMatch(/"type":"string".*"type":"number"/);
+    expect(JSON.stringify(strictTitle)).toMatch(/"type":"string".*"type":"object"/);
     expect(findForbiddenShapes(strict)).toEqual([]);
     expect(JSON.stringify(strict)).not.toContain('$json');
-    expect(lastResult(adapter.requests[1]).fields).toEqual([{ field: 'fields.title', message: 'must be number for "stats"' }]);
+    expect(lastResult(adapter.requests[1]).fields).toEqual([{ field: 'fields.title', message: 'must be an image: an asset ID or { assetId, alt } for "stats"' }]);
     const grid = nodeAt(session.state, 2).props;
-    expect((grid.stats as Array<{ title: number }>).map((i) => i.title)).toEqual([42]);
+    expect((grid.stats as Array<{ title: unknown }>).map((i) => i.title)).toEqual([{ assetId: null, alt: 'Chart' }]);
     expect((grid.items as Array<{ title: string }>).at(-1)?.title).toBe('Care');
   });
 
@@ -1156,6 +1157,12 @@ describe('context budget', () => {
         // An end before the start returns all but the last line: what came back is what counts.
         ...read('s5', { definitionId: 'def_c', endLine: -1 }, src('def_c', 1, 899, 'sha_c', -1), 'read_source'),
         ...read('s6', { definitionId: 'def_c', endLine: 80 }, src('def_c', 1, 80, 'sha_c'), 'read_source'),
+        // An empty answer shows no line at all.
+        ...read('s7', { definitionId: 'def_e', startLine: 80, endLine: 80 }, src('def_e', 80, 80, 'sha_e'), 'read_source'),
+        ...read('s8', { definitionId: 'def_e', startLine: 80, endLine: 79 }, JSON.stringify({ definitionId: 'def_e', editable: true, hash: 'sha_e', totalLines: 900, startLine: 80, endLine: 79, source: '' }), 'read_source'),
+        // A cut read that asked for all but the last line may show more than a later read of the first lines.
+        ...read('s9', { definitionId: 'def_f', endLine: -1 }, cut(src('def_f', 1, 899, 'sha_f', -1)), 'read_source'),
+        ...read('s10', { definitionId: 'def_f', endLine: 80 }, src('def_f', 1, 80, 'sha_f'), 'read_source'),
         ...filler('f1'),
         ...filler('f2')
       ];
@@ -1164,7 +1171,7 @@ describe('context budget', () => {
       expect(at(items, 'a')).toBe(big(1));
       // A complete read of the lines the cut one asked for replaces it.
       expect(at(items, 's1')).toBe('[Superseded read_source def_a. Read it again for the current source and hash.]');
-      for (const id of ['s3', 's5']) expect(at(items, id), id).toBe(at(kept, id));
+      for (const id of ['s3', 's5', 's7', 's9']) expect(at(items, id), id).toBe(at(kept, id));
     });
 
     it('under pressure collapses what a later change made stale, then sources once anything has changed', () => {
@@ -1242,10 +1249,16 @@ describe('context budget', () => {
     });
 
     it('keeps every collapsed read to one line', () => {
-      const titled = JSON.stringify({ revision: 1, id: 'pg_a', title: 'About\nUs', owner: { kind: 'page', id: 'pg_a' }, sections: [{ id: 'n_1', componentId: 'hero.split', props: { heading: pad } }] });
+      const titled = JSON.stringify({ revision: 1, id: 'pg_a', title: 'About\nUs\u2028Team', owner: { kind: 'page', id: 'pg_a' }, sections: [{ id: 'n_1', componentId: 'hero.split', props: { heading: pad } }] });
       const items: CanonicalItem[] = [...read('a', { pageId: 'pg_a' }, titled), ...read('b', { pageId: 'pg_a' }, titled), ...filler('f1'), ...filler('f2')];
       applyContextBudget(items, optsWith(2000));
-      expect(at(items, 'a')).toMatch(/^\[Superseded read_page pg_a "About Us"/);
+      expect(at(items, 'a')).toMatch(/^\[Superseded read_page pg_a "About Us Team"/);
+    });
+
+    it('records the revision a layout check was made at', async () => {
+      const { session, adapter, run } = await setup([() => [call('i1', 'inspect_layout', { pageId: '/', viewport: 'phone' })], () => finish()]);
+      await run('Check the home page on phones');
+      expect(lastResult(adapter.requests[1])).toMatchObject({ revision: session.revision, pageId: session.state.site.homePageId, viewport: 'phone' });
     });
   });
 

@@ -86,10 +86,12 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     const definitionId = String(body?.definitionId ?? args.definitionId ?? '');
     // A managed component's answer is a one-line note with no source to collapse.
     if (!definitionId || (!partial && typeof body?.source !== 'string')) return null;
-    // The lines actually shown: a cut result shows an unknown share of what was asked for, and an end before
-    // the start (which the tool accepts) does not say what came back.
+    // The lines actually shown. An end before the start (which the tool accepts) does not say what came back: a
+    // negative one counts from the end of the file, and a cut result shows an unknown share of what it asked for.
     const start = Number(partial ? (args.startLine ?? 1) : body!.startLine);
-    const end = partial ? Number(args.endLine ?? start + 399) : start + String(body!.source).split('\n').length - 1;
+    const asked = Number(args.endLine ?? start + 399);
+    const shown = body?.source === '' ? 0 : String(body?.source).split('\n').length;
+    const end = partial ? (asked < 1 ? Infinity : asked) : start + shown - 1;
     return { ...base, target: `source:${definitionId}`, definitionId, lines: [start, end], ...(partial ? {} : { hash: String(body!.hash) }) };
   }
   if (item.name === 'inspect_element') {
@@ -195,7 +197,7 @@ export function applyContextBudget(
     });
     const collapse = (r: ReadInfo) => {
       const it = items[r.index] as Extract<CanonicalItem, { kind: 'tool_result' }>;
-      const line = tombstoneFor(r, it.content, argsByCall.get(it.callId) ?? {}).replace(/\s*[\r\n]+\s*/g, ' ');
+      const line = tombstoneFor(r, it.content, argsByCall.get(it.callId) ?? {}).replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ');
       if (line.length >= it.content.length) return;
       estimate -= estimateTokens(it.content) - estimateTokens(line);
       it.content = line;

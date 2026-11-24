@@ -142,21 +142,31 @@ const STYLE_VALUE: JsonSchema = {
   description: 'A value, a token reference, or null to remove the override.'
 };
 
-/** The fields two lists shape differently, by name: either shape is offered, so the call is checked for its list's. */
-function sharedShapes(lists: Array<[string, Extract<PropSchema, { type: 'list' }>]>): Map<string, Array<{ lists: string[]; schema: JsonSchema }>> {
-  const shapes = new Map<string, Array<{ lists: string[]; schema: JsonSchema }>>();
+type ListSchema = Extract<PropSchema, { type: 'list' }>;
+type Shape = { lists: Array<{ key: string; description?: string }>; schema: JsonSchema };
+
+/** Each list field's shapes by name, with the lists using each. Fields that differ only in their label are one shape. */
+function listShapes(lists: Array<[string, ListSchema]>): Map<string, Shape[]> {
+  const shapes = new Map<string, Shape[]>();
   for (const [key, s] of lists)
     for (const [name, schema] of Object.entries((propJsonSchema(s).items as JsonSchema).properties as Record<string, JsonSchema>)) {
       if (name === 'id') continue;
       const seen = shapes.get(name) ?? [];
-      // Fields that differ only in their label are the same shape.
       const shape = JSON.stringify({ ...schema, description: undefined });
+      const entry = { key, ...(schema.description !== undefined ? { description: String(schema.description) } : {}) };
       const same = seen.find((x) => JSON.stringify({ ...x.schema, description: undefined }) === shape);
-      if (same) same.lists.push(key);
-      else seen.push({ lists: [key], schema });
+      if (same) same.lists.push(entry);
+      else seen.push({ lists: [entry], schema });
       shapes.set(name, seen);
     }
   return shapes;
+}
+
+/** A shape's description, naming its lists when it is one of several or when they describe it differently. */
+function describeShape(shape: Shape, name: string, alone: boolean): string | undefined {
+  const descriptions = [...new Set(shape.lists.map((l) => l.description ?? name))];
+  if (descriptions.length > 1) return shape.lists.map((l) => `When prop is "${l.key}": ${l.description ?? name}`).join('. ');
+  return alone ? (shape.schema.description as string | undefined) : `When prop is ${shape.lists.map((l) => `"${l.key}"`).join(' or ')}: ${descriptions[0]}`;
 }
 
 /**
@@ -164,17 +174,27 @@ function sharedShapes(lists: Array<[string, Extract<PropSchema, { type: 'list' }
  * name two lists use differently takes either list's shape, each labelled with its lists, rather than one
  * list's shape silently replacing the other's.
  */
-function listFields(lists: Array<[string, Extract<PropSchema, { type: 'list' }>]>): Record<string, JsonSchema> {
+function listFields(lists: Array<[string, ListSchema]>): Record<string, JsonSchema> {
   const fields: Record<string, JsonSchema> = {};
-  for (const [name, seen] of sharedShapes(lists))
-    fields[name] =
-      seen.length === 1
-        ? seen[0].schema
-        : { anyOf: seen.map((x) => ({ ...x.schema, description: `When prop is ${x.lists.map((l) => `"${l}"`).join(' or ')}: ${x.schema.description ?? name}` })) };
+  for (const [name, seen] of listShapes(lists)) {
+    const branches = seen.map((x) => {
+      const description = describeShape(x, name, seen.length === 1);
+      return { ...x.schema, ...(description !== undefined ? { description } : {}) };
+    });
+    fields[name] = branches.length === 1 ? branches[0] : { anyOf: branches };
+  }
   return fields;
 }
 
-const jsonType = (v: unknown) => (v === null ? 'null' : Array.isArray(v) ? 'array' : typeof v);
+/**
+ * Another list's shape for a field this list's check would quietly empty rather than refuse: a number for an
+ * image, or an image for a link.
+ */
+function emptiedBy(field: PropSchema, v: unknown): string | null {
+  if (field.type === 'image' && (typeof v === 'number' || typeof v === 'boolean' || Array.isArray(v))) return 'must be an image: an asset ID or { assetId, alt }';
+  if (field.type === 'link' && !!v && typeof v === 'object' && !Array.isArray(v) && !('type' in v)) return 'must be a link: a route, a URL or { type, target }';
+  return null;
+}
 
 /**
  * The tools for a selection, or null when they cannot cover it: inside a component's own definition, or on a
@@ -196,7 +216,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
     }
   });
   // A computed list (news, an article header) is filled from the site's pages: it has no items to edit.
-  const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list' && !s.feed) as Array<[string, Extract<PropSchema, { type: 'list' }>]>;
+  const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list' && !s.feed) as Array<[string, ListSchema]>;
   if (lists.length) {
     const fields = listFields(lists);
     tools.push({
@@ -328,19 +348,18 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     else if (a.action !== 'insert' && !items.some((i) => i.id === itemId)) issues.push({ field: 'itemId', message: `no item "${itemId}". Items: ${items.map((i) => i.id).join(', ')}` });
     if (a.action === 'move' && a.index === undefined) issues.push({ field: 'index', message: 'required for move' });
     let fields: Record<string, unknown> = {};
-    // A field another list shapes differently must come in this list's shape: an image's check would quietly
-    // turn another list's number into an empty image.
-    const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list') as Array<[string, Extract<PropSchema, { type: 'list' }>]>;
-    const misshapen = new Set<string>();
-    for (const [name, seen] of sharedShapes(lists)) {
-      if (seen.length < 2 || !Object.hasOwn(a.fields ?? {}, name)) continue;
-      const type = seen.find((x) => x.lists.includes(a.prop))?.schema.type;
-      const types = (Array.isArray(type) ? type : type ? [type] : []).map((t) => (t === 'integer' ? 'number' : String(t)));
-      if (!types.length || types.includes(jsonType(a.fields![name]))) continue;
-      misshapen.add(`fields.${name}`);
-      issues.push({ field: `fields.${name}`, message: `must be ${types.join(' or ')} for "${a.prop}"` });
-    }
     if (a.action === 'update' || a.action === 'insert') {
+      // A field another list shapes differently may come in that list's shape, which this list's own check
+      // could quietly turn into an empty value.
+      const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list' && !s.feed) as Array<[string, ListSchema]>;
+      const misshapen = new Set<string>();
+      for (const [name, seen] of listShapes(lists)) {
+        if (seen.length < 2 || !Object.hasOwn(a.fields ?? {}, name) || !Object.hasOwn(schema.fields, name)) continue;
+        const problem = emptiedBy(schema.fields[name], a.fields![name]);
+        if (!problem) continue;
+        misshapen.add(`fields.${name}`);
+        issues.push({ field: `fields.${name}`, message: `${problem} for "${a.prop}"` });
+      }
       // One item is checked here; the list's length rules are the engine's, against the real list.
       const list = { name: schema.label, properties: { [a.prop]: { ...schema, min: undefined, max: undefined } } } as unknown as ComponentDefinition;
       const fieldIssues: FieldIssue[] = [];
