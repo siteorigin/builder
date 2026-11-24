@@ -4,8 +4,8 @@
  */
 import type { EditOperation } from '@shared/ops';
 import type { ElementRef, OwnerRef, ProjectState, ResponsiveScope, ResponsiveStyles, StyleValue } from '@shared/types';
-import { STYLE_PROP_MAP, tokenVar } from '@shared/styles';
-import { itemStylesOf, repeatedPartList } from '@shared/item-styles';
+import { MEDIA_QUERIES, STYLE_PROP_MAP, tokenVar } from '@shared/styles';
+import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveTokens } from '@generator/index';
 import { styleSelection } from './style-copy';
 import { treeFor } from './model';
@@ -71,10 +71,11 @@ export function draggedSize(start: number, travel: number, zoom: number, grow: 1
 /** A frame-pixel length as the canvas draws it at a zoom, in screen pixels. */
 export const onScreen = (px: number, zoom: number) => px * (finite(zoom) && zoom > 0 ? zoom : 1);
 
-/** The spacing stops in size order, without duplicates of a size an earlier (smaller-named) stop already has. */
+/** The spacing stops in size order, without a stop within half a pixel of one already kept (the earlier one stays). */
 export function spaceScale(stops: SpaceStop[]): SpaceStop[] {
-  const sorted = stops.filter((s) => finite(s.px) && s.px > 0).sort((a, b) => a.px - b.px);
-  return sorted.filter((s, i) => i === 0 || Math.abs(s.px - sorted[i - 1].px) >= 0.5);
+  const kept: SpaceStop[] = [];
+  for (const s of stops.filter((x) => finite(x.px) && x.px > 0).sort((a, b) => a.px - b.px)) if (!kept.length || s.px - kept[kept.length - 1].px >= 0.5) kept.push(s);
+  return kept;
 }
 
 /**
@@ -126,6 +127,10 @@ export interface SpacingTarget {
   offered: string[];
   /** Every copy of a repeated part takes the change, not only the one picked. */
   everyItem: boolean;
+  /** For a change to every card: the outlined card's own styles, which beat the shared ones it is drawn with. */
+  picked?: ResponsiveStyles;
+  /** For a change to every card: each card's own styles, by item ID. */
+  items?: Record<string, ResponsiveStyles>;
 }
 
 /**
@@ -145,15 +150,19 @@ export function spacingTarget(state: ProjectState, ref: ElementRef, reach: (key:
   }
   const t = sel.targets[0];
   if (!t) return null;
-  if (!t.partId) return ref.instancePath.length === 0 && t.nodeId === ref.nodeId ? { owner: t.owner, nodeId: t.nodeId, styles: t.styles, offered: t.offered, everyItem: !!ref.itemPath?.length } : null;
-  const base: SpacingTarget = { owner: t.owner, nodeId: t.nodeId, partId: t.partId, styles: t.styles, offered: t.offered, everyItem: false };
+  // Something picked in one copy of a list (a card, or an article a computed list shows) is styled for every copy.
+  const inList = !!ref.itemPath?.length;
+  if (!t.partId) return ref.instancePath.length === 0 && t.nodeId === ref.nodeId ? { owner: t.owner, nodeId: t.nodeId, styles: t.styles, offered: t.offered, everyItem: inList } : null;
+  const base: SpacingTarget = { owner: t.owner, nodeId: t.nodeId, partId: t.partId, styles: t.styles, offered: t.offered, everyItem: inList };
   const inst = treeFor(state, t.owner)?.nodes[t.nodeId];
   const def = inst?.kind === 'instance' && Object.hasOwn(state.components, inst.definitionId) ? state.components[inst.definitionId] : undefined;
   if (inst?.kind !== 'instance' || !def || !repeatedPartList(def, t.partId)) return base;
   const itemId = ref.itemPath?.[ref.itemPath.length - 1];
   const own = itemId ? itemStylesOf(def, inst, t.partId, itemId) : undefined;
   const chosen = itemId ? (reach(itemReachKey(t.owner, t.nodeId, itemId)) ?? (own ? 'item' : 'all')) : 'all';
-  return chosen === 'item' ? { ...base, itemId, styles: own, everyItem: false } : { ...base, everyItem: true };
+  if (chosen === 'item') return { ...base, itemId, styles: own, everyItem: false };
+  const items = liveItemStyles(def, inst, t.partId)?.items;
+  return { ...base, everyItem: true, ...(own ? { picked: own } : {}), ...(items ? { items: { ...items } } : {}) };
 }
 
 /** What one handle does for a selection: the style it writes, its name, and the sides that move on the page. */
@@ -166,16 +175,30 @@ export interface HandlePlan {
 
 const at = (styles: ResponsiveStyles | undefined, scope: ResponsiveScope) => (styles && Object.hasOwn(styles, scope) ? styles[scope] : undefined) ?? {};
 
+/** The CSS properties that set one side's padding or margin: the shorthand, its axis, the side and its logical name. */
+function cssNames(box: SpacingBox, side: SpacingSide, rtl: boolean): string[] {
+  const axis = side === 'top' || side === 'bottom' ? 'block' : 'inline';
+  const logical = side === 'top' ? 'block-start' : side === 'bottom' ? 'block-end' : (side === 'left') !== rtl ? 'inline-start' : 'inline-end';
+  return [box, `${box}-${side}`, `${box}-${axis}`, `${box}-${logical}`];
+}
+
+/** Whether Custom CSS sets one of these properties: it is written after the named styles, so it wins. */
+const customSets = (css: StyleValue | undefined, names: string[]) => typeof css === 'string' && css.split(';').some((d) => names.includes(d.split(':')[0].trim().toLowerCase()));
+
+/** Whether one set of rules gives a side a value of its own: by its edge, its pair or Custom CSS. */
+const setsSide = (rules: Record<string, StyleValue>, edge: string, pair: string | null, names: string[]) => rules[edge] !== undefined || (!!pair && rules[pair] !== undefined) || customSets(rules.customCss, names);
+
 /**
  * Whether a value written at `scope` would be beaten on one side at the previewed size: by that size's own value
- * for the side (its edge or its pair), or, within one scope, by the side's own value over a pair being written.
+ * for the side, by Custom CSS in the same rule, within one scope by the side's own value over a pair being
+ * written, or, for a change to every card, by the outlined card's own value (a card's rule beats the shared one).
  */
-function beaten(styles: ResponsiveStyles | undefined, scope: ResponsiveScope, shown: Size, edge: string, pair: string | null, writes: string): boolean {
-  if (scope === 'base') {
-    const s = at(styles, shown);
-    if (s[edge] !== undefined || (pair && s[pair] !== undefined)) return true;
-  }
-  return writes !== edge && at(styles, scope)[edge] !== undefined;
+function beaten(target: SpacingTarget, scope: ResponsiveScope, shown: Size, edge: string, pair: string | null, writes: string, names: string[]): boolean {
+  const styles = target.styles;
+  if (scope === 'base' && setsSide(at(styles, shown), edge, pair, names)) return true;
+  const here = at(styles, scope);
+  if ((writes !== edge && here[edge] !== undefined) || customSets(here.customCss, names)) return true;
+  return !!target.picked && [at(target.picked, 'base'), at(target.picked, shown)].some((r) => setsSide(r, edge, pair, names));
 }
 
 /**
@@ -187,14 +210,32 @@ export function planHandle(h: SpacingHandle, target: SpacingTarget, scope: Respo
   if (scope !== 'base' && scope !== shown) return null;
   const edge = edgeOf(h, rtl);
   const property = target.offered.includes(edge) ? edge : h.pair && target.offered.includes(h.pair) ? h.pair : null;
-  if (!property || beaten(target.styles, scope, shown, edge, h.pair, property)) return null;
+  if (!property || beaten(target, scope, shown, edge, h.pair, property, cssNames(h.box, h.side, rtl))) return null;
   const sides: SpacingSide[] = [h.side];
   if (property === h.pair) {
-    const other = SPACING_HANDLES.find((o) => o.box === h.box && o.side === OPPOSITE[h.side])!;
-    if (!beaten(target.styles, scope, shown, edgeOf(other, rtl), h.pair, property)) sides.push(other.side);
+    const other = handleAt(h.box, OPPOSITE[h.side]);
+    if (!beaten(target, scope, shown, edgeOf(other, rtl), h.pair, property, cssNames(h.box, other.side, rtl))) sides.push(other.side);
   }
   return { handle: h, property, label: STYLE_PROP_MAP[property]?.label ?? property, sides };
 }
+
+const handleAt = (box: SpacingBox, side: SpacingSide) => SPACING_HANDLES.find((o) => o.box === box && o.side === side)!;
+
+/**
+ * The cards a change to every card leaves where they are, by item ID: each one whose own styles give a moving side
+ * a value of their own at the size shown. A drag's preview leaves them out.
+ */
+export function keptItems(target: SpacingTarget, plan: HandlePlan, shown: Size, rtl: boolean): string[] {
+  if (!target.everyItem || !target.items) return [];
+  const { box, pair } = plan.handle;
+  const sides = plan.sides.map((side) => ({ edge: edgeOf(handleAt(box, side), rtl), names: cssNames(box, side, rtl) }));
+  return Object.entries(target.items)
+    .filter(([, own]) => sides.some(({ edge, names }) => [at(own, 'base'), at(own, shown)].some((r) => setsSide(r, edge, pair, names))))
+    .map(([id]) => id);
+}
+
+/** The media query a preview applies under: the edited size's own, so it never shows at another size. */
+export const previewMedia = (scope: ResponsiveScope): string | null => (scope === 'base' ? null : MEDIA_QUERIES[scope]);
 
 /** The CSS a preview gives the dragged box: each side that moves, as the stylesheet names it, set to the value. */
 export function previewDecls(plan: HandlePlan, value: StyleValue, rtl: boolean): Array<[string, string]> {

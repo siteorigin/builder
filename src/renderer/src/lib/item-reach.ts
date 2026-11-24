@@ -9,3 +9,19 @@ export const reachByItem = new Map<string, 'all' | 'item'>();
 
 /** The key one card of one placement is remembered by. */
 export const itemReachKey = (owner: OwnerRef, placementId: string, itemId: string) => JSON.stringify([owner.kind, owner.id, placementId, itemId]);
+
+/** The reach the inspector shows for the card it has open, which can differ from the one remembered (an Undo
+ *  removing the card's own styles leaves it showing "This card"). */
+let shown: { key: string; reach: 'all' | 'item' } | null = null;
+
+/** Say which reach the inspector shows for a card; the returned function takes it back. */
+export function showReach(key: string, reach: 'all' | 'item'): () => void {
+  const entry = { key, reach };
+  shown = entry;
+  return () => {
+    if (shown === entry) shown = null;
+  };
+}
+
+/** The reach chosen for a card: what the inspector shows for it, else what was last chosen there. */
+export const chosenReach = (key: string) => (shown?.key === key ? shown.reach : reachByItem.get(key));

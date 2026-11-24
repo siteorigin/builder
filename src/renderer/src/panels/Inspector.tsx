@@ -55,7 +55,7 @@ import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, 
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
-import { itemReachKey, reachByItem } from '../lib/item-reach';
+import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
 import { TagField } from './TagField';
 import { ContactMismatch, FieldGroups, groupFields, ImageEditor, LinkEditor, openPageSettings, placedOnPage, PropField, ScalarField, IconPicker, useRevealedItem, type ListItemNote, type ListOp } from './PropEditors';
 import { StyleControls } from './StyleControls';
@@ -1185,6 +1185,8 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
     if (reachKey) reachByItem.set(reachKey, r);
     setReachState(r);
   };
+  // The canvas's spacing handles write where this says.
+  useEffect(() => (reachKey ? showReach(reachKey, reach) : undefined), [reachKey, reach]);
   const oneItem = canStyleItem && reach === 'item';
   const itemName = (it: Record<string, unknown> | undefined, i: number) => {
     const t = listSchema?.titleField ? it?.[listSchema.titleField] : undefined;

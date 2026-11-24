@@ -37,12 +37,14 @@ export interface FrameSides {
   left: number;
 }
 
-/** The selected element's padding, border widths and margin, in frame pixels, and its writing direction. */
+/** The selected element's padding, border widths and margin, in frame pixels, its writing direction, and the
+ *  selection it was measured for. */
 export interface FrameSpacing {
   padding: FrameSides;
   border: FrameSides;
   margin: FrameSides;
   rtl: boolean;
+  desc: BridgeDesc;
 }
 
 function sidesOf(v: unknown, signed: boolean): FrameSides | null {
@@ -59,7 +61,8 @@ export function spacingOf(v: unknown): FrameSpacing | null {
   const padding = sidesOf(r.padding, false);
   const border = sidesOf(r.border, false);
   const margin = sidesOf(r.margin, true);
-  return padding && border && margin ? { padding, border, margin, rtl: r.rtl === true } : null;
+  if (!padding || !border || !margin || !str(r.ctx) || !str(r.node) || !str(r.items)) return null;
+  return { padding, border, margin, rtl: r.rtl === true, desc: { ctx: r.ctx, node: r.node, items: r.items } };
 }
 
 /** Spacing site style sizes in request order, null where one has none; null for a malformed list. */

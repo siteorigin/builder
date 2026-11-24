@@ -8,9 +8,11 @@ import {
   dragLabel,
   dragValue,
   draggedSize,
+  keptItems,
   onScreen,
   planHandle,
   previewDecls,
+  previewMedia,
   spaceScale,
   spaceTokens,
   spacingOp,
@@ -20,7 +22,7 @@ import {
   type SpacingHandle,
   type SpacingTarget
 } from '../../src/renderer/src/lib/spacing-drag';
-import { itemReachKey } from '../../src/renderer/src/lib/item-reach';
+import { chosenReach, itemReachKey, reachByItem, showReach } from '../../src/renderer/src/lib/item-reach';
 import { spacingOf, spaceSizes } from '../../src/renderer/src/lib/payload';
 
 // The foundation theme's spacing scale, as the page measures it at a desktop width.
@@ -53,10 +55,12 @@ describe('draggedSize: pointer travel at the canvas zoom', () => {
     expect(draggedSize(16, -200, 1, 1)).toBe(0);
   });
 
-  it('treats a missing or broken zoom as 1', () => {
+  it('treats a missing or broken zoom as 1, and broken travel as none', () => {
     expect(draggedSize(10, 10, 0, 1)).toBe(20);
+    expect(draggedSize(10, 10, -2, 1)).toBe(20);
     expect(draggedSize(10, 10, Number.NaN, 1)).toBe(20);
     expect(draggedSize(Number.NaN, 10, 1, 1)).toBe(10);
+    expect(draggedSize(10, Number.NaN, 1, 1)).toBe(10);
   });
 
   it('turns the same drag into the same page distance at a fractional fit zoom, either way', () => {
@@ -100,8 +104,15 @@ describe('dragValue: snapping to the spacing scale', () => {
   it('works from the sizes the page measured, in any order, whatever the styles are called', () => {
     const shuffled = [SCALE[8], SCALE[0], SCALE[5], SCALE[3]];
     expect(dragValue(30, shuffled, false).value).toEqual({ token: 'space.xl' });
+    // Larger first: an even split still goes to the smaller.
+    expect(dragValue(20, [SCALE[4], SCALE[3]], false).value).toEqual({ token: 'space.md' });
     const custom = [{ token: 'space.roomy', label: 'Roomy', px: 40 }];
     expect(dragValue(35, custom, false).value).toEqual({ token: 'space.roomy' });
+  });
+
+  it('keeps stops at least half a pixel apart, measured from the last one kept', () => {
+    const close = [8, 8.25, 8.5].map((px) => ({ token: `space.s${px}`, label: String(px), px }));
+    expect(spaceScale(close).map((s) => s.px)).toEqual([8, 8.5]);
   });
 
   it('keeps the first of two styles the same size', () => {
@@ -119,6 +130,8 @@ describe('dragValue: snapping to the spacing scale', () => {
 
   it('writes whole pixels for an exact margin below zero, and snaps one to zero at most', () => {
     expect(dragValue(-12.4, SCALE, true, true)).toEqual({ value: '-12px', px: -12 });
+    expect(dragValue(-12.6, SCALE, true, true)).toEqual({ value: '-13px', px: -13 });
+    expect(dragValue(-0.4, SCALE, true, true)).toEqual({ value: '0', px: 0 });
     expect(dragValue(-12.4, SCALE, false, true)).toEqual({ value: '0', px: 0 });
     expect(dragValue(-12.4, SCALE, true)).toEqual({ value: '0', px: 0 });
   });
@@ -143,14 +156,14 @@ describe('dragValue: snapping to the spacing scale', () => {
 });
 
 describe('the handles', () => {
-  it('write padding on four sides and margin above and below', () => {
-    expect(SPACING_HANDLES.map((h) => `${h.box}:${h.side}:${h.edge}`)).toEqual([
-      'padding:top:paddingBlockStart',
-      'padding:bottom:paddingBlockEnd',
-      'padding:left:paddingInlineStart',
-      'padding:right:paddingInlineEnd',
-      'margin:top:marginBlockStart',
-      'margin:bottom:marginBlockEnd'
+  it('write padding on four sides and margin above and below, growing away from the content', () => {
+    expect(SPACING_HANDLES.map((h) => [h.box, h.side, h.edge, h.pair, h.axis, h.grow])).toEqual([
+      ['padding', 'top', 'paddingBlockStart', 'paddingBlock', 'y', 1],
+      ['padding', 'bottom', 'paddingBlockEnd', 'paddingBlock', 'y', -1],
+      ['padding', 'left', 'paddingInlineStart', 'paddingInline', 'x', 1],
+      ['padding', 'right', 'paddingInlineEnd', 'paddingInline', 'x', -1],
+      ['margin', 'top', 'marginBlockStart', null, 'y', -1],
+      ['margin', 'bottom', 'marginBlockEnd', null, 'y', 1]
     ]);
   });
 });
@@ -209,6 +222,38 @@ describe('spacingTarget: the styles a drag writes', () => {
     s = apply(s, [{ type: 'node.setStyle', owner: owner(s), nodeId: g.id, partId: 'card', itemId: second, scope: 'base', property: 'background', value: '#dbeeff' }]);
     expect(spacingTarget(s, part(s, 'features.grid', 'card', second))).toMatchObject({ itemId: second, styles: { base: { background: '#dbeeff' } } });
     expect(spacingTarget(s, part(s, 'features.grid', 'card', second), () => 'all')).toMatchObject({ everyItem: true });
+  });
+
+  it('writes a part shown once to its placement alone, and a card picked from Layers to every card', () => {
+    const s = fresh();
+    const g = placed(s, 'features.grid');
+    expect(spacingTarget(s, part(s, 'hero.split', 'container'))).toMatchObject({ nodeId: placed(s, 'hero.split').id, partId: 'container', everyItem: false });
+    const fromLayers = spacingTarget(s, part(s, 'features.grid', 'card'))!;
+    expect(fromLayers).toMatchObject({ nodeId: g.id, partId: 'card', everyItem: true });
+    expect(fromLayers.itemId).toBeUndefined();
+  });
+
+  it('shows an article card\u2019s change on every article of a news list, which it styles all at once', () => {
+    let s = fresh();
+    s = apply(s, [{ type: 'node.insert', owner: owner(s), componentId: 'content.news' }]);
+    const t = spacingTarget(s, part(s, 'content.news', 'card', 'pg_article'))!;
+    expect(t).toMatchObject({ partId: 'card', everyItem: true });
+    expect(t.itemId).toBeUndefined();
+  });
+
+  it('follows the reach the inspector shows for a card over the one last chosen', () => {
+    const s = fresh();
+    const g = placed(s, 'features.grid');
+    const first = (g.props.items as ListItem[])[0].id;
+    const key = itemReachKey(owner(s), g.id, first);
+    expect(key).toBe(JSON.stringify(['page', homeId(s), g.id, first]));
+    reachByItem.set(key, 'all');
+    const hide = showReach(key, 'item');
+    expect(chosenReach(key)).toBe('item');
+    expect(spacingTarget(s, part(s, 'features.grid', 'card', first), chosenReach)).toMatchObject({ itemId: first });
+    hide();
+    expect(chosenReach(key)).toBe('all');
+    reachByItem.delete(key);
   });
 
   it('writes nothing for an element inside a section that is not one of its parts', () => {
@@ -274,6 +319,28 @@ describe('planHandle: what each handle writes', () => {
     expect(plan('padding', 'top', phonePadded, 'phone', 'phone')).toMatchObject({ property: 'paddingBlockStart' });
   });
 
+  it('shows no handle for a side the size shown sets on its own, and keeps the other side\u2019s', () => {
+    const t = element(EDGES, { phone: { paddingBlockStart: '16px' } });
+    expect(plan('padding', 'top', t, 'base', 'phone')).toBeNull();
+    expect(plan('padding', 'bottom', t, 'base', 'phone')).toMatchObject({ property: 'paddingBlockEnd' });
+  });
+
+  it('shows no handle where Custom CSS sets the side, since it is written after the named styles', () => {
+    expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'padding-block-start: 60px' } }))).toBeNull();
+    expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'opacity: 0.9; padding-top: 60px' } }))).toBeNull();
+    expect(plan('padding', 'top', element(EDGES, { base: { customCss: 'padding: 60px' } }))).toBeNull();
+    expect(plan('padding', 'top', element(EDGES, { phone: { customCss: 'padding-top: 60px' } }), 'base', 'phone')).toBeNull();
+    expect(plan('padding', 'bottom', element(EDGES, { base: { customCss: 'padding-top: 60px' } }))).toMatchObject({ property: 'paddingBlockEnd' });
+    expect(plan('margin', 'top', element(EDGES, { base: { customCss: 'padding-top: 60px' } }))).toMatchObject({ property: 'marginBlockStart' });
+  });
+
+  it('shows no handle for a shared change the outlined card\u2019s own style would keep from it', () => {
+    const shared = (picked: SpacingTarget['styles']) => ({ ...element(['paddingBlock']), everyItem: true, picked });
+    expect(plan('padding', 'top', shared({ phone: { paddingBlock: '48px' } }), 'phone', 'phone')).toBeNull();
+    expect(plan('padding', 'top', shared({ base: { paddingBlock: '48px' } }), 'phone', 'phone')).toBeNull();
+    expect(plan('padding', 'top', shared({ base: { background: '#fff' } }), 'phone', 'phone')).toMatchObject({ property: 'paddingBlock', sides: ['top', 'bottom'] });
+  });
+
   it('moves only the side a pair reaches past a side\u2019s own value', () => {
     const t = element(['paddingBlock'], { base: { paddingBlockEnd: '8px' } });
     expect(plan('padding', 'top', t)).toMatchObject({ property: 'paddingBlock', sides: ['top'] });
@@ -297,15 +364,44 @@ describe('previewDecls: what the page shows while dragging', () => {
     expect(previewDecls(left, '37px', true)).toEqual([['padding-inline-end', '37px']]);
     const above = planHandle(handle('margin', 'top'), element(EDGES), 'base', 'desktop', false)!;
     expect(previewDecls(above, '-12px' as StyleValue, false)).toEqual([['margin-block-start', '-12px']]);
+    // Where a line starts: the left on a left-to-right page, the right on a right-to-left one.
+    const ltrLeft = planHandle(handle('padding', 'left'), element(EDGES), 'base', 'desktop', false)!;
+    const rtlRight = planHandle(handle('padding', 'right'), element(EDGES), 'base', 'desktop', true)!;
+    expect(previewDecls(ltrLeft, '8px', false)).toEqual([['padding-inline-start', '8px']]);
+    expect(previewDecls(rtlRight, '8px', true)).toEqual([['padding-inline-start', '8px']]);
+  });
+
+  it('applies only at the size being edited', () => {
+    expect(previewMedia('base')).toBeNull();
+    expect(previewMedia('phone')).toBe('(max-width: 767.98px)');
+    expect(previewMedia('desktop')).toBe('(min-width: 1024px)');
+  });
+
+  it('leaves out the cards whose own styles keep the moving sides where they are', () => {
+    const t: SpacingTarget = {
+      ...element(['paddingBlock']),
+      everyItem: true,
+      items: { a: { base: { paddingBlock: '4px' } }, b: { base: { background: '#fff' } }, c: { phone: { customCss: 'padding-bottom: 2px' } }, d: { tablet: { paddingBlock: '9px' } } }
+    };
+    const top = planHandle(handle('padding', 'top'), t, 'base', 'phone', false)!;
+    expect(top.sides).toEqual(['top', 'bottom']);
+    expect(keptItems(t, top, 'phone', false)).toEqual(['a', 'c']);
+    expect(keptItems({ ...t, everyItem: false }, top, 'phone', false)).toEqual([]);
   });
 });
 
 describe('the frame\u2019s spacing report', () => {
   const sides = { top: 1, right: 2, bottom: 3, left: 4 };
-  it('reads padding, border and margin, and drops anything malformed', () => {
-    expect(spacingOf({ padding: sides, border: sides, margin: { ...sides, top: -8 }, rtl: true })).toEqual({ padding: sides, border: sides, margin: { ...sides, top: -8 }, rtl: true });
-    expect(spacingOf({ padding: { ...sides, top: -1 }, border: sides, margin: sides })).toBeNull();
-    expect(spacingOf({ padding: sides, border: sides, margin: { ...sides, left: 'x' } })).toBeNull();
+  const desc = { ctx: 'page:p', node: 'n', items: '' };
+  it('reads padding, border and margin with what it measured, and drops anything malformed', () => {
+    expect(spacingOf({ padding: sides, border: sides, margin: { ...sides, top: -8 }, rtl: true, ...desc })).toEqual({ padding: sides, border: sides, margin: { ...sides, top: -8 }, rtl: true, desc });
+    expect(spacingOf({ padding: sides, border: sides, margin: sides, ...desc })?.rtl).toBe(false);
+    expect(spacingOf({ padding: { ...sides, top: 0 }, border: sides, margin: sides, ...desc })?.padding.top).toBe(0);
+    expect(spacingOf({ padding: { ...sides, top: -1 }, border: sides, margin: sides, ...desc })).toBeNull();
+    expect(spacingOf({ padding: sides, border: { ...sides, left: -1 }, margin: sides, ...desc })).toBeNull();
+    expect(spacingOf({ padding: { ...sides, top: Infinity }, border: sides, margin: sides, ...desc })).toBeNull();
+    expect(spacingOf({ padding: sides, border: sides, margin: { ...sides, left: 'x' }, ...desc })).toBeNull();
+    expect(spacingOf({ padding: sides, border: sides, margin: sides, ctx: 'page:p', node: 'n' })).toBeNull();
     expect(spacingOf(null)).toBeNull();
   });
 

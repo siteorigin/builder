@@ -1124,12 +1124,13 @@ export function Canvas() {
     window.addEventListener('keydown', key, true);
   }
 
-  /** Each spacing site style's size on the page now (null where it has none); null when the page doesn't answer. */
-  const measureSpace = (vars: string[]) =>
+  /** Each spacing site style's size as padding on the box `desc` finds (null where it has none); null when the page
+   *  doesn't answer. */
+  const measureSpace = (vars: string[], desc: BridgeDesc) =>
     new Promise<Array<number | null> | null>((resolve) => {
       const requestId = Math.random().toString(36).slice(2);
       measureWaiters.current.set(requestId, (raw) => resolve(spaceSizes(raw, vars.length)));
-      post('measureSpace', { requestId, vars });
+      post('measureSpace', { requestId, vars, desc });
       setTimeout(() => {
         measureWaiters.current.delete(requestId);
         resolve(null);
@@ -1332,7 +1333,9 @@ export function Canvas() {
   // Spacing handles sit on the selected box itself (not its outline's breathing room), while editing and not while
   // text is being typed, a block moved, the page resized or a component's design edited everywhere.
   const spaceDesc = selection ? descFor(selection) : null;
-  const spaceShown = selBoxes.length > 0 && !!spacing && !!spaceDesc && !!state && !editing && !reorder && !resizing && !definitionMode && !snapshot?.aiBusy;
+  // The page's report must be for this selection: one from before it changed measured something else.
+  const spaceFor = !!spacing && !!spaceDesc && spacing.desc.ctx === spaceDesc.ctx && spacing.desc.node === spaceDesc.node && spacing.desc.items === spaceDesc.items;
+  const spaceShown = selBoxes.length > 0 && spaceFor && !!state && !editing && !reorder && !resizing && !definitionMode && !snapshot?.aiBusy && !snapshot?.readOnly;
   const device = viewport < 768 ? 'Phone' : viewport < 1024 ? 'Tablet' : 'Desktop';
   const scalePct = Math.round(z * 100);
   // The width label shares the strip with a parked chip: in full, then the width and zoom, then just the width,

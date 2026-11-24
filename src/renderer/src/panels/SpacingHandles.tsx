@@ -2,16 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import type { ElementRef, ProjectState, ResponsiveScope } from '@shared/types';
 import { scopeForWidth } from '@shared/styles';
 import { api, commitOps, getState, useStore } from '../store';
-import type { BridgeDesc } from '../lib/model';
+import { encodeItemId, type BridgeDesc } from '../lib/model';
 import type { FrameSpacing } from '../lib/payload';
-import { reachByItem } from '../lib/item-reach';
+import { chosenReach } from '../lib/item-reach';
 import {
   SPACING_HANDLES,
   dragLabel,
   dragValue,
   draggedSize,
+  keptItems,
   planHandle,
   previewDecls,
+  previewMedia,
   sameStyleValue,
   spaceTokens,
   spacingOp,
@@ -50,6 +52,10 @@ interface Drag {
   value: DragValue | null;
   raf: number;
   desc: BridgeDesc;
+  /** Copies of a repeated part whose own styles keep them where they are, as the page names their items. */
+  skip: string[];
+  /** Settles once the page has said how large its spacing styles are (or did not answer in time). */
+  measured: Promise<void>;
   revision: number;
   opening: string | undefined;
   stop: () => void;
@@ -71,7 +77,7 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
   spacing: FrameSpacing;
   zoom: number;
   post: (type: string, payload?: unknown) => void;
-  measureSpace: (vars: string[]) => Promise<Array<number | null> | null>;
+  measureSpace: (vars: string[], desc: BridgeDesc) => Promise<Array<number | null> | null>;
   onDragging: (on: boolean) => void;
   focusCanvas: () => void;
 }) {
@@ -82,23 +88,28 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
   const drag = useRef<Drag | null>(null);
   const shown = scopeForWidth(viewport);
   const rtl = spacing.rtl;
-  const target = spacingTarget(state, selection, (k) => reachByItem.get(k));
+  const target = spacingTarget(state, selection, chosenReach);
   const plans = target ? SPACING_HANDLES.flatMap((h) => planHandle(h, target, scope, shown, rtl) ?? []) : [];
 
-  /** Show where the drag has got to on the page, and in the HUD. */
-  const update = () => {
-    const d = drag.current;
-    if (!d) return;
+  /** Work out where a drag has got to and show it on the page. False while there is nothing to show yet. */
+  const place = (d: Drag): boolean => {
     const h = d.plan.handle;
     const travel = h.axis === 'y' ? d.at.y - d.y : d.at.x - d.x;
     if (Math.abs(travel) >= DRAG_START) d.moved = true;
     // Snapped values wait for the page to say how large its spacing styles are.
-    if (!d.moved || (!d.stops && !d.at.exact)) return;
+    if (!d.moved || (!d.stops && !d.at.exact)) return false;
     const signed = h.box === 'margin';
     const v = dragValue(draggedSize(d.start, travel, d.zoom, h.grow, signed), d.stops ?? [], d.at.exact, signed);
-    if (!d.value || !sameStyleValue(d.value.value, v.value)) post('spacingPreview', { drag: d.id, desc: d.desc, decls: previewDecls(d.plan, v.value, d.rtl) });
+    if (!d.value || !sameStyleValue(d.value.value, v.value))
+      post('spacingPreview', { drag: d.id, desc: d.desc, skip: d.skip, media: previewMedia(d.scope), decls: previewDecls(d.plan, v.value, d.rtl) });
     d.value = v;
-    setLive({ key: keyOf(h), text: dragLabel(v) });
+    return true;
+  };
+
+  /** Show where the drag in progress has got to, on the page and in the HUD. */
+  const update = () => {
+    const d = drag.current;
+    if (d && place(d)) setLive({ key: keyOf(d.plan.handle), text: dragLabel(d.value!) });
   };
 
   /** End the drag: listeners off, the pointer let go. What the page shows is the caller's to keep or put back. */
@@ -120,29 +131,37 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
     if (d) post('spacingPreview', { drag: d.id, clear: true });
   };
 
-  /** Save the drag as one edit, and hand what the page shows over to it once the page has it. */
-  const finish = async () => {
-    const d = release();
-    if (!d) return;
+  /**
+   * Save the drag as one edit, and hand what the page shows over to it once the page has it. A release before the
+   * page has said how large its spacing styles are waits for that, so the edit is where the pointer let go.
+   */
+  const finish = async (d: Drag) => {
     const clear = () => post('spacingPreview', { drag: d.id, clear: true });
+    if (d.moved && !d.stops && !d.at.exact) await d.measured;
+    place(d);
     const { property } = d.plan;
     const v = d.value;
     // A click, or a drag that ends on what is saved already, changes nothing.
     if (!d.moved || !v || sameStyleValue(storedSpacing(d.target, d.scope, property), v.value) || getState().snapshot?.workspaceKey !== d.opening) return clear();
-    const r = await commitOps([spacingOp(d.target, d.scope, property, v.value)], `Set ${d.plan.label.toLowerCase()}`, undefined, d.revision);
-    if (r?.ok) post('spacingPreview', { drag: d.id, handoff: r.revision });
-    else clear();
+    try {
+      const r = await commitOps([spacingOp(d.target, d.scope, property, v.value)], `Set ${d.plan.label.toLowerCase()}`, undefined, d.revision);
+      if (r?.ok) post('spacingPreview', { drag: d.id, handoff: r.revision });
+      else clear();
+    } catch {
+      clear();
+    }
   };
 
-  const begin = (e: React.PointerEvent<HTMLDivElement>, plan: HandlePlan) => {
+  const begin = (e: React.PointerEvent<HTMLDivElement>, drawn: HandlePlan) => {
     if (e.button !== 0 || drag.current) return;
     e.preventDefault();
     e.stopPropagation();
     const s = getState();
     const st = s.snapshot?.state;
     // Read again now: the card's reach may have been chosen in the inspector since this was drawn.
-    const t = st ? spacingTarget(st, selection, (k) => reachByItem.get(k)) : null;
-    if (!st || !t || !s.snapshot) return;
+    const t = st ? spacingTarget(st, selection, chosenReach) : null;
+    const plan = t && planHandle(drawn.handle, t, scope, shown, rtl);
+    if (!st || !t || !plan || !s.snapshot) return;
     const el = e.currentTarget;
     el.setPointerCapture(e.pointerId);
     // Escape reaches the editor, not a page that had the keyboard.
@@ -163,8 +182,8 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
       const d = drag.current;
       if (d?.pointer !== ev.pointerId) return;
       d.at = { x: ev.clientX, y: ev.clientY, exact: ev.altKey };
-      update();
-      void finish();
+      release();
+      void finish(d);
     };
     const lost = (ev: PointerEvent) => {
       if (drag.current?.pointer === ev.pointerId) cancel();
@@ -199,7 +218,10 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
       el.removeEventListener('lostpointercapture', lost);
     };
     const start = h.box === 'padding' ? spacing.padding[h.side] : spacing.margin[h.side];
-    drag.current = {
+    // A change for every card shows on every card, but for those whose own styles keep them where they are.
+    const prefix = (selection.itemPath ?? []).slice(0, -1).map(encodeItemId);
+    const skip = keptItems(t, plan, shown, rtl).map((item) => [...prefix, encodeItemId(item)].join(','));
+    const d: Drag = {
       id,
       pointer: e.pointerId,
       el,
@@ -216,21 +238,24 @@ export function SpacingHandles({ state, selection, desc, box, spacing, zoom, pos
       moved: false,
       value: null,
       raf: 0,
-      // A change for every card shows on every card.
       desc: t.everyItem ? { ...desc, items: '' } : desc,
+      skip,
+      measured: Promise.resolve(),
       revision: s.snapshot.revision,
       opening: s.snapshot.workspaceKey,
       stop
     };
+    drag.current = d;
+    const tokens = spaceTokens(st).slice(0, 500);
+    d.measured = measureSpace(
+      tokens.map((x) => x.cssVar),
+      desc
+    ).then((px) => {
+      d.stops = px ? tokens.flatMap((x, i) => (px[i] === null ? [] : [{ token: x.token, label: x.label, px: px[i]! }])) : [];
+      if (drag.current === d) update();
+    });
     onDragging(true);
     setLive({ key: keyOf(h), text: dragLabel({ value: '', px: start }) });
-    const tokens = spaceTokens(st);
-    void measureSpace(tokens.map((x) => x.cssVar)).then((px) => {
-      const d = drag.current;
-      if (d?.id !== id) return;
-      d.stops = px ? tokens.flatMap((x, i) => (px[i] === null ? [] : [{ token: x.token, label: x.label, px: px[i]! }])) : [];
-      update();
-    });
   };
 
   // Whatever takes the handles away (another selection, size, zoom or page; the frame restarting) ends the drag.

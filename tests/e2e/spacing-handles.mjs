@@ -27,8 +27,8 @@ const zoom = async () => {
   const inner = await frame.locator('html').evaluate(() => innerWidth);
   return box.width / inner;
 };
-/** Press the top padding handle and move it so the padding would be `to` page pixels, in a few steps. */
-async function dragTopTo(to) {
+/** Press the top padding handle and move it so the padding would be `to` page pixels, in a few steps (or one). */
+async function dragTopTo(to, steps = 4) {
   const b = await handle.boundingBox();
   const x = b.x + b.width / 2;
   const y = b.y + b.height / 2;
@@ -36,16 +36,17 @@ async function dragTopTo(to) {
   const target = y + (to - from) * (await zoom());
   await win.mouse.move(x, y);
   await win.mouse.down();
-  await win.mouse.move(x, (y + target) / 2, { steps: 4 });
-  await win.mouse.move(x, target, { steps: 4 });
+  if (steps > 1) await win.mouse.move(x, (y + target) / 2, { steps });
+  await win.mouse.move(x, target, { steps });
 }
 
 step('select the Split hero: its vertical padding gets handles on the page');
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('.list-item', { hasText: 'Split hero' }).first().click();
 await handle.waitFor();
-assert.equal(await win.getByTestId('spacing-padding-bottom').count(), 1, 'the bottom padding has a handle too');
-assert.equal(await win.getByTestId('spacing-padding-left').count(), 0, 'side padding is not offered on this section, so it has no handle');
+const handles = () => win.locator('[data-testid^="spacing-"]:not([data-testid="spacing-hud"])').evaluateAll((els) => els.map((e) => e.dataset.testid).sort());
+// The section offers Vertical padding only: no side padding or margin handles.
+assert.deepEqual(await handles(), ['spacing-padding-bottom', 'spacing-padding-top']);
 const before = await snap();
 const original = heroNode(before).overrides ?? {};
 const start = await padding();
@@ -73,23 +74,53 @@ await eventually(async () => assert.equal(await previews(), 0, 'the drag preview
 assert.deepEqual(await padding(), [24, 24], 'the saved style shows on its own');
 assert.equal(await hud.count(), 0, 'the HUD goes with the drag');
 
+step('a release before the page has measured its spacing styles saves where it let go');
+// The page's answer is held back in the editor for a moment, so the release always comes first.
+await win.evaluate(() => {
+  const held = new WeakSet();
+  window.addEventListener(
+    'message',
+    (e) => {
+      if (e.data?.type !== 'spaceMeasured' || held.has(e.data)) return;
+      e.stopImmediatePropagation();
+      held.add(e.data);
+      setTimeout(() => window.dispatchEvent(new MessageEvent('message', { data: e.data, origin: e.origin, source: e.source })), 800);
+    },
+    true
+  );
+});
+await dragTopTo(47, 1);
+await win.mouse.up();
+await eventually(async () => assert.deepEqual(heroNode(await snap()).overrides?.root?.base?.paddingBlock, { token: 'space.2xl' }), 15000);
+assert.equal(applied(await snap()).length, applied(saved).length + 1, 'one more history entry');
+await eventually(async () => assert.equal(await previews(), 0), 15000);
+assert.deepEqual(await padding(), [48, 48]);
+await win.locator('[aria-label^="Undo"]').first().click();
+await eventually(async () => assert.deepEqual(heroNode(await snap()).overrides?.root?.base?.paddingBlock, { token: 'space.lg' }));
+await eventually(async () => assert.deepEqual(await padding(), [24, 24]), 15000);
+
 step('Escape mid-drag puts the page back and saves nothing');
+const beforeEscape = await snap();
 await dragTopTo(70);
 await eventually(async () => assert.match(await hud.innerText(), /3XL · 72px/));
 await eventually(async () => assert.deepEqual(await padding(), [72, 72]));
 await win.keyboard.press('Escape');
-await win.mouse.up();
+// Still holding the mouse: Escape alone ends the drag.
 await eventually(async () => assert.deepEqual(await padding(), [24, 24], 'the padding is back where it was'));
 assert.equal(await previews(), 0, 'no preview is left on the page');
+assert.equal(await hud.count(), 0, 'the HUD goes with the drag');
+await win.mouse.up();
 await win.waitForTimeout(500);
 const escaped = await snap();
-assert.equal(escaped.revision, saved.revision, 'nothing is saved');
-assert.deepEqual(applied(escaped), applied(saved), 'no history entry');
+assert.equal(escaped.revision, beforeEscape.revision, 'nothing is saved');
+assert.deepEqual(applied(escaped), applied(beforeEscape), 'no history entry');
+assert.deepEqual(await padding(), [24, 24], 'releasing after Escape saves nothing either');
 assert.match(await win.locator('.ov-chip').first().innerText(), /Split hero/, 'Escape ended the drag, not the selection');
 
 step('one Undo takes the drag back');
 await win.locator('[aria-label^="Undo"]').first().click();
 await eventually(async () => assert.deepEqual(heroNode(await snap()).overrides ?? {}, original, 'the overrides are as they were'));
+assert.deepEqual(applied(await snap()), applied(before), 'the history is where it started');
 await eventually(async () => assert.deepEqual(await padding(), start, 'the page shows its original padding'), 15000);
 
 step('editing Phone while the canvas shows Desktop: no handles, since the drag would not show');
