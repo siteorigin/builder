@@ -1,3 +1,9 @@
+import { listItemImage, listRowTitle } from '@shared/fields';
+import { effectiveItem } from '@shared/page-teasers';
+import { placedItemIndex } from '@engine/install';
+import { treeFor } from './model';
+import type { ListItem, OwnerRef, ProjectState } from '@shared/types';
+
 // What a repeatable list says about its limits and about an item that was just moved. Plain functions, so the
 // wording and the focus rule are tested without a renderer.
 
@@ -43,4 +49,72 @@ export function moveFocusTarget(direction: MoveDirection, newIndex: number, coun
 /** What a screen reader hears after a move: the item and its new place in the list. */
 export function moveAnnouncement(title: string, newIndex: number, count: number): string {
   return `${title} moved to position ${newIndex + 1} of ${count}`;
+}
+
+// ---------------------------------------------------------------------------
+// History and Undo wording
+// ---------------------------------------------------------------------------
+
+/** The kinds of list edit that get their own wording (a pick and a repair carry their own label). */
+export type ListEdit =
+  | { kind: 'insert'; item?: Record<string, unknown> }
+  | { kind: 'remove'; itemId: string }
+  | { kind: 'move'; itemId: string; index: number }
+  | { kind: 'field'; itemId: string; field: string };
+
+const TITLE_MAX = 32;
+
+/** A row's name for a History line: its title in quotes, cut at a word-ish length. */
+function quoted(text: string): string {
+  const t = text.replace(/\s+/g, ' ').trim();
+  return `“${t.length > TITLE_MAX ? `${t.slice(0, TITLE_MAX - 1).trimEnd()}…` : t}”`;
+}
+
+/**
+ * The History and Undo wording for one list edit, read from the project as it is before the edit lands (so a removed
+ * row can still be named): what was done, to which row (by its title, else its place, "card 2"), in which list, and
+ * where the list is, the section and the page it is on. `everywhere` is the edit made on a design for every
+ * placement, which names the design, not a page. Falls back to `fallback` when the row or list can't be found.
+ */
+export function listEditLabel(state: ProjectState, owner: OwnerRef, nodeId: string, prop: string, op: ListEdit, fallback: string, everywhere = false): string {
+  const node = treeFor(state, owner)?.nodes[nodeId];
+  if (node?.kind !== 'instance') return fallback;
+  const def = state.components[node.definitionId];
+  const schema = def?.properties[prop];
+  if (schema?.type !== 'list') return fallback;
+  const items = (Array.isArray(node.props[prop]) ? node.props[prop] : schema.default) as ListItem[];
+  const nameAt = (i: number) => {
+    const eff = effectiveItem(state, schema, items[i]);
+    return quoted(listRowTitle(schema, eff, i, listItemImage(schema, eff, state.assets.assets)?.name));
+  };
+  const noun = schema.itemLabel.toLowerCase();
+  const at = op.kind === 'insert' ? -1 : placedItemIndex(items, owner, nodeId, op.itemId);
+  if (op.kind !== 'insert' && at < 0) return fallback;
+  const list = schema.label;
+  let what: string;
+  switch (op.kind) {
+    case 'insert': {
+      // A card made for a page is named by it; a blank one by its place.
+      const own = op.item ? effectiveItem(state, schema, { id: '', ...op.item } as ListItem) : undefined;
+      const t = schema.titleField && own ? own[schema.titleField] : undefined;
+      what = `Add ${typeof t === 'string' && t.trim() ? quoted(t) : `${noun} ${items.length + 1}`} to ${list}`;
+      break;
+    }
+    case 'remove':
+      what = `Remove ${nameAt(at)} from ${list}`;
+      break;
+    case 'move': {
+      const to = Math.min(op.index, items.length - 1);
+      what = to === at ? `Move ${nameAt(at)} in ${list}` : `Move ${nameAt(at)} from ${at + 1} to ${to + 1} in ${list}`;
+      break;
+    }
+    case 'field':
+      what = `Edit ${schema.fields[op.field]?.label ?? op.field} of ${nameAt(at)} in ${list}`;
+      break;
+  }
+  if (everywhere) return `${what} everywhere`;
+  const section = def.name;
+  const page = owner.kind === 'page' && Object.hasOwn(state.pages, owner.id) ? state.pages[owner.id].title : owner.kind === 'shell' ? `the ${owner.id}` : '';
+  const where = [section, page && `on ${page}`].filter(Boolean).join(' ');
+  return where && where !== list ? `${what} (${where})` : what;
 }

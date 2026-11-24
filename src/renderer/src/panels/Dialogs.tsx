@@ -1452,7 +1452,7 @@ function ChangesModal() {
           {entries.map((e) => (
             <li key={e.id} ref={e.id === focusId ? focused : undefined} className={`${e.applied ? '' : 'undone'}${e.id === focusId ? ' focus' : ''}`} aria-current={e.id === focusId ? 'true' : undefined}>
               {e.source === 'ai' ? <Sparkles aria-label="By AI" /> : <User aria-label="By you" />}
-              <span className="grow ellipsis">{e.label}</span>
+              <span className="grow ellipsis" title={e.label}>{e.label}</span>
               {!e.applied && <span className="badge">Undone</span>}
               <time>{new Date(e.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
             </li>

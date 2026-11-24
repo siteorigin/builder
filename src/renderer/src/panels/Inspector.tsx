@@ -52,6 +52,7 @@ import { catalogueComponent } from '@catalogue/index';
 import { formFieldSettingsHidden, formFieldsAsSent, formKeyNote, formServiceSetup, namesFormFields, offersFormChoices, type FormServiceSetup } from '@catalogue/foundation/form';
 import { anchorCapable, codeImportantProps, codeTakesOverrides, designAppear, enclosingRepeatProp, instancesOf, itemLinkPairs } from '@engine/tree';
 import type { TableEdit } from '@engine/table';
+import { listEditLabel } from '../lib/list-editor';
 import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
 import { TEXT_LIMITS } from '@shared/text-limits';
@@ -214,10 +215,13 @@ async function applyPicks(owner: OwnerRef, nodeId: string, prop: string, op: Ext
   return { added, replaced: plan.steps.filter((st) => st.kind === 'remove').length };
 }
 
-function applyListOp(owner: OwnerRef, nodeId: string, prop: string, op: ListOp, label: string, coalesceKey?: string) {
+function applyListOp(owner: OwnerRef, nodeId: string, prop: string, op: ListOp, label: string, coalesceKey?: string, everywhere = false) {
   if (op.kind === 'pick') return applyPicks(owner, nodeId, prop, op);
   if (op.kind === 'repair') return applyOps([listOps(owner, nodeId, prop, op)], op.label, undefined, op.revision);
-  return applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, nodeId, prop, op)], label, op.kind === 'field' ? coalesceKey : undefined);
+  // History and Undo name the row and what was done to it; `label` is the fallback when the project can't say.
+  const snap = getState().snapshot;
+  const named = snap ? listEditLabel(snap.state, owner, nodeId, prop, op, label, everywhere) : label;
+  return applyWith(op.kind === 'field' ? op.edit : undefined, [listOps(owner, nodeId, prop, op)], named, op.kind === 'field' ? coalesceKey : undefined);
 }
 
 /**
@@ -1384,7 +1388,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                     everywhere={!!everywhere}
                     onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}`)}
                     onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: b.prop!, field, value: v }], `Edit ${schema.label}`, `${keyAt}:${b.prop}:${field}`)}
-                    onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`)}
+                    onList={(op) => applyListOp(instOwner, instNodeId, b.prop!, op, `Edit ${schema.label}`, undefined, !!everywhere)}
                     read={() => readProp(instOwner, instNodeId, b.prop!)}
                     alive={propAlive(instOwner, instNodeId, b.prop!)}
                     itemAlive={(itemId, field) => rowAlive(instOwner, instNodeId, b.prop!, itemId, field)}
@@ -1403,7 +1407,7 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
                 const field = listSchema.fields[b.item!];
                 const item = listItems.find((x) => x.id === itemId);
                 if (!field || !item) return null;
-                const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], `Edit ${field.label}`, `${keyAt}:${listProp}:${itemId}:${b.item}`);
+                const edit = (v: unknown, pending?: PendingEdit) => void applyWith(pending, [{ type: 'instance.setProp', owner: instOwner, nodeId: instNodeId, prop: listProp, itemId, field: b.item!, value: v }], listEditLabel(getState().snapshot?.state ?? state, instOwner, instNodeId, listProp, { kind: 'field', itemId, field: b.item! }, `Edit ${field.label}`, !!everywhere), `${keyAt}:${listProp}:${itemId}:${b.item}`);
                 // A page list's card says where an empty field's text comes from.
                 const teaser = teaserFieldNote(state, listSchema, item, b.item!);
                 // An item without its own value for the field shows the field's default, on the site and here.
@@ -1963,7 +1967,7 @@ function NestedInputs({ state, def, node, placedDef }: { state: ProjectState; de
                 value={raw ?? schema.default}
                 onChange={(v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${key}`)}
                 onField={(field, v, edit) => void applyWith(edit, [{ type: 'instance.setProp', owner, nodeId: node.id, prop: key, field, value: v }], `Edit ${schema.label} everywhere`, `${def.id}:${node.id}:${key}:${field}`)}
-                onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label} everywhere`, op.kind === 'field' ? `${def.id}:${node.id}:${key}:${op.itemId}:${op.field}` : undefined)}
+                onList={(op) => applyListOp(owner, node.id, key, op, `Edit ${schema.label} everywhere`, op.kind === 'field' ? `${def.id}:${node.id}:${key}:${op.itemId}:${op.field}` : undefined, true)}
                 read={() => readProp(owner, node.id, key)}
                 alive={propAlive(owner, node.id, key)}
                 itemAlive={(itemId, field) => rowAlive(owner, node.id, key, itemId, field)}
