@@ -2553,7 +2553,7 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
             value={{ assetId: page.seo.socialImage || null, alt: '' }}
             state={state}
             picture={sharing.picker}
-            onChange={(v) => upd({ socialImage: v.assetId }, v.assetId ? 'Change sharing image' : 'Use the site’s sharing image')}
+            onChange={(v) => upd({ socialImage: v.assetId }, v.assetId ? 'Change sharing image' : sharing.picker.inherited ? 'Use the site’s sharing image' : 'Remove sharing image')}
           />
           <div className="field-hint">{sharing.imageNote}</div>
           <button type="button" className="insp-mini" style={{ alignSelf: 'flex-start', marginLeft: -6 }} onClick={() => openSiteSharing('socialImage')}>
