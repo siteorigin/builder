@@ -209,6 +209,12 @@ export function planComponentPackage(state: ProjectState, rootId: string, app?: 
     if (def.kind === 'code' && from && def.source?.includes(`so-${defKey(from)}__`))
       fail(`${quoted(def.name)} was converted to code by an earlier version and still relies on the original design's styles. Convert the design to code again, then export that.`);
   }
+  // Code that writes a library file's address shows a file the other site won't have, wherever it lands.
+  const files = Object.values(state.assets.assets).flatMap((a) => (typeof a?.file === 'string' && a.file.startsWith('static/') ? [{ name: a.name, url: a.file.slice('static'.length) }] : []));
+  for (const def of defs) {
+    const hit = def.kind === 'code' && files.find((f) => def.source?.includes(f.url));
+    if (hit) fail(`The code of ${quoted(def.name)} shows ${quoted(hit.name)} from this site's library by its address, which a package can't carry. Give the component an image property for it instead.`);
+  }
   const notes: string[] = [];
   const links = defs.reduce((n, d) => n + siteLinks(d, true), 0);
   if (links) notes.push(`${links === 1 ? 'A link' : `${links} links`} to this site's pages or documents ${links === 1 ? 'was' : 'were'} left out, as another site doesn't have them.`);

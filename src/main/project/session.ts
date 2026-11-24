@@ -1872,8 +1872,8 @@ export class ProjectSession extends EventEmitter {
       for (const def of Object.values(next.components)) {
         if (def.kind !== 'code' || def.source === undefined || this.state.components[def.id]?.source === def.source) continue;
         // Placing a theme's own component (the contact form, say) authors no code when it is code the app ships,
-        // whichever pack reuses it.
-        if (def.owner === 'theme' && listThemes().some((t) => t.source !== 'user' && t.components.some((c) => c.kind === 'code' && c.source === def.source))) continue;
+        // whichever pack reuses it; nor does a package bringing that code, unchanged, to a site whose theme lacks it.
+        if ((def.owner === 'theme' || importing) && listThemes().some((t) => t.source !== 'user' && t.components.some((c) => c.kind === 'code' && c.source === def.source))) continue;
         // Code the AI writes is held to a stricter policy than code a developer writes, and so is an installed pack's
         // own code, which nobody here wrote or reviewed.
         const installed = def.owner === 'theme' && listThemes().some((t) => t.source === 'user' && t.components.some((c) => c.id === def.id));

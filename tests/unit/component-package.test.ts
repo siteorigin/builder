@@ -313,6 +313,15 @@ describe('component packages: export and import (#371)', () => {
     await Promise.all([s.close(), dest.close()]);
   });
 
+  it('won’t export code that shows a library image by its address, which the other site would not have', async () => {
+    const s = await blank('Code');
+    const imageId = await addImage(s, 'Waves.png', await png('#0a6e8a'));
+    const url = s.state.assets.assets[imageId].file.replace(/^static/, '');
+    const made = ok(await s.apply({ operations: [{ type: 'component.createCode', name: 'Hero', source: `<img src="${url}" alt="Waves" />\n` }] }, { label: 'Create', codeAllowed: true })).results![0];
+    await expect(buildComponentPackage(s.dir, s.state, made.definitionId as string)).rejects.toThrow(/The code of “Hero” shows “Waves” from this site's library by its address/);
+    await s.close();
+  });
+
   it('refuses unsafe or non-compiling code with the reason, changing nothing', async () => {
     const dest = await blank('Dest');
     const untouched = snapshot(dest);
