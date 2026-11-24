@@ -4,9 +4,11 @@
  * overwritten by a value, and a component's first variant leaves its placements as they were.
  */
 import { describe, expect, it } from 'vitest';
-import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
+import type { InstanceNode, LinkValue, ListItem, ProjectState } from '@shared/types';
+import type { EditOperation } from '@shared/ops';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { installComponent, makeInstance, placedDefaultItems } from '@engine/install';
 import { EngineError } from '@engine/tree';
 import { blocksSaving, validateState } from '@engine/validate';
 
@@ -40,6 +42,7 @@ function placedNote(count: number) {
 
 const placement = (s: ProjectState, nodeId: string) => home(s).nodes[nodeId] as InstanceNode;
 const items = (s: ProjectState, nodeId: string) => placement(s, nodeId).props.links as ListItem[] | undefined;
+const items0 = (s: ProjectState, nodeId: string) => placement(s, nodeId).props.items as ListItem[];
 
 describe('a list property added to a placed component', () => {
   function withLinks() {
@@ -76,6 +79,14 @@ describe('a list property added to a placed component', () => {
     expect(items(s, b)!.map((i) => i.label)).toEqual(['Two', 'Three']);
     expect(items(s, c)!.map((i) => i.label)).toEqual(['Three', 'One', 'Two']);
     expect(s.components[noteId].properties.links.default).toEqual(defaults);
+    // An item added to a filled-in list takes a new ID and leaves the others' alone.
+    const before = items(s, c)!.map((i) => i.id);
+    const ins = applyOperations(s, [{ type: 'instance.listInsert', owner: own, nodeId: c, prop: 'links', index: 1, item: { label: 'New' } }]);
+    const after = items(ins.state, c)!;
+    expect(after.map((i) => i.label)).toEqual(['Three', 'New', 'One', 'Two']);
+    expect(after[1].id).toBe(ins.results[0].itemId);
+    expect(after.filter((_, i) => i !== 1).map((i) => i.id)).toEqual(before);
+    expect(new Set(after.map((i) => i.id)).size).toBe(4);
     const ids = allIds(s, defaults, nodeIds);
     expect(new Set(ids).size).toBe(ids.length);
     expect(errors(s)).toEqual([]);
@@ -158,10 +169,95 @@ describe('a list property added to a placed component', () => {
     const nested = (id: string) => (s.components[outerId].tree!.nodes[id] as InstanceNode).props.links;
     expect((nested(first.id) as ListItem[]).map((i) => i.label)).toEqual(['One', 'Two', 'Three']);
     expect(nested(second.id)).toEqual({ $prop: 'entries' });
+    const defaults = s.components[noteId].properties.links.default as ListItem[];
+    expect((nested(first.id) as ListItem[]).some((i) => defaults.some((d) => d.id === i.id))).toBe(false);
+    // Edited in the design by the ID the definition gives the item.
+    const defOwner = { kind: 'component' as const, id: outerId };
+    const edited = applyOperations(s, [{ type: 'instance.setProp', owner: defOwner, nodeId: first.id, prop: 'links', itemId: defaults[2].id as string, field: 'label', value: 'Last' }]).state;
+    expect(((edited.components[outerId].tree!.nodes[first.id] as InstanceNode).props.links as ListItem[]).map((i) => i.label)).toEqual(['One', 'Two', 'Last']);
     // Changing the list's fields afterwards keeps the binding, and never refills it.
     s = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: noteId, prop: 'links', schema: { ...links, fields: { ...links.fields, note: { type: 'string', label: 'Note', default: '' } } } }]).state;
     expect(nested(second.id)).toEqual({ $prop: 'entries' });
     expect(errors(s)).toEqual([]);
+  });
+
+  it('styles and resets one copied item by the ID the definition gives it', () => {
+    const s0 = fresh();
+    const id = installComponent(s0, 'contact.details');
+    const node = makeInstance(s0.components[id], {});
+    home(s0).nodes[node.id] = node;
+    home(s0).rootIds.push(node.id);
+    const own = pageOwner(s0);
+    const defaults = s0.components[id].properties.items.default as ListItem[];
+    // As a list filled in when the property was added holds it.
+    node.props.items = placedDefaultItems(own, node, defaults);
+    const copy = (node.props.items as ListItem[])[1].id;
+    const style = (value: unknown): EditOperation => ({ type: 'node.setStyle', owner: own, nodeId: node.id, partId: 'method', itemId: defaults[1].id as string, scope: 'base', property: 'background', value });
+    const s1 = applyOperations(s0, [style('#ff0000')]).state;
+    expect(placement(s1, node.id).itemOverrides?.method?.items).toEqual({ [copy]: { base: { background: '#ff0000' } } });
+    const s2 = applyOperations(s1, [{ type: 'node.resetStyles', owner: own, nodeId: node.id, partId: 'method', itemId: defaults[1].id as string }]).state;
+    expect(placement(s2, node.id).itemOverrides).toBeUndefined();
+  });
+
+  it('keeps a link the batch sets itself, whichever ID it names the copied item by', () => {
+    const s0 = fresh();
+    const id = installComponent(s0, 'contact.details');
+    const node = makeInstance(s0.components[id], {});
+    home(s0).nodes[node.id] = node;
+    home(s0).rootIds.push(node.id);
+    const own = pageOwner(s0);
+    const defaults = s0.components[id].properties.items.default as ListItem[];
+    node.props.items = placedDefaultItems(own, node, defaults);
+    const at = defaults.findIndex((d) => (d.link as LinkValue | undefined)?.type === 'email');
+    const copy = (node.props.items as ListItem[])[at];
+    const was = copy.link as LinkValue;
+    const set = (itemId: string, field: string, value: unknown): EditOperation => ({ type: 'instance.setProp', owner: own, nodeId: node.id, prop: 'items', itemId, field, value });
+    // Unasked, the link follows the new address.
+    const followed = applyOperations(s0, [set(copy.id, 'value', 'new@example.com')]);
+    expect(followed.results[0].followed).toEqual(['link']);
+    expect((items0(followed.state, node.id)[at].link as LinkValue).target).toBe('new@example.com');
+    for (const [linkId, textId] of [
+      [defaults[at].id, copy.id],
+      [copy.id, defaults[at].id]
+    ] as const) {
+      // The link written as it was, then the text: the link the batch named stays.
+      const kept = applyOperations(s0, [set(linkId as string, 'link', was), set(textId as string, 'value', 'new@example.com')]);
+      expect(kept.results[1].followed).toBeUndefined();
+      expect(items0(kept.state, node.id)[at].link).toEqual(was);
+      // The text first: it does not move a link the batch sets after it.
+      const later = applyOperations(s0, [set(textId as string, 'value', 'new@example.com'), set(linkId as string, 'link', was)]);
+      expect(later.results[0].followed).toBeUndefined();
+    }
+  });
+
+  it('settles a copied form field’s key when its name is cleared by the ID the definition gives it', () => {
+    const s0 = fresh();
+    const id = installComponent(s0, 'contact.form');
+    const node = makeInstance(s0.components[id], {});
+    home(s0).nodes[node.id] = node;
+    home(s0).rootIds.push(node.id);
+    const own = pageOwner(s0);
+    const defaults = s0.components[id].properties.fields.default as ListItem[];
+    node.props.fields = placedDefaultItems(own, node, defaults);
+    const phone = defaults.findIndex((f) => f.label === 'Phone');
+    const set = (field: string, value: unknown): EditOperation => ({ type: 'instance.setProp', owner: own, nodeId: node.id, prop: 'fields', itemId: defaults[phone].id as string, field, value });
+    const relabelled = applyOperations(s0, [set('label', 'Company')]).state;
+    expect((placement(relabelled, node.id).props.fields as ListItem[])[phone].name).toBe(defaults[phone].name || 'phone');
+    const cleared = applyOperations(relabelled, [set('name', '')]).state;
+    expect((placement(cleared, node.id).props.fields as ListItem[])[phone]).toMatchObject({ label: 'Company', name: 'company' });
+  });
+
+  it('refuses an item edit whose value is not the item’s fields', () => {
+    const { s, nodeIds } = withLinks();
+    const first = items(s, nodeIds[0])![0].id as string;
+    const err = (() => {
+      try {
+        applyOperations(s, [{ type: 'instance.setProp', owner: pageOwner(s), nodeId: nodeIds[0], prop: 'links', itemId: first, value: true }]);
+      } catch (e) {
+        return e as Error;
+      }
+    })();
+    expect(err).toBeInstanceOf(EngineError);
   });
 
   it('stores nothing for a computed list, and still edits a placement showing the defaults it never stored', () => {
@@ -169,6 +265,11 @@ describe('a list property added to a placed component', () => {
     const [a] = p.nodeIds;
     const feed = applyOperations(p.s, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'news', schema: { type: 'list', label: 'News', itemLabel: 'Story', feed: 'articles', fields: { title: { type: 'string', label: 'Title' } } } }]).state;
     expect(Object.hasOwn(placement(feed, a).props, 'news')).toBe(false);
+    // Once it stores items, every placement gets the defaults, even one that held an empty list the feed ignored.
+    const held = a;
+    placement(feed, held).props.news = [];
+    const stored = applyOperations(feed, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'news', schema: { type: 'list', label: 'News', itemLabel: 'Story', min: 1, fields: { title: { type: 'string', label: 'Title' } }, default: [{ title: 'First' }] } }]).state;
+    expect((placement(stored, held).props.news as ListItem[]).map((i) => i.title)).toEqual(['First']);
     // A placement whose list came later another way (a document written elsewhere) still edits from the defaults.
     const added = applyOperations(p.s, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'links', schema: links }]).state;
     delete placement(added, a).props.links;
@@ -179,13 +280,14 @@ describe('a list property added to a placed component', () => {
 });
 
 describe('editing a nested component’s bound property', () => {
-  /** A Note with a title and a list of links, placed inside an Outer component that passes both down from its own properties. */
+  /** A Note with a label, a list of links and a tone, placed inside an Outer component that passes all three down from its own properties. */
   function nested() {
     let s = fresh();
     const o = pageOwner(s);
     const c = applyOperations(s, [{ type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties: { label: text('Label', { default: 'Hi' }), links } }]);
     s = c.state;
     const noteId = c.results[0].definitionId as string;
+    s = applyOperations(s, [{ type: 'component.setVariant', definitionId: noteId, axis: 'tone', variant: 'loud', label: 'Loud' }]).state;
     s = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: null, index: 0, primitive: 'stack' }]).state;
     const stack = home(s).rootIds[0];
     s = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: stack, definitionId: noteId }]).state;
@@ -195,13 +297,16 @@ describe('editing a nested component’s bound property', () => {
     const defOwner = { kind: 'component' as const, id: outerId };
     const boundNote = Object.values(s.components[outerId].tree!.nodes).find((n) => n.kind === 'instance' && n.definitionId === noteId)!.id;
     s = applyOperations(s, [
-      { type: 'component.setPropSchema', definitionId: outerId, prop: 'title', schema: { type: 'string', label: 'Title', default: 'Welcome' } },
-      { type: 'component.setPropSchema', definitionId: outerId, prop: 'entries', schema: { ...links, label: 'Entries' } },
+      { type: 'component.setPropSchema', definitionId: outerId, prop: 'title', schema: { type: 'string', label: 'Heading text', default: 'Welcome' } },
+      { type: 'component.setPropSchema', definitionId: outerId, prop: 'entries', schema: { ...links, label: 'Link list' } },
+      { type: 'component.setPropSchema', definitionId: outerId, prop: 'mood', schema: { type: 'enum', label: 'Mood', options: [{ value: 'default', label: 'Default' }, { value: 'loud', label: 'Loud' }], default: 'default' } },
       { type: 'node.setBinding', owner: defOwner, nodeId: boundNote, field: 'prop', prop: 'label', binding: { $prop: 'title' } },
-      { type: 'node.setBinding', owner: defOwner, nodeId: boundNote, field: 'prop', prop: 'links', binding: { $prop: 'entries' } }
+      { type: 'node.setBinding', owner: defOwner, nodeId: boundNote, field: 'prop', prop: 'links', binding: { $prop: 'entries' } },
+      { type: 'node.setBinding', owner: defOwner, nodeId: boundNote, field: 'variant', axis: 'tone', binding: { $prop: 'mood' } }
     ]).state;
-    const bound = (st: ProjectState) => (st.components[outerId].tree!.nodes[boundNote] as InstanceNode).props;
-    return { s, outerId, defOwner, boundNote, bound };
+    const node = (st: ProjectState) => st.components[outerId].tree!.nodes[boundNote] as InstanceNode;
+    const item = (s.components[noteId].properties.links.default as ListItem[])[0].id as string;
+    return { s, noteId, outerId, defOwner, boundNote, node, item };
   }
 
   /** The error an operation is refused with. */
@@ -214,27 +319,50 @@ describe('editing a nested component’s bound property', () => {
     throw new Error('The operation was not refused.');
   }
 
-  it('refuses a value for a property passed down from the enclosing component, and keeps the binding', () => {
+  it('refuses a value for a property passed down from the enclosing component, naming that property', () => {
     const p = nested();
-    expect(p.bound(p.s)).toMatchObject({ label: { $prop: 'title' }, links: { $prop: 'entries' } });
+    expect(p.node(p.s).props).toMatchObject({ label: { $prop: 'title' }, links: { $prop: 'entries' } });
+    expect(p.node(p.s).variants).toEqual({ tone: { $prop: 'mood' } });
     expect(errors(p.s)).toEqual([]);
-    const value = refusal(() => applyOperations(p.s, [{ type: 'instance.setProp', owner: p.defOwner, nodeId: p.boundNote, prop: 'label', value: 'Overwritten' }]));
-    expect(value).toBeInstanceOf(EngineError);
-    expect(value.message).toMatch(/Title/);
-    const list = refusal(() => applyOperations(p.s, [{ type: 'instance.setProp', owner: p.defOwner, nodeId: p.boundNote, prop: 'links', value: [{ label: 'Mine' }] }]));
-    expect(list).toBeInstanceOf(EngineError);
-    const item = refusal(() => applyOperations(p.s, [{ type: 'instance.setProp', owner: p.defOwner, nodeId: p.boundNote, prop: 'links', itemId: 'i-any', field: 'label', value: 'x' }]));
-    expect(item).toBeInstanceOf(EngineError);
-    expect(p.bound(p.s)).toMatchObject({ label: { $prop: 'title' }, links: { $prop: 'entries' } });
+    const at = { owner: p.defOwner, nodeId: p.boundNote };
+    const ops: Array<[EditOperation, RegExp]> = [
+      [{ type: 'instance.setProp', ...at, prop: 'label', value: 'Overwritten' }, /^Label comes from the enclosing component's "Heading text" property\. Change it there, or unbind it/],
+      [{ type: 'instance.setProp', ...at, prop: 'links', value: [{ label: 'Mine' }] }, /^Links comes from the enclosing component's "Link list" property/],
+      [{ type: 'instance.setProp', ...at, prop: 'links', itemId: p.item, field: 'label', value: 'x' }, /"Link list" property/],
+      [{ type: 'instance.listInsert', ...at, prop: 'links', item: { label: 'x' } }, /"Link list" property/],
+      [{ type: 'instance.listRemove', ...at, prop: 'links', itemId: p.item }, /"Link list" property/],
+      [{ type: 'instance.listMove', ...at, prop: 'links', itemId: p.item, index: 1 }, /"Link list" property/],
+      [{ type: 'instance.setVariant', ...at, axis: 'tone', variant: 'loud' }, /^Tone comes from the enclosing component's "Mood" property/]
+    ];
+    for (const [op, message] of ops) {
+      const err = refusal(() => applyOperations(p.s, [op]));
+      expect(err).toBeInstanceOf(EngineError);
+      expect(err.message).toMatch(message);
+    }
+    expect(p.node(p.s).props).toMatchObject({ label: { $prop: 'title' }, links: { $prop: 'entries' } });
+    expect(p.node(p.s).variants).toEqual({ tone: { $prop: 'mood' } });
   });
 
   it('refuses a value for a property filled from each item of a repeated list', () => {
     const p = nested();
     // As a design that repeats the note over a list binds it.
-    p.bound(p.s).label = { $item: 'label' };
+    p.node(p.s).props.label = { $item: 'label' };
     const err = refusal(() => applyOperations(p.s, [{ type: 'instance.setProp', owner: p.defOwner, nodeId: p.boundNote, prop: 'label', value: 'Overwritten' }]));
     expect(err).toBeInstanceOf(EngineError);
-    expect(p.bound(p.s).label).toEqual({ $item: 'label' });
+    expect(err.message).toMatch(/^Label is filled in from each item of the list the design repeats/);
+    expect(p.node(p.s).props.label).toEqual({ $item: 'label' });
+  });
+
+  it('still sets a nested property or variant that is not bound', () => {
+    const p = nested();
+    const s = applyOperations(p.s, [
+      { type: 'node.setBinding', owner: p.defOwner, nodeId: p.boundNote, field: 'prop', prop: 'label', binding: null },
+      { type: 'node.setBinding', owner: p.defOwner, nodeId: p.boundNote, field: 'variant', axis: 'tone', binding: null },
+      { type: 'instance.setProp', owner: p.defOwner, nodeId: p.boundNote, prop: 'label', value: 'Own words' },
+      { type: 'instance.setVariant', owner: p.defOwner, nodeId: p.boundNote, axis: 'tone', variant: 'loud' }
+    ]).state;
+    expect(p.node(s).props.label).toBe('Own words');
+    expect(p.node(s).variants).toEqual({ tone: 'loud' });
   });
 });
 

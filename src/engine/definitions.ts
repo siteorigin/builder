@@ -167,13 +167,15 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
     // Item styles kept for the default items (from before the property was removed) move to the placement's copies.
     const defaults = new Set((schema.default as ListItem[]).map((it) => it.id));
     for (const entry of Object.values(node.itemOverrides ?? {})) {
-      if (entry?.list !== name || !entry.items || typeof entry.items !== 'object') continue;
+      if (entry?.list !== name || !entry.items || typeof entry.items !== 'object' || Array.isArray(entry.items)) continue;
       entry.items = Object.fromEntries(Object.entries(entry.items).map(([id, rs]) => [defaults.has(id) ? placedItemId(owner, node.id, id) : id, rs]));
     }
     return placedDefaultItems(owner, node, schema.default);
   };
+  // A computed list showed the site's pages whatever a placement held for it, so what it held is not content to keep.
+  const fromFeed = prev?.type === 'list' && !!prev.feed;
   for (const { node, label, owner } of instancesOf(state, def.id)) {
-    if (!Object.hasOwn(node.props, name)) {
+    if (!Object.hasOwn(node.props, name) || (startsList && fromFeed && !isBinding(node.props[name]))) {
       if (startsList) node.props[name] = ownItems(owner, node);
       continue;
     }

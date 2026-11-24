@@ -1475,9 +1475,9 @@ describe('operation reach', () => {
     expect(hasVariants).toBe(true);
     allow({ type: 'component.setVariant', definitionId: def.id, axis: 'tone', variant: 'quiet', label: 'Quiet' });
     deny({ type: 'component.setVariant', definitionId: def.id, axis: 'tone', variant: 'quiet', label: 'Quiet', makeDefault: true });
-    // A new axis gives every placement a new default.
+    // A new axis gives every placement a new choice.
     deny({ type: 'component.setVariant', definitionId: def.id, axis: 'density', variant: 'quiet', label: 'Quiet' });
-    // The first variant of a component becomes every placement's default.
+    // The first variant of a component adds a choice to every placement.
     const noVariants = structuredClone(state);
     noVariants.components[def.id].variantAxes = {};
     expect(checkAuthority(noVariants, [{ type: 'component.setVariant', definitionId: def.id, variant: 'quiet', label: 'Quiet' }], authority)).toMatch(/changes more than/);

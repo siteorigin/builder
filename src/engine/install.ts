@@ -45,9 +45,18 @@ export function placedItemId(owner: OwnerRef, nodeId: string, itemId: string): s
   return `i_${stableHash(`${at}\u0000${itemId}`)}${stableHash(`${itemId}\u0000${at}`)}`;
 }
 
-/** One placement's own copy of a list's default items, each under its placedItemId. */
+/**
+ * One placement's own copy of a list's default items, each under its placedItemId. Should two copies ever work out
+ * to the same ID, the later one takes a random one, so the list stays valid.
+ */
 export function placedDefaultItems(owner: OwnerRef, node: InstanceNode, items: unknown): ListItem[] {
-  return (Array.isArray(items) ? (items as ListItem[]) : []).map((it) => ({ ...clone(it), id: placedItemId(owner, node.id, it.id) }));
+  const taken = new Set<string>();
+  return (Array.isArray(items) ? (items as ListItem[]) : []).map((it) => {
+    let id = placedItemId(owner, node.id, it.id);
+    if (taken.has(id)) id = newId('i');
+    taken.add(id);
+    return { ...clone(it), id };
+  });
 }
 
 /** Where an item is in a placement's own list: by its own ID, or by the ID of the default item it was copied from. */
