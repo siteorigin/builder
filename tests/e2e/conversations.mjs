@@ -4,7 +4,7 @@
 // experiment alone is deleted (after one cancelled attempt). The project is closed and opened again: the kept
 // threads and their messages, the site edit the keeper made and its step in History are all still there.
 import assert from 'node:assert/strict';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { Session } from '../driver/session.ts';
 import { eventually, scratch, step } from './harness.mjs';
@@ -71,6 +71,7 @@ const EXPERIMENT = 'Interview me about the Contact page';
 const PHRASE = 'terracotta accent';
 const CONTINUED = `Add a ${PHRASE} to the hero and keep the photography warm`;
 const NAME = 'Homepage brief (keeper)';
+const DRAFT = 'Also ask me about opening hours';
 
 try {
   await session.start({ fixture: 'business-v1' });
@@ -138,7 +139,7 @@ try {
   const menuItems = page().locator('.menu [role="menuitemradio"]');
   await menuItems.first().waitFor();
   assert.equal(await menuItems.first().getAttribute('aria-checked'), 'true', 'the open conversation, first in the menu');
-  assert.doesNotMatch(await menuItems.first().innerText(), /Today/, 'today’s activity is a time of day, not just “Today”');
+  assert.match(await menuItems.first().innerText(), /\d{1,2}[:.]\d{2}/, 'today’s activity is a time of day, not just “Today”');
   await press('Escape');
 
   step('the keeper renamed in the manager; the chat shows its name');
@@ -157,16 +158,32 @@ try {
   await eventually(async () => assert.equal(await manager().locator('li').count(), 1));
   assert.equal(await manager().locator('li').getAttribute('data-conversation-id'), keeperId);
   assert.equal(await row(keeperId).locator('[data-testid="conversation-match"] mark').innerText(), PHRASE);
+  await search.fill('');
+  await eventually(async () => assert.equal(await manager().locator('li').count(), 3));
+  // By its new name, from the whole list: the name is marked where it matched.
   await search.fill('keeper');
   await eventually(async () => assert.equal(await manager().locator('li').count(), 1), 5000);
+  assert.equal(await manager().locator('li').getAttribute('data-conversation-id'), keeperId);
+  assert.equal(await row(keeperId).locator('.conversation-title mark').innerText(), 'keeper');
   await search.fill('');
   await eventually(async () => assert.equal(await manager().locator('li').count(), 3));
 
-  step('deleting the experiment: cancelled once, then confirmed; nothing else goes');
+  step('the experiment opened, with a message left unsent in it');
+  await row(experimentId).getByRole('button', { name: /^Open/ }).click();
+  await manager().waitFor({ state: 'detached' });
+  await eventually(async () => assert.equal((await shown()).conversationId, experimentId));
+  const box = await find('textbox', 'Message');
+  await ok('ui.fill', { target: { ref: box.ref }, text: DRAFT });
+  await eventually(async () => assert.equal((await shown()).composer.value, DRAFT));
+
+  step('deleting it: cancelled once, then confirmed; its draft goes with it, nothing else does');
+  await openManager();
   const confirm = page().getByRole('dialog', { name: 'Delete this conversation?' });
   await row(experimentId).getByRole('button', { name: /^Delete/ }).click();
   await confirm.waitFor();
-  assert.match(await confirm.innerText(), /Changes the AI made to your site stay/);
+  const asked = await confirm.innerText();
+  assert.match(asked, /Changes the AI made to your site stay/);
+  assert.match(asked, /The message you haven’t sent in it goes too/);
   await confirm.getByRole('button', { name: 'Cancel' }).click();
   await confirm.waitFor({ state: 'detached' });
   assert.equal(await manager().locator('li').count(), 3, 'a cancelled delete deletes nothing');
@@ -174,23 +191,40 @@ try {
   await confirm.getByRole('button', { name: 'Delete conversation' }).click();
   await eventually(async () => assert.equal(await manager().locator('li').count(), 2));
   assert.deepEqual((await listed()).map((c) => c.id), [keeperId, secondId]);
-  assert.equal((await shown()).conversationId, keeperId, 'the conversation on screen stays open');
   await manager().getByRole('button', { name: 'Close', exact: true }).last().click();
   await manager().waitFor({ state: 'detached' });
+  // The open one gave way to a new conversation, with an empty composer.
+  await eventually(async () => {
+    const s = await shown();
+    assert.notEqual(s.conversationId, experimentId);
+    assert.deepEqual([s.messages.length, s.composer.value], [0, '']);
+  });
+  assert.equal(await page().locator('.chat-title').innerText(), 'New conversation');
   assert.equal(await applied(), historyAfter, 'History is as it was');
+
+  step('a rename or delete from another opening of the project, or naming none, changes nothing');
+  const refusedBy = (args) => page().evaluate(([fn, a]) => window.builder.ai[fn](...a).then(() => 'done', (e) => e.message), args);
+  assert.match(await refusedBy(['renameConversation', [secondId, 'Not this', 'an-earlier-opening']]), /project changed/);
+  assert.match(await refusedBy(['deleteConversation', [secondId]]), /project changed/);
+  assert.deepEqual((await listed()).map((c) => [c.id, c.title]), [[keeperId, NAME], [secondId, titles[secondId]]]);
 
   step('the project closed and opened again: the kept threads, their messages and the site edit are there');
   const dir = (await saved()).dir;
   await ok('menu.invoke', { path: ['File', 'Close Project'] });
   await eventually(async () => assert.equal((await ok('ui.snapshot', { scope: 'editor', maxNodes: 5 })).context.screen, 'welcome'), 30000);
-  await click('button', 'Last opened just now Open', { exact: false, region: 'Recent projects' });
+  // The Welcome screen's cards settle in as it appears: a click on one still moving is tried again once it stops.
+  await eventually(() => click('button', 'Last opened just now Open', { exact: false, region: 'Recent projects' }), 15000, 300);
   await eventually(async () => assert.equal((await ok('ui.snapshot', { scope: 'editor', maxNodes: 5 })).context.preview?.state, 'ready'), 60000);
   await click('tab', 'AI', { exact: false, region: 'Right panel views' });
+  // The new conversation left open was never sent to, so the one continued most recently opens: the keeper.
   const again = await eventually(async () => {
     const s = await shown();
-    assert.equal(s.conversationId, keeperId, 'the keeper, left open, opens again');
+    assert.equal(s.conversationId, keeperId, 'the keeper opens again');
     return s;
   }, 30000);
+  const workspace = JSON.parse(readFileSync(join(dir, '.siteorigin', 'workspace.json'), 'utf8'));
+  assert.equal(Object.hasOwn(workspace.chatDrafts ?? {}, experimentId), false, 'the deleted thread’s draft is gone');
+  assert.notEqual(workspace.chatConversation, experimentId);
   assert.deepEqual(
     again.messages.filter((m) => m.role === 'user').map((m) => m.text),
     [KEEPER, CONTINUED],

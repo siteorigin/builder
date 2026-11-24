@@ -369,6 +369,24 @@ describe('a deleted conversation’s workspace state (#235)', () => {
     expect(onDisk(dir)).toEqual({ chatDrafts: { c_kept: 'Warmer hero' }, chatImages: { c_kept: ['a_2'] }, rightTab: 'chat' });
   });
 
+  it('puts everything back for a delete that failed, and drops a remembered place or images held alone', async () => {
+    const { c, parent } = setup();
+    await create(c, parent, 'Kiln and Clay');
+    const key = opening(c);
+    c.saveLocalState({ chatDrafts: { c_gone: 'Ask about the contact form' }, chatImages: { c_gone: ['a_1'] }, chatConversation: 'c_gone' }, key);
+    const restore = c.forgetConversation('c_gone', key);
+    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: {}, chatImages: {}, chatConversation: undefined });
+    restore();
+    expect(c.snapshot()!.localState).toMatchObject({ chatDrafts: { c_gone: 'Ask about the contact form' }, chatImages: { c_gone: ['a_1'] }, chatConversation: 'c_gone' });
+    // Only the remembered place, or only images: each goes on its own.
+    c.saveLocalState({ chatDrafts: {}, chatImages: {}, chatConversation: 'c_pointer' }, key);
+    c.forgetConversation('c_pointer', key);
+    expect(c.snapshot()!.localState.chatConversation).toBeUndefined();
+    c.saveLocalState({ chatImages: { c_pics: ['a_2'] } }, key);
+    c.forgetConversation('c_pics', key);
+    expect(c.snapshot()!.localState.chatImages).toEqual({});
+  });
+
   it('leaves the state alone when the conversation had nothing kept', async () => {
     const { c, parent } = setup();
     await create(c, parent, 'Kiln and Clay');

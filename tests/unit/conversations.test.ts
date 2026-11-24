@@ -3,10 +3,10 @@
  * activity with every request to tell similar ones apart and to search, a name that sticks, and a delete that takes
  * one thread and nothing else (never the site, its undo history, or another conversation).
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AiEvent, ChatContext, ChatMessage, Conversation } from '@shared/api';
 import { createStarterState } from '@catalogue/starters';
 import { Orchestrator } from '@agent/orchestrator';
@@ -27,6 +27,10 @@ describe('conversation titles', () => {
     expect(autoTitle(`Use ${'y'.repeat(62)} as the hero link`)).toBe(`Use ${'y'.repeat(62)}…`);
     expect(autoTitle('x'.repeat(100))).toBe(`${'x'.repeat(60)}…`);
     expect(autoTitle('x'.repeat(70))).toBe('x'.repeat(70));
+    // A one-word request that fits the longest title exactly is kept whole.
+    expect(autoTitle('x'.repeat(TITLE_MAX))).toBe('x'.repeat(TITLE_MAX));
+    // Punctuation the cut lands after is dropped before the ellipsis.
+    expect(autoTitle(`${'word '.repeat(11)}end, then more words that run on past the cut`)).toBe(`${'word '.repeat(11)}end…`);
     // No dangling punctuation before the ellipsis.
     expect(autoTitle(`${'word '.repeat(10)}end, and then much more text that keeps going past the cut`)).not.toMatch(/[,\s]…$/);
   });
@@ -38,6 +42,8 @@ describe('conversation titles', () => {
     expect(storedTitle({ title: 'Contact interview', messages })).toBe('Contact interview');
     expect(storedTitle({ title: opening.slice(0, 60), named: true, messages })).toBe(opening.slice(0, 60));
     expect(storedTitle({ title: '', messages: [] })).toBe('New conversation');
+    // A title lost by an earlier version (an images-only first message) reads as its first request with words.
+    expect(storedTitle({ title: '', messages })).toBe(autoTitle(opening));
   });
 
   it('takes a typed name on one line, refusing an empty or overlong one', () => {
@@ -46,6 +52,9 @@ describe('conversation titles', () => {
     expect(cleanTitle(7)).toBeNull();
     expect(cleanTitle('a'.repeat(TITLE_MAX))).toBe('a'.repeat(TITLE_MAX));
     expect(cleanTitle('a'.repeat(TITLE_MAX + 1))).toBeNull();
+    // Counted in characters, and composed: 41 emoji fit, and a decomposed accent comes back composed.
+    expect(cleanTitle('🏺'.repeat(41))).toBe('🏺'.repeat(41));
+    expect(cleanTitle('Cafe\u0301 brief')).toBe('Café brief');
   });
 });
 
@@ -66,9 +75,23 @@ describe('finding a conversation', () => {
     expect(matchConversation(keeper, '   ')).toBeNull();
   });
 
-  it('lists the conversation continued most recently first', () => {
+  it('marks a match as written: a decomposed accent, a ligature and a final sigma', () => {
+    const decomposed = 'Cafe\u0301 opening hours';
+    const m = matchConversation({ title: 'x', prompts: [decomposed] }, 'café opening')!;
+    expect(decomposed.slice(m.start, m.end)).toBe(decomposed.slice(0, 'Cafe\u0301 opening'.length));
+    const lig = matchConversation({ title: 'Our o\uFB03ce', prompts: [] }, 'f')!;
+    expect(lig.end).toBeGreaterThan(lig.start);
+    expect('Our o\uFB03ce'.slice(lig.start, lig.end)).toBe('\uFB03');
+    expect(matchConversation({ title: 'ΚΑΦΕΣ', prompts: [] }, 'καφες')).not.toBeNull();
+    // Only what the author asked is searched: a reply's words find nothing.
+    expect(matchConversation({ title: 'Homepage', prompts: ['Write a brief'] }, 'terracotta')).toBeNull();
+  });
+
+  it('lists the conversation continued most recently first, then the one started later', () => {
     const list = [conv('c_old', 'Started first, continued today', [], '2026-11-25T10:00:00.000Z'), conv('c_new', 'Started later, idle since', [], '2026-11-22T10:00:00.000Z')];
     expect([...list].reverse().sort(byRecentActivity).map((c) => c.id)).toEqual(['c_old', 'c_new']);
+    const tie = [{ ...conv('c_a', 'A', [], '2026-11-22T10:00:00.000Z'), createdAt: '2026-11-20T08:00:00.000Z' }, { ...conv('c_b', 'B', [], '2026-11-22T10:00:00.000Z'), createdAt: '2026-11-21T08:00:00.000Z' }];
+    expect(tie.sort(byRecentActivity).map((c) => c.id)).toEqual(['c_b', 'c_a']);
   });
 
   it('summarizes a stored conversation by its latest message and every request', () => {
@@ -80,10 +103,13 @@ describe('finding a conversation', () => {
         { id: 'm_1', role: 'user', text: 'First', time: '2026-11-20T08:00:00.000Z' },
         { id: 'm_2', role: 'assistant', text: 'Done', time: '2026-11-20T08:00:05.000Z' },
         { id: 'm_3', role: 'user', text: '', time: '2026-11-21T08:00:00.000Z' },
-        { id: 'm_4', role: 'user', text: 'Second', time: '2026-11-24T08:00:00.000Z' }
+        { id: 'm_4', role: 'user', text: 'Second', time: '2026-11-24T08:00:00.000Z' },
+        // The reply is the latest activity, and a time that can't be read is not.
+        { id: 'm_5', role: 'assistant', text: 'Done', time: '2026-11-24T08:00:09.000Z' },
+        { id: 'm_6', role: 'assistant', text: 'Odd', time: 'yesterday-ish' }
       ]
     };
-    expect(summarize(c)).toEqual({ id: 'c_s', title: 'First', createdAt: c.createdAt, updatedAt: '2026-11-24T08:00:00.000Z', prompts: ['First', 'Second'] });
+    expect(summarize(c)).toEqual({ id: 'c_s', title: 'First', createdAt: c.createdAt, updatedAt: '2026-11-24T08:00:09.000Z', prompts: ['First', 'Second'] });
   });
 });
 
@@ -97,6 +123,7 @@ describe('how the list words a conversation', () => {
     expect(activityHint(new Date(2026, 10, 20, 12, 0).toISOString(), now, 'en-GB')).toBe('20 Nov');
     expect(activityHint(new Date(2025, 10, 20, 12, 0).toISOString(), now, 'en-GB')).toBe('20 Nov 2025');
     expect(activityHint('not a date', now)).toBe('');
+    expect(activityPhrase('not a date', now)).toBe('');
     expect(activityPhrase(new Date(2026, 10, 25, 9, 5).toISOString(), now, 'en-GB')).toBe('today at 9:05');
     expect(activityPhrase(new Date(2026, 10, 24, 9, 5).toISOString(), now, 'en-GB')).toBe('yesterday');
     expect(activityPhrase(new Date(2026, 10, 20, 9, 5).toISOString(), now, 'en-GB')).toBe('on 20 Nov');
@@ -113,12 +140,18 @@ describe('how the list words a conversation', () => {
     // A match at the start has nothing cut before it.
     const first = matchExcerpt(matchConversation({ title: 'x', prompts: ['Terracotta everywhere, please'] }, 'terracotta')!);
     expect(first).toEqual({ before: '', hit: 'Terracotta', after: ' everywhere, please' });
+    // A long tail is cut at a word, with an ellipsis.
+    const tail = matchExcerpt(matchConversation({ title: 'x', prompts: [`Terracotta ${'and more words '.repeat(10)}`] }, 'terracotta')!, 20);
+    expect(tail.after.endsWith('…')).toBe(true);
+    expect(tail.after.length).toBeLessThan(25);
   });
 });
 
 /** Each model turn answers at once, unless the test holds it at its gate. */
 class Adapter implements AgentModelAdapter {
   hold = false;
+  /** Turns answered as written, before any default one. */
+  script: ModelEvent[][] = [];
   private gates: Array<() => void> = [];
   capabilities() {
     return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000 };
@@ -130,6 +163,8 @@ class Adapter implements AgentModelAdapter {
     this.gates.splice(0).forEach((r) => r());
   }
   async *streamTurn(): AsyncIterable<ModelEvent> {
+    const scripted = this.script.shift();
+    if (scripted) return yield* scripted;
     yield { type: 'text', delta: 'Done.' };
     if (this.hold) await new Promise<void>((r) => this.gates.push(r));
     yield { type: 'done', stopReason: 'end', text: 'Done.', toolCalls: [] };
@@ -199,18 +234,27 @@ const thread = (id: string, prompts: Array<[string, string]>): Conversation => (
   ])
 });
 
+/** Hold the orchestrator's queue of conversation file changes until released, so the next ones wait behind it. */
+function hold(orch: Orchestrator): () => void {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  void (orch as unknown as { queueFileChange(change: () => Promise<void>): Promise<void> }).queueFileChange(() => held);
+  return release;
+}
+
 describe('managing conversations (#235)', () => {
   it('lists conversations by their latest activity, so one continued today comes first', async () => {
     const env = await setup();
     env.write(thread('c_brief1', [['Design a calm homepage for the studio', '2026-11-20T09:00:00.000Z']]));
     env.write(thread('c_brief2', [['Design a calm homepage for the bakery', '2026-11-22T09:00:00.000Z']]));
-    expect((await env.orch.loadConversations()).list.map((c) => c.id)).toEqual(['c_brief2', 'c_brief1']);
-    // With none open yet, the most recently active one opens.
-    expect((await env.orch.loadConversations()).active.id).toBe('c_brief2');
+    // Started first, continued last: it leads, and it is the one that opens when none is open yet.
+    env.write(thread('c_brief0', [['Plan the gallery page', '2026-11-18T09:00:00.000Z'], ['Add captions', '2026-11-23T09:00:00.000Z']]));
+    expect((await env.orch.loadConversations()).list.map((c) => c.id)).toEqual(['c_brief0', 'c_brief2', 'c_brief1']);
+    expect((await env.orch.loadConversations()).active.id).toBe('c_brief0');
     await env.orch.openConversation('c_brief1');
     await env.ask('Make the studio hero warmer');
     const { list } = await env.orch.loadConversations();
-    expect(list.map((c) => c.id)).toEqual(['c_brief1', 'c_brief2']);
+    expect(list.map((c) => c.id)).toEqual(['c_brief1', 'c_brief0', 'c_brief2']);
     expect(list[0]).toMatchObject({ title: 'Design a calm homepage for the studio', prompts: ['Design a calm homepage for the studio', 'Make the studio hero warmer'] });
     expect(Date.parse(list[0].updatedAt)).toBeGreaterThan(Date.parse('2026-11-24T00:00:00.000Z'));
   });
@@ -245,6 +289,10 @@ describe('managing conversations (#235)', () => {
     const reopened = env.make();
     const { list } = await reopened.loadConversations();
     expect(Object.fromEntries(list.map((c) => [c.id, c.title]))).toEqual({ [keeper]: 'Homepage keeper', c_other1: 'Contact interview' });
+    // Even a name that reads like the placeholder is the author's.
+    await env.orch.renameConversation(keeper, 'New conversation');
+    await env.ask('One more change');
+    expect(env.stored(keeper)).toMatchObject({ title: 'New conversation', named: true });
     // Naming touched neither the site nor its undo history.
     expect(env.session.revision).toBe(revision);
     expect(env.session.historyInfo()).toEqual(history);
@@ -256,6 +304,8 @@ describe('managing conversations (#235)', () => {
     await expect(env.orch.renameConversation(id, '   ')).rejects.toThrow(/needs some text/);
     await expect(env.orch.renameConversation('c_missing1', 'Name')).rejects.toThrow();
     await expect(env.orch.renameConversation('../escape', 'Name')).rejects.toThrow(/Unknown conversation/);
+    await expect(env.orch.deleteConversation('../escape')).rejects.toThrow(/Unknown conversation/);
+    await expect(env.orch.deleteConversation(7 as unknown as string)).rejects.toThrow(/Unknown conversation/);
     expect(env.stored(id).title).toBe('Design a calm homepage');
     env.session.readOnly = { reason: 'Another app is editing this project.', canUnlock: false } as typeof env.session.readOnly;
     await expect(env.orch.renameConversation(id, 'Keeper')).rejects.toThrow(/Another app/);
@@ -332,10 +382,10 @@ describe('managing conversations (#235)', () => {
     env.write(thread('c_brief1', [['Design a calm homepage', '2026-11-20T09:00:00.000Z']]));
     env.write(thread('c_gone1', [['Interview me about the Contact page', '2026-11-21T09:00:00.000Z']]));
     await env.orch.openConversation('c_brief1');
-    // Rename first, then delete, asked for at once: the delete is the last word (the rename may land or be refused).
-    const renamed = env.orch.renameConversation('c_gone1', 'Experiment').catch((e: Error) => e);
+    // Rename first, then delete, asked for at once: each lands in turn, and the delete is the last word.
+    const renamed = env.orch.renameConversation('c_gone1', 'Experiment');
     const deleted = env.orch.deleteConversation('c_gone1');
-    await renamed;
+    await expect(renamed).resolves.toEqual({ id: 'c_gone1', title: 'Experiment' });
     await deleted;
     expect(existsSync(env.file('c_gone1'))).toBe(false);
     // Delete first, then a rename or an open: both find it gone.
@@ -345,14 +395,16 @@ describe('managing conversations (#235)', () => {
     await expect(env.orch.openConversation('c_gone2')).rejects.toThrow();
     await del2;
     expect(existsSync(env.file('c_gone2'))).toBe(false);
-    // An open already reading when the delete is asked for: the delete still wins, and a new conversation is open.
+    // An open already reading when the delete is asked for: the open is refused, and the thread on screen stays.
     env.write(thread('c_gone3', [['Interview me once more', '2026-11-21T09:00:00.000Z']]));
+    const release = hold(env.orch);
     const opening = env.orch.openConversation('c_gone3');
     const del3 = env.orch.deleteConversation('c_gone3');
-    await opening.catch(() => undefined);
+    release();
+    await expect(opening).rejects.toThrow(/deleted/);
     await del3;
     const { active, list } = await env.orch.loadConversations();
-    expect(active.id).not.toBe('c_gone3');
+    expect(active.id).toBe('c_brief1');
     expect(list.map((c) => c.id)).toEqual(['c_brief1']);
     expect(existsSync(env.file('c_gone3'))).toBe(false);
   });
@@ -379,13 +431,93 @@ describe('managing conversations (#235)', () => {
     env.write(thread('c_brief1', [['Design a calm homepage', '2026-11-20T09:00:00.000Z']]));
     await env.orch.newConversation();
     const first = await env.ask('Try an interview experiment');
-    // The request ends and its save is queued; the author switches away and deletes it straight after.
+    // The request ends while the queue is held, so its save waits; the author deletes it straight after.
+    const release = hold(env.orch);
     expect((await env.orch.send('One more question', env.ctx, first)).ok).toBe(true);
     await until(() => !env.orch.busy, 'the request to finish');
-    await env.orch.openConversation('c_brief1');
-    await env.orch.deleteConversation(first);
-    await new Promise((r) => setTimeout(r, 50));
+    const deleting = env.orch.deleteConversation(first);
+    await new Promise((r) => setTimeout(r, 30));
+    // Nothing is removed before the save queued ahead of it has run.
+    expect(existsSync(env.file(first))).toBe(true);
+    release();
+    await deleting;
+    await new Promise((r) => setTimeout(r, 30));
     expect(existsSync(env.file(first))).toBe(false);
     expect((await env.make().loadConversations()).list.map((c) => c.id)).toEqual(['c_brief1']);
+  });
+
+  it('a delete that fails leaves the conversation listed, open and saved, and can be tried again', async () => {
+    const env = await setup();
+    const open = await env.ask('Try an interview experiment');
+    const rm = vi.spyOn(fsPromises, 'rm').mockRejectedValueOnce(Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }));
+    try {
+      await expect(env.orch.deleteConversation(open)).rejects.toThrow(/EPERM/);
+    } finally {
+      rm.mockRestore();
+    }
+    expect((await env.orch.loadConversations()).list.map((c) => c.id)).toEqual([open]);
+    expect((await env.orch.loadConversations()).active.id).toBe(open);
+    // Its next request is saved as usual.
+    await env.ask('Keep going');
+    expect(env.stored(open).messages).toHaveLength(4);
+    await env.orch.deleteConversation(open);
+    expect(existsSync(env.file(open))).toBe(false);
+  });
+
+  it('nothing is renamed or deleted while the whole history is being cleared', async () => {
+    const env = await setup();
+    env.write(thread('c_brief1', [['Design a calm homepage', '2026-11-20T09:00:00.000Z']]));
+    await env.orch.openConversation('c_brief1');
+    const release = hold(env.orch);
+    const clearing = env.orch.clearHistory();
+    await expect(env.orch.renameConversation('c_brief1', 'Keeper')).rejects.toThrow(/being cleared/);
+    await expect(env.orch.deleteConversation('c_brief1')).rejects.toThrow(/being cleared/);
+    release();
+    await clearing;
+    await new Promise((r) => setTimeout(r, 30));
+    // The clear is the last word: no rename brought the thread back.
+    expect(existsSync(env.chatDir)).toBe(false);
+  });
+
+  it('a rename or delete waiting its turn while the project becomes read-only is refused, and changes nothing', async () => {
+    const env = await setup();
+    env.write(thread('c_brief1', [['Design a calm homepage', '2026-11-20T09:00:00.000Z']]));
+    env.write(thread('c_brief2', [['Design a calm homepage for the shop', '2026-11-21T09:00:00.000Z']]));
+    await env.orch.openConversation('c_brief1');
+    const before = readFileSync(env.file('c_brief2'), 'utf8');
+    const release = hold(env.orch);
+    const renamingOpen = env.orch.renameConversation('c_brief1', 'Keeper');
+    const renaming = env.orch.renameConversation('c_brief2', 'Shop');
+    const deleting = env.orch.deleteConversation('c_brief2');
+    env.session.readOnly = { reason: 'Another app is editing this project.', canUnlock: false } as typeof env.session.readOnly;
+    release();
+    await expect(renamingOpen).rejects.toThrow(/Another app/);
+    await expect(renaming).rejects.toThrow(/Another app/);
+    await expect(deleting).rejects.toThrow(/Another app/);
+    env.session.readOnly = null;
+    expect(readFileSync(env.file('c_brief2'), 'utf8')).toBe(before);
+    expect((await env.orch.loadConversations()).active.title).toBe('Design a calm homepage');
+  });
+
+  it('deleting the conversation whose request edited the site keeps the edit and its step in History, which still undoes', async () => {
+    const env = await setup();
+    const rename = { type: 'site.update', name: 'Kiln and Clay' };
+    env.adapter.script.push(
+      [{ type: 'done', stopReason: 'tool_use', text: '', toolCalls: [{ id: 'r1', name: 'apply_operations', arguments: JSON.stringify({ expectedRevision: env.session.revision, scope: { kind: 'site', targetIds: [] }, operations: [rename] }) }] }],
+      [{ type: 'text', delta: 'Renamed the site.' }, { type: 'done', stopReason: 'end', text: 'Renamed the site.', toolCalls: [] }]
+    );
+    const open = await env.ask('Rename the site to Kiln and Clay');
+    expect(env.session.state.site.name).toBe('Kiln and Clay');
+    const steps = env.session.historyInfo();
+    const step = steps.entries.filter((e) => e.applied).at(-1)!;
+    expect(step.runId).toBeTruthy();
+
+    const fresh = await env.orch.deleteConversation(open);
+    expect(fresh.messages).toEqual([]);
+    expect(existsSync(env.file(open))).toBe(false);
+    expect(env.session.state.site.name).toBe('Kiln and Clay');
+    expect(env.session.historyInfo()).toEqual(steps);
+    expect((await env.session.undo()).ok).toBe(true);
+    expect(env.session.state.site.name).toBe('Studio');
   });
 });

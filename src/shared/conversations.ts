@@ -33,7 +33,8 @@ export function autoTitle(text: string): string {
     // On to the end of the word the cut falls in, when it ends in time for the ellipsis.
     let next = AUTO_TITLE_CHARS;
     while (next < chars.length && chars[next] !== ' ') next++;
-    if (next < TITLE_MAX) end = next;
+    // Room for the ellipsis, unless the request ends with that word.
+    if (next < TITLE_MAX || (next === chars.length && next <= TITLE_MAX)) end = next;
   }
   const cut = chars.slice(0, end).join('').replace(/[\s,;:.!?\-–—]+$/u, '');
   return end < chars.length ? `${cut}…` : cut;
@@ -84,21 +85,22 @@ export function byRecentActivity(a: ConversationSummary, b: ConversationSummary)
 }
 
 /**
- * Text folded for a search, with where each folded character came from in the original: case and accents never
- * stop a match ("cafe" finds "Café"), and a match can still be marked in the text as written.
+ * Text folded for a search, with where each folded character came from in the original (the start and the end of
+ * that character): case and accents never stop a match ("cafe" finds "Café", "ος" finds "ΟΣ"), and a match can
+ * still be marked in the text as written, a ligature ("ﬃ") whole.
  */
-function fold(text: string): { folded: string; from: number[] } {
+function fold(text: string): { folded: string; from: number[]; to: number[] } {
   let folded = '';
   const from: number[] = [];
+  const to: number[] = [];
   let i = 0;
   for (const ch of text) {
-    const f = ch.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
-    for (let k = 0; k < f.length; k++) from.push(i);
+    const f = ch.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/ς/g, 'σ');
+    for (let k = 0; k < f.length; k++) (from.push(i), to.push(i + ch.length));
     folded += f;
     i += ch.length;
   }
-  from.push(text.length);
-  return { folded, from };
+  return { folded, from, to };
 }
 
 /** The words of a search, folded; empty when there is nothing to search for. */
@@ -133,7 +135,7 @@ export function matchConversation(c: Pick<ConversationSummary, 'title' | 'prompt
     for (const t of texts) {
       const flat = t.f.folded.replace(/\s/g, ' ');
       const at = flat.indexOf(needle);
-      if (at >= 0) return { in: t.in, text: t.text, start: t.f.from[at], end: t.f.from[at + needle.length] };
+      if (at >= 0) return { in: t.in, text: t.text, start: t.f.from[at], end: t.f.to[at + needle.length - 1] };
     }
     return null;
   };

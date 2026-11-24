@@ -690,8 +690,12 @@ export function Chat() {
       (e: Error) => stillOpen() && toast(e.message || 'Could not open that conversation.', 'error')
     );
 
-  // Earlier conversations, managed: found, named and deleted one at a time (issue 235).
-  const [managing, setManaging] = useState<ConversationSummary[] | null>(null);
+  // Earlier conversations, managed: found, named and deleted one at a time (issue 235), in the opening of the project
+  // the list was read from. Another project opening closes it.
+  const [managing, setManaging] = useState<{ opening: string; list: ConversationSummary[] } | null>(null);
+  useEffect(() => {
+    if (managing && managing.opening !== snap.workspaceKey) setManaging(null);
+  }, [managing, snap.workspaceKey]);
   const openHistory = async (el: HTMLElement) => {
     const listed = await api.ai.conversations().catch((e: Error) => {
       if (stillOpen()) toast(e.message || 'Could not list the earlier conversations.', 'error');
@@ -715,7 +719,7 @@ export function Chat() {
         // Listed by their latest activity, so a conversation continued today is near the top.
         ...(list.length ? [{ heading: 'Recent conversations' }, ...list.map((c) => ({ label: c.title, hint: activityHint(c.updatedAt, now), checked: c.id === conversation?.id, onSelect: () => show(api.ai.openConversation(c.id)) }))] : []),
         { separator: true },
-        ...(list.length ? [{ label: 'Find, rename or remove…', icon: <Search />, onSelect: () => setManaging(list) }] : []),
+        ...(list.length ? [{ label: 'Find, rename or remove…', icon: <Search />, onSelect: () => stillOpen() && setManaging({ opening, list }) }] : []),
         // Unsent drafts belong to the conversations being removed, so they go with them.
         { label: 'Clear history…', icon: <Trash2 />, danger: true, onSelect: () => void confirmDialog({ title: 'Clear AI conversation history?', body: 'Every AI conversation in this project is deleted, including this one and any message you haven’t sent yet.', details: [{ kind: 'keep', text: 'Changes the AI made to your site stay, and you can still undo them.' }, { kind: 'final', text: 'Deleted conversations can’t be brought back.' }], confirmLabel: 'Clear history', tone: 'danger', icon: 'delete' }).then((ok) => ok === true && stillOpen() && show(api.ai.clearHistory(opening), () => ({ chatDrafts: {}, chatImages: {} }))) }
       ],
@@ -761,14 +765,15 @@ export function Chat() {
           </button>
         </div>
       )}
-      {managing && (
+      {managing && managing.opening === snap.workspaceKey && (
         <ConversationsModal
-          list={managing}
-          opening={opening}
+          list={managing.list}
+          opening={managing.opening}
           onClose={() => setManaging(null)}
-          onOpen={(id) => {
+          onOpened={(c) => {
             setManaging(null);
-            show(api.ai.openConversation(id));
+            setState({ conversation: c });
+            focusComposer();
           }}
         />
       )}

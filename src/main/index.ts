@@ -524,10 +524,15 @@ function registerIpc() {
     if (typeof key !== 'string' || key !== controller.openingKey) throw new Error('The project changed, so the conversation was not deleted.');
     const blocked = readOnlyReason();
     if (blocked) throw new Error(blocked);
-    const active = await orchestrator.deleteConversation(id);
-    // In the same turn as the delete: its unsent message never outlives it, even if the project closes next.
-    controller.forgetConversation(id, key);
-    return active;
+    // Its unsent message goes first, while this opening is current: it never outlives the conversation, even if the
+    // project closes during the delete. A delete that fails puts it back.
+    const restore = controller.forgetConversation(id, key);
+    try {
+      return await orchestrator.deleteConversation(id);
+    } catch (e) {
+      restore();
+      throw e;
+    }
   });
   // Chat history belongs to the app editing the project; a read-only view never clears it.
   handle('ai:clearHistory', async (key?: string) => {
