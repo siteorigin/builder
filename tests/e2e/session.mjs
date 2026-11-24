@@ -196,7 +196,8 @@ try {
   assert.equal((await pa.evaluate(() => window.builder.ai.providers())).find((p) => p.id === 'openai').configured, true);
   a.mock.script(envelopeReply('finish', { message: 'Hello from session A.' }));
   await pa.locator('.dock-tab', { hasText: 'AI' }).click();
-  await pa.getByRole('button', { name: /^Ask: a read-only question/ }).click();
+  await pa.getByRole('button', { name: /^What your next message does: Edit/ }).click();
+  await pa.getByRole('menuitemradio', { name: /^Ask/ }).click();
   const message = pa.getByRole('textbox', { name: 'Message' });
   await message.fill('Say hello, and leave the site unchanged.');
   await message.press('Enter');
