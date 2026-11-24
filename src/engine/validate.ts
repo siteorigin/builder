@@ -1,5 +1,6 @@
 import type { ExportNote } from '@shared/api';
 import { isArticleDate, pageArticle } from '@shared/articles';
+import { storedCanonical } from '@shared/seo';
 import { findEntry } from '@shared/collections';
 import { collectionDiagnostics } from './collections';
 import type { GraphNode, ImageValue, NodeTree, OwnerRef, ProjectState, PropSchema, ResponsiveStyles } from '@shared/types';
@@ -113,6 +114,11 @@ export function validateState(state: ProjectState, opts: { sectionLinks?: boolea
     // A hand-edited article with no readable date would otherwise vanish from the news lists without a word.
     if (p.article !== undefined && !pageArticle(p))
       out.push({ severity: 'warning', code: 'ARTICLE_DATE_INVALID', message: `${p.title}: its publication date is not a calendar date written YYYY-MM-DD, so news lists leave it out.`, owner: { kind: 'page', id } });
+    if (p.updatedAt !== undefined && !isArticleDate(p.updatedAt))
+      out.push({ severity: 'warning', code: 'PAGE_DATE_INVALID', message: `${p.title}: its revision date is not a calendar date written YYYY-MM-DD, so the sitemap gives none.`, owner: { kind: 'page', id }, site: 'updatedAt' });
+    const canonical = p.seo && typeof p.seo === 'object' ? p.seo.canonical : undefined;
+    if (canonical !== undefined && !storedCanonical(canonical))
+      out.push({ severity: 'warning', code: 'CANONICAL_INVALID', message: `${p.title}: its canonical URL is not a full http(s) address, so its own public URL is used.`, owner: { kind: 'page', id }, site: 'canonical' });
   }
   // Translations in the same language cannot tell visitors apart. Published ones then list none of their versions;
   // a draft only matters once it is published.

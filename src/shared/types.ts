@@ -720,12 +720,31 @@ export interface PageSeo {
   noindex?: boolean;
   /** Left out of the site's own search (the Site search section), whatever search engines are told. */
   searchHidden?: boolean;
+  /**
+   * The address search engines are told is the page's own, when it is not where the site publishes it (a copy of an
+   * article first published elsewhere): an absolute http(s) URL (see shared/seo `checkCanonicalUrl`). Absent: the
+   * page's public URL.
+   */
+  canonical?: string;
 }
 
-/** A collection entry's search settings, read through generator/seo-metadata. No edit sets them yet. */
+/**
+ * A collection entry's search and sharing settings, read through generator/seo-metadata. Each one left out falls back
+ * as the entry's page always has: its title, its excerpt, its featured image, its public URL.
+ */
 export interface EntrySeo {
+  /** The browser title and the title of a link preview, used as it is written (no site name added). */
+  title?: string;
+  /** What search engines and link previews show of it. Absent: its excerpt, else the site's description. */
+  description?: string;
+  /** A library image's asset ID to share it with. Absent: its featured image, else the site's sharing image. */
+  socialImage?: string;
+  /** Search engines are asked not to list it, and it is left out of the sitemap, as a page's switch does. */
+  noindex?: boolean;
   /** Left out of the site's own search, whatever search engines are told, as a page's switch does. */
   searchHidden?: boolean;
+  /** The address search engines are told is its own, as a page's canonical override is. */
+  canonical?: string;
 }
 
 export interface PageDoc extends NodeTree {
@@ -754,6 +773,11 @@ export interface PageDoc extends NodeTree {
   translationGroup?: string;
   /** Makes the page a dated article, such as a news item or an announcement (see shared/articles.ts). */
   article?: PageArticle;
+  /**
+   * When the page's content was last revised, as the author states it (YYYY-MM-DD), as an entry's `updatedAt` is.
+   * It is the sitemap's last-modified date for the page. Absent on pages stored before it existed: no date is made up.
+   */
+  updatedAt?: string;
 }
 
 /**
@@ -781,6 +805,8 @@ export interface SiteDoc {
   baseUrl?: string;
   favicon?: string | null;
   socialImage?: string | null;
+  /** The site's X (Twitter) account, written "@handle", named by link previews as `twitter:site`. Absent: none. */
+  twitterSite?: string;
   homePageId: string;
   pageOrder: string[];
   themeId: string;

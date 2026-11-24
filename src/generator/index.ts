@@ -69,7 +69,6 @@ import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { pickImagesField } from '@shared/image-lists';
 import { HTML_ATTR, HTML_START, isLanguageCode, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
-import { pageSharing } from '@shared/sharing';
 import { siteVisitorText, visitorTextFor, visitorTextLanguage } from '@shared/visitor-text';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
@@ -90,6 +89,8 @@ import { CAROUSEL_JS, CAROUSEL_SVELTE } from './carousel';
 import { showsPart, type ShellPart } from '@shared/page-shell';
 import { SEARCH_HELPER_FILE, SEARCH_INDEX_FILE, SEARCH_JS, generateSearchIndex, usesSiteSearch } from './search';
 import { derived, isTracked, type GenerationCache } from './cache';
+import { createSeoResolver, entryMetadata, pageMetadata, type SeoMetadata } from './seo-metadata';
+import { ogLocale, twitterHandle } from '@shared/seo';
 import { VIDEO_HELPER_FILE, VIDEO_JS, VIDEO_PLAYER_FILE, usesVideo, videoPlayerSvelte } from './video';
 import { APPEAR_CSS, APPEAR_FILE, appearJs, usesAppear } from './appear';
 import { elementKind, isEmptyLayout } from '@engine/tree';
@@ -2892,6 +2893,57 @@ function escapeHtmlAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
+/**
+ * The search and sharing tags of a page's or an entry's `<head>`, from its metadata (see ./seo-metadata): its title
+ * and description, what Open Graph, an article and an X (Twitter) card say of it, its canonical address and whether
+ * search engines may list it. Each tag is left out when it has nothing to say. `alternates` are the languages of the
+ * page's other versions (its own among them). User text is emitted as Svelte string literals, never as template
+ * text, so "{" cannot become code.
+ */
+function seoHead(state: ProjectState, meta: SeoMetadata, opts: { article: boolean; alternates: readonly string[] }): string[] {
+  const head: string[] = [`\t<title>{${js(meta.title)}}</title>`];
+  if (meta.description) head.push(`\t<meta name="description" content={${js(meta.description)}} />`);
+  head.push(`\t<meta property="og:type" content="${opts.article ? 'article' : 'website'}" />`);
+  if (opts.article) {
+    if (meta.published) head.push(`\t<meta property="article:published_time" content={${js(meta.published)}} />`);
+    if (meta.modified) head.push(`\t<meta property="article:modified_time" content={${js(meta.modified)}} />`);
+    if (meta.author) head.push(`\t<meta property="article:author" content={${js(meta.author)}} />`);
+    if (meta.section) head.push(`\t<meta property="article:section" content={${js(meta.section)}} />`);
+    for (const tag of meta.tags) head.push(`\t<meta property="article:tag" content={${js(tag)}} />`);
+  }
+  head.push(`\t<meta property="og:title" content={${js(meta.socialTitle)}} />`);
+  if (meta.description) head.push(`\t<meta property="og:description" content={${js(meta.description)}} />`);
+  // The language as Open Graph writes it ("fr_FR"), and those of the page's other versions.
+  const locale = ogLocale(meta.language);
+  if (locale) head.push(`\t<meta property="og:locale" content=${js(locale)} />`);
+  const others = new Set(opts.alternates.map(ogLocale).filter((l): l is string => !!l && l !== locale));
+  for (const l of others) head.push(`\t<meta property="og:locale:alternate" content=${js(l)} />`);
+  if (meta.canonical) {
+    head.push(`\t<link rel="canonical" href={${js(meta.canonical)}} />`);
+    head.push(`\t<meta property="og:url" content={${js(meta.canonical)}} />`);
+  }
+  const image = meta.imageUrl ? meta.image : undefined;
+  if (meta.imageUrl && image) {
+    head.push(`\t<meta property="og:image" content={${js(meta.imageUrl)}} />`);
+    if (image.width && image.height) {
+      head.push(`\t<meta property="og:image:width" content=${js(String(image.width))} />`);
+      head.push(`\t<meta property="og:image:height" content=${js(String(image.height))} />`);
+    }
+    if (meta.imageAlt) head.push(`\t<meta property="og:image:alt" content={${js(meta.imageAlt)}} />`);
+  }
+  head.push(`\t<meta name="twitter:card" content=${js(image ? 'summary_large_image' : 'summary')} />`);
+  const handle = twitterHandle(state.site.twitterSite);
+  if (handle) head.push(`\t<meta name="twitter:site" content=${js(handle)} />`);
+  head.push(`\t<meta name="twitter:title" content={${js(meta.socialTitle)}} />`);
+  if (meta.description) head.push(`\t<meta name="twitter:description" content={${js(meta.description)}} />`);
+  if (meta.imageUrl && image) {
+    head.push(`\t<meta name="twitter:image" content={${js(meta.imageUrl)}} />`);
+    if (meta.imageAlt) head.push(`\t<meta name="twitter:image:alt" content={${js(meta.imageAlt)}} />`);
+  }
+  if (meta.noindex) head.push(`\t<meta name="robots" content="noindex" />`);
+  return head;
+}
+
 export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateOptions): string {
   const file = pageFile(page);
   const ctx: EmitCtx = {
@@ -2917,48 +2969,28 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
     .join('\n');
   ctx.firstSection = false;
   const site = state.site;
-  // What the page says about itself when its link is shared; the editor's Search & sharing preview reads the same.
-  const { title, description, image: social } = pageSharing(state, page);
-  // User text is emitted as Svelte string literals, never as template text, so "{" cannot become code.
-  const head: string[] = [`\t<title>{${js(title)}}</title>`];
-  if (description) head.push(`\t<meta name="description" content={${js(description)}} />`);
+  // What the page says about itself when its link is shared, as the SEO audit and the editor's preview read it.
+  const meta = pageMetadata(state, page)!;
+  const noindex = meta.noindex;
   // A dated article says so, with its publication date in a form other sites and readers can use.
   const article = pageArticle(page);
-  head.push(`\t<meta property="og:type" content="${article ? 'article' : 'website'}" />`);
-  if (article) head.push(`\t<meta property="article:published_time" content={${js(article.date)}} />`);
-  head.push(`\t<meta property="og:title" content={${js(title)}} />`);
-  if (description) head.push(`\t<meta property="og:description" content={${js(description)}} />`);
   const base = publicUrl(site);
-  if (base) {
-    head.push(`\t<link rel="canonical" href={${js(base + routeUrl(page.route))}} />`);
-    head.push(`\t<meta property="og:url" content={${js(base + routeUrl(page.route))}} />`);
-    if (social) {
-      head.push(`\t<meta property="og:image" content={${js(base + '/' + social.file.replace(/^static\//, ''))}} />`);
-      if (social.width && social.height) {
-        head.push(`\t<meta property="og:image:width" content=${js(String(social.width))} />`);
-        head.push(`\t<meta property="og:image:height" content=${js(String(social.height))} />`);
-      }
-      const alt = social.altSuggestion || social.description || '';
-      if (alt) head.push(`\t<meta property="og:image:alt" content={${js(alt)}} />`);
-    }
-  }
-  head.push(`\t<meta name="twitter:card" content=${js(base && social ? 'summary_large_image' : 'summary')} />`);
-  if (page.seo.noindex) head.push(`\t<meta name="robots" content="noindex" />`);
+  const alternates = pageAlternates(state, page);
+  const head = seoHead(state, meta, { article: !!article, alternates: alternates.map((a) => a.language) });
   // The same page in other languages, and this one among them: each version lists the same set.
   // Without a public address they are site paths, resolved as authored links are, so they hold under any sub-path.
-  const alternates = pageAlternates(state, page);
   for (const alt of alternates) head.push(`\t<link rel="alternate" hreflang=${js(alt.language)} href={${base ? js(base + routeUrl(alt.route)) : `resolve(${js(alt.route)})`}} />`);
   // `<` is escaped inside the JSON, so no text can end the script.
   const ldScript = (ld: Record<string, unknown>) => `\t{@html ${js(`<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, '\\u003c')}</script>`)}}`;
   // Structured data: the home page describes the website itself, once a public URL is known.
-  if (base && page.id === site.homePageId && !page.seo.noindex) {
+  if (base && page.id === site.homePageId && !noindex) {
     const ld: Record<string, unknown> = { '@context': 'https://schema.org', '@type': 'WebSite', name: site.name, url: base + '/' };
     if (site.description) ld.description = site.description;
     if (isLanguageCode(site.language)) ld.inLanguage = site.language;
     head.push(ldScript(ld));
   }
   // A page's contact sections describe the business, and its FAQ the questions it answers, as the page shows them.
-  if (!page.seo.noindex) {
+  if (!noindex) {
     const found = structuredContent(state, page);
     const facts = (k: string, list: string[]) => (list.length ? { [k]: list.length === 1 ? list[0] : list } : {});
     // A business is named by the site; a site with no name says nothing about one.
@@ -2968,8 +3000,8 @@ export function generatePage(state: ProjectState, page: PageDoc, opts: GenerateO
       head.push(ldScript({ '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: found.faq.map((e) => ({ '@type': 'Question', name: e.question, acceptedAnswer: { '@type': 'Answer', text: e.answer } })) }));
   }
   // On a site in more than one language, every page also says which language it is in.
-  if (base && !page.seo.noindex && languagesByRoute(state).length) {
-    head.push(ldScript({ '@context': 'https://schema.org', '@type': 'WebPage', name: page.seo.title || page.title, url: base + routeUrl(page.route), inLanguage: pageLanguage(site, page) }));
+  if (base && !noindex && languagesByRoute(state).length) {
+    head.push(ldScript({ '@context': 'https://schema.org', '@type': 'WebPage', name: page.seo?.title || page.title, url: base + routeUrl(page.route), inLanguage: pageLanguage(site, page) }));
   }
   const imports = [renderImports(ctx.imports), alternates.length && !base ? `\timport { resolve } from '$app/paths';` : ''].filter(Boolean).join('\n');
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
@@ -3309,7 +3341,6 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
   const entry = collection.entries[entryId];
   const route = entryRoute(collection, entry);
   const file = entryFile(route);
-  const site = state.site;
   const tree = materializeTemplate(state, collection, entry, entryNeighbours(state, collectionId, entryId));
   const ctx: EmitCtx = {
     state,
@@ -3333,35 +3364,9 @@ export function generateEntry(state: ProjectState, collectionId: string, entryId
     .filter(Boolean)
     .join('\n');
   ctx.firstSection = false;
-  const title = `${entry.title} · ${site.name}`;
-  const description = entry.excerpt || site.description;
-  const published = isArticleDate(entry.publishedAt) ? entry.publishedAt : undefined;
-  const updated = isArticleDate(entry.updatedAt) ? entry.updatedAt : undefined;
-  const asset = (id: unknown) => (typeof id === 'string' && Object.hasOwn(state.assets.assets, id) && state.assets.assets[id].kind === 'image' ? state.assets.assets[id] : undefined);
-  const featured = asset(entry.featuredImage);
-  const head: string[] = [`\t<title>{${js(title)}}</title>`];
-  if (description) head.push(`\t<meta name="description" content={${js(description)}} />`);
-  head.push(`\t<meta property="og:type" content="article" />`);
-  if (published) head.push(`\t<meta property="article:published_time" content={${js(published)}} />`);
-  if (updated) head.push(`\t<meta property="article:modified_time" content={${js(updated)}} />`);
-  head.push(`\t<meta property="og:title" content={${js(entry.title)}} />`);
-  if (description) head.push(`\t<meta property="og:description" content={${js(description)}} />`);
-  const social = featured ?? asset(site.socialImage);
-  const base = publicUrl(site);
-  if (base) {
-    head.push(`\t<link rel="canonical" href={${js(base + routeUrl(route))}} />`);
-    head.push(`\t<meta property="og:url" content={${js(base + routeUrl(route))}} />`);
-    if (social) {
-      head.push(`\t<meta property="og:image" content={${js(base + '/' + social.file.replace(/^static\//, ''))}} />`);
-      if (social.width && social.height) {
-        head.push(`\t<meta property="og:image:width" content=${js(String(social.width))} />`);
-        head.push(`\t<meta property="og:image:height" content=${js(String(social.height))} />`);
-      }
-      const alt = social.altSuggestion || social.description || '';
-      if (alt) head.push(`\t<meta property="og:image:alt" content={${js(alt)}} />`);
-    }
-  }
-  head.push(`\t<meta name="twitter:card" content=${js(base && social ? 'summary_large_image' : 'summary')} />`);
+  // What the entry says about itself to search engines and link previews: its own search settings, else its title,
+  // excerpt and featured image, as the SEO audit reads them.
+  const head = seoHead(state, entryMetadata(state, collectionId, entryId, route)!, { article: true, alternates: [] });
   const imports = renderImports(ctx.imports);
   const script = [imports, editingState(ctx).trimEnd()].filter(Boolean).join('\n\n');
   // Section headings and pictures in the entry's text get the article's rules.
@@ -3526,15 +3531,14 @@ export function generateRobots(state: ProjectState): string {
 export function generateSitemap(state: ProjectState): string | null {
   const base = publicUrl(state.site);
   if (!base) return null;
-  const urls = state.site.pageOrder
-    .map((id) => state.pages[id])
-    .filter((p) => p && !p.seo.noindex && !isDraftPage(state, p))
-    .map((p) => `\t<url><loc>${escapeHtmlAttr(base + routeUrl(p.route))}</loc></url>`);
-  // Published entries follow, each with the day it last changed: its revision date, or else its publication date.
-  for (const { entry, route } of siteEntries(state)) {
-    if (isDraftEntry(entry)) continue;
-    const changed = isArticleDate(entry.updatedAt) ? entry.updatedAt : isArticleDate(entry.publishedAt) ? entry.publishedAt : undefined;
-    urls.push(`\t<url><loc>${escapeHtmlAttr(base + routeUrl(route))}</loc>${changed ? `<lastmod>${changed}</lastmod>` : ''}</url>`);
+  // The pages and entries the sitemap lists by the shared visibility rule: published, and not hidden from search
+  // engines. Pages come first in site order, then entries. Each says the day it last changed when that is known: its
+  // revision date, or else an entry's publication date.
+  const urls: string[] = [];
+  for (const meta of createSeoResolver(state).published()) {
+    if (!meta.visibility.sitemap || !meta.url) continue;
+    const changed = meta.modified ?? (meta.subject.kind === 'entry' ? meta.published : null);
+    urls.push(`\t<url><loc>${escapeHtmlAttr(meta.url)}</loc>${changed ? `<lastmod>${changed}</lastmod>` : ''}</url>`);
   }
   // Then each collection's index and category archives, every page of each.
   for (const { route } of siteArchives(state)) urls.push(`\t<url><loc>${escapeHtmlAttr(base + routeUrl(route))}</loc></url>`);

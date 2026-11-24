@@ -28,8 +28,16 @@ const has = <T,>(o: Record<string, T> | undefined, k: string): T | undefined => 
 const found = (value: unknown): FieldRead => ({ found: true, value });
 const gone = (what: string): FieldRead => ({ found: false, what });
 
-/** Entry fields `entry.update` can set: each is stored under its own name. */
-const ENTRY_FIELDS = ['title', 'slug', 'publishedAt', 'updatedAt', 'draft', 'author', 'excerpt', 'featuredImage', 'terms', 'values', 'body'] as const;
+/** Entry fields `entry.update` can set, and where each is stored: most under their own name, search settings in `seo`. */
+const ENTRY_FIELDS: Record<string, string[]> = {
+  ...Object.fromEntries(['title', 'slug', 'publishedAt', 'updatedAt', 'draft', 'author', 'excerpt', 'featuredImage', 'terms', 'values', 'body'].map((k) => [k, [k]])),
+  seoTitle: ['seo', 'title'],
+  description: ['seo', 'description'],
+  socialImage: ['seo', 'socialImage'],
+  canonical: ['seo', 'canonical'],
+  noindex: ['seo', 'noindex'],
+  searchHidden: ['seo', 'searchHidden']
+};
 
 /** Page fields `page.update` can set, and where each is stored. */
 const PAGE_FIELDS: Record<string, string[]> = {
@@ -44,6 +52,8 @@ const PAGE_FIELDS: Record<string, string[]> = {
   showHeader: ['showHeader'],
   showFooter: ['showFooter'],
   socialImage: ['seo', 'socialImage'],
+  canonical: ['seo', 'canonical'],
+  updatedAt: ['updatedAt'],
   language: ['language'],
   articleDate: ['article', 'date'],
   byline: ['article', 'byline'],
@@ -121,8 +131,8 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const c = has(state.collections, op.collectionId);
       const entry = c ? has(c.entries, op.entryId) : undefined;
       if (!entry) return gone('post');
-      const keys = ENTRY_FIELDS.filter((k) => (op as Record<string, unknown>)[k] !== undefined);
-      return found(Object.fromEntries(keys.map((k) => [k, (entry as unknown as Record<string, unknown>)[k]])));
+      const keys = Object.keys(ENTRY_FIELDS).filter((k) => (op as Record<string, unknown>)[k] !== undefined);
+      return found(Object.fromEntries(keys.map((k) => [k, at(entry, ENTRY_FIELDS[k])])));
     }
     case 'site.update': {
       const keys = SITE_FIELDS.filter((k) => (op as Record<string, unknown>)[k] !== undefined);

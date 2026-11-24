@@ -3,11 +3,12 @@
  * every address held once across pages, old page addresses, collections and entries; links to entries kept or
  * pointed elsewhere when an entry goes; pictures and links in entries pointing at things that exist.
  */
-import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionTaxonomy, EntryDoc, GraphNode, LinkValue, NodeTree, ProjectState, ResponsiveStyles, RichText, SiteRedirect } from '@shared/types';
+import type { Collection, CollectionDoc, CollectionFieldSchema, CollectionFieldValue, CollectionTaxonomy, EntryDoc, EntrySeo, GraphNode, LinkValue, NodeTree, ProjectState, ResponsiveStyles, RichText, SiteRedirect } from '@shared/types';
 import { COLLECTION_FIELD_TYPES, SCHEMA_VERSION, conditionRef, isEntryBinding } from '@shared/types';
 import type { Op } from '@shared/ops';
 import { ARCHIVE_FOLDERS, MAX_PAGE_SIZE, POSTS_COLLECTION_ID, archiveRouteOwner, entryRoute, findEntry, isCollectionId, isEntryId, isTermId, routeOwners, underArchiveFolder, type RouteOwner } from '@shared/collections';
 import { isArticleDate, todayArticleDate } from '@shared/articles';
+import { checkCanonicalUrl, storedCanonical } from '@shared/seo';
 import { addressSlug, normalizeRoute, numberedSlug, validateRoute, validateSegment } from '@shared/routes';
 import { isImageBlock, isRichBlock } from '@shared/richtext';
 import { newId } from '@shared/ids';
@@ -404,7 +405,9 @@ export function collectionRemove(state: ProjectState, op: Op<'collection.remove'
 // Entries
 // ---------------------------------------------------------------------------
 
-type EntryFields = Partial<Pick<Op<'entry.update'>, 'title' | 'slug' | 'publishedAt' | 'updatedAt' | 'draft' | 'author' | 'excerpt' | 'featuredImage' | 'terms' | 'values' | 'body'>>;
+type EntryFields = Partial<
+  Pick<Op<'entry.update'>, 'title' | 'slug' | 'publishedAt' | 'updatedAt' | 'draft' | 'author' | 'excerpt' | 'featuredImage' | 'terms' | 'values' | 'body' | 'seoTitle' | 'description' | 'socialImage' | 'canonical' | 'noindex' | 'searchHidden'>
+>;
 
 function date(v: string, what: string): string {
   if (!isArticleDate(v)) fail(`${what} "${v}" is not a calendar date written YYYY-MM-DD.`);
@@ -471,6 +474,43 @@ function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, o
     }
   }
   if (op.body !== undefined) entry.body = normalizeRichText(op.body ?? [], state, `${label} text`, undefined, { entries: true });
+  applyEntrySeo(state, entry, op, label);
+}
+
+/**
+ * Applies an operation's search and sharing settings to an entry, each one left out staying as it is. Text cleared,
+ * an image of null and a switch turned off each remove the setting, so the entry falls back as it did; an entry left
+ * with none keeps no settings object at all, as entries stored before they existed have none.
+ */
+function applyEntrySeo(state: ProjectState, entry: EntryDoc, op: EntryFields, label: string) {
+  if (op.seoTitle === undefined && op.description === undefined && op.socialImage === undefined && op.canonical === undefined && op.noindex === undefined && op.searchHidden === undefined) return;
+  const seo: EntrySeo = entry.seo && typeof entry.seo === 'object' ? { ...entry.seo } : {};
+  const text = (k: 'title' | 'description', v: string | undefined) => {
+    if (v === undefined) return;
+    if (v.trim()) seo[k] = v.trim();
+    else delete seo[k];
+  };
+  text('title', op.seoTitle);
+  text('description', op.description);
+  if (op.socialImage === null || op.socialImage === '') delete seo.socialImage;
+  else if (op.socialImage !== undefined) {
+    const a = own(state.assets.assets, op.socialImage);
+    if (!a) fail(`${label}: the sharing image "${op.socialImage.slice(0, 60)}" is not in the library.`);
+    if (a!.kind !== 'image') fail(`${label}: “${a!.name}” is a ${a!.kind}, not a picture. Choose an image to share it with.`);
+    seo.socialImage = op.socialImage;
+  }
+  if (op.canonical !== undefined) {
+    const canonical = checkCanonicalUrl(op.canonical);
+    if (!canonical.ok) fail(`${label}: ${canonical.message}`);
+    else if (canonical.url) seo.canonical = canonical.url;
+    else delete seo.canonical;
+  }
+  for (const k of ['noindex', 'searchHidden'] as const) {
+    if (op[k] === true) seo[k] = true;
+    else if (op[k] === false) delete seo[k];
+  }
+  if (Object.keys(seo).length) entry.seo = seo;
+  else delete entry.seo;
 }
 
 /**
@@ -661,6 +701,14 @@ export function collectionDiagnostics(state: ProjectState, routes: Map<string, s
         if (!a) out.push({ severity: 'error', code: 'ASSET_MISSING', message: `${what}: its featured image is not in the library.`, owner: eo, site: 'featuredImage' });
         else if (a.kind !== 'image') out.push({ severity: 'error', code: 'ASSET_NOT_IMAGE', message: `${what}: its featured image is “${a.name}”, which is a ${a.kind}, not a picture.`, owner: eo, site: `featuredImage|${a.id}` });
       }
+      const seo = e.seo && typeof e.seo === 'object' ? e.seo : undefined;
+      if (seo?.socialImage !== undefined && seo.socialImage !== '') {
+        const a = typeof seo.socialImage === 'string' ? own(assets, seo.socialImage) : undefined;
+        if (!a) out.push({ severity: 'warning', code: 'ASSET_MISSING', message: `${what}: its sharing image is not in the library, so links to it are shared without one.`, owner: eo, site: 'socialImage' });
+        else if (a.kind !== 'image') out.push({ severity: 'warning', code: 'ASSET_NOT_IMAGE', message: `${what}: its sharing image is “${a.name}”, which is a ${a.kind}, not a picture.`, owner: eo, site: `socialImage|${a.id}` });
+      }
+      if (seo?.canonical !== undefined && !storedCanonical(seo.canonical))
+        out.push({ severity: 'warning', code: 'CANONICAL_INVALID', message: `${what}: its canonical URL is not a full http(s) address, so its own public URL is used.`, owner: eo, site: 'canonical' });
       for (const [tax, ids] of Object.entries(e.terms && typeof e.terms === 'object' ? e.terms : {})) {
         const t = own(taxonomies, tax);
         const unknown = Array.isArray(ids) ? ids.filter((id) => !t || !Object.hasOwn(t.terms ?? {}, id)) : [String(ids)];

@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Bold, Eye, Heading2, Heading3, Heading4, ImagePlus, Italic, Link, List, ListChecks, ListOrdered, Newspaper, Pilcrow, Quote, Send, Unlink, Undo2 } from 'lucide-react';
-import type { ImageValue, LinkValue, ProjectState, RichText } from '@shared/types';
+import type { EntrySeo, ImageValue, LinkValue, ProjectState, RichText } from '@shared/types';
 import type { ProjectSnapshot } from '@shared/api';
 import { entryRoute, findEntry, orderedEntries } from '@shared/collections';
 import { formatArticleDate, isArticleDate } from '@shared/articles';
@@ -10,7 +10,11 @@ import { normalizeRichText } from '@engine/values';
 import { EngineError } from '@engine/tree';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
-import { DraftInput, Field, Modal } from '../components/ui';
+import { DraftInput, Field, Modal, SwitchRow } from '../components/ui';
+import { CanonicalUrlField } from '../components/CanonicalUrlField';
+import { seoSummary } from '../lib/sharing';
+import { publicUrl } from '@shared/public-url';
+import { routeUrl } from '@shared/routes';
 import { AssetImage } from '../components/AssetImage';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { isImeComposing } from '../lib/ime';
@@ -501,6 +505,14 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
   const published = entry.draft === false;
   const images = useMemo(() => sortAssets(Object.values(state.assets.assets).filter((a) => a.kind === 'image'), 'name'), [state.assets]);
   const labels = useMemo(() => assetLabels(images), [images]);
+  // The post's search and sharing settings, and what it falls back to without each.
+  const seo: EntrySeo = entry.seo && typeof entry.seo === 'object' ? entry.seo : {};
+  const defaultTitle = `${entry.title} · ${state.site.name}`;
+  const base = publicUrl(state.site);
+  const ownUrl = base ? base + routeUrl(route) : null;
+  const featured = entry.featuredImage && state.assets.assets[entry.featuredImage]?.kind === 'image';
+  const inheritedImage = featured ? 'The featured image' : state.site.socialImage ? 'The site’s sharing image' : 'None';
+  const seoScope = seoSummary(seo);
   const blockLabel = { p: 'Paragraph', h2: 'Heading 2', h3: 'Heading 3', h4: 'Heading 4', blockquote: 'Quote' } as Record<string, string>;
   const tools: Array<{ id: string; label: string; icon: React.ReactNode; on?: boolean; run: () => void; gap?: boolean }> = [
     { id: 'p', label: 'Paragraph', icon: <Pilcrow />, on: pressed.block === 'p' || pressed.block === 'div', run: () => block('p') },
@@ -558,6 +570,15 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               <Field label="Publication date" hint="A date in the past backdates the post.">
                 <DraftInput type="date" value={entry.publishedAt} onCommit={(v) => (isArticleDate(v) ? (v !== entry.publishedAt ? update({ publishedAt: v }, 'Change post date') : undefined) : refuse())} />
               </Field>
+              <div data-entry-field="updatedAt" style={{ display: 'contents' }}>
+                <Field label="Last updated" hint="When the post was last revised, for search engines. Leave empty when it hasn’t been.">
+                  <DraftInput
+                    type="date"
+                    value={entry.updatedAt ?? ''}
+                    onCommit={(v) => (!v ? (entry.updatedAt ? update({ updatedAt: null }, 'Clear post revision date') : undefined) : isArticleDate(v) ? (v !== entry.updatedAt ? update({ updatedAt: v }, 'Change post revision date') : undefined) : refuse())}
+                  />
+                </Field>
+              </div>
               <Field label="Address" hint={`The last part of ${route}`}>
                 <DraftInput value={entry.slug} onCommit={(v) => (v.trim() ? (v.trim() !== entry.slug ? update({ slug: v.trim() }, 'Change post address') : undefined) : refuse())} />
               </Field>
@@ -582,6 +603,40 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
                   ))}
                 </select>
               </Field>
+            </div>
+          </details>
+          <details className="post-details post-seo">
+            <summary>Search & sharing{seoScope ? ` · ${seoScope}` : ''}</summary>
+            <div className="post-fields">
+              <div data-entry-field="seoTitle" style={{ display: 'contents' }}>
+                <Field label="Browser title" hint={`Leave empty to use “${defaultTitle}”.`}>
+                  <DraftInput value={seo.title ?? ''} limit={TEXT_LIMITS.seoTitle} placeholder={defaultTitle} onCommit={(v) => (v.trim() !== (seo.title ?? '') ? update({ seoTitle: v.trim() }, 'Change post browser title') : undefined)} />
+                </Field>
+              </div>
+              <div data-entry-field="seoDescription" style={{ display: 'contents' }}>
+                <Field label="Description" hint="Shown by search engines and link previews. Leave empty to use the excerpt.">
+                  <DraftInput multiline rows={3} value={seo.description ?? ''} limit={TEXT_LIMITS.pageDescription} placeholder={entry.excerpt || state.site.description || 'Describe this post'} onCommit={(v) => (v.trim() !== (seo.description ?? '') ? update({ description: v.trim() }, 'Change post description') : undefined)} />
+                </Field>
+              </div>
+              <Field label="Sharing image" controlId={`${uid}-sharing`} hint="The picture link previews show.">
+                <select id={`${uid}-sharing`} className="select" value={seo.socialImage ?? ''} onChange={(e) => void update({ socialImage: e.target.value || null }, e.target.value ? 'Change post sharing image' : 'Use the default sharing image')}>
+                  <option value="">{inheritedImage}</option>
+                  {seo.socialImage && !images.some((a) => a.id === seo.socialImage) && <option value={seo.socialImage}>Missing image</option>}
+                  {images.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {labels.get(a.id)?.label ?? a.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <CanonicalUrlField value={seo.canonical} ownUrl={ownUrl} what="post" onCommit={(url) => update({ canonical: url }, url ? 'Change post canonical URL' : 'Clear post canonical URL')} />
+              <SwitchRow
+                checked={!!seo.noindex}
+                onChange={(v) => void update({ noindex: v }, v ? 'Hide post from search engines' : 'Show post to search engines')}
+                label="Hide from search engines"
+                hint={published ? 'Search engines are asked not to list it, and the sitemap leaves it out. Anyone with the address can still open it.' : 'Once published, search engines are asked not to list it, and the sitemap leaves it out.'}
+              />
+              <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void update({ searchHidden: v }, v ? 'Hide post from site search' : 'Show post in site search')} label="Hide from site search" hint="Leaves this post out of the site’s own search results." />
             </div>
           </details>
           <div className="post-tools" role="toolbar" aria-label="Formatting">

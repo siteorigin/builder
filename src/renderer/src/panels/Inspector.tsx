@@ -40,7 +40,8 @@ import { isBinding, parseStyleScopeKey } from '@shared/types';
 import { followNote } from '@shared/site-name';
 import { showsPart } from '@shared/page-shell';
 import { pageParents, pageRows, pagesWithin, planRouteMove, routeLeaf } from '@shared/page-tree';
-import { validateRoute } from '@shared/routes';
+import { routeUrl, validateRoute } from '@shared/routes';
+import { publicUrl } from '@shared/public-url';
 import { videoFieldNotes, type VideoFieldNotes } from '@shared/video';
 import { isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { findEntry } from '@shared/collections';
@@ -59,6 +60,7 @@ import { listEditLabel } from '../lib/list-editor';
 import { contentLabel, editLabel, fieldLabel, forLabel, refTo, styleLabel, styleWords, subjectWords } from '../lib/edit-label';
 import { applyOps, applyWith, commitOps, getState, renamePage, setState, toast, useStore, type InspectorFocus, type PendingEdit } from '../store';
 import { DraftInput, Field, FieldHome, openSection, Section, Segmented, SwitchRow, useMenu, type MenuItem } from '../components/ui';
+import { CanonicalUrlField } from '../components/CanonicalUrlField';
 import { TEXT_LIMITS } from '@shared/text-limits';
 import { itemStylesOf, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { itemReachKey, reachByItem, showReach } from '../lib/item-reach';
@@ -2546,6 +2548,8 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
   const inside = pagesWithin(state.pages, page.id);
   // How a shared link to the page looks, and whose sharing image it carries.
   const sharing = sharingView(state, page);
+  const base = publicUrl(state.site);
+  const ownUrl = base ? base + routeUrl(page.route) : null;
   return (
     <div className="panel-body insp">
       <Header title={page.title} kind={`${isHome ? 'Home page' : draft ? 'Draft page' : 'Page'} · ${isHome ? '/' : page.route}`} icon={isHome ? <House /> : <FileText />}>
@@ -2654,6 +2658,15 @@ function PageSettings({ page, state }: { page: PageDoc; state: ProjectState }) {
           }
         />
         <SwitchRow checked={!!page.seo.searchHidden} onChange={(v) => upd({ searchHidden: v })} label="Hide from site search" hint={draft ? 'Once published, leaves this page out of the site’s own Site search results.' : 'Leaves this page out of the site’s own Site search results.'} />
+        <CanonicalUrlField id="page-seo-canonical" value={page.seo.canonical} ownUrl={ownUrl} what="page" onCommit={(url) => upd({ canonical: url }, url ? 'Change canonical URL' : 'Clear canonical URL')} />
+        <Field label="Last revised" hint="When the page’s content last changed, for the sitemap. Leave empty to give no date.">
+          <DraftInput
+            id="page-seo-updated"
+            type="date"
+            value={page.updatedAt ?? ''}
+            onCommit={(v) => (!v ? (page.updatedAt ? upd({ updatedAt: null }, 'Clear revision date') : undefined) : isArticleDate(v) ? (v !== page.updatedAt ? upd({ updatedAt: v }, 'Change revision date') : undefined) : false)}
+          />
+        </Field>
       </Section>
       {dev && (
         <Section title="Advanced" id="page-adv" defaultOpen={false} level={LEVEL}>

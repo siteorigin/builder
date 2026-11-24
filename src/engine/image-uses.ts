@@ -3,15 +3,15 @@ import { allTrees } from './tree';
 import { orderedEntries } from '@shared/collections';
 
 /**
- * A use in a collection entry: its featured image, or the `n`th picture in its text (counted from 1, as the Posts
- * writer shows them).
+ * A use in a collection entry: its featured image, the image it is shared with, or the `n`th picture in its text
+ * (counted from 1, as the Posts writer shows them).
  */
 export interface EntryImagePlace {
   collectionId: string;
   /** Empty for a collection's own default of a picture field, which no one entry holds. */
   entryId: string;
   title: string;
-  field: 'featured' | 'body' | 'value' | 'default';
+  field: 'featured' | 'sharing' | 'body' | 'value' | 'default';
   n?: number;
   /** A picture field's label (`value`, `default`). */
   label?: string;
@@ -83,8 +83,9 @@ export function imageUses(state: ProjectState, assetId: string): ImageUse[] {
 }
 
 /**
- * The uses of a library image in collection entries, drafts included: each entry's featured image and the pictures
- * in its text, in the collections' and entries' own order. They are changed only with every other use.
+ * The uses of a library image in collection entries, drafts included: each entry's featured image, the image it is
+ * shared with and the pictures in its text, in the collections' and entries' own order. They are changed only with
+ * every other use.
  */
 export function entryImageUses(state: ProjectState, assetId: string): ImageUse[] {
   const out: ImageUse[] = [];
@@ -98,6 +99,7 @@ export function entryImageUses(state: ProjectState, assetId: string): ImageUse[]
       if (!e || typeof e !== 'object') continue;
       const at = { collectionId: id, entryId: e.id, title: typeof e.title === 'string' ? e.title : e.id };
       if (e.featuredImage === assetId) out.push({ target: null, entry: { ...at, field: 'featured' } });
+      if (e.seo && typeof e.seo === 'object' && e.seo.socialImage === assetId) out.push({ target: null, entry: { ...at, field: 'sharing' } });
       for (const [name, f] of pictures) if ((e.values?.[name] as { assetId?: unknown } | undefined)?.assetId === assetId) out.push({ target: null, entry: { ...at, field: 'value', label: f.label } });
       let n = 0;
       for (const b of Array.isArray(e.body) ? e.body : []) {

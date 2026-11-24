@@ -41,7 +41,10 @@ export interface EffectiveSeo {
   route: string;
   /** The public URL it is reached at (the site's public URL and its route), when the site has one. */
   url: string | null;
-  /** The address search engines are told is its own: its public URL, which its page's canonical link names. */
+  /**
+   * The address search engines are told is its own, which its page's canonical link and og:url name: the author's
+   * canonical override when it is a valid one, else its public URL.
+   */
   canonical: string | null;
   /** The browser title. */
   title: string;
@@ -58,6 +61,18 @@ export interface EffectiveSeo {
   imageSource: SeoImageSource;
   /** The public URL of that image, when the site has a public URL and the image is in the library. */
   imageUrl: string | null;
+  /** What that image shows, for people who cannot see it: the library's suggested description, else its own. */
+  imageAlt: string;
+  /** The publication date (YYYY-MM-DD) of an entry or a dated article; null for anything else. */
+  published: string | null;
+  /** When it was last revised (YYYY-MM-DD), as the author states it; null when no valid date is given. */
+  modified: string | null;
+  /** Who wrote it, as written: an entry's author or a dated article's byline. Empty when nobody is named. */
+  author: string;
+  /** The label of an entry's first category: the section of the site it belongs to. Empty for pages. */
+  section: string;
+  /** The labels of an entry's tags, in the order they were assigned. None for pages. */
+  tags: string[];
   draft: boolean;
   noindex: boolean;
   searchHidden: boolean;
@@ -90,4 +105,64 @@ export function seoText(value: unknown): string {
 /** How many characters text is, as a reader counts them (an emoji or an accented letter is one). */
 export function seoLength(value: string): number {
   return [...value].length;
+}
+
+/** The most characters a canonical URL keeps. */
+export const CANONICAL_URL_MAX = 2000;
+
+/** A canonical URL as checked: the address to store ("" when none is set), or why it can't be used. */
+export type CanonicalUrlCheck = { ok: true; url: string } | { ok: false; message: string };
+
+/**
+ * Check an address typed as a page's or an entry's canonical URL: an absolute http(s) URL with a host, which may be
+ * on another site, with no user name, password or "#" part. Gives back the address as browsers write it
+ * ("HTTPS://Example.com/a" -> "https://example.com/a").
+ */
+export function checkCanonicalUrl(input: string): CanonicalUrlCheck {
+  const refuse = (message: string): CanonicalUrlCheck => ({ ok: false, message });
+  const text = input.trim();
+  if (!text) return { ok: true, url: '' };
+  if (text.length > CANONICAL_URL_MAX) return refuse(`The canonical URL can be at most ${CANONICAL_URL_MAX} characters.`);
+  if (/[\s\u0000-\u001f\u007f]/.test(text)) return refuse('The canonical URL can’t contain spaces or control characters.');
+  if (text.includes('\\')) return refuse('Use “/” rather than “\\” in the canonical URL.');
+  if (!/^https?:\/\//i.test(text)) return refuse('The canonical URL must be a full address starting with https:// (or http://).');
+  if (text.includes('#')) return refuse('Leave the “#” part out of the canonical URL.');
+  let url: URL;
+  try {
+    url = new URL(text);
+  } catch {
+    return refuse(`“${text.slice(0, 80)}” is not an address browsers can open.`);
+  }
+  if (!url.hostname) return refuse('The canonical URL needs a host name after https://, such as https://example.com/.');
+  if (url.username || url.password || /^https?:\/\/[^/?#]*@/i.test(text)) return refuse('Leave the user name and password out of the canonical URL.');
+  return { ok: true, url: url.href };
+}
+
+/** A stored canonical URL when it is a valid one, as it is written; null for anything else (a hand-edited value). */
+export function storedCanonical(value: unknown): string | null {
+  if (typeof value !== 'string' || !value) return null;
+  const check = checkCanonicalUrl(value);
+  return check.ok && check.url ? check.url : null;
+}
+
+/**
+ * A language code as Open Graph writes a locale, language and territory ("en-AU" -> "en_AU"). A code that names no
+ * territory takes its most likely one ("fr" -> "fr_FR", "zh-Hant" -> "zh_TW"); null when none can be told.
+ */
+export function ogLocale(code: string): string | null {
+  try {
+    const given = new Intl.Locale(code);
+    // A region that is no country ("es-419", Latin America) is no territory Open Graph names: the language's own is.
+    const region = given.region && /^[A-Z]{2}$/.test(given.region) ? given.region : new Intl.Locale(given.script ? `${given.language}-${given.script}` : given.language).maximize().region;
+    return given.language && region && /^[A-Z]{2}$/.test(region) ? `${given.language.toLowerCase()}_${region}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The site's X (Twitter) account as `twitter:site` names it ("@studio"), when it is one; null for anything else. */
+export function twitterHandle(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const m = /^@?([A-Za-z0-9_]{1,15})$/.exec(value.trim());
+  return m ? `@${m[1]}` : null;
 }

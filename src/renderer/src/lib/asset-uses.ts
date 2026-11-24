@@ -110,7 +110,7 @@ export function imageUseRows(state: ProjectState, assetId: string): ImageUseRow[
     if (u.entry) {
       const e = u.entry;
       const key = JSON.stringify(['entry', e.collectionId, e.entryId, e.field, e.label ?? '', e.n ?? 0]);
-      const what = e.field === 'featured' ? 'Featured image' : e.field === 'body' ? `Picture ${e.n} in the text` : e.field === 'default' ? `${e.label}: starting picture for new entries` : (e.label ?? 'Picture');
+      const what = e.field === 'featured' ? 'Featured image' : e.field === 'sharing' ? 'Sharing image' : e.field === 'body' ? `Picture ${e.n} in the text` : e.field === 'default' ? `${e.label}: starting picture for new entries` : (e.label ?? 'Picture');
       // A collection's default is in no one entry: there is no post to open for it.
       if (e.field === 'default') return { key, target: null, icon: 'post', where: e.title, what };
       return { key, target: null, icon: 'post', where: e.title, what, post: { collectionId: e.collectionId, entryId: e.entryId, ...(e.n ? { n: e.n } : {}) } };
