@@ -34,8 +34,10 @@ const HEADER_SOURCE = `<script>
 		class: className = ''
 	} = $props();
 
-	let open = $state(false);
 	let header = $state();
+	// The phone menu is a native disclosure, and its open attribute is the menu's only state: the browser opens it
+	// before the site's script runs (or when it never does), and the script keeps whatever the visitor chose.
+	let menu = $state();
 	let toggle = $state();
 	// Route IDs ("/about") do not depend on the base path the site is published under.
 	const current = $derived(page.route.id);
@@ -57,10 +59,9 @@ const HEADER_SOURCE = `<script>
 	const download = (link) => (link?.href?.startsWith('/') && typeof link.download === 'string' && link.download ? link.download : undefined);
 	const isCurrent = (link) => !!link?.href?.startsWith('/') && !link.href.includes('#') && (link.href.length > 1 && link.href.endsWith('/') ? link.href.slice(0, -1) : link.href) === current;
 
-	$effect(() => {
-		void current;
-		open = false;
-	});
+	function closeMenu() {
+		if (menu?.open) menu.open = false;
+	}
 
 	/**
 	 * Publishes how far down the window the header reaches while it stays at the top (0 when it scrolls away, is
@@ -183,6 +184,8 @@ const HEADER_SOURCE = `<script>
 	// leaves the page where it is.
 	let stopReveal;
 	afterNavigate(({ type }) => {
+		// Arriving on another page folds the menu away; the page the visit starts on keeps it as the visitor left it.
+		if (type !== 'enter') closeMenu();
 		stopReveal?.();
 		stopReveal = undefined;
 		const win = header?.ownerDocument.defaultView;
@@ -196,22 +199,35 @@ const HEADER_SOURCE = `<script>
 		stopReveal = undefined;
 	});
 	onMount(() => () => stopReveal?.());
+	// A menu opened before the script started, which focus has since left for the page, folds away as it starts.
+	onMount(() => {
+		const active = header?.ownerDocument.activeElement;
+		if (active && active !== header.ownerDocument.body && !header.contains(active)) closeMenu();
+	});
 
+	// Escape returns focus to the menu button only from inside the header (or from nowhere), never from the page.
 	function onKeydown(event) {
-		if (event.key === 'Escape' && open) {
-			open = false;
-			toggle?.focus();
-		}
+		if (event.key !== 'Escape' || !menu?.open) return;
+		const active = header?.ownerDocument.activeElement;
+		const inside = !active || active === header?.ownerDocument.body || !!header?.contains(active);
+		closeMenu();
+		if (inside) toggle?.focus();
 	}
 
 	function onPointerdown(event) {
-		if (open && header && !header.contains(event.target)) open = false;
+		if (menu?.open && header && !header.contains(event.target)) closeMenu();
+	}
+
+	// Focus that leaves the header (Tab past the last link, Shift+Tab past the brand) folds the menu away and stays
+	// on the control it reached. Moving between the button and the links keeps it open.
+	function onFocusin(event) {
+		if (menu?.open && header && !header.contains(event.target)) closeMenu();
 	}
 </script>
 
-<svelte:window onkeydown={onKeydown} onpointerdown={onPointerdown} />
+<svelte:window onkeydown={onKeydown} onpointerdown={onPointerdown} onfocusin={onFocusin} />
 
-<header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', open && 'so-header--open', className]} bind:this={header}>
+<header class={['so-header', \`so-header--\${surface}\`, sticky && 'so-header--sticky', className]} bind:this={header}>
 	{#if noticeText}
 		<div class="so-header__notice">
 			<p class="so-header__notice-inner">
@@ -221,7 +237,7 @@ const HEADER_SOURCE = `<script>
 						href={href(noticeLink)}
 						target={noticeLink.newTab ? '_blank' : undefined}
 						rel={noticeLink.newTab ? 'noopener noreferrer' : undefined}
-						onclick={() => (open = false)}>{noticeLinkText}</a
+						onclick={closeMenu}>{noticeLinkText}</a
 					>
 				{/if}
 			</p>
@@ -238,23 +254,16 @@ const HEADER_SOURCE = `<script>
 			{/if}
 		</a>
 
-		<button
-			bind:this={toggle}
-			type="button"
-			class="so-header__toggle"
-			aria-expanded={open}
-			aria-controls="so-site-nav"
-			onclick={() => (open = !open)}
-		>
-			<span class="so-visually-hidden">{open ? 'Close menu' : 'Open menu'}</span>
-			<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-				{#if open}
-					<path d="M6 6l12 12M18 6L6 18" />
-				{:else}
-					<path d="M4 7h16M4 12h16M4 17h16" />
-				{/if}
-			</svg>
-		</button>
+		<!-- The browser announces whether the menu is expanded, so the button's name stays the same either way. -->
+		<details class="so-header__menu" bind:this={menu}>
+			<summary bind:this={toggle} class="so-header__toggle" aria-controls="so-site-nav">
+				<span class="so-visually-hidden">Menu</span>
+				<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+					<path class="so-header__icon-open" d="M4 7h16M4 12h16M4 17h16" />
+					<path class="so-header__icon-close" d="M6 6l12 12M18 6L6 18" />
+				</svg>
+			</summary>
+		</details>
 
 		<!-- Choosing a link closes the menu, including links to the current page or an anchor on it. -->
 		<nav id="so-site-nav" class="so-header__nav" aria-label="Main">
@@ -267,7 +276,7 @@ const HEADER_SOURCE = `<script>
 							target={item.link?.newTab ? '_blank' : undefined}
 							rel={item.link?.newTab ? 'noopener noreferrer' : undefined}
 							aria-current={isCurrent(item.link) ? 'page' : undefined}
-							onclick={() => (open = false)}>{item.label}</a
+							onclick={closeMenu}>{item.label}</a
 						>
 					</li>
 				{/each}
@@ -279,7 +288,7 @@ const HEADER_SOURCE = `<script>
 					download={download(ctaLink)}
 					target={ctaLink.newTab ? '_blank' : undefined}
 					rel={ctaLink.newTab ? 'noopener noreferrer' : undefined}
-					onclick={() => (open = false)}>{ctaLabel}</a
+					onclick={closeMenu}>{ctaLabel}</a
 				>
 			{/if}
 		</nav>
@@ -383,22 +392,31 @@ const HEADER_SOURCE = `<script>
 		height: 34px;
 		object-fit: contain;
 	}
-	.so-header__toggle {
+	/* The menu button keeps its whole 44 × 44 target beside the brand, however long the name: the brand wraps instead. */
+	.so-header__menu {
 		display: none;
+		flex: none;
+		margin-right: -10px;
+	}
+	.so-header__toggle {
+		display: flex;
 		align-items: center;
 		justify-content: center;
 		width: 44px;
 		height: 44px;
-		margin-right: -10px;
-		border: 0;
 		border-radius: var(--so-radius-md);
-		background: transparent;
 		color: inherit;
-		cursor: pointer;
 	}
 	.so-header__toggle svg {
 		width: 24px;
 		height: 24px;
+	}
+	.so-header__icon-close,
+	.so-header__menu[open] .so-header__icon-open {
+		display: none;
+	}
+	.so-header__menu[open] .so-header__icon-close {
+		display: inline;
 	}
 	.so-header__nav {
 		display: flex;
@@ -450,8 +468,8 @@ const HEADER_SOURCE = `<script>
 
 	/* Matches the phone breakpoint used by every other component (MEDIA_QUERIES.phone). */
 	@media (max-width: 767.98px) {
-		.so-header__toggle {
-			display: inline-flex;
+		.so-header__menu {
+			display: block;
 		}
 		.so-header__nav {
 			position: absolute;
@@ -480,7 +498,7 @@ const HEADER_SOURCE = `<script>
 		.so-header__nav {
 			background: inherit;
 		}
-		.so-header--open .so-header__nav {
+		.so-header__menu[open] ~ .so-header__nav {
 			display: flex;
 		}
 		.so-header__nav ul {

@@ -357,11 +357,12 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
     for (const width of PHONES)
       it(`keeps the whole phone menu reachable by keyboard on a short screen at ${width}px with ${fontSize}px text`, async () => {
         await withPage('together', { width, height: 400 }, fontSize, async (page) => {
-          const toggle = page.locator('.so-header__toggle');
+          // The menu button is the summary of a native disclosure, whose open state the browser announces.
+          const expanded = () => page.evaluate<boolean>("document.querySelector('.so-header__menu').open");
           const opening = [await tab(page), await tab(page), await tab(page)];
-          expect(opening.map((f) => f.text)).toEqual(['Skip to content', 'Test Studio', 'Open menu']);
+          expect(opening.map((f) => f.text)).toEqual(['Skip to content', 'Test Studio', 'Menu']);
           await page.keyboard.press('Enter');
-          await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('true');
+          await expect.poll(expanded).toBe(true);
           const items: Focused[] = [];
           for (let i = 0; i < 4; i++) items.push(await tab(page));
           expect(items.map((f) => `${f.section}: ${f.text} ${f.href}`)).toEqual(['header: Home /', 'header: About /about/', 'header: Contact /contact/', 'header: Book a call /contact/']);
@@ -369,9 +370,9 @@ describe.skipIf(!browserInstalled)('Foundation pages with enlarged text', () => 
           // One column: every item starts at the same edge.
           expect(new Set(items.map((f) => Math.round(f.left))).size).toBe(1);
           await page.keyboard.press('Escape');
-          await expect.poll(() => toggle.getAttribute('aria-expanded')).toBe('false');
+          await expect.poll(expanded).toBe(false);
           await expect.poll(() => page.locator('#so-site-nav').isVisible()).toBe(false);
-          expect((await focused(page))?.text).toBe('Open menu');
+          expect((await focused(page))?.text).toBe('Menu');
         });
       }, 30_000);
 });

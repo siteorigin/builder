@@ -14,7 +14,8 @@ const read = (rel) => readFileSync(join(dir, rel), 'utf8');
 
 step('open the FAQ on Contact from Layers');
 await win.locator('.side-panel-view:not([hidden]) [data-page]', { hasText: 'Contact' }).first().click();
-const questions = frame.locator('details');
+// The FAQ's questions: the header's menu button is a disclosure too.
+const questions = frame.locator('.so-foundation-faq-list__root details');
 await questions.first().waitFor({ state: 'attached', timeout: 30000 });
 await win.locator('.rail [aria-label="Layers"]').click();
 await win.locator('[role="tree"] .list-item', { hasText: 'FAQ' }).first().click();

@@ -206,7 +206,7 @@ details[open] > summary .so-icon { transform: rotate(45deg); }
      service messages. Components' own (scoped) styles show some of them, hence !important, and a placement's styles
      for a code component are important too, hence the weight of an id no element has (":not(#so-print)"). */
   :is(:is(button, input):is([type='submit'], [type='reset']), form button:not([type]),
-  .so-skip-link, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap, .so-viewer):not(#so-print) { display: none !important; }
+  .so-skip-link, .so-header__menu, .so-header__toggle, .so-header__nav, .so-form__actions, .so-form__messages, .so-form__trap, .so-viewer):not(#so-print) { display: none !important; }
   .so-action--image::after { display: none; }
   .so-header:not(#so-print) { position: static !important; }
   /* Where the sheet has room: a heading, or a section's heading group (eyebrow, heading and lead, in any copy of

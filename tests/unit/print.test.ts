@@ -20,6 +20,8 @@ const ORIGIN = 'https://site.test';
 const ENGINES = ([['chromium', chromium], ['webkit', webkit]] as Array<[string, BrowserType]>).filter(([, engine]) => existsSync(engine.executablePath()));
 const CAN_PRINT = ENGINES.some(([name]) => name === 'chromium');
 
+/** The FAQ's questions, which are the page's disclosures apart from the header's menu button. */
+const QUESTION = '.so-foundation-faq-list__root details';
 const QUESTIONS = [
   ['How long does a typical project take?', 'Most design projects take six to ten weeks from the first meeting to final drawings. We agree a schedule with you at the start.'],
   ['Do you work outside the local area?', 'Yes. We regularly work across the region and can arrange remote consultations for early planning.'],
@@ -182,12 +184,12 @@ async function openSite(browser: Browser, open: number[], width = 1280): Promise
     });
   });
   await page.goto(`${ORIGIN}/contact/`);
-  await page.waitForSelector('details summary');
-  for (const i of open) await page.locator('details > summary').nth(i).click();
+  await page.waitForSelector(`${QUESTION} > summary`);
+  for (const i of open) await page.locator(`${QUESTION} > summary`).nth(i).click();
   return page;
 }
 
-const openStates = (page: Page) => page.evaluate<boolean[]>("[...document.querySelectorAll('details')].map((d) => d.open)");
+const openStates = (page: Page) => page.evaluate<boolean[]>(`[...document.querySelectorAll('${QUESTION}')].map((d) => d.open)`);
 const expected = (open: number[]) => QUESTIONS.map((_, i) => open.includes(i));
 
 /** Prints the page as Chrome's A4 print does by default (0.4 inch margins, no background graphics). */
@@ -263,7 +265,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       for (const value of [...CONTACT_VALUES, 'studio@example.com']) expect(text, value).toContain(squash(value));
       for (const field of FIELDS) expect(text, field).toContain(squash(field));
       for (const plan of PLANS) expect(text, plan.action).toContain(squash(plan.action));
-      const controls = [SUBMIT, HEADER_ACTION, 'Send the request', 'Submit the request', 'Clear the request', 'Reset the request', 'Request a callback', 'Open menu', NOT_CONNECTED];
+      const controls = [SUBMIT, HEADER_ACTION, 'Send the request', 'Submit the request', 'Clear the request', 'Reset the request', 'Request a callback', 'Menu', NOT_CONNECTED];
       for (const control of controls)
         expect(text, control).not.toContain(squash(control));
     } finally {
@@ -289,6 +291,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         page.evaluate<Record<string, string>>(`(() => {
           const display = (sel) => [...document.querySelectorAll(sel)].map((el) => getComputedStyle(el).display).join(',');
           return {
+            menu: display('.so-header__menu'),
             toggle: display('.so-header__toggle'),
             nav: display('.so-header__nav'),
             icons: display('.so-foundation-faq-list__toggle-icon'),
@@ -303,6 +306,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
         })()`);
       // On screen the phone menu is open, below its button, in a header that sticks.
       const screen = await styles();
+      expect(screen.menu).not.toBe('none');
       expect(screen.toggle).not.toBe('none');
       expect(screen.nav).not.toBe('none');
       expect(screen.icons.split(',')).not.toContain('none');
@@ -314,6 +318,7 @@ describe.runIf(CAN_PRINT)('printing a Foundation page as a handout in chromium',
       expect(screen.header).toBe('sticky');
       await page.emulateMedia({ media: 'print' });
       expect(await styles()).toEqual({
+        menu: 'none',
         toggle: 'none',
         nav: 'none',
         icons: 'none,none,none,none',
