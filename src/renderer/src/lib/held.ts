@@ -359,7 +359,7 @@ export function shownValue(v: unknown): string | null {
 /** What the author typed into a batch: the value its first operation writes, when that is plain text. */
 export function typedText(op: EditOperation): string | null {
   const o = op as Record<string, unknown>;
-  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'asset.update') {
+  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'asset.update' || op.type === 'entry.update') {
     const key = Object.keys(o).find((k) => k !== 'type' && !TARGET_KEYS.has(k) && o[k] !== undefined);
     if (key === 'font') return shownValue((o.font as { family?: unknown } | undefined)?.family);
     if (key === 'visitorText') {
@@ -378,7 +378,7 @@ export function typedText(op: EditOperation): string | null {
 export function shownField(op: EditOperation, read: unknown): string | null {
   const o = (read && typeof read === 'object' ? read : {}) as Record<string, unknown>;
   let v: unknown = read;
-  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'component.rename') v = Object.values(o)[0];
+  if (op.type === 'page.update' || op.type === 'site.update' || op.type === 'entry.update' || op.type === 'component.rename') v = Object.values(o)[0];
   else if (op.type === 'asset.update') {
     const asset = (o.asset ?? {}) as Record<string, unknown>;
     const key = Object.keys(op).find((k) => k !== 'type' && k !== 'assetId');

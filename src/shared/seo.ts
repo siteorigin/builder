@@ -21,11 +21,14 @@ export interface SeoVisibility {
   website: boolean;
   /** Search engines may list it: on the website and not `noindex`. */
   indexable: boolean;
-  /** The sitemap lists it: indexable, with a public URL to list it at. */
+  /**
+   * The sitemap lists it: indexable, with a public URL to list it at, and that URL its own canonical address (one whose
+   * canonical URL names another address is a copy, and sitemaps list the original).
+   */
   sitemap: boolean;
   /** The site's own search may find it: on the website and not hidden from site search. */
   siteSearch: boolean;
-  /** It may carry the connected structured data graph: the same conditions as the sitemap. */
+  /** It may carry the connected structured data graph: indexable, with a public URL to name it by. */
   jsonLd: boolean;
   /** News lists show it: a published page that is a dated article not hidden from them. Entries have feeds of their own. */
   news: boolean;
@@ -126,6 +129,8 @@ export function checkCanonicalUrl(input: string): CanonicalUrlCheck {
   if (/[\s\u0000-\u001f\u007f]/.test(text)) return refuse('The canonical URL can’t contain spaces or control characters.');
   if (text.includes('\\')) return refuse('Use “/” rather than “\\” in the canonical URL.');
   if (!/^https?:\/\//i.test(text)) return refuse('The canonical URL must be a full address starting with https:// (or http://).');
+  // Checked as typed, before the parser repairs it: "https:///articles/" would become the host "articles".
+  if (!/^https?:\/\/[^/?#]/i.test(text)) return refuse('The canonical URL needs a host name after https://, such as https://example.com/.');
   if (text.includes('#')) return refuse('Leave the “#” part out of the canonical URL.');
   let url: URL;
   try {
@@ -135,6 +140,8 @@ export function checkCanonicalUrl(input: string): CanonicalUrlCheck {
   }
   if (!url.hostname) return refuse('The canonical URL needs a host name after https://, such as https://example.com/.');
   if (url.username || url.password || /^https?:\/\/[^/?#]*@/i.test(text)) return refuse('Leave the user name and password out of the canonical URL.');
+  // Letters in another script are stored encoded, which makes the address longer than it was typed.
+  if (url.href.length > CANONICAL_URL_MAX) return refuse(`The canonical URL can be at most ${CANONICAL_URL_MAX} characters once its letters are encoded for the web.`);
   return { ok: true, url: url.href };
 }
 

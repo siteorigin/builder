@@ -11,7 +11,7 @@ import { EngineError } from '@engine/tree';
 import { assetLabels, sortAssets } from '@shared/asset-order';
 import { applyOps, commitIfUnchanged, commitOps, getState, markDraft, projectHistory, setState, toast, useStore, type CheckedOutcome, type PostRef } from '../store';
 import { DraftInput, Field, Modal, SwitchRow } from '../components/ui';
-import { CanonicalUrlField } from '../components/CanonicalUrlField';
+import { CanonicalUrlField, RevisionDateInput } from '../components/SeoFields';
 import { seoSummary } from '../lib/sharing';
 import { publicUrl } from '@shared/public-url';
 import { routeUrl } from '@shared/routes';
@@ -572,11 +572,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
               </Field>
               <div data-entry-field="updatedAt" style={{ display: 'contents' }}>
                 <Field label="Last updated" hint="When the post was last revised, for search engines. Leave empty when it hasn’t been.">
-                  <DraftInput
-                    type="date"
-                    value={entry.updatedAt ?? ''}
-                    onCommit={(v) => (!v ? (entry.updatedAt ? update({ updatedAt: null }, 'Clear post revision date') : undefined) : isArticleDate(v) ? (v !== entry.updatedAt ? update({ updatedAt: v }, 'Change post revision date') : undefined) : refuse())}
-                  />
+                  <RevisionDateInput value={entry.updatedAt} onSet={(v) => update({ updatedAt: v }, 'Change post revision date')} onClear={() => update({ updatedAt: null }, 'Clear post revision date')} refuse={refuse} />
                 </Field>
               </div>
               <Field label="Address" hint={`The last part of ${route}`}>
@@ -636,7 +632,7 @@ function PostEditor({ post, hidden }: { post: PostRef; hidden: boolean }) {
                 label="Hide from search engines"
                 hint={published ? 'Search engines are asked not to list it, and the sitemap leaves it out. Anyone with the address can still open it.' : 'Once published, search engines are asked not to list it, and the sitemap leaves it out.'}
               />
-              <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void update({ searchHidden: v }, v ? 'Hide post from site search' : 'Show post in site search')} label="Hide from site search" hint="Leaves this post out of the site’s own search results." />
+              <SwitchRow checked={!!seo.searchHidden} onChange={(v) => void update({ searchHidden: v }, v ? 'Hide post from site search' : 'Show post in site search')} label="Hide from site search" hint="Keeps this post out of the site’s own search results once Site search lists posts." />
             </div>
           </details>
           <div className="post-tools" role="toolbar" aria-label="Formatting">

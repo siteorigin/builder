@@ -99,7 +99,10 @@ export function entryMetadata(state: ProjectState, collectionId: string, entryId
   if (at === null) return null;
   const seo: EntrySeo = entry.seo && typeof entry.seo === 'object' ? entry.seo : {};
   const base = publicUrl(site) ?? null;
+  // The library is read only for an image the entry or the site names, so an entry's page is made again for a change
+  // to the library only when it shows a picture from it.
   const picture = (id: unknown) => {
+    if (typeof id !== 'string' || !id) return undefined;
     const a = own(state.assets?.assets, id);
     return a?.kind === 'image' ? a : undefined;
   };
@@ -165,25 +168,26 @@ export function createSeoResolver(state: ProjectState): SeoResolver {
   const cache = new Map<string, EffectiveSeo | null>();
 
   /** Where a document is published, and what that means for each output. */
-  const visibility = (on: boolean, flags: { noindex: boolean; searchHidden: boolean; news: boolean }): SeoVisibility => {
-    const indexable = on && !flags.noindex;
+  const visibility = (on: boolean, meta: SeoMetadata, news: boolean): SeoVisibility => {
+    const indexable = on && !meta.noindex;
     // Listed at its public URL, so only once the site has one.
     const listed = indexable && !!base;
-    return { website: on, indexable, sitemap: listed, siteSearch: on && !flags.searchHidden, jsonLd: listed, news: on && flags.news };
+    // A copy whose canonical URL names another address leaves the sitemap to that one, as search engines ask.
+    return { website: on, indexable, sitemap: listed && meta.canonical === meta.url, siteSearch: on && !meta.searchHidden, jsonLd: listed, news: on && news };
   };
 
   const resolvePage = (pageId: string): EffectiveSeo | null => {
     const meta = pageMetadata(state, pageId);
     if (!meta) return null;
     const article = pageArticle(state.pages[pageId]);
-    return { ...meta, visibility: visibility(onSite().pages.has(pageId), { noindex: meta.noindex, searchHidden: meta.searchHidden, news: !!article && article.hidden !== true }) };
+    return { ...meta, visibility: visibility(onSite().pages.has(pageId), meta, !!article && article.hidden !== true) };
   };
 
   const resolveEntry = (collectionId: string, entryId: string): EffectiveSeo | null => {
     const key = `${collectionId}\n${entryId}`;
     const meta = entryMetadata(state, collectionId, entryId, onSite().entries.get(key));
     if (!meta) return null;
-    return { ...meta, visibility: visibility(onSite().entries.has(key), { noindex: meta.noindex, searchHidden: meta.searchHidden, news: false }) };
+    return { ...meta, visibility: visibility(onSite().entries.has(key), meta, false) };
   };
 
   const resolve = (subject: SeoSubject): EffectiveSeo | null => {

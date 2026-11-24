@@ -3531,8 +3531,8 @@ export function generateRobots(state: ProjectState): string {
 export function generateSitemap(state: ProjectState): string | null {
   const base = publicUrl(state.site);
   if (!base) return null;
-  // The pages and entries the sitemap lists by the shared visibility rule: published, and not hidden from search
-  // engines. Pages come first in site order, then entries. Each says the day it last changed when that is known: its
+  // The pages and entries the sitemap lists by the shared visibility rule: published, not hidden from search engines,
+  // and their own canonical address. Pages come first in site order, then entries. Each says the day it last changed when that is known: its
   // revision date, or else an entry's publication date.
   const urls: string[] = [];
   for (const meta of createSeoResolver(state).published()) {

@@ -241,6 +241,7 @@ export function pageDetail(state: ProjectState, pageId: string) {
     title: p.title,
     route: p.route,
     seo: p.seo,
+    ...(p.updatedAt !== undefined ? { updatedAt: p.updatedAt } : {}),
     showHeader: p.showHeader,
     showFooter: p.showFooter,
     ...(isDraftPage(state, p) ? { draft: true } : {}),

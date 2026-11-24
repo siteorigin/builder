@@ -20,7 +20,9 @@ import { buildSeoGraph } from '@generator/seo-graph';
 import { GenerationCache } from '@generator/cache';
 import { generateEntry, generatePage, generateProject, generateSitemap } from '@generator/index';
 import { buildSearchIndex } from '@generator/search';
-import { checkHeld, readFields } from '../../src/renderer/src/lib/held';
+import { checkHeld, readFields, shownField, typedText } from '../../src/renderer/src/lib/held';
+import { duplicatePostOps } from '../../src/renderer/src/lib/posts';
+import { pageDetail } from '@agent/context';
 import { ProjectSession } from '../../src/main/project/session';
 import { copy, image, run, seoSite } from './fixtures/seo-site';
 
@@ -66,8 +68,25 @@ describe('the shared helpers', () => {
     expect(checkCanonicalUrl('')).toEqual({ ok: true, url: '' });
     expect(checkCanonicalUrl('  HTTPS://Example.com/Original/?ref=1  ')).toEqual({ ok: true, url: 'https://example.com/Original/?ref=1' });
     expect(checkCanonicalUrl('http://other.example')).toEqual({ ok: true, url: 'http://other.example/' });
-    for (const bad of ['example.com/post/', '/blog/post/', 'ftp://example.com/', 'https://example.com/a#part', 'https://user:pw@example.com/', 'https://exa mple.com/', 'https:\\\\example.com', 'https://', `https://example.com/${'a'.repeat(2000)}`])
+    for (const bad of [
+      'example.com/post/',
+      '/blog/post/',
+      'ftp://example.com/',
+      'https://example.com/a#part',
+      'https://user:pw@example.com/',
+      'https://exa mple.com/',
+      // Each of these the URL parser would repair into some other address: a space or "\\" in the path, a missing host.
+      'https://example.com/a b/',
+      'https://example.com/a\\b/',
+      'https:///articles/original',
+      'https:\\\\example.com',
+      'https://',
+      `https://example.com/${'a'.repeat(2000)}`,
+      // Short enough as typed, too long once its letters are encoded.
+      `https://example.com/${'界'.repeat(225)}`
+    ])
       expect(checkCanonicalUrl(bad).ok, bad).toBe(false);
+    expect(checkCanonicalUrl(`https://example.com/${'界'.repeat(10)}`)).toEqual({ ok: true, url: `https://example.com/${encodeURIComponent('界'.repeat(10))}` });
     // A stored value is used only when it is one.
     expect(storedCanonical('https://example.com/a')).toBe('https://example.com/a');
     for (const bad of [undefined, '', 42, 'example.com/a']) expect(storedCanonical(bad)).toBeNull();
@@ -92,6 +111,9 @@ describe('an entry’s search settings', () => {
     // One setting changes without touching the others.
     const one = run(s, updatePost({ seoTitle: 'Spring at the wheel' }));
     expect(entryOf(one).seo).toEqual({ ...entryOf(s).seo, title: 'Spring at the wheel' });
+    // Turning one switch off removes that one alone.
+    const { noindex: _off, ...rest } = entryOf(s).seo!;
+    expect(entryOf(run(s, updatePost({ noindex: false }))).seo).toEqual(rest);
     const cleared = run(s, updatePost({ seoTitle: '', description: '  ', socialImage: null, canonical: '', noindex: false, searchHidden: false }));
     expect(entryOf(cleared)).not.toHaveProperty('seo');
     // A new entry can be made with them.
@@ -123,9 +145,11 @@ describe('an entry’s search settings', () => {
       expect(entryOf(session.state).seo).toBeUndefined();
       expect(entryOf(session.state).updatedAt).toBeUndefined();
       await ok(session.redo());
+      expect(entryOf(session.state)).toMatchObject({ updatedAt: '2027-03-09', seo: { title: 'Spring at Riverside', canonical: 'https://journal.example/spring/', noindex: true } });
       expect(entryOf(session.state).seo).toEqual({ title: 'Spring at Riverside', canonical: 'https://journal.example/spring/', noindex: true });
       await session.close();
       const again = await ProjectSession.open(dir, 'reopen');
+      expect(entryOf(again.state).updatedAt).toBe('2027-03-09');
       expect(entryOf(again.state).seo).toEqual({ title: 'Spring at Riverside', canonical: 'https://journal.example/spring/', noindex: true });
       await again.close();
     } finally {
@@ -142,7 +166,37 @@ describe('an entry’s search settings', () => {
     expect(reads).toEqual([{ found: true, value: { seoTitle: 'Spring' } }]);
     const values = reads.map((r) => (r.found ? r.value : undefined));
     expect(checkHeld(run(base, updatePost({ description: 'Seven weeks.' })), ops, values).kind).toBe('apply');
-    expect(checkHeld(run(base, updatePost({ seoTitle: 'Spring term' })), ops, values)).toEqual({ kind: 'changed', current: [{ seoTitle: 'Spring term' }] });
+    const changed = checkHeld(run(base, updatePost({ seoTitle: 'Spring term' })), ops, values);
+    expect(changed).toEqual({ kind: 'changed', current: [{ seoTitle: 'Spring term' }] });
+    // The author is shown what the field holds now, and what they typed, never “nothing”.
+    expect(shownField(ops[0], (changed as { current: unknown[] }).current[0])).toBe('Spring term');
+    expect(typedText(ops[0])).toBe('Spring at the wheel');
+  });
+
+  it('reads every new setting from where it is stored, for posts and pages', () => {
+    const { state, services } = seoSite();
+    const s = run(
+      state,
+      updatePost({ seoTitle: 'T', description: 'D', socialImage: 'img_bowls', canonical: 'https://a.example/', noindex: true, searchHidden: true, updatedAt: '2027-01-02' }),
+      { type: 'page.update', pageId: services, canonical: 'https://b.example/', updatedAt: '2027-01-03' }
+    );
+    const read = (op: EditOperation) => readFields(s, [op])![0];
+    expect(read(updatePost({ seoTitle: 'x', description: 'x', socialImage: 'x', canonical: 'x', noindex: false, searchHidden: false, updatedAt: null }))).toEqual({
+      found: true,
+      value: { seoTitle: 'T', description: 'D', socialImage: 'img_bowls', canonical: 'https://a.example/', noindex: true, searchHidden: true, updatedAt: '2027-01-02' }
+    });
+    expect(read({ type: 'page.update', pageId: services, canonical: 'x', updatedAt: null })).toEqual({ found: true, value: { canonical: 'https://b.example/', updatedAt: '2027-01-03' } });
+  });
+
+  it('carries a post’s search description, sharing image and switches to its copy, but not what names the original', () => {
+    const { state } = seoSite();
+    const s = run(state, updatePost({ seoTitle: 'Spring', description: 'Six weeks.', socialImage: 'img_bowls', canonical: 'https://journal.example/spring/', noindex: true, searchHidden: true }));
+    const plan = duplicatePostOps(s, POST)!;
+    const copied = run(s, ...plan.ops);
+    expect(copied.collections.posts.entries[plan.ref.entryId].seo).toEqual({ description: 'Six weeks.', socialImage: 'img_bowls', noindex: true, searchHidden: true });
+    // A post without settings is copied without any.
+    const plain = duplicatePostOps(state, POST)!;
+    expect(run(state, ...plain.ops).collections.posts.entries[plain.ref.entryId]).not.toHaveProperty('seo');
   });
 });
 
@@ -195,8 +249,12 @@ describe('an entry’s generated page', () => {
     expect(head).toContain('<meta name="twitter:image" content={"https://example.com/studio/assets/img_cups-1a2b3c4d.png"} />');
     expect(head).toContain('<meta name="twitter:image:alt" content={"Cups drying on a rack"} />');
     expect(head).toContain('<meta name="twitter:site" content="@riverside" />');
-    // The sitemap still lists the post at its own address: the canonical link is a hint, not a move.
-    expect(sitemapUrls(set)).toContain(SPRING);
+    // A copy of an article first published elsewhere leaves the sitemap to the original, as search engines ask; it
+    // stays published, and the graph may still describe it.
+    expect(sitemapUrls(set)).not.toContain(SPRING);
+    expect(meta.visibility).toMatchObject({ website: true, indexable: true, sitemap: false, jsonLd: true });
+    // A canonical URL that names the post's own address is no copy.
+    expect(sitemapUrls(run(set, updatePost({ canonical: SPRING })))).toContain(SPRING);
     // Cleared, each falls back again: the entry's title, its excerpt, its featured image before the site's.
     const back = run(set, updatePost({ seoTitle: '', description: '', socialImage: null, canonical: '', featuredImage: 'img_bowls' }));
     expect(post(back)).toMatchObject({ title: 'Spring pottery classes · Riverside Studio', socialTitle: 'Spring pottery classes', description: entryOf(state).excerpt, imageId: 'img_bowls', imageSource: 'featured', canonical: SPRING });
@@ -210,7 +268,7 @@ describe('an entry’s generated page', () => {
     const head = headOf(generateEntry(s, 'posts', 'en_spring'));
     expect(head.filter((l) => /og:image|twitter:image/.test(l))).toEqual([]);
     expect(head).toContain('<meta name="twitter:card" content="summary" />');
-    expect(collectionDiagnostics(s, new Map()).map((d) => d.code)).toContain('ASSET_MISSING');
+    expect(collectionDiagnostics(s, new Map()).filter((d) => d.site === 'socialImage')).toEqual([expect.objectContaining({ severity: 'warning', code: 'ASSET_MISSING', owner: { kind: 'entry', id: 'en_spring' } })]);
   });
 
   it('asks search engines not to list a noindex post and leaves it out of every indexable output, while it stays published', () => {
@@ -257,18 +315,33 @@ describe('an entry’s generated page', () => {
     check();
     s = run(s, updatePost({ seoTitle: 'Spring at Riverside' }));
     expect(check()).toEqual(['entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'sitemap.xml']);
+    expect(check()).toEqual([]);
     s = run(s, updatePost({ noindex: true }));
     expect(check()).toEqual(['entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'sitemap.xml']);
+    expect(check()).toEqual([]);
     expect(generateProject(s).get('static/sitemap.xml')).not.toContain(SPRING);
+    // A post that shows no picture from the library is not made again when the library changes.
+    s = run(s, { type: 'site.update', socialImage: null }, { type: 'entry.create', collectionId: 'posts', entryId: 'en_plain', title: 'Opening hours', publishedAt: '2027-01-05', draft: false, body: ['Open every day but Monday.'] });
+    check();
+    s = copy(s);
+    s.assets.assets.img_new = image('img_new');
+    const made = check();
+    expect(made).not.toContain('entry:posts:en_plain#clean');
+    expect(made).not.toContain('entry:posts:en_plain#dev');
   });
 
   it('counts an entry’s sharing image as a use, replaces it with every other use, and keeps it from being removed', () => {
-    const { state } = seoSite();
-    const s = run(state, updatePost({ socialImage: 'img_bowls' }));
-    expect(assetUsages(s).img_bowls - assetUsages(state).img_bowls).toBe(1);
-    expect(entryImageUses(s, 'img_bowls').map((u) => u.entry?.field)).toContain('sharing');
-    expect(refused(s, [{ type: 'asset.remove', assetId: 'img_bowls' }])).toMatch(/used/);
-    const replaced = run(s, { type: 'asset.replace', assetId: 'img_bowls', withAssetId: 'img_texture' });
+    const base = copy(seoSite().state);
+    // An image the post is shared with and used nowhere else.
+    base.assets.assets.img_cups = image('img_cups');
+    expect(assetUsages(base).img_cups).toBeUndefined();
+    const s = run(base, updatePost({ socialImage: 'img_cups' }));
+    expect(assetUsages(s).img_cups).toBe(1);
+    expect(entryImageUses(s, 'img_cups')).toEqual([{ target: null, entry: { collectionId: 'posts', entryId: 'en_spring', title: 'Spring pottery classes', field: 'sharing' } }]);
+    expect(refused(s, [{ type: 'asset.remove', assetId: 'img_cups' }])).toMatch(/used 1 time/);
+    // Once the post goes back to its default, the image can go.
+    expect(run(s, updatePost({ socialImage: null }), { type: 'asset.remove', assetId: 'img_cups' }).assets.assets.img_cups).toBeUndefined();
+    const replaced = run(s, { type: 'asset.replace', assetId: 'img_cups', withAssetId: 'img_texture' });
     expect(entryOf(replaced).seo?.socialImage).toBe('img_texture');
     expect(post(replaced)).toMatchObject({ imageId: 'img_texture', imageSource: 'own' });
   });
@@ -284,9 +357,10 @@ describe('a page’s canonical URL, revision date and complete tags', () => {
     const head = headOf(generatePage(s, s.pages[services], {}));
     expect(head).toContain('<link rel="canonical" href={"https://partner.example/classes/"} />');
     expect(head).toContain('<meta property="og:url" content={"https://partner.example/classes/"} />');
-    expect(sitemapUrls(s)).toContain('https://example.com/studio/services/');
+    expect(sitemapUrls(s)).not.toContain('https://example.com/studio/services/');
     const cleared = run(s, { type: 'page.update', pageId: services, canonical: '' });
     expect(cleared.pages[services].seo).not.toHaveProperty('canonical');
+    expect(sitemapUrls(cleared)).toContain('https://example.com/studio/services/');
     expect(headOf(generatePage(cleared, cleared.pages[services], {}))).toContain('<link rel="canonical" href={"https://example.com/studio/services/"} />');
     expect(refused(state, [{ type: 'page.update', pageId: services, canonical: '/classes/' }])).toMatch(/full address/);
   });
@@ -296,6 +370,8 @@ describe('a page’s canonical URL, revision date and complete tags', () => {
     const s = run(state, { type: 'site.update', baseUrl: '' }, { type: 'page.update', pageId: services, canonical: 'https://partner.example/classes/' });
     const head = headOf(generatePage(s, s.pages[services], {}));
     expect(head).toContain('<link rel="canonical" href={"https://partner.example/classes/"} />');
+    expect(head).toContain('<meta property="og:url" content={"https://partner.example/classes/"} />');
+    expect(generateSitemap(s)).toBeNull();
     expect(head.filter((l) => /og:image|twitter:image/.test(l))).toEqual([]);
     expect(head).toContain('<meta name="twitter:card" content="summary" />');
     // Another page, with no canonical URL of its own, has none without the site's.
@@ -306,6 +382,9 @@ describe('a page’s canonical URL, revision date and complete tags', () => {
     const { state, services } = seoSite();
     const s = run(state, { type: 'page.update', pageId: services, updatedAt: '2027-02-01' });
     expect(s.pages[services].updatedAt).toBe('2027-02-01');
+    // The assistant reads it back with the page.
+    expect(pageDetail(s, services)).toMatchObject({ updatedAt: '2027-02-01' });
+    expect(pageDetail(state, services)).not.toHaveProperty('updatedAt');
     expect(generateSitemap(s)).toContain('<loc>https://example.com/studio/services/</loc><lastmod>2027-02-01</lastmod>');
     // Pages stored without one get no date made up.
     expect(generateSitemap(state)).toContain('<loc>https://example.com/studio/services/</loc></url>');
@@ -331,6 +410,13 @@ describe('a page’s canonical URL, revision date and complete tags', () => {
     expect(locales('pg_fr')).toEqual(['<meta property="og:locale" content="fr_FR" />', '<meta property="og:locale:alternate" content="en_US" />', '<meta property="og:locale:alternate" content="en_AU" />']);
     // A page without versions names its own alone.
     expect(locales('pg_services')).toEqual(['<meta property="og:locale" content="en_US" />']);
+    // Versions whose languages share one Open Graph locale name it once.
+    const both = run(s, { type: 'page.create', pageId: 'pg_frfr', title: 'Accueil (France)', route: '/fr-fr/' }, { type: 'page.update', pageId: 'pg_frfr', language: 'fr-FR', linkTranslationTo: home });
+    expect(headOf(generatePage(both, both.pages[home], {})).filter((l) => l.includes('og:locale'))).toEqual([
+      '<meta property="og:locale" content="en_US" />',
+      '<meta property="og:locale:alternate" content="fr_FR" />',
+      '<meta property="og:locale:alternate" content="en_AU" />'
+    ]);
   });
 
   it('points out a canonical URL or revision date written by hand that can’t be used, and uses the page’s own', () => {
@@ -350,6 +436,6 @@ describe('a page’s canonical URL, revision date and complete tags', () => {
     (entryOf(odd) as { seo: unknown }).seo = 'hidden';
     expect(post(odd)).toMatchObject({ noindex: false, searchHidden: false, title: 'Spring pottery classes · Riverside Studio' });
     expect(() => generateProject(odd)).not.toThrow();
-    expect(buildSearchIndex(odd).length).toBeGreaterThan(0);
+    expect(buildSearchIndex(odd)).toEqual(buildSearchIndex(state));
   });
 });
