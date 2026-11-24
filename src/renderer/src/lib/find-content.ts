@@ -356,7 +356,7 @@ const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  */
 const SAMPLE_PATTERNS: Record<SampleContactKind, RegExp> = {
   email: new RegExp(`(?<![\\p{L}\\p{N}_.+-])${escapeRe(SAMPLE_CONTACT.email)}(?![\\p{L}\\p{N}_-]|\\.[\\p{L}\\p{N}])`, 'giu'),
-  phone: new RegExp(`(?<![\\p{L}\\p{N}_+])(?:\\+${DIAL_GAP})?${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?![\\p{L}\\p{N}_])`, 'gu'),
+  phone: new RegExp(`(?<![\\p{N}_+])(?:\\+${DIAL_GAP})?${[...SAMPLE_CONTACT.phoneDial.replace(/\D/g, '')].join(DIAL_GAP)}(?![\\p{N}_])`, 'gu'),
   address: new RegExp(`(?<![\\p{L}\\p{N}_])${escapeRe(SAMPLE_CONTACT.address).replace(/,\s*/g, ',\\s*').replace(/ +/g, '\\s+')}(?![\\p{L}\\p{N}_])`, 'giu')
 };
 
@@ -367,9 +367,9 @@ const SAMPLE_PATTERNS: Record<SampleContactKind, RegExp> = {
 function joinedReason(kind: SampleContactKind, text: string, start: number, end: number): string | undefined {
   const before = text.slice(0, start);
   const after = text.slice(end);
-  if (kind === 'email' && /[!#$%&'*/=?^`{|}~@]$/.test(before)) return 'This address runs into other characters, so it may be someone else’s. Check it in the inspector.';
-  if (kind === 'address' && (/[\p{L}\p{N}]\p{Pd}+$/u.test(before) || /^\p{Pd}+[\p{L}\p{N}]/u.test(after))) return 'This address runs into another name, so it may be a different place. Check it in the inspector.';
-  const joined = (text[start] !== '+' && /\d[\s()./\p{Pd}]*$/u.test(before)) || /^[\s./\p{Pd}]+\d/u.test(after);
+  if (kind === 'email' && (/[!#$%&'*/=?^`{|}~@]$/.test(before) || /^["']?@/.test(after))) return 'This address runs into other characters, so it may be someone else’s. Check it in the inspector.';
+  if (kind === 'address' && (/[\p{L}\p{N}]\s*\p{Pd}+\s*$/u.test(before) || /^\s*\p{Pd}+\s*[\p{L}\p{N}]/u.test(after))) return 'This address runs into another name, so it may be a different place. Check it in the inspector.';
+  const joined = /[\p{L}_]$/u.test(before) || /^[\p{L}_]|^[\s()./\p{Pd}]*\d/u.test(after) || (text[start] !== '+' && /\d[\s()./\p{Pd}]*$/u.test(before));
   return kind === 'phone' && joined ? 'This number runs into other digits, so it may be a different number. Check it in the inspector.' : undefined;
 }
 
@@ -395,6 +395,14 @@ function sampleInLink(kind: SampleContactKind, type: 'email' | 'tel', target: st
       const address = m[0].trim();
       if (address.toLowerCase() === SAMPLE_CONTACT.email) out.push([(m.index ?? 0) + lead, (m.index ?? 0) + lead + address.length, held]);
     }
+    // Copied in (?cc=…, ?bcc=…), it is still sent to: reviewed, and changed in the inspector.
+    let query = target.slice(to.length);
+    try {
+      query = decodeURIComponent(query);
+    } catch {
+      // Left as written.
+    }
+    if (new RegExp(SAMPLE_PATTERNS.email.source, 'iu').test(query)) out.push([to.length, target.length, 'This link copies the sample address in too. Change it in the inspector.']);
     return out;
   }
   return kind === 'phone' && type === 'tel' && dialsSample(target) ? [[0, target.length]] : [];

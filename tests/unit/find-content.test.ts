@@ -578,6 +578,7 @@ describe('the starter’s sample contact details (#15)', () => {
           { text: 'Not myhello@example.com, hello@example.com.au or +1 555 01345. ' },
           // Perhaps someone else's: found, so none goes out unreviewed, but changed only in the inspector.
           { text: "Maybe o'hello@example.com, 'hello@example.com', ops@hello@example.com, +1 555 0134 24/7, +1 555 0134-5, +1 555\u20130134 -5, +44 (20) 1555 0134, +44 (20) / 1555\u20130134, +44 20/1555 0134, 12 Harbour Lane, Millbrook\u2011East or 12 Harbour Lane, Millbrook--East. " },
+          { text: 'Also +1 555 0134 (567), Call+1 555 0134, 12 Harbour Lane, Millbrook\u2013 East and "hello@example.com"@company.org. ' },
           { text: 'Directions', link: { type: 'url', target: 'https://maps.example.org/?q=+15550134' } },
           { text: ' or ' },
           { text: 'the front desk', link: { type: 'email', target: 'HELLO@example.com' } }
@@ -592,23 +593,28 @@ describe('the starter’s sample contact details (#15)', () => {
       ['text', 'hello@example.com', true],
       ['text', 'hello@example.com', true],
       ['text', 'hello@example.com', true],
+      ['text', 'hello@example.com', true],
       ['link', 'hello@example.com', false],
       ['link', 'HELLO@example.com', false]
     ]);
     // Listed on one line, as the result list shows them.
+    // Words or digits after it may carry the number on, "(24 hours)" as much as "(567)": held, to check by eye.
     expect(shown('phone')).toEqual([
-      ['text', '+1 555-0134', false],
+      ['text', '+1 555-0134', true],
       ['text', '+ 1 555 0134', false],
       ['text', '+1 555 0134', true],
       ['text', '+1 555 0134', true],
       ['text', '+1 555\u20130134', true],
       ['text', '1555 0134', true],
       ['text', '1555\u20130134', true],
-      ['text', '1555 0134', true]
+      ['text', '1555 0134', true],
+      ['text', '+1 555 0134', true],
+      ['text', '+1 555 0134', true]
     ]);
     expect(on('phone')[2].blocked).toMatch(/runs into other digits/);
     expect(shown('address')).toEqual([
       ['text', '12 Harbour Lane,Millbrook', false],
+      ['text', '12 Harbour Lane, Millbrook', true],
       ['text', '12 Harbour Lane, Millbrook', true],
       ['text', '12 Harbour Lane, Millbrook', true]
     ]);
@@ -619,10 +625,11 @@ describe('the starter’s sample contact details (#15)', () => {
     expect(spans.spans[0]).toEqual({ text: 'Email us', link: { type: 'email', target: 'studio@kloof.example?subject=Hi' } });
     expect(spans.spans.at(-1)).toEqual({ text: 'the front desk', link: { type: 'email', target: 'studio@kloof.example' } });
     const words = spans.spans.map((x) => x.text).join('');
-    expect(words).toContain('write to studio@kloof.example, call +27 21 555 0199 (24 hours) or +27 21 555 0199, or visit');
+    expect(words).toContain('write to studio@kloof.example, call +1\u00a0555-0134 (24 hours) or +27 21 555 0199, or visit');
     expect(words).toContain('Not myhello@example.com, hello@example.com.au or +1 555 01345.');
     // What was held is as it was.
     expect(words).toContain("Maybe o'hello@example.com, 'hello@example.com', ops@hello@example.com, +1 555 0134 24/7, +1 555 0134-5, +1 555\u20130134 -5, +44 (20) 1555 0134, +44 (20) / 1555\u20130134, +44 20/1555 0134, 12 Harbour Lane, Millbrook\u2011East or 12 Harbour Lane, Millbrook--East.");
+    expect(words).toContain('Also +1 555 0134 (567), Call+1 555 0134, 12 Harbour Lane, Millbrook\u2013 East and "hello@example.com"@company.org.');
   });
 
   it('finds the sample among the recipients of an email link, and leaves that link to the inspector', () => {
@@ -637,6 +644,11 @@ describe('the starter’s sample contact details (#15)', () => {
     const plan = planReplace(s, group(s, 'email'), 'studio@kloof.example');
     expect(plan.error).toBeUndefined();
     expect(plan.skipped).toBe(1);
+    // Copied in, it is still sent to.
+    details.props.actionLink = { type: 'email', target: 'owner@kloof.example?cc=hello%40example.com' };
+    const copied = group(s, 'email').filter((m) => m.field.label === 'Action link');
+    expect(copied.map((m) => [m.match, m.start])).toEqual([['?cc=hello%40example.com', 19]]);
+    expect(copied[0].blocked).toMatch(/copies the sample address in/);
   });
 
   it('takes a telephone link that dials the sample as a whole, however it is written, and no other number', () => {
