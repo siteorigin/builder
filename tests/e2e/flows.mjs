@@ -322,6 +322,8 @@ await eventually(async () => {
   assert.equal(at.first, true, 'on the first control of its open sections');
 });
 
+// The canvas re-fits to the reopened dock before the chip is measured.
+await win.waitForTimeout(800);
 const gb = await win.locator('.ov-chip [aria-label="Drag to move"]').boundingBox();
 assert.ok(gb, 'the selection chip shows a drag grip');
 const wrap = await win.locator('.frame-wrap').boundingBox();
