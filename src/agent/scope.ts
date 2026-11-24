@@ -155,6 +155,11 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
   const def = state.components[authority.definitionId];
   if (!def?.tree) return `${authority.label} is no longer in the site.`;
   const nodes = def.tree.nodes;
+  // The first top-level node is the component's own root: placements' classes and variants style it, so it stays
+  // first. Other top-level nodes go after it.
+  const root = def.tree.rootIds[0];
+  const beforeRoot = (parentId: string | null | undefined, index: number | undefined) => !parentId && !!root && index === 0;
+  const rootFirst = `The first top-level node of ${authority.label} is its root, which every placement and variant styles: keep it first, and add other top-level nodes after it.`;
   const mine = (o: OwnerRef) => o.kind === 'component' && o.id === def.id;
   /** A node of the design, or its top level (null). */
   const inside = (id: string | null | undefined) => !id || Object.hasOwn(nodes, id);
@@ -164,22 +169,28 @@ function checkComponentAuthority(state: ProjectState, ops: EditOperation[], auth
       if ((op as { definitionId?: string }).definitionId !== def.id) return outside(op);
       continue;
     }
+    // Both add a new component to the site, for one placement inside the design.
+    if (op.type === 'component.makeUnique' || op.type === 'component.convertToCode') return `${op.type} adds a new component to the site, which changes more than ${authority.label}.`;
     switch (OP_REACH[op.type] ?? 'wider') {
       case 'node': {
-        const o = op as unknown as { owner: OwnerRef; nodeId: string; parentId?: string | null };
+        const o = op as unknown as { owner: OwnerRef; nodeId: string; parentId?: string | null; index?: number };
         if (!mine(o.owner) || !Object.hasOwn(nodes, o.nodeId)) return outside(op);
         if (op.type === 'node.move' && !inside(o.parentId)) return `node.move would move content outside ${authority.label}.`;
+        if (op.type === 'node.move' && (o.nodeId === root ? !(!o.parentId && o.index === 0) : beforeRoot(o.parentId, o.index))) return `node.move: ${rootFirst}`;
+        if (op.type === 'node.remove' && o.nodeId === root) return `node.remove: ${rootFirst}`;
         break;
       }
       case 'insert': {
         const o = op as Extract<EditOperation, { type: 'node.insert' }>;
         if (!mine(o.owner) || !inside(o.parentId)) return `node.insert adds content outside ${authority.label}.`;
+        if (beforeRoot(o.parentId, o.index)) return `node.insert: ${rootFirst}`;
         break;
       }
       case 'copy': {
         // The source is only read, so it may be anywhere; the copy must land in the design.
         const o = op as Extract<EditOperation, { type: 'node.copy' }>;
         if (!mine(o.toOwner) || !inside(o.parentId)) return `node.copy adds content outside ${authority.label}.`;
+        if (beforeRoot(o.parentId, o.index)) return `node.copy: ${rootFirst}`;
         break;
       }
       default:
@@ -200,6 +211,8 @@ export function checkAuthority(state: ProjectState, ops: EditOperation[], author
   } catch {
     return 'The selected element no longer exists.';
   }
+  // Gone since it was selected (or never there): nothing is limited to it, not even an addition to its contract.
+  if (!allowed.size) return 'The selected element no longer exists.';
   const sameOwner = (o: OwnerRef) => o.kind === authority.owner.kind && o.id === authority.owner.id;
   for (const op of ops) {
     // Anything not classified (an operation from a newer document) is treated as the widest reach.
@@ -235,3 +248,9 @@ export function checkAuthority(state: ProjectState, ops: EditOperation[], author
 
 export const WIDEN_YES = 'Yes, allow changes beyond the selection';
 export const WIDEN_NO = 'No, only change the selection';
+
+/** The two answers to a request for more than the authority allows: the first allows it. */
+export function widenChoices(authority: Authority): [string, string] {
+  if (authority.kind === 'component') return [`Yes, allow changes beyond ${authority.label}`, `No, only change ${authority.label}`];
+  return [WIDEN_YES, WIDEN_NO];
+}

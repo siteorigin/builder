@@ -26,12 +26,26 @@ try {
   const chips = () => win.locator('.composer .chips');
   const log = () => win.locator('.chat-log');
   const message = () => win.getByRole('textbox', { name: 'Message' });
-  const posts = () => server.requests.filter((r) => r.method === 'POST');
+  /** The editor context a request was sent with, read from the user's message the way the model reads it. */
+  const editorContext = (req) => {
+    const text = JSON.stringify(req.body.messages.filter((m) => m.role === 'user'));
+    const all = [...text.matchAll(/<editor_context>\\n([\s\S]*?)\\n<\/editor_context>/g)];
+    assert.ok(all.length, 'the request carries an editor context');
+    return JSON.parse(JSON.parse(`"${all.at(-1)[1]}"`));
+  };
+  /** The latest tool result a request carries, as text. */
+  const lastResult = (req) => JSON.stringify(req.body.messages.at(-1));
 
-  step('a project; the hero is edited everywhere, at its overview');
+  step('a project, with page starters in the AI tab');
   const frame = await createProject(win, { name: 'Kloof Light Studio', parentDir: WORK, starter: 'business', sampleImages: false });
+  await win.locator('.dock-tab', { hasText: 'AI' }).click();
+  await message().waitFor();
+  await eventually(async () => assert.ok((await win.locator('.chat .suggestions').count()) > 0, 'a page offers starters'));
+
+  step('the hero is edited everywhere, at its overview');
   if (!(await win.locator('[role="tree"]').first().isVisible())) await win.locator('.rail [aria-label="Layers"]').click();
   await win.locator('[role="tree"] .list-item', { hasText: 'Split hero' }).first().click();
+  await win.locator('.dock-tab', { hasText: 'Inspector' }).click();
   const compSection = win.locator('.section-head', { hasText: 'Component' });
   if ((await compSection.getAttribute('aria-expanded')) === 'false') await compSection.click();
   await win.getByRole('button', { name: 'Edit everywhere…' }).click();
@@ -46,7 +60,8 @@ try {
   const def = Object.values(before.state.components).find((d) => d.owner === 'project' && d.name === 'Split hero');
   assert.ok(def, 'Edit everywhere made a project copy of the hero');
   const owner = { kind: 'component', id: def.id };
-  const homeBefore = JSON.stringify(before.state.pages[before.state.site.homePageId]);
+  const home = before.state.pages[before.state.site.homePageId];
+  const homeBefore = JSON.stringify(home);
 
   step('the composer is about the component, not the page behind it');
   await win.locator('.dock-tab', { hasText: 'AI' }).click();
@@ -54,13 +69,30 @@ try {
   await eventually(async () => assert.equal(await chips().locator('.chip.def').innerText(), 'Split hero'));
   assert.doesNotMatch(await chips().innerText(), /Home|Whole site/, 'no page chip and no whole-site choice');
   assert.equal(await win.locator('.chat .suggestions').count(), 0, 'no page starters while a component is edited');
+  const [chipColor, plum] = await chips()
+    .locator('.chip.def')
+    .evaluate((el) => {
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--plum)';
+      document.body.append(probe);
+      const want = getComputedStyle(probe).color;
+      probe.remove();
+      return [getComputedStyle(el).color, want];
+    });
+  assert.equal(chipColor, plum, 'the component chip is plum, as the editing band is');
   await chips().screenshot({ path: join(SHOTS, 'ai-edit-everywhere-chips.png') });
 
-  step('asking for an editable tagline adds a property and binds a new element to it');
-  let first;
+  step('asking for an editable tagline adds a property and binds a new element to it, and nothing else');
+  const seen = [];
+  let insertedId;
   server.script(
     (req) => {
-      first = req;
+      seen.push(req);
+      // Something outside the component first: the logo strip on the page behind it.
+      return envelopeReply('apply_operations', { expectedRevision: before.revision, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home.id }, nodeId: home.rootIds[1], prop: 'heading', value: 'Changed' }] });
+    },
+    (req) => {
+      seen.push(req);
       return envelopeReply('apply_operations', {
         expectedRevision: before.revision,
         operations: [
@@ -70,11 +102,11 @@ try {
       });
     },
     (req) => {
+      seen.push(req);
       // The new element's ID comes back in the result of the insert, the latest tool result.
-      const said = JSON.stringify(req.body.messages.at(-1));
-      const nodeId = [...said.matchAll(/nodeId\\*"\s*:\s*\\*"(n_[a-z0-9]{4,32})/g)].at(-1)?.[1];
-      assert.ok(nodeId, `the insert returned the new element's ID: ${said.slice(0, 400)}`);
-      return envelopeReply('apply_operations', { expectedRevision: before.revision + 1, operations: [{ type: 'node.setBinding', owner, nodeId, field: 'text', binding: { $prop: 'tagline' } }] });
+      insertedId = [...lastResult(req).matchAll(/nodeId\\*"\s*:\s*\\*"(n_[a-z0-9]{4,32})/g)].at(-1)?.[1];
+      assert.ok(insertedId, `the insert returned the new element's ID: ${lastResult(req).slice(0, 400)}`);
+      return envelopeReply('apply_operations', { expectedRevision: before.revision + 1, operations: [{ type: 'node.setBinding', owner, nodeId: insertedId, field: 'text', binding: { $prop: 'tagline' } }] });
     },
     envelopeReply('finish', { message: 'Added an editable tagline under the heading.' })
   );
@@ -83,29 +115,52 @@ try {
   await log().getByText('Added an editable tagline under the heading.').waitFor({ timeout: 30000 });
   assert.match(await log().locator('.msg-user .ctx').last().innerText(), /Split hero everywhere/, 'the message names the component it was about');
 
-  const sent = JSON.stringify(first.body.messages);
-  assert.match(sent, /editingComponent/, 'the model is told which component is edited everywhere');
-  assert.match(sent, /only the Split hero component's own design/, 'and that the request is limited to it');
-  const grammar = JSON.stringify(first.body.response_format ?? first.body.tools ?? {});
+  const ctx = editorContext(seen[0]);
+  assert.equal(ctx.editingComponent?.id, def.id, 'the model is told which component is edited everywhere');
+  assert.deepEqual(ctx.editingComponent.rootIds, def.tree.rootIds);
+  assert.equal(ctx.selection, null);
+  assert.match(ctx.allowedScope, /^only the Split hero component's own design/, 'and that the request is limited to it');
+  assert.match(lastResult(seen[1]), /SCOPE_MISMATCH/, 'the write to the page behind it was refused');
+  const grammar = JSON.stringify(seen[0].body.response_format ?? seen[0].body.tools ?? {});
   for (const op of ['component.setPropSchema', 'node.setBinding', 'component.setPart']) assert.ok(grammar.includes(op), `${op} is offered without Developer mode`);
   assert.ok(!grammar.includes('component.createCode'), 'code stays behind Developer mode');
 
   const after = await snapshot();
   const design = after.state.components[def.id];
   assert.equal(design.properties.tagline?.label, 'Tagline', 'the component has a Tagline property');
-  assert.ok(
-    Object.values(design.tree.nodes).some((n) => JSON.stringify(n.text) === JSON.stringify({ $prop: 'tagline' })),
-    'a new element in the design shows the tagline'
-  );
+  assert.deepEqual(design.tree.nodes[insertedId]?.text, { $prop: 'tagline' }, 'the new element shows the tagline');
   assert.equal(JSON.stringify(after.state.pages[after.state.site.homePageId]), homeBefore, 'the page behind the component did not change');
 
   step('an element of the design narrows the next message to it, or the whole component');
   // A click in the page picks the design's own node under the pointer.
-  const heroId = after.state.pages[after.state.site.homePageId].rootIds[0];
-  await frame.locator(`[data-so-ctx$="|${heroId}"] h1`).first().click();
+  await frame.locator(`[data-so-ctx$="|${home.rootIds[0]}"] h1`).first().click();
   await eventually(async () => assert.equal(await win.locator('[role="tree"] [data-node="heading"]').getAttribute('aria-selected'), 'true', 'the heading of the design is selected'));
   await eventually(async () => assert.match(await chips().innerText(), /Heading[\s\S]*Whole component/));
   assert.doesNotMatch(await chips().innerText(), /Whole site/);
+  const ask = async (text) => {
+    let req;
+    server.script(
+      (r) => {
+        req = r;
+        return envelopeReply('finish', { message: `Noted: ${text}` });
+      }
+    );
+    await message().fill(text);
+    await message().press('Enter');
+    await log().getByText(`Noted: ${text}`).waitFor({ timeout: 30000 });
+    return editorContext(req);
+  };
+  const narrowed = await ask('Make the heading shorter');
+  assert.deepEqual(narrowed.selection && { owner: narrowed.selection.owner, nodeId: narrowed.selection.nodeId, label: narrowed.selection.label }, { owner, nodeId: 'heading', label: 'Heading' });
+  assert.match(narrowed.allowedScope, /^only Heading/);
+  assert.match(await log().locator('.msg-user .ctx').last().innerText(), /Split hero everywhere → Heading/);
+  const wholeComponent = chips().getByRole('button', { name: 'All of Split hero, everywhere it is used' });
+  await wholeComponent.click();
+  await eventually(async () => assert.equal(await wholeComponent.getAttribute('aria-pressed'), 'true'));
+  const whole = await ask('Tighten the spacing');
+  assert.equal(whole.selection, null);
+  assert.equal(whole.editingComponent?.id, def.id);
+  assert.match(whole.allowedScope, /^only the Split hero component's own design/);
 
   step('finishing goes back to the page, and the composer with it');
   await win.locator('.mode-band-done').click();

@@ -13,6 +13,7 @@ function project() {
   let state = createStarterState('business', 'Test', false);
   const home = state.site.homePageId;
   const about = Object.values(state.pages).find((p) => p.route === '/about/')!.id;
+  const contact = Object.values(state.pages).find((p) => p.route === '/contact/')!.id;
   const at = (i: number) => state.pages[home].nodes[state.pages[home].rootIds.at(i)!] as InstanceNode;
   const fork = (definitionId: string) => {
     const r = applyOperations(state, [{ type: 'component.fork', definitionId }]);
@@ -26,7 +27,7 @@ function project() {
   const nested = applyOperations(state, [{ type: 'node.insert', owner, parentId: 'content', componentId: 'cta.banner' }]);
   state = nested.state;
   const nestedId = (nested.results[0] as { nodeId: string }).nodeId;
-  return { state, home, about, hero, banner, owner, nestedId };
+  return { state, home, about, contact, hero, banner, owner, nestedId };
 }
 
 const enabled = { page: true, selection: true };
@@ -34,10 +35,14 @@ const user = (id: string, context?: ChatContext): ChatMessage => ({ id, role: 'u
 
 describe('the composer while a component is edited everywhere (#191)', () => {
   it('scopes to the component, not the page behind it, at the overview', () => {
-    const { state, home, hero } = project();
+    const { state, home, about, hero } = project();
     const scope = composerScope(state, { pageId: home, selection: null, definitionMode: { definitionId: hero, returnPageId: home } });
     expect(scope).toEqual({ page: { id: home, title: state.pages[home].title }, component: { id: hero, name: 'Split hero' }, selection: null, selectionLabel: null });
     expect(chatContextFor(state, scope, { enabled, viewport: 1280 })).toEqual({ pageId: home, pageTitle: state.pages[home].title, selection: null, selectionLabel: null, component: { id: hero, name: 'Split hero' }, viewport: 1280 });
+    // Shown on another page: that page goes with it, or Home when the page switch is off; the component either way.
+    const elsewhere = composerScope(state, { pageId: about, selection: null, definitionMode: { definitionId: hero, returnPageId: home } });
+    expect(chatContextFor(state, elsewhere, { enabled, viewport: 1280 })).toMatchObject({ pageId: about, pageTitle: state.pages[about].title, component: { id: hero } });
+    expect(chatContextFor(state, elsewhere, { enabled: { page: false, selection: true }, viewport: 1280 })).toMatchObject({ pageId: home, component: { id: hero } });
   });
 
   it('offers one of its own nodes, or the whole component when the switch is off', () => {
@@ -48,8 +53,14 @@ describe('the composer while a component is edited everywhere (#191)', () => {
     expect(scope.selectionLabel).toBe('Heading');
     const sent = chatContextFor(state, scope, { enabled, viewport: 390, assetIds: ['img1'], ask: true });
     expect(sent).toEqual({ pageId: home, pageTitle: state.pages[home].title, selection: heading, selectionLabel: 'Heading', component: { id: hero, name: 'Split hero' }, viewport: 390, assetIds: ['img1'], mode: 'ask' });
-    // A frozen copy: a later selection never changes a message already sent.
-    expect(sent.selection).not.toBe(heading);
+    // A frozen copy: a later selection or attached image never changes a message already sent.
+    const images = ['img1'];
+    const frozen = chatContextFor(state, scope, { enabled, viewport: 390, assetIds: images });
+    heading.instancePath.push('n_later');
+    images.push('img2');
+    expect(frozen.selection).toEqual({ owner, instancePath: [], nodeId: 'heading' });
+    expect(frozen.assetIds).toEqual(['img1']);
+    heading.instancePath.pop();
     const whole = chatContextFor(state, scope, { enabled: { page: true, selection: false }, viewport: 390 });
     expect(whole).toMatchObject({ selection: null, selectionLabel: null, component: { id: hero, name: 'Split hero' } });
   });
@@ -63,6 +74,8 @@ describe('the composer while a component is edited everywhere (#191)', () => {
     // A selection on the page (the moment before the canvas turns it into the design's own node) is not offered.
     const onPage: ElementRef = { owner: { kind: 'page', id: about }, instancePath: [], nodeId: state.pages[about].rootIds[0] };
     expect(composerScope(state, { pageId: home, selection: onPage, definitionMode: dm })).toMatchObject({ component: { id: hero }, selection: null, selectionLabel: null });
+    // Nor is a node of another component's design.
+    expect(composerScope(state, { pageId: home, selection: { owner: { kind: 'component', id: 'foundation.cta.banner' }, instancePath: [], nodeId: 'root' }, definitionMode: dm }).selection).toBeNull();
     // A node the design no longer has is not offered either.
     expect(composerScope(state, { pageId: home, selection: { owner, instancePath: [], nodeId: 'n_gone' }, definitionMode: dm }).selection).toBeNull();
   });
@@ -93,13 +106,25 @@ describe('the composer while a component is edited everywhere (#191)', () => {
 });
 
 describe('trying a request about a component again (#191)', () => {
-  it('goes back to editing that component everywhere, from wherever the author is', () => {
-    const { state, home, about, hero, banner, owner } = project();
-    const ctx: ChatContext = { pageId: home, pageTitle: 'Home', selection: { owner, instancePath: [], nodeId: 'heading' }, selectionLabel: 'Heading', component: { id: hero, name: 'Split hero' }, viewport: 1280 };
-    // Editing another component everywhere: the request goes back to its own component, never this one.
-    expect(retryView(state, ctx, { pageId: about, definitionMode: { definitionId: banner, returnPageId: about } })).toEqual({ pageId: home, definitionMode: { definitionId: hero, returnPageId: about }, selection: ctx.selection, missing: null });
+  it('goes back to editing that component everywhere, on a page that shows it, from wherever the author is', () => {
+    const p = project();
+    const { home, about, contact, hero, banner, owner } = p;
+    // A second placement of the hero, on About.
+    const state = applyOperations(p.state, [{ type: 'node.insert', owner: { kind: 'page', id: about }, definitionId: hero }]).state;
+    const ctx: ChatContext = { pageId: about, pageTitle: 'About', selection: { owner, instancePath: [], nodeId: 'heading' }, selectionLabel: 'Heading', component: { id: hero, name: 'Split hero' }, viewport: 1280 };
+    // Editing another component everywhere, entered from Home, with Contact open: the request's own page and
+    // component come back, and finishing still returns to Home.
+    expect(retryView(state, ctx, { pageId: contact, definitionMode: { definitionId: banner, returnPageId: home } })).toEqual({ pageId: about, definitionMode: { definitionId: hero, returnPageId: home }, selection: ctx.selection, missing: null });
     // On a page: it starts editing the component again, and finishing goes back to that page.
-    expect(retryView(state, ctx, { pageId: about, definitionMode: null })).toEqual({ pageId: home, definitionMode: { definitionId: hero, returnPageId: about }, selection: ctx.selection, missing: null });
+    expect(retryView(state, ctx, { pageId: contact, definitionMode: null })).toEqual({ pageId: about, definitionMode: { definitionId: hero, returnPageId: contact }, selection: ctx.selection, missing: null });
+    // The request's page no longer shows it: the page open now does, else the first page that does.
+    const moved = applyOperations(state, [{ type: 'node.remove', owner: { kind: 'page', id: about }, nodeId: state.pages[about].rootIds.at(-1)! }]).state;
+    expect(retryView(moved, ctx, { pageId: contact, definitionMode: null }).pageId).toBe(home);
+    const onContact = applyOperations(moved, [{ type: 'node.insert', owner: { kind: 'page', id: contact }, definitionId: hero }]).state;
+    expect(retryView(onContact, ctx, { pageId: contact, definitionMode: null }).pageId).toBe(contact);
+    // Placed nowhere: it stays on the request's page, where Layers still shows the design.
+    const nowhere = applyOperations(moved, [{ type: 'node.remove', owner: { kind: 'page', id: home }, nodeId: moved.pages[home].rootIds[0] }]).state;
+    expect(retryView(nowhere, ctx, { pageId: contact, definitionMode: null })).toMatchObject({ pageId: about, definitionMode: { definitionId: hero } });
   });
 
   it('drops a component or element that has gone, and says which', () => {
@@ -108,9 +133,13 @@ describe('trying a request about a component again (#191)', () => {
     const gone = structuredClone(state) as ProjectState;
     delete gone.components[hero];
     expect(retryView(gone, ctx, { pageId: home, definitionMode: { definitionId: banner, returnPageId: about } })).toEqual({ pageId: about, definitionMode: null, selection: null, missing: 'Split hero' });
+    // A theme's original is never edited in place: only through the copy "Edit everywhere" makes.
+    const theme = (state.pages[home].nodes[state.pages[home].rootIds[1]] as InstanceNode).definitionId;
+    expect(state.components[theme].owner).toBe('theme');
+    expect(retryView(state, { ...ctx, component: { id: theme, name: 'Logo strip' } }, { pageId: home, definitionMode: null })).toMatchObject({ definitionMode: null, missing: 'Logo strip' });
     const { state: noHeading } = applyOperations(state, [{ type: 'node.remove', owner, nodeId: 'heading' }]);
     expect(retryView(noHeading, { ...ctx, selection: { owner, instancePath: [], nodeId: 'heading' }, selectionLabel: 'Heading' }, { pageId: home, definitionMode: null })).toMatchObject({ definitionMode: { definitionId: hero }, selection: null, missing: 'Heading' });
-    // The page it was shown on has gone: another one shows it, and nothing is missing.
+    // The page it was shown on has gone, and with it the only placement: it opens on the page open now.
     const { state: noHome } = applyOperations(state, [{ type: 'page.setHome', pageId: about }]);
     const { state: removed } = applyOperations(noHome, [{ type: 'page.remove', pageId: home, replacementPageId: about }]);
     expect(retryView(removed, ctx, { pageId: about, definitionMode: null })).toEqual({ pageId: about, definitionMode: { definitionId: hero, returnPageId: about }, selection: null, missing: null });
@@ -123,6 +152,11 @@ describe('trying a request about a component again (#191)', () => {
     // Sent before requests named their component: the selection inside it still does.
     const older: ChatContext = { pageId: home, pageTitle: 'Home', selection: { owner, instancePath: [], nodeId: 'heading' }, selectionLabel: 'Heading', viewport: 1280 };
     expect(retryView(state, older, { pageId: home, definitionMode: null })).toMatchObject({ definitionMode: { definitionId: hero }, selection: older.selection, missing: null });
+    // A page request's selection comes back while it is there, and is named when it has gone.
+    const section: ElementRef = { owner: { kind: 'page', id: about }, instancePath: [], nodeId: state.pages[about].rootIds[0] };
+    expect(retryView(state, { ...page, selection: section, selectionLabel: 'Intro' }, { pageId: home, definitionMode: null })).toEqual({ pageId: about, definitionMode: null, selection: section, missing: null });
+    const { state: noSection } = applyOperations(state, [{ type: 'node.remove', owner: section.owner, nodeId: section.nodeId }]);
+    expect(retryView(noSection, { ...page, selection: section, selectionLabel: 'Intro' }, { pageId: home, definitionMode: null })).toEqual({ pageId: about, definitionMode: null, selection: null, missing: 'Intro' });
     // No context at all (the oldest requests): about the site.
     expect(retryView(state, undefined, { pageId: home, definitionMode: { definitionId: hero, returnPageId: about } })).toEqual({ pageId: about, definitionMode: null, selection: null, missing: null });
   });
@@ -136,5 +170,12 @@ describe('trying a request about a component again (#191)', () => {
     const gone = structuredClone(state) as ProjectState;
     delete gone.components[hero];
     expect(continueContext(user('u', ctx), gone, 1280)).toEqual({ error: 'Split hero is no longer in the site. Choose what to change, then send "Continue".' });
+    // Saved before requests named their component: its selection inside it still carries on, page or not.
+    const older: ChatContext = { pageId: about, pageTitle: 'About', selection: { owner: { kind: 'component', id: hero }, instancePath: [], nodeId: 'heading' }, selectionLabel: 'Heading', viewport: 1280 };
+    expect(continueContext(user('u', older), noAbout, 1280)).toEqual({ ctx: { ...older, pageId: home, pageTitle: state.pages[home].title } });
+    // Still checked like any other: a selected node that has gone, an image no longer in Assets.
+    const { state: noHeading } = applyOperations(state, [{ type: 'node.remove', owner: { kind: 'component', id: hero }, nodeId: 'heading' }]);
+    expect(continueContext(user('u', { ...ctx, selection: older.selection, selectionLabel: 'Heading' }), noHeading, 1280)).toEqual({ error: 'Heading is no longer in the site. Choose what to change, then send "Continue".' });
+    expect(continueContext(user('u', { ...ctx, assetIds: ['a_missing'] }), state, 1280)).toMatchObject({ error: expect.stringMatching(/no longer in Assets/) });
   });
 });

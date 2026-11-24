@@ -26,9 +26,12 @@ type Turn = (req: CanonicalModelRequest) => ModelEvent[] | Promise<ModelEvent[]>
 /** Deterministic adapter that replays scripted turns, used to test the harness without a provider. */
 class FakeAdapter implements AgentModelAdapter {
   requests: CanonicalModelRequest[] = [];
-  constructor(private turns: Turn[]) {}
+  constructor(
+    private turns: Turn[],
+    private caps: Partial<ReturnType<AgentModelAdapter['capabilities']>> = {}
+  ) {}
   capabilities() {
-    return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000 };
+    return { toolCalling: 'native' as const, streaming: true, strictSchemas: false, parallelToolCalls: true, contextWindowTokens: 100000, maxOutputTokens: 32000, ...this.caps } as ReturnType<AgentModelAdapter['capabilities']>;
   }
   async *streamTurn(req: CanonicalModelRequest, signal: AbortSignal): AsyncIterable<ModelEvent> {
     this.requests.push(structuredClone(req));
@@ -63,13 +66,14 @@ interface SetupOptions {
   compileAll?: (session: ProjectSession) => ReturnType<typeof compileProject>;
   inspectLayout?: (pageId: string, width: number) => Promise<unknown>;
   codeEnabled?: boolean;
+  capabilities?: Partial<ReturnType<AgentModelAdapter['capabilities']>>;
 }
 
 async function setup(turns: Turn[], opts: SetupOptions = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'so-agent-'));
   dirs.push(dir);
   const session = await ProjectSession.create(dir, createStarterState('business', 'Test', false));
-  const adapter = new FakeAdapter(turns);
+  const adapter = new FakeAdapter(turns, opts.capabilities);
   const events: AiEvent[] = [];
   let busy = false;
   const orch = new Orchestrator({
@@ -1507,8 +1511,18 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     const home = env.session.state.pages[env.session.state.site.homePageId];
     const onPage = await env.orch.send('Add a tagline', { pageId: home.id, pageTitle: 'Home', selection: { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] }, selectionLabel: 'Hero', component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
     expect(onPage.ok).toBe(false);
-    const malformed = await env.orch.send('Add a tagline', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: 7 } as unknown as { id: string; name: string }, viewport: 1280 });
-    expect(malformed.ok).toBe(false);
+    const gone = await env.orch.send('Add a tagline', { pageId: home.id, pageTitle: 'Home', selection: { owner: def.owner, instancePath: [], nodeId: 'n_gone' }, selectionLabel: 'Tagline', component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
+    expect(gone).toMatchObject({ ok: false, message: expect.stringMatching(/Tagline is no longer in Split hero/) });
+    const malformed = await env.orch.send('Add a tagline', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: def.id, name: 7 } as unknown as { id: string; name: string }, viewport: 1280 });
+    expect(malformed).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read/) });
+    // A node of another component's design, sent as if it were inside this one.
+    const banner = (home.nodes[home.rootIds.at(-1)!] as InstanceNode).definitionId;
+    const other = (await env.session.apply({ operations: [{ type: 'component.fork', definitionId: banner }] }, { label: 'Edit everywhere', source: 'user' })).results?.[0] as { definitionId: string };
+    const elsewhere = await env.orch.send('Add a tagline', { pageId: home.id, pageTitle: 'Home', selection: { owner: { kind: 'component', id: other.definitionId }, instancePath: [], nodeId: 'root' }, selectionLabel: 'Banner', component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
+    expect(elsewhere).toMatchObject({ ok: false, message: expect.stringMatching(/could not be read/) });
+    // A theme's original is changed only through its project copy.
+    const theme = await env.orch.send('Add a tagline', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: banner, name: 'Banner' }, viewport: 1280 });
+    expect(theme).toMatchObject({ ok: false, message: expect.stringMatching(/Banner is no longer in the site/) });
   });
 
   it('keeps contract operations after the author widens an Edit everywhere request', async () => {
@@ -1564,13 +1578,37 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     allow({ type: 'node.setStyle', owner, nodeId: second, scope: 'base', style: 'color', value: '#000' });
     allow({ type: 'node.insert', owner, parentId: null, primitive: 'paragraph' });
     allow({ type: 'node.insert', owner, parentId: 'content', primitive: 'paragraph' });
-    allow({ type: 'node.move', owner, nodeId: second, parentId: null, index: 0 });
+    allow({ type: 'node.move', owner, nodeId: 'eyebrow', parentId: null, index: 1 });
+    allow({ type: 'node.move', owner, nodeId: second, parentId: 'content', index: 0 });
     allow({ type: 'node.remove', owner, nodeId: second });
+    // The first top-level node is the root every placement and variant styles: it stays first.
+    const keepsRoot = (op: unknown) => expect(checkAuthority(state, [op as EditOperation], authority)).toMatch(/keep it first/);
+    keepsRoot({ type: 'node.move', owner, nodeId: second, parentId: null, index: 0 });
+    keepsRoot({ type: 'node.move', owner, nodeId: root, parentId: null, index: 1 });
+    keepsRoot({ type: 'node.move', owner, nodeId: root, parentId: 'content', index: 0 });
+    keepsRoot({ type: 'node.insert', owner, parentId: null, index: 0, primitive: 'paragraph' });
+    keepsRoot({ type: 'node.remove', owner, nodeId: root });
+    // A placement inside the design becoming a component of its own adds to the site's components.
+    const nested = applyOperations(state, [{ type: 'node.insert', owner, parentId: 'content', componentId: 'cta.banner' }]);
+    const placed = (nested.results[0] as { nodeId: string }).nodeId;
+    expect(checkAuthority(nested.state, [{ type: 'component.makeUnique', owner, nodeId: placed } as EditOperation], authority)).toMatch(/adds a new component/);
+    expect(checkAuthority(nested.state, [{ type: 'component.convertToCode', owner, nodeId: placed } as EditOperation], authority)).toMatch(/adds a new component/);
+    allow({ type: 'node.duplicate', owner, nodeId: root });
     allow({ type: 'node.setBinding', owner, nodeId: 'eyebrow', field: 'text', binding: { $prop: 'tagline' } });
     // Its existing contract is what editing a component everywhere changes.
     allow({ type: 'component.setPropSchema', definitionId: id, prop: 'heading', schema: { type: 'string', label: 'Title', default: '' } });
     allow({ type: 'component.removePropSchema', definitionId: id, prop: 'eyebrow' });
     allow({ type: 'component.setPropDefault', definitionId: id, prop: 'heading', value: 'Hello' });
+    allow({ type: 'component.setPart', definitionId: id, partId: 'eyebrowText', nodeId: 'eyebrow', label: 'Eyebrow' });
+    allow({ type: 'component.removePart', definitionId: id, partId: 'root' });
+    allow({ type: 'component.setVariant', definitionId: id, axis: 'density', variant: 'quiet', label: 'Quiet', makeDefault: true });
+    allow({ type: 'component.setSlot', definitionId: id, slot: 'extra', label: 'Extra' });
+    // A copy of anything may land in the design, never outside it.
+    const from = { kind: 'page' as const, id: homeId };
+    allow({ type: 'node.copy', owner: from, nodeId: base.pages[homeId].rootIds[1], toOwner: owner, parentId: 'content' });
+    deny({ type: 'node.copy', owner, nodeId: 'heading', toOwner: from, parentId: null });
+    deny({ type: 'node.copy', owner: from, nodeId: base.pages[homeId].rootIds[1], toOwner: owner, parentId: 'n_nothere' });
+    deny({ type: 'node.move', owner, nodeId: 'eyebrow', parentId: 'n_nothere', index: 0 });
     // Nothing else: the page behind it, another component, site styles, or the component's name and library entry.
     deny({ type: 'instance.setProp', owner: { kind: 'page', id: homeId }, nodeId: hero.id, prop: 'heading', value: 'x' });
     deny({ type: 'node.insert', owner: { kind: 'page', id: homeId }, parentId: null, primitive: 'paragraph' });
@@ -1582,7 +1620,10 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     deny({ type: 'component.rename', definitionId: id, name: 'Other' });
     deny({ type: 'page.create', title: 'New' });
     // The component has gone (its copy was undone): nothing may change.
-    expect(checkAuthority(base, [{ type: 'node.remove', owner, nodeId: root }], authority)).toMatch(/no longer in the site/);
+    expect(checkAuthority(base, [{ type: 'node.setStyle', owner, nodeId: 'heading', scope: 'base', style: 'color', value: '#000' } as EditOperation], authority)).toMatch(/no longer in the site/);
+    // An element selected inside it that has gone limits nothing, not even an addition to the contract.
+    const stale: Authority = { kind: 'selection', owner, nodeId: 'n_gone', label: 'Tagline' };
+    expect(checkAuthority(state, [{ type: 'component.setPropSchema', definitionId: id, prop: 'extra', schema: { type: 'string', label: 'Extra', default: '' } }], stale)).toMatch(/no longer exists/);
   });
 
   it('decides contract operations by what the run may change, never by Developer mode', () => {
@@ -1606,6 +1647,35 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     expect(names(site)).not.toContain('apply_operations');
   });
 
+  it('names the component when a whole-component request asks for more, and keeps to it on a no', async () => {
+    let def = { id: '', owner: { kind: 'component' as const, id: '' }, root: '' };
+    let kept = '';
+    let refused: { error?: { code?: string } } = {};
+    const env = await setup(
+      [
+        () => [call('w1', 'request_clarification', { question: 'The brand colour is a site style. Change it?', widenScope: true })],
+        (req) => {
+          kept = JSON.stringify(req.items.at(-1));
+          return [call('w2', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'token.set', tokenId: 'color.brand', value: '#000080' }] })];
+        },
+        (req) => {
+          refused = lastTool(req);
+          return finish('Kept it to the hero.');
+        }
+      ],
+      { codeEnabled: false }
+    );
+    def = await editEverywhere(env.session);
+    const r = await env.orch.send('Use navy for this hero and the brand', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
+    const q = await waitForQuestion(env.events);
+    expect(q.choices).toEqual(['Yes, allow changes beyond Split hero', 'No, only change Split hero']);
+    expect(env.orch.answer(r.runId!, q.id!, q.choices[1])).toBe(true);
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect(kept).toMatch(/Keep changes within the component/);
+    expect(refused.error?.code).toBe('SCOPE_MISMATCH');
+    expect(env.session.state.tokens.overrides['color.brand']).toBeUndefined();
+  });
+
   it('offers contract operations to a whole-site request without Developer mode', async () => {
     let offered: string[] = [];
     const env = await setup(
@@ -1620,7 +1690,70 @@ describe('Edit everywhere without Developer mode (#191)', () => {
     await env.run('Make the hero tagline editable');
     expect(offered).toEqual(expect.arrayContaining(contract));
     // Code stays behind Developer mode.
-    expect(offered).not.toContain('component.createCode');
+    for (const op of ['component.createCode', 'component.updateSource', 'component.convertToCode']) expect(offered).not.toContain(op);
+  });
+
+  it('leaves contract operations out of a request about an element on a page, even in Developer mode', async () => {
+    let offered: string[] = [];
+    const env = await setup(
+      [
+        (req) => {
+          offered = offeredOps(req);
+          return finish('Nothing to change.');
+        }
+      ],
+      { codeEnabled: true }
+    );
+    const home = env.session.state.pages[env.session.state.site.homePageId];
+    await env.run('Make this bolder', { selection: { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] }, selectionLabel: 'Split hero' });
+    expect(offered).toContain('node.setStyle');
+    for (const op of contract) expect(offered).not.toContain(op);
+  });
+
+  it('keeps a small model able to edit the component after the author widens a whole-component request', async () => {
+    let def = { id: '', owner: { kind: 'component' as const, id: '' }, root: '' };
+    const tools: string[][] = [];
+    const offered: string[][] = [];
+    let applied: { error?: unknown } = {};
+    const env = await setup(
+      [
+        (req) => {
+          tools.push(req.tools.map((t) => t.name));
+          offered.push(offeredOps(req));
+          return [call('w1', 'request_clarification', { question: 'This needs the brand colour too. Go ahead?', widenScope: true })];
+        },
+        (req) => {
+          tools.push(req.tools.map((t) => t.name));
+          offered.push(offeredOps(req));
+          return [
+            call('w2', 'apply_operations', {
+              expectedRevision: 1,
+              operations: [
+                { type: 'token.set', tokenId: 'color.brand', value: '#000080' },
+                { type: 'component.setPropSchema', definitionId: def.id, prop: 'tagline', schema: { type: 'string', label: 'Tagline', default: '' } },
+                { type: 'node.setBinding', owner: def.owner, nodeId: 'eyebrow', field: 'text', binding: { $prop: 'tagline' } }
+              ]
+            })
+          ];
+        },
+        (req) => {
+          applied = lastTool(req);
+          return finish('Done.');
+        }
+      ],
+      { codeEnabled: false, capabilities: { toolCalling: 'constrained-json' } }
+    );
+    def = await editEverywhere(env.session);
+    const r = await env.orch.send('Bind the eyebrow to a new tagline field and use navy for the brand', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
+    const q = await waitForQuestion(env.events);
+    expect(env.orch.answer(r.runId!, q.id!, 'yes')).toBe(true);
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    // The general tools before and after: a site request on this model would get the page and brand tools only.
+    for (const t of tools) expect(t).toContain('apply_operations');
+    for (const o of offered) expect(o).toEqual(expect.arrayContaining(contract));
+    expect(applied.error).toBeUndefined();
+    expect(env.session.state.tokens.overrides['color.brand']).toBe('#000080');
+    expect(env.session.state.components[def.id].properties.tagline).toBeDefined();
   });
 });
 

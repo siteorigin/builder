@@ -11,7 +11,7 @@ import type { AgentModelAdapter, CanonicalItem, ModelEvent, ToolCall } from './t
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { compactProjectSummary, describeSelection, projectSummary } from './context';
-import { authorityFor, canEditContracts, checkAuthority, WIDEN_NO, WIDEN_YES, type Authority } from './scope';
+import { authorityFor, canEditContracts, checkAuthority, widenChoices, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { selectionTarget } from './selection';
 import { applyContextBudget } from './budget';
@@ -475,8 +475,11 @@ export class Orchestrator {
     // selected with it is one of that design's own nodes: the run is limited to what the author saw.
     if (context.component) {
       const def = session.state.components[context.component.id];
-      if (def?.kind !== 'managed' || !def.tree) return { ok: false, message: `${context.component.name || 'That component'} is no longer in the site. Choose what to change, then send again.` };
+      // Only a project's own copy: a theme's original is changed through the copy "Edit everywhere" makes.
+      if (def?.kind !== 'managed' || def.owner !== 'project' || !def.tree) return { ok: false, message: `${context.component.name || 'That component'} is no longer in the site. Choose what to change, then send again.` };
       if (context.selection && (context.selection.owner.kind !== 'component' || context.selection.owner.id !== def.id)) return { ok: false, message: 'Your message could not be read. Try sending it again.' };
+      if (context.selection && !Object.hasOwn(def.tree.nodes, context.selection.instancePath[0] ?? context.selection.nodeId))
+        return { ok: false, message: `${context.selectionLabel || 'The selected element'} is no longer in ${def.name}. Choose what to change, then send again.` };
     }
     // Attached images are checked against the project as it is now, before the request joins the conversation.
     const attached = attachedImages(session.state, context.assetIds);
@@ -808,6 +811,7 @@ export class Orchestrator {
           // A question can never be granted more: nothing in it may change.
           const widen = !ask && !!widenScope && authority.kind !== 'site';
           const limit = authority.kind === 'component' ? 'the component' : 'the selection';
+          const [yes, no] = widenChoices(authority);
           const id = newId('q');
           run.pendingQuestion = {
             id,
@@ -816,7 +820,7 @@ export class Orchestrator {
               // Stop settles the question too; the run is stopping, not working again.
               if (signal.aborted) return resolve(a);
               this.setStatus('running');
-              if (widen && (a === WIDEN_YES || TYPED_YES.test(a))) {
+              if (widen && (a === yes || TYPED_YES.test(a))) {
                 authority = { kind: 'site' };
                 resolve(`${a}. You may now change anything needed for this request.`);
               } else if (widen) resolve(`${a}. Keep changes within ${limit}.`);
@@ -824,7 +828,7 @@ export class Orchestrator {
             }
           };
           // Each question is added to the turn, so earlier questions and their answers stay with it.
-          (msg.questions ??= []).push({ id, text: question, choices: widen ? [WIDEN_YES, WIDEN_NO] : choices, ...(widen ? { widen: true } : {}), ...(!widen && images?.length ? { images } : {}) });
+          (msg.questions ??= []).push({ id, text: question, choices: widen ? [yes, no] : choices, ...(widen ? { widen: true } : {}), ...(!widen && images?.length ? { images } : {}) });
           this.setStatus('awaiting-input');
           this.emitMessage(msg, runId);
         })

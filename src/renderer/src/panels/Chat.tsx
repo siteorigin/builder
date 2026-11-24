@@ -848,7 +848,8 @@ function ResultCard({ m, undoable, onContinue }: { m: ChatMessage; undoable: boo
       setState({
         chatDrafts: withDraft(getState().chatDrafts, conv.id, user.text),
         chatImages: withImages(getState().chatImages, conv.id, originalImages),
-        ...(view ? { ...(view.pageId ? { pageId: view.pageId } : {}), definitionMode: view.definitionMode } : {}),
+        // Editing a component everywhere happens in Edit, never in Preview.
+        ...(view ? { ...(view.pageId ? { pageId: view.pageId } : {}), definitionMode: view.definitionMode, ...(view.definitionMode ? { mode: 'edit' as const } : {}) } : {}),
         selection: view?.selection ?? null,
         chatContextEnabled: { page: true, selection: !!view?.selection },
         // Tried again as it was sent: a question stays a question.

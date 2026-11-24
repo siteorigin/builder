@@ -5,7 +5,7 @@
  */
 import type { ChatContext } from '@shared/api';
 import type { ElementRef, ProjectState } from '@shared/types';
-import { inDefinition, refLabel, resolveRef } from './model';
+import { inDefinition, placementsOn, refLabel, resolveRef } from './model';
 
 type DefinitionMode = { definitionId: string; returnPageId: string } | null;
 
@@ -27,10 +27,18 @@ const resolves = (state: ProjectState, ref: ElementRef) => {
   }
 };
 
-/** A component design the project still has, which a request can be about. */
-function editableDesign(state: ProjectState, id: string | null | undefined) {
-  const def = id && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
-  return def?.kind === 'managed' && def.tree ? def : null;
+/** A component design of this project's own that a request can be about: a theme's original is changed only through
+ *  the copy "Edit everywhere" makes. */
+export function editableDesign(state: ProjectState, id: unknown) {
+  const def = typeof id === 'string' && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+  return def?.kind === 'managed' && def.owner === 'project' && def.tree ? def : null;
+}
+
+/** The component a saved request was about: named, or (saved before requests named it) owning its selection. */
+export function requestComponentId(ctx: ChatContext | undefined): string | null {
+  const named = ctx?.component?.id;
+  if (typeof named === 'string') return named;
+  return ctx?.selection?.owner?.kind === 'component' ? ctx.selection.owner.id : null;
 }
 
 export function composerScope(state: ProjectState, view: { pageId: string | null; selection: ElementRef | null; definitionMode: DefinitionMode }): ComposerScope {
@@ -84,13 +92,16 @@ export function retryView(
   const pageOk = !!ctx?.pageId && Object.hasOwn(state.pages, ctx.pageId);
   // Leaving a component edited everywhere goes back to the page it was entered from.
   const leave = now.definitionMode ? { pageId: now.definitionMode.returnPageId } : {};
-  // Requests saved before they named their component still name it through a selection inside it.
-  const componentId = ctx?.component?.id ?? (ctx?.selection?.owner.kind === 'component' ? ctx.selection.owner.id : null);
+  const componentId = requestComponentId(ctx);
   if (ctx && componentId) {
     const def = editableDesign(state, componentId);
     if (!def) return { ...leave, definitionMode: null, selection: null, missing: ctx.component?.name ?? ctx.selectionLabel ?? 'The component' };
     const selOk = !!ctx.selection && inDefinition(ctx.selection, def.id) && resolves(state, ctx.selection);
-    const pageId = pageOk ? ctx.pageId : (now.pageId ?? state.site.homePageId);
+    // The canvas shows the design through a placement: on the request's page, else the one open now, else the first
+    // page that has one. A design placed nowhere stays on the request's page, editable through Layers.
+    const shows = (id: string | null | undefined): id is string => !!id && Object.hasOwn(state.pages, id) && placementsOn(state, def.id, id).length > 0;
+    const fallback = pageOk ? ctx.pageId : (now.pageId ?? state.site.homePageId);
+    const pageId = [ctx.pageId, now.pageId, ...state.site.pageOrder].find(shows) ?? fallback;
     return {
       pageId,
       definitionMode: { definitionId: def.id, returnPageId: now.definitionMode?.returnPageId ?? now.pageId ?? pageId },

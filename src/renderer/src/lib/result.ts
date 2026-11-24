@@ -4,6 +4,7 @@ import type { ElementRef, ProjectState } from '@shared/types';
 import { locateField } from '@engine/locate';
 import { resolveRef } from './model';
 import { pageShowing, partName } from '@shared/page-shell';
+import { editableDesign, requestComponentId } from './chatTarget';
 
 /** Checks that need attention, read from the wording of results stored before checks carried a status. */
 const ISSUE = /wider than the screen|overflows its box|(?<!no )horizontal overflow detected|issues? remains?|could(?: not|n['’]t) (?:run|check)|^stopped at /i;
@@ -88,9 +89,9 @@ export function continueContext(user: ChatMessage | undefined, state: ProjectSta
   const pageOk = !!ctx.pageId && Object.hasOwn(state.pages, ctx.pageId);
   // A request about a component edited everywhere carries on with that component, wherever it was shown.
   let page: Pick<ChatContext, 'pageId' | 'pageTitle'> | null = null;
-  if (ctx.component) {
-    const def = Object.hasOwn(state.components, ctx.component.id) ? state.components[ctx.component.id] : undefined;
-    if (def?.kind !== 'managed' || !def.tree) return { error: `${ctx.component.name || 'That component'} is no longer in the site. ${choose}` };
+  const componentId = requestComponentId(ctx);
+  if (componentId) {
+    if (!editableDesign(state, componentId)) return { error: `${ctx.component?.name || ctx.selectionLabel || 'That component'} is no longer in the site. ${choose}` };
     // The page only showed it, so another one does as well.
     if (!pageOk) page = { pageId: state.site.homePageId, pageTitle: state.pages[state.site.homePageId]?.title ?? '' };
   } else if (!pageOk) return { error: `${ctx.pageTitle || 'That page'} is no longer in the site. ${choose}` };

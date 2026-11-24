@@ -137,7 +137,7 @@ describe('questions that offer library images (#12)', () => {
     expect(questionHint({ choices: ['Keep it'], images: img })).toBe('Choose a picture or an option, or type your own answer below. Preview shows a picture larger before you choose.');
     expect(questionHint({ choices: ['A'] })).toBe('Choose an option, or type your own answer below.');
     expect(questionHint({ choices: [] })).toBe('Type your answer below.');
-    expect(questionHint({ choices: ['Yes', 'No'], widen: true })).toBe('Choose an option, or type a reply below. Only the first option, or a plain “yes”, allows changes beyond the selection.');
+    expect(questionHint({ choices: ['Yes', 'No'], widen: true })).toBe('Choose an option, or type a reply below. Only the first option, or a plain “yes”, allows the wider change.');
   });
 
   it('shows an answered picture question in the turn like any other', () => {
