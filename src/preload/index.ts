@@ -24,6 +24,7 @@ const api: BuilderApi = {
   } as BuilderApi['projects'],
   project: {
     snapshot: invoke('project:snapshot'),
+    reloadFromDisk: invoke('project:reloadFromDisk'),
     apply: invoke('project:apply'),
     copy: invoke('project:copy'),
     undo: invoke('project:undo'),
@@ -52,6 +53,9 @@ const api: BuilderApi = {
     generatedSource: invoke('project:generatedSource'),
     restoreGenerated: invoke('project:restoreGenerated'),
     resolveConflict: invoke('project:resolveConflict'),
+    compareConflict: invoke('project:compareConflict'),
+    readSavedCopy: invoke('project:readSavedCopy'),
+    dismissSavedCopy: invoke('project:dismissSavedCopy'),
     unlock: invoke('project:unlock'),
     saveLocalState: invoke('project:saveLocalState'),
     validateSource: invoke('project:validateSource'),

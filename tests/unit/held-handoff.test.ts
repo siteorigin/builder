@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AiEvent, ChatContext, ProjectSnapshot, RunStatus } from '@shared/api';
@@ -70,6 +70,7 @@ interface Held {
   id: number;
   seq: number;
   phase: string;
+  cause?: 'elsewhere';
   label: string;
   place: string;
   text: string | null;
@@ -86,10 +87,10 @@ interface StoreState {
   toasts: Array<{ action?: { label: string } }>;
 }
 interface StoreModule {
-  applyOps(operations: EditOperation[], label: string): Promise<unknown>;
+  applyOps(operations: EditOperation[], label: string, coalesceKey?: string, expectedRevision?: number): Promise<unknown>;
   applyHeld(id: number, opts?: { replace?: boolean; stopRunId?: string }): Promise<void>;
   discardHeld(id: number): void;
-  commitDraft(base: ProjectSnapshot | null, commit: () => void, text?: string | null, opts?: { check?: boolean }): void;
+  commitDraft(base: ProjectSnapshot | null, commit: () => void, text?: string | null, opts?: { check?: boolean; shown?: string; review?: boolean }): void;
   holdEdit(base: ProjectSnapshot, operations: EditOperation[], label: string, opts?: { text?: string | null; seq?: number }): { id: number | null } | null;
   applyAiEvent(e: AiEvent): void;
   aiActivity(): number;
@@ -127,6 +128,7 @@ beforeAll(async () => {
       },
       project: {
         snapshot: async () => snapshot(),
+        reloadFromDisk: () => current!.session.reloadFromDisk(),
         apply: (batch: { operations: EditOperation[]; expectedRevision?: number }, opts?: { label?: string; coalesceKey?: string; opening?: string }) => {
           applyCalls++;
           const meanwhile = beforeApply;
@@ -664,5 +666,246 @@ describe('Orchestrator.stopRun', () => {
     unsubscribe();
     expect(r).toEqual({ stopped: true, status: 'cancelled' });
     expect(statuses).not.toContain('running');
+  });
+});
+
+describe('a field changed somewhere else while it was typed (#82)', () => {
+  const description = (pageId: string, value: string): EditOperation => ({ type: 'page.update', pageId, description: value });
+  /** The page's document on disk, as another editor would open it. */
+  const pageFile = (dir: string, pageId: string) => join(dir, 'siteorigin', 'pages', `${pageId}.json`);
+  /** Save the page's document from another editor: `change` edits it as parsed JSON. */
+  function saveOutside(dir: string, pageId: string, change: (page: { title: string; seo: Record<string, unknown> }) => void) {
+    const page = JSON.parse(readFileSync(pageFile(dir, pageId), 'utf8'));
+    change(page);
+    writeFileSync(pageFile(dir, pageId), JSON.stringify(page, null, 2) + '\n');
+  }
+  const onDisk = (dir: string, pageId: string) => JSON.parse(readFileSync(pageFile(dir, pageId), 'utf8')) as { title: string; seo: Record<string, unknown> };
+  /** The file watcher's part: the project reads the file, and this window hears of it. */
+  async function watcherDelivers(session: ProjectSession) {
+    expect((await session.reloadFromDisk()).ok).toBe(true);
+    store.setState({ snapshot: snapshot() });
+  }
+  /** Every held edit that appears, even for a moment. */
+  function heldSeen() {
+    const seen: Held[] = [];
+    const off = store.useStore.subscribe((st) => seen.push(...st.heldEdits));
+    return { seen, off };
+  }
+
+  it('keeps both the value saved outside the app and the typed text when the same field changed, until the author chooses', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    // The author starts typing in Home's description.
+    const base = store.getState().snapshot;
+    saveOutside(dir, home, (p) => (p.seo.description = 'Written in another editor'));
+    await watcherDelivers(session);
+    // Tab out: the draft commits against the project as it was when typing began.
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+
+    // Nothing was written over the external value...
+    expect(session.state.pages[home].seo.description).toBe('Written in another editor');
+    expect(onDisk(dir, home).seo.description).toBe('Written in another editor');
+    // ...and the typed text is kept beside it, for the author to choose.
+    const held = store.getState().heldEdits;
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ phase: 'changed', cause: 'elsewhere', text: 'Typed in the inspector', currentText: 'Written in another editor' });
+    // Held before anything was sent, and not an AI matter: the toolbar's account of the AI is left alone.
+    expect(applyCalls).toBe(0);
+    expect(store.getState().aiOutcome).toBeNull();
+
+    // Changed outside once more before the author chose: replacing it needs a new look.
+    saveOutside(dir, home, (p) => (p.seo.description = 'Saved again in another editor'));
+    await watcherDelivers(session);
+    await store.applyHeld(held[0].id, { replace: true });
+    expect(onDisk(dir, home).seo.description).toBe('Saved again in another editor');
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'changed', currentText: 'Saved again in another editor' });
+
+    // Replace with my edit: written over the reviewed value, as an ordinary edit.
+    await store.applyHeld(held[0].id, { replace: true });
+    expect(store.getState().heldEdits).toEqual([]);
+    expect(session.state.pages[home].seo.description).toBe('Typed in the inspector');
+    expect(onDisk(dir, home).seo.description).toBe('Typed in the inspector');
+    expect(store.getState().aiOutcome).toBeNull();
+  });
+
+  it('keeps the external value when the author discards the typed text', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    saveOutside(dir, home, (p) => (p.seo.description = 'Written in another editor'));
+    await watcherDelivers(session);
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    store.discardHeld(store.getState().heldEdits[0].id);
+    expect(store.getState().heldEdits).toEqual([]);
+    expect(onDisk(dir, home).seo.description).toBe('Written in another editor');
+  });
+
+  it('merges the typed text with a change to another field saved outside the app, with nothing held', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    saveOutside(dir, home, (p) => (p.seo.title = 'Title from another editor'));
+    await watcherDelivers(session);
+    // This window has heard of the change, so the typed text is checked against it.
+    expect(store.getState().snapshot!.revision).toBeGreaterThan(base!.revision);
+    const { seen, off } = heldSeen();
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    off();
+    expect(seen).toEqual([]);
+    expect(session.state.pages[home].seo).toMatchObject({ title: 'Title from another editor', description: 'Typed in the inspector' });
+    expect(onDisk(dir, home).seo).toMatchObject({ title: 'Title from another editor', description: 'Typed in the inspector' });
+  });
+
+  it('checks the typed text against a file saved outside the app that the app has not read yet', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    // Saved just before Tab: the watcher has not fired, so neither the project nor this window knows of it.
+    saveOutside(dir, home, (p) => (p.seo.description = 'Written in another editor'));
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    expect(onDisk(dir, home).seo.description).toBe('Written in another editor');
+    expect(session.state.pages[home].seo.description).toBe('Written in another editor');
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'changed', cause: 'elsewhere', text: 'Typed in the inspector', currentText: 'Written in another editor' });
+    // The project carries on: the next edit is saved, beside the value saved outside the app.
+    await typeAndCommit(browserTitle(home, 'Later title'), 'Change browser title', 'Later title', store.getState().snapshot);
+    expect(onDisk(dir, home).seo).toMatchObject({ title: 'Later title', description: 'Written in another editor' });
+  });
+
+  it('merges with a change to another field saved outside the app that the app has not read yet', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    saveOutside(dir, home, (p) => (p.seo.title = 'Title from another editor'));
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    expect(store.getState().heldEdits).toEqual([]);
+    expect(onDisk(dir, home).seo).toMatchObject({ title: 'Title from another editor', description: 'Typed in the inspector' });
+  });
+
+  it('checks the typed text against the project itself when this window has not heard of the change yet', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    saveOutside(dir, home, (p) => (p.seo.description = 'Written in another editor'));
+    // The project read the file, but its new snapshot has not reached this window.
+    expect((await session.reloadFromDisk()).ok).toBe(true);
+    expect(store.getState().snapshot?.revision).toBe(base?.revision);
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    expect(onDisk(dir, home).seo.description).toBe('Written in another editor');
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'changed', cause: 'elsewhere', currentText: 'Written in another editor' });
+  });
+
+  it('saves the typed text when only the author changed something else meanwhile', async () => {
+    const { session, about } = await setup([]);
+    const base = store.getState().snapshot;
+    await typeAndCommit(browserTitle(about, 'Other field'), 'Change browser title', 'Other field', base);
+    store.setState({ snapshot: snapshot() });
+    const { seen, off } = heldSeen();
+    await typeAndCommit(description(about, 'Typed meanwhile'), 'Change description', 'Typed meanwhile', base);
+    off();
+    expect(seen).toEqual([]);
+    expect(session.state.pages[about].seo).toMatchObject({ title: 'Other field', description: 'Typed meanwhile' });
+  });
+
+  it('saves the typed text over the author’s own save of the same field that this window had not heard of yet', async () => {
+    const { session, about } = await setup([]);
+    const before = store.getState().snapshot;
+    // Saved from this window; its snapshot has not arrived when the author starts typing in the field again.
+    await typeAndCommit(description(about, 'First words'), 'Change description', 'First words', before);
+    const { seen, off } = heldSeen();
+    // Only the author's own save changed the field since typing began, so writing over it loses nothing they did not see.
+    await typeAndCommit(description(about, 'Second words'), 'Change description', 'Second words', before);
+    off();
+    expect(seen).toEqual([]);
+    expect(session.state.pages[about].seo.description).toBe('Second words');
+  });
+
+  it('holds the typed text when the field was changed by anything other than the author’s own last save of it', async () => {
+    const { session, about } = await setup([]);
+    const before = store.getState().snapshot;
+    await typeAndCommit(description(about, 'First words'), 'Change description', 'First words', before);
+    // Changed again since the author's own save, by someone else.
+    await session.apply({ operations: [description(about, 'Someone else’s words')] }, { label: 'Other', source: 'user' });
+    await typeAndCommit(description(about, 'Typed'), 'Change description', 'Typed', before);
+    expect(session.state.pages[about].seo.description).toBe('Someone else’s words');
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'changed', cause: 'elsewhere', currentText: 'Someone else’s words' });
+  });
+
+  it('checks the typed text again when anything else changed before the author’s own save of the field', async () => {
+    const { session, about } = await setup([]);
+    const before = store.getState().snapshot;
+    // Something else lands first (a route a link names could be one), then the author's own save of the field.
+    await session.apply({ operations: [browserTitle(about, 'Changed elsewhere')] }, { label: 'Other', source: 'user' });
+    await typeAndCommit(description(about, 'First words'), 'Change description', 'First words', before);
+    expect(session.state.pages[about].seo.description).toBe('First words');
+    // Typed from the project as it was before both: the author's own save is not the only change since.
+    await typeAndCommit(description(about, 'Second words'), 'Change description', 'Second words', before);
+    expect(session.state.pages[about].seo.description).toBe('First words');
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'changed', cause: 'elsewhere', currentText: 'First words' });
+  });
+
+  it('checks a typed edit built on a revision of its own, as the image focus fields build theirs', async () => {
+    const { session, about } = await setup([]);
+    const base = store.getState().snapshot;
+    await session.apply({ operations: [description(about, 'Changed elsewhere')] }, { label: 'Other', source: 'user' });
+    store.setState({ snapshot: snapshot() });
+    // The editor reads the field as it is now and builds on that revision, as a typed coordinate does.
+    let done: Promise<unknown> = Promise.resolve();
+    store.commitDraft(base, () => (done = store.applyOps([description(about, 'Typed')], 'Change description', undefined, session.revision)), 'Typed');
+    await done;
+    expect(session.state.pages[about].seo.description).toBe('Changed elsewhere');
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'changed', cause: 'elsewhere', currentText: 'Changed elsewhere' });
+  });
+
+  it('waits for the author when the text was typed over something other than what the project held then', async () => {
+    const { session, about } = await setup([]);
+    const base = store.getState().snapshot;
+    // The page showed older text than the project held when editing began: nothing to compare tells it apart, so
+    // the edit is shown to the author rather than saved over text they never saw.
+    let done: Promise<unknown> = Promise.resolve();
+    store.commitDraft(base, () => (done = store.applyOps([description(about, 'Typed on the page')], 'Edit text')), 'Typed on the page', { review: true, shown: 'What the page showed' });
+    await done;
+    expect(applyCalls).toBe(0);
+    expect(store.getState().heldEdits[0]).toMatchObject({ phase: 'changed', cause: 'elsewhere', text: 'Typed on the page' });
+    expect(session.state.pages[about].seo.description).not.toBe('Typed on the page');
+    // Unless the field holds just what the page showed.
+    store.discardHeld(store.getState().heldEdits[0].id);
+    const shown = session.state.pages[about].seo.description ?? '';
+    store.commitDraft(base, () => (done = store.applyOps([description(about, 'Typed on the page')], 'Edit text')), 'Typed on the page', { review: true, shown });
+    await done;
+    expect(session.state.pages[about].seo.description).toBe('Typed on the page');
+  });
+
+  it('never writes the typed text unchecked when the project cannot be read to check it', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    saveOutside(dir, home, (p) => (p.seo.description = 'Written in another editor'));
+    // The project read the file; this window has not heard, and asking for the project fails.
+    expect((await session.reloadFromDisk()).ok).toBe(true);
+    const bridge = (globalThis as unknown as { window: { builder: { project: { snapshot: () => Promise<unknown> } } } }).window.builder.project;
+    const snapshotOf = bridge.snapshot;
+    bridge.snapshot = () => Promise.reject(new Error('The editor is not answering'));
+    try {
+      await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    } finally {
+      bridge.snapshot = snapshotOf;
+    }
+    expect(onDisk(dir, home).seo.description).toBe('Written in another editor');
+    const held = store.getState().heldEdits[0];
+    expect(held).toMatchObject({ phase: 'failed', cause: 'elsewhere', text: 'Typed in the inspector' });
+    expect(held.note).toMatch(/not answering/);
+  });
+
+  it('keeps the typed text, with why, when the file saved outside the app cannot be read', async () => {
+    const { session, dir } = await setup([]);
+    const home = session.state.site.homePageId;
+    const base = store.getState().snapshot;
+    writeFileSync(pageFile(dir, home), '{ not json');
+    await typeAndCommit(description(home, 'Typed in the inspector'), 'Change description', 'Typed in the inspector', base);
+    expect(readFileSync(pageFile(dir, home), 'utf8')).toBe('{ not json');
+    const held = store.getState().heldEdits[0];
+    expect(held).toMatchObject({ phase: 'failed', cause: 'elsewhere', text: 'Typed in the inspector' });
+    expect(held.note).toMatch(/changed outside SiteOrigin Builder/);
+    expect(session.state.pages[home].seo.description).not.toBe('Typed in the inspector');
   });
 });

@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, FilePlus, ImageOff, Imag
 import type { ChoiceOption, ChoicesProp, ElementRef, GraphNode, ImageValue, LinkValue, ListItem, ListProp, ProjectState, PropSchema, ScalarPropSchema } from '@shared/types';
 import { refKey } from '@shared/types';
 import { ICONS } from '@catalogue/foundation/icons';
-import { api, getState, setState, toast, useStore, type PendingEdit } from '../store';
+import { api, getState, markDraft, setState, toast, useStore, type PendingEdit } from '../store';
 import { isImeComposing } from '../lib/ime';
 import type { ListPlace } from '../lib/reveal';
 import { DraftInput, Field, openSection, Switch, SwitchRow } from '../components/ui';
@@ -673,10 +673,15 @@ const isChoiceRow = (o: unknown): o is ChoiceOption => !!o && typeof o === 'obje
 const choiceRows = (value: unknown) => (Array.isArray(value) ? value : []).filter(isChoiceRow);
 
 /**
- * A choice's label, edited as a draft: committed on Enter or on leaving it, put back on Escape or a refusal. A rename
- * says the label it was typed over, so one the AI changed meanwhile is not overwritten.
+ * A choice's label, edited as a draft: committed on Enter or on leaving it, put back on Escape. A rename says the
+ * label it was typed over, so one changed meanwhile (by the AI, or in the file outside the app) is not overwritten.
+ * A refused label is not lost either: it stays in the field, unsaved, until the author presses Enter to use it
+ * anyway or Escape to keep what the project holds.
  */
-function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceOption; index: number; describedBy?: string; onRename: (label: string, from: string[]) => Promise<boolean> }) {
+/** How a choice change ended: saved, refused, or refused because the choice was renamed meanwhile (to `changedTo`). */
+type ChoiceDone = boolean | { changedTo: string };
+
+function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceOption; index: number; describedBy?: string; onRename: (label: string, from: string[]) => Promise<ChoiceDone> }) {
   const [draft, setDraft] = useState(choice.label);
   const saved = useRef(choice.label);
   saved.current = choice.label;
@@ -689,17 +694,63 @@ function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceO
   useEffect(() => {
     if (from.current === null) setDraft(choice.label);
   }, [choice.label]);
-  const commit = () => {
+  // A label kept after its rename was refused because the choice changed meanwhile: an unsaved draft, which only
+  // Enter (or typing again) commits, and Escape gives up.
+  const kept = useRef(false);
+  const attempts = useRef(0);
+  const draftKey = useId();
+  const mounted = useRef(true);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  // The field closes (its question was collapsed or removed) with a label typed in it that was not saved: the label
+  // is offered once more, to copy.
+  const offer = (text: string, other?: string) =>
+    toast(`Your label “${text}” for this choice was not saved${other !== undefined ? `, because the choice became “${other}” while you were typing` : ''}.`, 'error', {
+      label: 'Copy text',
+      run: () => void navigator.clipboard?.writeText(text).catch(() => undefined)
+    });
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const over = from.current;
+      const text = choiceText(draftRef.current);
+      if (over && text && text !== over.shown) offer(text, kept.current ? over.shown : undefined);
+      markDraft(draftKey, false);
+    };
+  }, [draftKey]);
+  const keep = (on: boolean) => {
+    kept.current = on;
+    markDraft(draftKey, on);
+  };
+  const commit = (explicit: boolean) => {
     const over = from.current;
-    if (over === null) return;
+    if (over === null || (kept.current && !explicit)) return;
     from.current = null;
+    keep(false);
     const text = choiceText(draft);
     // An emptied label puts the saved one back: a choice is removed with its own button.
     if (!text || text === over.shown) return setDraft(sent.current ?? saved.current);
     sent.current = text;
-    void onRename(text, over.labels).then((ok) => {
+    const attempt = ++attempts.current;
+    void onRename(text, over.labels).then((done) => {
       if (sent.current === text) sent.current = null;
-      if (!ok && from.current === null) setDraft(saved.current);
+      // A newer label was sent from here since: this one was given up for it.
+      if (done !== true && attempt !== attempts.current) return;
+      if (done === true) {
+        // Landed: a label typed since can no longer have been typed over the one this replaced.
+        if (from.current && from.current.labels.length > 1) from.current = { shown: from.current.shown, labels: from.current.labels.filter((l) => !over.labels.includes(l) || l === text) };
+        return;
+      }
+      if (from.current !== null) return;
+      // Refused (the choice was renamed somewhere else while this was typed, say): the label stays here, unsaved,
+      // beside whatever the project holds, or is offered to copy once the field has closed. The field may already
+      // have followed the project to the newer label: the typed one is put back.
+      const now = done === false ? saved.current : done.changedTo;
+      if (!mounted.current) return offer(text, done === false ? undefined : now);
+      from.current = { shown: now, labels: [now] };
+      setDraft(text);
+      keep(true);
     });
   };
   return (
@@ -708,20 +759,24 @@ function ChoiceLabel({ choice, index, describedBy, onRename }: { choice: ChoiceO
       value={draft}
       aria-label={`Choice ${index + 1}`}
       aria-describedby={describedBy}
+      title={kept.current ? 'Not saved. Press Enter to save it, or Escape to keep the label the project has.' : undefined}
       data-choice-focus={`input-${choice.id}`}
       onChange={(e) => {
         from.current ??= { shown: sent.current ?? saved.current, labels: sent.current === null ? [saved.current] : [saved.current, sent.current] };
+        // Typing again after a refusal is editing again: leaving the field commits, as it always does.
+        if (kept.current) keep(false);
         setDraft(e.target.value);
       }}
-      onBlur={commit}
+      onBlur={() => commit(false)}
       onKeyDown={(e) => {
         if (isImeComposing(e)) return;
         if (e.key === 'Enter') {
           e.preventDefault();
-          commit();
+          commit(true);
         } else if (e.key === 'Escape' && from.current !== null) {
           e.preventDefault();
           from.current = null;
+          keep(false);
           setDraft(sent.current ?? saved.current);
         }
       }}
@@ -748,7 +803,7 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
   const rootRef = useRef<HTMLDivElement>(null);
   const shownRef = useRef(choices);
   shownRef.current = choices;
-  const queue = useRef<Array<{ action: ChoiceAction; done: (ok: boolean) => void }>>([]);
+  const queue = useRef<Array<{ action: ChoiceAction; done: (ok: ChoiceDone) => void }>>([]);
   const busy = useRef(false);
   const refocus = useRef<{ target: string; fallback: string } | null>(null);
   const pump = () => {
@@ -763,10 +818,11 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
       const now = read?.();
       const saved = now ? choiceRows(now.value) : shownRef.current;
       const stale = staleRename(saved, action);
-      if (stale && action.kind === 'rename') toast(`That choice became “${stale.label}” while you were typing, so it was not renamed to “${action.label}”.`, 'error');
+      if (stale && action.kind === 'rename')
+        toast(`That choice became “${stale.label}” while you were typing, so it was not renamed to “${action.label}”. Your label is still in the field: press Enter to use it, or Escape to keep “${stale.label}”.`, 'error');
       const next = applyChoiceAction(saved, action);
       if (!next) {
-        done(false);
+        done(stale && action.kind === 'rename' ? { changedTo: stale.label } : false);
         continue;
       }
       busy.current = true;
@@ -777,13 +833,15 @@ function ChoicesEditor({ schema, value, onChange, read, label }: { schema: Choic
         )
         .then((ok) => {
           busy.current = false;
-          done(ok);
+          // Refused because the project moved on as it was written: a rename whose choice was renamed meanwhile says so.
+          const late = !ok && action.kind === 'rename' && read ? staleRename(choiceRows(read()?.value), action) : undefined;
+          done(late ? { changedTo: late.label } : ok);
           pump();
         });
     }
   };
   const act = (action: ChoiceAction) =>
-    new Promise<boolean>((done) => {
+    new Promise<ChoiceDone>((done) => {
       queue.current.push({ action, done });
       pump();
     });

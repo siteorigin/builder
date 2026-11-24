@@ -258,6 +258,7 @@ function registerIpc() {
   handle('projects:duplicate', () => controller.duplicate());
   handle('projects:reveal', (p?: string) => controller.revealInFinder(p));
   handle('project:snapshot', () => controller.snapshot());
+  handle('project:reloadFromDisk', () => controller.reloadFromDisk());
   handle('project:apply', (batch, opts) => controller.apply(batch, opts));
   // One node, or several siblings copied together (the session checks they are siblings on that page).
   const nodeIds = (v: unknown): v is string | string[] => typeof v === 'string' || (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'string'));
@@ -325,6 +326,9 @@ function registerIpc() {
   handle('project:generatedSource', (kind: 'component' | 'page', id: string) => controller.generatedSource(kind, id));
   handle('project:restoreGenerated', (p: string) => controller.session?.restoreGeneratedFile(p));
   handle('project:resolveConflict', (p: string, choice: 'keep' | 'restore') => controller.resolveConflict(p, choice));
+  handle('project:compareConflict', (p: unknown) => (typeof p === 'string' ? controller.compareConflict(p) : { ok: false, message: 'That file is no longer in conflict.' }));
+  handle('project:readSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.readSavedCopy(id) : { ok: false, message: 'That saved copy is no longer listed.' }));
+  handle('project:dismissSavedCopy', (id: unknown) => (typeof id === 'string' ? controller.dismissSavedCopy(id) : { ok: false, message: 'That saved copy is no longer listed.' }));
   handle('project:unlock', () => controller.unlock());
   handle('project:saveLocalState', (s: LocalWorkspaceState, key: string) => controller.saveLocalState(s, String(key ?? '')));
   handle('project:validateSource', async (source: string) => {

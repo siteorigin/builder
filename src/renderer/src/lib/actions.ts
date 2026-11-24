@@ -533,9 +533,22 @@ function sameValue(current: unknown, next: string | RichText): boolean {
 }
 
 /**
+ * Whether the plain text a canvas element showed (`shown`, as the preview read it) is what its field holds in
+ * `snapshot`: an edit begun before the page caught up with the project was typed over something else.
+ */
+export function showsInlineText(snapshot: ProjectSnapshot, ref: ElementRef, shown: string): boolean {
+  const target = inlineField(resolveRef(snapshot.state, ref).node as GraphNode | undefined);
+  if (!target) return false;
+  const v = shownOrDefault(snapshot.state, ref, target.value);
+  const words = (t: string) => t.replace(/\s+/g, ' ').trim();
+  return typeof v === 'string' ? words(v) === words(shown) : !v && !words(shown);
+}
+
+/**
  * Commit inline text from the canvas to the right document field, as that field is in `snapshot` (by default
- * the project now; the project when editing began, for an edit checked because the AI ran meanwhile). Text
- * that ends up as it was makes no edit.
+ * the project now; the project when editing began, for a typed edit, checked before it is applied). Text that
+ * ends up as it was makes no edit. 'restore' asks the page to put back the text it showed: the edit made no
+ * change, or was not saved (it was held, or refused).
  */
 export async function commitText(ref: ElementRef, text: string | RichText, snapshot = getState().snapshot): Promise<'restore' | void> {
   if (!snapshot) return;
@@ -558,23 +571,20 @@ export async function commitText(ref: ElementRef, text: string | RichText, snaps
     return 'restore';
   }
   const label = (target.field === 'label' ? 'Edit button text' : 'Edit text') + (ref.owner.kind === 'component' ? ' everywhere' : '');
-  if (!ref.instancePath.length) {
-    await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label);
-    return;
-  }
+  if (!ref.instancePath.length) return (await applyOps([{ type: 'node.setContent', owner: ref.owner, nodeId: ref.nodeId, field: target.field, value: text }], label)) ? undefined : 'restore';
   if (ref.instancePath.length > 1) return toast('Edit nested component text from the inspector.', 'error');
   const instId = ref.instancePath[0];
   const binding = target.value;
   if (!isBinding(binding)) return toast('This text is part of the component design. Use Edit everywhere or Make unique to change it.', 'error');
   if ('$prop' in binding) {
-    await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, value: text }], label);
+    if (!(await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: binding.$prop, value: text }], label))) return 'restore';
   } else {
     // The list the repeated item belongs to: the one the enclosing repeat shows (matching field names alone
     // cannot tell a footer's links from its contact links).
     const listProp = listPropFor(r.def!, ref.nodeId);
     const itemId = ref.itemPath?.[ref.itemPath.length - 1];
     if (!listProp || !itemId) return;
-    await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], label);
+    if (!(await applyOps([{ type: 'instance.setProp', owner: ref.owner, nodeId: instId, prop: listProp, itemId, field: binding.$item, value: text }], label))) return 'restore';
   }
 }
 

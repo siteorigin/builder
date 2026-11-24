@@ -170,6 +170,53 @@ describe('project session', () => {
     expect(r.error?.code).toBe('STALE_REVISION');
   });
 
+  it('never replaces a document saved outside the app after the save checked it, and carries on (#82)', async () => {
+    const { dir, s } = await make();
+    const home = s.state.site.homePageId;
+    const file = join(dir, 'siteorigin', 'pages', `${home}.json`);
+    // Another editor saves the page while the change's journal is being written: after the check, before the write.
+    const session = s as unknown as { writeJournal: (j: unknown) => Promise<void> };
+    const writeJournal = session.writeJournal.bind(s);
+    session.writeJournal = async (j) => {
+      await writeJournal(j);
+      session.writeJournal = writeJournal;
+      const page = JSON.parse(readFileSync(file, 'utf8'));
+      page.title = 'Saved in another editor';
+      writeFileSync(file, JSON.stringify(page, null, 2) + '\n');
+    };
+    const r = await s.apply({ operations: [{ type: 'page.update', pageId: home, description: 'Typed' }] }, { label: 'Change description' });
+    expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', recoverable: true } });
+    expect(JSON.parse(readFileSync(file, 'utf8')).title).toBe('Saved in another editor');
+    // Nothing of the change reached disk, so nothing waits on a reopen: the external save is read, and edits go on.
+    expect(existsSync(join(dir, '.siteorigin', 'journal.json'))).toBe(false);
+    expect((await s.reloadFromDisk()).ok).toBe(true);
+    expect((await s.apply({ operations: [{ type: 'page.update', pageId: home, description: 'Typed' }] }, { label: 'Change description' })).ok).toBe(true);
+    expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ title: 'Saved in another editor', seo: { description: 'Typed' } });
+  });
+
+  it('says a save stopped part way by a file saved outside the app needs the project reopened', async () => {
+    const { dir, s } = await make();
+    const [home, about] = s.state.site.pageOrder;
+    const session = s as unknown as { writeJournal: (j: { writes: Array<{ path: string }> }) => Promise<void> };
+    const writeJournal = session.writeJournal.bind(s);
+    session.writeJournal = async (j) => {
+      await writeJournal(j);
+      session.writeJournal = writeJournal;
+      // The second document of the batch is saved outside the app; the first is replaced before that is seen.
+      const second = join(dir, j.writes[1].path);
+      const doc = JSON.parse(readFileSync(second, 'utf8'));
+      doc.title = 'Saved in another editor';
+      writeFileSync(second, JSON.stringify(doc, null, 2) + '\n');
+    };
+    const r = await s.apply(
+      { operations: [{ type: 'page.update', pageId: home, description: 'One' }, { type: 'page.update', pageId: about, description: 'Two' }] },
+      { label: 'Two pages' }
+    );
+    expect(r).toMatchObject({ ok: false, error: { code: 'CONFLICT', recoverable: false, message: expect.stringMatching(/reopen/) } });
+    // The journal stays for reopening to finish.
+    expect(existsSync(join(dir, '.siteorigin', 'journal.json'))).toBe(true);
+  });
+
   it('preserves an externally edited generated file and reports a conflict (I02)', async () => {
     const { dir, s } = await make();
     const file = join(dir, 'src/routes/about/+page.svelte');
