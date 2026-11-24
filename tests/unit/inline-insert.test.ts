@@ -218,6 +218,12 @@ describe('an Add button goes only where the slot it fills is plain', () => {
     // Handed to a slot the Section does not have, it shows nowhere.
     def.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: sectionDef, props: {}, slots: { aside: ['bodySlot'] } };
     expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+    // Nor when the Section has stopped declaring the slot it still has an outlet for.
+    def.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: sectionDef, props: {}, slots: { content: ['bodySlot'] } };
+    const declared = p.state.components[sectionDef].slots;
+    p.state.components[sectionDef].slots = {};
+    expect(addPoints(p.state, p.owner, ref(p.owner, p.card))).toEqual([]);
+    p.state.components[sectionDef].slots = declared;
     // Shown from two places, it would show twice.
     def.tree!.nodes.inner = { id: 'inner', kind: 'instance', definitionId: sectionDef, props: {}, slots: { content: ['bodySlot'] } };
     def.tree!.nodes.bodySlot2 = { id: 'bodySlot2', kind: 'slot', slot: 'body' };

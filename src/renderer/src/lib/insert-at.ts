@@ -138,7 +138,10 @@ function slotCounts(state: ProjectState, definitionId: string, done: Map<string,
     const n = own(tree.nodes, id);
     if (!n || !times || seen.has(id)) return;
     seen.add(id);
-    if (n.kind === 'slot') counts.set(n.slot, Math.min(MANY, (counts.get(n.slot) ?? 0) + times));
+    // An outlet for a slot it no longer declares is given nothing (the generator passes declared slots only).
+    if (n.kind === 'slot') {
+      if (Object.hasOwn(def.slots ?? {}, n.slot)) counts.set(n.slot, Math.min(MANY, (counts.get(n.slot) ?? 0) + times));
+    }
     else if (n.kind === 'element') n.children.forEach((c) => walk(c, times));
     else if (n.kind === 'repeat') n.children.forEach((c) => walk(c, MANY));
     else if (n.kind === 'instance') {
