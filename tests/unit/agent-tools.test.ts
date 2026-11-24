@@ -1026,6 +1026,7 @@ describe('selection tools', () => {
       [
         () => [call('h1', 'style_selected_element', { partId: 'root', scope: 'base', state: 'hover', styles: [{ property: 'background', value: { token: 'color.brand' } }, { property: 'paddingBlock', value: '8px' }] })],
         () => [call('h2', 'style_selected_element', { partId: 'root', scope: 'phone', state: 'active', styles: [{ property: 'shadow', value: { token: 'shadow.sm' } }] })],
+        () => [call('h3', 'style_selected_element', { partId: 'root', scope: 'base', state: 'hover', styles: [{ property: 'background', value: { token: 'color.brand' } }] })],
         () => finish()
       ],
       focused
@@ -1034,10 +1035,12 @@ describe('selection tools', () => {
     const tool = adapter.requests[0].tools.find((t) => t.name === 'style_selected_element');
     expect((tool?.parameters as { properties: Record<string, { enum?: string[] }> }).properties.state?.enum).toEqual(['hover', 'focus', 'active']);
     expect(tool?.description).toContain('Add state "hover", "focus" (keyboard focus) or "active" (while pressed)');
-    // Padding on hover would move what is around it: the whole call is refused, the background with it.
-    expect(JSON.stringify(lastResult(adapter.requests[1]))).toContain('cannot change on hover, focus or press');
+    // Padding on hover would move what is around it: the whole call is refused before anything is applied, naming the field.
+    const refused = JSON.stringify(lastResult(adapter.requests[1]));
+    expect(refused).toContain('styles[1].property');
+    expect(refused).toContain('cannot change on hover, focus or press');
     const root = nodeAt(session.state, 0).overrides?.root;
-    expect(root?.['base:hover']).toBeUndefined();
+    expect(root?.['base:hover']).toEqual({ background: { token: 'color.brand' } });
     expect(root?.['phone:active']).toEqual({ shadow: { token: 'shadow.sm' } });
     expect(root?.base).toBeUndefined();
   });

@@ -20,7 +20,7 @@ import { EngineError } from '@engine/tree';
 import { tokenUsageCounts } from '@engine/tokens';
 import { validateState } from '@engine/validate';
 import { makeInstance } from '@engine/install';
-import { defFile, generateProject, generateSiteCss, nestedOverrideClass, nodeClass, pageNodeClass, variantClass } from '@generator/index';
+import { defFile, generateProject, generateSiteCss, nestedStateClass, nodeClass, pageNodeClass, variantClass } from '@generator/index';
 import { captureStyle, planStylePaste } from '../../src/renderer/src/lib/style-copy';
 
 const fresh = () => createStarterState('business', 'Test Studio', false);
@@ -74,6 +74,7 @@ const set = (s: ProjectState, scope: string, state: string | undefined, property
 function styledBox(): ProjectState {
   let s = withBoxes();
   s = set(s, 'base', undefined, 'background', '#ffffff');
+  s = set(s, 'tablet', undefined, 'background', '#dddddd');
   s = set(s, 'desktop', undefined, 'background', '#eeeeee');
   s = set(s, 'base', 'hover', 'background', '#0000ff');
   s = set(s, 'phone', 'hover', 'background', '#ff0000');
@@ -87,6 +88,7 @@ describe('state rules in the style map', () => {
     const s = styledBox();
     expect(box(s).styles).toEqual({
       base: { background: '#ffffff' },
+      tablet: { background: '#dddddd' },
       desktop: { background: '#eeeeee' },
       'base:hover': { background: '#0000ff' },
       'phone:hover': { background: '#ff0000' },
@@ -100,6 +102,8 @@ describe('state rules in the style map', () => {
 
   it('name a size and a state, and nothing else', () => {
     expect(parseStyleScopeKey('phone:hover')).toEqual({ scope: 'phone', state: 'hover' });
+    expect(parseStyleScopeKey('desktop:focus')).toEqual({ scope: 'desktop', state: 'focus' });
+    expect(parseStyleScopeKey('base:active')).toEqual({ scope: 'base', state: 'active' });
     expect(parseStyleScopeKey('base')).toEqual({ scope: 'base' });
     for (const k of ['hover', 'base:visited', 'wide', 'base:hover:active', 'toString']) expect(parseStyleScopeKey(k), k).toBeNull();
     expect(styleScopeKey('tablet', 'active')).toBe('tablet:active');
@@ -108,14 +112,15 @@ describe('state rules in the style map', () => {
   it('change only how an element looks: layout, size, visibility and motion stay on the resting style', () => {
     expect(STATE_STYLE_PROPS).toEqual(['color', 'background', 'border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd', 'radius', 'shadow', 'opacity']);
     const s = withBoxes();
-    for (const property of ['paddingBlock', 'hidden', 'layout', 'transition', 'translateY', 'customCss'])
-      rejects(() => set(s, 'base', 'hover', property, property === 'hidden' ? true : property === 'layout' ? 'row' : property === 'transition' ? 'colors' : property === 'customCss' ? 'filter: none' : '4px'), /cannot change on hover, focus or press/);
+    for (const state of ['hover', 'focus', 'active'])
+      for (const property of ['paddingBlock', 'hidden', 'layout', 'transition', 'translateY', 'customCss'])
+        rejects(() => set(s, 'base', state, property, property === 'hidden' ? true : property === 'layout' ? 'row' : property === 'transition' ? 'colors' : property === 'customCss' ? 'filter: none' : '4px'), /cannot change on hover, focus or press/);
     // A hand-edited value a state cannot hold can still be cleared.
     box(s).styles = { 'base:hover': { paddingBlock: '4px', color: '#000000' } };
     expect(box(set(s, 'base', 'hover', 'paddingBlock', null)).styles).toEqual({ 'base:hover': { color: '#000000' } });
     // A state the builder does not know is refused by the operation's schema.
     expect(validateOperation({ type: 'node.setStyle', ...at(s), scope: 'base', state: 'visited', property: 'color', value: '#000000' }).ok).toBe(false);
-    // A site style of the wrong kind is refused in a state as it is on the resting style.
+    // A site style that does not exist is refused in a state as it is on the resting style.
     rejects(() => set(s, 'base', 'hover', 'background', { token: 'color.nope' }), /does not exist|unknown|no site style/i);
   });
 
@@ -156,6 +161,10 @@ describe('state rules in the style map', () => {
     // The item's hover goes, and its empty record with it.
     const u = apply(s, [{ type: 'node.resetStyles', ...g, itemId: second, state: 'hover' }]);
     expect(grid(u).itemOverrides).toBeUndefined();
+    // A size and a state reset only that one rule of the item's.
+    const phoneToo = apply(s, [{ type: 'node.setStyle', ...g, itemId: second, scope: 'phone', state: 'hover', property: 'border', value: '1px solid #000000' }]);
+    const w = apply(phoneToo, [{ type: 'node.resetStyles', ...g, itemId: second, scope: 'phone', state: 'hover' }]);
+    expect(grid(w).itemOverrides?.card.items[second]).toEqual({ 'base:hover': { border: '2px solid #1f5f3a' } });
     // Resetting the whole placement in one state reaches its items too.
     const v = apply(s, [{ type: 'node.resetStyles', owner: owner(s), nodeId: grid(s).id, state: 'hover' }]);
     expect(grid(v).overrides).toEqual({ card: { base: { background: '#ffffff' } } });
@@ -178,7 +187,8 @@ describe('state rules in the style map', () => {
 describe('checking a document', () => {
   it('reports a value no state can hold, a key that names no size or state, and a site style of the wrong kind', () => {
     const s = withBoxes();
-    box(s).styles = { base: { color: '#000000' }, 'base:hover': { paddingBlock: '4px' }, 'base:visited': { color: '#ff0000' }, 'phone:hover': { background: { token: 'space.lg' } } };
+    // As a hand edit leaves it: a key the type does not allow.
+    box(s).styles = { base: { color: '#000000' }, 'base:hover': { paddingBlock: '4px' }, 'base:visited': { color: '#ff0000' }, 'phone:hover': { background: { token: 'space.lg' } } } as ResponsiveStyles;
     const found = validateState(s).filter((d) => d.nodeId === 'n_box');
     expect(found.map((d) => [d.code, d.severity]).sort()).toEqual([
       ['STYLE_SCOPE_INVALID', 'error'],
@@ -187,7 +197,7 @@ describe('checking a document', () => {
     ]);
     expect(found.find((d) => d.code === 'STYLE_SCOPE_INVALID')?.message).toContain('"base:visited"');
     expect(found.find((d) => d.code === 'TOKEN_GROUP')?.site).toBe('n_box|own|phone:hover|background');
-    // None of it reaches the stylesheet.
+    // Neither the unknown key nor the value no state can hold reaches the stylesheet.
     const css = generateSiteCss(s);
     expect(css).not.toContain('visited');
     expect(css).not.toMatch(/:where\(:hover\) \{[^}]*padding/);
@@ -217,12 +227,14 @@ describe('the stylesheet', () => {
   it('writes every state after every resting rule: hover only where a pointer hovers, then focus, then pressed', () => {
     const css = generateSiteCss(styledBox());
     const cls = `.${pageNodeClass('n_box')}`;
+    const tablet = css.indexOf(`@media ${MEDIA_QUERIES.tablet} {\n\t${cls} {`);
     const desktop = css.indexOf(`@media ${MEDIA_QUERIES.desktop} {\n\t${cls} {`);
     const hover = css.indexOf(`@media (hover: hover) {\n\t${cls}:where(:hover) {\n\t\tbackground: #0000ff;`);
     const phoneHover = css.indexOf(`@media ${MEDIA_QUERIES.phone} and (hover: hover) {\n\t${cls}:where(:hover) {\n\t\tbackground: #ff0000;`);
-    const focus = css.indexOf(`\n${cls}:where(:focus-visible) {\n\tcolor: #00ff00;`);
-    const active = css.indexOf(`\n${cls}:where(:active) {\n\tbox-shadow: var(--so-shadow-sm);`);
-    expect([desktop, hover, phoneHover, focus, active].every((i) => i > 0), JSON.stringify([desktop, hover, phoneHover, focus, active])).toBe(true);
+    const focus = css.indexOf(`\n${cls}:where(:focus-visible, .so-card-link:focus-visible > *) {\n\tcolor: #00ff00;`);
+    const active = css.indexOf(`\n${cls}:where(:active, .so-card-link:active > *) {\n\tbox-shadow: var(--so-shadow-sm);`);
+    expect([tablet, desktop, hover, phoneHover, focus, active].every((i) => i > 0), JSON.stringify([tablet, desktop, hover, phoneHover, focus, active])).toBe(true);
+    expect(tablet).toBeLessThan(hover);
     expect(desktop).toBeLessThan(hover);
     expect(hover).toBeLessThan(phoneHover);
     expect(phoneHover).toBeLessThan(focus);
@@ -231,14 +243,21 @@ describe('the stylesheet', () => {
     expect(css.match(/\(hover: hover\)/g)).toHaveLength(2);
   });
 
-  it('paints a link’s or button’s state background itself and through the button’s own colours', () => {
+  it('paints a link’s or button’s state background through the button’s own colours, in every state', () => {
     let s = withBoxes();
     s = set(s, 'base', 'hover', 'background', '#123456', 'n_link');
     s = set(s, 'base', 'hover', 'color', '#ffffff', 'n_link');
+    s = set(s, 'base', 'focus', 'background', '#654321', 'n_link');
     const css = generateSiteCss(s);
-    const rule = css.slice(css.indexOf(`.${pageNodeClass('n_link')}:where(:hover) {`));
-    expect(rule.slice(0, rule.indexOf('}'))).toContain('background: #123456;');
-    for (const d of ['--so-btn-bg: #123456;', '--so-btn-bg-hover: #123456;', 'color: #ffffff;', '--so-btn-fg: #ffffff;']) expect(rule.slice(0, rule.indexOf('}'))).toContain(d);
+    const ruleOf = (pseudo: string) => {
+      const rule = css.slice(css.indexOf(`.${pageNodeClass('n_link')}:where(${pseudo}`));
+      return rule.slice(0, rule.indexOf('}'));
+    };
+    // The theme's own hover for a button reads --so-btn-bg-hover; a text button paints the variable as well.
+    for (const d of ['--so-btn-bg: #123456;', '--so-btn-bg-hover: #123456;', 'background: var(--so-btn-bg);', 'color: #ffffff;', '--so-btn-fg: #ffffff;']) expect(ruleOf(':hover')).toContain(d);
+    for (const d of ['--so-btn-bg: #654321;', '--so-btn-bg-hover: #654321;', 'background: var(--so-btn-bg);']) expect(ruleOf(':focus-visible')).toContain(d);
+    // Never the colour itself, which would beat a stronger layer's resting colour (set only through the variable).
+    expect(ruleOf(':hover')).not.toContain('background: #123456');
   });
 });
 
@@ -268,10 +287,26 @@ describe.runIf(BROWSER)('the stylesheet in a browser', () => {
     }
   }
 
+  it('shows a linked card’s focus while its link has keyboard focus', async () => {
+    const css = generateSiteCss(styledBox());
+    const tab = await browser!.newPage({ viewport: { width: 1200, height: 600 } });
+    try {
+      // The card as the runtime's link wraps it (see the Action runtime file).
+      await tab.setContent(`<!doctype html><html><head><style>${css}</style></head><body><a class="so-card-link" href="#x"><div class="${pageNodeClass('n_box')}">Card</div></a></body></html>`);
+      const read = `getComputedStyle(document.querySelector('.${pageNodeClass('n_box')}')).color`;
+      const resting = (await tab.evaluate(read)) as string;
+      await tab.keyboard.press('Tab');
+      expect(resting).not.toBe('rgb(0, 255, 0)');
+      expect(await tab.evaluate(read)).toBe('rgb(0, 255, 0)');
+    } finally {
+      await tab.close();
+    }
+  });
+
   it('shows the hover over a size’s own resting value, and a size’s own hover over the one for all sizes', async () => {
     const css = generateSiteCss(styledBox());
     expect(await backgrounds(css, 1200)).toEqual({ resting: 'rgb(238, 238, 238)', hovered: 'rgb(0, 0, 255)' });
-    expect(await backgrounds(css, 900)).toEqual({ resting: 'rgb(255, 255, 255)', hovered: 'rgb(0, 0, 255)' });
+    expect(await backgrounds(css, 900)).toEqual({ resting: 'rgb(221, 221, 221)', hovered: 'rgb(0, 0, 255)' });
     expect(await backgrounds(css, 500)).toEqual({ resting: 'rgb(255, 255, 255)', hovered: 'rgb(255, 0, 0)' });
   });
 });
@@ -335,7 +370,7 @@ describe('a design’s state rules on a placement inside it', () => {
     const { inner, outer, first } = host(s);
     const files = generateProject(s);
     const css = files.get('src/lib/siteorigin/styles/components.css')!;
-    const marker = nestedOverrideClass(outer, first.id, 'lead');
+    const marker = nestedStateClass(outer, first.id, 'lead');
     const root = `.${nodeClass(outer, first.id)}`;
     // The resting rule is as it was; the state rule names the part's own class, as strongly.
     expect(css).toContain(`${root}${root} .${nodeClass(inner, 'lead')} {\n\tcolor: #111111;`);
@@ -363,12 +398,21 @@ describe('copying and detaching', () => {
       ['base', null],
       ['base', 'hover'],
       ['phone', 'hover'],
+      ['tablet', null],
       ['tablet', 'active'],
       ['desktop', null]
     ]);
-    // One size writes its resting value and its states only.
+    // One size writes the values the copy holds for it, its states included, and clears nothing it doesn't hold.
+    s = set(s, 'phone', undefined, 'background', '#777777', 'n_other');
+    s = set(s, 'phone', 'focus', 'background', '#666666', 'n_other');
     const phone = applyOperations(s, planStylePaste(s, copy, to, 'phone').operations).state;
-    expect(box(phone, 'n_other').styles).toEqual({ 'base:hover': { background: '#999999' }, 'phone:hover': { background: '#ff0000' }, 'tablet:active': { background: '#888888' } });
+    expect(box(phone, 'n_other').styles).toEqual({
+      'base:hover': { background: '#999999' },
+      phone: { background: '#777777' },
+      'phone:hover': { background: '#ff0000' },
+      'phone:focus': { background: '#666666' },
+      'tablet:active': { background: '#888888' }
+    });
     // A copy with state rules only is still a copy.
     const focused = set(withBoxes(), 'base', 'focus', 'color', '#00ff00');
     expect(captureStyle(focused, { owner: owner(focused), instancePath: [], nodeId: 'n_box' })?.sets).toHaveLength(1);
@@ -408,6 +452,33 @@ describe('copying and detaching', () => {
     expect(flattenStates(layers)).toEqual({ 'base:hover': { color: '#000002' }, 'phone:hover': { color: '#000003' }, 'base:active': { color: '#000004' } });
     // Layers beneath stay in force: their states are not written again.
     expect(flattenStates(layers, { beneath: 1 })).toEqual({ 'base:active': { color: '#000004' } });
+  });
+
+  it('writes a beneath layer’s winning state again where the result’s own resting value would now hide it', () => {
+    // An inner design's later block (a stronger tie) turns its root blue on desktop hover, over the outer design's red.
+    const layers = [
+      { styles: { 'desktop:hover': { color: '#0000ff' } } as ResponsiveStyles, strength: 2.02 },
+      { styles: { base: { color: '#ff0000' } } as ResponsiveStyles, strength: 2.01 }
+    ];
+    expect(flattenStates(layers, { beneath: 1 })).toEqual({});
+    expect(flattenStates(layers, { beneath: 1, resting: { base: { color: '#ff0000' } } })).toEqual({ 'desktop:hover': { color: '#0000ff' } });
+  });
+
+  it('lets a stronger resting rule’s custom CSS beat a weaker state value it sets too', () => {
+    const layers = [
+      { styles: { 'base:hover': { opacity: 0.25, color: '#000001' } } as ResponsiveStyles, strength: 1 },
+      { styles: { base: { customCss: 'opacity: 1' } } as ResponsiveStyles, strength: 3 }
+    ];
+    expect(flattenStates(layers)).toEqual({ 'base:hover': { color: '#000001' } });
+  });
+
+  it('keeps a stronger side over a state’s border, and drops a side a stronger state border overrides', () => {
+    const side = { styles: { base: { borderBlockStart: '3px solid #ff0000' } } as ResponsiveStyles, strength: 3 };
+    const hoverBorder = { styles: { 'base:hover': { border: '1px solid #0000ff' } } as ResponsiveStyles, strength: 1 };
+    expect(flattenStates([hoverBorder, side])).toEqual({ 'base:hover': { border: '1px solid #0000ff', borderBlockStart: '3px solid #ff0000' } });
+    const hoverSide = { styles: { 'base:hover': { borderBlockStart: '2px dashed #00ff00' } } as ResponsiveStyles, strength: 1 };
+    const strongBorder = { styles: { 'base:hover': { border: '1px solid #0000ff' } } as ResponsiveStyles, strength: 2 };
+    expect(flattenStates([hoverSide, strongBorder])).toEqual({ 'base:hover': { border: '1px solid #0000ff' } });
   });
 });
 

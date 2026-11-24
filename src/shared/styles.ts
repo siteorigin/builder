@@ -1437,39 +1437,63 @@ const BORDER_EDGES = SHORTHANDS.border;
  * The interactive state rules of layers of rules on one element, folded into the state rules of the one set of styles
  * `flattenStyles` makes of their resting rules. The stylesheet writes every resting rule, then each state's rules in
  * turn (hover, focus, active), so within one layer, and among layers as strong as each other, a state beats every
- * resting value at every size; a stronger layer still beats a weaker one's state with its resting value. At each size
- * and in each state, a property keeps the value of the state rule that wins there, from a layer of the result's own
- * (one beneath stays in force as it is); where a resting value wins, the result's resting rule already shows it.
- * Each state is folded on its own: while two hold at once (pressed while hovered), the result's later state wins, where
- * a stronger layer's earlier state may have before.
+ * resting value at every size; a stronger layer still beats a weaker one's state with its resting value (its custom
+ * CSS included). At each size and in each state, a property keeps the value of the state rule that wins there.
+ * Layers beneath (`beneath`) stay in force under the result, so their winning state values need writing only where
+ * the result's own resting rule (`resting`), now stronger than all of them, would hide them. Each state is folded on
+ * its own: while two hold at once (pressed while hovered), the result's later state wins, where a stronger layer's
+ * earlier state may have before.
  */
-export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, 'beneath'> = {}): ResponsiveStyles {
+export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, 'beneath'> & { resting?: ResponsiveStyles } = {}): ResponsiveStyles {
   const beneath = opts.beneath ?? 0;
+  // What the result's own resting rule sets at each size.
+  const resting = beneath && opts.resting ? cascadeStyles([{ styles: opts.resting, strength: 1, wideColumns: true }]) : {};
   const out: ResponsiveStyles = {};
+  /** A winning value; `custom` when it is a resting rule's custom CSS, which no style property can write again. */
+  type Win = { value: StyleValue; rank: number[]; inState: boolean; index: number; custom?: boolean };
   for (const state of STYLE_STATES) {
     const bySize = {} as Record<Size, StyleProps>;
     let any = false;
     for (const size of CASCADE_SIZES) {
-      type Win = { value: StyleValue; rank: number[]; inState: boolean; index: number };
       const best = new Map<string, Win>();
+      const offer = (prop: string, w: Win) => {
+        const held = best.get(prop);
+        if (!held || later(w.rank, held.rank)) best.set(prop, w);
+      };
+      // Custom CSS in resting rules, which may set what a state value does (an opacity, a colour).
+      const custom: Array<{ decls: string[]; rank: number[]; index: number }> = [];
       layers.forEach((layer, index) => {
         const raw = layer.styles;
         if (!raw) return;
         for (const [bucket, inState] of [['base', false], [size, false], ['base', true], [size, true]] as const) {
           const props = raw[styleScopeKey(bucket, inState ? state : undefined)];
           if (!props || typeof props !== 'object') continue;
-          for (const [prop, value] of Object.entries(props)) {
-            if (value === undefined || !isStateStyleProp(prop)) continue;
-            // Stronger first; as strong (one stylesheet block), a state rule after every resting one; then the size's
-            // own rule after the rule for all sizes; then the later layer.
-            const rank = [layer.strength, inState ? 1 : 0, bucket === 'base' ? 0 : 1, index];
-            const held = best.get(prop);
-            if (!held || later(rank, held.rank)) best.set(prop, { value, rank, inState, index });
-          }
+          // Stronger first; as strong (one stylesheet block), a state rule after every resting one; then the size's
+          // own rule after the rule for all sizes; then the later layer.
+          const rank = [layer.strength, inState ? 1 : 0, bucket === 'base' ? 0 : 1, index];
+          if (!inState && typeof props.customCss === 'string') custom.push({ decls: parseCustomCss(props.customCss).decls, rank, index });
+          for (const [prop, value] of Object.entries(props)) if (value !== undefined && isStateStyleProp(prop)) offer(prop, { value, rank, inState, index });
         }
       });
+      // Resting custom CSS that sets every CSS property a state value writes, and comes later, wins over it.
+      for (const [prop, w] of best) {
+        if (!w.inState) continue;
+        const names = cssNames(prop, w.value);
+        const over = custom.filter((c) => later(c.rank, w.rank) && names.length > 0 && names.every((n) => c.decls.some((d) => d.slice(0, d.indexOf(':')).trim().toLowerCase() === n)));
+        const last = over.reduce<(typeof over)[number] | undefined>((a, c) => (!a || later(c.rank, a.rank) ? c : a), undefined);
+        if (last) best.set(prop, { value: w.value, rank: last.rank, inState: false, index: last.index, custom: true });
+      }
+      // The result's resting rule sets this property at this size, itself or through its custom CSS.
+      const restingSets = (prop: string, value: StyleValue) => {
+        const at = resting[size];
+        if (!at) return false;
+        if (at[prop] !== undefined) return true;
+        const names = cssNames(prop, value);
+        const decls = typeof at.customCss === 'string' ? parseCustomCss(at.customCss).decls.map((d) => d.slice(0, d.indexOf(':')).trim().toLowerCase()) : [];
+        return names.length > 0 && names.some((n) => decls.includes(n));
+      };
       const props: StyleProps = {};
-      for (const [prop, w] of best) if (w.inState && w.index >= beneath) props[prop] = w.value;
+      for (const [prop, w] of best) if (w.inState && (w.index >= beneath || restingSets(prop, w.value))) props[prop] = w.value;
       // A border sets every side: a side's state value a later border overrode goes. The state's own rule writes its
       // border before the sides, so a resting side that beat that border is written again after it.
       const border = best.get('border');
@@ -1478,7 +1502,7 @@ export function flattenStates(layers: StyleLayer[], opts: Pick<FlattenOptions, '
           const side = best.get(edge);
           if (!side) continue;
           if (later(border.rank, side.rank)) delete props[edge];
-          else if (props.border !== undefined && !side.inState && side.index >= beneath) props[edge] = side.value;
+          else if (props.border !== undefined && !side.inState && !side.custom) props[edge] = side.value;
         }
       bySize[size] = props;
       if (Object.keys(props).length) any = true;

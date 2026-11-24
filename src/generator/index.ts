@@ -60,6 +60,7 @@ import { getTheme } from '@catalogue/index';
 import { usedPackFonts } from '@catalogue/fonts';
 import { ACTION_SVELTE, DRAFTS_JS, IMAGE_SVELTE, NOT_FOUND_JS, RICHTEXT_SVELTE, UTIL_JS, iconSvelte, iconsJs, linkSvelte } from './runtime-files';
 import { routeDir, validateRoute } from '@shared/routes';
+import { sha256Hex } from '@shared/sha256';
 import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { HTML_ATTR, HTML_START, isLanguageCode, pageDirection, pageLanguage, sameLanguage, siteDirection, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { publicUrl } from '@shared/public-url';
@@ -457,9 +458,11 @@ const newRules = (): RuleSet => ({ base: [], wide: [], phone: [], tablet: [], de
 const WIDE_QUERY = '(min-width: 768px)';
 /**
  * Where each interactive state applies. `:where()` adds no weight, so a state rule is exactly as strong as the rule it
- * changes, and wins by coming after every resting rule. Focus is the keyboard's (`:focus-visible`), not a click's.
+ * changes, and wins by coming after every resting rule. Focus is the keyboard's (`:focus-visible`), not a click's. A
+ * linked card is wrapped in the runtime's link (`.so-card-link`), which is what takes focus and is pressed with the
+ * keyboard, so the card it wraps shows those states with it.
  */
-const STATE_PSEUDO: Record<StyleState, string> = { hover: ':hover', focus: ':focus-visible', active: ':active' };
+const STATE_PSEUDO: Record<StyleState, string> = { hover: ':hover', focus: ':focus-visible, .so-card-link:focus-visible > *', active: ':active, .so-card-link:active > *' };
 /** Hover rules apply only where a pointer can hover, so a tap on a touch screen never leaves one stuck on. */
 const HOVER_QUERY = '(hover: hover)';
 
@@ -638,7 +641,10 @@ function addStateRules(rules: RuleSet, raw: string, input: ResponsiveStyles, opt
       for (const k of Object.keys(props).sort((a, b) => ORDER(a) - ORDER(b) || a.localeCompare(b))) {
         if (!isStateStyleProp(k)) continue;
         const out = styleToCss(k, props[k]);
-        if (opts.link && k === 'background') out.push(...out.flatMap((d) => (d.startsWith('background:') ? [d.replace(/^background:/, '--so-btn-bg:'), d.replace(/^background:/, '--so-btn-bg-hover:')] : [])));
+        // It paints through the variable too, so a stronger layer's resting colour (which sets only the variable)
+        // still wins, as it does over every other state value; a text button paints no background of its own.
+        if (opts.link && k === 'background')
+          out.splice(0, out.length, ...out.flatMap((d) => (d.startsWith('background:') ? [d.replace(/^background:/, '--so-btn-bg:'), d.replace(/^background:/, '--so-btn-bg-hover:'), 'background: var(--so-btn-bg)'] : [d])));
         if (opts.link && k === 'color') out.push(...out.map((d) => d.replace(/^color:/, '--so-btn-fg:')));
         decls.push(...out.filter(safeDecl));
       }
@@ -723,6 +729,13 @@ export function overrideClass(instanceId: string, partId: string): string {
  * The class an inner part of a code component placed in a design takes (through `so_o`) for that design's override:
  * node IDs recur across designs (a copy keeps them), so the design names it too.
  */
+/**
+ * The class an inner part of a managed component placed in a design takes (through `so_o`) for that design's state
+ * rules on it (see nestedStateMarker). Hashed, so no two placements' parts share one however their IDs run together.
+ */
+export function nestedStateClass(owner: ComponentDefinition, instanceId: string, partId: string): string {
+  return `so-os-${sha256Hex(JSON.stringify([owner.id, instanceId, partId])).slice(0, 16)}`;
+}
 export function nestedOverrideClass(owner: ComponentDefinition, instanceId: string, partId: string): string {
   return `so-o-${defKey(owner.id)}--${instanceId}-${partId}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 }
@@ -826,7 +839,7 @@ function addOverrideRules(rules: RuleSet, state: ProjectState, owner: ComponentD
  */
 function nestedStateMarker(owner: ComponentDefinition, def: ComponentDefinition, inst: InstanceNode, partId: string): string | undefined {
   if (def.kind !== 'managed' || partId === 'root' || !Object.hasOwn(def.parts, partId) || def.parts[partId].nodeId === def.tree?.rootIds[0]) return undefined;
-  return hasStateStyles(inst.overrides?.[partId]) ? nestedOverrideClass(owner, inst.id, partId) : undefined;
+  return hasStateStyles(inst.overrides?.[partId]) ? nestedStateClass(owner, inst.id, partId) : undefined;
 }
 
 /**

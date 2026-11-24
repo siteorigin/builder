@@ -291,6 +291,8 @@ export function planStylePaste(state: ProjectState, copy: StyleCopy, ref: Elemen
         const changes: PasteChange[] = [];
         for (const sc of scopes) {
           const want = wants.get(sc);
+          // One size writes only what the copy holds there; every size also clears what it doesn't.
+          if (want === undefined && scope !== 'every') continue;
           const have = target.styles?.[sc]?.[property];
           const at = parseStyleScopeKey(sc)!;
           const where = { scope: at.scope, ...(at.state ? { state: at.state } : {}) };

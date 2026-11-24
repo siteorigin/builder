@@ -1105,6 +1105,10 @@ describe('the document format and the assistant', () => {
     place(s, def);
     const docs = (p: ProjectState) => [p.manifest, p.site, p.tokens, p.assets, p.themeLock, ...Object.values(p.pages), ...Object.values(p.components)];
     for (const d of docs(s)) d.schemaVersion = from;
+    // The step itself changes nothing in the documents.
+    const stepped = structuredClone(s);
+    MIGRATIONS[from - 1].migrate(stepped, () => true);
+    expect(stepped).toEqual(s);
     const before = structuredClone(s);
     const out = migrateProject(s)!.state;
     // Every document is as it was apart from its version, and the theme lock it keeps truthful.

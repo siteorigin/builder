@@ -645,13 +645,10 @@ function structureDiagnostics(state: ProjectState): Diagnostic[] {
   const checkStyles = (rs: ResponsiveStyles | undefined, label: string, owner: Diagnostic['owner'], nodeId?: string, layer = 'own') => {
     for (const [scopeId, scope] of Object.entries(rs ?? {})) {
       const at = parseStyleScopeKey(scopeId);
-      // Rules under a key that names no size or state reach no stylesheet.
-      if (!at) {
-        out.push({ severity: 'error', code: 'STYLE_SCOPE_INVALID', message: `${label}: some styles are kept under "${scopeId}", which is neither a screen size nor a hover, focus or pressed state.`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}` });
-        continue;
-      }
+      // Rules under a key that names no size or state reach no stylesheet; the site styles they name are still checked.
+      if (!at) out.push({ severity: 'error', code: 'STYLE_SCOPE_INVALID', message: `${label}: some styles are kept under "${scopeId}", which is neither a screen size nor a hover, focus or pressed state.`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}` });
       for (const [prop, v] of Object.entries(scope ?? {})) {
-        if (at.state && !isStateStyleProp(prop))
+        if (at?.state && !isStateStyleProp(prop))
           out.push({ severity: 'error', code: 'STYLE_STATE_PROPERTY', message: `${label}: ${stateStyleError(prop)}`, owner, nodeId, site: `${nodeId ?? ''}|${layer}|${scopeId}|${prop}` });
         const token = v && typeof v === 'object' && typeof (v as { token?: unknown }).token === 'string' ? (v as { token: string }).token : undefined;
         if (token === undefined) continue;

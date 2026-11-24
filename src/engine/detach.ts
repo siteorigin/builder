@@ -341,7 +341,7 @@ export function detachInstance(state: ProjectState, op: Op<'component.detachInst
       // What the stylesheet shows a placed component's root with: its own kind in this design (an instance: the browser's).
       shownDisplay: () => naturalDisplay(src)
     });
-    Object.assign(root, flattenStates(layers, { beneath: beneath.length }));
+    Object.assign(root, flattenStates(layers, { beneath: beneath.length, resting: structuredClone(root) }));
     const overrides = { ...(src.overrides ?? {}) };
     delete overrides.root;
     if (Object.keys(root).length) overrides.root = root;

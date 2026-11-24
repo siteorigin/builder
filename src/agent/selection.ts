@@ -319,7 +319,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
                 type: 'string',
                 description: `Style only this list item (its stable ID), on a repeated part (${perItem.join(', ')}); the other items keep the shared style.${itemOnly ? ` Omitted, it is the selected item "${target.itemId}": styling every item needs request_wider_scope first.` : ` Omit to style every item.${selectedItem}`}`
               },
-              resetItem: { type: 'boolean', description: 'With itemId: first return that item to the shared style at every size, clearing its own styles (with state, only its rules for that state); then apply styles, which may be empty.' }
+              resetItem: { type: 'boolean', description: 'With itemId: first return that item to the shared style at every size, clearing its own styles (with state, only its rule for that state at scope); then apply styles, which may be empty.' }
             }
           : {}),
         scope: { type: 'string', enum: ['base', 'phone', 'tablet', 'desktop'] },
@@ -481,6 +481,6 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
   if (issues.length) return fieldError(issues, note);
   const ops: EditOperation[] = a.styles.map((s) => ({ type: 'node.setStyle', owner, nodeId, ...(partId ? { partId } : {}), ...(a.itemId !== undefined ? { itemId: a.itemId } : {}), scope: a.scope, ...(a.state ? { state: a.state } : {}), property: s.property, value: s.value }));
   // The reset and any new values are one batch: one change in history.
-  if (a.resetItem) ops.unshift({ type: 'node.resetStyles', owner, nodeId, partId, itemId: a.itemId, ...(a.state ? { state: a.state } : {}) });
+  if (a.resetItem) ops.unshift({ type: 'node.resetStyles', owner, nodeId, partId, itemId: a.itemId, ...(a.state ? { scope: a.scope, state: a.state } : {}) });
   return applySelected(ops, host, a.resetItem && !a.styles.length ? 'Reset one item to the shared style' : a.itemId !== undefined ? 'Style one item' : 'Style selection', callId);
 }

@@ -1265,7 +1265,9 @@ function PartInspector({ state, selection, tokens, everywhere }: { state: Projec
       ? focusImage(state, devUrl, shownImage(state, selection, node.image), [[inst.overrides?.[partId!]], selectedVariantStyles(def, inst.variants, part.nodeId), [def.tree?.nodes[part.nodeId]?.styles]], 'This picture can’t be shown here.')
       : undefined;
   // Rows the shared style uses show for one item too, so the item can change what every item was given.
-  const sharedRows = (controls: string[] | undefined) => controls && [...new Set([...controls, ...Object.values(inst.overrides?.[partId!] ?? {}).flatMap((sc) => Object.keys(sc ?? {}))])];
+  // Resting values only: a hover, focus or pressed value has no control of its own here.
+  const sharedRows = (controls: string[] | undefined) =>
+    controls && [...new Set([...controls, ...Object.entries(inst.overrides?.[partId!] ?? {}).flatMap(([k, sc]) => (parseStyleScopeKey(k)?.state === undefined ? Object.keys(sc ?? {}) : []))])];
 
   return (
     <>

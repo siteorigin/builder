@@ -1,7 +1,7 @@
 import type { EditOperation } from '@shared/ops';
 import { propBindingSchema, propBindingValue } from '@shared/bindings';
 import type { GraphNode, NodeTree, OwnerRef, ProjectState, TableValue } from '@shared/types';
-import { conditionRef, isBinding, isComparison } from '@shared/types';
+import { conditionRef, isBinding, isComparison, styleScopeKey } from '@shared/types';
 import { getTheme } from '@catalogue/index';
 import { displayName, enclosingRepeatProp } from '@engine/tree';
 import { boundSchema } from '@engine/schema';
@@ -180,19 +180,21 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       // A variant rule lives on the component definition with every other rule of that option: not one field.
       if (op.variant !== undefined) return null;
       const node = nodeOf(state, op.owner, op.nodeId);
+      // A state's rule is kept beside its size's resting one (`phone:hover`).
+      const key = styleScopeKey(op.scope, op.state);
       if (typeof node === 'string') return gone(node);
       if (node.kind === 'instance') {
         // A part is a name for one element of the component: which element it names is part of the field.
         const partId = op.partId ?? 'root';
         const def = has(state.components, node.definitionId);
         const part = has(def?.parts, partId);
-        if (op.itemId === undefined) return found({ definitionId: node.definitionId, part, value: at(node.overrides, [partId, op.scope, op.property]) });
+        if (op.itemId === undefined) return found({ definitionId: node.definitionId, part, value: at(node.overrides, [partId, key, op.property]) });
         // One item's own value: the item must still be in the list the part repeats over (reordering keeps it).
         const list = def ? repeatedPartList(def, partId) : undefined;
         if (!def || !list || !placementItems(def, node, list).some((i) => i.id === op.itemId)) return gone('list item');
-        return found({ definitionId: node.definitionId, part, list, value: at(itemStylesOf(def, node, partId, op.itemId), [op.scope, op.property]) });
+        return found({ definitionId: node.definitionId, part, list, value: at(itemStylesOf(def, node, partId, op.itemId), [key, op.property]) });
       }
-      return found({ kind: node.kind, value: at((node as { styles?: unknown }).styles, [op.scope, op.property]) });
+      return found({ kind: node.kind, value: at((node as { styles?: unknown }).styles, [key, op.property]) });
     }
     case 'token.set': {
       // A theme style's value is its override over the theme's default, so the theme is part of the field.
@@ -295,7 +297,7 @@ export function tableRowNameEdit(operations: EditOperation[], base: unknown[], c
 }
 
 /** Keys that say which field an operation writes; every other key is the value written. */
-const TARGET_KEYS = new Set(['owner', 'nodeId', 'pageId', 'prop', 'itemId', 'field', 'partId', 'variant', 'axis', 'scope', 'property', 'tokenId', 'assetId', 'definitionId', 'action', 'rowId', 'columnId']);
+const TARGET_KEYS = new Set(['owner', 'nodeId', 'pageId', 'prop', 'itemId', 'field', 'partId', 'variant', 'axis', 'scope', 'state', 'property', 'tokenId', 'assetId', 'definitionId', 'action', 'rowId', 'columnId']);
 
 /** Identifies the fields a batch writes, so a newer edit of the same fields replaces an older held one. */
 export function fieldKey(operations: EditOperation[]): string {
