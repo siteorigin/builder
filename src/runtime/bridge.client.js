@@ -27,12 +27,26 @@ function send(type, payload = {}) {
 function descOf(el) {
   return { ctx: el.getAttribute('data-so-ctx') || '', node: el.getAttribute('data-so-node') || '', items: el.getAttribute('data-so-items') || '' };
 }
-function chainFrom(target) {
-  const chain = [];
+function sameDesc(a, b) {
+  return a === b || (!!a && !!b && a.ctx === b.ctx && a.node === b.node && a.items === b.items);
+}
+/** The innermost of the editor's elements at `target` (itself or the nearest one around it), or null. */
+function innermost(target) {
   let el = target instanceof Element ? target : target?.parentElement;
   while (el && el !== document.documentElement) {
-    if (el.hasAttribute('data-so-node')) chain.push({ ...descOf(el), tag: el.tagName.toLowerCase(), text: textPreview(el), code: el.hasAttribute('data-so-code') });
+    if (el.hasAttribute('data-so-node')) return el;
     el = el.parentElement;
+  }
+  return null;
+}
+/**
+ * The editor's elements at `target`, innermost first. Only attributes and tag names are read: anything that makes
+ * the browser lay the page out (an element's text, its box) would do so on every move of the pointer.
+ */
+function chainFrom(target) {
+  const chain = [];
+  for (let el = innermost(target); el && el !== document.documentElement; el = el.parentElement) {
+    if (el.hasAttribute('data-so-node')) chain.push({ ...descOf(el), tag: el.tagName.toLowerCase(), code: el.hasAttribute('data-so-code') });
   }
   return chain;
 }
@@ -280,14 +294,14 @@ document.addEventListener(
   'mousemove',
   (e) => {
     if (mode !== 'edit' || editing) return;
-    const chain = chainFrom(e.target);
-    const next = chain[0] ? { ctx: chain[0].ctx, node: chain[0].node, items: chain[0].items } : null;
     // Report what is under the pointer; the editor decides what that hover means (what a click would
-    // select) and sends it back with `track`, which is what gets outlined.
-    if (JSON.stringify(next) !== JSON.stringify(pointerAt)) {
-      pointerAt = next;
-      send('hover', { chain });
-    }
+    // select) and sends it back with `track`, which is what gets outlined. While the pointer stays on the
+    // same element nothing is reported, so the elements around it are only looked at once it reaches another.
+    const el = innermost(e.target);
+    const next = el ? descOf(el) : null;
+    if (sameDesc(next, pointerAt)) return;
+    pointerAt = next;
+    send('hover', { chain: chainFrom(el) });
   },
   true
 );
@@ -1328,7 +1342,9 @@ new MutationObserver(() => {
   // An update re-rendered the page: a revealed item comes back closed, and without the text being typed. Brought up
   // to date once per frame, however many changes arrive.
   if (reveal || revealOpened.size || drafts.size) revealDirty = true;
-  scheduleRects();
+  // Outlines are measured again only while there is one to keep in place. With nothing selected, hovered while
+  // editing or revealed, the editor already has none, so a change to the page is neither measured nor reported.
+  if (revealDirty || selected || (hovered && mode === 'edit')) scheduleRects();
 }).observe(document.body, { childList: true, subtree: true, characterData: true });
 window.addEventListener('error', (e) => {
   errors.push(String(e.message));
