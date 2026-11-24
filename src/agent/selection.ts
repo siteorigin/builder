@@ -5,7 +5,7 @@
  */
 import { findVariant, variantOptions } from '@shared/variants';
 import { z } from 'zod';
-import type { ComponentDefinition, ElementRef, GraphNode, NodeTree, OwnerRef, ProjectState, PropSchema } from '@shared/types';
+import { isBinding, type ButtonAppearance, type ComponentDefinition, type ElementRef, type GraphNode, type NodeTree, type OwnerRef, type ProjectState, type PropSchema } from '@shared/types';
 import type { EditOperation } from '@shared/ops';
 import { STYLE_PROPS } from '@shared/styles';
 import { getTree } from '@engine/tree';
@@ -15,6 +15,8 @@ import { propJsonSchema, propsJsonSchema, type JsonSchema } from './propschema';
 import type { ToolDefinition } from './types';
 import type { ToolHost, ToolOutcome } from './tools';
 import { repeatedPartList } from '@shared/item-styles';
+
+type ContentField = Extract<EditOperation, { type: 'node.setContent' }>['field'];
 
 export const SELECTION_ARGS = {
   update_selected_props: z.object({ props: z.record(z.string(), z.unknown()).optional(), variant: z.string().optional() }),
@@ -78,13 +80,33 @@ export function selectionTarget(ref: ElementRef | null | undefined): SelectionTa
   };
 }
 
+const choice = (label: string, values: readonly string[]): PropSchema => ({ type: 'enum', label, default: values[0], options: values.map((value) => ({ value, label: value })) });
+/** The tags the engine lets a plain text element change to. */
+const TEXT_TAG_CHOICES = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'] as const;
+const APPEARANCES: readonly ButtonAppearance[] = ['primary', 'secondary', 'text', 'light', 'link', 'plain'];
+
 /** Content fields of a basic element, expressed as properties so one tool edits every kind of selection. */
 const NODE_FIELDS: Partial<Record<GraphNode['kind'], Record<string, PropSchema>>> = {
-  text: { text: { type: 'string', label: 'Text', default: '', multiline: true, maxLength: 20000 } },
+  text: { text: { type: 'string', label: 'Text', default: '', multiline: true, maxLength: 20000 }, tag: choice('Heading level or paragraph', TEXT_TAG_CHOICES) },
   image: { image: { type: 'image', label: 'Image', default: { assetId: null, alt: '' } } },
-  link: { label: { type: 'string', label: 'Button label', default: '' }, link: { type: 'link', label: 'Destination', default: { type: 'none', target: '' } } },
+  link: {
+    label: { type: 'string', label: 'Button label', default: '' },
+    link: { type: 'link', label: 'Destination', default: { type: 'none', target: '' } },
+    appearance: choice('Button style', APPEARANCES)
+  },
   icon: { icon: { type: 'icon', label: 'Icon', default: 'sparkles' } }
 };
+
+/**
+ * The fields this element can change. Rich text keeps its paragraph structure, and a tag or style bound to a
+ * repeated item is set by the item, so neither is offered.
+ */
+function nodeFields(node: GraphNode): Record<string, PropSchema> {
+  const fields = { ...NODE_FIELDS[node.kind] };
+  if (node.kind === 'text' && (node.rich || isBinding(node.tag))) delete fields.tag;
+  if (node.kind === 'link' && isBinding(node.appearance)) delete fields.appearance;
+  return fields;
+}
 
 interface Resolved {
   tree: NodeTree;
@@ -106,7 +128,7 @@ function resolve(state: ProjectState, target: SelectionTarget): Resolved | null 
     const def = state.components[node.definitionId];
     return def ? { tree, node, def, properties: def.properties } : null;
   }
-  return { tree, node, properties: NODE_FIELDS[node.kind] ?? {} };
+  return { tree, node, properties: nodeFields(node) };
 }
 
 const STYLE_VALUE: JsonSchema = {
@@ -119,6 +141,26 @@ const STYLE_VALUE: JsonSchema = {
   ],
   description: 'A value, a token reference, or null to remove the override.'
 };
+
+/**
+ * One closed object with the fields of every list; the app checks them against the list named by `prop`. A
+ * name two lists use differently takes either list's shape, each labelled with its list, rather than one
+ * list's shape silently replacing the other's.
+ */
+function listFields(lists: Array<[string, Extract<PropSchema, { type: 'list' }>]>): Record<string, JsonSchema> {
+  const shapes = new Map<string, Array<{ list: string; schema: JsonSchema }>>();
+  for (const [key, s] of lists)
+    for (const [name, schema] of Object.entries((propJsonSchema(s).items as JsonSchema).properties as Record<string, JsonSchema>)) {
+      if (name === 'id') continue;
+      const seen = shapes.get(name) ?? [];
+      if (!seen.some((x) => JSON.stringify(x.schema) === JSON.stringify(schema))) seen.push({ list: key, schema });
+      shapes.set(name, seen);
+    }
+  const fields: Record<string, JsonSchema> = {};
+  for (const [name, seen] of shapes)
+    fields[name] = seen.length === 1 ? seen[0].schema : { anyOf: seen.map(({ list, schema }) => ({ ...schema, description: `When prop is "${list}": ${schema.description ?? name}` })) };
+  return fields;
+}
 
 /**
  * The tools for a selection, or null when they cannot cover it: inside a component's own definition, or on a
@@ -142,10 +184,7 @@ export function selectionTools(state: ProjectState, target: SelectionTarget | nu
   // A computed list (news, an article header) is filled from the site's pages: it has no items to edit.
   const lists = Object.entries(r.properties).filter(([, s]) => s.type === 'list' && !s.feed) as Array<[string, Extract<PropSchema, { type: 'list' }>]>;
   if (lists.length) {
-    // One closed object with the fields of every list; the app checks them against the list named by `prop`.
-    const fields: Record<string, JsonSchema> = {};
-    for (const [, s] of lists) Object.assign(fields, ((propJsonSchema(s).items as JsonSchema).properties as Record<string, JsonSchema>));
-    delete fields.id;
+    const fields = listFields(lists);
     tools.push({
       name: 'edit_selected_list',
       description: SELECTION_DESCRIPTIONS.edit_selected_list,
@@ -254,7 +293,7 @@ export async function runSelectionTool(name: keyof typeof SELECTION_ARGS, args: 
     if (a.variant !== undefined && (!r.def || 'error' in findVariant(r.def, a.variant))) issues.push({ field: 'variant', message: `must be one of: ${(r.def ? [...new Set(variantOptions(r.def).map((o) => o.id))] : []).join(', ') || 'none'}` });
     if (issues.length) return fieldError(issues, note);
     const ops: EditOperation[] = Object.entries(props).map(([prop, value]) =>
-      r.node.kind === 'instance' ? { type: 'instance.setProp', owner, nodeId, prop, value } : { type: 'node.setContent', owner, nodeId, field: prop as 'text', value }
+      r.node.kind === 'instance' ? { type: 'instance.setProp', owner, nodeId, prop, value } : { type: 'node.setContent', owner, nodeId, field: prop as ContentField, value }
     );
     if (a.variant !== undefined) ops.push({ type: 'instance.setVariant', owner, nodeId, variant: a.variant });
     return applySelected(ops, host, 'Edit selection', callId);

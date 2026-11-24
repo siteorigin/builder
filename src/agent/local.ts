@@ -2,7 +2,7 @@ import { newId } from '@shared/ids';
 import { checkLocalBaseURL, type LocalToolMode, type LocalURLCheck } from '@shared/local';
 import type { AgentModelAdapter, CanonicalItem, CanonicalModelRequest, ModelCapabilities, ModelErrorCode, ModelEvent, StopReason, ToolCall } from './types';
 import { redact } from './types';
-import { envelopeInstructions, envelopeSchema, parseEnvelope, partialStatus, stripThinking } from './constrained';
+import { envelopeInstructions, envelopeSchema, FINISH_ACTION, parseEnvelope, partialStatus, stripThinking } from './constrained';
 import { localModelProfile, type LocalModelProfile } from './models';
 
 /** A loaded model can take minutes to read a long prompt before its first token. */
@@ -316,7 +316,11 @@ export class LocalAdapter implements AgentModelAdapter {
         // A finish is replayed as an envelope too, so a repair turn still shows the format the model must use.
         const envelope = constrained ? (it.providerData as { envelope?: string } | undefined)?.envelope : undefined;
         if (envelope) out.push({ role: 'assistant', content: envelope });
-        else if (!it.toolCalls.length) out.push({ role: 'assistant', content: it.text });
+        else if (!it.toolCalls.length && constrained) {
+          // An earlier request's answer, read back from the transcript, is shown in the format too: prose in
+          // the history leads a model to answer in prose once the server no longer enforces the schema.
+          if (it.text.trim()) out.push({ role: 'assistant', content: JSON.stringify({ brief_status: 'Replying', action: { tool: FINISH_ACTION, args: { message: it.text } } }) });
+        } else if (!it.toolCalls.length) out.push({ role: 'assistant', content: it.text });
         else if (constrained) {
           const c = it.toolCalls[0];
           out.push({ role: 'assistant', content: JSON.stringify({ brief_status: it.text, action: { tool: c.name, args: safeJson(replayableArgs(c.arguments)) } }) });

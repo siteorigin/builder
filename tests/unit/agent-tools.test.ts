@@ -24,6 +24,7 @@ import { compileProject } from '../../src/main/compile';
 import { resolveInstanceProps } from '@generator/index';
 
 type Turn = (req: CanonicalModelRequest) => ModelEvent[];
+type JsonSchemaLike = { type?: string; description?: string; anyOf?: JsonSchemaLike[]; properties?: Record<string, JsonSchemaLike> };
 
 class FakeAdapter implements AgentModelAdapter {
   requests: CanonicalModelRequest[] = [];
@@ -918,6 +919,87 @@ describe('selection tools', () => {
     const textId = Object.values(home.nodes).find((n) => n.kind === 'text')!.id;
     await run('Change this', { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: textId });
     expect((pageAt(session.state, '/')!.nodes[textId] as { text: string }).text).toBe('Hello there');
+  });
+
+  it('changes a selected heading’s level and a selected button’s style (#195)', async () => {
+    const { session, adapter, run } = await setup(
+      [
+        (req) => {
+          const props = (req.tools[0].parameters.properties as { props: { properties: Record<string, { enum?: string[] }> } }).props.properties;
+          expect(props.tag.enum).toEqual(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p']);
+          return [call('t1', 'update_selected_props', { props: { tag: 'h2' } })];
+        },
+        () => [call('t2', 'update_selected_props', { props: { tag: 'span' } })],
+        () => finish(),
+        (req) => {
+          const props = (req.tools[0].parameters.properties as { props: { properties: Record<string, { enum?: string[] }> } }).props.properties;
+          expect(props.appearance.enum).toEqual(['primary', 'secondary', 'text', 'light', 'link', 'plain']);
+          return [call('b1', 'update_selected_props', { props: { appearance: 'secondary', label: 'Book now' } })];
+        },
+        () => finish()
+      ],
+      focused,
+      'blank',
+      (s) => {
+        const home = s.pages[s.site.homePageId];
+        home.nodes.n_btn = { id: 'n_btn', kind: 'link', link: { type: 'none', target: '' }, label: 'Button', appearance: 'primary' };
+        home.rootIds.push('n_btn');
+      }
+    );
+    const home = pageAt(session.state, '/')!;
+    const headingId = Object.values(home.nodes).find((n) => n.kind === 'text' && n.tag === 'h1')!.id;
+    await run('Make this a subheading', { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: headingId });
+    expect((pageAt(session.state, '/')!.nodes[headingId] as { tag: string }).tag).toBe('h2');
+    // A tag the element cannot take is refused by field, before anything is applied.
+    expect(JSON.stringify(lastResult(adapter.requests[2]))).toContain('props.tag');
+    await run('Make this a secondary button', { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: 'n_btn' });
+    expect(pageAt(session.state, '/')!.nodes.n_btn).toMatchObject({ appearance: 'secondary', label: 'Book now' });
+  });
+
+  it('never offers a tag for rich text, or a tag or style a repeated item sets (#195)', () => {
+    const state = createStarterState('blank', 'Test', false);
+    const home = state.pages[state.site.homePageId];
+    home.nodes.n_rich = { id: 'n_rich', kind: 'text', tag: 'p', text: '', rich: true };
+    home.nodes.n_boundTag = { id: 'n_boundTag', kind: 'text', tag: { $item: 'level' }, text: 'x' };
+    home.nodes.n_boundBtn = { id: 'n_boundBtn', kind: 'link', link: { type: 'none', target: '' }, label: 'Go', appearance: { $item: 'style' } };
+    const fieldsOf = (nodeId: string) => Object.keys((selectionTools(state, { owner: { kind: 'page', id: home.id }, nodeId })![0].parameters.properties as { props: { properties: object } }).props.properties);
+    expect(fieldsOf('n_rich')).toEqual(['text']);
+    expect(fieldsOf('n_boundTag')).toEqual(['text']);
+    expect(fieldsOf('n_boundBtn')).toEqual(['label', 'link']);
+  });
+
+  it('keeps each list’s own shape for a field name two lists share (#195)', async () => {
+    const statsList = { type: 'list', label: 'Stats', itemLabel: 'Stat', fields: { title: { type: 'number', label: 'Value', default: 0 } }, default: [] } as unknown as PropSchema;
+    let gridDef = '';
+    const { session, adapter, run } = await setup(
+      [
+        // The other list's shape for the same name is refused by field, and nothing is applied.
+        () => [call('l0', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: 'Care' } })],
+        () => [call('l1', 'edit_selected_list', { prop: 'stats', action: 'insert', fields: { title: 42 } })],
+        () => [call('l2', 'edit_selected_list', { prop: 'items', action: 'insert', fields: { icon: 'leaf', title: 'Care', description: 'Weekly.' } })],
+        () => finish()
+      ],
+      focused,
+      'business',
+      (s) => {
+        const grid = s.pages[s.site.homePageId].nodes[s.pages[s.site.homePageId].rootIds[2]] as InstanceNode;
+        gridDef = grid.definitionId;
+        s.components[gridDef].properties.stats = statsList;
+      }
+    );
+    const ref = { ...heroRef(session.state), nodeId: pageAt(session.state, '/')!.rootIds[2] };
+    await run('Add a stat and a card', ref);
+    const tool = adapter.requests[0].tools.find((t) => t.name === 'edit_selected_list')!;
+    const title = ((tool.parameters.properties as Record<string, JsonSchemaLike>).fields.properties as Record<string, JsonSchemaLike>).title;
+    expect(title.anyOf?.map((b) => b.type)).toEqual(['string', 'number']);
+    expect(title.anyOf?.map((b) => b.description)).toEqual(['When prop is "items": Title', 'When prop is "stats": Value']);
+    const strict = toStrictSchema(tool.parameters);
+    expect(findForbiddenShapes(strict)).toEqual([]);
+    expect(JSON.stringify(strict)).not.toContain('$json');
+    expect(lastResult(adapter.requests[1]).fields.map((f: { field: string }) => f.field)).toEqual(['fields.title']);
+    const grid = nodeAt(session.state, 2).props;
+    expect((grid.stats as Array<{ title: number }>).map((i) => i.title)).toEqual([42]);
+    expect((grid.items as Array<{ title: string }>).at(-1)?.title).toBe('Care');
   });
 
   it('switches to the site tools once the user allows a wider change', async () => {
