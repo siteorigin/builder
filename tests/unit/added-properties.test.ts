@@ -48,45 +48,100 @@ describe('a list property added to a placed component', () => {
     const defaults = s.components[p.noteId].properties.links.default as ListItem[];
     return { ...p, s, defaults };
   }
+  /** Every item ID in the definition's defaults and in each placement's own list, once each. */
+  const allIds = (s: ProjectState, defaults: ListItem[], nodeIds: string[]) => [...defaults, ...nodeIds.flatMap((id) => items(s, id) ?? [])].map((i) => i.id);
 
-  it('gives each placement its own copy of the default items, with IDs of its own, on the first edit, reorder or removal', () => {
-    const { s: added, nodeIds, defaults } = withLinks();
-    const [a, b, c] = nodeIds;
+  it('gives each placement already there its own copy of the default items, with IDs of its own', () => {
+    const { s, nodeIds, defaults } = withLinks();
     expect(defaults.map((d) => d.label)).toEqual(['One', 'Two', 'Three']);
-    // Placed before the list existed: each shows the definition's items until it is edited.
-    for (const id of nodeIds) expect(items(added, id)).toBeUndefined();
-    const own = pageOwner(added);
-    const s = applyOperations(added, [
-      { type: 'instance.setProp', owner: own, nodeId: a, prop: 'links', itemId: defaults[1].id as string, field: 'label', value: 'Changed' },
-      { type: 'instance.listRemove', owner: own, nodeId: b, prop: 'links', itemId: defaults[0].id as string },
-      { type: 'instance.listMove', owner: own, nodeId: c, prop: 'links', itemId: defaults[2].id as string, index: 0 }
-    ]).state;
-    expect(items(s, a)!.map((i) => i.label)).toEqual(['One', 'Changed', 'Three']);
-    expect(items(s, b)!.map((i) => i.label)).toEqual(['Two', 'Three']);
-    expect(items(s, c)!.map((i) => i.label)).toEqual(['Three', 'One', 'Two']);
-    // No item shares an ID with the definition's defaults or with an item of another placement.
-    const ids = [...defaults, ...nodeIds.flatMap((id) => items(s, id)!)].map((i) => i.id);
+    for (const id of nodeIds) expect(items(s, id)!.map((i) => i.label)).toEqual(['One', 'Two', 'Three']);
+    const ids = allIds(s, defaults, nodeIds);
+    expect(ids).toHaveLength(12);
     expect(new Set(ids).size).toBe(ids.length);
-    // The definition's own defaults are untouched.
-    expect(s.components[Object.keys(s.components).find((k) => s.components[k].properties.links)!].properties.links.default).toEqual(defaults);
     expect(errors(s)).toEqual([]);
   });
 
-  it('keeps editing the same item after its first edit gave the placement its own items', () => {
-    const { s: added, nodeIds, defaults } = withLinks();
-    const [a] = nodeIds;
+  it('edits, removes and reorders the items each placement shows, one placement at a time', () => {
+    const { s: added, noteId, nodeIds, defaults } = withLinks();
+    const [a, b, c] = nodeIds;
     const own = pageOwner(added);
-    let s = applyOperations(added, [{ type: 'instance.setProp', owner: own, nodeId: a, prop: 'links', itemId: defaults[0].id as string, field: 'label', value: 'O' }]).state;
-    const first = items(s, a)![0];
-    s = applyOperations(s, [{ type: 'instance.setProp', owner: own, nodeId: a, prop: 'links', itemId: first.id as string, field: 'label', value: 'On' }]).state;
-    expect(items(s, a)!.map((i) => i.label)).toEqual(['On', 'Two', 'Three']);
-    expect(items(s, a)![0].id).toBe(first.id);
+    const shown = (id: string) => items(added, id)!.map((i) => i.id as string);
+    const s = applyOperations(added, [
+      { type: 'instance.setProp', owner: own, nodeId: a, prop: 'links', itemId: shown(a)[1], field: 'label', value: 'Changed' },
+      { type: 'instance.setProp', owner: own, nodeId: a, prop: 'links', itemId: shown(a)[1], field: 'label', value: 'Changed again' },
+      { type: 'instance.listRemove', owner: own, nodeId: b, prop: 'links', itemId: shown(b)[0] },
+      { type: 'instance.listMove', owner: own, nodeId: c, prop: 'links', itemId: shown(c)[2], index: 0 }
+    ]).state;
+    expect(items(s, a)!.map((i) => i.label)).toEqual(['One', 'Changed again', 'Three']);
+    expect(items(s, b)!.map((i) => i.label)).toEqual(['Two', 'Three']);
+    expect(items(s, c)!.map((i) => i.label)).toEqual(['Three', 'One', 'Two']);
+    expect(s.components[noteId].properties.links.default).toEqual(defaults);
+    const ids = allIds(s, defaults, nodeIds);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(errors(s)).toEqual([]);
   });
 
-  it('refuses an item that is in neither the placement’s list nor the definition’s', () => {
-    const { s, nodeIds } = withLinks();
-    expect(() => applyOperations(s, [{ type: 'instance.setProp', owner: pageOwner(s), nodeId: nodeIds[0], prop: 'links', itemId: 'i-nowhere', field: 'label', value: 'x' }])).toThrow(/Item "i-nowhere" not found/);
-    expect(() => applyOperations(s, [{ type: 'instance.listRemove', owner: pageOwner(s), nodeId: nodeIds[0], prop: 'links', itemId: 'i-nowhere' }])).toThrow(/Item "i-nowhere" not found/);
+  it('fills in a list added by saving a code component’s properties, and one a property becomes', () => {
+    const p = placedNote(2);
+    const [a, b] = p.nodeIds;
+    // Placement b never had a title of its own; a keeps the untouched default it was given.
+    delete placement(p.s, b).props.title;
+    const saved = applyOperations(p.s, [{ type: 'component.updateSource', definitionId: p.noteId, source: '<p>y</p>\n', properties: { title: text('Title', { default: 'Hi' }), links } }]).state;
+    const defaults = saved.components[p.noteId].properties.links.default as ListItem[];
+    for (const id of p.nodeIds) expect(items(saved, id)!.map((i) => i.label)).toEqual(['One', 'Two', 'Three']);
+    expect(new Set(allIds(saved, defaults, p.nodeIds)).size).toBe(9);
+    // Retyped from text to a list: the untouched default and the missing value both become items of their own.
+    const retyped = applyOperations(saved, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'title', schema: { ...links, label: 'Titles' } }]).state;
+    const titles = (id: string) => placement(retyped, id).props.title as ListItem[];
+    expect(titles(a).map((i) => i.label)).toEqual(['One', 'Two', 'Three']);
+    expect(titles(b).map((i) => i.label)).toEqual(['One', 'Two', 'Three']);
+    const titleDefaults = retyped.components[p.noteId].properties.title.default as ListItem[];
+    const ids = [...titleDefaults, ...titles(a), ...titles(b)].map((i) => i.id);
+    expect(new Set(ids).size).toBe(9);
+    expect(errors(retyped)).toEqual([]);
+  });
+
+  it('fills in a placement inside another component’s design, and leaves a bound one bound', () => {
+    let s = fresh();
+    const o = pageOwner(s);
+    const c = applyOperations(s, [{ type: 'component.createCode', name: 'Note', source: '<p>x</p>\n', properties: { title: text('Title') } }]);
+    s = c.state;
+    const noteId = c.results[0].definitionId as string;
+    s = applyOperations(s, [{ type: 'node.insert', owner: o, parentId: null, index: 0, primitive: 'stack' }]).state;
+    const stack = home(s).rootIds[0];
+    s = applyOperations(s, [
+      { type: 'node.insert', owner: o, parentId: stack, definitionId: noteId },
+      { type: 'node.insert', owner: o, parentId: stack, definitionId: noteId }
+    ]).state;
+    const outer = applyOperations(s, [{ type: 'component.createFromNode', owner: o, nodeId: stack, name: 'Outer' }]);
+    s = outer.state;
+    const outerId = outer.results[0].definitionId as string;
+    const [first, second] = Object.values(s.components[outerId].tree!.nodes).filter((n) => n.kind === 'instance' && n.definitionId === noteId) as InstanceNode[];
+    s = applyOperations(s, [
+      { type: 'component.setPropSchema', definitionId: noteId, prop: 'links', schema: links },
+      { type: 'component.setPropSchema', definitionId: outerId, prop: 'entries', schema: { ...links, label: 'Entries' } },
+      { type: 'node.setBinding', owner: { kind: 'component', id: outerId }, nodeId: second.id, field: 'prop', prop: 'links', binding: { $prop: 'entries' } }
+    ]).state;
+    const nested = (id: string) => (s.components[outerId].tree!.nodes[id] as InstanceNode).props.links;
+    expect((nested(first.id) as ListItem[]).map((i) => i.label)).toEqual(['One', 'Two', 'Three']);
+    expect(nested(second.id)).toEqual({ $prop: 'entries' });
+    // Changing the list's fields afterwards keeps the binding, and never refills it.
+    s = applyOperations(s, [{ type: 'component.setPropSchema', definitionId: noteId, prop: 'links', schema: { ...links, fields: { ...links.fields, note: { type: 'string', label: 'Note', default: '' } } } }]).state;
+    expect(nested(second.id)).toEqual({ $prop: 'entries' });
+    expect(errors(s)).toEqual([]);
+  });
+
+  it('stores nothing for a computed list, and still edits a placement showing the defaults it never stored', () => {
+    const p = placedNote(1);
+    const [a] = p.nodeIds;
+    const feed = applyOperations(p.s, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'news', schema: { type: 'list', label: 'News', itemLabel: 'Story', feed: 'articles', fields: { title: { type: 'string', label: 'Title' } } } }]).state;
+    expect(Object.hasOwn(placement(feed, a).props, 'news')).toBe(false);
+    // A placement whose list came later another way (a document written elsewhere) still edits from the defaults.
+    const added = applyOperations(p.s, [{ type: 'component.setPropSchema', definitionId: p.noteId, prop: 'links', schema: links }]).state;
+    delete placement(added, a).props.links;
+    const defaults = added.components[p.noteId].properties.links.default as ListItem[];
+    const s = applyOperations(added, [{ type: 'instance.setProp', owner: pageOwner(added), nodeId: a, prop: 'links', itemId: defaults[0].id as string, field: 'label', value: 'Edited' }]).state;
+    expect(items(s, a)!.map((i) => i.label)).toEqual(['Edited', 'Two', 'Three']);
   });
 });
 

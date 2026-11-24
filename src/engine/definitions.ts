@@ -13,7 +13,7 @@ import { richTextToPlain, toRichText } from '@shared/richtext';
 import { axesOf, findVariant } from '@shared/variants';
 import { defKey } from '@generator/index';
 import { EngineError, fail, findParent, getNode, instancesOf } from './tree';
-import { clone } from './install';
+import { clone, freshListIds } from './install';
 import { normalizeProp } from './values';
 import { acceptedTypes, bindingProblem, bindingSites, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties, normalizePropSchema, type BindField } from './schema';
 import { defFile } from '@generator/index';
@@ -159,8 +159,16 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
   // Changing the type of a property that has content keeps that content only where the conversion is lossless.
   const lossless: Record<string, string[]> = { string: ['richtext', 'enum', 'number'], richtext: ['string'], enum: ['string'], number: ['string'] };
   const retyped = prev && prev.type !== schema.type;
+  // List items carry IDs, and each placement needs its own, as a new placement gets them. A property that starts
+  // holding items now gives every placement without a value its own copy of the default items, so no two share an
+  // item's ID and the items the Inspector shows are the ones its edits find. A computed list stores nothing.
+  const startsList = schema.type === 'list' && !schema.feed && (prev?.type !== 'list' || !!prev.feed);
+  const ownItems = () => freshListIds({ [name]: schema }, { [name]: schema.default })[name];
   for (const { node, label, owner } of instancesOf(state, def.id)) {
-    if (!Object.hasOwn(node.props, name)) continue;
+    if (!Object.hasOwn(node.props, name)) {
+      if (startsList) node.props[name] = ownItems();
+      continue;
+    }
     const v = node.props[name];
     if (isBinding(v)) {
       // Bound straight through from an enclosing component: both ends must keep the same type.
@@ -171,7 +179,7 @@ function applyPropSchema(state: ProjectState, def: ComponentDefinition, name: st
     }
     // Placements start with every default filled in; an untouched default is not content to keep.
     if (retyped && JSON.stringify(v) === JSON.stringify(prev!.default)) {
-      node.props[name] = clone(schema.default);
+      node.props[name] = schema.type === 'list' ? ownItems() : clone(schema.default);
       continue;
     }
     if (retyped && !(lossless[prev!.type] ?? []).includes(schema.type)) fail(`${label}: "${name}" has content that a ${schema.type} property cannot keep. Remove the property and add it again to start over.`);
@@ -355,7 +363,11 @@ export function setVariant(state: ProjectState, op: Op<'component.setVariant'>):
   const axisId = op.axis ?? (holding.length === 1 ? holding[0] : existing.length === 1 ? existing[0] : existing.length ? fail(`"${def.name}" has several variant axes (${existing.join(', ')}). Name the axis.`) : 'style');
   if (!validId(axisId)) fail(`Variant axis names must be camelCase identifiers ("${axisId}").`);
   def.variantAxes ??= {};
-  const axis = own(def.variantAxes, axisId) ?? (def.variantAxes[axisId] = { label: axisId.charAt(0).toUpperCase() + axisId.slice(1), default: op.variant, options: {} });
+  // A new axis starts with a plain base option as its default, so placements keep the look they had and can choose the
+  // new option (a picker needs two to choose between).
+  const axis =
+    own(def.variantAxes, axisId) ??
+    (def.variantAxes[axisId] = { label: axisId.charAt(0).toUpperCase() + axisId.slice(1), default: 'default', options: op.variant === 'default' ? {} : { default: { label: 'Default' } } });
   if (op.axisLabel) axis.label = op.axisLabel.trim();
   axis.options[op.variant] = { ...(own(axis.options, op.variant) ?? {}), label: op.label.trim() };
   if (op.makeDefault) axis.default = op.variant;

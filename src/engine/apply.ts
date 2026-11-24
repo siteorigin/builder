@@ -440,13 +440,25 @@ function refuseFeed(schema: PropSchema) {
   fail(`${schema.label} shows ${what} and changes with them. Edit the article’s title, date, byline or excerpt in its page settings, or hide it from news lists there.`);
 }
 
+/**
+ * A nested component's property that its design fills in, from the enclosing component's own property or from each
+ * item of a list the design repeats, takes no value of its own: writing one would drop that link without a word.
+ */
+function refuseBound(state: ProjectState, owner: OwnerRef, value: unknown, schema: PropSchema) {
+  if (!isBinding(value)) return;
+  if ('$item' in value) fail(`${schema.label} is filled in from each item of the list the design repeats. Edit those items, or unbind it in the design first.`);
+  const parent = owner.kind === 'component' ? state.components[owner.id] : undefined;
+  const from = parent && Object.hasOwn(parent.properties, value.$prop) ? parent.properties[value.$prop].label : value.$prop;
+  fail(`${schema.label} comes from the enclosing component's "${from}" property. Change it there, or unbind it in the design first.`);
+}
+
 function listTarget(state: ProjectState, owner: OwnerRef, nodeId: string, prop: string) {
   const { node, def } = instanceTarget(state, owner, nodeId);
   const schema = def.properties[prop];
   if (!schema) fail(`"${def.name}" has no property "${prop}".`);
   if (schema.type !== 'list') fail(`"${prop}" is not a list property.`);
   refuseFeed(schema);
-  if (isBinding(node.props[prop])) fail(`${schema.label} comes from the enclosing component's own property; edit its items there.`);
+  refuseBound(state, owner, node.props[prop], schema);
   if (!Array.isArray(node.props[prop])) node.props[prop] = clone(schema.default);
   return { node, def, schema };
 }
@@ -1677,10 +1689,10 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
   const { node, def } = instanceTarget(state, op.owner, op.nodeId);
   const schema = def.properties[op.prop];
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
+  refuseBound(state, op.owner, node.props[op.prop], schema);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
     refuseFeed(schema);
-    if (isBinding(node.props[op.prop])) fail(`${schema.label} comes from the enclosing component's own property; edit its items there.`);
     // A placement without its own list shows the definition's items, so an edit to one of them starts from those.
     const own = node.props[op.prop];
     const list = (Array.isArray(own) ? own : clone(schema.default)) as Array<ListItem>;
@@ -1745,7 +1757,7 @@ function tableEdit(state: ProjectState, op: Op<'instance.editTable'>): OpResult 
   const schema = def.properties[op.prop];
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   if (schema.type !== 'table') fail(`"${op.prop}" is not a table property.`);
-  if (isBinding(node.props[op.prop])) fail(`${schema.label} comes from the enclosing component's own property; edit the table there.`);
+  refuseBound(state, op.owner, node.props[op.prop], schema);
   const current = Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : clone(schema.default);
   const r = editTable(current, op, `${def.name} → ${schema.label}`);
   node.props[op.prop] = r.value;
