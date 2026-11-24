@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, promises as fs } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { CreateProjectOptions, ExportFormat, ExportResult, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RuntimeState, StorageInfo, WebsiteTools } from '@shared/api';
+import type { CreateProjectOptions, ExportFormat, ExportResult, ImportChoices, ImportReview, ImportReviewRow, LocalWorkspaceState, ProjectSnapshot, ProgressEvent, RecentExport, RestoreVersionResult, RuntimeState, StorageInfo, VersionReview, WebsiteTools } from '@shared/api';
 import type { ApplyResult, EditBatch } from '@shared/ops';
 import type { AssetRecord, ProjectState } from '@shared/types';
 import { createStarterState, STARTER_ASSETS } from '@catalogue/starters';
@@ -229,6 +229,7 @@ export class Controller {
       state: s.state,
       revision: s.revision,
       history: s.historyInfo(),
+      versions: s.versionsInfo(),
       // Missing image files are for the author, not the AI: it cannot bring them back, and its checks compare messages.
       diagnostics: [...s.diagnostics(), ...safeMissingDiagnostics(s)],
       runtime: this.runtimeStatus(),
@@ -1205,6 +1206,42 @@ export class Controller {
     if (!s || !key || this.workspaceKey !== key || this.closing) return { ok: false, message: 'That project is no longer open.' };
     if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
     return s.reclaimStorage(plan);
+  }
+
+  /** The open project in the opening `key`, while it is not closing; otherwise why not. */
+  private openedAs(key: string): ProjectSession | null {
+    const s = this.session;
+    return s && key && this.workspaceKey === key && !this.closing ? s : null;
+  }
+
+  /** Save the site as it is now as a named version (issue 260), in the opening `key` only. */
+  async saveVersion(name: string, key: string): Promise<{ ok: boolean; message?: string; id?: string; missing?: string[] }> {
+    const s = this.openedAs(key);
+    if (!s) return { ok: false, message: 'That project is no longer open.' };
+    if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
+    return s.saveVersion(name);
+  }
+
+  /** What restoring saved version `id` would change in the opening `key`. */
+  async reviewVersion(id: string, key: string): Promise<{ ok: boolean; message?: string; review?: VersionReview }> {
+    const s = this.openedAs(key);
+    if (!s) return { ok: false, message: 'That project is no longer open.' };
+    return s.reviewVersion(id);
+  }
+
+  /** Restore saved version `id` as reviewed at `revision`, in the opening `key` only. */
+  async restoreVersion(id: string, revision: number, key: string): Promise<RestoreVersionResult> {
+    const s = this.openedAs(key);
+    if (!s) return { ok: false, message: 'That project is no longer open.' };
+    if (this.aiBusy()) return { ok: false, message: 'Wait for the AI to finish, then try again.' };
+    return s.restoreVersion(id, revision);
+  }
+
+  /** Delete saved version `id` in the opening `key` only. */
+  async deleteVersion(id: string, key: string): Promise<{ ok: boolean; message?: string; freed?: number }> {
+    const s = this.openedAs(key);
+    if (!s) return { ok: false, message: 'That project is no longer open.' };
+    return s.deleteVersion(id);
   }
 
   /** What private metadata an image asset's original carries. Only a library file inside the project is read. */

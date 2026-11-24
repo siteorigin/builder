@@ -7,7 +7,7 @@ import { basename, dirname, join } from 'node:path';
 import type { PageDoc, ProjectState } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
 import type { ApplyResult, EditBatch } from '@shared/ops';
-import type { StorageInfo } from '@shared/api';
+import type { RestoreVersionResult, StorageInfo, VersionReview, VersionsInfo } from '@shared/api';
 import { validateOperation } from '@shared/ops';
 import { applyOperations, assetUsages, captureClipboard, type Clipboard } from '@engine/apply';
 import { listThemes, themePinProblem } from '@catalogue/index';
@@ -24,6 +24,7 @@ import { packFileInfo, readPackFile } from '../packs/files';
 import { checkSvelteSource, componentSources } from '../codecheck';
 import { atomicWrite, ensureDir, readBytesIfExists, readIfExists, readJson, removeDurable, removeEmptyDirs, safeJoin, sha, syncDir, toJson } from './fsutil';
 import { CUSTOM_SOURCE_RE, DOC_DIR, isCanonicalPath, newestStoredVersion, ProjectFormatError, readProject, readState, stateToAuthoredSources, stateToDocs } from './documents';
+import { newVersionId, sameContents, VERSION_DAMAGED, VERSION_MEDIA_RE, VERSION_NAME_MAX, VersionStore, type SavedVersion } from './versions';
 
 export const LOCAL_DIR = '.siteorigin';
 /** In the dev cache: hashes of the generated project files the dev variants stand in for. */
@@ -170,6 +171,12 @@ interface AssetFile {
   mtimeMs: number;
   ino: number;
   token: string;
+}
+
+/** Does `text` name `file` as a whole file name, so that `a-logo.svg` is not found inside `ba-logo.svg`? */
+function namesFile(text: string, file: string): boolean {
+  for (let i = text.indexOf(file); i >= 0; i = text.indexOf(file, i + 1)) if (i === 0 || !/[\w.-]/.test(text[i - 1])) return true;
+  return false;
 }
 
 /** Every stored version a history entry restores or expects. */
@@ -383,9 +390,12 @@ export class ProjectSession extends EventEmitter {
   private clipboards: Clipboard[] = [];
   /** A save failed after its journal was written: only reopening the project can finish it, so nothing else is written. */
   private unsettled = false;
+  /** Named versions of the site, kept apart from history until the author deletes them (issue 260). */
+  private versions: VersionStore;
 
   constructor(public readonly dir: string) {
     super();
+    this.versions = new VersionStore(this.local('versions'));
   }
 
   local(...parts: string[]): string {
@@ -442,6 +452,7 @@ export class ProjectSession extends EventEmitter {
     s.state = await readState(dir, { allowNewer: true });
     s.docs = stateToDocs(s.state);
     s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)).catch(() => null));
+    await s.versions.load().catch(() => undefined);
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
     return s;
@@ -459,6 +470,8 @@ export class ProjectSession extends EventEmitter {
     s.migrationDue = !!read.migration;
     s.docs = stateToDocs(s.state);
     s.history = usableHistory(await readIfExists(s.local('history', 'history.json')).then((t) => (t ? (JSON.parse(t) as HistoryFile) : null)));
+    // Before the first sweep, which collects what no saved version names.
+    await s.versions.load();
     s.generated = (await readIfExists(join(dir, 'siteorigin', 'generated-manifest.json')).then((t) => (t ? JSON.parse(t) : null))) ?? s.generated;
     const local = await readIfExists(s.local('state.json'));
     if (local) s.revision = JSON.parse(local).revision ?? 0;
@@ -1780,6 +1793,8 @@ export class ProjectSession extends EventEmitter {
     }
     const keep = new Set([...pinned, ...this.history.entries.flatMap(entryBlobs), ...(await this.blobsNamedOnDisk())]);
     for (const b of sizes.keys()) if (!keep.has(b)) await fs.rm(join(blobDir, `${b}.json`), { force: true });
+    // What a save of a version that stopped part way left, which no version names.
+    await this.versions.collect().catch(() => 0);
     await this.gateAssets(() => this.collectAssets());
   }
 
@@ -1997,7 +2012,14 @@ export class ProjectSession extends EventEmitter {
       if (inHistory && !inv!.pinned.has(f.token)) freeable.push(f);
     }
     const sum = (blobs: Iterable<string>) => [...new Set(blobs)].reduce((n, b) => n + (sizes.get(b) ?? 0), 0);
-    const info: StorageInfo = { media, kept, history: { steps: h.entries.length, bytes: sum(h.entries.flatMap(entryBlobs)) }, reclaim: null, blocked: this.reclaimBlocked() };
+    const info: StorageInfo = {
+      media,
+      kept,
+      history: { steps: h.entries.length, bytes: sum(h.entries.flatMap(entryBlobs)) },
+      versions: { count: this.versions.versions.length, bytes: this.versions.totalBytes() },
+      reclaim: null,
+      blocked: this.reclaimBlocked()
+    };
     if (!inv || !freeable.length) return { info, drop: null };
     const tokens = new Set(freeable.map((f) => f.token));
     const names = (i: number) => [...tokens].some((t) => inv.byEntry[i].has(t));
@@ -2089,6 +2111,273 @@ export class ProjectSession extends EventEmitter {
       redoLabel: h.entries[h.cursor]?.label,
       entries: h.entries.map((e, i) => ({ id: e.id, label: e.label, source: e.source, time: e.time, applied: i < h.cursor, runId: e.runId }))
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Saved versions (issue 260)
+  // -------------------------------------------------------------------------
+
+  /** The saved versions, newest first, with what each one alone takes on disk. */
+  versionsInfo(): VersionsInfo {
+    const store = this.versions;
+    return {
+      list: [...store.versions].reverse().map((v) => ({
+        id: v.id,
+        name: v.name,
+        time: v.time,
+        auto: !!v.auto,
+        pages: Object.keys(v.docs).filter((p) => PAGE_DOC.test(p)).length,
+        bytes: store.exclusiveBytes(v),
+        missing: Object.keys(v.media).filter((p) => v.media[p] === null)
+      })),
+      bytes: store.totalBytes(),
+      ...(store.problem ? { problem: store.problem } : {})
+    };
+  }
+
+  /** Why a version can't be saved or restored now, if so. */
+  private async versionsBlocked(): Promise<string | null> {
+    const blocked = await this.writeBlocked();
+    if (blocked) return blocked.error?.message ?? LOCK_UNCHECKED;
+    // The documents hold the AI's provisional work while it runs.
+    if (this.activeRun) return 'Wait for the AI to finish, then try again.';
+    return this.versions.problem;
+  }
+
+  /**
+   * The media files a version of `docs` holds: every file the asset library lists (originals and smaller copies), and
+   * every other file directly in static/assets/ that a document names, an imported file by its eight hash characters
+   * (as the sweep finds it) and any other by its whole name (a code component's /assets/logo.svg).
+   */
+  private async versionMediaPaths(docs: Map<string, string>): Promise<string[]> {
+    const out = new Set(libraryFiles(docs.get(ASSETS_DOC)).filter((f) => VERSION_MEDIA_RE.test(f)));
+    let dir: string;
+    try {
+      dir = safeJoin(this.dir, 'static/assets');
+    } catch {
+      return [...out].sort();
+    }
+    const texts = [...docs.values()];
+    const names = (await fs.lstat(dir).catch(() => null))?.isDirectory() ? await fs.readdir(dir).catch(() => [] as string[]) : [];
+    for (const name of names) {
+      const rel = `static/assets/${name}`;
+      if (out.has(rel) || name.startsWith('.') || !VERSION_MEDIA_RE.test(rel)) continue;
+      const named = IMPORTED_ASSET_RE.test(name) ? texts.some((t) => t.includes(assetToken(name))) : texts.some((t) => namesFile(t, name));
+      if (named && (await fs.lstat(join(dir, name)).catch(() => null))?.isFile()) out.add(rel);
+    }
+    return [...out].sort();
+  }
+
+  /** Store the project as it is now, its documents and the media they name, as a version not yet in the list. */
+  private async captureVersion(name: string, auto = false): Promise<SavedVersion> {
+    const docs: Record<string, string> = {};
+    for (const [path, content] of this.docs) docs[path] = await this.versions.putText(content);
+    const media: Record<string, string | null> = {};
+    for (const rel of await this.versionMediaPaths(this.docs)) {
+      try {
+        media[rel] = await this.versions.putFile(safeJoin(this.dir, rel));
+      } catch (e) {
+        // Only a file that is not there is kept as missing: one that could not be read stops the save.
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(`${rel} could not be read, so nothing was saved: ${(e as Error).message}`);
+        media[rel] = null;
+      }
+    }
+    return { id: newVersionId(), name, time: new Date().toISOString(), revision: this.revision, schemaVersion: SCHEMA_VERSION, ...(auto ? { auto } : {}), docs, media };
+  }
+
+  /**
+   * Save the site as it is now as a named version, kept until the author deletes it. A file its documents name that
+   * is missing from the folder does not stop the save: it is listed in `missing`, and the version records it as such.
+   */
+  saveVersion(name: string): Promise<{ ok: boolean; message?: string; id?: string; missing?: string[] }> {
+    return this.serialize(async () => {
+      const why = await this.versionsBlocked();
+      if (why) return { ok: false, message: why };
+      const clean = name.replace(/\s+/g, ' ').trim();
+      if (!clean) return { ok: false, message: 'Give the version a name.' };
+      if (clean.length > VERSION_NAME_MAX) return { ok: false, message: `Use a name of at most ${VERSION_NAME_MAX} characters.` };
+      let v: SavedVersion;
+      try {
+        v = await this.captureVersion(clean);
+        await this.versions.publish([...this.versions.versions, v]);
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      }
+      this.emit('history');
+      return { ok: true, id: v.id, missing: Object.keys(v.media).filter((p) => v.media[p] === null) };
+    });
+  }
+
+  /**
+   * What restoring `v` leaves: the project it holds, brought up to the current format if it is older, with this
+   * project's own manifest (its identity stays, whichever version of the site it holds), and the files to put back.
+   * Every object it needs is read and checked, and the project it leaves validated, before anything is written.
+   */
+  private async restorePlan(v: SavedVersion): Promise<{ ok: false; message: string } | { ok: true; state: ProjectState; docs: Map<string, string>; files: Array<{ path: string; hash: string; replaces: boolean }> }> {
+    const refuse = (message: string) => ({ ok: false as const, message });
+    if (v.schemaVersion > SCHEMA_VERSION) return refuse(`“${v.name}” was saved by a newer version of SiteOrigin Builder. Update the app to restore it.`);
+    const stored = new Map<string, string>();
+    try {
+      for (const [path, h] of Object.entries(v.docs)) stored.set(path, (await this.versions.read(h)).toString('utf8'));
+    } catch (e) {
+      return refuse((e as Error).message);
+    }
+    let state: ProjectState;
+    try {
+      const read = await readProject(this.dir, { only: stored });
+      state = { ...read.state, manifest: this.state.manifest };
+    } catch (e) {
+      return refuse(`“${v.name}” can’t be restored: ${(e as Error).message}`);
+    }
+    // Reading fills a component's missing code with nothing: a version without it is damaged, not empty.
+    for (const def of Object.values(state.components)) if (def.sourcePath && !stored.has(def.sourcePath)) return refuse(VERSION_DAMAGED);
+    const fatal = validateState(state, { sectionLinks: false }).find((d) => d.severity === 'error' && FATAL_CODES.has(d.code));
+    if (fatal) return refuse(`“${v.name}” can’t be restored: ${fatal.message}`);
+    const resolve = componentSources(state.components);
+    for (const def of Object.values(state.components)) {
+      if (def.kind !== 'code' || def.source === undefined || def.source === this.state.components[def.id]?.source) continue;
+      if (def.owner === 'theme' && listThemes().some((t) => t.components.some((c) => c.id === def.id && c.source === def.source))) continue;
+      const bad = (await checkSvelteSource(def.source, { filename: def.sourcePath, resolve })).filter((p) => p.severity === 'error');
+      if (bad.length) return refuse(`The code for “${def.name}” in “${v.name}” has problems, so it can’t be restored: ${bad[0].message}`);
+    }
+    const files: Array<{ path: string; hash: string; replaces: boolean }> = [];
+    for (const [path, h] of Object.entries(v.media)) {
+      if (h === null) continue;
+      let abs: string;
+      try {
+        abs = safeJoin(this.dir, path);
+      } catch (e) {
+        return refuse(`“${v.name}” can’t put back ${path}: ${(e as Error).message}`);
+      }
+      const st = await fs.lstat(abs).catch(() => null);
+      if (st && !st.isFile()) return refuse(`${path} is not a file, so “${v.name}” can’t put back its own.`);
+      if (st && sha(await fs.readFile(abs)) === h) continue;
+      try {
+        await this.versions.read(h);
+      } catch (e) {
+        return refuse((e as Error).message);
+      }
+      files.push({ path, hash: h, replaces: !!st });
+    }
+    return { ok: true, state, docs: stateToDocs(state), files };
+  }
+
+  /** What restoring saved version `id` would change in the project as it is now. Changes nothing. */
+  reviewVersion(id: string): Promise<{ ok: boolean; message?: string; review?: VersionReview }> {
+    // Queued behind any save, so it compares with a settled project, but it never writes.
+    return this.serialize(async () => {
+      const v = this.versions.versions.find((x) => x.id === id);
+      if (!v) return { ok: false, message: 'That saved version is no longer there.' };
+      const review: VersionReview = {
+        revision: this.revision,
+        pages: { back: [], gone: [], changed: [] },
+        site: false,
+        styles: false,
+        components: 0,
+        library: false,
+        files: [],
+        missing: Object.keys(v.media).filter((p) => v.media[p] === null),
+        unchanged: false
+      };
+      const plan = await this.restorePlan(v);
+      if (!plan.ok) return { ok: true, review: { ...review, problem: plan.message } };
+      const title = (s: ProjectState, pageId: string) => s.pages[pageId]?.title?.trim() || 'Untitled page';
+      let differs = false;
+      for (const p of new Set([...plan.docs.keys(), ...this.docs.keys()])) {
+        if (plan.docs.get(p) === this.docs.get(p)) continue;
+        differs = true;
+        const pageId = p.match(PAGE_DOC)?.[1];
+        if (pageId) {
+          if (!this.docs.has(p)) review.pages.back.push(title(plan.state, pageId));
+          else if (!plan.docs.has(p)) review.pages.gone.push(title(this.state, pageId));
+          else review.pages.changed.push(title(plan.state, pageId));
+        } else if (p === `${DOC_DIR}/site.json`) review.site = true;
+        else if (p === `${DOC_DIR}/tokens.json`) review.styles = true;
+        else if (p === ASSETS_DOC) review.library = true;
+      }
+      const ids = new Set([...Object.keys(plan.state.components), ...Object.keys(this.state.components)]);
+      review.components = [...ids].filter((c) => JSON.stringify(plan.state.components[c] ?? null) !== JSON.stringify(this.state.components[c] ?? null)).length;
+      review.files = plan.files.map((f) => f.path);
+      review.unchanged = !differs && !plan.files.length;
+      return { ok: true, review };
+    }, false);
+  }
+
+  /**
+   * Restore saved version `id`, as reviewed at `expectedRevision`. The work it replaces is saved first, as a version
+   * of its own unless one already holds exactly that, so the way back outlasts the undo history. Then the files the
+   * version needs are put back, and its documents saved as one ordinary step that Undo takes back. Files are only
+   * ever put back, never removed, so every step history keeps still finds the files it names.
+   */
+  restoreVersion(id: string, expectedRevision: number): Promise<RestoreVersionResult> {
+    return this.serialize(async () => {
+      const why = await this.versionsBlocked();
+      if (why) return { ok: false, message: why };
+      const v = this.versions.versions.find((x) => x.id === id);
+      if (!v) return { ok: false, message: 'That saved version is no longer there.' };
+      if (expectedRevision !== this.revision) return { ok: false, stale: true, message: 'The project changed since this version was reviewed. Review it again before restoring.' };
+      const plan = await this.restorePlan(v);
+      if (!plan.ok) return { ok: false, message: plan.message };
+      const docsChange = plan.docs.size !== this.docs.size || [...plan.docs].some(([p, c]) => this.docs.get(p) !== c);
+      if (!docsChange && !plan.files.length) return { ok: true, unchanged: true, revision: this.revision };
+      // A change made outside the app and not loaded yet would vanish under the restore: it waits for it.
+      const unloaded = await this.unloadedEdit(new Set());
+      if (unloaded) return { ok: false, message: `${unloaded} changed outside the app. Try again in a moment.` };
+      // The way back first. If it can't be saved nothing is restored; a stop after it leaves one more version.
+      let backup: SavedVersion;
+      try {
+        const now = await this.captureVersion(`Before restoring “${v.name}”`, true);
+        const same = this.versions.versions.find((x) => sameContents(x, now));
+        backup = same ?? now;
+        if (!same) await this.versions.publish([...this.versions.versions, now]);
+      } catch (e) {
+        return { ok: false, message: `Your current work could not be saved first, so nothing was restored. ${(e as Error).message}` };
+      }
+      const way = { id: backup.id, name: backup.name };
+      this.emit('history');
+      // The files before the documents that name them. A file put back over something else keeps that in recovery.
+      const stamp = Date.now();
+      for (const f of plan.files) {
+        const abs = safeJoin(this.dir, f.path);
+        if (f.replaces) {
+          const prior = await fs.readFile(abs).catch(() => null);
+          if (prior && sha(prior) !== f.hash) await atomicWrite(this.local('recovery', `${stamp}-${f.path.replace(/[\\/]/g, '__')}`), prior);
+        }
+        await atomicWrite(abs, await this.versions.read(f.hash));
+      }
+      if (plan.files.length) await this.refreshAssetFiles().catch(() => false);
+      if (!docsChange) {
+        this.emit('changed', { revision: this.revision, changedDocs: [], changedFiles: plan.files.map((f) => f.path), label: `Restore “${v.name}”`, source: 'user' } satisfies SessionEvent);
+        return { ok: true, revision: this.revision, backup: way };
+      }
+      let ev: SessionEvent;
+      try {
+        ev = await this.persist(plan.state, { label: `Restore “${v.name}”`, source: 'user' });
+      } catch (e) {
+        if (e instanceof DiskConflictError) return { ok: false, message: e.message, backup: way };
+        throw e;
+      }
+      return { ok: true, revision: this.revision, entryId: ev.entryId, backup: way };
+    });
+  }
+
+  /** Delete saved version `id`, and what no other version holds. */
+  deleteVersion(id: string): Promise<{ ok: boolean; message?: string; freed?: number }> {
+    return this.serialize(async () => {
+      const blocked = await this.writeBlocked();
+      if (blocked) return { ok: false, message: blocked.error?.message };
+      if (this.versions.problem) return { ok: false, message: this.versions.problem };
+      const left = this.versions.versions.filter((v) => v.id !== id);
+      if (left.length === this.versions.versions.length) return { ok: true, freed: 0 };
+      try {
+        await this.versions.publish(left);
+      } catch (e) {
+        return { ok: false, message: (e as Error).message };
+      }
+      const freed = await this.versions.collect().catch(() => 0);
+      this.emit('history');
+      return { ok: true, freed };
+    });
   }
 
   /** A canonical document, other than `skip`, that differs on disk from the loaded project, or a page file it lacks. */

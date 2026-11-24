@@ -281,6 +281,19 @@ function registerIpc() {
   handle('project:reclaimStorage', (plan: unknown, key: unknown) =>
     typeof plan === 'string' && typeof key === 'string' ? controller.reclaimStorage(plan, key) : { ok: false, message: 'Nothing to free.' }
   );
+  // Saved versions (issue 260).
+  handle('project:saveVersion', (name: unknown, key: unknown) =>
+    typeof name === 'string' && typeof key === 'string' ? controller.saveVersion(name, key) : { ok: false, message: 'Give the version a name.' }
+  );
+  handle('project:reviewVersion', (id: unknown, key: unknown) =>
+    typeof id === 'string' && typeof key === 'string' ? controller.reviewVersion(id, key) : { ok: false, message: 'That saved version is no longer there.' }
+  );
+  handle('project:restoreVersion', (id: unknown, revision: unknown, key: unknown) =>
+    typeof id === 'string' && Number.isInteger(revision) && typeof key === 'string' ? controller.restoreVersion(id, revision as number, key) : { ok: false, message: 'That saved version is no longer there.' }
+  );
+  handle('project:deleteVersion', (id: unknown, key: unknown) =>
+    typeof id === 'string' && typeof key === 'string' ? controller.deleteVersion(id, key) : { ok: false, message: 'That saved version is no longer there.' }
+  );
   // Export builds from the project folder and needs the writer lock (spec 20).
   handle('project:exportSource', (format?: unknown) => (readOnlyReason() ? { ok: false, message: readOnlyReason(), warnings: [] } : controller.exportSource(format === 'zip' ? 'zip' : 'folder')));
   handle('project:exportStatic', (format?: unknown, published?: unknown) =>
