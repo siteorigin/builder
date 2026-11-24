@@ -65,6 +65,14 @@ describe('a session before it starts', () => {
       ['files.list', 'observe'],
       ['ui.snapshot', 'observe'],
       ['ui.locate', 'observe'],
+      ['ui.click', 'act'],
+      ['ui.hover', 'act'],
+      ['ui.fill', 'act'],
+      ['ui.type', 'act'],
+      ['ui.select', 'act'],
+      ['ui.press', 'act'],
+      ['ui.scroll', 'act'],
+      ['ui.drag', 'act'],
       ['session.close', 'session']
     ]);
     expect(Object.fromEntries(d.capabilities.map((c: any) => [c.op, c.defaultTimeoutMs]))).toEqual({
@@ -80,6 +88,14 @@ describe('a session before it starts', () => {
       'files.list': 10000,
       'ui.snapshot': 15000,
       'ui.locate': 15000,
+      'ui.click': 15000,
+      'ui.hover': 15000,
+      'ui.fill': 15000,
+      'ui.type': 30000,
+      'ui.select': 15000,
+      'ui.press': 15000,
+      'ui.scroll': 15000,
+      'ui.drag': 20000,
       'session.close': 60000
     });
   });
@@ -101,6 +117,7 @@ describe('a session before it starts', () => {
     expect(err(await s.call(req('window.info'))).error.code).toBe('NOT_STARTED');
     expect(err(await s.call(req('ui.snapshot'))).error.code).toBe('NOT_STARTED');
     expect(err(await s.call(req('ui.locate', { args: { role: 'button' } }))).error.code).toBe('NOT_STARTED');
+    expect(err(await s.call(req('ui.click', { args: { target: { ref: 'a1b2c3:1' } } }))).error.code).toBe('NOT_STARTED');
     expect(err(await s.call(req('window.click'))).error).toMatchObject({ code: 'UNKNOWN_OP', details: { ops: Object.keys(OPERATIONS) } });
     const broken = err(await s.call('{"v":1,'));
     expect([broken.id, broken.error.code]).toEqual([null, 'BAD_REQUEST']);

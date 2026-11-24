@@ -94,6 +94,14 @@ try {
       'files.list:observe',
       'ui.snapshot:observe',
       'ui.locate:observe',
+      'ui.click:act',
+      'ui.hover:act',
+      'ui.fill:act',
+      'ui.type:act',
+      'ui.select:act',
+      'ui.press:act',
+      'ui.scroll:act',
+      'ui.drag:act',
       'session.close:session'
     ]
   );

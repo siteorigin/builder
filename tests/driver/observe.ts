@@ -18,7 +18,9 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ElementHandle, Frame, Locator, Page } from 'playwright';
 import { DriverError } from './protocol.ts';
-import type { LocateArgs, SnapshotArgs, UiScope } from './protocol.ts';
+import type { LocateArgs, SnapshotArgs, UiScope, XY } from './protocol.ts';
+import { readScene, sceneChange } from './shots.ts';
+import type { Scene, ShotRegistry } from './shots.ts';
 import {
   LIMITS,
   REFRESH_HINT,
@@ -64,10 +66,12 @@ export interface ObserveEnv {
   remember?: (secrets: string[]) => void;
   /** Every credential the session has seen before: scrubbed from this observation too. */
   remembered?: () => string[];
+  /** The session's screenshot points: a screenshot taken while the scene holds still becomes the one actions may aim at. */
+  shots?: ShotRegistry;
 }
 
 /** The canvas's iframe: the live preview. */
-const PREVIEW_IFRAME = '.frame-box iframe';
+export const PREVIEW_IFRAME = '.frame-box iframe';
 /** Fields whose values are credentials, in any document. Playwright's CSS locators pierce open shadow roots too. */
 export const SECRET_INPUTS = 'input[type="password" i], input[autocomplete*="password" i]';
 
@@ -191,6 +195,32 @@ async function readPreview(page: Page): Promise<{ iframe: boolean; doc: PreviewD
   }
 }
 
+/**
+ * Runs in a document: the values its visible ordinary fields show (never a credential field's, nor a hidden input's),
+ * open shadow roots included. A value one of them shows is reported through that field anyway.
+ */
+function plainIn(secret: string): string[] {
+  const w = globalThis as Dom;
+  const out: string[] = [];
+  const visit = (root: Dom) => {
+    for (const el of root.querySelectorAll('input, textarea, select')) {
+      if (el.matches(secret) || String(el.type).toLowerCase() === 'hidden') continue;
+      if (typeof el.checkVisibility === 'function' ? !el.checkVisibility({ visibilityProperty: true }) : !el.getClientRects().length) continue;
+      if (el.tagName === 'SELECT') for (const o of el.selectedOptions) out.push(String(o.label || o.textContent || ''), String(o.value));
+      else if (el.value) out.push(String(el.value));
+    }
+    for (const el of root.querySelectorAll('*')) if (el.shadowRoot) visit(el.shadowRoot);
+  };
+  visit(w.document);
+  return out;
+}
+
+/** The values of ordinary fields in every frame of the window (frames that cannot be read give none). */
+async function framePlain(page: Page): Promise<Set<string>> {
+  const read = await Promise.all(page.frames().map((f) => f.evaluate(plainIn, SECRET_INPUTS).catch((): string[] => [])));
+  return new Set(read.flat());
+}
+
 /** The credential values in every frame of the window: the editor's, the preview's and any other (failures skipped). */
 export async function frameSecrets(page: Page, { strict = false }: { strict?: boolean } = {}): Promise<string[]> {
   // Strict: a frame that cannot be read fails the whole read, for a caller that must not take "unknown" as "none".
@@ -280,7 +310,7 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   aborted(signal);
   const raw = (await page.locator('body').ariaSnapshotJSON({ mode: 'ai', boxes: true, signal })) as unknown as (RawNode | string)[];
   aborted(signal);
-  const [docs, others, stored] = await Promise.all([readDocs(page), frameSecrets(page), env.storedSecrets?.().catch((): string[] => []) ?? Promise.resolve([])]);
+  const [docs, others, stored, plain] = await Promise.all([readDocs(page), frameSecrets(page), env.storedSecrets?.().catch((): string[] => []) ?? Promise.resolve([]), framePlain(page)]);
   if (docs.editor.token !== first.editor.token) throw changing('The editor reloaded');
   // The editor's document stays the same when another project opens in it: refs would be bound to the wrong one.
   if (docs.editor.opening !== first.editor.opening) throw changing('Another project opened');
@@ -294,10 +324,14 @@ export async function observe(env: ObserveEnv, before?: (docs: Docs) => Promise<
   const classified = await factsByRef(page, valued);
   const secretRefs = new Set(valued.filter((r) => classified.get(r)?.secret));
   const unknownRefs = new Set(valued.filter((r) => !classified.get(r)));
+  // A field with no ref (Playwright gives none to the editor's fields while a menu is open) or one that could not be read
+  // is told apart by its value: one an ordinary field holds now, and no credential field, is not a secret. Anything
+  // else it could be is remembered for the rest of the session, as a credential is.
   const redacted = redact(raw, {
     secretRefs,
     unknownRefs,
-    secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? []), ...others, ...stored, ...(env.remembered?.() ?? [])]
+    secrets: [...first.editor.secrets, ...docs.editor.secrets, ...(first.preview?.secrets ?? []), ...(docs.preview?.secrets ?? []), ...others, ...stored, ...(env.remembered?.() ?? [])],
+    plain
   });
   env.remember?.(redacted.secrets);
   const editor = shape(raw, 'editor');
@@ -338,7 +372,7 @@ function* walkRaw(nodes: (RawNode | string)[] | undefined): Generator<RawNode> {
  * Run an operation so nothing it returns or throws carries a credential its observations saw. `seen` collects them as
  * the operation observes; an error that is not the driver's own is reported by its first line only.
  */
-async function sealed<T>(run: (seen: string[]) => Promise<T>, { result = true }: { result?: boolean } = {}): Promise<T> {
+export async function sealed<T>(run: (seen: string[]) => Promise<T>, { result = true }: { result?: boolean } = {}): Promise<T> {
   const seen: string[] = [];
   try {
     const out = await run(seen);
@@ -530,15 +564,33 @@ export interface SnapshotResult {
   preview?: ScopeTree & { state: PreviewState; refs: boolean };
   /** With `within`: the node observed inside, and its scope. */
   within?: { ref: string; scope: Scope; node: UiNode };
-  screenshots?: { editor: Shot | null; preview: Shot | null; withheld?: string };
+  screenshots?: Shots;
+}
+
+export interface Shots {
+  editor: Shot | null;
+  preview: Shot | null;
+  withheld?: string;
+  /**
+   * The token actions name to aim at a pixel of these images (a PointTarget's `observation`): given while nothing moved
+   * as they were taken, and good until another screenshot, an action that sends input, or a minute passes.
+   */
+  observation?: string;
 }
 
 export interface Shot {
   path: string;
+  /** In CSS pixels, as the image's own pixels are (one image pixel is one CSS pixel of the window). */
   width: number;
   height: number;
   /** Where the preview sits in the editor window, for the preview's shot. */
   clip?: { x: number; y: number; width: number; height: number };
+  /**
+   * For the preview's shot: where the page's own (0, 0) is in the editor window, and how far the canvas scales it, so
+   * a box the preview reports (UiNode.box) is at `origin - clip + box * scale` on this image.
+   */
+  origin?: XY;
+  scale?: number;
 }
 
 /** The CSS selector for a page's element ids, as the bridge finds them. */
@@ -712,9 +764,11 @@ async function snapshotOf(env: ObserveEnv, args: SnapshotArgs, id: number, seen:
   return result;
 }
 
-async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promise<{ editor: Shot | null; preview: Shot | null; withheld?: string }> {
+async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promise<Shots> {
   const { page, signal } = env;
   if (!env.artifacts) throw new DriverError('OP_FAILED', 'This session has no artifacts folder to save screenshots in.');
+  // Any screenshot replaces the last one's points, whether or not this one gives any.
+  const token = env.shots?.next() ?? null;
   // Pixels cannot be scrubbed, and a credential can be painted where no text check finds it: nothing is captured while
   // the session knows any credential (a filled credential field, a saved key, one seen before), or cannot tell.
   const withheld = { editor: null, preview: null, withheld: 'A credential is known in this session, and screenshots could show it.' };
@@ -727,7 +781,10 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
   const dir = join(env.artifacts, 'snapshots');
   const mask = page.frames().map((f) => f.locator(SECRET_INPUTS));
   const vp = await page.evaluate(() => ({ width: (globalThis as Dom).innerWidth as number, height: (globalThis as Dom).innerHeight as number }));
-  const editorPng = await page.screenshot({ mask, timeout: 10_000 });
+  // The scene before the pixels, with every element's box as the witness of what each pixel showed; compared after.
+  const frame = obs.docs.preview?.frame ?? null;
+  const before: Scene | null = token ? await readScene(page, frame, PREVIEW_IFRAME, token).catch(() => null) : null;
+  const editorPng = await page.screenshot({ mask, timeout: 10_000, scale: 'css' });
   aborted(signal);
   // The preview as it shows in the editor (zoomed, with the canvas's outlines over it), clipped to what is in view.
   const box = await page
@@ -742,7 +799,8 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
     const height = Math.min(vp.height, box.y + box.height) - y;
     if (width >= 1 && height >= 1) clip = { x: Math.floor(x), y: Math.floor(y), width: Math.floor(width), height: Math.floor(height) };
   }
-  const previewPng = clip ? await page.screenshot({ mask, clip, timeout: 10_000 }) : null;
+  const previewPng = clip ? await page.screenshot({ mask, clip, timeout: 10_000, scale: 'css' }) : null;
+  const after: Scene | null = before ? await readScene(page, frame, PREVIEW_IFRAME).catch(() => null) : null;
   // A credential typed or saved while the pixels were taken counts as well.
   if (!(await clear())) return withheld;
   // A capture that outlived its request leaves nothing behind.
@@ -764,7 +822,19 @@ async function screenshots(env: ObserveEnv, obs: Observation, id: number): Promi
     await Promise.all(written.map((f) => rm(f, { force: true }).catch(() => undefined)));
     throw e;
   }
-  return { editor: { path: `${stem}-editor.png`, width: vp.width, height: vp.height }, preview: previewPng && clip ? { path: `${stem}-preview.png`, width: clip.width, height: clip.height, clip } : null };
+  // Where the page sits on the preview image, only from a capture nothing moved during.
+  const still = !!before && !!after && !sceneChange(before, after);
+  const f = still ? after!.frame : null;
+  const out: Shots = {
+    editor: { path: `${stem}-editor.png`, width: vp.width, height: vp.height },
+    preview: previewPng && clip ? { path: `${stem}-preview.png`, width: clip.width, height: clip.height, clip, ...(f ? { origin: f.origin, scale: f.scale.x } : {}) } : null
+  };
+  // Points on the images stand for what they show only if nothing moved while they were taken.
+  if (token && env.shots && still && after!.editor.viewport.width === vp.width && after!.editor.viewport.height === vp.height) {
+    env.shots.issue({ token, at: performance.now(), generation: env.generation, scene: after!, editor: { width: vp.width, height: vp.height }, preview: out.preview?.clip ? { clip: out.preview.clip } : null });
+    out.observation = token;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -926,23 +996,44 @@ async function located(node: Shaped, minter: Minter, args: LocateArgs): Promise<
 // The element a ref names, for acting on (issue #493)
 // ---------------------------------------------------------------------------
 
+/** One target an action names, resolved: its exact element, held. */
+export interface Resolved {
+  ref: string;
+  handle: ElementHandle;
+  scope: Scope;
+  role: string;
+  name: string;
+}
+
+export interface Resolution {
+  targets: Resolved[];
+  /** The editor's mode when they were resolved. */
+  mode: 'edit' | 'preview' | null;
+  /** The topmost dialog's name, for saying what covers a target. */
+  dialog: string | null;
+}
+
 /**
- * The element a ref names, checked as `ui.locate` checks it, then checked again on the element itself: its document,
- * its page ids and the project open around it. A handle belongs to one document, so acting through it can never reach
- * an element of a page that replaced it. The caller disposes of it.
+ * The elements refs name, all from one observation: each checked as `ui.locate` checks a ref, then checked again on
+ * the element itself (its document, its page ids, the project open around it). A handle belongs to one document, so
+ * acting through it can never reach an element of a page that replaced it. The caller disposes of the handles.
  */
-export function elementFor(env: ObserveEnv, ref: string): Promise<ElementHandle> {
-  return sealed(async (seen) => {
-    argRef(ref, 'ref');
-    const obs = await observeInto(env, seen);
-    const minter = new Minter(env, obs);
-    const { binding } = await checkRef(env, ref, obs, minter);
-    const handle = (await env.page
-      .locator(`aria-ref=${binding.pwRef}`)
-      .elementHandle({ timeout: 2000 })
-      .catch(() => null)) as ElementHandle | null;
-    if (!handle) throw stale('gone', ref, `"${ref}" is no longer there.`);
-    try {
+export async function resolveInto(env: ObserveEnv, seen: string[], refs: string[]): Promise<Resolution> {
+  for (const ref of refs) argRef(ref, 'ref');
+  const obs = await observeInto(env, seen);
+  const minter = new Minter(env, obs);
+  const targets: Resolved[] = [];
+  try {
+    for (const ref of refs) {
+      const known = targets.find((t) => t.ref === ref);
+      if (known) continue;
+      const { binding } = await checkRef(env, ref, obs, minter);
+      const handle = (await env.page
+        .locator(`aria-ref=${binding.pwRef}`)
+        .elementHandle({ timeout: 2000 })
+        .catch(() => null)) as ElementHandle | null;
+      if (!handle) throw stale('gone', ref, `"${ref}" is no longer there.`);
+      targets.push({ ref, handle, scope: binding.scope, role: binding.role, name: binding.name });
       // Evaluated in the element's own document, which a reload or another page replaces.
       const now = (await handle.evaluate((el: Dom) => (el.isConnected ? { doc: `${(globalThis as Dom).performance.timeOrigin}|${(globalThis as Dom).location.pathname}${(globalThis as Dom).location.search}`, node: el.getAttribute('data-so-node'), ctx: el.getAttribute('data-so-ctx'), items: el.getAttribute('data-so-items') } : null)).catch(() => null)) as {
         doc: string;
@@ -953,13 +1044,21 @@ export function elementFor(env: ObserveEnv, ref: string): Promise<ElementHandle>
       if (!now || now.doc !== binding.doc) throw stale('document', ref, `"${ref}" was seen on a page that has since been replaced.`);
       const semantic = now.node !== null ? JSON.stringify({ ctx: now.ctx ?? '', node: now.node, ...(now.items ? { items: now.items } : {}) }) : null;
       if (semantic !== binding.semantic) throw stale('changed', ref, `"${ref}" now shows another part of the page than it did.`);
-      if ((await readEditor(env.page)).opening !== binding.opening) throw stale('project', ref, `"${ref}" was seen in another project, or another opening of this one.`);
-      return handle;
-    } catch (e) {
-      await handle.dispose().catch(() => undefined);
-      throw e;
     }
-  }, { result: false });
+    if (targets.length && (await readEditor(env.page)).opening !== obs.docs.editor.opening) throw stale('project', refs[0], `"${refs[0]}" was seen in another project, or another opening of this one.`);
+    const dialog = dialogFrom(obs.editor) ?? (obs.preview && obs.previewState === 'ready' ? dialogFrom(obs.preview) : null);
+    return { targets, mode: obs.docs.editor.mode, dialog: dialog?.name ?? null };
+  } catch (e) {
+    await Promise.all(targets.map((t) => t.handle.dispose().catch(() => undefined)));
+    throw e;
+  }
+}
+
+/**
+ * The element a ref names, for acting on it in-process: as resolveInto resolves it. The caller disposes of it.
+ */
+export function elementFor(env: ObserveEnv, ref: string): Promise<ElementHandle> {
+  return sealed(async (seen) => (await resolveInto(env, seen, [ref])).targets[0].handle, { result: false });
 }
 
 /** Every node a tree shows, depth first. */

@@ -99,6 +99,45 @@ describe('redaction', () => {
     expect(shaped[3].text).toBe(`echo ${REDACTED} and ${REDACTED}`);
   });
 
+  it('tells a field with no ref, or one that could not be read, apart by the value ordinary fields hold now', () => {
+    // While a menu is open the editor's fields have no refs: one holding what an ordinary field holds stays readable.
+    const nodes = () => [
+      { role: 'textbox', name: 'Heading', text: 'Rooms that work beautifully' },
+      { role: 'spinbutton', name: 'Width', ref: 'w', text: '1280' },
+      { role: 'textbox', name: 'Key', text: 'sk-LOST-1' },
+      { role: 'textbox', name: 'Typed', ref: 't', text: 'hunter2' },
+      { role: 'heading', ref: 'h', name: 'Rooms that work beautifully' }
+    ];
+    const plain = new Set(['Rooms that work beautifully', '1280', 'hunter2']);
+    const out = redact(nodes(), { ...none, unknownRefs: new Set(['w', 't']), secrets: ['hunter2'], plain });
+    const [heading, width, key, typed, title] = out.nodes as RawNode[];
+    expect(heading).toMatchObject({ text: 'Rooms that work beautifully' });
+    expect(heading.redacted).toBeUndefined();
+    expect(width).toMatchObject({ text: '1280' });
+    // Not an ordinary field's value (a password field gone before its frame was read): a credential, remembered.
+    expect(key).toMatchObject({ redacted: true });
+    expect(out.secrets).toContain('sk-LOST-1');
+    // A credential's value counts as one even where an ordinary field holds it too.
+    expect(typed).toMatchObject({ redacted: true });
+    expect(title.name).toBe('Rooms that work beautifully');
+    expect(out.secrets).not.toContain('Rooms that work beautifully');
+    expect(out.secrets).not.toContain('1280');
+    // Without the live values, every one of them is held back as before.
+    const strict = redact(nodes(), { ...none, unknownRefs: new Set(['w', 't']) });
+    expect((strict.nodes as RawNode[]).slice(0, 4).every((n) => n.redacted)).toBe(true);
+    expect(strict.secrets).toEqual(expect.arrayContaining(['Rooms that work beautifully', '1280', 'sk-LOST-1', 'hunter2']));
+    // A field classified as a credential stays one, whatever ordinary fields hold.
+    expect((redact(nodes(), { ...none, secretRefs: new Set(['w']), plain }).nodes[1] as RawNode).redacted).toBe(true);
+    // Compared as the snapshot gives values, whitespace collapsed, on both sides.
+    const spaced = redact([{ role: 'textbox', name: 'Notes', text: 'Line one line two' }, { role: 'textbox', name: 'Pass', text: 'open sesame' }], {
+      ...none,
+      secrets: ['open  sesame'],
+      plain: new Set(['Line one\n   line two', 'open sesame'])
+    });
+    expect((spaced.nodes[0] as RawNode).redacted).toBeUndefined();
+    expect((spaced.nodes[1] as RawNode).redacted).toBe(true);
+  });
+
   it('scrubs secrets read from the page wherever they appear, from two characters; one only as a whole value', () => {
     const out = redact(
       [
