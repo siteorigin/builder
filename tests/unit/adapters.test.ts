@@ -400,15 +400,16 @@ describe('cloud adapters and the environment', () => {
   });
 
   /**
-   * Answers requests to the provider's own API with the next scripted response, and sends anything else on to the
-   * real network: a request the environment redirected reaches the mock server below.
+   * Answers requests to the provider's own API with the next scripted response, and passes a request for the mock
+   * server on to it, as a request the environment redirected would go. Nothing else leaves the test.
    */
   function official(origin: string, responses: Array<() => Response>) {
     const seen: Array<{ url: string; headers: Headers }> = [];
     const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
       seen.push({ url, headers: new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)) });
-      if (!url.startsWith(origin)) return globalThis.fetch(input, init);
+      if (mock && new URL(url).origin === new URL(mock.baseURL).origin) return globalThis.fetch(input, { ...init, redirect: 'error' });
+      if (!url.startsWith(origin)) throw new Error(`Unexpected request to ${url}`);
       const next = responses.shift();
       if (!next) throw new Error('No scripted response left');
       return next();

@@ -127,8 +127,21 @@ export class MockOpenAIServer {
     return `http://127.0.0.1:${this.port}/v1`;
   }
 
-  async start() {
-    await new Promise<void>((resolve) => this.server.listen(0, '127.0.0.1', resolve));
+  /** Listen on 127.0.0.1: any free port, or the one given, rejecting (with EADDRINUSE) when it is taken. */
+  async start(port = 0) {
+    await new Promise<void>((resolve, reject) => {
+      const failed = (e: Error) => {
+        this.server.off('listening', listening);
+        reject(e);
+      };
+      const listening = () => {
+        this.server.off('error', failed);
+        resolve();
+      };
+      this.server.once('error', failed);
+      this.server.once('listening', listening);
+      this.server.listen(port, '127.0.0.1');
+    });
     this.port = (this.server.address() as AddressInfo).port;
     return this;
   }
