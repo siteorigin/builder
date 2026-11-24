@@ -355,7 +355,7 @@ export const OPERATION_SCHEMAS = {
   'component.setVariant': z.object({
     type: z.literal('component.setVariant'),
     definitionId: z.string(),
-    axis: z.string().optional().describe('The variant axis to add to. A new name creates the axis. Defaults to the only axis, or "style".'),
+    axis: z.string().optional().describe('The variant axis to add to. A new name creates the axis, with a plain "default" option that placements keep unless makeDefault is set. Defaults to the only axis, or "style".'),
     axisLabel: z.string().min(1).max(40).optional(),
     variant: z.string(),
     label: z.string().min(1).max(60),

@@ -45,7 +45,7 @@ import { pageLinkUses, type PageLinkUse } from './page-links';
 import { EngineError, RESERVED_ANCHORS, anchorCapable, anchorsInUse, childLists, codePlacesClass, displayName, enclosingRepeatProp, fail, findParent, getNode, getTree, headerMenu, headerMenuSlot, instancesOf, itemLinkPairs, settledRoot, subtreeIds, allTrees } from './tree';
 import { itemStyleRecords, liveItemStyles, placementItems, repeatedPartList } from '@shared/item-styles';
 import { followText, joinedLines } from '@shared/contact-links';
-import { clone, definitionHash, freshListIds, installComponent, makeInstance } from './install';
+import { clone, definitionHash, freshListIds, installComponent, makeInstance, placedItemId, placedItemIndex } from './install';
 import { normalizeImage, normalizeItem, normalizeLink, normalizeProp, normalizeRichText } from './values';
 import { editTable } from './table';
 import { acceptedTypes, bindingProblem, bindingSlots, boundSchema, checkPropName, enclosingList, isProtoKey, normalizeProperties } from './schema';
@@ -189,17 +189,18 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'instance.listRemove':
       return keepingFormKeys(state, op, () => {
         const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
-        const list = (node.props[op.prop] as Array<{ id: string }>) ?? [];
-        if (!list.some((i) => i.id === op.itemId)) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
+        const list = (node.props[op.prop] as ListItem[]) ?? [];
+        const at = placedItemIndex(list, op.owner, node.id, op.itemId);
+        if (at < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
         if (schema.min !== undefined && list.length <= schema.min) fail(`${schema.label} needs at least ${schema.min} items.`);
-        node.props[op.prop] = list.filter((i) => i.id !== op.itemId);
+        node.props[op.prop] = list.filter((_, i) => i !== at);
         return {};
       });
     case 'instance.listMove':
       return keepingFormKeys(state, op, () => {
         const { node, schema } = listTarget(state, op.owner, op.nodeId, op.prop);
-        const list = [...((node.props[op.prop] as Array<{ id: string }>) ?? [])];
-        const from = list.findIndex((i) => i.id === op.itemId);
+        const list = [...((node.props[op.prop] as ListItem[]) ?? [])];
+        const from = placedItemIndex(list, op.owner, node.id, op.itemId);
         if (from < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
         const [it] = list.splice(from, 1);
         list.splice(Math.min(op.index, list.length), 0, it);
@@ -211,6 +212,9 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
     case 'instance.setVariant': {
       const { node, def } = instanceTarget(state, op.owner, op.nodeId);
       const found = variantOption(def, op.variant, op.axis);
+      // A choice the design passes down from the enclosing component's property is not replaced by a fixed one.
+      const chosen = node.variants && Object.hasOwn(node.variants, found.axis) ? node.variants[found.axis] : undefined;
+      refuseBound(state, op.owner, chosen, def.variantAxes?.[found.axis]?.label ?? found.axis);
       node.variants = { ...node.variants, [found.axis]: found.id };
       return {};
     }
@@ -447,13 +451,25 @@ function refuseFeed(schema: PropSchema) {
   fail(`${schema.label} shows ${what} and changes with them. Edit the article’s title, date, byline or excerpt in its page settings, or hide it from news lists there.`);
 }
 
+/**
+ * A nested component's property that its design fills in, from the enclosing component's own property or from each
+ * item of a list the design repeats, takes no value of its own: writing one would drop that link without a word.
+ */
+function refuseBound(state: ProjectState, owner: OwnerRef, value: unknown, label: string) {
+  if (!isBinding(value)) return;
+  if ('$item' in value) fail(`${label} is filled in from each item of the list the design repeats. Edit those items, or unbind it in the design first.`);
+  const parent = owner.kind === 'component' ? state.components[owner.id] : undefined;
+  const from = parent && Object.hasOwn(parent.properties, value.$prop) ? parent.properties[value.$prop].label : value.$prop;
+  fail(`${label} comes from the enclosing component's "${from}" property. Change it there, or unbind it in the design first.`);
+}
+
 function listTarget(state: ProjectState, owner: OwnerRef, nodeId: string, prop: string) {
   const { node, def } = instanceTarget(state, owner, nodeId);
   const schema = def.properties[prop];
   if (!schema) fail(`"${def.name}" has no property "${prop}".`);
   if (schema.type !== 'list') fail(`"${prop}" is not a list property.`);
   refuseFeed(schema);
-  if (isBinding(node.props[prop])) fail(`${schema.label} comes from the enclosing component's own property; edit its items there.`);
+  refuseBound(state, owner, node.props[prop], schema.label);
   if (!Array.isArray(node.props[prop])) node.props[prop] = clone(schema.default);
   return { node, def, schema };
 }
@@ -1355,7 +1371,7 @@ function variantStyles(state: ProjectState, owner: OwnerRef, nodeId: string, var
  * The placement and part one repeated item is styled on (`itemId`): a part inside exactly one repeat of a managed
  * definition, placed on a page or in the shared header or footer, and an item its list shows now.
  */
-function itemStyleTarget(state: ProjectState, owner: OwnerRef, node: GraphNode, partId: string | undefined, itemId: string): { node: InstanceNode; partId: string; list: string } {
+function itemStyleTarget(state: ProjectState, owner: OwnerRef, node: GraphNode, partId: string | undefined, itemId: string): { node: InstanceNode; partId: string; list: string; itemId: string } {
   if (node.kind !== 'instance') fail('"itemId" styles one item of a repeated part of a component; this node is not a component.');
   if (owner.kind === 'component') fail('Only a placement on a page or in the shared header or footer can style one item on its own.');
   const def = own(state.components, node.definitionId) ?? fail(`Component definition "${node.definitionId}" is missing.`);
@@ -1365,8 +1381,10 @@ function itemStyleTarget(state: ProjectState, owner: OwnerRef, node: GraphNode, 
   const list = repeatedPartList(def, partId);
   if (!list) fail(`"${def.parts[partId].label}" in "${def.name}" is not shown once per list item, so it has no single item to style. Leave out itemId to style it everywhere.`);
   const items = placementItems(def, node, list);
-  if (!items.some((i) => i.id === itemId)) fail(`${def.properties[list].label} has no item "${itemId}". Items: ${items.map((i) => i.id).join(', ') || 'none'}.`);
-  return { node, partId, list };
+  // An item copied from the definition's defaults is found by the default's ID too (see placedItemIndex).
+  const at = placedItemIndex(items, owner, node.id, itemId);
+  if (at < 0) fail(`${def.properties[list].label} has no item "${itemId}". Items: ${items.map((i) => i.id).join(', ') || 'none'}.`);
+  return { node, partId, list, itemId: items[at].id };
 }
 
 /**
@@ -1438,8 +1456,7 @@ function nodeSetStyle(state: ProjectState, op: Op<'node.setStyle'>): OpResult {
     return {};
   }
   if (itemTarget) {
-    const { node: inst, partId, list } = itemTarget;
-    const itemId = op.itemId!;
+    const { node: inst, partId, list, itemId } = itemTarget;
     const entry = inst.itemOverrides && Object.hasOwn(inst.itemOverrides, partId) ? inst.itemOverrides[partId] : undefined;
     const current = entry?.list === list && entry.items && typeof entry.items === 'object';
     // Clearing a value this item does not have changes nothing, and must not discard styles kept for another list.
@@ -1494,11 +1511,11 @@ function nodeResetStyles(state: ProjectState, op: Op<'node.resetStyles'>): OpRes
   const node = getNode(editableTree(state, op.owner), op.nodeId);
   if (op.itemId !== undefined) {
     // Back to the shared style: the item's own values go, and the part's shared values show through again.
-    const { node: inst, partId, list } = itemStyleTarget(state, op.owner, node, op.partId, op.itemId);
+    const { node: inst, partId, list, itemId } = itemStyleTarget(state, op.owner, node, op.partId, op.itemId);
     const entry = inst.itemOverrides?.[partId];
-    const rs = entry?.list === list && Object.hasOwn(entry.items, op.itemId) ? entry.items[op.itemId] : undefined;
+    const rs = entry?.list === list && Object.hasOwn(entry.items, itemId) ? entry.items[itemId] : undefined;
     if (rs && op.scope) delete rs[op.scope];
-    else if (rs) delete entry!.items[op.itemId];
+    else if (rs) delete entry!.items[itemId];
     pruneEmptyItemStyles(inst);
     return {};
   }
@@ -1683,8 +1700,16 @@ function explicitItemFields(ops: EditOperation[]): Set<string> {
  */
 function followItemLinks(state: ProjectState, def: ComponentDefinition, op: Op<'instance.setProp'>, before: ListItem, next: ListItem, sent: Record<string, unknown>, ctx: ApplyContext): string[] {
   const moved: string[] = [];
-  for (const { text, link } of itemLinkPairs(def, op.prop)) {
-    if (!Object.hasOwn(sent, text) || Object.hasOwn(sent, link) || ctx.explicitItemFields?.has(itemFieldKey(op.owner, op.nodeId, op.prop, before.id, link))) continue;
+  const pairs = itemLinkPairs(def, op.prop);
+  if (!pairs.length) return moved;
+  // The batch may name the item by its own ID or by the ID of the default it was copied from (see placedItemIndex).
+  const schema = def.properties[op.prop];
+  const defaults = schema?.type === 'list' && Array.isArray(schema.default) ? (schema.default as unknown[]) : [];
+  const copiedFrom = defaults.flatMap((d) => (d && typeof d === 'object' && typeof (d as ListItem).id === 'string' && placedItemId(op.owner, op.nodeId, (d as ListItem).id) === before.id ? [(d as ListItem).id] : []));
+  const names = [before.id, ...(op.itemId ? [op.itemId] : []), ...copiedFrom];
+  for (const { text, link } of pairs) {
+    const explicit = names.some((id) => ctx.explicitItemFields?.has(itemFieldKey(op.owner, op.nodeId, op.prop, id, link)));
+    if (!Object.hasOwn(sent, text) || Object.hasOwn(sent, link) || explicit) continue;
     // Lines that are each a number are a list, even once a one-line field joins them.
     const to = joinedLines(sent[text]) === null ? null : followText(before[text], next[text], before[link]);
     if (!to) continue;
@@ -1704,14 +1729,14 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
   const { node, def } = instanceTarget(state, op.owner, op.nodeId);
   const schema = def.properties[op.prop];
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
+  refuseBound(state, op.owner, node.props[op.prop], schema.label);
   if (op.itemId) {
     if (schema.type !== 'list') fail(`"${op.prop}" is not a list.`);
     refuseFeed(schema);
-    if (isBinding(node.props[op.prop])) fail(`${schema.label} comes from the enclosing component's own property; edit its items there.`);
     // A placement without its own list shows the definition's items, so an edit to one of them starts from those.
     const own = node.props[op.prop];
     const list = (Array.isArray(own) ? own : clone(schema.default)) as Array<ListItem>;
-    const idx = list.findIndex((i) => i.id === op.itemId);
+    const idx = placedItemIndex(list, op.owner, node.id, op.itemId);
     if (idx < 0) fail(`Item "${op.itemId}" not found in ${schema.label}.`);
     const before = list[idx];
     let next: ListItem;
@@ -1722,6 +1747,7 @@ function instanceSetProp(state: ProjectState, op: Op<'instance.setProp'>, ctx: A
       next = normalizeItem(schema, { ...before, [op.field]: op.value }, state, `${schema.itemLabel}`, { id: before.id } as never, before);
       sent = { [op.field]: op.value };
     } else {
+      if (!op.value || typeof op.value !== 'object' || Array.isArray(op.value)) fail(`${schema.itemLabel}: send the item's fields as an object, or name one field.`);
       next = normalizeItem(schema, op.value as Record<string, unknown>, state, schema.itemLabel, before, before);
       sent = op.value && typeof op.value === 'object' && !Array.isArray(op.value) ? (op.value as Record<string, unknown>) : {};
     }
@@ -1757,7 +1783,8 @@ function keepingFormKeys(state: ProjectState, op: Op<'instance.setProp' | 'insta
   const result = run();
   const after = node.props.fields;
   if (Array.isArray(after)) {
-    const cleared = op.type === 'instance.setProp' && op.itemId && op.field === 'name' ? [op.itemId] : [];
+    const at = op.type === 'instance.setProp' && op.itemId && op.field === 'name' ? placedItemIndex(after as ListItem[], op.owner, node.id, op.itemId) : -1;
+    const cleared = at >= 0 ? [(after as ListItem[])[at].id] : [];
     node.props.fields = settleFormKeys(before, after as ListItem[], new Set(cleared), formDefaults(def));
   }
   return result;
@@ -1772,7 +1799,7 @@ function tableEdit(state: ProjectState, op: Op<'instance.editTable'>): OpResult 
   const schema = def.properties[op.prop];
   if (!schema) fail(`"${def.name}" has no property "${op.prop}". Properties: ${Object.keys(def.properties).join(', ')}.`);
   if (schema.type !== 'table') fail(`"${op.prop}" is not a table property.`);
-  if (isBinding(node.props[op.prop])) fail(`${schema.label} comes from the enclosing component's own property; edit the table there.`);
+  refuseBound(state, op.owner, node.props[op.prop], schema.label);
   const current = Object.hasOwn(node.props, op.prop) ? node.props[op.prop] : clone(schema.default);
   const r = editTable(current, op, `${def.name} → ${schema.label}`);
   node.props[op.prop] = r.value;

@@ -270,7 +270,8 @@ describe('editing axes on a project component', () => {
     const axes = state.components[id].variantAxes!;
     expect(axes.tone.options.quiet.label).toBe('Quiet');
     expect(axes.tone.default).toBe('default');
-    expect(axes.density).toMatchObject({ label: 'How dense', default: 'compact' });
+    // A new axis keeps a plain base option as its default, so placements look as they did.
+    expect(axes.density).toEqual({ label: 'How dense', default: 'default', options: { default: { label: 'Default' }, compact: { label: 'Compact' } } });
   });
 
   it('asks which axis when there are several', () => {
@@ -286,8 +287,10 @@ describe('editing axes on a project component', () => {
       { type: 'instance.setVariant', owner: owner(s), nodeId, axis: 'tone', variant: 'muted' },
       { type: 'component.removeVariant', definitionId: id, axis: 'density', variant: 'compact' }
     ]);
-    expect(state.components[id].variantAxes!.density).toBeUndefined();
+    expect(state.components[id].variantAxes!.density.options).toEqual({ default: { label: 'Default' } });
     expect((home(state).nodes[nodeId] as InstanceNode).variants).toEqual({ tone: 'muted' });
+    const emptied = applyOperations(state, [{ type: 'component.removeVariant', definitionId: id, axis: 'density', variant: 'default' }]).state;
+    expect(emptied.components[id].variantAxes!.density).toBeUndefined();
   });
 
   it('refuses an axis with no option on a style operation, which would edit the base styles', () => {

@@ -315,7 +315,7 @@ function definitionOpAllowed(state: ProjectState, op: EditOperation, authority: 
     case 'component.setPart':
       return op.definitionId === def.id && !Object.hasOwn(def.parts, op.partId) && allowed.has(op.nodeId);
     case 'component.setVariant':
-      // The first variant becomes the default for every placement, so it is not a local addition.
+      // A first variant adds a new choice to every placement's Inspector, so it is not a local addition.
       return op.definitionId === def.id && !op.makeDefault && addsOptionToExistingAxis(def, op.variant, op.axis, op.axisLabel);
     case 'component.setSlot':
       return op.definitionId === def.id && !Object.hasOwn(def.slots ?? {}, op.slot);
@@ -324,7 +324,7 @@ function definitionOpAllowed(state: ProjectState, op: EditOperation, authority: 
   }
 }
 
-/** A new option on an axis that already exists changes no placement; a new axis gives every placement a default. */
+/** A new option on an axis that already exists changes no placement; a new axis gives every placement a new choice. */
 function addsOptionToExistingAxis(def: ComponentDefinition, option: string, axis?: string, axisLabel?: string): boolean {
   const axes = Object.keys(def.variantAxes ?? {});
   const id = axis ?? (axes.length === 1 ? axes[0] : undefined);
