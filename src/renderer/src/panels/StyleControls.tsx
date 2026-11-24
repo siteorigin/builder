@@ -2,7 +2,9 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Monitor, Palette, RotateCcw, Smartphone, Tablet } from 'lucide-react';
 import type { ResponsiveScope, ResponsiveStyles, StyleValue, TokenDef } from '@shared/types';
 import { STYLE_GROUP_LABELS, STYLE_PROPS, STYLE_PROP_MAP, VIEWPORT_PRESETS, type StylePropDef } from '@shared/styles';
+import { cascadedStyle, cropAxis, parseFocus, parseRatio } from '@shared/focus';
 import { ColorPick } from '../components/ColorPick';
+import { FocusEditor, type FocusImage } from './FocusEditor';
 import { DraftInput } from '../components/ui';
 import { setState, useStore } from '../store';
 
@@ -171,13 +173,18 @@ export function StyleControls({
   onReset,
   resetLabel,
   target,
-  designSizesWin
+  designSizesWin,
+  image
 }: {
   styles: ResponsiveStyles | undefined;
   inherited: ResponsiveStyles | undefined;
   allowed?: string[];
   tokens: TokenDef[];
-  onSet: (prop: string, value: StyleValue | null) => void;
+  /**
+   * `expectedRevision`: the change applies only to the project as it was then (a drag started there). What it
+   * returns may be the change's promise, settling to null when the project refused it.
+   */
+  onSet: (prop: string, value: StyleValue | null, expectedRevision?: number) => unknown;
   /** Clears this element's changes: at one size when a size is given, otherwise at every size. */
   onReset?: (scope?: ResponsiveScope) => void;
   /** Replaces the every-size reset's wording (for example, "Restore original design"). */
@@ -189,10 +196,14 @@ export function StyleControls({
    * one size then win over a change made for All sizes, as they do on the page.
    */
   designSizesWin?: boolean;
+  /** For an image: the picture Image focus is chosen on, and the rules under these styles. */
+  image?: FocusImage;
 }) {
   const scope = useStore((s) => s.styleScope);
   const viewport = useStore((s) => s.viewport);
   const preview = sizeForWidth(viewport);
+  // The selected element's box on the canvas, for a crop no aspect ratio declares (a fixed height, say).
+  const selectedBox = useStore((s) => (image ? s.rects.selected[0] : undefined));
   const [showAll, setShowAll] = useState(false);
   const moreId = useId();
   const resetHintId = useId();
@@ -307,7 +318,68 @@ export function StyleControls({
             ))}
           </div>
         )}
+        {p.kind === 'focus' && focusEditor(p, label, value)}
       </div>
+    );
+  };
+
+  // The crop a focal point is chosen in: the size being edited, or the previewed one under All sizes, worked
+  // out the way the exported site applies the rules.
+  const focusEditor = (p: StylePropDef, label: string, value: StyleValue | undefined) => {
+    const own = image?.own ?? styles;
+    const below = image?.below ?? (inherited ? [[inherited]] : []);
+    const tiers = [[own], ...below];
+    const validFocus = (v: StyleValue) => parseFocus(v) !== null;
+    // Under All sizes the crop shown is the previewed size's, unless that size keeps its own focus: then the
+    // first size the all-sizes value does reach. When every size keeps its own, it reaches none.
+    const keepsOwn = (z: Size) => own?.[z]?.[p.id] !== undefined && validFocus(own[z]![p.id]!);
+    const fitAt = (z: Size) => {
+      const v = cascadedStyle(tiers, z, 'objectFit');
+      return typeof v === 'string' ? v.trim() : v;
+    };
+    // The ratio the browser applies: a declaration it can't read is skipped, as it skips it; "auto" or a ratio
+    // with a zero in it keeps the picture's own shape.
+    const readable = (v: StyleValue) => /^(auto|\d+(\.\d+)?(\s*\/\s*\d+(\.\d+)?)?)$/.test(String(v).trim());
+    const declaredAt = (z: Size) => parseRatio(cascadedStyle(tiers, z, 'aspectRatio', readable));
+    const has = (z: Size, keys: string[]) => tiers.some((t) => t.some((l) => [z, 'base' as const].some((sc) => keys.some((k) => l?.[sc]?.[k] !== undefined))));
+    // Among the sizes it reaches, one its ratio crops, so the pad has a crop to show.
+    const sourceRatio = image?.width && image.height ? image.width / image.height : null;
+    const crops = (z: Size) => {
+      const r = declaredAt(z);
+      return r !== null && fitAt(z) !== 'contain' && (sourceRatio === null || cropAxis(sourceRatio, r) !== null);
+    };
+    const reachable = (['desktop', 'tablet', 'phone'] as const).filter((z) => !keepsOwn(z));
+    const reached = scope !== 'base' ? scope : !keepsOwn(preview) ? preview : (reachable.find(crops) ?? reachable[0]);
+    const size = reached ?? preview;
+    // The box's shape: a declared ratio; else, when a height can crop the picture, the box the canvas shows for
+    // this size, which is the picture's own box only without borders or custom CSS. Otherwise it is unknown.
+    const heightSet = has(size, ['height', 'maxHeight', 'minHeight', 'customCss']);
+    const plainBox = !has(size, ['border', 'borderBlockStart', 'borderBlockEnd', 'borderInlineStart', 'borderInlineEnd', 'customCss']);
+    const measured = heightSet && plainBox && size === preview && selectedBox && selectedBox.width > 0 && selectedBox.height > 0 ? selectedBox.width / selectedBox.height : null;
+    const ratio = declaredAt(size) ?? measured;
+    const fit = fitAt(size);
+    // Custom CSS is written after these properties, so it can set the crop itself.
+    const custom = tiers.some((t) => t.some((l) => [size, 'base' as const].some((sc) => /\b(object-position|object-fit|aspect-ratio)\s*:/i.test(String(l?.[sc]?.customCss ?? '')))));
+    // What shows when nothing is set here: this element's value at this size when only its changes are listed
+    // (Edit everywhere), its all-sizes value when a size is being edited, then whatever lies under it.
+    const current = value === undefined ? own?.[scope]?.[p.id] : undefined;
+    const under = (current !== undefined && validFocus(current) ? current : undefined) ?? cascadedStyle([[scope === 'base' ? undefined : { base: own?.base }], ...below], size, p.id, validFocus);
+    return (
+      <FocusEditor
+        label={label}
+        value={value}
+        under={under}
+        scope={scope}
+        size={size}
+        previewed={size === preview}
+        unreached={scope === 'base' && !reached}
+        uncertain={ratio === null && heightSet}
+        custom={custom}
+        ratio={ratio}
+        fit={fit}
+        image={image}
+        onSet={(v, rev) => onSet(p.id, v, rev)}
+      />
     );
   };
 
@@ -457,7 +529,7 @@ function Control({
       </select>
     );
   }
-  if (def.kind === 'enum' || def.kind === 'ratio') {
+  if (def.kind === 'enum' || def.kind === 'ratio' || def.kind === 'focus') {
     return (
       <select className={`select sm grow style-select${state}`} value={set ? String(value) : ''} onChange={(e) => onSet(e.target.value === '' ? null : e.target.value)} aria-label={label} aria-describedby={describedBy}>
         {ghost}

@@ -283,7 +283,7 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       }
       if (a.sections?.includes('components'))
         out.installedComponents = Object.values(state.components).map((d) => ({ definitionId: d.id, componentId: d.componentId, name: d.name, owner: d.owner, kind: d.kind }));
-      out.styleProperties = STYLE_PROPS.map((p) => `${p.id}${p.tokenGroup ? ` (token: ${p.tokenGroup})` : ''}${p.options ? ` [${p.options.map((o) => o.value).join('|')}]` : ''}`);
+      out.styleProperties = STYLE_PROPS.map((p) => `${p.id}${p.tokenGroup ? ` (token: ${p.tokenGroup})` : ''}${p.options ? ` [${p.options.map((o) => o.value).join('|')}]` : ''}${p.kind === 'focus' ? ' or "X% Y%": the focal point across and down a cropped image, each 0 to 100 with at most one decimal, such as "50% 20%"' : ''}`);
       return { ok: true, content: out };
     }
     case 'read_page': {

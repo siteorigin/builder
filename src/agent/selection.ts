@@ -46,7 +46,7 @@ export const SELECTION_DESCRIPTIONS: Record<keyof typeof SELECTION_ARGS, string>
   edit_selected_list: 'Change one item of a list in the selected element: update, insert, remove or move it.',
   edit_selected_table:
     'Change one cell, row or column of a table in the selected element, by the row and column IDs in its content: set a cell, rename a column, or insert, remove or move a row or column. Other cells stay where they are.',
-  style_selected_element: 'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}.',
+  style_selected_element: 'Style the selected element. Use scope "phone", "tablet" or "desktop" to change one screen size only, and prefer token values such as {"token":"space.lg"}. For a cropped image, objectPosition takes the focal point as "X% Y%" across and down, each 0 to 100 with at most one decimal, such as "50% 20%".',
   request_wider_scope: 'Ask the user for permission to change more than the selected element, when the request cannot be done inside it.'
 };
 

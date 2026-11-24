@@ -1,11 +1,12 @@
-import type { StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
+import { isFocusValue } from './focus';
+import type { ComponentDefinition, StyleValue, TextStyleValue, TokenDef, TokenGroup, TokenValue } from './types';
 
 /**
  * The finite set of visual style properties the editor and AI can set.
  * Anything outside this list belongs in a code component.
  */
 
-export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css';
+export type StyleValueKind = 'length' | 'color' | 'enum' | 'number' | 'boolean' | 'ratio' | 'focus' | 'textStyle' | 'font' | 'shadow' | 'border' | 'css';
 
 export interface StylePropDef {
   id: string;
@@ -90,7 +91,7 @@ export const STYLE_PROPS: StylePropDef[] = [
   { id: 'objectFit', label: 'Image fit', group: 'size', kind: 'enum', options: [
     { value: 'cover', label: 'Fill (crop)' }, { value: 'contain', label: 'Fit (no crop)' }
   ] },
-  { id: 'objectPosition', label: 'Image focus', group: 'size', kind: 'enum', description: 'Which part stays in view when the image is cropped.', options: [
+  { id: 'objectPosition', label: 'Image focus', group: 'size', kind: 'focus', description: 'Which part stays in view when the image is cropped: a keyword, or "X% Y%" across and down the picture.', options: [
     { value: 'top', label: 'Top' }, { value: 'center', label: 'Center' }, { value: 'bottom', label: 'Bottom' }, { value: 'left', label: 'Left' }, { value: 'right', label: 'Right' }
   ] },
   { id: 'overflow', label: 'Overflow', group: 'size', kind: 'enum', advanced: true, description: 'Clip lets rounded corners cut off what sits inside them.', options: [
@@ -159,6 +160,20 @@ export function styleSetFor(node: { kind: string }): string[] | undefined {
     default:
       return undefined;
   }
+}
+
+/**
+ * The style controls a component part offers: the part's own list, plus Image focus on an image it lets authors
+ * crop to an aspect ratio. Derived rather than stored, so components already in a project offer it too.
+ */
+export function partStyleControls(def: Pick<ComponentDefinition, 'parts' | 'tree'>, partId: string): string[] | undefined {
+  const part = Object.hasOwn(def.parts, partId) ? def.parts[partId] : undefined;
+  const list = part?.styleControls;
+  if (!part || !list?.length) return list;
+  const node = def.tree && Object.hasOwn(def.tree.nodes, part.nodeId) ? def.tree.nodes[part.nodeId] : undefined;
+  const at = list.indexOf('aspectRatio');
+  if (node?.kind !== 'image' || at < 0 || list.includes('objectPosition')) return list;
+  return [...list.slice(0, at + 1), 'objectPosition', ...list.slice(at + 1)];
 }
 
 export const STYLE_GROUP_LABELS: Record<StylePropDef['group'], string> = {
@@ -546,6 +561,8 @@ export function validateStyleValue(propId: string, value: StyleValue): string | 
       return def.options!.some((o) => o.value === s) ? null : `${def.label} must be one of: ${def.options!.map((o) => o.value).join(', ')}.`;
     case 'ratio':
       return /^(auto|\d+(\.\d+)?\s*\/\s*\d+(\.\d+)?)$/.test(s) ? null : `${def.label} must look like 16/9.`;
+    case 'focus':
+      return typeof value === 'string' && isFocusValue(s) ? null : `${def.label} must be one of ${def.options!.map((o) => o.value).join(', ')}, or two percentages across and down such as "50% 20%".`;
     case 'color':
       if (propId === 'background' && isGradient(s)) return isValidGradient(s) ? null : `"${s.slice(0, 60)}" is not a supported gradient. Use colors, angles and percentages inside linear-gradient(), radial-gradient() or conic-gradient().`;
       return COLOR_RE.test(s) ? null : `"${s}" is not a supported color. Use a hex value, rgb(), hsl() or oklch().`;
