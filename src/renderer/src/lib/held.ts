@@ -10,6 +10,7 @@ import { pagesWithin } from '@shared/page-tree';
 import { normalizeRoute, readablePath } from '@shared/routes';
 import { itemStylesOf, placementItems, repeatedPartList } from '@shared/item-styles';
 import { ownVisitorTextFor } from '@shared/visitor-text';
+import { coordinatesText } from '@shared/site-identity';
 
 /**
  * A typed edit made while the AI is working is held, not dropped. Each operation it is made of names one
@@ -84,6 +85,12 @@ function identityRead(state: ProjectState, patch: Record<string, unknown> | null
   return keys.length === 1 ? own(keys[0]) : Object.fromEntries(keys.map((k) => [k, own(k)]));
 }
 
+/** Whether the site has an identity, and of which kind. */
+function publisherRead(state: ProjectState): { kind: unknown } | null {
+  const stored: unknown = state.site.identity;
+  return stored && typeof stored === 'object' && !Array.isArray(stored) ? { kind: (stored as Record<string, unknown>).kind ?? null } : null;
+}
+
 function treeOf(state: ProjectState, owner: OwnerRef): NodeTree | undefined {
   if (owner.kind === 'page') return has(state.pages, owner.id);
   if (owner.kind === 'shell') return owner.id === 'header' || owner.id === 'footer' ? state.site.shell[owner.id] : undefined;
@@ -151,8 +158,12 @@ export function readField(state: ProjectState, op: EditOperation): FieldRead | n
       const fields: Record<string, unknown> = Object.fromEntries(keys.map((k) => [k, (state.site as unknown as Record<string, unknown>)[k]]));
       // Visitor text is read piece by piece, so wording typed for one piece never waits on a change to another.
       if (op.visitorText) fields.visitorText = visitorTextRead(state, op.visitorText.language, Object.keys(op.visitorText.text));
-      // So is who publishes it: a held name waits on no change to the profiles.
-      if (op.identity !== undefined) fields.identity = identityRead(state, op.identity);
+      // So is who publishes it: a held name waits on no change to the profiles. A field belongs to the publisher it was
+      // typed for, though: one cleared, or made another kind, meanwhile is a conflict, never recreated by the field.
+      if (op.identity !== undefined) {
+        fields.identity = identityRead(state, op.identity);
+        if (op.identity) fields.publisher = publisherRead(state);
+      }
       return found(fields);
     }
     case 'node.rename': {
@@ -365,8 +376,12 @@ export function fieldKey(operations: EditOperation[]): string {
   );
 }
 
-/** A list of lines (profile addresses, opening hours) as the field it was typed in shows it. */
-const listText = (v: unknown) => (Array.isArray(v) && v.every((x) => typeof x === 'string') ? v.join('\n') : v);
+/** A list of lines (profile addresses, opening hours) or a map position, as the field it was typed in shows it. */
+const listText = (v: unknown) => {
+  if (Array.isArray(v) && v.every((x) => typeof x === 'string')) return v.join('\n');
+  const geo = v && typeof v === 'object' ? (v as { latitude?: unknown; longitude?: unknown }) : null;
+  return geo && typeof geo.latitude === 'number' && typeof geo.longitude === 'number' ? coordinatesText(geo as { latitude: number; longitude: number }) : v;
+};
 
 /** Text for a value a field holds or will hold, to show the author; null for structured values. */
 export function shownValue(v: unknown): string | null {

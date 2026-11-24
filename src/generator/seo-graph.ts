@@ -37,7 +37,11 @@ export interface GraphIds {
    * feature names the publisher (a BlogPosting's, say) by this ID or `organization`, which is the same one.
    */
   publisher: string;
-  /** The publisher's ID, whatever kind it is: the same as `publisher`. */
+  /**
+   * The publisher's ID, whatever kind it is: the same as `publisher`. Its fragments (`organization`, `localbusiness`,
+   * `person`) are the publisher's own: an author or other person a feature adds takes an ID of its own
+   * (`ids.site('author-ana')`), and the publisher's logo is the site identity's to set.
+   */
   organization: string;
   website: string;
   webpage: string;
@@ -111,6 +115,9 @@ export function graphIds(root: string, url: string, kind: EntityKind = 'Organiza
   };
 }
 
+/** The collection indexes of each resolver's project, worked out once for every entry's trail it resolves. */
+const archivesOf = new WeakMap<SeoResolver, ReturnType<typeof siteArchives>>();
+
 /** The trail from the Home page to a document: Home, the published pages its address is inside, its collection's index. */
 function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, root: string): Array<{ name: string; url: string }> {
   const site = state.site;
@@ -131,7 +138,8 @@ function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, r
   }
   if (meta.subject.kind === 'entry') {
     const { collectionId } = meta.subject;
-    const index = siteArchives(state).find((a) => a.collectionId === collectionId && a.category === undefined && a.page === 1);
+    if (!archivesOf.has(resolver)) archivesOf.set(resolver, siteArchives(state));
+    const index = archivesOf.get(resolver)!.find((a) => a.collectionId === collectionId && a.category === undefined && a.page === 1);
     const name = seoText(state.collections[collectionId]?.settings?.name);
     if (index && name) steps.push({ route: index.route, name });
   }
@@ -143,10 +151,16 @@ function trail(state: ProjectState, resolver: SeoResolver, meta: EffectiveSeo, r
   return out;
 }
 
-/** Whether an asset ID names a picture in the library, with a file to link to. */
+/** A library file the website serves: one under static/ and nowhere above it. What a damaged record names otherwise is not. */
+const servedFile = (file: string) => {
+  const parts = file.split('/');
+  return parts[0] === 'static' && parts.length > 1 && parts.slice(1).every((p) => p && p !== '.' && p !== '..' && !/[\\\0]/.test(p));
+};
+
+/** Whether an asset ID names a picture in the library, with a file the website serves to link to. */
 export const isLibraryImage = (state: ProjectState) => (id: string) => {
   const a = Object.hasOwn(state.assets?.assets ?? {}, id) ? state.assets.assets[id] : undefined;
-  return a?.kind === 'image' && typeof a.file === 'string' && !!a.file;
+  return a?.kind === 'image' && typeof a.file === 'string' && servedFile(a.file);
 };
 
 /**

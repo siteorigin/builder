@@ -917,6 +917,7 @@ function graphOf(head: string): Array<Record<string, unknown>> {
   const scripts = jsonLd(head);
   expect(scripts.length).toBeLessThanOrEqual(1);
   if (scripts[0]) expect(Object.keys(scripts[0]).sort()).toEqual(['@context', '@graph']);
+  if (scripts[0]) expect(scripts[0]['@context']).toBe('https://schema.org');
   return (scripts[0]?.['@graph'] ?? []) as Array<Record<string, unknown>>;
 }
 /** The graph's nodes of a type (a page that is also an FAQ page is both). */
@@ -1053,11 +1054,8 @@ describe('structured data on a page with contact details and an FAQ', () => {
     expect(more).toEqual([]);
     const faq = firstOf(s, contact, 'faq.list');
     const items = faq.props.items as Array<{ question: string; answer: string }>;
-    expect(faqPage).toMatchObject({
-      '@type': ['WebPage', 'FAQPage'],
-      '@id': `${page}#webpage`,
-      mainEntity: items.map((i) => ({ '@type': 'Question', name: i.question, acceptedAnswer: { '@type': 'Answer', text: i.answer } }))
-    });
+    expect(faqPage).toMatchObject({ '@type': ['WebPage', 'FAQPage'], '@id': `${page}#webpage` });
+    expect(faqPage.mainEntity).toEqual(items.map((i) => ({ '@type': 'Question', name: i.question, acceptedAnswer: { '@type': 'Answer', text: i.answer } })));
     // Each question and answer is one the page shows, in the order it shows them.
     const text = shownText(body);
     let at = 0;

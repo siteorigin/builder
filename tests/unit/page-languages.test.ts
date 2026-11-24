@@ -83,7 +83,7 @@ const graphNodes = (file: string) => {
   return (scripts[0]?.['@graph'] ?? []) as unknown as Array<Record<string, unknown>>;
 };
 /** The graph's website and page, with the language each is said to be in. */
-const languagesOf = (file: string) => graphNodes(file).filter((n) => n['@type'] === 'WebSite' || [n['@type']].flat().includes('WebPage')).map((n) => [n['@type'], n.inLanguage]);
+const languagesOf = (file: string) => graphNodes(file).filter((n) => n['@type'] === 'WebSite' || [n['@type']].flat().includes('WebPage')).map((n) => [[n['@type']].flat()[0], n.inLanguage]);
 const ld = (file: string) => [...file.matchAll(/\{@html ("(?:[^"\\]|\\.)*")\}/g)].map((m) => JSON.parse((JSON.parse(m[1]) as string).replace(/^<script type="application\/ld\+json">|<\/script>$/g, '')) as Record<string, string>);
 /** The route-to-language table the layout carries, evaluated. */
 const layoutTable = (layout: string) => JSON.parse(layout.match(/const pageLanguages = (\{[^]*?\});/)![1]) as Record<string, string>;
@@ -302,8 +302,10 @@ describe('page languages in the website', () => {
       expect(content).not.toMatch(/hreflang/);
       // Only the not-found page links through resolve(), to the home page; no page of the site needs it.
       if (!path.startsWith(`${NOT_FOUND_DIR}/`)) expect(content).not.toMatch(/\$app\/paths/);
-      // Every page and the website are in the site's language, and nothing else says otherwise.
-      if (pageFiles.has(path)) expect(languagesOf(content), path).toEqual([['WebSite', 'en'], [[graphNodes(content)[2]['@type']].flat().length > 1 ? ['WebPage', 'FAQPage'] : 'WebPage', 'en']]);
+      // Every page and the website are in the site's language, and nothing else says otherwise; the other routes (the
+      // not-found page) carry no structured data at all.
+      if (pageFiles.has(path)) expect(languagesOf(content).map(([, language]) => language), path).toEqual(['en', 'en']);
+      else expect(ld(content), path).toEqual([]);
       expect(content.match(/"inLanguage\\":\\"(?!en\\")/g), path).toBeNull();
     }
     expect(graphNodes(files.get('src/routes/+page.svelte')!)[1]).toMatchObject({ '@type': 'WebSite', url: 'https://example.com/', inLanguage: 'en' });
@@ -543,6 +545,7 @@ describe('page languages in the website', () => {
         ['WebSite', 'en'],
         ['WebPage', language]
       ]);
+    expect(ld(pub.get(pageFile(s.pages[fr]))!)[0]['@context']).toBe('https://schema.org');
     expect(graphNodes(pub.get(pageFile(s.pages[fr]))!)[2]).toMatchObject({ '@id': 'https://example.com/studio/fr/a-propos/#webpage', name: 'À propos du studio', url: 'https://example.com/studio/fr/a-propos/', isPartOf: { '@id': 'https://example.com/studio/#website' } });
     expect(languagesOf(pub.get(pageFile(s.pages[s.site.homePageId]))!)).toEqual([
       ['WebSite', 'en'],

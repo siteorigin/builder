@@ -13,6 +13,7 @@ import type { NodeTree, ProjectState } from '@shared/types';
 import type { SeoSubject } from '@shared/seo';
 import { isArticleDate } from '@shared/articles';
 import { partsShown } from '@shared/page-shell';
+import { translationGroup } from '@shared/languages';
 import { buildSeoGraph, graphScriptText, type GraphContribution, type GraphContributor, type JsonValue, type SeoGraph } from './seo-graph';
 import { derived } from './cache';
 import { createSeoResolver, type SeoResolver } from './seo-metadata';
@@ -22,8 +23,16 @@ import { searchesFromAddress } from './search';
 /** One value, or several. */
 const oneOrMany = (list: string[]): JsonValue | undefined => (list.length === 1 ? list[0] : list.length ? list : undefined);
 /** A property only when it has a value. */
-/** The Home page is about whoever publishes the site. */
-const homeAbout: GraphContributor = ({ state, meta, ids }) => (meta.subject.kind === 'page' && meta.subject.pageId === state.site.homePageId ? { extend: [{ id: ids.webpage, set: { about: { '@id': ids.publisher } } }] } : null);
+/** Whether a page is the Home page, or the Home page in another language. */
+function isHome(state: ProjectState, pageId: string): boolean {
+  if (pageId === state.site.homePageId) return true;
+  const home = Object.hasOwn(state.pages, state.site.homePageId) ? state.pages[state.site.homePageId] : undefined;
+  const group = home && translationGroup(home);
+  return !!group && Object.hasOwn(state.pages, pageId) && translationGroup(state.pages[pageId]) === group;
+}
+
+/** The Home page, in every language it is written in, is about whoever publishes the site. Other pages have subjects of their own. */
+const homeAbout: GraphContributor = ({ state, meta, ids }) => (meta.subject.kind === 'page' && isHome(state, meta.subject.pageId) ? { extend: [{ id: ids.webpage, set: { about: { '@id': ids.publisher } } }] } : null);
 
 /** An entry says when it was last revised, when its author says so. A publication date is not a revision. */
 const revised: GraphContributor = ({ state, meta, ids }) => {

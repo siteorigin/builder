@@ -132,12 +132,15 @@ export function usesSiteSearch(state: ProjectState): boolean {
   return Object.values(state.components).some((def) => def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source));
 }
 
+/** Code that reads `q` from the page's address (not from a form it submits): `new URLSearchParams(location.search)`, or a URL's `searchParams`. */
+const READS_ADDRESS_QUERY = /(?:new\s+URLSearchParams\(\s*(?:window\.|document\.)?location\.search\s*\)|\.url\.searchParams|\blocation\.searchParams)\s*\.get\(\s*['"`]q['"`]\s*\)/;
+
 /**
  * Whether a component runs a search of the site from its page's address (`?q=` in the URL), as the theme's Site search
- * does for a link to a search: its code names the search code and reads the `q` parameter.
+ * does for a link to a search: its code names the search code and reads the `q` parameter of its page's address.
  */
 export function searchesFromAddress(def: ComponentDefinition | undefined): boolean {
-  return !!def && def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source) && /\.get\(\s*['"`]q['"`]\s*\)/.test(def.source);
+  return !!def && def.kind === 'code' && typeof def.source === 'string' && NAMES_HELPER.test(def.source) && READS_ADDRESS_QUERY.test(def.source);
 }
 
 /** The index as a module: the same pages always give the same bytes. */

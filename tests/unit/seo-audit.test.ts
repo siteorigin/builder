@@ -194,8 +194,12 @@ describe('baseline rules', () => {
     // A kind, named by the site, with no profile: who it is can't be confirmed.
     const person = run(plain, { type: 'site.update', identity: { kind: 'Person' } });
     expect(runSeoAudit(person)).toEqual([
-      expect.objectContaining({ code: 'SEO_ENTITY_SAME_AS_MISSING', severity: 'warning', pillar: 'entity', site: 'sameAs', message: expect.stringContaining('its author'), destination: { kind: 'site', field: 'sameAs' } })
+      expect.objectContaining({ code: 'SEO_ENTITY_SAME_AS_MISSING', severity: 'warning', pillar: 'entity', site: 'sameAs', aiFixable: false, message: expect.stringContaining('its author'), destination: { kind: 'site', field: 'sameAs' } })
     ]);
+    // A kind chosen with no name at all, its own or the site's, says no one.
+    const nameless = copy(run(person, { type: 'site.update', identity: { sameAs: ['https://github.com/riverside'] } }));
+    nameless.site.name = '  ';
+    expect(runSeoAudit(nameless)).toEqual([expect.objectContaining({ code: 'SEO_ENTITY_IDENTITY_MISSING', message: 'The site’s publisher has no name.', site: 'identity' })]);
     expect(runSeoAudit(run(person, { type: 'site.update', identity: { sameAs: ['https://github.com/riverside'] } }))).toEqual([]);
     // Values edited into the file by hand that Site details would refuse count as none.
     const damaged = copy(seoSite().state);

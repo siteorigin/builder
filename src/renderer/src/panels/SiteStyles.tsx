@@ -473,8 +473,11 @@ function CheckedField({ label, hint, value: saved, check, onCommit, unusable, cl
 
 /** A check's refusal as a field shows it. */
 const refusalOf = <T,>(c: Checked<T>): DraftProblem | null => (c.ok ? null : { message: c.message });
-/** A checked value, or nothing for a refusal (the field never commits one). */
-const valueOf = <T,>(c: Checked<T>): T | null => (c.ok ? c.value : null);
+/**
+ * Saves a field's checked value, or refuses the text (false) without saving anything: a field that leaves with text
+ * its check refuses (one unmounted while focused) must never clear what was saved.
+ */
+const commitChecked = <T,>(c: Checked<T>, save: (value: T) => unknown): unknown => (c.ok ? save(c.value) : false);
 const textOf = (v: unknown) => (typeof v === 'string' ? v : '');
 const linesOf = (v: unknown) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string').join('\n') : textOf(v));
 
@@ -496,7 +499,7 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
       <div className="ss-group-label" id={`${uid}-identity`}>
         Entity &amp; identity
       </div>
-      <Field label="Published by" hint="Who search engines and AI answer engines are told the site belongs to.">
+      <Field label="Published by" hint={kind === 'LocalBusiness' && (identity.openingHours || identity.priceRange || identity.geo) ? 'Who search engines and AI answer engines are told the site belongs to. Another kind clears the opening hours, price range and map position; Undo brings them back.' : 'Who search engines and AI answer engines are told the site belongs to.'}>
         <select id="site-identity-kind" className="select" value={kind} onChange={(e) => onPatch({ kind: isEntityKind(e.target.value) ? e.target.value : null })}>
           <option value="">Not set</option>
           {ENTITY_KINDS.map((k) => (
@@ -518,7 +521,7 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
         placeholder="https://"
         check={(v) => refusalOf(checkProfileUrl(v, 'The home page address'))}
         unusable={unusable}
-        onCommit={(v) => onPatch({ url: valueOf(checkProfileUrl(v)) || null })}
+        onCommit={(v) => commitChecked(checkProfileUrl(v), (url) => onPatch({ url: url || null }))}
       />
       <Field hint={kind === 'Person' ? 'A photo search engines can show beside your name.' : 'The logo search engines can show beside the name. A square image works best.'}>
         <div id="site-identity-logo" style={{ display: 'contents' }}>
@@ -536,14 +539,14 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
         rows={3}
         check={(v) => refusalOf(checkProfiles(v))}
         unusable={unusable}
-        onCommit={(v) => onPatch({ sameAs: valueOf(checkProfiles(v)) ?? [] })}
+        onCommit={(v) => commitChecked(checkProfiles(v), (sameAs) => onPatch({ sameAs }))}
       />
-      <CheckedField key={key('x')} id="site-identity-x" label="X handle" hint="Named on link previews shared on X." value={identity.twitterSite} placeholder="@" check={(v) => refusalOf(checkTwitterHandle(v))} unusable={unusable} onCommit={(v) => onPatch({ twitterSite: valueOf(checkTwitterHandle(v)) || null })} />
+      <CheckedField key={key('x')} id="site-identity-x" label="X handle" hint="Named on link previews shared on X." value={identity.twitterSite} placeholder="@" check={(v) => refusalOf(checkTwitterHandle(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTwitterHandle(v), (handle) => onPatch({ twitterSite: handle || null }))} />
       <Field label="Address" hint="On one line, as people would write it on a letter.">
         <DraftInput id="site-identity-address" value={textOf(identity.address)} limit={IDENTITY_LIMITS.address} onCommit={(v) => onPatch({ address: v.trim() || null })} />
       </Field>
-      <CheckedField key={key('telephone')} id="site-identity-telephone" label="Telephone" hint="With the country code, such as +27 21 555 0134." value={identity.telephone} check={(v) => refusalOf(checkTelephone(v))} unusable={unusable} onCommit={(v) => onPatch({ telephone: valueOf(checkTelephone(v)) || null })} />
-      <CheckedField key={key('email')} id="site-identity-email" label="Email" hint="An address people can write to." value={identity.email} check={(v) => refusalOf(checkEmail(v))} unusable={unusable} onCommit={(v) => onPatch({ email: valueOf(checkEmail(v)) || null })} />
+      <CheckedField key={key('telephone')} id="site-identity-telephone" label="Telephone" hint="With the country code, such as +27 21 555 0134." value={identity.telephone} check={(v) => refusalOf(checkTelephone(v))} unusable={unusable} onCommit={(v) => commitChecked(checkTelephone(v), (telephone) => onPatch({ telephone: telephone || null }))} />
+      <CheckedField key={key('email')} id="site-identity-email" label="Email" hint="An address people can write to." value={identity.email} check={(v) => refusalOf(checkEmail(v))} unusable={unusable} onCommit={(v) => commitChecked(checkEmail(v), (email) => onPatch({ email: email || null }))} />
       {kind === 'LocalBusiness' && (
         <>
           <CheckedField
@@ -556,7 +559,7 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
             rows={3}
             check={(v) => refusalOf(checkHoursList(v))}
             unusable={unusable}
-            onCommit={(v) => onPatch({ openingHours: valueOf(checkHoursList(v)) ?? [] })}
+            onCommit={(v) => commitChecked(checkHoursList(v), (openingHours) => onPatch({ openingHours }))}
           />
           <Field label="Price range" hint="How much things cost, such as $$ or R100–R400.">
             <DraftInput id="site-identity-price" value={textOf(identity.priceRange)} limit={IDENTITY_LIMITS.priceRange} onCommit={(v) => onPatch({ priceRange: v.trim() || null })} />
@@ -569,7 +572,7 @@ function IdentityFields({ state, workspaceKey, onPatch }: { state: ProjectState;
             value={coordinatesText(identity.geo as SiteIdentity['geo'])}
             check={(v) => refusalOf(checkCoordinates(v))}
             unusable={unusable}
-            onCommit={(v) => onPatch({ geo: valueOf(checkCoordinates(v)) ?? null })}
+            onCommit={(v) => commitChecked(checkCoordinates(v), (geo) => onPatch({ geo }))}
           />
         </>
       )}

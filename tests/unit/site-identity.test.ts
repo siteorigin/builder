@@ -12,13 +12,14 @@ import type { EditOperation } from '@shared/ops';
 import { applyOperations, assetUsages } from '@engine/apply';
 import { imageUses } from '@engine/image-uses';
 import { validateState } from '@engine/validate';
-import { generateProject } from '@generator/index';
+import { generateProject, publishedState } from '@generator/index';
 import { GenerationCache } from '@generator/cache';
 import { createSeoResolver } from '@generator/seo-metadata';
 import { buildSeoGraph, type GraphContributor, type GraphNode, type SeoGraph } from '@generator/seo-graph';
 import { documentGraph, searchPageUrl } from '@generator/structured-data';
-import { checkCoordinates, checkOpeningHours, checkProfileUrl, checkTwitterHandle, sitePublisher } from '@shared/site-identity';
-import { fieldKey, readField, shownField, typedText } from '../../src/renderer/src/lib/held';
+import { checkCoordinates, checkOpeningHours, checkProfileUrl, checkTwitterHandle, coordinatesText, sitePublisher } from '@shared/site-identity';
+import { checkHeld, fieldKey, readField, readFields, shownField, typedText } from '../../src/renderer/src/lib/held';
+import { imageUseRows } from '../../src/renderer/src/lib/asset-uses';
 import { ProjectSession } from '../../src/main/project/session';
 import { copy, image, run, seoSite } from './fixtures/seo-site';
 
@@ -117,10 +118,16 @@ describe('the site identity site.update saves', () => {
     // null, "" and an empty list each clear a field; the rest stays.
     s = run(s, { type: 'site.update', identity: { name: null, twitterSite: '', sameAs: [], geo: null } });
     expect(s.site.identity).toEqual({ kind: 'LocalBusiness', email: 'hello@riverside.example', openingHours: ['Mo-Fr 09:00-17:00', 'Sa 10:00-14:00'] });
-    // Another kind keeps a local business's details for a switch back; the pages say only what the kind has.
+    // Another kind clears what only a local business has, so nothing hidden comes back with a later switch; contact
+    // details, which every kind has and Site details shows for each, stay.
+    s = run(s, { type: 'site.update', identity: { priceRange: '$$', geo: { latitude: 0, longitude: 0 } } });
     s = run(s, { type: 'site.update', identity: { kind: 'Person' } });
-    expect(s.site.identity?.openingHours).toEqual(['Mo-Fr 09:00-17:00', 'Sa 10:00-14:00']);
+    expect(s.site.identity).toEqual({ kind: 'Person', email: 'hello@riverside.example' });
+    expect(run(s, { type: 'site.update', identity: { kind: 'LocalBusiness' } }).site.identity).toEqual({ kind: 'LocalBusiness', email: 'hello@riverside.example' });
     expect(sitePublisher(s.site, () => true)).toMatchObject({ kind: 'Person', email: 'hello@riverside.example', openingHours: [] });
+    // Given with the kind in one patch, a local business's details are kept; for another kind, refused.
+    expect(run(s, { type: 'site.update', identity: { kind: 'LocalBusiness', priceRange: '$' } }).site.identity).toMatchObject({ kind: 'LocalBusiness', priceRange: '$' });
+    expect(refusal(s, { type: 'site.update', identity: { openingHours: ['Mo 09:00-17:00'] } })).toMatch(/said of a local business/);
     // Clearing it all leaves nothing behind.
     s = run(s, { type: 'site.update', identity: null });
     expect(s.site).not.toHaveProperty('identity');
@@ -144,6 +151,12 @@ describe('the site identity site.update saves', () => {
       [{ sameAs: ['https://ana:secret@profiles.example/ana'] }, /user name and password/],
       [{ url: 'https://riverside example' }, /home page address can’t contain spaces/],
       [{ twitterSite: '@river side' }, /X handle/],
+      [{ twitterSite: '@' }, /X handle/],
+      [{ email: 'hello@riverside.example/contact' }, /not an email address/],
+      [{ sameAs: [`https://ja.wikipedia.org/wiki/${'陶'.repeat(40)}`] }, /at most 300 characters, written as browsers send it/],
+      [{ sameAs: [{ toString: null }] }, /Each profile address is text/],
+      [{ sameAs: [['https://github.com/riverside']] }, /Each profile address is text/],
+      [{ openingHours: [42] }, /Each opening period is text/],
       [{ email: 'hello at riverside' }, /not an email address/],
       [{ telephone: 'call us' }, /not a telephone number/],
       [{ openingHours: ['Monday to Friday, 9 to 5'] }, /not a period such as Mo-Fr 09:00-17:00/],
@@ -171,11 +184,15 @@ describe('the site identity site.update saves', () => {
     expect(checkOpeningHours('mo,we-fr')).toEqual({ ok: true, value: 'Mo,We-Fr' });
     expect(checkOpeningHours('Su 24:00-24:00')).toEqual({ ok: true, value: 'Su 24:00-24:00' });
     expect(checkOpeningHours('Su 24:30-24:00').ok).toBe(false);
+    expect(checkOpeningHours('Fr 09:00-24:00')).toEqual({ ok: true, value: 'Fr 09:00-24:00' });
+    expect(checkOpeningHours('Fr 09:00-24:30').ok).toBe(false);
     expect(checkCoordinates('-33.92, 18.42')).toEqual({ ok: true, value: { latitude: -33.92, longitude: 18.42 } });
     expect(checkCoordinates('0 0')).toEqual({ ok: true, value: { latitude: 0, longitude: 0 } });
     expect(checkCoordinates('')).toEqual({ ok: true, value: null });
     expect(checkCoordinates('-33.92').ok).toBe(false);
     expect(checkCoordinates('north, east').ok).toBe(false);
+    // A position saved is shown as one the field takes again.
+    expect(checkCoordinates(coordinatesText({ latitude: 0.0000001, longitude: 0 }))).toEqual({ ok: true, value: { latitude: 0.0000001, longitude: 0 } });
   });
 
   it('counts the logo as a use of its picture, which a replacement follows and Project health checks', () => {
@@ -184,8 +201,12 @@ describe('the site identity site.update saves', () => {
     expect(assetUsages(state).img_logo).toBeUndefined();
     expect(assetUsages(s).img_logo).toBe(1);
     expect(imageUses(s, 'img_logo').map((u) => u.target)).toEqual([{ kind: 'site', field: 'logo' }]);
-    const replaced = run(s, { type: 'asset.replace', assetId: 'img_logo', withAssetId: 'img_bowls', uses: [{ kind: 'site', field: 'logo' }] });
+    // One picture as both the sharing image and the logo: each is its own place to replace it, named apart.
+    const shared = run(s, { type: 'site.update', socialImage: 'img_logo' });
+    expect(imageUseRows(shared, 'img_logo').map((r) => r.what)).toEqual(['Sharing image', 'Publisher logo']);
+    const replaced = run(shared, { type: 'asset.replace', assetId: 'img_logo', withAssetId: 'img_bowls', uses: [{ kind: 'site', field: 'logo' }] });
     expect(replaced.site.identity).toEqual({ kind: 'Organization', logo: 'img_bowls' });
+    expect(replaced.site.socialImage).toBe('img_logo');
     const notPicture = copy(s);
     notPicture.assets.assets.img_logo.kind = 'document';
     expect(validateState(notPicture).filter((d) => d.code === 'ASSET_NOT_IMAGE')).toEqual([expect.objectContaining({ site: 'logo', message: expect.stringContaining('The site’s logo') })]);
@@ -198,12 +219,22 @@ describe('the site identity site.update saves', () => {
     const profiles: EditOperation = { type: 'site.update', identity: { sameAs: ['https://github.com/riverside'] } };
     expect(fieldKey([name])).toBe(fieldKey([{ type: 'site.update', identity: { name: 'Another' } }]));
     expect(fieldKey([name])).not.toBe(fieldKey([profiles]));
-    expect(readField(s, name)).toEqual({ found: true, value: { identity: 'Riverside Studio Ltd' } });
+    expect(readField(s, name)).toEqual({ found: true, value: { identity: 'Riverside Studio Ltd', publisher: { kind: 'LocalBusiness' } } });
     expect(readField(run(s, profiles), name)).toEqual(readField(s, name));
     expect(typedText(name)).toBe('Riverside Pottery');
-    expect(shownField(profiles, readField(s, profiles)!.found ? { identity: PROFILES } : null)).toBe(PROFILES.join('\n'));
+    const read = readField(s, profiles)!;
+    expect(read.found && shownField(profiles, read.value)).toBe(PROFILES.join('\n'));
+    const geo: EditOperation = { type: 'site.update', identity: { geo: { latitude: 1, longitude: 2 } } };
+    const geoRead = readField(s, geo)!;
+    expect(geoRead.found && shownField(geo, geoRead.value)).toBe('-33.92, 18.42');
     // Clearing it all writes every field.
     expect(readField(s, { type: 'site.update', identity: null })).toEqual({ found: true, value: { identity: s.site.identity } });
+    // A held name still applies after the AI changes the profiles; not once it clears who publishes the site, or
+    // makes the publisher another kind, which would give the name to someone else.
+    const base = readFields(s, [name])!.map((r) => (r.found ? r.value : undefined));
+    expect(checkHeld(run(s, profiles), [name], base).kind).toBe('apply');
+    expect(checkHeld(run(s, { type: 'site.update', identity: null }), [name], base).kind).toBe('changed');
+    expect(checkHeld(run(s, { type: 'site.update', identity: { kind: 'Person' } }), [name], base).kind).toBe('changed');
   });
 });
 
@@ -222,14 +253,21 @@ describe('the site identity in a project session', () => {
     const identity = { kind: 'Person', name: 'Ana Ruiz', sameAs: ['https://github.com/anaruiz'] } as const;
     expect((await session.apply({ operations: [{ type: 'site.update', identity: { ...identity, sameAs: [...identity.sameAs] } }] }, { label: 'Published by', source: 'user' })).ok).toBe(true);
     expect(stored()).toEqual(identity);
-    expect(home()).toContain('\\"@id\\":\\"https://example.com/studio/#person\\",\\"name\\":\\"Ana Ruiz\\"');
-    expect(home()).not.toContain('#organization');
+    const services = () => readFileSync(join(dir, 'src/routes/services/+page.svelte'), 'utf8');
+    for (const page of [home, services]) {
+      expect(page()).toContain('\\"@id\\":\\"https://example.com/studio/#person\\",\\"name\\":\\"Ana Ruiz\\"');
+      expect(page()).toContain('https://github.com/anaruiz');
+      expect(page()).not.toContain('#organization');
+    }
     expect((await session.undo()).ok).toBe(true);
     expect(stored()).toBeUndefined();
-    expect(home()).toContain('#organization');
+    for (const page of [home, services]) {
+      expect(page()).toContain('#organization');
+      expect(page()).not.toContain('Ana Ruiz');
+    }
     expect((await session.redo()).ok).toBe(true);
     expect(stored()).toEqual(identity);
-    expect(home()).toContain('#person');
+    for (const page of [home, services]) expect(page()).toContain('#person');
     await session.close();
     // Opened again, it is still there.
     const again = await ProjectSession.open(dir, 'test');
@@ -282,6 +320,36 @@ describe('the publisher in the connected graph', () => {
     expect(node(person, `${ROOT}#webpage`).about).toEqual({ '@id': `${ROOT}#person` });
   });
 
+  it('says a place on the equator, and leaves out what a hand-edited identity has that the website can’t use', () => {
+    const { state } = site();
+    const equator = documentGraph(run(state, { type: 'site.update', identity: { kind: 'LocalBusiness', geo: { latitude: 0, longitude: 0 } } }), { kind: 'page', pageId: state.site.homePageId })!;
+    expect(equator['@graph'][0].geo).toEqual({ '@type': 'GeoCoordinates', latitude: 0, longitude: 0 });
+    // Each usable profile is kept on its own; a single address where a list belongs is a list of one.
+    const damaged = copy(state);
+    (damaged.site as { identity: unknown }).identity = { kind: 'Organization', sameAs: [{ toString: null }, 'https://github.com/riverside', 42, 'not an address'], openingHours: ['Mo 09:00-17:00'] };
+    expect(() => generateProject(damaged)).not.toThrow();
+    expect(sitePublisher(damaged.site, () => true)).toMatchObject({ sameAs: ['https://github.com/riverside'], openingHours: [] });
+    (damaged.site as { identity: unknown }).identity = { kind: 'Organization', sameAs: 'https://github.com/riverside' };
+    expect(homeGraph(damaged)['@graph'][0].sameAs).toBe('https://github.com/riverside');
+    // A logo whose record names a file the website doesn't serve is left out, never linked.
+    for (const file of ['/Users/ana/Pictures/logo.png', 'static/../siteorigin/site.json', 'siteorigin/brief.md', 'static/']) {
+      const s = run(state, { type: 'site.update', identity: { kind: 'Organization', logo: 'img_logo' } });
+      s.assets.assets.img_logo.file = file;
+      expect(homeGraph(s)['@graph'][0], file).not.toHaveProperty('logo');
+    }
+  });
+
+  it('makes the Home page about the publisher in each of its languages', () => {
+    const { state } = site();
+    const s = run(
+      business(state),
+      { type: 'page.create', pageId: 'pg_accueil', title: 'Accueil', route: '/fr/' },
+      { type: 'page.update', pageId: 'pg_accueil', language: 'fr', linkTranslationTo: state.site.homePageId }
+    );
+    const accueil = documentGraph(s, { kind: 'page', pageId: 'pg_accueil' })!;
+    expect(node(accueil, `${ROOT}fr/#webpage`)).toMatchObject({ about: { '@id': `${ROOT}#localbusiness` }, inLanguage: 'fr' });
+  });
+
   it('keeps an organization as the default, and lets a feature name the publisher whatever kind it is', () => {
     const { state } = site();
     // Unset, or set to something no kind is: the site's name, as an organization, says nothing else.
@@ -312,12 +380,13 @@ describe('structured data in the exported website', () => {
       { type: 'page.update', pageId: 'pg_cours', language: 'fr', linkTranslationTo: 'pg_services' },
       { type: 'page.create', pageId: 'pg_thanks', title: 'Thanks', route: '/thanks/' },
       { type: 'page.update', pageId: 'pg_thanks', noindex: true },
-      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', updatedAt: '2027-03-09' }
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', updatedAt: '2027-03-09' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_autumn', title: 'Autumn glazing', publishedAt: '2027-09-01', draft: false, excerpt: 'Glazing evenings through the autumn, for anyone who has thrown a pot before.' }
     );
-    // Private notes of the project never reach the website.
-    (s.manifest as unknown as Record<string, unknown>).brief = 'PRIVATE-BRIEF-7f3a';
+    // What the project keeps for its author alone never reaches the website, as the editor or the export generates it.
+    s.manifest.workingCopyName = 'PRIVATE-COPY-7f3a';
     const files = generateProject(s);
-    expect([...files.values()].some((c) => c.includes('PRIVATE-BRIEF-7f3a'))).toBe(false);
+    for (const out of [files, generateProject(publishedState(s))]) expect([...out.values()].some((c) => c.includes('PRIVATE-COPY-7f3a'))).toBe(false);
     const graphs = graphsByDocument(files);
     const one = (source: string) => {
       const found = graphs.get(source);
@@ -345,8 +414,9 @@ describe('structured data in the exported website', () => {
     const entryPage = entry['@graph'][2];
     expect(entryPage).toMatchObject({ '@type': 'WebPage', dateModified: '2027-03-09', isPartOf: { '@id': `${ROOT}#website` } });
     expect(entry['@graph'][0]['@id']).toBe(`${ROOT}#localbusiness`);
-    // A page carries no revision date the project does not hold.
+    // A page, or an entry with only a publication date, carries no revision date the project does not hold.
     expect(one(`siteorigin/pages/${s.site.homePageId}.json`)['@graph'][2]).not.toHaveProperty('dateModified');
+    expect(one('siteorigin/collections/posts/entries/en_autumn.json')['@graph'][2]).not.toHaveProperty('dateModified');
     // The X handle is said on every page and entry, with or without a public URL.
     const documents = [...files].filter(([path, content]) => path.endsWith('+page.svelte') && /from siteorigin\/(pages\/|collections\/[^/]+\/entries\/)/.test(content));
     expect(documents.length).toBeGreaterThanOrEqual(6);
@@ -355,7 +425,9 @@ describe('structured data in the exported website', () => {
     // Without a public URL nothing has an address to hang the graph off: no page carries one.
     const local = copy(s);
     delete local.site.baseUrl;
-    expect([...graphsByDocument(generateProject(local)).values()].flat()).toEqual([]);
+    const localFiles = generateProject(local);
+    expect([...graphsByDocument(localFiles).values()].flat()).toEqual([]);
+    expect(localFiles.get('src/routes/+page.svelte')).toContain('<meta name="twitter:site" content={"@riverside"} />');
   });
 
   it('rewrites the pages an identity change reaches, a cached run giving the bytes a fresh one does', () => {
@@ -374,7 +446,10 @@ describe('structured data in the exported website', () => {
     const edited = copy(state);
     expect(generateProject(edited).get('src/routes/+page.svelte')).toContain('#organization');
     edited.site.identity = { kind: 'Person' };
-    expect(generateProject(edited).get('src/routes/+page.svelte')).toContain('#person');
+    edited.pages.pg_services.seo.title = 'Wheel and glaze classes';
+    const again = generateProject(edited);
+    expect(again.get('src/routes/+page.svelte')).toContain('#person');
+    expect(again.get('src/routes/services/+page.svelte')).toContain('\\"name\\":\\"Wheel and glaze classes\\"');
     // An instrumented (editor) run agrees with a fresh one too.
     const dev = new GenerationCache();
     generateProject(state, { instrument: true }, dev);
@@ -397,10 +472,20 @@ describe('structured data in the exported website', () => {
     const removed = run(searched, { type: 'node.remove', owner: { kind: 'page', id: 'pg_services' }, nodeId: placed.id });
     expect(Object.values(removed.components).some((d) => d.componentId === 'site.search')).toBe(true);
     expect(website(removed)).not.toHaveProperty('potentialAction');
-    // A results page search engines are asked not to list still runs the search; one they may list is preferred.
+    // A results page search engines are asked not to list still runs the search; one they may list, later in the
+    // site's order, is preferred.
     const quiet = run(insert(state, 'pg_services'), { type: 'page.update', pageId: 'pg_services', noindex: true });
     expect(searchPageUrl(quiet, createSeoResolver(quiet))).toBe(`${ROOT}services/`);
-    expect(searchPageUrl(insert(quiet, quiet.site.homePageId), createSeoResolver(insert(quiet, quiet.site.homePageId)))).toBe(ROOT);
+    const both = run(quiet, { type: 'page.create', pageId: 'pg_search', title: 'Search', route: '/search/' });
+    const preferred = insert(both, 'pg_search');
+    expect(preferred.site.pageOrder.indexOf('pg_services')).toBeLessThan(preferred.site.pageOrder.indexOf('pg_search'));
+    expect(searchPageUrl(preferred, createSeoResolver(preferred))).toBe(`${ROOT}search/`);
+    // A copy that searches only what its form sends, not its page's address, can't be sent words in a link.
+    const formOnly = copy(searched);
+    const def = Object.values(formOnly.components).find((d) => d.componentId === 'site.search')!;
+    def.source = def.source!.replace(/new URLSearchParams\(location\.search\)\.get\('q'\)/, "new FormData(form).get('q')");
+    expect(def.source).not.toContain('location.search');
+    expect(website(formOnly)).not.toHaveProperty('potentialAction');
     // In the shared header, the first page showing it runs it.
     const header = run(state, { type: 'node.insert', owner: { kind: 'shell', id: 'header' }, parentId: null, index: 0, componentId: 'site.search' });
     expect((website(header, 'pg_services').potentialAction as typeof action).target.urlTemplate).toBe(`${ROOT}?q={search_term_string}`);

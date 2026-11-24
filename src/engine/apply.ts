@@ -429,8 +429,10 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
         const t = u.target;
         if (!u.value) {
           if (t?.kind === 'pageSharing') state.pages[t.pageId].seo.socialImage = op.withAssetId;
-          else if (t?.kind === 'site' && t.field === 'logo') state.site.identity = { ...state.site.identity, logo: op.withAssetId };
-          else if (t?.kind === 'site') state.site[t.field] = op.withAssetId;
+          else if (t?.kind === 'site') {
+            if (t.field === 'logo') state.site.identity = { ...state.site.identity, logo: op.withAssetId };
+            else state.site[t.field] = op.withAssetId;
+          }
           continue;
         }
         const v = u.value;

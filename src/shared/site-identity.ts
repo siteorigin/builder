@@ -45,13 +45,16 @@ export function checkProfileUrl(input: string, what = 'The address'): Checked<st
   }
   if (!url.hostname) return no(`${what} needs a host name after https://.`);
   if (url.username || url.password) return no(`Leave the user name and password out of ${what[0].toLowerCase()}${what.slice(1)}.`);
+  // The limit is on the address as it is kept, so one saved is never refused when the website reads it again.
+  if (url.href.length > IDENTITY_LIMITS.url) return no(`${what} can be at most ${IDENTITY_LIMITS.url} characters, written as browsers send it.`);
   return ok(url.href);
 }
 
 /** An X (Twitter) handle, written with its @ ("riverside" and "@riverside" are "@riverside"). */
 export function checkTwitterHandle(input: string): Checked<string> {
-  const body = input.trim().replace(/^@/, '');
-  if (!body) return ok('');
+  const text = input.trim();
+  if (!text) return ok('');
+  const body = text.replace(/^@/, '');
   if (!/^[A-Za-z0-9_]{1,15}$/.test(body)) return no('An X handle is up to 15 letters, numbers and underscores, such as @riverside.');
   return ok(`@${body}`);
 }
@@ -60,7 +63,7 @@ export function checkTwitterHandle(input: string): Checked<string> {
 export function checkEmail(input: string): Checked<string> {
   const text = input.trim();
   if (!text) return ok('');
-  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
+  if (text.length > IDENTITY_LIMITS.email || !/^[^\s@<>()",;:/\\?#]+@(?:[^\s@<>()",;:/\\?#.]+\.)+[^\s@<>()",;:/\\?#.]+$/.test(text)) return no(`“${text}” is not an email address, such as hello@example.com.`);
   return ok(text);
 }
 
@@ -84,7 +87,7 @@ const HOURS = new RegExp(`^(${DAYS})(?: (\\d{1,2}):([0-5]\\d)-(\\d{1,2}):([0-5]\
 export function checkOpeningHours(input: string): Checked<string> {
   const text = oneLine(input).replace(/\s*([-,])\s*/g, '$1');
   if (!text) return ok('');
-  const m = HOURS.exec(text);
+  const m = text.length > IDENTITY_LIMITS.hoursLine ? null : HOURS.exec(text);
   const refused = no<string>(`“${oneLine(input)}” is not a period such as Mo-Fr 09:00-17:00: two-letter days, then the hours on a 24-hour clock.`);
   if (!m) return refused;
   const days = m[1].toLowerCase().replace(/\b([a-z])/g, (c) => c.toUpperCase());
@@ -100,7 +103,7 @@ export function checkCoordinates(input: string): Checked<{ latitude: number; lon
   const text = input.trim();
   if (!text) return ok(null);
   const parts = text.split(/\s*[,;]\s*|\s+/).filter(Boolean);
-  if (parts.length !== 2 || parts.some((p) => !/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(p))) return no('Enter the latitude and the longitude as two numbers, such as -33.92, 18.42.');
+  if (parts.length !== 2 || parts.some((p) => !/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(p))) return no('Enter the latitude and the longitude as two numbers, such as -33.92, 18.42.');
   return checkGeo({ latitude: Number(parts[0]), longitude: Number(parts[1]) });
 }
 
@@ -119,7 +122,8 @@ export const coordinatesText = (geo: SiteIdentity['geo']): string => (geo && typ
 
 /** Profile addresses, one per line or a list, checked and each kept once, in order. A refusal names the line. */
 export function checkProfiles(input: string | readonly unknown[]): Checked<string[]> {
-  const lines = typeof input === 'string' ? input.split(/\r?\n/) : input.map((v) => (typeof v === 'string' ? v : String(v)));
+  if (typeof input !== 'string' && input.some((v) => typeof v !== 'string')) return no('Each profile address is text, such as https://www.wikidata.org/wiki/Q42.');
+  const lines = typeof input === 'string' ? input.split(/\r?\n/) : (input as string[]);
   const out: string[] = [];
   for (const [i, line] of lines.entries()) {
     const c = checkProfileUrl(line, lines.length > 1 ? `The profile address on line ${i + 1}` : 'The profile address');
@@ -132,7 +136,8 @@ export function checkProfiles(input: string | readonly unknown[]): Checked<strin
 
 /** Opening hours, one period per line or a list, each checked and kept once, in order. */
 export function checkHoursList(input: string | readonly unknown[]): Checked<string[]> {
-  const lines = typeof input === 'string' ? input.split(/\r?\n/) : input.map((v) => (typeof v === 'string' ? v : String(v)));
+  if (typeof input !== 'string' && input.some((v) => typeof v !== 'string')) return no('Each opening period is text, such as Mo-Fr 09:00-17:00.');
+  const lines = typeof input === 'string' ? input.split(/\r?\n/) : (input as string[]);
   const out: string[] = [];
   for (const line of lines) {
     const c = checkOpeningHours(line);
@@ -182,10 +187,14 @@ function checkField(key: keyof SiteIdentity, value: unknown, isImage: (id: strin
 
 const isEmpty = (v: unknown) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
 
+/** What only a local business has: kept only while the identity is one, so nothing hidden comes back with a later switch. */
+export const BUSINESS_FIELDS = ['openingHours', 'priceRange', 'geo'] as const satisfies ReadonlyArray<keyof SiteIdentity>;
+
 /**
  * The identity once `patch` is applied to `current` (whatever was stored, even something edited into another shape
  * by hand), or why it can't be: each field given a value is checked, and one given null, "" or an empty list is
- * cleared. A patch of null clears the whole identity. Undefined when nothing is left.
+ * cleared. A patch of null clears the whole identity. Undefined when nothing is left. Opening hours, price range and
+ * map position belong to a local business: another kind clears them, and refuses them in the same patch.
  */
 export function patchIdentity(current: unknown, patch: IdentityPatch | null, isImage: (id: string) => boolean): Checked<SiteIdentity | undefined> {
   if (patch === null) return ok(undefined);
@@ -202,6 +211,11 @@ export function patchIdentity(current: unknown, patch: IdentityPatch | null, isI
     if (isEmpty(c.value)) delete next[key];
     else next[key] = c.value;
   }
+  if (next.kind !== 'LocalBusiness')
+    for (const key of BUSINESS_FIELDS) {
+      if (Object.hasOwn(patch, key) && !isEmpty(patch[key])) return no('Opening hours, a price range and a map position are said of a local business: choose Local business as who publishes the site first.');
+      delete next[key];
+    }
   return ok(Object.keys(next).length ? (next as SiteIdentity) : undefined);
 }
 
@@ -242,6 +256,19 @@ function usable<T>(key: keyof SiteIdentity, stored: Record<string, unknown>, isI
 }
 
 /**
+ * The usable members of a list as stored, each checked on its own: one value edited in by hand where a list belongs
+ * counts as a list of one, and a member that is not usable text is left out without the rest.
+ */
+function usableList(value: unknown, check: (text: string) => Checked<string>): string[] {
+  const out: string[] = [];
+  for (const v of Array.isArray(value) ? value : [value]) {
+    const c = typeof v === 'string' ? check(v) : undefined;
+    if (c?.ok && c.value && !out.includes(c.value)) out.push(c.value);
+  }
+  return out;
+}
+
+/**
  * Who publishes the site, as its pages describe it: the identity's values that are usable (a value edited by hand
  * that Site details would refuse is left out on its own), and the site's name when the identity names no one.
  * `isImage` says whether an asset ID is a picture in the library.
@@ -259,12 +286,12 @@ export function sitePublisher(site: SiteDoc, isImage: (id: string) => boolean): 
     name: usable<string>('name', stored, isImage) || siteName,
     ...opt('url', usable<string>('url', stored, isImage)),
     ...opt('logo', usable<string>('logo', stored, isImage)),
-    sameAs: usable<string[]>('sameAs', stored, isImage) ?? [],
+    sameAs: usableList(stored.sameAs, (v) => checkProfileUrl(v)).slice(0, IDENTITY_LIMITS.profiles),
     ...opt('twitterSite', usable<string>('twitterSite', stored, isImage)),
     ...opt('address', usable<string>('address', stored, isImage)),
     ...opt('telephone', usable<string>('telephone', stored, isImage)),
     ...opt('email', usable<string>('email', stored, isImage)),
-    openingHours: (local && usable<string[]>('openingHours', stored, isImage)) || [],
+    openingHours: local ? usableList(stored.openingHours, checkOpeningHours).slice(0, IDENTITY_LIMITS.hours) : [],
     ...opt('priceRange', local ? usable<string>('priceRange', stored, isImage) : undefined),
     ...opt('geo', local ? usable<{ latitude: number; longitude: number }>('geo', stored, isImage) : undefined)
   };

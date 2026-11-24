@@ -482,7 +482,7 @@ export const OPERATION_SCHEMAS = {
       })
       .nullable()
       .optional()
-      .describe('Who publishes the site, for search engines and AI answer engines. Only the fields given change; null or "" clears one, and identity: null clears all of it.')
+      .describe('Who publishes the site, for search engines and AI answer engines. Only the fields given change; null clears one (so does "" for text, or [] for a list), and identity: null clears all of it. Opening hours, price range and geo belong to a LocalBusiness: another kind clears them.')
   }),
 
   'component.create': z

@@ -346,7 +346,13 @@ describe('a renamed entry in a cached run', () => {
     // from Home in their structured data (#586) names it; no other page.
     s = run(s, { type: 'collection.update', collectionId: 'posts', name: 'Journal' });
     expect(made()).toEqual(['archive:posts:/blog/', 'entry:posts:en_spring#clean', 'entry:posts:en_spring#dev', 'entry:posts:en_winter#clean', 'entry:posts:en_winter#dev']);
-    expect(generateProject(s, {}, cache).get('src/routes/blog/glaze/+page.svelte')).toContain('\\"name\\":\\"Journal\\",\\"item\\":\\"https://');
+    const entryPage = generateProject(s, {}, cache).get('src/routes/blog/glaze/+page.svelte')!;
+    const graph = JSON.parse((JSON.parse(/\{@html ("(?:[^"\\]|\\.)*")\}/.exec(entryPage)![1]) as string).replace(/^<script type="application\/ld\+json">|<\/script>$/g, '')) as { '@graph': Array<{ '@type': string; itemListElement?: Array<{ name: string; item: string }> }> };
+    expect(graph['@graph'].find((n) => n['@type'] === 'BreadcrumbList')!.itemListElement!.map((i) => [i.name, i.item])).toEqual([
+      ['Home', 'https://example.com/'],
+      ['Journal', 'https://example.com/blog/'],
+      ['Winter workshop', 'https://example.com/blog/glaze/']
+    ]);
     expect(generateProject(s, {}, cache).get('src/routes/blog/+page.svelte')).toContain('{"Journal"}</h1>');
   });
 });
