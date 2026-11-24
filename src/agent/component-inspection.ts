@@ -502,7 +502,7 @@ export function digestComponentInspection(target: InspectTarget, cases: InspectC
   const measuredCases = cases.slice(0, Math.ceil(reached / VIEWPORTS.length)).map((c) => c.label);
 
   const parts: string[] = [];
-  const widths = `phone (${INSPECT_WIDTHS.phone}px) and desktop (${INSPECT_WIDTHS.desktop}px)`;
+  const widths = `phone (${INSPECT_WIDTHS.phone}px) and desktop (${INSPECT_WIDTHS.desktop}px) width`;
   const problems = all.length + errors.length;
   if (!problems && !failed.length) parts.push(`${def.name}: no problems found in ${measuredCases.length} case${measuredCases.length === 1 ? '' : 's'} at ${widths}.`);
   else parts.push(`${def.name}: ${problems} problem${problems === 1 ? '' : 's'} found in ${measuredCases.length} case${measuredCases.length === 1 ? '' : 's'} at ${widths}.`);
