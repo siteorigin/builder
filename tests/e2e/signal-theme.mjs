@@ -32,7 +32,8 @@ async function inspectAll(label) {
       assert.ok(report && !report.error, `${label}: ${page.route} at ${width}px was inspected: ${JSON.stringify(report)}`);
       assert.equal(report.viewportWidth, width, `${label}: ${page.route} measured at ${width}px`);
       assert.ok(report.checks && report.checks.contrast.checked > 0, `${label}: ${page.route} at ${width}px ran the readability checks`);
-      for (const k of ['contrast', 'overlaps', 'clippedText']) assert.ok(!report.checks[k].incomplete, `${label}: ${page.route} at ${width}px measured every ${k} candidate`);
+      for (const k of ['contrast', 'overlaps', 'clippedText', ...(width < 768 ? ['tapTargets'] : [])]) assert.ok(!report.checks[k].incomplete, `${label}: ${page.route} at ${width}px measured every ${k} candidate`);
+      if (width < 768) assert.ok(report.checks.tapTargets.checked > 0 && !report.checks.tapTargets.skipped, `${label}: ${page.route} at ${width}px measured its tap targets`);
       for (const f of report.issues.filter((i) => !NOT_FINDINGS.has(i.kind))) {
         const where = f.ref ? `${f.ref.owner.kind}:${f.ref.owner.id}/${f.ref.partId ?? f.ref.nodeId}` : (f.text ?? '');
         // How many elements a finding stands for counts too: a second small link under the same part is a new failure.
@@ -129,11 +130,37 @@ console.log(`Signal findings:\n${list(signal)}`);
 const added = [...signal].filter(([k, n]) => n > (baseline.get(k) ?? 0)).map(([k]) => k);
 assert.deepEqual(added, [], `Signal reports nothing Foundation's own pages do not:\n${list(signal)}`);
 
+step('a dark Services grid keeps its light cards' links in the theme’s own colours');
+const home = onSignal.site.homePageId;
+const features = Object.values(onSignal.pages[home].nodes).find((n) => n.kind === 'instance' && onSignal.components[n.definitionId].componentId === 'features.grid');
+const firstCard = features.props.items[0].id;
+const apply = (operations, label) => win.evaluate(async ([operations, label]) => (await window.builder.project.apply({ operations, label })).ok, [operations, label]);
+const owner = { kind: 'page', id: home };
+assert.ok(await apply([{ type: 'instance.setVariant', owner, nodeId: features.id, axis: 'tone', variant: 'inverse' }], 'Dark services'));
+assert.ok(await apply([{ type: 'instance.setProp', owner, nodeId: features.id, prop: 'items', itemId: firstCard, field: 'linkLabel', value: 'See planning' }, { type: 'instance.setProp', owner, nodeId: features.id, prop: 'items', itemId: firstCard, field: 'link', value: { type: 'page', target: home } }], 'Card link'));
+await eventually(
+  async () => {
+    const ink = await frame.locator('[class*="so-signal-features-grid__card-link"]').first().evaluate((a) => ({ color: getComputedStyle(a).color, brand: getComputedStyle(document.documentElement).getPropertyValue('--so-color-brand').trim() }));
+    assert.equal(ink.color, 'rgb(67, 56, 202)', `the card's text link is in the brand colour, not the dark section's light ink: ${JSON.stringify(ink)}`);
+  },
+  30000,
+  300
+);
+for (const width of WIDTHS) {
+  const report = await withTimeout(win.evaluate(([id, w]) => window.builderTest.inspectLayout(id, w), [home, width]), 90000, `dark services at ${width}px`);
+  const unreadable = report.issues.filter((i) => ['low-contrast', 'contrast-unverified'].includes(i.kind));
+  assert.deepEqual(unreadable, [], `nothing on the dark Services grid is hard to read at ${width}px`);
+}
+await win.evaluate(() => window.builder.project.undo());
+await win.evaluate(() => window.builder.project.undo());
+await eventually(async () => assert.deepEqual((await snapshot()).pages, onSignal.pages, 'the two edits are undone'));
+
 step('switching back to Foundation leaves the project as it was');
 await win.locator('.dock-tab', { hasText: 'Styles' }).click();
 await meta.getByLabel('Theme').selectOption('foundation');
 await eventually(async () => assert.equal((await snapshot()).site.themeId, 'foundation'));
 await shows(/Fraunces Variable/);
+await eventually(async () => assert.equal(await shot.getAttribute('data-theme'), 'foundation', 'Site styles pictures Foundation again'), 15000);
 const after = await snapshot();
 assert.deepEqual(after.pages, before.pages, 'the pages are exactly as they were');
 assert.deepEqual(after.site.shell, before.site.shell, 'so are the header and footer');

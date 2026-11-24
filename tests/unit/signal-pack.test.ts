@@ -9,17 +9,22 @@ import { join } from 'node:path';
 import type { ComponentDefinition, InstanceNode, ProjectState } from '@shared/types';
 import { BUILTIN_PACKS, FOUNDATION_PACK, SIGNAL_PACK } from '@catalogue/builtin';
 import { BUILTIN_FONTS } from '@catalogue/builtin-fonts';
-import { findTheme, listThemes, themePinProblem } from '@catalogue/index';
+import { findTheme, listThemes, registerPacks, themePinProblem } from '@catalogue/index';
+import { BUNDLED_PACK_IDS } from '@catalogue/pack';
+import { evaluatePairs } from '@shared/contrast';
 import { createStarterState } from '@catalogue/starters';
 import { mergeStyles, restyle } from '@catalogue/signal/components';
 import { applyOperations } from '@engine/apply';
-import { FONTS_DIR, STYLES_DIR, generateProject, packFileCopies } from '@generator/index';
-import { buildPack } from '../../src/main/packs/build';
+import { FONTS_DIR, STYLES_DIR, effectiveTokens, generateProject, packFileCopies } from '@generator/index';
+import { buildPack, registerBuiltinPacks } from '../../src/main/packs/build';
 import { ProjectSession } from '../../src/main/project/session';
-import { isGeneratedReadme, projectReadme, themeNotice } from '../../src/main/export';
+import { finishExportedSource, isGeneratedReadme, projectReadme, themeNotice } from '../../src/main/export';
 
 const dirs: string[] = [];
-afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+afterEach(() => {
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+  registerBuiltinPacks();
+});
 const tmp = () => {
   const d = mkdtempSync(join(tmpdir(), 'so-signal-'));
   dirs.push(d);
@@ -64,6 +69,20 @@ describe('the Signal pack', () => {
     expect(shipped().map((t) => t.id)).toEqual(['foundation', 'signal']);
     expect(findTheme('signal')).toMatchObject({ name: 'Signal', version: '0.1.0', license: 'GPL-3.0-or-later', source: 'bundled' });
     expect(createStarterState('business', 'New', false).site.themeId).toBe('foundation');
+    // Its ID is reserved, so an installed pack can never load under it.
+    expect(BUNDLED_PACK_IDS).toContain('signal');
+  });
+
+  it('never stands in for an installed pack a project was pinned to under the same ID', () => {
+    // A project made with an installed pack called "signal" before Signal shipped records that pack's exact copy.
+    const pinned = { site: { themeId: 'signal' }, themeLock: { theme: { id: 'signal', version: '1.0.0', digest: 'd1' } } };
+    expect(themePinProblem(pinned)).toMatch(/uses the installed theme "signal" 1\.0\.0, but SiteOrigin Builder now has a built-in theme with that ID/);
+    expect(themePinProblem({ ...pinned, themeLock: { theme: { id: 'signal', version: '0.1.0', digest: 'd1' } } })).toMatch(/built-in theme with that ID/);
+    // A project made with the built-in Signal records no copy, and opens.
+    expect(themePinProblem({ site: { themeId: 'signal' }, themeLock: { theme: { id: 'signal', version: '0.1.0' } } })).toBeNull();
+    // An installed pack's own pin still works.
+    registerPacks([...listThemes().filter((t) => t.id !== 'signal'), { ...findTheme('signal')!, source: 'user', digest: 'd1', version: '1.0.0' }]);
+    expect(themePinProblem(pinned)).toBeNull();
   });
 
   it('implements every contract of every other shipped pack, both ways', () => {
@@ -115,8 +134,12 @@ describe('the Signal pack', () => {
     expect(signal.baseCss).toContain(`@media screen and (min-width: 1024px) {\n  :where(${featured}) { grid-column: 1 / -2; grid-row: span 2; }`);
     expect(def(signal, 'features.grid').parts.grid.nodeId).toBe('bento');
     expect(def(signal, 'features.grid').variantAxes!.layout.options['two-columns'].styles).toEqual({ bento: { desktop: { columns: 2 } } });
-    // A chosen tab keeps its ring on hover: the lifted shadow is for buttons that are not marking a choice.
-    expect(signal.baseCss).toContain(":is(a, button).so-btn--primary:not([aria-selected='true'], [aria-pressed='true']):hover { box-shadow: var(--so-shadow-md); }");
+    // A chosen tab keeps its ring on hover, and a shadow the site sets wins: the lift weighs one class.
+    expect(signal.baseCss).toContain(".so-btn--primary:where(:is(a, button):hover:not([aria-selected='true'], [aria-pressed='true'])) { box-shadow: var(--so-shadow-md); }");
+    // The arrow travels further only for visitors who have not asked for less motion.
+    expect(signal.baseCss).toMatch(/@media \(prefers-reduced-motion: no-preference\) \{\n {2}:is\(a, button\)\.so-btn--text:hover::after \{ transform: translateX\(5px\); \}/);
+    // Light tiles start afresh after the tone rules, so a dark section's ink never lands on them.
+    expect(signal.baseCss.indexOf("--so-surface-ink: initial; --so-surface-ink-text: initial; --so-surface-ink-hover: initial; }\n.so-btn {")).toBeGreaterThan(signal.baseCss.indexOf('--so-surface-ink: var(--so-color-on-inverse);'));
     // Lifts only play where a pointer hovers, for visitors who have not asked for less motion.
     expect(signal.baseCss).toContain('@media (hover: hover) and (prefers-reduced-motion: no-preference) {\n  :where(:is(a, button):is(.so-btn--primary, .so-btn--light):hover) { translate: 0 -2px; }');
     // Everything Foundation's stylesheet does for every section, Signal's does too, unchanged.
@@ -153,9 +176,30 @@ describe('the Signal pack', () => {
     expect(renamed.parts.grid.nodeId).toBe('tiles');
     expect(renamed.variantAxes!.layout.options['four-columns'].styles).toEqual({ tiles: { desktop: { columns: 4 } } });
     expect(Object.values(renamed.tree!.nodes).flatMap((n) => [n.id, ...('children' in n ? n.children : [])])).not.toContain('grid');
+    // A placement inside a design holds its slots' children by ID too.
+    const hosting = structuredClone(features);
+    hosting.tree!.nodes.host = { id: 'host', kind: 'instance', definitionId: 'x', props: {}, slots: { content: ['grid'] } } as never;
+    expect((restyle(hosting, { rename: { grid: 'tiles' } }).tree!.nodes.host as { slots: Record<string, string[]> }).slots).toEqual({ content: ['tiles'] });
     expect(() => restyle(structuredClone(features), { nodes: { nope: { base: { color: 'red' } } } })).toThrow(/no node "nope"/);
     expect(() => restyle(structuredClone(features), { variants: { tone: { loud: { card: { base: { color: 'red' } } } } } })).toThrow(/no tone option "loud"/);
     expect(mergeStyles({ base: { layout: 'grid', columns: 1 }, tablet: { columns: 2 } }, { base: { columns: null, gap: '8px' }, desktop: { columns: 3 } })).toEqual({ base: { layout: 'grid', gap: '8px' }, tablet: { columns: 2 }, desktop: { columns: 3 } });
+  });
+});
+
+describe("Signal's contrast pairs", () => {
+  it("declare Foundation's pairs and the eyebrow pill's own ground, on every tone, all readable as delivered", () => {
+    const signal = findTheme('signal')!;
+    const ids = signal.contrastPairs!.map((p) => p.id);
+    expect(ids).toEqual([...findTheme('foundation')!.contrastPairs!.map((p) => p.id), 'eyebrow-background', 'eyebrow-surface-alt', 'eyebrow-dark']);
+    expect(evaluatePairs(signal.tokens, signal.contrastPairs!).filter((r) => r.status !== 'pass')).toEqual([]);
+  });
+
+  it('flag an eyebrow its pill makes unreadable, though the same brand reads on the bare section', () => {
+    const state = applyOperations(createStarterState('business', 'Grey', false), [{ type: 'theme.apply', themeId: 'signal' }, { type: 'token.set', tokenId: 'color.brand', value: '#696969' }]).state;
+    const results = evaluatePairs(effectiveTokens(state), findTheme('signal')!.contrastPairs!);
+    const status = (id: string) => results.find((r) => r.pair.id === id)!.status;
+    expect(status('brand-text-surface-alt')).toBe('pass');
+    expect(status('eyebrow-surface-alt')).toBe('fail');
   });
 });
 
@@ -184,7 +228,10 @@ describe("Signal's fonts", () => {
     const urls = [...tokens.matchAll(/url\(([^)]*)\)/g)].map((m) => m[1]);
     expect(urls.length).toBeGreaterThan(0);
     for (const u of urls) expect(u).toMatch(/^'\.\.\/fonts\/[a-z0-9-]+\.woff2'$/);
-    expect(packFileCopies(state).every((c) => c.pack === 'signal' && c.path.startsWith(`${FONTS_DIR}/`))).toBe(true);
+    const copies = packFileCopies(state);
+    expect([...new Set(copies.map((c) => c.file.replace(/^fonts\/(.+?)-(latin|cyrillic|greek|vietnamese).*$/, '$1')))].sort()).toEqual(['dm-sans', 'jetbrains-mono', 'sora']);
+    expect(copies.map((c) => `${FONTS_DIR}/${c.file.slice('fonts/'.length)}`).sort()).toEqual(urls.map((u) => `${FONTS_DIR}/${u.slice("'../fonts/".length, -1)}`).sort());
+    expect(copies.every((c) => c.pack === 'signal')).toBe(true);
     expect(files.get(`${FONTS_DIR}/NOTICE.txt`)).toMatch(/^Fonts in this folder come with the Signal theme\.[^]*Sora \(OFL-1\.1\)/);
   });
 });
@@ -279,8 +326,16 @@ describe('a Signal site as it is exported', () => {
       expect(text, path).not.toMatch(/data-so-(node|ctx|items)=/);
       expect(text, path).not.toMatch(/@fontsource|fonts\.googleapis|fonts\.gstatic/);
     }
-    for (const css of [...files].filter(([p]) => p.endsWith('.css')).map(([, t]) => t)) for (const [, u] of css.matchAll(/url\(\s*['"]?([^'")]+)/g)) expect(u).not.toMatch(/^(https?:)?\/\//);
+    // Every url() in the site's stylesheets is inline data or a file beside them; nothing from a server, not even its own root.
+    for (const css of [...files].filter(([p]) => p.endsWith('.css')).map(([, t]) => t)) for (const [, u] of css.matchAll(/url\(\s*['"]?([^'")]+)/g)) expect(u).toMatch(/^(data:|\.\.?\/)/);
     expect(files.get(`${STYLES_DIR}/theme.css`)).toContain('/* Signal theme base styles */');
+  });
+
+  it('names its own theme in the README an export writes', async () => {
+    const dest = tmp();
+    await finishExportedSource(dest, applyOperations(createStarterState('blank', 'Northwind', false), [{ type: 'theme.apply', themeId: 'signal' }]).state, join(dest, 'missing.md'));
+    expect(readFileSync(join(dest, 'README.md'), 'utf8')).toBe(projectReadme('Northwind', false, themeNotice(findTheme('signal')!)));
+    expect(readFileSync(join(dest, 'README.md'), 'utf8')).toContain('The Signal theme is licensed under GPL-3.0-or-later.');
   });
 
   it('names its own theme in the README, which the app still knows as its own', () => {

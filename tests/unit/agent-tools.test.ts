@@ -743,7 +743,8 @@ describe('update_site_brand', () => {
 
   it("switches a small model's site to another theme with a new brand color, in one undoable step (#391)", async () => {
     const small = { contextWindowTokens: 8000, maxOutputTokens: 2000, toolCalling: 'native' as const };
-    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'signal', brandColor: '#0f766e', headingFont: 'Space Grotesk' })], () => finish()], small);
+    // JetBrains Mono comes with Signal only: the rest of the call is worked out against the theme it switches to.
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'signal', brandColor: '#0f766e', headingFont: 'JetBrains Mono' })], () => finish()], small);
     const before = structuredClone(session.state);
     const { result } = await run('Make the site look like a modern software product, in teal');
     // A small site run ends with its one macro call.
@@ -755,7 +756,7 @@ describe('update_site_brand', () => {
     const s = session.state;
     expect(s.site.themeId).toBe('signal');
     expect(s.tokens.overrides['color.brand']).toBe('#0f766e');
-    expect(String(s.tokens.overrides['font.display'])).toContain('Space Grotesk Variable');
+    expect(String(s.tokens.overrides['font.display'])).toContain('JetBrains Mono Variable');
     // The pages hold what they did; only their sections now come from Signal.
     expect(JSON.parse(JSON.stringify(s.pages).replace(/"definitionId":"signal\./g, '"definitionId":"foundation.'))).toEqual(before.pages);
     expect(await compileProject(s)).toEqual([]);
@@ -772,6 +773,22 @@ describe('update_site_brand', () => {
     expect(r.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('Use one of: signal') })]);
     expect(session.state.site.themeId).toBe('foundation');
     expect(session.state.site.name).toBe('Test Studio');
+  });
+
+  it('applies nothing in the call when the switch itself is refused', async () => {
+    // On Signal, an eyebrow style the author edited keeps its JetBrains Mono, which Foundation does not ship.
+    const eyebrow = { family: "'JetBrains Mono Variable', ui-monospace, monospace", size: '0.8rem', lineHeight: '1.4', weight: 500, tracking: '0.08em', transform: 'uppercase' };
+    const { session, adapter, run } = await setup([() => [call('t1', 'update_site_brand', { theme: 'foundation', siteName: 'Kept Out', brandColor: '#0b5cad' })], () => finish()], {}, 'business', (s) => {
+      Object.assign(s, applyOperations(s, [{ type: 'theme.apply', themeId: 'signal' }, { type: 'token.set', tokenId: 'text.eyebrow', value: eyebrow }]).state);
+    });
+    expect(session.state.site.themeId).toBe('signal');
+    const tokens = structuredClone(session.state.tokens);
+    await run('Go back to the classic look and rename the site');
+    const r = lastResult(adapter.requests[1]);
+    expect(r.fields).toEqual([expect.objectContaining({ field: 'theme', message: expect.stringContaining('JetBrains Mono: your site uses this font') })]);
+    expect(session.state.site.themeId).toBe('signal');
+    expect(session.state.site.name).toBe('Test Studio');
+    expect(session.state.tokens).toEqual(tokens);
   });
 
   it('derives readable colors for both dark and light brand colors', () => {
