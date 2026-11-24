@@ -2,7 +2,7 @@ import type { EditOperation } from '@shared/ops';
 import type { ElementRef, GraphNode, OwnerRef, ProjectState, RichText } from '@shared/types';
 import { newId } from '@shared/ids';
 import { sameRichText, toRichText } from '@shared/richtext';
-import { isBinding } from '@shared/types';
+import { isBinding, sameRef } from '@shared/types';
 import { childLists, findParent } from '@engine/tree';
 import type { ProjectSnapshot } from '@shared/api';
 import { pageShowing } from '@shared/page-shell';
@@ -46,7 +46,7 @@ export async function deleteSelection() {
   // A reply that arrives after its project closed has nothing left here to select or announce.
   if (!r || getState().snapshot?.workspaceKey !== r.workspaceKey) return;
   // What the author selected meanwhile (another page, opened at its place) is theirs, and stays.
-  if (getState().selection === s.selection) setState({ selection: null });
+  if (sameRef(getState().selection, s.selection)) setState({ selection: null });
   toast(`Deleted ${label}`, 'info', undoAction(r));
 }
 
@@ -666,6 +666,8 @@ export function setMode(mode: 'edit' | 'preview') {
   const ref = !s.selection && back && st && back.pageId === s.pageId && back.definitionId === editing ? selectionBack(st, back.pageId, back.ref, back.revision === s.snapshot?.revision) : null;
   unscrolled = ref;
   setState({ mode, previewReturn: null, ...(ref ? { selection: ref } : {}) });
+  // The page Edit returns on (one a visitor's link opened, say) is the page being worked on, and reopens.
+  if (s.pageId) saveLocal({ pageId: s.pageId });
 }
 
 /** A selection made again without being scrolled to (see setMode). */

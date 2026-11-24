@@ -55,7 +55,7 @@ export function placeToKeep(state: ProjectState, pageId: string, ref: ElementRef
  * section is (see sectionOf). An element of a component edited everywhere is the component's.
  */
 export function selectionBack(state: ProjectState, pageId: string, ref: ElementRef, unchanged: boolean): ElementRef | null {
-  if (ref.owner.kind === 'component') return resolveRef(state, ref).node ? ref : null;
+  if (ref.owner.kind === 'component') return resolveRef(state, ref).node && (unchanged || !ref.itemPath?.length) ? ref : null;
   if (ref.itemPath?.length && !unchanged) return placeToKeep(state, pageId, ref);
   return onPage(state, pageId, ref) ? ref : null;
 }
@@ -92,9 +92,9 @@ export interface PlaceView {
  */
 export function notePlace(prev: PlaceView, s: PlaceView): PagePlaces {
   const places = s.pagePlaces;
-  // Only a change of selection is a pick: the page shown changing under the same selection (an Undo took the page
-  // away and Home is shown) is not.
-  if (s.selection === prev.selection) return places;
+  // Only a change of selection is a pick, and Edit keeping one made while previewing: the page shown changing under
+  // the same selection (an Undo took the page away and Home is shown) is not.
+  if (s.selection === prev.selection && !(prev.mode === 'preview' && s.mode === 'edit')) return places;
   const st = s.snapshot?.state;
   if (!st || !s.pageId || s.mode !== 'edit' || s.definitionMode || s.snapshot?.workspaceKey !== prev.snapshot?.workspaceKey) return places;
   if (s.selection) {

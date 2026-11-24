@@ -104,6 +104,10 @@ describe('what Edit selects again after Preview', () => {
     const own = ref({ kind: 'component', id: def }, s.components[def].tree!.rootIds[0]);
     expect(selectionBack(s, home, own, false), 'a component edited everywhere').toEqual(own);
     expect(selectionBack(s, home, { ...own, nodeId: 'n_gone' }, true)).toBeNull();
+    // An item of the component's list can only be told apart while nothing has changed.
+    const item = { ...own, itemPath: ['i_1'] };
+    expect(selectionBack(s, home, item, true)).toEqual(item);
+    expect(selectionBack(s, home, item, false)).toBeNull();
   });
 });
 
@@ -379,6 +383,26 @@ describe('the editor resumes where the author was', () => {
     expect(store.getState().selection).toBeNull();
   });
 
+  it('a pick made while previewing becomes the page\'s place once Edit keeps it', () => {
+    const cta = ref(page(home), lastSection(s, home));
+    const intro = ref(page(home), s.pages[home].rootIds[0]);
+    store.setState({ selection: cta });
+    actions.setMode('preview');
+    store.setState({ selection: intro });
+    actions.setMode('edit');
+    actions.selectPage(about);
+    actions.selectPage(home);
+    expect(store.getState().selection).toEqual(intro);
+  });
+
+  it('Edit after a visitor\'s link saves the page it opened as the one to reopen at', () => {
+    actions.setMode('preview');
+    store.setState({ pageId: about, selection: null });
+    saved.length = 0;
+    actions.setMode('edit');
+    expect(saved).toContainEqual({ state: { pageId: about }, key: 'opening#1' });
+  });
+
   it('Preview → Edit never selects a component after editing it everywhere ended meanwhile', () => {
     const def = Object.keys(s.components).find((id) => s.components[id].tree?.rootIds.length)!;
     const own = ref({ kind: 'component', id: def }, s.components[def].tree!.rootIds[0]);
@@ -426,5 +450,18 @@ describe('the editor resumes where the author was', () => {
     await deleting;
     expect(store.getState().selection).toEqual(intro);
     expect(store.getState().pagePlaces[about]).toEqual(intro);
+  });
+
+  it('a delete that lands after its page was opened again lets go of the section deleted', async () => {
+    const cta = ref(page(home), lastSection(s, home));
+    store.setState({ selection: { ...cta } });
+    const deleting = actions.deleteSelection();
+    actions.selectPage(about);
+    actions.selectPage(home);
+    expect(store.getState().selection, 'Home resumes at its place, a copy of the selection').toEqual(cta);
+    applying!({ ok: true, revision: 9 } as ApplyResult);
+    await deleting;
+    expect(store.getState().selection).toBeNull();
+    expect(store.getState().pagePlaces[home]).toBeUndefined();
   });
 });

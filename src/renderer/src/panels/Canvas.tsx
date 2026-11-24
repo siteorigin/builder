@@ -115,9 +115,12 @@ export function Canvas() {
   const previewFrom = useRef<FrameEntry | null>(null);
   function visitorAt(at: FrameEntry) {
     const from = previewFrom.current;
-    // The first entry of the page being opened is where the visitor starts (a report of the page it replaces is not).
+    // The first entry of the page Edit would return to is where the visitor starts (a report of the page it replaces
+    // is not).
     if (!from) {
-      if (!pendingNav.current || samePath(addressPath(at.address), pendingNav.current)) previewFrom.current = at;
+      const back = getState().previewReturn;
+      const route = back && getState().snapshot?.state.pages[back.pageId]?.route;
+      if (route && samePath(addressPath(at.address), route)) previewFrom.current = at;
     } else if ((from.key !== at.key || from.address !== at.address) && getState().previewReturn) setState({ previewReturn: null });
   }
   const [dragging, setDragging] = useState(false);
@@ -790,6 +793,12 @@ export function Canvas() {
   // Entering Preview starts the visitor's journey where the frame is (or carries on with the last one, when the
   // author went back to editing, opened no other page and moved none). A page the editor is still opening is where
   // it starts, once the frame is there.
+  // What Edit returns to, chosen again while previewing (Preview pressed with a layer picked), starts from where the
+  // frame is then.
+  const previewReturn = useStore((s) => s.previewReturn);
+  useEffect(() => {
+    if (getState().mode === 'preview' && previewReturn) previewFrom.current = frameAt.current !== null ? journeyRef.current.at : null;
+  }, [previewReturn]);
   useEffect(() => {
     // Where the frame is when Preview is entered (or, while a page is still opening, the first entry it reports).
     previewFrom.current = mode === 'preview' && frameAt.current !== null ? journeyRef.current.at : null;

@@ -902,7 +902,7 @@ export function PagesPanel() {
                     endDrag();
                   }}
                   // The second click of a double-click renames the page it opened, which keeps its place.
-                  onClick={(e) => e.detail < 2 && open(id)}
+                  onClick={(e) => (e.detail < 2 || getState().pageId !== id) && open(id)}
                   onDoubleClick={() => setRenaming(id)}
                   onKeyDown={(e) => {
                     if (e.target !== e.currentTarget) return;
