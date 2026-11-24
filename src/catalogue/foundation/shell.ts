@@ -62,8 +62,18 @@ const HEADER_SOURCE = `<script>
 	 * to it, so jump links land below it. The computed style also counts a position set as a style: a sticky
 	 * header stays in view at its top inset (only when it has one), a fixed one where it is, and either covers
 	 * the top of the window when it sits nearer the top edge than the bottom.
+	 *
+	 * First it measures the notice above the brand row as --so-header-notice on the header: a sticky header is
+	 * pinned that far above the window's top edge, so the notice scrolls away with the page however long it is,
+	 * and the brand row, the menu button and the menu stay on screen.
 	 */
 	function publishOffset(el) {
+		const notice = el.querySelector('.so-header__notice');
+		const noticeHeight = notice ? notice.getBoundingClientRect().height + 'px' : '';
+		if (el.style.getPropertyValue('--so-header-notice') !== noticeHeight) {
+			if (noticeHeight) el.style.setProperty('--so-header-notice', noticeHeight);
+			else el.style.removeProperty('--so-header-notice');
+		}
 		const root = el.ownerDocument.documentElement;
 		const style = getComputedStyle(el);
 		const box = el.getBoundingClientRect();
@@ -102,6 +112,7 @@ const HEADER_SOURCE = `<script>
 			win.removeEventListener('resize', resized);
 			win.cancelAnimationFrame(frame);
 			el.ownerDocument.documentElement.style.removeProperty('--so-header-offset');
+			el.style.removeProperty('--so-header-notice');
 		};
 	});
 
@@ -277,7 +288,8 @@ const HEADER_SOURCE = `<script>
 	}
 	.so-header--sticky {
 		position: sticky;
-		top: 0;
+		/* Pinned by the brand row: a notice above it scrolls away with the page (publishOffset measures it). */
+		top: calc(-1 * var(--so-header-notice, 0px));
 	}
 	.so-header--surface,
 	.so-header--surface .so-header__nav {
@@ -294,8 +306,8 @@ const HEADER_SOURCE = `<script>
 		color: var(--so-color-on-inverse);
 	}
 	/* The notice spans the header's full width above the brand row. On a phone its words wrap and push the row
-	   (and the menu that hangs from the header's bottom edge) down, so it never covers the menu button; its
-	   length is capped, so even the longest leaves the menu most of a phone screen. Its brand colour is painted
+	   (and the menu that hangs from the header's bottom edge) down, so it never covers the menu button, and it
+	   scrolls away with the page while the brand row stays (see .so-header--sticky). Its brand colour is painted
 	   over the page colour over white, as the theme's contrast check measures Text on brand on Brand, whatever
 	   the header's own background. */
 	.so-header__notice {
@@ -446,9 +458,10 @@ const HEADER_SOURCE = `<script>
 			border-bottom: 1px solid var(--so-color-border);
 			box-shadow: var(--so-shadow-md);
 			/* The menu hangs from a sticky header, so the page cannot scroll to it. When enlarged text or a short
-			   screen makes it taller than the space below the header, it scrolls on its own. */
-			max-height: calc(100vh - 100%);
-			max-height: calc(100dvh - 100%);
+			   screen makes it taller than the space below the header's brand row (a notice above that row scrolls
+			   away with the page), it scrolls on its own. */
+			max-height: calc(100vh - 100% + var(--so-header-notice, 0px));
+			max-height: calc(100dvh - 100% + var(--so-header-notice, 0px));
 			overflow-y: auto;
 		}
 		.so-header--open .so-header__nav {
@@ -496,7 +509,7 @@ export const header: ComponentDefinition = {
       ['secondary', 'Outlined button']
     ]) },
     // A notice for every page that shows the header, such as a closure: set it once here, clear it to remove it.
-    // Capped so even the longest notice leaves a phone's menu most of the screen.
+    // A sentence or two: a notice is not the place for a page's content.
     notice: { group: 'Notice', ...P.str('Notice text', '', { maxLength: 160 }), description: 'A sentence or two, shown in a bar above the header on every page that shows the header. Clear it to remove the notice and its link.' },
     noticeLabel: { group: 'Notice', ...P.str('Notice link label', '', { maxLength: 40 }) },
     noticeLink: { group: 'Notice', ...P.link('Notice link') },

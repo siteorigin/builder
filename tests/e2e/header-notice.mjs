@@ -50,7 +50,6 @@ const notice = inspector().getByRole('group', { name: 'Notice', exact: true });
 const text = notice.getByRole('textbox', { name: 'Text', exact: true });
 const label = notice.getByRole('textbox', { name: 'Link label', exact: true });
 await text.waitFor();
-assert.equal(await text.getAttribute('maxlength'), '160', 'the notice field takes a sentence or two');
 // The notice has its own fields: the site name and the action are still where they were.
 assert.equal(await inspector().getByRole('textbox', { name: 'Site name', exact: true }).inputValue(), siteName);
 
@@ -118,7 +117,8 @@ await eventually(async () => {
   assert.ok(p.lines >= 2, `the notice wraps onto more than one line (${p.lines})`);
   assert.ok(p.toggle.top >= p.notice.bottom - 0.5, 'the menu button sits below the notice');
   assert.equal(p.toggleVisible, true, 'nothing covers the menu button');
-  assert.ok(Math.abs(p.offset - p.header.height) <= 1, `jump links clear the whole header, notice included (${p.offset} vs ${p.header.height})`);
+  // The notice scrolls away with the page, so jump links clear the brand row that stays.
+  assert.ok(Math.abs(p.offset - (p.header.height - p.notice.height)) <= 1, `jump links clear the brand row (${p.offset} vs ${p.header.height} - ${p.notice.height})`);
 }, 30000);
 await frame.locator('.so-header__toggle').click();
 await eventually(async () => {
@@ -131,7 +131,8 @@ await eventually(async () => {
 await win.screenshot({ path: join(SHOTS, 'header-notice-phone.png') });
 await frame.locator('.so-header__toggle').click();
 
-// The longest notice the header takes still leaves the menu button and the open menu on a phone screen.
+// The longest notice the header takes wraps over several lines; scrolled down the page, it has gone and the brand
+// row, the menu button and the open menu stay on screen.
 const setNotice = (value) => apply([{ type: 'instance.setProp', owner: { kind: 'shell', id: 'header' }, nodeId: headerId, prop: 'notice', value }], 'Notice');
 const longest = 'We are closed for essential repairs until the end of the month. Bookings continue by phone and email, and site visits resume once the workshop reopens. Thanks.';
 assert.equal(longest.length, 159);
@@ -140,17 +141,23 @@ assert.ok((await setNotice(longest)).ok);
 await eventually(async () => {
   const p = await phone();
   assert.ok(p.lines >= 3, `the longest notice wraps (${p.lines} lines)`);
-  assert.ok(p.notice.height <= p.viewHeight * 0.3, `the notice leaves most of the screen (${p.notice.height} of ${p.viewHeight})`);
-  assert.ok(p.toggle.bottom <= p.viewHeight, 'the menu button is on screen');
   assert.equal(p.toggleVisible, true, 'nothing covers the menu button');
 }, 30000);
+await frame.locator('html').evaluate(() => window.scrollTo(0, 600));
+await eventually(async () => {
+  const p = await phone();
+  assert.ok(Math.abs(p.header.top + p.notice.height) <= 1, `the header is pinned by its brand row, the notice above the window (${p.header.top} vs ${p.notice.height})`);
+  assert.ok(p.toggle.top >= 0 && p.toggle.bottom <= p.viewHeight, `the menu button is on screen (${p.toggle.top}–${p.toggle.bottom})`);
+  assert.equal(p.toggleVisible, true, 'nothing covers the menu button');
+}, 15000);
 await frame.locator('.so-header__toggle').click();
 await eventually(async () => {
   const p = await phone();
-  assert.ok(p.nav.bottom - p.nav.top > 150, `the open menu has room to show its links (${p.nav.top}–${p.nav.bottom})`);
+  assert.ok(p.nav.top >= p.toggle.bottom && p.nav.bottom <= p.viewHeight + 1, `the open menu hangs below the brand row, on screen (${p.nav.top}–${p.nav.bottom} of ${p.viewHeight})`);
   assert.equal(p.contactVisible, true, 'the Contact link is reachable under a long notice');
 }, 15000);
 await frame.locator('.so-header__toggle').click();
+await frame.locator('html').evaluate(() => window.scrollTo(0, 0));
 assert.ok((await setNotice(REWORDED)).ok);
 await eventually(async () => assert.match(await bar.innerText(), /Back on Saturday\./, 'the notice is back to its wording'), 30000);
 await win.locator('button[title^="Edit:"]').click();

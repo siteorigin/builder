@@ -463,11 +463,21 @@ describe('shell.header', () => {
       );
       expect(rule('.so-header__notice')).toMatch(/color:\s*var\(--so-color-on-brand\)/);
       expect(rule('.so-header__notice a:focus-visible')).toMatch(/outline-color:\s*currentColor/);
-      // Nothing in the band scrolls on its own (a scrolling box needs a tab stop and can hold the page still):
-      // its length is capped instead.
+      // Nothing in the band scrolls on its own (a scrolling box needs a tab stop and can hold the page still).
       expect(rule('.so-header__notice-inner')).toMatch(/text-align:\s*center/);
       expect(rule('.so-header__notice-inner')).not.toMatch(/overflow(-[xy])?\s*:|max-height/);
       expect(bundle.defs['shell.header'].properties.notice).toMatchObject({ type: 'string', maxLength: 160 });
+    });
+
+    it('scrolls away with the page while the brand row and its menu stay pinned, however tall it is', () => {
+      const source = bundle.defs['shell.header'].source!;
+      // The header measures the notice and pins itself that far above the window's top edge.
+      expect(source).toMatch(/el\.style\.setProperty\('--so-header-notice', noticeHeight\)/);
+      expect(source).toMatch(/\.so-header--sticky \{\s*position: sticky;[^}]*top: calc\(-1 \* var\(--so-header-notice, 0px\)\);/);
+      // The phone menu has the room below the brand row, not below the notice too.
+      expect(source).toMatch(/max-height: calc\(100dvh - 100% \+ var\(--so-header-notice, 0px\)\);/);
+      // Its measure goes with the effect that set it.
+      expect(source).toMatch(/el\.style\.removeProperty\('--so-header-notice'\);\n\t\t\};/);
     });
   });
 
