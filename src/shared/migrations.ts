@@ -88,84 +88,185 @@ function v3Blocks(value: unknown, list?: string): unknown {
 }
 
 const v3IsBinding = (v: unknown) => !!v && typeof v === 'object' && ('$prop' in v || '$item' in v);
+/** The kinds of list rich text can be; anything else in a hand-edited document is no list. */
+const V3_KINDS: readonly unknown[] = ['ul', 'ol', 'check'];
 
-/** How each rich property of a definition is listed, from the old `list` on the node showing it, or its schema. */
-function v3ListKinds(def: Loose): Map<string, string> {
-  const kinds = new Map<string, string>();
-  for (const [name, schema] of Object.entries<Loose>(def.properties ?? {})) {
-    if (schema?.plainAs) kinds.set(name, schema.plainAs);
-    if (schema?.type === 'list') for (const [f, field] of Object.entries<Loose>(schema.fields ?? {})) if (field?.plainAs) kinds.set(`${name}.${f}`, field.plainAs);
-  }
-  const nodes: Record<string, Loose> = def.tree?.nodes ?? {};
+/** Each node's parent: through its children, and through the content placed in an instance's slots. */
+function v3Parents(nodes: Record<string, Loose>): Map<string, string> {
   const parents = new Map<string, string>();
-  for (const n of Object.values(nodes)) for (const c of (Array.isArray(n.children) ? n.children : []) as string[]) parents.set(c, n.id);
   for (const n of Object.values(nodes)) {
-    const kind = n.kind === 'text' && n.rich ? V2_LIST[n.list] : undefined;
-    if (!kind || !v3IsBinding(n.text)) continue;
-    const bound = n.text as { $prop?: string; $item?: string };
-    if (bound.$prop !== undefined) kinds.set(bound.$prop, kind);
-    else {
-      const seen = new Set<string>();
-      let at = parents.get(n.id);
-      while (at && !seen.has(at) && nodes[at]?.kind !== 'repeat') {
-        seen.add(at);
-        at = parents.get(at);
+    if (!n || typeof n !== 'object') continue;
+    const slotted = n.slots && typeof n.slots === 'object' ? Object.values<unknown>(n.slots).flatMap((ids) => (Array.isArray(ids) ? ids : [])) : [];
+    for (const c of [...(Array.isArray(n.children) ? n.children : []), ...slotted]) if (typeof c === 'string') parents.set(c, n.id);
+  }
+  return parents;
+}
+
+/**
+ * The value a binding in a definition's tree reads, as `definition \0 property` or `definition \0 list.field`. A
+ * list item field is found through the nearest repeat above the node; a hand-edited cycle ends the search.
+ */
+function v3Key(defId: string, nodes: Record<string, Loose>, parents: Map<string, string>, nodeId: string, b: Loose): string | undefined {
+  if (typeof b.$prop === 'string') return `${defId}\u0000${b.$prop}`;
+  if (typeof b.$item !== 'string') return undefined;
+  const seen = new Set<string>();
+  let at = parents.get(nodeId);
+  while (at && !seen.has(at) && nodes[at]?.kind !== 'repeat') {
+    seen.add(at);
+    at = parents.get(at);
+  }
+  const list = at ? nodes[at]?.list?.$prop : undefined;
+  return typeof list === 'string' ? `${defId}\u0000${list}.${b.$item}` : undefined;
+}
+
+interface V3Lists {
+  /** The kind of list a rich value is stored as; undefined for paragraphs. */
+  kind(defId: string, name: string): string | undefined;
+  /** Whether a value shown as a list in this definition can hold paragraphs, which that site then lists itself. */
+  hinted(defId: string, name: string): boolean;
+}
+
+/**
+ * How each rich property and rich list field was shown. The old renderer listed a value wherever a node marked as a
+ * list showed it, so every place a value reaches counts: the definition's own nodes, a nested component it is
+ * passed to (directly, as a whole list, or as a list item field), and content in an instance's slots. A value
+ * shown one way only is stored in that form. One shown both as a list and as paragraphs, or as two kinds of list,
+ * is stored as paragraphs, and each place that listed it keeps doing so with a `paragraphList` hint, as does every
+ * place such a value is passed on to.
+ */
+function v3ListPlan(components: Record<string, Loose>, due: (doc: { schemaVersion: number }) => boolean): V3Lists {
+  const demands = new Map<string, Set<string>>();
+  const demand = (key: string, kind: string) => {
+    if (!demands.has(key)) demands.set(key, new Set());
+    demands.get(key)!.add(kind);
+  };
+  /** [receiving key, forwarding key]: whatever the receiver shows, the forwarded value is shown as. */
+  const edges: Array<[string, string]> = [];
+  for (const def of Object.values(components)) {
+    if (!def || typeof def !== 'object' || typeof def.id !== 'string') continue;
+    const current = !due(def as ComponentDefinition);
+    /** The kind of list a definition's schema stores a value as; undefined for paragraphs. */
+    const listedAs = (name: string): string | undefined => {
+      const [prop, field] = name.split('.');
+      const schema = def.properties && Object.hasOwn(def.properties, prop) ? def.properties[prop] : undefined;
+      const rich = field === undefined ? schema : schema?.type === 'list' && schema.fields && Object.hasOwn(schema.fields, field) ? schema.fields[field] : undefined;
+      return rich?.type === 'richtext' && V3_KINDS.includes(rich.plainAs) ? rich.plainAs : undefined;
+    };
+    // A current definition says how its values are listed in its schema; its nodes no longer do.
+    for (const [name, schema] of Object.entries<Loose>(def.properties ?? {})) {
+      const names = [name, ...(schema?.type === 'list' ? Object.keys(schema.fields ?? {}).map((f) => `${name}.${f}`) : [])];
+      for (const k of names) if (listedAs(k)) demand(`${def.id}\u0000${k}`, listedAs(k)!);
+    }
+    const nodes: Record<string, Loose> = def.tree?.nodes && typeof def.tree.nodes === 'object' ? def.tree.nodes : {};
+    const parents = v3Parents(nodes);
+    for (const n of Object.values(nodes)) {
+      if (!n || typeof n !== 'object') continue;
+      if (n.kind === 'text' && n.rich && v3IsBinding(n.text)) {
+        const key = v3Key(def.id, nodes, parents, n.id, n.text);
+        if (!key) continue;
+        // A format 2 node lists a value if it says so. A current one shows it as stored, or as its hint lists it.
+        if (!current) demand(key, typeof n.list === 'string' && Object.hasOwn(V2_LIST, n.list) ? V2_LIST[n.list] : 'p');
+        else demand(key, V3_KINDS.includes(n.paragraphList) ? n.paragraphList : (listedAs(key.slice(def.id.length + 1)) ?? 'p'));
+      } else if (n.kind === 'instance' && n.props && typeof n.props === 'object') {
+        const nested = typeof n.definitionId === 'string' && Object.hasOwn(components, n.definitionId) ? components[n.definitionId] : undefined;
+        for (const [name, v] of Object.entries<Loose>(n.props)) {
+          const schema = nested?.properties && Object.hasOwn(nested.properties, name) ? nested.properties[name] : undefined;
+          const from = v3IsBinding(v) && schema ? v3Key(def.id, nodes, parents, n.id, v) : undefined;
+          if (!from) continue;
+          if (schema.type === 'richtext') edges.push([`${n.definitionId}\u0000${name}`, from]);
+          else if (schema.type === 'list' && typeof v.$prop === 'string')
+            for (const [f, field] of Object.entries<Loose>(schema.fields ?? {})) if (field?.type === 'richtext') edges.push([`${n.definitionId}\u0000${name}.${f}`, `${from}.${f}`]);
+        }
       }
-      const listProp = at ? nodes[at]?.list?.$prop : undefined;
-      if (listProp) kinds.set(`${listProp}.${bound.$item}`, kind);
     }
   }
-  return kinds;
+  // Sets only grow and each holds at most four kinds, so this ends, cycles included.
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [to, from] of edges) {
+      for (const kind of demands.get(to) ?? []) {
+        if (demands.get(from)?.has(kind)) continue;
+        demand(from, kind);
+        grew = true;
+      }
+    }
+  }
+  const stored = (key: string) => {
+    const set = demands.get(key);
+    const [only] = set ?? [];
+    return set?.size === 1 && only !== 'p' ? only : undefined;
+  };
+  const hinted = new Set<string>();
+  const pending = [...new Set([...demands.keys(), ...edges.flat()])].filter((k) => !stored(k));
+  while (pending.length) {
+    const key = pending.pop()!;
+    if (hinted.has(key)) continue;
+    hinted.add(key);
+    for (const [to, from] of edges) if (from === key && !hinted.has(to)) pending.push(to);
+  }
+  return { kind: (defId, name) => stored(`${defId}\u0000${name}`), hinted: (defId, name) => hinted.has(`${defId}\u0000${name}`) };
 }
 
 function structureRichText(project: ProjectState, due: (doc: { schemaVersion: number }) => boolean) {
   const components = project.components as Record<string, Loose>;
   // Read from every definition first: a document that is not due can still describe the values of one that is.
-  const kinds = new Map(Object.values(components).map((d) => [d.id as string, v3ListKinds(d)]));
-  const items = (list: unknown, schema: Loose, name: string, of: Map<string, string> | undefined) => {
+  const lists = v3ListPlan(components, due);
+  const items = (list: unknown, schema: Loose, name: string, defId: string) => {
     if (!Array.isArray(list)) return list;
     return list.map((it: Loose) => {
       if (!it || typeof it !== 'object') return it;
       const out = { ...it };
       for (const [f, field] of Object.entries<Loose>(schema.fields ?? {})) {
-        if (field?.type === 'richtext' && Object.hasOwn(out, f) && !v3IsBinding(out[f])) out[f] = v3Blocks(out[f], of?.get(`${name}.${f}`));
+        if (field?.type === 'richtext' && Object.hasOwn(out, f) && !v3IsBinding(out[f])) out[f] = v3Blocks(out[f], lists.kind(defId, `${name}.${f}`));
       }
       return out;
     });
   };
-  const convertTree = (tree: Loose | undefined) => {
-    for (const n of Object.values<Loose>(tree?.nodes ?? {})) {
+  const convertTree = (tree: Loose | undefined, owner?: Loose) => {
+    const nodes: Record<string, Loose> = tree?.nodes ?? {};
+    const parents = owner ? v3Parents(nodes) : undefined;
+    for (const n of Object.values<Loose>(nodes)) {
+      if (!n || typeof n !== 'object') continue;
       if (n.kind === 'text' && n.rich) {
-        if (!v3IsBinding(n.text)) n.text = v3Blocks(n.text, V2_LIST[n.list]);
+        if (!v3IsBinding(n.text)) n.text = v3Blocks(n.text, typeof n.list === 'string' && Object.hasOwn(V2_LIST, n.list) ? V2_LIST[n.list] : undefined);
+        else if (owner && typeof n.list === 'string' && Object.hasOwn(V2_LIST, n.list)) {
+          const key = v3Key(owner.id, nodes, parents!, n.id, n.text);
+          const name = key?.slice(owner.id.length + 1);
+          if (name !== undefined && lists.hinted(owner.id, name)) n.paragraphList = V2_LIST[n.list];
+        }
         delete n.list;
-      } else if (n.kind === 'instance') {
-        const def = components[n.definitionId];
-        const of = kinds.get(n.definitionId);
+      } else if (n.kind === 'instance' && n.props && typeof n.props === 'object' && !Array.isArray(n.props)) {
+        const def = typeof n.definitionId === 'string' && Object.hasOwn(components, n.definitionId) ? components[n.definitionId] : undefined;
         for (const [name, schema] of Object.entries<Loose>(def?.properties ?? {})) {
-          if (!n.props || !Object.hasOwn(n.props, name) || v3IsBinding(n.props[name])) continue;
-          if (schema?.type === 'richtext') n.props[name] = v3Blocks(n.props[name], of?.get(name));
-          else if (schema?.type === 'list') n.props[name] = items(n.props[name], schema, name, of);
+          if (!Object.hasOwn(n.props, name) || v3IsBinding(n.props[name])) continue;
+          if (schema?.type === 'richtext') n.props[name] = v3Blocks(n.props[name], lists.kind(n.definitionId, name));
+          else if (schema?.type === 'list') n.props[name] = items(n.props[name], schema, name, n.definitionId);
         }
       }
     }
   };
   for (const def of Object.values(components)) {
     if (!due(def as ComponentDefinition)) continue;
-    const of = kinds.get(def.id);
+    // Code written before rich text was structured reads paragraph strings, which it keeps being given.
+    const code = def.kind === 'code';
     for (const [name, schema] of Object.entries<Loose>(def.properties ?? {})) {
+      if (code && schema?.type === 'richtext') schema.codeForm ??= 'paragraphs';
+      if (code && schema?.type === 'list') for (const field of Object.values<Loose>(schema.fields ?? {})) if (field?.type === 'richtext') field.codeForm ??= 'paragraphs';
       if (schema?.type === 'richtext') {
-        schema.default = v3Blocks(schema.default, of?.get(name));
-        if (of?.has(name)) schema.plainAs = of.get(name);
+        const kind = lists.kind(def.id, name);
+        schema.default = v3Blocks(schema.default, kind);
+        if (kind) schema.plainAs = kind;
       } else if (schema?.type === 'list') {
         for (const [f, field] of Object.entries<Loose>(schema.fields ?? {})) {
           if (field?.type !== 'richtext') continue;
-          field.default = v3Blocks(field.default, of?.get(`${name}.${f}`));
-          if (of?.has(`${name}.${f}`)) field.plainAs = of.get(`${name}.${f}`);
+          const kind = lists.kind(def.id, `${name}.${f}`);
+          field.default = v3Blocks(field.default, kind);
+          if (kind) field.plainAs = kind;
         }
-        schema.default = items(schema.default, schema, name, of);
+        schema.default = items(schema.default, schema, name, def.id);
       }
     }
-    convertTree(def.tree);
+    convertTree(def.tree, def);
   }
   for (const page of Object.values(project.pages)) if (due(page)) convertTree(page);
   if (due(project.site)) {
@@ -258,6 +359,22 @@ export const MIGRATIONS: Migration[] = [
     description:
       'Placements can style single list items (itemOverrides). Nothing in the documents changes; the new version only keeps an older editor, which would drop those styles from the site and from copies, from opening the project for editing.',
     migrate() {}
+  },
+  {
+    id: 'rich-text-code-form',
+    description: 'Declare how each code component takes rich text, as its source decided until each property declared it.',
+    migrate(project, due) {
+      for (const def of Object.values(project.components) as Loose[]) {
+        if (!due(def as ComponentDefinition) || def.kind !== 'code') continue;
+        const rich = Object.values<Loose>(def.properties ?? {}).flatMap((schema) => [schema, ...(schema?.type === 'list' ? Object.values<Loose>(schema.fields ?? {}) : [])]).filter((s) => s?.type === 'richtext');
+        // A component that already declares a form for any of them was written property by property.
+        if (rich.some((s) => s.codeForm !== undefined)) continue;
+        // Frozen: the test of the source that decided this before. A component that renders through the RichText
+        // helper, or was converted from a design, took blocks; any other took paragraph strings, which need no word.
+        if (!/RichText\.svelte|^<!-- Code component converted from/.test(typeof def.source === 'string' ? def.source : '')) continue;
+        for (const s of rich) s.codeForm = 'blocks';
+      }
+    }
   }
 ];
 

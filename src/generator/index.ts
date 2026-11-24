@@ -54,7 +54,7 @@ import { NOT_FOUND_ROUTE, notFoundCopy } from '@shared/not-found';
 import { HTML_ATTR, HTML_START, isLanguageCode, pageLanguage, sameLanguage, siteLanguage, translationGroup, translationMembers } from '@shared/languages';
 import { stableHash } from '@shared/ids';
 import { fontFaceCss } from '@shared/fonts';
-import { isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan } from '@shared/richtext';
+import { asParagraphList, isListBlock, richTextToParagraphs, richTextToPlain, toRichText, type RichListType, type RichSpan, type RichText } from '@shared/richtext';
 import { axesOf, selectedVariants, selectedVariantStyles } from '@shared/variants';
 import { itemOverrideClass, liveItemStyles, repeatedPartList } from '@shared/item-styles';
 import { effectiveItem } from '@shared/page-teasers';
@@ -119,7 +119,7 @@ const RESERVED_WORDS = new Set(
   ).split(' ')
 );
 /** Names a generated managed component declares itself. Properties never use them as local variables. */
-const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'thumbnail']);
+const INTERNAL_LOCALS = new Set(['variant', 'className', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', 'has', 'isDate', 'uid', 'children', 'SoImage', 'SoLink', 'SoRichText', 'SoIcon', 'SoAction', 'richParagraphs', 'richList', 'thumbnail']);
 /** Prop keys a generated managed component already receives; a property with one of these names is renamed. */
 const INTERNAL_KEYS = new Set(['class', 'variant', 'so_o', 'so_oi', 'so_id', 'so_eager', 'so_pages', '__so', 'children']);
 
@@ -165,8 +165,8 @@ function itemField(itemVar: string, field: string): string {
 
 export interface ResolveContext {
   state: ProjectState;
-  /** Rich text goes to a code component written for paragraph strings. */
-  richAsParagraphs?: boolean;
+  /** The value goes to a code component, which takes each rich text property in the form it declares. */
+  forCode?: boolean;
   /**
    * The page whose own content is being written, which computed lists (news, an article's header) are worked out
    * for. Absent in the shared header and footer and inside component designs, which every page shares: a design
@@ -257,14 +257,14 @@ export function resolveRichText(value: unknown, ctx: ResolveContext, plainAs?: R
 }
 
 /**
- * Whether a code component reads rich text as paragraph strings. One that renders through the RichText helper
- * takes the blocks, links included; any other was written for the strings it has always been given.
+ * Whether a code component receives a rich text property or list field as blocks, declared with `codeForm`, for its
+ * RichText helper to render with links, lists and headings. Otherwise it gets the paragraph strings code components
+ * have always been given.
  */
-export function takesParagraphs(def: ComponentDefinition): boolean {
-  return def.kind === 'code' && !/RichText\.svelte|^<!-- Code component converted from/.test(def.source ?? '');
-}
+export const codeTakesBlocks = (schema: PropSchema | undefined): boolean => schema?.type === 'richtext' && schema.codeForm === 'blocks';
 
-const holdsRichText = (schema: PropSchema) => schema.type === 'richtext' || (schema.type === 'list' && Object.values(schema.fields).some((f) => f.type === 'richtext'));
+/** The rich text fields of a list a code component takes as paragraph strings. */
+const paragraphFields = (schema: PropSchema): string[] => (schema.type === 'list' ? Object.entries(schema.fields).filter(([, f]) => f.type === 'richtext' && !codeTakesBlocks(f)).map(([k]) => k) : []);
 
 export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx: ResolveContext): unknown {
   if (!schema) return value;
@@ -274,7 +274,7 @@ export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx
     case 'image':
       return resolveImage((value as ImageValue) ?? schema.default, ctx);
     case 'richtext':
-      return ctx.richAsParagraphs
+      return ctx.forCode && !codeTakesBlocks(schema)
         ? richTextToParagraphs(toRichText(value ?? schema.default, schema.plainAs))
         : resolveRichText(value ?? schema.default, ctx, schema.plainAs);
     case 'list': {
@@ -303,9 +303,10 @@ export function resolveValue(schema: PropSchema | undefined, value: unknown, ctx
 
 export function resolveInstanceProps(def: ComponentDefinition, node: InstanceNode, ctx: ResolveContext): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  const rctx = def.kind === 'code' ? { ...ctx, forCode: true } : ctx;
   for (const [name, schema] of Object.entries(def.properties)) {
     const raw = Object.hasOwn(node.props, name) ? node.props[name] : schema.default;
-    out[name] = resolveValue(schema, raw, ctx);
+    out[name] = resolveValue(schema, raw, rctx);
   }
   return out;
 }
@@ -1405,7 +1406,12 @@ function emitNodeInner(ctx: EmitCtx, node: GraphNode): string {
     case 'text': {
       if (node.rich) {
         useImport(ctx, 'SoRichText', `${RUNTIME_DIR}/RichText.svelte`);
-        const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(resolveRichText(node.text, ctx.rctx));
+        const listed = node.paragraphList === 'check' || node.paragraphList === 'ul' ? node.paragraphList : undefined;
+        let val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(listed ? asParagraphList(resolveRichText(node.text, ctx.rctx) as unknown as RichText, listed) : resolveRichText(node.text, ctx.rctx));
+        if (listed && isBinding(node.text)) {
+          useImport(ctx, '{ richList }', `${RUNTIME_DIR}/util.js`);
+          val = `richList(${val}, ${js(listed)})`;
+        }
         return `${p}<SoRichText value={${val}} class=${classExpr(ctx, node)}${anchorAttr(ctx, node)}${ids} />`;
       }
       const val = isBinding(node.text) ? bindExpr(ctx, node.text) : js(Array.isArray(node.text) ? richTextToPlain(toRichText(node.text)) : node.text);
@@ -1520,15 +1526,17 @@ function emitInstance(ctx: EmitCtx, node: InstanceNode): string {
   if (ctx.def) attrs.push(`class=${classExpr(ctx, node)}`);
   for (const [propName, schema] of Object.entries(def.properties).sort(([a], [b]) => a.localeCompare(b))) {
     const raw = Object.hasOwn(node.props, propName) ? node.props[propName] : schema.default;
-    const paragraphs = takesParagraphs(def);
-    const rctx = paragraphs ? { ...ctx.rctx, richAsParagraphs: true } : ctx.rctx;
+    const code = def.kind === 'code';
+    const rctx = code ? { ...ctx.rctx, forCode: true } : ctx.rctx;
     // A computed list is never bound or stored: on a page it is worked out for that page, and inside a design (which
     // every page shares) it takes the rows the page handed down (`so_pages`).
     const feed = schema.type === 'list' && schema.feed;
     let expr = feed ? (ctx.def ? designRowsExpr(schema, rctx) : js(resolveValue(schema, [], rctx))) : isBinding(raw) ? bindExpr(ctx, raw) : js(resolveValue(schema, raw, rctx));
-    if (paragraphs && isBinding(raw) && holdsRichText(schema)) {
+    // A value bound from the design arrives as blocks; each field the code takes as paragraph strings is converted.
+    const fields = code && isBinding(raw) ? paragraphFields(schema) : [];
+    if (code && isBinding(raw) && ((schema.type === 'richtext' && !codeTakesBlocks(schema)) || fields.length)) {
       useImport(ctx, '{ richParagraphs }', `${RUNTIME_DIR}/util.js`);
-      expr = `richParagraphs(${expr})`;
+      expr = schema.type === 'richtext' ? `richParagraphs(${expr})` : `richParagraphs(${expr}, ${js(fields)})`;
     }
     attrs.push(propAttr(propKey(def, propName), expr));
   }

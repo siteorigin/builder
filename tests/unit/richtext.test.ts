@@ -6,8 +6,8 @@ import { render } from 'svelte/server';
 import type { Component } from 'svelte';
 import type { ComponentDefinition, InstanceNode, ProjectState, RichText } from '@shared/types';
 import { SCHEMA_VERSION } from '@shared/types';
-import { definitionHash as migrateHash, migrateProject } from '@shared/migrations';
-import { cleanBlocks, richTextToMarkdown, richTextToParagraphs, richTextToPlain, toRichText } from '@shared/richtext';
+import { MIGRATIONS, definitionHash as migrateHash, migrateProject } from '@shared/migrations';
+import { cleanBlocks, parseRichText, richTextToMarkdown, richTextToParagraphs, richTextToPlain, toRichText } from '@shared/richtext';
 import { createStarterState } from '@catalogue/starters';
 import { catalogueComponent } from '@catalogue/index';
 import { applyOperations, pageLinkReferences } from '@engine/apply';
@@ -120,6 +120,51 @@ describe('rich text input', () => {
     expect(norm(richTextToMarkdown(value, s.pages))).toEqual(value);
   });
 
+  describe('reads back its own text form for each case that needs care', () => {
+    const team = { type: 'page', target: about.id, anchor: 'team' };
+    const cases: Array<[string, RichText, ('ul' | 'ol' | 'check')?]> = [
+      ['marks that touch', [p({ text: 'a', strong: true }, { text: 'b', em: true }, { text: 'c', strong: true, em: true }, { text: 'd', strong: true }, 'e', { text: 'f', em: true })] as unknown as RichText],
+      ['a mark touching a link', [p({ text: 'a', strong: true }, { text: 'b', link: team }, { text: 'c', em: true })] as unknown as RichText],
+      ['lines that start like numbered items', [p('1) not a list'), p('2. nor this'), p('3)also not')] as unknown as RichText],
+      ['URLs with parentheses', [p({ text: 'wiki', link: { type: 'url', target: 'https://en.wikipedia.org/wiki/Foo_(bar)' } }, ' ', { text: 'odd', link: { type: 'url', target: 'https://example.com/a)b(' } })] as unknown as RichText],
+      ['paragraphs in a field whose plain lines are items', [p('Intro'), { type: 'check', items: [[{ text: 'One' }], [{ text: '- two' }]] }, p('- dash'), p('Outro')] as unknown as RichText, 'check'],
+      ['a page link with an anchor', [p({ text: 'the team', link: team })] as unknown as RichText]
+    ];
+    for (const [name, value, plainAs] of cases)
+      it(name, () => {
+        // Each fixture is already canonical, so the round trip is compared with exactly what was written.
+        expect(norm(value, plainAs)).toEqual(value);
+        expect(norm(richTextToMarkdown(value, s.pages, plainAs), plainAs)).toEqual(value);
+      });
+
+    it('reads each case as written by hand, too', () => {
+      expect(norm('1) One\n2) Two')).toEqual([{ type: 'ol', items: [[{ text: 'One' }], [{ text: 'Two' }]] }]);
+      expect(norm('[wiki](https://en.wikipedia.org/wiki/Foo_(bar))')).toEqual([p({ text: 'wiki', link: { type: 'url', target: 'https://en.wikipedia.org/wiki/Foo_(bar)' } })]);
+      expect(norm('[**a** b](https://example.com/)')).toEqual([p({ text: 'a', strong: true, link: { type: 'url', target: 'https://example.com/' } }, ' ', { text: 'b', link: { type: 'url', target: 'https://example.com/' } })]);
+      expect(norm('One\n\\|Two', 'check')).toEqual([{ type: 'check', items: [[{ text: 'One' }]] }, p('Two')]);
+    });
+
+    it('reads a page ID with an anchor as that page', () => {
+      expect(norm(`[the team](${about.id}#team)`)).toEqual([p({ text: 'the team', link: team })]);
+      expect(norm(`[x](${about.id}#not an anchor)`)).toEqual([p(`[x](${about.id}#not an anchor)`)]);
+    });
+  });
+
+  it('parses hostile input in linear time', () => {
+    const link = (target: string) => ({ type: 'url' as const, target });
+    // About 120 000 characters each: linear parsing takes milliseconds, a quadratic scan many seconds.
+    const inputs: Array<[string, string]> = [
+      ...['*a ', '[', '**a ', '[a]('].map((unit): [string, string] => [unit, unit.repeat(Math.ceil(120_000 / unit.length))]),
+      ['a link whose words are many marked runs', `[${'*a* '.repeat(30_000)}](https://example.com/${'x'.repeat(1900)})`]
+    ];
+    for (const [name, input] of inputs) {
+      const started = performance.now();
+      const out = parseRichText(input, { markdown: true, link });
+      expect(performance.now() - started, name).toBeLessThan(1500);
+      expect(richTextToPlain(out).length, name).toBeGreaterThan(0);
+    }
+  });
+
   it('gives plain words and old-style paragraphs when that is all a place can hold', () => {
     const value = norm('A **b**\n- c\n- *d*');
     expect(richTextToPlain(value)).toBe('A b\n\nc\nd');
@@ -178,6 +223,63 @@ describe('links inside rich text are real links', () => {
     expect(about.id).not.toBe('pg_gone');
   });
 
+  it('is reported when its page is gone from a rich or list default', () => {
+    const s = fresh();
+    place(s, 'content.text');
+    place(s, 'pricing.plans');
+    const gone = { type: 'page', target: 'pg_gone' };
+    const broken = () => validateState(s).filter((d) => d.code === 'LINK_BROKEN');
+    expect(broken()).toEqual([]);
+    const text = s.components['foundation.content.text'];
+    (text.properties.body as { default: unknown }).default = [p('Read ', { text: 'this', link: gone })];
+    expect(broken()).toEqual([expect.objectContaining({ owner: { kind: 'component', id: text.id }, message: expect.stringContaining('default “Text” links to a page') })]);
+    (text.properties.body as { default: unknown }).default = [];
+    const plans = s.components['foundation.pricing.plans'];
+    const list = plans.properties.plans as unknown as { label: string; default: Array<{ features: unknown }> };
+    list.default[0].features = [{ type: 'check', items: [[{ text: 'See more', link: gone }]] }];
+    expect(broken()).toEqual([expect.objectContaining({ owner: { kind: 'component', id: plans.id }, message: expect.stringContaining(`default “${list.label}” links to a page`) })]);
+    // A link to a page that exists is not reported, and neither is list data that only looks like a link.
+    list.default[0].features = [{ type: 'check', items: [[{ text: 'About', link: { type: 'page', target: pageNamed(s, 'About').id } }]] }];
+    expect(broken()).toEqual([]);
+    const cta = s.components[installComponent(s, 'cta.banner')];
+    const [, linkSchema] = Object.entries(cta.properties).find(([, sch]) => sch.type === 'link')!;
+    const ctaDefault = linkSchema.default;
+    (linkSchema as { default: unknown }).default = gone;
+    expect(broken()).toEqual([expect.objectContaining({ owner: { kind: 'component', id: cta.id } })]);
+    (linkSchema as { default: unknown }).default = ctaDefault;
+    (text.properties.body as { default: unknown }).default = [p({ text: 'file', link: { type: 'document', target: 'asset_gone' } })];
+    expect(broken()).toEqual([expect.objectContaining({ message: expect.stringContaining('default “Text” links to a document that is no longer in Assets') })]);
+    (text.properties.body as { default: unknown }).default = [];
+    list.default[0].features = [];
+    const data = applyOperations(s, [{ type: 'component.createCode', name: 'Data', source: '<p>x</p>\n', properties: { rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { type: { type: 'string', label: 'Type' }, target: { type: 'string', label: 'Target' } } } } }]);
+    const rows = data.state.components[data.results[0].definitionId as string].properties.rows as unknown as { default: unknown[] };
+    rows.default = [{ id: 'r1', type: 'page', target: 'landing' }];
+    expect(validateState(data.state).filter((d) => d.code === 'LINK_BROKEN')).toEqual([]);
+    // An unplaced code component whose list starts empty, with the link only in the default of a new item's field.
+    const r = applyOperations(s, [{ type: 'component.createCode', name: 'Notes', source: '<p>x</p>\n', properties: { notes: { type: 'list', label: 'Notes', itemLabel: 'Note', fields: { body: { type: 'richtext', label: 'Body' } } } } }]);
+    const code = r.state.components[r.results[0].definitionId as string];
+    (code.properties.notes as unknown as { fields: { body: { default: unknown } } }).fields.body.default = [p({ text: 'gone', link: gone })];
+    const found = validateState(r.state).filter((d) => d.code === 'LINK_BROKEN');
+    expect(found).toEqual([expect.objectContaining({ owner: { kind: 'component', id: code.id }, message: 'Notes: the default “Notes › Body” links to a page that no longer exists.' })]);
+    expect(found[0]).not.toHaveProperty('nodeId');
+  });
+
+  it('flags rich text shown from a property that is not rich text when a project opens', () => {
+    const s = fresh();
+    place(s, 'content.text');
+    const def = s.components['foundation.content.text'];
+    const invalid = () => validateState(s).filter((d) => d.code === 'BINDING_INVALID');
+    expect(invalid()).toEqual([]);
+    const [nodeId] = Object.entries(def.tree!.nodes).find(([, n]) => n.kind === 'text' && n.rich && JSON.stringify(n.text) === '{"$prop":"body"}')!;
+    def.properties.body = { type: 'string', label: 'Body', default: 'Plain' };
+    expect(invalid()).toEqual([expect.objectContaining({ owner: { kind: 'component', id: def.id }, nodeId, message: expect.stringMatching(/string property as its text, which needs a richtext property/) })]);
+    // A list item field, too.
+    const plans = s.components[installComponent(s, 'pricing.plans')];
+    const [featuresId] = Object.entries(plans.tree!.nodes).find(([, n]) => n.kind === 'text' && n.rich && JSON.stringify(n.text) === '{"$item":"features"}')!;
+    (plans.properties.plans as unknown as { fields: Record<string, unknown> }).fields.features = { type: 'string', label: 'Features', default: '' };
+    expect(invalid()).toEqual(expect.arrayContaining([expect.objectContaining({ owner: { kind: 'component', id: plans.id }, nodeId: featuresId })]));
+  });
+
   it('goes through instance and node content operations', () => {
     const { s, about, node } = withLink();
     const owner = { kind: 'page' as const, id: s.site.homePageId };
@@ -220,10 +322,17 @@ describe('generated rich text', () => {
     const s = fresh();
     const about = pageNamed(s, 'About');
     const r = applyOperations(s, [{ type: 'node.insert', owner: { kind: 'page', id: s.site.homePageId }, primitive: 'richtext', text: `[go](${about.route})` }]);
-    const page = generateProject(r.state).get('src/routes/+page.svelte')!;
-    expect(page).toContain('<SoRichText value={');
-    expect(page).toContain('"href":"/about/"');
-    expect(page).not.toContain(about.id);
+    // The home page links to About elsewhere too, so only the element written for this text is read.
+    const literal = (state: ProjectState) => {
+      const page = generateProject(state).get('src/routes/+page.svelte')!;
+      const lines = page.split('\n').filter((l) => l.includes('<SoRichText value={') && l.includes('"text":"go"'));
+      expect(lines).toHaveLength(1);
+      return lines[0];
+    };
+    expect(literal(r.state)).toContain('[{"type":"p","spans":[{"text":"go","link":{"href":"/about/"}}]}]');
+    expect(literal(r.state)).not.toContain(about.id);
+    const moved = applyOperations(r.state, [{ type: 'page.update', pageId: about.id, route: '/our-story/' }]).state;
+    expect(literal(moved)).toContain('"link":{"href":"/our-story/"}');
   });
 
   it('carries no editor runtime in exports', () => {
@@ -243,8 +352,8 @@ describe('generated rich text', () => {
   });
 
   describe('code components', () => {
-    const code = (s: ProjectState, source: string) => {
-      const r = applyOperations(s, [{ type: 'component.createCode', name: 'Note', source, properties: { body: { type: 'richtext', label: 'Body', default: 'Default **text**' } } }]);
+    const code = (s: ProjectState, source: string, form: Record<string, unknown> = {}) => {
+      const r = applyOperations(s, [{ type: 'component.createCode', name: 'Note', source, properties: { body: { type: 'richtext', label: 'Body', default: 'Default **text**', ...form } } }]);
       const defId = r.results[0].definitionId as string;
       const node = makeInstance(r.state.components[defId], { body: normalizeRichText('A **b** [c](https://example.com/)', r.state, 'Body') });
       const page = r.state.pages[r.state.site.homePageId];
@@ -253,15 +362,25 @@ describe('generated rich text', () => {
       return r.state;
     };
 
-    it('passes paragraph strings to a component written for them', () => {
+    const helper = `<script>import SoRichText from '$lib/siteorigin/runtime/RichText.svelte'; let { body = [] } = $props();</script><SoRichText value={body} />`;
+
+    it('passes paragraph strings to a property that declares no form, as code components always had', () => {
       const out = generateProject(code(fresh(), `<script>let { body = [] } = $props();</script>{#each body as line}<p>{line}</p>{/each}`)).get('src/routes/+page.svelte')!;
       expect(out).toContain('body={["A **b** c"]}');
+      // Importing the helper decides nothing: only the declaration does.
+      expect(generateProject(code(fresh(), helper)).get('src/routes/+page.svelte')).toContain('body={["A **b** c"]}');
+      expect(generateProject(code(fresh(), helper, { codeForm: 'paragraphs' })).get('src/routes/+page.svelte')).toContain('body={["A **b** c"]}');
     });
 
-    it('passes blocks to a component that renders through the helper', () => {
-      const source = `<script>import SoRichText from '$lib/siteorigin/runtime/RichText.svelte'; let { body = [] } = $props();</script><SoRichText value={body} />`;
-      const out = generateProject(code(fresh(), source)).get('src/routes/+page.svelte')!;
+    it('keeps a declared form as declared', () => {
+      const s = code(fresh(), helper, { codeForm: 'paragraphs' });
+      expect(Object.values(s.components).find((d) => d.name === 'Note')!.properties.body).toMatchObject({ codeForm: 'paragraphs' });
+    });
+
+    it('passes blocks to a property declared to take them', () => {
+      const out = generateProject(code(fresh(), helper, { codeForm: 'blocks' })).get('src/routes/+page.svelte')!;
       expect(out).toContain('"href":"https://example.com/"');
+      expect(() => code(fresh(), helper, { codeForm: 'html' })).toThrow(/codeForm must be blocks or paragraphs/);
     });
 
     it('converts a bound value for a nested component written for strings', () => {
@@ -359,9 +478,15 @@ describe('migrating documents to structured rich text', () => {
     current.schemaVersion = SCHEMA_VERSION;
     const value = [p('Already structured')];
     const node = makeInstance(s.components[installComponent(s, 'content.text')], { body: value });
-    current.nodes[node.id] = node;
-    current.rootIds.push(node.id);
+    // Text the step would read as an old paragraph: in a current document, only the version check keeps it as it is.
+    const loose = makeInstance(s.components['foundation.content.text'], { body: 'Left **as written**' as never });
+    const lit = 'n_current_literal';
+    current.nodes[lit] = { id: lit, kind: 'text', tag: 'div', rich: true, text: ['Also **as written**'] as never };
+    for (const n of [node, loose]) current.nodes[n.id] = n;
+    current.rootIds.push(node.id, loose.id, lit);
+    const before = structuredClone(current);
     const out = migrateProject(s)!.state;
+    expect(out.pages[current.id]).toEqual(before);
     expect((out.pages[current.id].nodes[node.id] as InstanceNode).props.body).toEqual(value);
     expect((out.pages[page.id].nodes[textId] as InstanceNode).props.body).toEqual(expect.arrayContaining([p('Plain')]));
   });
@@ -372,14 +497,46 @@ describe('migrating documents to structured rich text', () => {
     def.schemaVersion = SCHEMA_VERSION;
     const blocks = [p('New default')];
     (def.properties.body as { default: unknown }).default = blocks;
+    // A default the step would read as old paragraphs: in a current definition, only the version check keeps it.
+    def.properties.note = { type: 'richtext', label: 'Note', default: 'Left **as written**' as never };
+    const kept = structuredClone(def);
     const bound = makeInstance(def, { body: { $prop: 'text' } });
     const wrapper = structuredClone(s.components['foundation.pricing.plans']);
     wrapper.id = 'project.wrap';
     wrapper.tree = { rootIds: [bound.id], nodes: { [bound.id]: bound } };
     s.components[wrapper.id] = wrapper;
     const out = migrateProject(s)!.state;
+    expect(out.components['foundation.content.text']).toEqual(kept);
     expect((out.components['foundation.content.text'].properties.body as { default: unknown }).default).toEqual(blocks);
     expect((out.components['project.wrap'].tree!.nodes[bound.id] as InstanceNode).props.body).toEqual({ $prop: 'text' });
+  });
+
+  it('declares how each code component takes rich text, as it took it before', () => {
+    const project = (version: number) => {
+      const properties = { body: { type: 'richtext', label: 'Body' }, rows: { type: 'list', label: 'Rows', itemLabel: 'Row', fields: { text: { type: 'richtext', label: 'Text' } } } };
+      const r = applyOperations(fresh(), [
+        { type: 'component.createCode', name: 'Helper', source: `<script>import SoRichText from '../runtime/RichText.svelte'; let { body = [] } = $props();</script><SoRichText value={body} />\n`, properties },
+        { type: 'component.createCode', name: 'Strings', source: `<script>let { body = [] } = $props();</script><p>{body.join(' ')}</p>\n`, properties },
+        { type: 'component.createCode', name: 'Declared', source: `<script>import SoRichText from '../runtime/RichText.svelte'; let { body = [] } = $props();</script><SoRichText value={body} />\n`, properties: { body: { ...properties.body, codeForm: 'paragraphs' } } },
+        // One property declared: the others were left to the default on purpose.
+        { type: 'component.createCode', name: 'Partly', source: `<script>import SoRichText from '../runtime/RichText.svelte'; let { body = [], rows = [] } = $props();</script><SoRichText value={body} />\n`, properties: { ...properties, body: { ...properties.body, codeForm: 'blocks' } } },
+        { type: 'component.createCode', name: 'Converted', source: `<!-- Code component converted from "Text". Edit freely; declared properties stay editable in SiteOrigin Builder. -->\n<p>x</p>\n`, properties }
+      ]);
+      const s = r.state;
+      for (const d of [s.manifest, s.site, s.tokens, s.assets, s.themeLock, ...Object.values(s.pages), ...Object.values(s.components)]) d.schemaVersion = version;
+      const out = migrateProject(s)!.state;
+      const form = (name: string) => {
+        const def = Object.values(out.components).find((d) => d.name === name)!;
+        return [(def.properties.body as { codeForm?: string }).codeForm, (def.properties.rows as { fields?: { text: { codeForm?: string } } } | undefined)?.fields?.text.codeForm];
+      };
+      return { helper: form('Helper'), strings: form('Strings'), declared: form('Declared'), partly: form('Partly'), converted: form('Converted') };
+    };
+    // Format 2 gave every code component paragraph strings.
+    expect(project(2)).toEqual({ helper: ['paragraphs', 'paragraphs'], strings: ['paragraphs', 'paragraphs'], declared: ['paragraphs', undefined], partly: ['blocks', 'paragraphs'], converted: ['paragraphs', 'paragraphs'] });
+    // Since then, the source decided: rendering through the helper, or being converted, took blocks.
+    const before = MIGRATIONS.findIndex((m) => m.id === 'rich-text-code-form') + 1;
+    expect(MIGRATIONS.at(-1)!.id).toBe('rich-text-code-form');
+    expect(project(before)).toEqual({ helper: ['blocks', 'blocks'], strings: [undefined, undefined], declared: ['paragraphs', undefined], partly: ['blocks', undefined], converted: ['blocks', 'blocks'] });
   });
 
   it('keeps a pristine theme definition matching its lock', () => {
@@ -506,10 +663,26 @@ describe('rich text round trip: document, HTML, inline edit, document', () => {
     expect(resolveRichText(back, { state: moved })[0]).toEqual({ type: 'p', spans: [{ text: 'story', link: { href: '/renamed/' } }] });
   });
 
-  it('renders the older form code components may still pass', () => {
-    const out = render(RichTextView, { props: { paragraphs: ['With **bold**', 'Second'], list: 'check' } }).body.replace(/<!--[\s\S]*?-->/g, '');
-    expect(out).toContain('<ul class="so-rich--check">');
-    expect(out).toContain('<strong>bold</strong>');
+  it('renders the older form code components may still pass, with the list as its root', () => {
+    const markup = (props: Record<string, unknown>) => render(RichTextView, { props }).body.replace(/<!--[\s\S]*?-->/g, '').replace(/>\s+</g, '><').trim();
+    // Selectors such as `.x > li` were written against this root.
+    expect(markup({ paragraphs: ['With **bold**', 'Second'], list: 'check', class: 'x', id: 'f' })).toBe('<ul class="so-rich so-rich--check x" id="f"><li>With <strong>bold</strong></li><li>Second</li></ul>');
+    expect(markup({ paragraphs: ['One'], list: 'bullet', class: 'x' })).toBe('<ul class="so-rich so-rich--bullet x"><li>One</li></ul>');
+    // Paragraphs and items of the same kind of list keep that form; anything else shows as written.
+    expect(markup({ value: [p('A'), { type: 'check', items: [[{ text: 'B' }]] }], list: 'check' })).toBe('<ul class="so-rich so-rich--check"><li>A</li><li>B</li></ul>');
+    expect(markup({ value: [p('A'), { type: 'ul', items: [[{ text: 'B' }]] }], list: 'bullet' })).toBe('<ul class="so-rich so-rich--bullet"><li>A</li><li>B</li></ul>');
+    expect(markup({ value: [{ type: 'h3', spans: [{ text: 'T' }] }, p('A')], list: 'check', class: 'x' })).toBe('<div class="so-rich x"><h3>T</h3><p>A</p></div>');
+    expect(markup({ value: [{ type: 'ul', items: [[{ text: 'B' }]] }], list: 'check' })).toBe('<div class="so-rich"><ul class="so-rich--bullet"><li>B</li></ul></div>');
+    expect(markup({ value: [], list: 'check', class: 'x' })).toBe('<ul class="so-rich so-rich--check x"></ul>');
+    expect(markup({ paragraphs: ['One', '*Two*'], class: 'x' })).toBe('<div class="so-rich x"><p>One</p><p><em>Two</em></p></div>');
+  });
+
+  it('refuses an unsafe address that reaches the helper from a code component', () => {
+    const spans = ['javascript:alert(1)', 'JAVASCRIPT:alert(1)', 'data:text/html,x', 'vbscript:x', ' javascript:alert(1)'].map((href, i) => ({ text: `t${i} `, link: { href } }));
+    const out = render(RichTextView, { props: { value: [{ type: 'p', spans: [...spans, { text: 'ok', link: { href: '/about/' } }] }] } }).body;
+    expect(out).not.toMatch(/script:|data:|href=" /i);
+    for (let i = 0; i < spans.length; i++) expect(out).toContain(`t${i} `);
+    expect(out).toContain('href="/about/"');
   });
 
   it('keeps the helpers free of editor code', () => {

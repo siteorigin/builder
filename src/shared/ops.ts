@@ -294,7 +294,9 @@ export const OPERATION_SCHEMAS = {
     properties: z
       .record(z.string(), z.unknown())
       .optional()
-      .describe('Property schema: { propName: { type, label, default } }. Types: string, richtext, number, boolean, enum (options), link, image, icon, choices, list (itemLabel, fields), table (default { columns, rows }).')
+      .describe(
+        'Property schema: { propName: { type, label, default } }. Types: string, richtext, number, boolean, enum (options), link, image, icon, choices, list (itemLabel, fields), table (default { columns, rows }). A richtext property or list field reaches the code as one string per paragraph or list item with **bold** and *italic*, unless it declares codeForm: "blocks", which passes structured blocks to render with <RichText value={...} /> imported from "../runtime/RichText.svelte" (links, lists and headings included).'
+      )
   }),
   'component.updateSource': z.object({
     type: z.literal('component.updateSource'),

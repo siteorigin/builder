@@ -311,6 +311,20 @@ export function toRichText(v: unknown, plainAs?: RichListType): RichText {
   return mergeLists(cleanBlocks(blocks));
 }
 
+/**
+ * Rich text as a node with `paragraphList` shows it: one list of `kind`, whose items are the paragraphs and the
+ * items of lists of that kind. Text holding anything else (a heading, a quote, another kind of list) is unchanged.
+ */
+export function asParagraphList(blocks: RichText, kind: RichListType): RichText {
+  const items: RichSpan[][] = [];
+  for (const b of blocks) {
+    if (b.type === 'p') items.push(b.spans);
+    else if (b.type === kind && isListBlock(b)) items.push(...b.items);
+    else return blocks;
+  }
+  return items.length ? [{ type: kind, items }] : blocks;
+}
+
 /** Neighbouring lists of the same kind are one list. */
 export function mergeLists(blocks: RichText): RichText {
   const out: RichText = [];
