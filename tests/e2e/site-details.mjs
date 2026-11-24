@@ -97,10 +97,11 @@ for (const [name, key] of [['Favicon', 'favicon'], ['Social sharing image', 'soc
   assert.ok((await tiles.first().locator('img').count()) === 1, 'each tile shows its picture');
   await box.getByRole('listbox', { name: 'Your images' }).locator('[tabindex="0"]').focus();
   await win.keyboard.press('ArrowRight');
+  assert.equal(await box.locator('.insp-pick-tile').evaluateAll((els) => els.indexOf(document.activeElement)), 1, 'the arrow key moved to the second tile');
   await win.keyboard.press('Enter');
   await eventually(() => assert.ok(site()[key], `${name} saved`));
   assert.equal(await box.locator('.insp-pick').count(), 0, 'the picker closed after choosing');
-  await eventually(async () => assert.equal(await box.locator('.insp-image-thumb img').count(), 1, `${name} shows the chosen image`));
+  await eventually(async () => assert.equal(await box.locator('.insp-image-thumb img').evaluate((el) => el.complete && el.naturalWidth > 0), true, `${name} shows the chosen image, loaded`));
   assert.equal(await box.locator('.insp-alt, input[type="checkbox"], [role="switch"]').count(), 0, 'no description or decorative controls');
   const shape = await box.locator('.insp-image-thumb').evaluate((el) => el.getBoundingClientRect().width / el.getBoundingClientRect().height);
   if (key === 'favicon') assert.ok(Math.abs(shape - 1) < 0.02, `the favicon preview is square (${shape})`);

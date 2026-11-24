@@ -496,6 +496,8 @@ export function ImageEditor({ value, onChange, state, title, plain }: { value: I
   // Said once when a pick keeps the old description, since the note appears away from where focus goes.
   const [carriedSaid, setCarriedSaid] = useState({ text: '', count: 0 });
   const setCarried = (on: boolean, of: ImageValue = latest.current) => {
+    // A site image carries no description, and must never clear the flag another field has for the same picture.
+    if (plain) return;
     const k = carryKey(of, project);
     if (on && !of.decorative && !carriedDescriptions.has(k)) setCarriedSaid((s) => announcementText('The description was kept from the previous image. Check it still describes this one.', s.count) ?? s);
     if (!k) return;
@@ -650,7 +652,7 @@ export function ImageEditor({ value, onChange, state, title, plain }: { value: I
             {asset ? (labels.get(asset.id)?.label ?? asset.name) : over ? 'Drop to use this image' : gone ? 'This image is no longer in Assets' : plain ? 'None' : 'No image chosen'}
           </span>
           <span className="row" style={{ gap: 4 }}>
-            <button ref={chooseBtn} className="btn btn-sm" aria-describedby={gone ? `${titleId}-now` : undefined} aria-expanded={browsing} aria-controls={browsing ? browseId : undefined} onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))} disabled={importing}>
+            <button ref={chooseBtn} className="btn btn-sm" aria-describedby={gone || plain ? `${titleId}-now` : undefined} aria-expanded={browsing} aria-controls={browsing ? browseId : undefined} onClick={() => (browsing ? closeBrowser(false) : setBrowsing(true))} disabled={importing}>
               <ImagePlus />
               {importing ? 'Adding…' : asset || gone ? 'Change…' : 'Choose image…'}
             </button>
