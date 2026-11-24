@@ -13,7 +13,7 @@ import { getTheme } from '@catalogue/index';
 import { TYPE_SCALE_CHOICES, scaleRoles, typeScaleOps } from '@shared/type-scale';
 import { normalizeLink } from '@engine/values';
 import { contactInText } from '@shared/contact-links';
-import { BRAND_PROP, COPYRIGHT_PROP, brandPlacements, followsSiteName } from '@shared/site-name';
+import { BRAND_PROP, COPYRIGHT_PROP, brandLabel, brandPlacements, followsSiteName } from '@shared/site-name';
 import { fieldError, type FieldIssue } from './macros';
 import type { JsonSchema } from './propschema';
 import type { ToolHost, ToolOutcome } from './tools';
@@ -217,16 +217,19 @@ export async function runBrand(args: BrandArgs, host: ToolHost, callId: string):
   // a label of the author's own stays, and the reply says where, so the model can mention it.
   const footer = shellInstance(state, 'footer');
   if (args.siteName !== undefined && args.siteName.trim() !== state.site.name) {
-    for (const { part, node } of brandPlacements(state))
-      if (followsSiteName(state, node, BRAND_PROP) === false) warnings.push(`The ${part} keeps its own name, “${String(node.props[BRAND_PROP] ?? '')}”, so it still shows that. Set its siteName with instance.setProp if it should change too.`);
+    for (const p of brandPlacements(state))
+      if (followsSiteName(state, p.node, BRAND_PROP) === false) warnings.push(`The ${p.part} keeps its own name, “${brandLabel(p)}”, so it still shows that. Set its siteName with instance.setProp if it should change too.`);
   }
+  // A line asked for goes in every footer that holds one, and wins over the line a rename in this call leaves, even
+  // when it is the line there now.
+  if (args.copyright !== undefined)
+    for (const { part, node, def } of brandPlacements(state)) {
+      if (part !== 'footer' || !Object.hasOwn(def.properties, COPYRIGHT_PROP)) continue;
+      if (args.siteName !== undefined) ops.push({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: node.id, prop: COPYRIGHT_PROP, value: args.copyright });
+      else setProp('footer', node, COPYRIGHT_PROP, args.copyright);
+    }
   if (footer) {
     if (args.tagline !== undefined) setProp('footer', footer, 'tagline', args.tagline);
-    // A line asked for wins over the one the rename leaves, even when it is the line there now.
-    if (args.copyright !== undefined) {
-      if (args.siteName !== undefined && Object.hasOwn(state.components[footer.definitionId]?.properties ?? {}, COPYRIGHT_PROP)) ops.push({ type: 'instance.setProp', owner: { kind: 'shell', id: 'footer' }, nodeId: footer.id, prop: COPYRIGHT_PROP, value: args.copyright });
-      else setProp('footer', footer, COPYRIGHT_PROP, args.copyright);
-    }
 
     const schema = state.components[footer.definitionId]?.properties.contact;
     if (schema?.type === 'list') {

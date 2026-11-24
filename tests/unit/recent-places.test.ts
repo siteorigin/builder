@@ -21,5 +21,8 @@ describe('where a recent project lives', () => {
     expect(labels.get('/Users/ana/Websites/studio')).toBe('/Users/ana/Websites/studio');
     expect(labels.get('/Users/ben/Websites/studio')).toBe('/Users/ben/Websites/studio');
     expect(labels.get('/Users/ana/Sites/studio')).toBe('~/Sites/studio');
+    // Names that differ tell the cards apart already.
+    const named = whereLabels([recent('/Users/ana/Websites/studio', 'Studio'), recent('/Users/ben/Websites/studio', 'Cafe')]);
+    expect([...named.values()]).toEqual(['~/Websites/studio', '~/Websites/studio']);
   });
 });

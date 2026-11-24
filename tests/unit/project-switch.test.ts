@@ -539,18 +539,21 @@ describe('the recent-projects entry of a renamed site (#31)', () => {
     const other = await makeProject('other');
     const kloof = await makeProject('kloof', 'business');
     const { c } = controller();
+    await openCurrent(c, kloof);
     await openCurrent(c, other);
     await openCurrent(c, kloof);
+    // Kept second, so a rename that moved it to the front would show.
+    await addRecent(other, 'other');
     // The settings cache outlives each test: only this test's own projects are looked at.
     const mine = async () => (await recents()).filter((r) => r.dir === kloof || r.dir === other);
     const before = await mine();
-    expect(before.map((r) => r.dir)).toEqual([kloof, other]);
+    expect(before.map((r) => r.dir)).toEqual([other, kloof]);
     expect((await c.apply({ operations: [{ type: 'site.update', name: 'New Kloof Studio' }] }, { label: 'Rename site' })).ok).toBe(true);
     expect(await recentName(kloof)).toBe('New Kloof Studio');
     // A rename is no new opening: the entry stays where it was, with the time it was opened.
     const after = await mine();
-    expect(after.map((r) => r.dir)).toEqual([kloof, other]);
-    expect(after[0].openedAt).toBe(before[0].openedAt);
+    expect(after.map((r) => r.dir)).toEqual([other, kloof]);
+    expect(after[1].openedAt).toBe(before[1].openedAt);
     expect((await c.session!.undo()).ok).toBe(true);
     expect(await recentName(kloof)).toBe('kloof');
     expect((await c.apply({ operations: [{ type: 'site.update', name: 'New Kloof Studio' }] }, { label: 'Rename site' })).ok).toBe(true);

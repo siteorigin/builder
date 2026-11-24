@@ -148,9 +148,10 @@ export async function renameRecent(dir: string, name: string) {
   const s = await loadSettings();
   const real = canonicalDir(dir);
   const at = s.recents.findIndex((r) => r.dir === dir || canonicalDir(r.dir) === real);
-  if (at < 0) return;
-  if (s.recents[at].name !== name) s.recents = s.recents.map((r, i) => (i === at ? { ...r, name } : r));
-  // Written even when the list already has the name: a write that failed before is made now.
+  // Nothing to write when the list already has the name: closing a project never waits on the disk for nothing. A
+  // write that failed leaves the name in the list all the same, and the next save of the settings writes it.
+  if (at < 0 || s.recents[at].name === name) return;
+  s.recents = s.recents.map((r, i) => (i === at ? { ...r, name } : r));
   await saveSettings();
 }
 

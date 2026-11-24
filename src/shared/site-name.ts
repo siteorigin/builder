@@ -21,11 +21,24 @@ const BRAND_TEXT = [BRAND_PROP, COPYRIGHT_PROP] as const;
 /** A property that holds plain text in this design. */
 const textProp = (def: ComponentDefinition, prop: string) => Object.hasOwn(def.properties, prop) && def.properties[prop].type === 'string';
 
-/** The text a placement shows for a property: its own, or the design's default. */
+/** The text a placement shows for a property: its own, or the design's default (as the site build reads it). */
 function shown(def: ComponentDefinition, node: InstanceNode, prop: string): string | undefined {
-  const v = Object.hasOwn(node.props, prop) ? node.props[prop] : def.properties[prop].default;
+  const own = Object.hasOwn(node.props, prop) ? node.props[prop] : undefined;
+  const v = own ?? def.properties[prop].default;
   return typeof v === 'string' ? v : undefined;
 }
+
+/** Whether the property can hold this text: within its length, on one line unless it takes several. */
+function fits(def: ComponentDefinition, prop: string, text: string): boolean {
+  const schema = def.properties[prop];
+  return schema.type === 'string' && text.length <= (schema.maxLength ?? 2000) && (!!schema.multiline || !/\n/.test(text));
+}
+
+/** The brand label a placement shows. */
+export const brandLabel = (p: { node: InstanceNode; def: ComponentDefinition }): string => (shown(p.def, p.node, BRAND_PROP) ?? '').trim();
+
+/** A header showing its logo alone shows no name (the shared header's "Show site name" turned off). */
+const nameHidden = (node: InstanceNode): boolean => node.props.showSiteName === false && !!(node.props.logo as { assetId?: unknown } | null | undefined)?.assetId;
 
 /** The shared header and footer themselves: each one's top-level placement whose design shows the site's name. */
 export function brandPlacements(state: ProjectState): Array<{ part: ShellPart; node: InstanceNode; def: ComponentDefinition }> {
@@ -100,8 +113,11 @@ export function carrySiteName(state: ProjectState, previous: string, next: strin
       // Kept until now: it keeps its text, which differs from the site's name from here on.
       const wasKept = keep.delete(prop);
       if (text === undefined) continue;
-      if (!wasKept && says(prop, text, previous)) node.props[prop] = prop === BRAND_PROP ? next : renamedCopyright(text, previous, next)!;
-      else if (says(prop, text, next)) keep.add(prop);
+      const renamed = !wasKept && says(prop, text, previous) ? (prop === BRAND_PROP ? next : renamedCopyright(text, previous, next)!) : null;
+      // Text the property cannot hold (too long for it, say) is left as it was, which shows it as its own from here.
+      if (renamed !== null) {
+        if (fits(def, prop, renamed)) node.props[prop] = renamed;
+      } else if (says(prop, text, next)) keep.add(prop);
     }
     setKept(node, keep);
   }
@@ -120,13 +136,13 @@ export function followNote(state: ProjectState, node: InstanceNode, prop: string
  * each one that keeps a name of its own. Undefined when neither shows a name.
  */
 export function siteNameNote(state: ProjectState): string | undefined {
-  const placed = brandPlacements(state);
+  const placed = brandPlacements(state).filter((p) => !nameHidden(p.node));
   if (!placed.length) return undefined;
   const following = placed.filter((p) => followsSiteName(state, p.node, BRAND_PROP));
   const own = placed.filter((p) => !following.includes(p));
   const parts = (list: typeof placed) => [...new Set(list.map((p) => p.part))].join(' and ');
   const out: string[] = [];
   if (following.length) out.push(`The ${parts(following)} ${following.length === 1 ? 'shows' : 'show'} it too.`);
-  for (const p of own) out.push(`The ${p.part} keeps its own name: “${String(shown(p.def, p.node, BRAND_PROP) ?? '').trim()}”`);
+  for (const p of own) out.push(`The ${p.part} keeps its own name: “${brandLabel(p)}”`);
   return out.join(' ');
 }

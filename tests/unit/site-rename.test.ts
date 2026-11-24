@@ -26,6 +26,8 @@ describe('renaming the site', () => {
 
   it('keeps a brand label and a copyright line the author made their own', () => {
     const s0 = createStarterState('business', 'Morning Press', false);
+    // Spaces around a label make no difference: it still says the site's name.
+    shell(s0, 'header').props.siteName = ' Morning Press ';
     shell(s0, 'footer').props.siteName = 'Morning Press Co.';
     shell(s0, 'footer').props.copyright = 'All words by the Morning Press team.';
     const s = apply(s0, { type: 'site.update', name: 'Morning Paper' });
@@ -74,8 +76,23 @@ describe('what follows a rename and what the author keeps', () => {
     expect(line('© 2026 A+B (Studio). All rights reserved.', 'A+B (Studio)', 'AB')).toBe('© 2026 AB. All rights reserved.');
   });
 
-  it('leaves the site’s other words, and a component inside the footer that shows a name, as they were', () => {
+  it('follows a label the site build shows from the design’s default, and leaves text the property cannot hold', () => {
+    const s0 = createStarterState('business', 'Studio', false);
+    // Null shows the design's default ("Studio"), as an absent value does.
+    shell(s0, 'header').props.siteName = null;
+    delete shell(s0, 'footer').props.siteName;
+    let s = apply(s0, { type: 'site.update', name: 'Harbour' });
+    expect([shell(s, 'header').props.siteName, shell(s, 'footer').props.siteName]).toEqual(['Harbour', 'Harbour']);
+    const def = s.components[shell(s, 'header').definitionId];
+    def.properties.siteName = { ...def.properties.siteName, maxLength: 8 } as typeof def.properties.siteName;
+    s = apply(s, { type: 'site.update', name: 'Harbour Lane' });
+    expect(shell(s, 'header').props.siteName).toBe('Harbour');
+    expect(followsSiteName(s, shell(s, 'header'), 'siteName')).toBe(false);
+  });
+
+  it('leaves the site’s other words, and any placement in the footer’s tree other than the footer itself, as they were', () => {
     const s0 = business();
+    // Only the top-level placement is the footer: another in its tree (held here without a parent) is not.
     const credit = makeInstance(s0.components[shell(s0, 'footer').definitionId], { siteName: 'Morning Press' });
     s0.site.shell.footer.nodes[credit.id] = credit;
     const s = apply(s0, { type: 'site.update', name: 'Morning Paper' });
@@ -87,7 +104,11 @@ describe('what follows a rename and what the author keeps', () => {
   it('refuses a name with no words, and changes nothing for the name the site already has', () => {
     const s0 = business();
     expect(() => apply(s0, { type: 'site.update', name: '   ' })).toThrow(/needs a name/);
-    expect(apply(s0, { type: 'site.update', name: ' Morning Press ' }).site.shell).toEqual(s0.site.shell);
+    const same = apply(s0, { type: 'site.update', name: ' Morning Press ' });
+    expect(same.site.name).toBe('Morning Press');
+    expect(same.site.shell).toEqual(s0.site.shell);
+    const padded = apply(s0, { type: 'site.update', name: '  Morning Paper  ' });
+    expect([padded.site.name, shell(padded, 'header').props.siteName]).toEqual(['Morning Paper', 'Morning Paper']);
   });
 });
 
@@ -97,6 +118,13 @@ describe('what the editor says about the site’s name', () => {
     expect(siteNameNote(s)).toBe('The header and footer show it too.');
     shell(s, 'footer').props.siteName = 'Morning Press Co.';
     expect(siteNameNote(s)).toBe('The header shows it too. The footer keeps its own name: “Morning Press Co.”');
+    shell(s, 'footer').props.siteName = 'Morning Press';
+    shell(s, 'header').props.siteName = 'MP';
+    expect(siteNameNote(s)).toBe('The footer shows it too. The header keeps its own name: “MP”');
+    // A header that shows its logo alone shows no name at all.
+    Object.assign(shell(s, 'header').props, { showSiteName: false, logo: { assetId: 'a_logo', alt: 'Morning Press' } });
+    expect(siteNameNote(s)).toBe('The footer shows it too.');
+    shell(s, 'footer').props.siteName = 'Morning Press Co.';
     s.site.shell.header = { rootIds: [], nodes: {} };
     expect(siteNameNote(s)).toBe('The footer keeps its own name: “Morning Press Co.”');
     s.site.shell.footer = { rootIds: [], nodes: {} };
@@ -108,6 +136,10 @@ describe('what the editor says about the site’s name', () => {
     shell(s, 'footer').props.copyright = 'Words by the team.';
     expect(followNote(s, shell(s, 'header'), 'siteName')).toEqual({ follows: true, text: expect.stringContaining('Follows the site name') });
     expect(followNote(s, shell(s, 'footer'), 'copyright')).toEqual({ follows: false, text: expect.stringContaining('Its own wording') });
+    shell(s, 'footer').props.copyright = '© 2026 Morning Press.';
+    expect(followNote(s, shell(s, 'footer'), 'copyright')).toEqual({ follows: true, text: expect.stringContaining('Names the site') });
+    shell(s, 'header').props.siteName = 'MP';
+    expect(followNote(s, shell(s, 'header'), 'siteName')).toEqual({ follows: false, text: expect.stringContaining('Its own name') });
     expect(followNote(s, shell(s, 'footer'), 'tagline')).toBeUndefined();
     const home = s.pages[s.site.homePageId];
     expect(followNote(s, home.nodes[home.rootIds[0]] as InstanceNode, 'siteName')).toBeUndefined();

@@ -100,17 +100,19 @@ await liveIs({ header: 'Morning Courier', footer: 'Morning Courier', copyright: 
 
 step('Recent projects lists the new name after switching straight into another project, and after closing to Welcome');
 await rename('New Morning Courier');
+const recents = () => win.evaluate(() => window.builder.projects.recents());
+await eventually(async () => assert.equal((await recents()).find((r) => r.dir === dir)?.name, 'New Morning Courier', 'the list follows the rename as it is made'));
 await win.evaluate((o) => window.builder.projects.create(o), { name: 'Orchid Garden', parentDir: join(WORK, 'sites'), starter: 'blank', sampleImages: false });
 await eventually(async () => assert.match(await win.locator('.toolbar').innerText(), /Orchid Garden/, 'the new project is open'), 90000);
-const recents = () => win.evaluate(() => window.builder.projects.recents());
 await eventually(async () => assert.equal((await recents()).find((r) => r.dir === dir)?.name, 'New Morning Courier', 'the list has the name it was left with'));
 await menu('Close Project');
 await win.waitForSelector('.welcome');
 const card = (name) => win.locator('.recent-card', { hasText: name });
 await card('New Morning Courier').waitFor();
 assert.equal(await win.locator('.recent-card', { hasText: 'Morning Press' }).count(), 0, 'no card has an old name');
-assert.match(await card('New Morning Courier').locator('.where').innerText(), /morning-press/, 'the card names the project’s own folder');
-assert.match(await card('Orchid Garden').locator('.where').innerText(), /orchid-garden/, 'so does the one beside it');
+// What the card shows, not what it says to a screen reader.
+assert.match(await card('New Morning Courier').locator('.where bdi').innerText(), /morning-press$/, 'the card shows the project’s own folder');
+assert.match(await card('Orchid Garden').locator('.where bdi').innerText(), /orchid-garden$/, 'so does the one beside it');
 await win.locator('.recent-grid').screenshot({ path: join(SHOTS, 'site-rename-recents.png') });
 
 assert.deepEqual(errors, [], 'no page errors');
