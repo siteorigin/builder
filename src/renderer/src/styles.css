@@ -4015,6 +4015,22 @@ button.asset-use:hover svg.go { color: var(--text); }
 .insp-check-note { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 7px 9px; border-radius: var(--r-sm); background: var(--amber-soft); }
 .insp-check-note .insp-check { color: var(--text); }
 .insp-part-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 280px; }
+/* Edit everywhere: what each placement fills in, styles and chooses (ContractControls). */
+.contract-bind { display: flex; flex-direction: column; gap: 6px; margin: -4px 0 2px; }
+.contract-bind > .insp-mini { align-self: flex-start; margin-left: -6px; }
+.contract-bind-line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; font-size: 12px; }
+.contract-bind-line > .faint { margin-right: auto; }
+.contract-box { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: var(--r-sm); background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--border); }
+.contract-actions, .contract-add { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.contract-add .input { flex: 1 1 96px; min-width: 0; }
+.contract-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.contract-row { display: flex; align-items: flex-start; gap: 2px; }
+.contract-row-main { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+.contract-row-main .input { width: 100%; }
+.contract-meta { font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.contract-group { display: flex; flex-direction: column; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+.contract-preview { overflow: hidden; max-width: 100%; }
+.contract-preview .insert-live { max-width: 100%; }
 .insp-note { margin: 0; font-size: 12px; line-height: 1.5; }
 .insp-condition-test { display: flex; gap: 6px; margin-top: 6px; }
 .insp-condition-test > * { flex: 1 1 0; min-width: 0; }

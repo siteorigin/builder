@@ -258,10 +258,42 @@ function removeProp(state: ProjectState, def: ComponentDefinition, name: string)
   for (const { node } of instancesOf(state, def.id)) delete node.props[name];
 }
 
+/** JSON with object keys in order, so two values that differ only in key order compare equal. */
+const sortedJson = (v: unknown): string =>
+  JSON.stringify(v, (_k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : x));
+
 export function setPropSchema(state: ProjectState, op: Op<'component.setPropSchema'>): OpResult {
   const def = projectDef(state, op.definitionId);
   checkPropName(op.prop);
+  // A schema that differs from the stored one only in its label renames what authors see and nothing else: the
+  // property keeps its name, its bindings and every placement's value exactly as stored.
+  const prev = own(def.properties, op.prop);
+  if (prev && sortedJson({ ...op.schema, label: undefined }) === sortedJson({ ...prev, label: undefined })) {
+    const label = typeof op.schema.label === 'string' ? op.schema.label.trim().slice(0, 80) : '';
+    prev.label = label || op.prop;
+    return {};
+  }
   applyPropSchema(state, def, op.prop, normalizePropSchema(op.schema, state, op.prop));
+  return {};
+}
+
+/**
+ * Put a managed component's properties in a new order: what each placement's Content lists them in. Every property
+ * keeps its schema, its bindings and each placement's value; only the order changes.
+ */
+export function orderProperties(state: ProjectState, op: Op<'component.orderProperties'>): OpResult {
+  const def = projectDef(state, op.definitionId);
+  if (def.kind !== 'managed') fail(`"${def.name}" is a code component; its properties are ordered in its source.`);
+  const keys = Object.keys(def.properties);
+  const seen = new Set<string>();
+  for (const name of op.order) {
+    if (!own(def.properties, name)) fail(`"${def.name}" has no property "${name}".`);
+    if (seen.has(name)) fail(`"${name}" is listed twice.`);
+    seen.add(name);
+  }
+  const missing = keys.filter((k) => !seen.has(k));
+  if (missing.length) fail(`The order leaves out ${missing.map((k) => `"${k}"`).join(', ')}. List every property of "${def.name}".`);
+  def.properties = Object.fromEntries(op.order.map((name) => [name, def.properties[name]]));
   return {};
 }
 

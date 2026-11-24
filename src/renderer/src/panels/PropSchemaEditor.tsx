@@ -16,6 +16,7 @@ import {
   schemaProblems,
   setItemField,
   settingProblems,
+  toCodeName,
   typeOptions,
   type PropType,
   type SchemaRow
@@ -63,23 +64,6 @@ const TYPE_ICONS: Record<string, ReactNode> = {
   table: <Table />
 };
 const typeLabel = (type: unknown) => typeOptions(type as PropType, true).find(([v]) => v === type)?.[1] ?? typeOptions(type as PropType, false).find(([v]) => v === type)?.[1] ?? 'a new type';
-
-/** Text as a valid code name, or null when it makes none: "Hero Title" becomes heroTitle. */
-function toCodeName(text: string): string | null {
-  const words = text.split(/[^a-zA-Z0-9]+/).filter(Boolean);
-  const joined = words
-    .map((w, i) => (i ? w[0].toUpperCase() + w.slice(1) : w))
-    .join('')
-    .replace(/^[0-9]+/, '');
-  const candidate = (joined.charAt(0).toLowerCase() + joined.slice(1)).slice(0, 40);
-  if (!candidate) return null;
-  try {
-    checkPropName(candidate);
-    return candidate;
-  } catch {
-    return null;
-  }
-}
 
 /** The nearest valid code name to what was typed, when it differs from it. */
 function camelSuggestion(name: string): string | null {

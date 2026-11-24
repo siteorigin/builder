@@ -179,6 +179,11 @@ export interface State {
   toasts: Toast[];
   /** Definition editing mode: the project-owned definition being edited. */
   definitionMode: { definitionId: string; returnPageId: string } | null;
+  /**
+   * While editing a component everywhere: the variant option its Style section styles, across the layers the author
+   * selects; the base design when null or when it names another component or an option that no longer exists.
+   */
+  variantStyle: { definitionId: string; axis: string; variant: string } | null;
   conversation: Conversation | null;
   runStatus: RunStatus | null;
   activeRunId: string | null;
@@ -263,6 +268,7 @@ export const useStore = create<State>((set) => ({
   modal: null,
   toasts: [],
   definitionMode: null,
+  variantStyle: null,
   conversation: null,
   runStatus: null,
   activeRunId: null,

@@ -410,6 +410,13 @@ export const OPERATION_SCHEMAS = {
     schema: z.record(z.string(), z.unknown()).describe('{ type, label, default, ... } as in component.createCode.')
   }),
   'component.removePropSchema': z.object({ type: z.literal('component.removePropSchema'), definitionId: z.string(), prop: z.string() }),
+  'component.orderProperties': z
+    .object({
+      type: z.literal('component.orderProperties'),
+      definitionId: z.string(),
+      order: z.array(z.string()).max(60).describe('Every property name of the component, each once, in the order placements list them.')
+    })
+    .describe("Reorder a managed component's properties. Schemas, bindings and placement values stay as they are."),
   'component.setPropDefault': z.object({
     type: z.literal('component.setPropDefault'),
     definitionId: z.string(),

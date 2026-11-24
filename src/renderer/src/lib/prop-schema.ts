@@ -1,6 +1,23 @@
 import type { PropSchema } from '@shared/types';
 import { checkPropName } from '@engine/schema';
 
+/** Text as a valid code name, or null when it makes none: "Hero Title" becomes heroTitle. */
+export function toCodeName(text: string): string | null {
+  const words = text.split(/[^a-zA-Z0-9]+/).filter(Boolean);
+  const joined = words
+    .map((w, i) => (i ? w[0].toUpperCase() + w.slice(1) : w))
+    .join('')
+    .replace(/^[0-9]+/, '');
+  const candidate = (joined.charAt(0).toLowerCase() + joined.slice(1)).slice(0, 40);
+  if (!candidate) return null;
+  try {
+    checkPropName(candidate);
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The editable property schema (manifest) of a code component, as rows. Each row is one property: its name and the
  * schema it is saved with. A list property's item fields are rows of their own, so each keeps its identity while it

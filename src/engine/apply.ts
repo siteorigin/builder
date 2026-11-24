@@ -67,6 +67,7 @@ import {
   dropPartOverrides,
   nodeSetBinding,
   nodeSetStateAction,
+  orderProperties,
   removePart,
   removePropSchema,
   setPropDefault,
@@ -301,6 +302,8 @@ export function applyOperation(state: ProjectState, op: EditOperation, ctx: Appl
       return setPropSchema(state, op);
     case 'component.removePropSchema':
       return removePropSchema(state, op);
+    case 'component.orderProperties':
+      return orderProperties(state, op);
     case 'component.setPropDefault':
       return setPropDefault(state, op);
     case 'component.setPart':
