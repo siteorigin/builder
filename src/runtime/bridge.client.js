@@ -123,7 +123,108 @@ function sendRects() {
   const hov = hovered && mode === 'edit' ? findAll(hovered).slice(0, 1).map(rectOf).filter(Boolean) : [];
   // A divider between items is not part of the item it follows.
   const rev = revealRoots().filter((el) => el.tagName !== 'HR').map(rectOf).filter(Boolean);
-  send('rects', { selected: sel, hovered: hov, hoveredDesc: hovered, revealed: rev, viewport: { width: innerWidth, height: innerHeight, scrollY } });
+  // The padding, border and margin of the first selected box the editor outlines, for its spacing handles.
+  const first = selBoxes.findIndex(Boolean);
+  const spacing = mode === 'edit' && first >= 0 ? spacingOf(selEls[first]) : null;
+  send('rects', { selected: sel, hovered: hov, hoveredDesc: hovered, revealed: rev, spacing, viewport: { width: innerWidth, height: innerHeight, scrollY } });
+}
+
+// ---------------------------------------------------------------------------
+// Spacing dragged on the canvas
+// ---------------------------------------------------------------------------
+
+/** An element's padding, border widths and margin in CSS pixels, by physical side. Null for a box that has no
+ *  padding of its own to drag: one laid out as its children (display: contents) or an inline run of text. */
+function spacingOf(el) {
+  const s = getComputedStyle(el);
+  if (s.display === 'contents' || s.display === 'inline' || s.display === 'none') return null;
+  const n = (v) => {
+    const x = Number.parseFloat(v);
+    return Number.isFinite(x) ? x : 0;
+  };
+  const sides = (k, suffix = '') => ({ top: n(s[`${k}Top${suffix}`]), right: n(s[`${k}Right${suffix}`]), bottom: n(s[`${k}Bottom${suffix}`]), left: n(s[`${k}Left${suffix}`]) });
+  return { padding: sides('padding'), border: sides('border', 'Width'), margin: sides('margin'), rtl: s.direction === 'rtl' };
+}
+
+/** Each spacing site style's size on this page now, in CSS pixels, or null where it has none. */
+function measureSpace(vars) {
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;';
+  // Beside the body, so the page's own observers never see it come and go.
+  document.documentElement.appendChild(probe);
+  try {
+    return vars.map((v) => {
+      if (typeof v !== 'string' || !/^--so-[a-zA-Z0-9-]+$/.test(v)) return null;
+      probe.style.paddingTop = `var(${v})`;
+      const px = Number.parseFloat(getComputedStyle(probe).paddingTop);
+      return Number.isFinite(px) ? px : null;
+    });
+  } finally {
+    probe.remove();
+  }
+}
+
+/**
+ * The drag being shown: one rule giving the dragged element(s) the dragged value until the page's own stylesheet
+ * shows the saved change. { drag, el (a <style>), desc, props, until (the revision the save made), deadline, raf }
+ */
+let spacingShown = null;
+const SPACING_PROPS = new Set(['padding-block-start', 'padding-block-end', 'padding-inline-start', 'padding-inline-end', 'margin-block-start', 'margin-block-end']);
+const SPACING_VALUE = /^(var\(--so-[a-zA-Z0-9-]+\)|-?\d+(\.\d+)?px|0)$/;
+
+function selectorOf(desc) {
+  const items = desc.items ? `[data-so-items="${cssEscape(desc.items)}"]` : '';
+  return `[data-so-ctx="${cssEscape(desc.ctx)}"][data-so-node="${cssEscape(desc.node)}"]${items}`;
+}
+
+function clearSpacing(drag) {
+  const p = spacingShown;
+  if (!p || (drag !== undefined && p.drag !== drag)) return;
+  if (p.raf) cancelAnimationFrame(p.raf);
+  p.el.remove();
+  spacingShown = null;
+  scheduleRects();
+}
+
+function showSpacing(drag, desc, decls) {
+  const list = Array.isArray(decls) ? decls.filter((d) => Array.isArray(d) && SPACING_PROPS.has(d[0]) && typeof d[1] === 'string' && SPACING_VALUE.test(d[1])) : [];
+  if (!desc || typeof desc.ctx !== 'string' || typeof desc.node !== 'string' || !list.length) return clearSpacing();
+  if (spacingShown?.raf) cancelAnimationFrame(spacingShown.raf);
+  if (!spacingShown) {
+    const el = document.createElement('style');
+    el.setAttribute('data-so-spacing', '');
+    document.head.appendChild(el);
+    spacingShown = { el };
+  }
+  Object.assign(spacingShown, { drag, desc: { ctx: desc.ctx, node: desc.node, items: typeof desc.items === 'string' ? desc.items : '' }, props: list.map((d) => d[0]), until: null, deadline: 0, raf: 0 });
+  spacingShown.el.textContent = `${selectorOf(spacingShown.desc)}{${list.map(([k, v]) => `${k}:${v} !important`).join(';')}}`;
+  scheduleRects();
+}
+
+/**
+ * Hand the drag over to the saved change: once the page has the revision the save made, the rule is taken away
+ * whenever the page shows the same spacing without it. Checked within one task, so a page still waiting for its
+ * new stylesheet never paints without the rule. A later revision (an Undo, another edit) or a page that never
+ * matches ends it, showing the page as it is.
+ */
+function settleSpacing() {
+  const p = spacingShown;
+  if (!p || p.until === null) return;
+  p.raf = 0;
+  if (revision > p.until || Date.now() > p.deadline) return clearSpacing();
+  if (revision === p.until) {
+    const els = findAll(p.desc);
+    const read = () => els.flatMap((el) => {
+      const s = getComputedStyle(el);
+      return p.props.map((k) => Number.parseFloat(s.getPropertyValue(k)) || 0);
+    });
+    const shown = read();
+    p.el.disabled = true;
+    const own = read();
+    if (own.every((v, i) => Math.abs(v - shown[i]) < 0.5)) return clearSpacing();
+    p.el.disabled = false;
+  }
+  p.raf = requestAnimationFrame(settleSpacing);
 }
 
 // ---------------------------------------------------------------------------
@@ -3024,6 +3125,8 @@ window.addEventListener('message', async (e) => {
     case 'mode':
       mode = m.payload.mode === 'preview' ? 'preview' : 'edit';
       formEpoch++;
+      // Preview shows the page as it is saved.
+      if (mode === 'preview') clearSpacing();
       // A double-click from before the change starts nothing after it.
       pendingHit = null;
       if (editing) commitEdit();
@@ -3145,6 +3248,24 @@ window.addEventListener('message', async (e) => {
       const descs = Array.isArray(m.payload.descs) ? m.payload.descs.slice(0, 200) : [];
       // Each box with its CSS order, which can lay siblings out in another order than the document's.
       send('measured', { requestId: m.payload.requestId, rects: descs.map((d) => { const el = findAll(d)[0]; const r = el && rectOf(el); return r ? { ...r, order: layoutOrder(el) } : null; }) });
+      break;
+    }
+    case 'measureSpace': {
+      const vars = Array.isArray(m.payload.vars) ? m.payload.vars.slice(0, 100) : [];
+      send('spaceMeasured', { requestId: m.payload.requestId, px: measureSpace(vars) });
+      break;
+    }
+    // A spacing drag: shown while it moves, handed to the saved change after it, or put back.
+    case 'spacingPreview': {
+      const drag = String(m.payload.drag || '');
+      if (m.payload.clear) clearSpacing(drag);
+      else if (Number.isSafeInteger(m.payload.handoff)) {
+        if (spacingShown && spacingShown.drag === drag) {
+          spacingShown.until = m.payload.handoff;
+          spacingShown.deadline = Date.now() + 8000;
+          settleSpacing();
+        }
+      } else showSpacing(drag, m.payload.desc, m.payload.decls);
       break;
     }
     case 'inspect': {

@@ -30,6 +30,44 @@ export function rectList(v: unknown): FrameRect[] {
   return Array.from(v.slice(0, MAX_RECTS)).filter(isRect).map((r) => ({ x: r.x, y: r.y, width: r.width, height: r.height }));
 }
 
+export interface FrameSides {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/** The selected element's padding, border widths and margin, in frame pixels, and its writing direction. */
+export interface FrameSpacing {
+  padding: FrameSides;
+  border: FrameSides;
+  margin: FrameSides;
+  rtl: boolean;
+}
+
+function sidesOf(v: unknown, signed: boolean): FrameSides | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Record<string, unknown>;
+  const ok = (n: unknown): n is number => finite(n) && Math.abs(n) < 100000 && (signed || n >= 0);
+  return ok(r.top) && ok(r.right) && ok(r.bottom) && ok(r.left) ? { top: r.top, right: r.right, bottom: r.bottom, left: r.left } : null;
+}
+
+/** The spacing the frame reports for the selection; null for anything malformed (or none sent). */
+export function spacingOf(v: unknown): FrameSpacing | null {
+  if (!v || typeof v !== 'object') return null;
+  const r = v as Record<string, unknown>;
+  const padding = sidesOf(r.padding, false);
+  const border = sidesOf(r.border, false);
+  const margin = sidesOf(r.margin, true);
+  return padding && border && margin ? { padding, border, margin, rtl: r.rtl === true } : null;
+}
+
+/** Spacing site style sizes in request order, null where one has none; null for a malformed list. */
+export function spaceSizes(v: unknown, expected: number): Array<number | null> | null {
+  if (!Array.isArray(v) || v.length !== expected) return null;
+  return Array.from(v, (n) => (finite(n) && n >= 0 && n < 100000 ? n : null));
+}
+
 /** Measured boxes in request order, where a missing (hidden) element is null; null for a malformed list. Each
  *  box has its element's CSS order (0 unless an Order style moves it among its siblings). */
 export function measuredRects(v: unknown, expected: number): Array<(FrameRect & { order: number }) | null> | null {
