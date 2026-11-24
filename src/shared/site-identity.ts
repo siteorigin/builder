@@ -74,21 +74,25 @@ export function checkTelephone(input: string): Checked<string> {
 
 const DAY = '(?:mo|tu|we|th|fr|sa|su)';
 const DAYS = `${DAY}(?:-${DAY})?(?:,${DAY}(?:-${DAY})?)*`;
-const TIME = '(?:[01]\\d|2[0-4]):[0-5]\\d';
-const HOURS = new RegExp(`^(${DAYS})(?: (${TIME})-(${TIME}))?$`, 'i');
+const HOURS = new RegExp(`^(${DAYS})(?: (\\d{1,2}):([0-5]\\d)-(\\d{1,2}):([0-5]\\d))?$`, 'i');
 
 /**
  * One period a business is open, as Schema.org writes it: two-letter days, ranges and lists of them, then the hours
- * on a 24-hour clock ("Mo-Fr 09:00-17:00", "Sa 10:00-14:00"). Days alone mean open all day. Days are written as
- * Schema.org writes them, whatever case they were typed in.
+ * on a 24-hour clock ("Mo-Fr 09:00-17:00", "Sa 10:00-14:00"). Days alone mean open all day. Written as Schema.org
+ * writes it, whatever case the days were typed in and however the hours were padded ("mo-fr 9:00-17:00").
  */
 export function checkOpeningHours(input: string): Checked<string> {
-  const text = oneLine(input).replace(/\s*([-,])\s*/g, '$1').replace(/^(\S+)(\d)/, '$1 $2');
+  const text = oneLine(input).replace(/\s*([-,])\s*/g, '$1');
   if (!text) return ok('');
   const m = HOURS.exec(text);
-  if (!m) return no(`“${oneLine(input)}” is not a period such as Mo-Fr 09:00-17:00: two-letter days, then the hours on a 24-hour clock.`);
+  const refused = no<string>(`“${oneLine(input)}” is not a period such as Mo-Fr 09:00-17:00: two-letter days, then the hours on a 24-hour clock.`);
+  if (!m) return refused;
   const days = m[1].toLowerCase().replace(/\b([a-z])/g, (c) => c.toUpperCase());
-  return ok(m[2] ? `${days} ${m[2]}-${m[3]}` : days);
+  if (m[2] === undefined) return ok(days);
+  const time = (h: string, min: string) => (Number(h) > 24 || (Number(h) === 24 && min !== '00') ? null : `${h.padStart(2, '0')}:${min}`);
+  const from = time(m[2], m[3]);
+  const to = time(m[4], m[5]);
+  return from && to ? ok(`${days} ${from}-${to}`) : refused;
 }
 
 /** A map position typed as “latitude, longitude” (“-33.92, 18.42”). Empty text is none. */
