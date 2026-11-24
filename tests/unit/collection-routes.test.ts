@@ -446,3 +446,33 @@ describe('after the focused review', () => {
     expect(isGeneratedReadme(projectReadme('Riverside Studio', true, undefined, true))).toBe(true);
   });
 });
+
+describe('handing on an entry’s addresses', () => {
+  it('gives nothing of a removed entry to a new entry that reuses its ID in the same batch', () => {
+    const s = run(
+      blog(),
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] },
+      { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter' },
+      { type: 'entry.create', collectionId: 'posts', entryId: 'en_winter', title: 'Unrelated', slug: 'winter-workshop' },
+      rename('en_winter', 'unrelated'),
+      { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' }
+    );
+    expect(kept(s)).toEqual([]);
+  });
+
+  it('hands on an old address the removed entry had just taken back', () => {
+    const s = run(blog(), rename('en_winter', 'glazing-evenings'));
+    const after = run(
+      s,
+      { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] },
+      rename('en_winter', 'winter-workshop'),
+      { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' }
+    );
+    expect(kept(after)).toEqual([
+      { from: '/blog/glazing-evenings/', entryId: 'en_spring' },
+      { from: '/blog/winter-workshop/', entryId: 'en_spring' }
+    ]);
+    // Its own address at the start of the batch is not one: a removed entry's address goes, as a page's does.
+    expect(kept(run(blog(), { type: 'entry.update', collectionId: 'posts', entryId: 'en_spring', body: ['No link.'] }, { type: 'entry.remove', collectionId: 'posts', entryId: 'en_winter', replacementEntryId: 'en_spring' }))).toEqual([]);
+  });
+});

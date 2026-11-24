@@ -37,7 +37,7 @@ import { newId } from '@shared/ids';
 import { checkPublicUrl } from '@shared/public-url';
 import { ARTICLE_ROW_FIELDS, isArticleDate, pageArticle, todayArticleDate } from '@shared/articles';
 import { collectionRouteOwner } from '@shared/collections';
-import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate } from './collections';
+import { collectionCreate, collectionRemove, collectionUpdate, entryAddressesInUse, entryCreate, entryRemove, entryReorder, entryUpdate, type EntryAddress } from './collections';
 import { isListBlock, toRichText } from '@shared/richtext';
 import { axesOf, findVariant, variantOptions } from '@shared/variants';
 import { teaserFields } from '@shared/page-teasers';
@@ -135,7 +135,7 @@ export interface ApplyContext {
    * (see entryAddressesInUse): an entry keeps an old address working only when it was one of these. An entry removed
    * for another hands its old addresses on to it here, for the rest of the batch. applyOperations fills it.
    */
-  entryAddressesAtStart?: Map<string, string>;
+  entryAddressesAtStart?: Map<string, EntryAddress>;
 }
 
 /** Own-property lookup: externally supplied keys must never resolve to inherited prototype members. */

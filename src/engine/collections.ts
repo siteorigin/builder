@@ -111,16 +111,22 @@ function setKeptAddresses(state: ProjectState, list: SiteRedirect[]) {
   else delete state.site.redirects;
 }
 
+/** An address visitors reached an entry at: the entry's ID, and whether it was an old address kept working for it. */
+export interface EntryAddress {
+  entryId: string;
+  old: boolean;
+}
+
 /**
- * The addresses visitors reached each entry at, lowercased, with that entry's ID: every published entry's own, and
- * the old addresses kept working for an entry. Taken when a batch begins: an address an entry only passed through
- * during the batch, or had while it was a draft, is one no visitor has, so nothing is kept at it.
+ * The addresses visitors reached each entry at, lowercased: every published entry's own, and the old addresses kept
+ * working for an entry. Taken when a batch begins: an address an entry only passed through during the batch, or had
+ * while it was a draft, is one no visitor has, so nothing is kept at it.
  */
-export function entryAddressesInUse(state: ProjectState): Map<string, string> {
-  const out = new Map<string, string>();
+export function entryAddressesInUse(state: ProjectState): Map<string, EntryAddress> {
+  const out = new Map<string, EntryAddress>();
   for (const c of Object.values(state.collections ?? {}))
-    for (const e of Object.values(c?.entries ?? {})) if (e?.draft === false && typeof e.slug === 'string' && typeof c.settings?.route === 'string') out.set(entryRoute(c, e).toLowerCase(), e.id);
-  for (const r of keptAddresses(state)) if (typeof r?.from === 'string' && typeof r.entryId === 'string') out.set(r.from.toLowerCase(), r.entryId);
+    for (const e of Object.values(c?.entries ?? {})) if (e?.draft === false && typeof e.slug === 'string' && typeof c.settings?.route === 'string') out.set(entryRoute(c, e).toLowerCase(), { entryId: e.id, old: false });
+  for (const r of keptAddresses(state)) if (typeof r?.from === 'string' && typeof r.entryId === 'string') out.set(r.from.toLowerCase(), { entryId: r.entryId, old: true });
   return out;
 }
 
@@ -137,9 +143,9 @@ function claimOwnAddresses(state: ProjectState, routes: ReadonlyMap<string, stri
  * entry's draft flag says in between. Without a batch to go by, an address the entry had while published. Never one
  * an address cannot be, or one anything else holds now.
  */
-function keepsAddress(entryId: string, from: string, published: boolean, atStart: ReadonlyMap<string, string> | undefined, holder: ReturnType<typeof routeIndex>): boolean {
+function keepsAddress(entryId: string, from: string, published: boolean, atStart: ReadonlyMap<string, EntryAddress> | undefined, holder: ReturnType<typeof routeIndex>): boolean {
   if (from === '/' || validateRoute(from) || holder(from)) return false;
-  return atStart ? atStart.get(from.toLowerCase()) === entryId : published;
+  return atStart ? atStart.get(from.toLowerCase())?.entryId === entryId : published;
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +249,7 @@ export function collectionCreate(state: ProjectState, op: Op<'collection.create'
   return { collectionId: op.collectionId, route };
 }
 
-export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>, atStart?: ReadonlyMap<string, string>): OpResult {
+export function collectionUpdate(state: ProjectState, op: Op<'collection.update'>, atStart?: ReadonlyMap<string, EntryAddress>): OpResult {
   const c = getCollection(state, op.collectionId);
   if (op.name !== undefined) c.settings.name = op.name.trim() || c.settings.name;
   if (op.route !== undefined && op.route !== c.settings.route) {
@@ -312,7 +318,7 @@ function date(v: string, what: string): string {
  * keeps its old address working when visitors reached it there as the batch began (see keepsAddress), since a
  * draft's address is one no visitor has.
  */
-function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, op: EntryFields, atStart?: ReadonlyMap<string, string>) {
+function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, op: EntryFields, atStart?: ReadonlyMap<string, EntryAddress>) {
   const label = `“${op.title ?? entry.title}”`;
   const wasPublished = entry.draft === false;
   if (op.title !== undefined) entry.title = op.title.trim() || fail('An entry needs a title.');
@@ -388,7 +394,7 @@ export function entryCreate(state: ProjectState, op: Op<'entry.create'>): OpResu
   return { collectionId: c.settings.id, entryId: id, slug: entry.slug, route: entryRoute(c, entry) };
 }
 
-export function entryUpdate(state: ProjectState, op: Op<'entry.update'>, atStart?: ReadonlyMap<string, string>): OpResult {
+export function entryUpdate(state: ProjectState, op: Op<'entry.update'>, atStart?: ReadonlyMap<string, EntryAddress>): OpResult {
   const c = getCollection(state, op.collectionId);
   const entry = getEntry(c, op.entryId);
   applyEntryFields(state, c, entry, op, atStart);
@@ -408,7 +414,7 @@ export function entryReorder(state: ProjectState, op: Op<'entry.reorder'>): OpRe
   return { collectionId: c.settings.id };
 }
 
-export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart?: Map<string, string>): OpResult {
+export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart?: Map<string, EntryAddress>): OpResult {
   const c = getCollection(state, op.collectionId);
   const entry = getEntry(c, op.entryId);
   if (op.replacementEntryId !== undefined && op.replacementPageId !== undefined) fail('Choose a replacement entry or a replacement page, not both.');
@@ -424,18 +430,31 @@ export function entryRemove(state: ProjectState, op: Op<'entry.remove'>, atStart
     link.target = to!.target;
     delete link.anchor;
   }
+  // The address it answers at now, when that was an old address of its own as the batch began (taken back during it):
+  // visitors' bookmarks to it go on to the replacement like the old addresses it still keeps.
+  const current = entryRoute(c, entry);
+  const start = atStart?.get(current.toLowerCase());
+  const reclaimed = start?.entryId === entry.id && start.old;
   delete c.entries[entry.id];
   if (Array.isArray(c.settings.entryOrder)) c.settings.entryOrder = c.settings.entryOrder.filter((id) => id !== entry.id);
-  // Its old addresses send visitors to the replacement the links now go to, or go with it when there is none. The
-  // replacement keeps them as its own through the rest of the batch.
+  // Its old addresses send visitors to the replacement the links now go to, or go with it when there is none.
+  const heir: { entryId: string } | { pageId: string } | null = op.replacementEntryId !== undefined ? { entryId: op.replacementEntryId } : op.replacementPageId !== undefined ? { pageId: op.replacementPageId } : null;
   const kept = keptAddresses(state);
-  if (op.replacementEntryId !== undefined && atStart)
-    for (const r of kept) if (r?.entryId === entry.id && typeof r.from === 'string' && atStart.get(r.from.toLowerCase()) === entry.id) atStart.set(r.from.toLowerCase(), op.replacementEntryId);
-  if (kept.some((r) => r?.entryId === entry.id))
-    setKeptAddresses(
-      state,
-      kept.flatMap((r): SiteRedirect[] => (r?.entryId !== entry.id ? [r] : op.replacementEntryId !== undefined ? [{ from: r.from, entryId: op.replacementEntryId }] : op.replacementPageId !== undefined ? [{ from: r.from, pageId: op.replacementPageId }] : []))
-    );
+  const handed = kept.filter((r) => r?.entryId === entry.id && typeof r.from === 'string').map((r) => r.from);
+  if (handed.length || (reclaimed && heir)) {
+    const rest = kept.flatMap((r): SiteRedirect[] => (r?.entryId !== entry.id ? [r] : heir ? [{ from: r.from, ...heir }] : []));
+    if (reclaimed && heir) {
+      rest.push({ from: current, ...heir });
+      handed.push(current);
+    }
+    setKeptAddresses(state, rest);
+  }
+  if (atStart) {
+    // Nothing else of the batch reaches it through this ID, even created again; a replacement entry keeps what it
+    // was handed as its own for the rest of the batch.
+    for (const [key, a] of [...atStart]) if (a.entryId === entry.id) atStart.delete(key);
+    if (heir && 'entryId' in heir) for (const from of handed) atStart.set(from.toLowerCase(), { entryId: heir.entryId, old: true });
+  }
   return { collectionId: c.settings.id, entryId: entry.id, referencesRepointed: uses.length };
 }
 
