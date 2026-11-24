@@ -1026,6 +1026,15 @@ describe('the loaded context window', () => {
     expect(gets.every((r) => r.headers.authorization === 'Bearer local-secret')).toBe(true);
   });
 
+  it('asks nothing with a cloud key, or of a localhost that is not this computer', async () => {
+    const cloud = `sk-proj-${'Ab3_dE6-gH9'.repeat(5)}`;
+    expect(await discoverLocalContext({ baseURL: server.baseURL, model: 'test-model', apiKey: cloud })).toEqual({});
+    const elsewhere = async () => [{ address: '203.0.113.7' }];
+    const localhost = server.baseURL.replace('127.0.0.1', 'localhost');
+    expect(await discoverLocalContext({ baseURL: localhost, model: 'test-model' }, { lookup: elsewhere })).toEqual({});
+    expect(server.requests).toEqual([]);
+  });
+
   it('asks a remote server nothing unless it is allowed', async () => {
     let calls = 0;
     const fetch = (async () => {
