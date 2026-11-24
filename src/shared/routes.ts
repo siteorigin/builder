@@ -28,22 +28,28 @@ const WORD = /[\p{L}\p{M}\p{Nd}]/u;
 const NO_SCRIPT = /\p{scx=Common}/u;
 /** Characters shared between scripts... */
 const SHARED = /\p{Script=Common}/u;
-/** ...that Latin text uses, such as the modifier apostrophe in "OʼNeil", which Latin titles never kept. */
+/** ...that Latin text uses too, such as the modifier apostrophe of "OʼNeil" and of Ukrainian "обʼєкт". */
 const USED_BY_LATIN = /\p{scx=Latin}/u;
+const sharedWithLatin = (ch: string) => SHARED.test(ch) && USED_BY_LATIN.test(ch);
 
 /** The most a segment holds: 60 characters, and 120 bytes once written as a folder name (UTF-8). */
 const SEGMENT_CHARS = 60;
 const SEGMENT_BYTES = 120;
 
 /**
- * Whether a character may stand in an address: a–z, 0–9 and the hyphen, or a letter, mark or digit of a script other
- * than Latin, so a page titled "お問い合わせ" or "Контакты" can have its natural address while Latin titles keep the
- * plain ASCII addresses they always had.
+ * Whether a character may stand in an address after `prev` (the character before it, "" at the start): a–z, 0–9 and
+ * the hyphen, or a letter, mark or digit of a script other than Latin, so a page titled "お問い合わせ" or "Контакты"
+ * can have its natural address while Latin titles keep the plain ASCII addresses they always had. A character Latin
+ * text shares ("ʼ") is part of a word in another script ("обʼєкт"), and punctuation after Latin ("OʼNeil").
  */
-function addressChar(ch: string): boolean {
+function addressChar(ch: string, prev: string): boolean {
   if (/^[a-z0-9-]$/.test(ch)) return true;
-  return WORD.test(ch) && !LATIN.test(ch) && !NO_SCRIPT.test(ch) && !(SHARED.test(ch) && USED_BY_LATIN.test(ch));
+  if (!WORD.test(ch) || LATIN.test(ch) || NO_SCRIPT.test(ch)) return false;
+  return !sharedWithLatin(ch) || (/[\p{L}\p{M}]/u.test(prev) && !LATIN.test(prev) && !sharedWithLatin(prev));
 }
+
+/** Whether every character of `text` may stand in an address where it is (see addressChar). */
+const addressChars = (text: string) => Array.from(text).map((ch, i, all) => addressChar(ch, all[i - 1] ?? ''));
 
 /** Bytes a code point takes in UTF-8, as file systems count a name's length. */
 const utf8Length = (cp: number) => (cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4);
@@ -118,7 +124,10 @@ const pointCount = (text: string) => Array.from(text).length;
  * can be kept.
  */
 export function addressSlug(text: string): string {
-  const kept = Array.from(foldAddress(text).replace(/&/g, ' and '), (ch) => (ch !== '-' && addressChar(ch) ? ch : '-'))
+  const folded = Array.from(foldAddress(text).replace(/&/g, ' and '));
+  const fits = addressChars(folded.join(''));
+  const kept = folded
+    .map((ch, i) => (ch !== '-' && fits[i] ? ch : '-'))
     .join('')
     // A mark whose letter was not kept cannot start a word.
     .replace(/(^|-)\p{M}+/gu, '$1')
@@ -170,7 +179,7 @@ export function validateSegment(seg: string): string | null {
   if (seg === '.' || seg === '..') return 'Routes cannot contain "." or "..".';
   // Plain ASCII addresses, which every Latin title gets, need nothing more.
   if (/^[a-z0-9][a-z0-9-]*$/.test(seg)) return seg.length > 60 ? 'Route segments must be 60 characters or fewer.' : null;
-  if (!/^[\p{L}\p{Nd}]/u.test(seg) || !Array.from(seg).every(addressChar)) return `"${seg}" may only contain lowercase letters, numbers and hyphens.`;
+  if (!/^[\p{L}\p{Nd}]/u.test(seg) || !addressChars(seg).every(Boolean)) return `"${seg}" may only contain lowercase letters, numbers and hyphens.`;
   if (pointCount(seg) > SEGMENT_CHARS) return 'Route segments must be 60 characters or fewer.';
   if (utf8Bytes(seg) > SEGMENT_BYTES) return 'Route segments must be 60 characters or fewer, and fewer in scripts whose letters take more room (40 in Japanese, Chinese or Korean).';
   // One spelling per address, so two that look the same, or share a folder on disk, are the same route.

@@ -57,7 +57,7 @@ describe('normalizeRoute', () => {
 });
 
 /** Titles in Latin script, whose addresses must stay exactly what they were before addresses took other scripts. */
-const LATIN_TITLES = ['OʼNeil & Sons', 'Rock ʼn Roll', 'AˇB', 'Hawaiʻi', 'About Us', '  Café & Bar!  ', 'Oﬃce Hours', 'Crème Brûlée', 'Straße 12', 'Đà Nẵng', 'Liên hệ', 'Ｆｕｌｌ Ｗｉｄｔｈ', 'Q&A — 2026', 'İstanbul', 'Ærø', '---', `${'a'.repeat(59)} b`, 'b'.repeat(70)];
+const LATIN_TITLES = ['OʼNeil & Sons', 'Rock ʼn Roll', 'AˇB', 'AˊB', 'Hawaiʻi', 'About Us', '  Café & Bar!  ', 'Oﬃce Hours', 'Crème Brûlée', 'Straße 12', 'Đà Nẵng', 'Liên hệ', 'Ｆｕｌｌ Ｗｉｄｔｈ', 'Q&A — 2026', 'İstanbul', 'Ærø', '---', `${'a'.repeat(59)} b`, 'b'.repeat(70)];
 
 describe('addresses in any script (#36)', () => {
   it('gives a page titled in Japanese, or other scripts, its natural address', () => {
@@ -72,6 +72,12 @@ describe('addresses in any script (#36)', () => {
     expect(addressSlug('한국어 페이지')).toBe('한국어-페이지');
     expect(addressSlug('हिन्दी पृष्ठ')).toBe('हिन्दी-पृष्ठ');
     expect(addressSlug('اتصل بنا')).toBe('اتصل-بنا');
+    // An apostrophe or tone mark Latin text shares is part of a word in another script, never at its start.
+    expect(addressSlug('Обʼєкт')).toBe('обʼєкт');
+    expect(addressSlug('ㄅˊ')).toBe('ㄅˊ');
+    expect(addressSlug('ʼобʼ ʼєкт')).toBe('обʼ-єкт');
+    expect(validateRoute('/обʼєкт/')).toBeNull();
+    expect(validateRoute('/oʼneil/')).toMatch(/may only contain/);
     for (const t of ['お問い合わせ', 'Привет Мир', 'Мой дом', 'Επικοινωνία', 'ΟΔΟΣ ΕΡΜΟΥ', '한국어 페이지', 'हिन्दी पृष्ठ', 'ภาษาไทย', 'צור קשר', '联系我们', '𠮷野家', 'ｶﾌｪ', 'Ἀθῆναι ᾳ']) {
       expect(validateRoute(`/${addressSlug(t)}/`), t).toBeNull();
     }
@@ -104,6 +110,7 @@ describe('addresses in any script (#36)', () => {
     for (const seg of ['я'.repeat(60), 'お'.repeat(40), astral, 'a'.repeat(60)]) expect(validateRoute(`/${seg}/${seg}/${seg}/${seg}/`), seg).toBeNull();
     expect(validateRoute(`/${'я'.repeat(61)}/`)).toMatch(/60 characters/);
     expect(validateRoute(`/${'お'.repeat(41)}/`)).toMatch(/40 in Japanese/);
+    expect(validateRoute(`/${'お'.repeat(40)}a/`)).toMatch(/40 in Japanese/);
     expect(validateRoute(`/${'𠮷'.repeat(31)}/`)).toMatch(/40 in Japanese/);
     const deepest = `/${Array(4).fill(astral).join('/')}/`;
     expect(new TextEncoder().encode(deepest).length).toBeLessThanOrEqual(485);
@@ -173,6 +180,7 @@ describe('addresses in any script (#36)', () => {
     // Escapes of a slash stay escaped, and a malformed one leaves the path as it is. Decoded once only: an escaped
     // "%" is a "%", never the start of another escape.
     expect(readablePath('/a%2Fb/')).toBe('/a%2Fb/');
+    expect(readablePath('/a%3Fb%23c/')).toBe('/a%3Fb%23c/');
     expect(readablePath(encodeURI(routeUrl('/お/')))).toBe(routeUrl('/お/'));
     expect(readablePath('/%E3%81/')).toBe('/%E3%81/');
   });

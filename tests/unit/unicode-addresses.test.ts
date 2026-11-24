@@ -109,8 +109,8 @@ describe('collection entries in other scripts', () => {
     r.state.site.baseUrl = 'https://example.com';
     let files = generateProject(r.state);
     expect(files.get('static/sitemap.xml')).toContain(`<loc>https://example.com${encodeURI('/お知らせ/春のセール/')}</loc>`);
-    const entryPage = [...files.entries()].find(([path, src]) => path.startsWith('src/routes/') && src.includes('canonical') && src.includes(encodeURI('/お知らせ/春のセール-2/')));
-    expect(entryPage, 'an entry names its escaped address as canonical').toBeTruthy();
+    const canonical = `<link rel="canonical" href={${JSON.stringify(`https://example.com${encodeURI('/お知らせ/春のセール-2/')}`)}} />`;
+    expect([...files.values()].some((src) => src.includes(canonical)), 'an entry names its escaped address as canonical').toBe(true);
     // A slug stored in another spelling, or holding a folder, is refused, and given no page.
     r.state.collections.posts.entries.en_sale0002.slug = '春のｾｰﾙ';
     r.state.collections.posts.entries.en_hours001.slug = '営業/時間';
