@@ -22,6 +22,8 @@ import { CODE_OPERATIONS, developerModeReason } from '@engine/developer-mode';
 import { changedComponents, componentWarnings, introducedReusability } from './reusability';
 import { isReusabilityWarning } from '@engine/reusability';
 import { OP_REACH, type AuthorityGrants } from './scope';
+import { digestComponentInspection, inspectionSteps, MAX_CASES, planComponentInspection, resolveInspectTarget } from './component-inspection';
+import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 
 const owner = z.object({ kind: z.enum(['page', 'shell', 'component']), id: z.string() });
 
@@ -60,6 +62,13 @@ export const TOOL_ARGS = {
     source: z.string().optional().describe('Full replacement source, instead of edits.')
   }),
   inspect_layout: z.object({ pageId: z.string(), viewport: z.enum(['phone', 'tablet', 'desktop']) }),
+  inspect_component: z.object({
+    definitionId: z.string().optional().describe('A component of the project.'),
+    componentId: z.string().optional().describe('Or a theme catalogue component, whether or not the project has it yet.'),
+    owner: owner.optional().describe('Or, with nodeId, a placement: its own content and variant choices are the starting point.'),
+    nodeId: z.string().optional(),
+    offset: z.number().int().min(0).optional().describe('Continue a sweep: the offset a previous call returned in next.')
+  }),
   validate_project: z.object({ profile: z.enum(['schema', 'component']).optional() }),
   request_clarification: z.object({
     question: z.string().min(1).max(300),
@@ -102,6 +111,8 @@ const DESCRIPTIONS: Record<ToolName, string> = {
   apply_source_patch: 'Change the source of a project code component (never generated files, config or dependencies). Requires the hash from read_source.',
   inspect_layout:
     'Measure a page in the live preview at a viewport width: overflow, images (report.images; unverified ones were still loading, not a site problem), alt text, headings, runtime errors, and readability (counts in report.checks): text contrast against its painted background, overlapping boxes, cut-off text, tap targets under 44px below 768px. Each finding\'s ref is the owner, nodeId, partId and itemId node.setStyle takes; contrast-unverified is text only pixels could judge (over an image). No screenshots.',
+  inspect_component:
+    'Check one component on its own, off-screen, without changing anything: it is measured at phone (390px) and desktop (1280px) width with every link set and empty text filled, in each option of every variant axis, and with stress content: long text with an unbroken long word, links and optional text left empty, one and five list items. Returns each overflow, cut-off text, low contrast, overlap, small tap target, runtime error and spacing collapse once, with the cases and widths it showed in and where it is in the design: at.nodeId is the node of its design (node.setStyle { owner: { kind: "component", id: definitionId }, nodeId } changes it on every placement) and at.partId the part it belongs to. The design of a theme component changes on a project copy: component.fork it first (one the project does not have yet is added by placing it) and use the definitionId that returns. A clean component gets a one-line summary. Use after building or changing a reusable component, then fix what it finds and check again.',
   validate_project: 'Run validation: "schema" checks references, routes and structure; "component" also compiles every Svelte component.',
   request_clarification:
     'Ask the user one question and wait for the answer. Use it when the user asks you to interview them, ask them something or let them choose; whenever you would offer them a few options to pick from (instead of listing the options in your reply); and when a request is ambiguous enough that a wrong guess would change shared content. Put up to four short, concrete options in choices; the user can also type their own answer. To let the user choose between library images, pass their assetIds instead of naming them in choices: the user sees the pictures, which you cannot. One question per call: ask the next one after the answer comes back.',
@@ -127,6 +138,7 @@ const BRIEFS: Partial<Record<ToolName, string>> = {
   read_source: "A component's Svelte source. Only project code components can be patched.",
   apply_source_patch: 'Change a project code component (never generated files, config or dependencies), with the hash from read_source.',
   inspect_layout: 'Measure a page in the live preview at a width: overflow, off-screen elements, whether each image loaded (unverified ones were still loading, which is fine), missing alt text, headings and runtime errors. Structure only, no screenshots.',
+  inspect_component: 'Measure a component on its own at phone and desktop width, in every variant option and with long, empty and repeated content: overflow, cut-off text, contrast, overlaps and collapsed spacing, each with where it is in the design. Changes nothing.',
   validate_project: '"schema" checks references, routes and structure; "component" also compiles every component.',
   request_clarification:
     'Ask the user one question and wait for the answer: when they ask you to interview them, ask them something or let them choose, when you would offer options (never list them in your reply instead), or when a wrong guess would change shared content. Up to four short, concrete choices; they can also type an answer. To choose between images, pass assetIds: they see the pictures. One question per call; then act on the answer.',
@@ -224,7 +236,9 @@ const COMPONENT_BUILD_OPERATIONS = new Set<OperationType>([
   'node.setBinding'
 ]);
 /** The tools a small model gets for building a new component, beside those operations. */
-const COMPONENT_BUILD_TOOLS = new Set<ToolName>(['read_project', 'read_page', 'search_components', 'read_component', 'search_assets', 'apply_operations', 'validate_project', 'request_clarification', 'read_source', 'apply_source_patch']);
+const COMPONENT_BUILD_TOOLS = new Set<ToolName>(['read_project', 'read_page', 'search_components', 'read_component', 'search_assets', 'apply_operations', 'validate_project', 'inspect_component', 'request_clarification', 'read_source', 'apply_source_patch']);
+/** Measures a component's own design: left out where the run cannot change one (a page) or has room only for the small set. */
+const COMPONENT_CHECK: ToolName = 'inspect_component';
 
 /** The operation union the model is shown for a run; the app still checks every operation it receives. `only` narrows it. */
 function offeredOperations(codeEnabled: boolean, definitionOps: boolean, only?: ReadonlySet<OperationType>) {
@@ -378,7 +392,7 @@ export function toolsForRun(opts: {
   if (opts.page) {
     // Operations only for the page's own sections and settings, and no code edits: a component's source shows on every
     // page. A small model gets the few that address one section by its ID, which the page tool cannot.
-    const own = toolDefinitions({ codeEnabled, definitionOps: false, operations: focused ? FOCUSED_PAGE_OPERATIONS : PAGE_OPERATIONS }).filter((t) => t.name !== 'apply_source_patch');
+    const own = toolDefinitions({ codeEnabled, definitionOps: false, operations: focused ? FOCUSED_PAGE_OPERATIONS : PAGE_OPERATIONS }).filter((t) => t.name !== 'apply_source_patch' && t.name !== COMPONENT_CHECK);
     const upsert: ToolDefinition = { name: 'upsert_page_with_sections', ...describe('upsert_page_with_sections'), parameters: upsertToolSchema(state, opts.page.route) };
     return { tools: [upsert, ...own], mode: 'page', focused };
   }
@@ -389,7 +403,7 @@ export function toolsForRun(opts: {
   // A small model widened from a selection keeps its style tool for the selected element, which nothing else it has can
   // do (styling every card of a selected one, say).
   const kept = focused && opts.widened ? (selectionTools(state, opts.widened, { widened: true }) ?? []).filter((t) => t.name === 'style_selected_element') : [];
-  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations').map(contractRead) : general)], mode: 'site', focused };
+  return { tools: [...macros, ...kept, ...(focused ? general.filter((t) => t.name !== 'apply_operations' && t.name !== COMPONENT_CHECK).map(contractRead) : general)], mode: 'site', focused };
 }
 
 /** How well a component matches a search: 3 for each word in its name, 1 for each found only in the rest. */
@@ -478,6 +492,8 @@ export interface ToolHost {
   apply(operations: EditOperation[], expectedRevision: number, label: string, idempotencyKey: string, grants?: AuthorityGrants): Promise<{ ok: boolean; revision: number; results?: unknown[]; error?: { code: string; message: string } }>;
   compileAll(): Promise<Diagnostic[]>;
   inspectLayout(pageId: string, width: number): Promise<unknown>;
+  /** Show and measure a component in isolated previews, step by step (see inspect_component). */
+  inspectComponent?(steps: ComponentPreviewStep[]): Promise<ComponentPreviewResult[]>;
   /** `images`: library images offered as choices, already checked to be in the project. */
   ask(question: string, choices: string[], widenScope?: boolean, images?: ChatImageRef[]): Promise<string>;
   /** What the macro tools remember during a run. */
@@ -548,6 +564,25 @@ export function fitInspection<R>(envelope: Record<string, unknown>, report: R): 
   }
   if (omitted) r.omittedIssues = omitted;
   return r as R;
+}
+
+/**
+ * A component check cut, when it must be, to fit a tool result whole, so it keeps the fields that say what it is
+ * (and the budget reads): first the texts of its findings, then findings from the end, keeping one of every kind.
+ */
+function fitComponentCheck(content: Record<string, unknown>): Record<string, unknown> {
+  const room = MAX_RESULT_CHARS - 200;
+  if (JSON.stringify(content).length <= room || !Array.isArray(content.findings)) return content;
+  const findings = (content.findings as Array<Record<string, unknown>>).map(({ text: _t, ...f }) => (f.with && typeof f.with === 'object' ? { ...f, with: { ...(f.with as Record<string, unknown>), text: undefined } } : f));
+  const out = { ...content, findings };
+  let omitted = Number(content.omittedFindings ?? 0);
+  while (JSON.stringify(out).length > room) {
+    const last = findings.findLastIndex((f, i) => findings.findIndex((g) => g.kind === f.kind) !== i);
+    if (last < 0) break;
+    findings.splice(last, 1);
+    omitted++;
+  }
+  return omitted ? { ...out, omittedFindings: omitted } : out;
 }
 
 export function serializeResult(content: unknown): string {
@@ -748,6 +783,32 @@ export async function executeTool(name: string, rawArgs: string, host: ToolHost,
       } catch (e) {
         return { ok: false, content: { error: 'VALIDATION_FAILED', pageId: resolved, viewport: a.viewport, message: `Layout could not be inspected: ${(e as Error).message}` } };
       }
+    }
+    case 'inspect_component': {
+      const a = args as z.infer<(typeof TOOL_ARGS)['inspect_component']>;
+      const target = resolveInspectTarget(state, a);
+      if ('error' in target) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: target.error } };
+      const cases = planComponentInspection(target);
+      const offset = a.offset ?? 0;
+      if (offset >= cases.length) return { ok: false, content: { error: 'INVALID_ARGUMENT', message: `There are ${cases.length} cases to measure; offset ${offset} is past the last.` } };
+      // Which check could not run, as a result that did would name it.
+      const which = { definitionId: target.def.id, ...(target.placement ? { placement: target.placement } : {}), ...(offset ? { offset } : {}) };
+      const failed = (message: string) => ({ ok: false, content: { error: 'VALIDATION_FAILED', ...which, message: `The component could not be inspected: ${message}` } });
+      if (!host.inspectComponent) return failed('measuring a component is not available here.');
+      const window = cases.slice(offset, offset + MAX_CASES);
+      const revision = host.revision();
+      let results: ComponentPreviewResult[];
+      try {
+        results = await host.inspectComponent(inspectionSteps(target, window));
+      } catch (e) {
+        return failed((e as Error).message);
+      }
+      // Measured against a project that changed meanwhile: it says nothing certain about either.
+      if (host.revision() !== revision) return { ok: false, content: { error: 'STALE_REVISION', ...which, message: 'The project changed while the component was measured. Inspect it again.' } };
+      const digest = digestComponentInspection(target, window, Array.isArray(results) ? results : [], { offset, total: cases.length, all: cases });
+      // Nothing measured is a check that could not run, never a clean component.
+      if (!digest.measured) return failed(String((digest.content.failed as Array<{ error: string }> | undefined)?.[0]?.error ?? 'the preview gave no measurements.'));
+      return { ok: true, content: fitComponentCheck({ revision, ...digest.content }) };
     }
     case 'validate_project': {
       const a = args as z.infer<(typeof TOOL_ARGS)['validate_project']>;

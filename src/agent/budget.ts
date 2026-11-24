@@ -117,7 +117,21 @@ function describeRead(item: Extract<CanonicalItem, { kind: 'tool_result' }>, ind
     const viewport = body?.viewport ?? args.viewport;
     return pageId && viewport ? { ...base, target: `layout:${pageId}:${viewport}`, pageId: String(pageId) } : null;
   }
+  if (item.name === 'inspect_component') {
+    // A component measured with its default content or a placement's, and which window of its cases: a theme
+    // component named by its catalogue ID is the same one by its definition ID.
+    const id = body?.definitionId ?? args.definitionId ?? args.componentId;
+    if (!id) return null;
+    // A check that left some of its cases unmeasured never stands in for one that measured them.
+    return { ...base, ...(body?.incomplete === true ? { partial: true } : {}), target: `component-check:${componentSample(body, args)}:${id}:${Number(body?.offset ?? args.offset ?? 0)}` };
+  }
   return null;
+}
+
+/** Whose content an inspect_component result was measured with: the defaults, or one placement's. */
+function componentSample(body: Record<string, any> | null, args: Record<string, any>): string {
+  const p = body?.placement ?? (args.owner && args.nodeId ? { owner: args.owner, nodeId: args.nodeId } : null);
+  return p?.owner ? `${p.owner.kind}:${p.owner.id}:${p.nodeId}` : 'defaults';
 }
 
 /** Whether a later read shows everything an earlier one did, at least as recently. */
@@ -152,6 +166,11 @@ export function tombstoneFor(read: Pick<ReadInfo, 'name'>, content: string, args
     return `${TOMBSTONE}inspect_element ${args.nodeId} on ${owner?.kind} ${owner?.id}${rev}. Inspect it again before relying on it.]`;
   }
   if (read.name === 'inspect_layout') return `${TOMBSTONE}inspect_layout ${body?.pageId ?? args.pageId} ${body?.viewport ?? args.viewport}. Measure it again if you need it.]`;
+  if (read.name === 'inspect_component') {
+    const sample = componentSample(body, args);
+    const offset = Number(body?.offset ?? args.offset ?? 0);
+    return `${TOMBSTONE}inspect_component ${body?.definitionId ?? args.definitionId ?? args.componentId}${sample === 'defaults' ? '' : ` placed at ${sample}`}${offset ? ` from offset ${offset}` : ''}${rev}. Inspect it again if you need it.]`;
+  }
   const pages = Array.isArray(body?.pages) ? body!.pages : [];
   const list = pages.slice(0, 12).map((p: Record<string, unknown>) => `${p.id} ${p.route ?? ''}`.trim()).join(', ');
   const more = pages.length > 12 ? `, and ${pages.length - 12} more` : '';
@@ -232,7 +251,7 @@ export function applyContextBudget(
       if (r.name === 'read_source') return changedAfter(r.definitionId!) || (!!r.hash && reads.some((n) => n.index > r.index && n.target === r.target && !!n.hash && n.hash !== r.hash));
       // A measurement, an element's props and the project summary all describe the revision they were read at:
       // only a change that moved it (whether or not a tool made it) makes them stale.
-      if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'read_project') return false;
+      if (r.name !== 'inspect_element' && r.name !== 'inspect_layout' && r.name !== 'inspect_component' && r.name !== 'read_project') return false;
       return r.revision !== undefined && opts.revision !== undefined ? r.revision < opts.revision : r.index < lastMutation;
     };
     if (estimate > available * HARD_LIMIT) {

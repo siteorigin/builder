@@ -2355,7 +2355,7 @@ describe('building a new component from Create component (#172)', () => {
     );
     await env.run('Create a component called "Price tag".', task);
     const names = seen[0].tools.map((t) => t.name).sort();
-    expect(names).toEqual(['apply_operations', 'read_component', 'read_page', 'read_project', 'request_clarification', 'search_assets', 'search_components', 'validate_project']);
+    expect(names).toEqual(['apply_operations', 'inspect_component', 'read_component', 'read_page', 'read_project', 'request_clarification', 'search_assets', 'search_components', 'validate_project']);
     const ops = offeredOps(seen[0]).map((v) => v.properties.type.const);
     expect(ops).toEqual(expect.arrayContaining(['component.create', 'node.insert', 'node.setBinding', 'component.setPropSchema', 'component.setVariant', 'node.setStyle']));
     for (const op of ['page.create', 'token.set', 'instance.setProp', 'component.createCode']) expect(ops).not.toContain(op);

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { CHAT_EDIT_SCOPES, turnQuestions, type AiEvent, type ChatActivity, type ChatCheck, type ChatContext, type ChatImageRef, type ChatMessage, type ChatMode, type Conversation, type FieldLocation, type ProviderId, type RunStatus } from '@shared/api';
 import type { EditOperation } from '@shared/ops';
 import type { ProjectState } from '@shared/types';
+import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { newId } from '@shared/ids';
 import { canCarryOn, summaryNow, turnState, type TurnHistory } from '@shared/turns';
 import { getTheme } from '@catalogue/index';
@@ -93,6 +94,8 @@ export interface OrchestratorDeps {
   emit(e: AiEvent): void;
   compileAll(): Promise<Diagnostic[]>;
   inspectLayout(pageId: string, width: number): Promise<unknown>;
+  /** Show and measure a component in isolated previews (see inspect_component); without it the tool says it cannot run. */
+  inspectComponent?(steps: ComponentPreviewStep[], signal?: AbortSignal): Promise<ComponentPreviewResult[]>;
   onBusyChange(busy: boolean): void;
   /** Whether code components may be created or edited (Developer mode). */
   codeEnabled?(): Promise<boolean>;
@@ -342,6 +345,7 @@ const COMPONENT_GUIDANCE = `Making a new reusable component (when the user asks 
 - Make it with component.create (name, description). Its result names the new definitionId and rootNodeId. In your next step build the design inside rootNodeId with node.insert and node.setStyle under owner { kind: "component", id: definitionId }. Use site tokens, not fixed colors or sizes, so it matches the site and follows its styles.
 - Give it clean inspector properties: component.setPropSchema for each piece of content an author will change (with a label and a useful default), then node.setBinding to bind the node to it ({ "$prop": name }). Repeated cards or items are a list property with a "repeat" node bound to it, its fields bound with { "$item": field }. Name the parts an author would style with component.setPart. Add variant options with component.setVariant and give each option its look with node.setStyle { variant, axis }: an option without style rules changes nothing.
 - It is a managed component. Only when the user asks for code, and component.createCode is offered (Developer mode), write a code component instead.
+- Check it with inspect_component { definitionId } once it is built: every variant option at phone and desktop width, with long text, empty links and few or many items. Fix what it finds and check again.
 - Place it on a page with node.insert { definitionId } only when the user asks for it there; otherwise it waits in Insert, under Your components. Finish by saying what you made and what an author can change on each placement.`;
 
 /** For a small model building a new component: the rules it needs, without the page and brand tools it was not given. */
@@ -1096,6 +1100,7 @@ export class Orchestrator {
       },
       compileAll: () => this.deps.compileAll(),
       inspectLayout: (pageId, width) => this.deps.inspectLayout(pageId, width),
+      ...(this.deps.inspectComponent ? { inspectComponent: (steps: ComponentPreviewStep[]) => this.deps.inspectComponent!(steps, signal) } : {}),
       ask: (question, choices, widenScope, images) =>
         new Promise<string>((resolve) => {
           // Stopped before the question could be shown: there is nothing to wait for.
@@ -1654,6 +1659,12 @@ export class Orchestrator {
             const c = outcome.content as { pageId?: string; viewport?: string };
             inspections.record(c.pageId ?? `?${call.arguments}`, c.viewport ?? '', outcome.ok, outcome.content);
           }
+          if (call.name === 'inspect_component') {
+            // Keyed by the component the tool resolved and its sample; each window of cases is kept apart, and a
+            // repeated check of a window replaces the last.
+            const c = outcome.content as { definitionId?: string; placement?: unknown; offset?: number };
+            inspections.recordComponent(c.definitionId ? JSON.stringify([c.definitionId, c.placement ?? null]) : `?${call.arguments}`, Number(c.offset) || 0, outcome.ok, outcome.content);
+          }
           this.emitMessage(msg, runId);
           items.push({ kind: 'tool_result', callId: call.id, name: call.name, content: serializeResult(outcome.content), isError: !outcome.ok });
           if (MUTATING_TOOLS.has(call.name as never)) msg.text = '';
@@ -1705,6 +1716,11 @@ function activityLabel(call: ToolCall, state: ProjectState): string {
       return 'Editing component source';
     case 'inspect_layout':
       return `Checking ${page(args.pageId)} at ${String(args.viewport ?? 'desktop')} width`;
+    case 'inspect_component': {
+      const id = typeof args.definitionId === 'string' ? args.definitionId : undefined;
+      const def = id && Object.hasOwn(state.components, id) ? state.components[id] : undefined;
+      return `Checking ${def?.name ?? 'a component'} in its variants and with long and empty content`;
+    }
     case 'validate_project':
       return 'Validating the project';
     case 'locate_field':

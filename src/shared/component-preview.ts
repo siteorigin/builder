@@ -61,6 +61,16 @@ export interface ComponentPreviewStep {
   frame?: number;
 }
 
+/** How a batch of component previews is measured, when not as Insert's thumbnails are (see the AI's inspect_component). */
+export interface ComponentPreviewMeasure {
+  /** Also run the readability checks a page gets: contrast, overlaps, clipped text and tap targets. */
+  readability?: boolean;
+  /** Also report the space between stacked elements, to compare a preview with content left empty against it shown. */
+  gaps?: boolean;
+  /** Start no step after this many milliseconds: the results end with the last step started. */
+  budgetMs?: number;
+}
+
 /** What a component preview frame reports once it has shown a request, or why it could not. */
 export interface ComponentPreviewResult {
   state: 'ready' | 'error';

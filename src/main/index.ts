@@ -4,7 +4,7 @@ import { join, dirname, normalize, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readFileSync } from 'node:fs';
 import type { Appearance, ImportChoices, LocalWorkspaceState, ProviderId, SettingsPatch } from '@shared/api';
-import type { ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
+import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep } from '@shared/component-preview';
 import { editorBackground, editorScheme } from '@shared/appearance';
 import { externalLink } from '@shared/links';
 import { visitorStepKey } from '@shared/preview-keys';
@@ -16,6 +16,7 @@ import { createMenuCommands, type MenuCommand } from './menu-commands';
 import { writingMenuTemplate } from './writing-menu';
 import { loadSettings, localCheckEpoch, localCheckRecorder, localEndpoint, providerStatuses, recents, removeRecent, setKey, updateSettings, getKey } from './settings';
 import { Orchestrator } from '@agent/orchestrator';
+import { INSPECT_COMPONENT_BUDGET_MS } from '@agent/component-inspection';
 import { OpenAIAdapter, testOpenAI } from '@agent/openai';
 import { AnthropicAdapter, testAnthropic } from '@agent/anthropic';
 import { listedProblem, listLocalModels, openLocalAdapter, testLocal } from '@agent/local';
@@ -73,10 +74,6 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: t
 const pendingInspections = new Map<string, (report: unknown) => void>();
 const pendingComponentPreviews = new Map<string, (results: unknown) => void>();
 
-/**
- * Show components in isolated preview frames in the editor window, step by step (see ComponentPreviewStep), and give
- * back what each frame reported.
- */
 /** Measure a page in the editor's hidden preview frame at `width` CSS px (see the renderer's runInspection). */
 function inspectLayout(pageId: string, width: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -93,22 +90,49 @@ function inspectLayout(pageId: string, width: number): Promise<unknown> {
   });
 }
 
-function previewComponents(steps: ComponentPreviewStep[]): Promise<ComponentPreviewResult[]> {
+/**
+ * Show components in isolated preview frames in the editor window, step by step (see ComponentPreviewStep), and give
+ * back what each frame reported. `measure` adds checks and a time budget; `signal` stops waiting for the answer
+ * (with no results) and tells the editor to stop the batch, as running out of time does.
+ */
+function previewComponents(steps: ComponentPreviewStep[], measure?: ComponentPreviewMeasure, signal?: AbortSignal): Promise<ComponentPreviewResult[]> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return resolve([]);
     const requestId = Math.random().toString(36).slice(2);
+    const settle = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      pendingComponentPreviews.delete(requestId);
+    };
+    // The editor is told, so it starts no more of the batch's steps.
+    const cancel = () => {
+      try {
+        controller.send('component-preview:cancel', { requestId });
+      } catch {
+        // A window that has gone has no batch left to stop.
+      }
+    };
+    const onAbort = () => {
+      settle();
+      cancel();
+      resolve([]);
+    };
     const timer = setTimeout(
       () => {
-        pendingComponentPreviews.delete(requestId);
+        settle();
+        cancel();
         reject(new Error('The preview did not respond in time.'));
       },
-      // A step may wait for its files (15s), its page (12s) and its measurement (8s).
-      40000 * Math.max(1, steps.length)
+      // A step may wait for its files (15s), its page (12s) and its measurement (8s); a budgeted batch starts none
+      // after its budget, so it ends at most one step later.
+      measure?.budgetMs !== undefined ? measure.budgetMs + 40000 : 40000 * Math.max(1, steps.length)
     );
+    signal?.addEventListener('abort', onAbort, { once: true });
     pendingComponentPreviews.set(requestId, (r) => {
-      clearTimeout(timer);
+      settle();
       resolve(Array.isArray(r) ? (r as ComponentPreviewResult[]) : []);
     });
-    controller.send('component-preview:request', { requestId, steps });
+    controller.send('component-preview:request', { requestId, steps, ...(measure ? { measure } : {}) });
   });
 }
 
@@ -188,6 +212,7 @@ const orchestrator = new Orchestrator({
   emit: (e) => controller.send('ai:event', e),
   compileAll: async (): Promise<Diagnostic[]> => (controller.session ? compileProject(controller.session.state) : []),
   inspectLayout,
+  inspectComponent: (steps, signal) => previewComponents(steps, { readability: true, gaps: true, budgetMs: INSPECT_COMPONENT_BUDGET_MS }, signal),
   onBusyChange: () => controller.broadcast(),
   codeEnabled: async () => (await loadSettings()).settings.developerMode
 });

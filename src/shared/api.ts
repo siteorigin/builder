@@ -2,7 +2,7 @@ import type { ApplyResult, EditBatch } from './ops';
 import type { ElementRef, OwnerRef, ProjectState } from './types';
 import type { ThemeUpdates } from '@engine/theme-updates';
 import type { LocalProviderSettings } from './local';
-import type { ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
+import type { ComponentPreviewMeasure, ComponentPreviewResult, ComponentPreviewStep, PreparedComponentPreview } from './component-preview';
 import type { ComponentThumb } from './component-thumbs';
 import type { ThemePack } from '@catalogue/pack';
 import type { FontCoverage } from './font-scripts';
@@ -791,7 +791,9 @@ export interface BuilderApi {
   on(channel: 'appearance', cb: (appearance: Appearance) => void): () => void;
   on(channel: 'inspect:request', cb: (req: { requestId: string; pageId: string; width: number }) => void): () => void;
   /** Show components in isolated preview frames, step by step, and answer with componentPreviewResult. */
-  on(channel: 'component-preview:request', cb: (req: { requestId: string; steps: ComponentPreviewStep[] }) => void): () => void;
+  on(channel: 'component-preview:request', cb: (req: { requestId: string; steps: ComponentPreviewStep[]; measure?: ComponentPreviewMeasure }) => void): () => void;
+  /** The main process no longer waits for this batch: start no more of its steps. */
+  on(channel: 'component-preview:cancel', cb: (req: { requestId: string }) => void): () => void;
   /** A File menu command: confirm it with menuReceived(id); the same id may be offered again until then. */
   on(channel: 'menu:command', cb: (command: { cmd: string; id: number }) => void): () => void;
   /** The app is about to leave the project (close, switch, close the window, quit): settle edits, then answer with leaveResult. */

@@ -7,6 +7,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { describe, expect, it } from 'vitest';
+import type { ComponentPreviewResult } from '@shared/component-preview';
+import type { ComponentDefinition } from '@shared/types';
+import { digestComponentInspection, type InspectCase } from '@agent/component-inspection';
 
 const bridge = readFileSync(resolve('src/runtime/bridge.client.js'), 'utf8');
 const browserInstalled = existsSync(chromium.executablePath());
@@ -14,8 +17,11 @@ const browserInstalled = existsSync(chromium.executablePath());
 type Box = { x: number; y: number; width: number; height: number };
 type Preview = { key: string; mounted: boolean; error?: string; bounds: Box | null; text: string };
 
-/** Load `body` (with `preview` as the entry module leaves it) in a 437px frame; what the bridge said on ready and on inspect. */
-async function run(body: string, preview: object) {
+/**
+ * Load `body` (with `preview` as the entry module leaves it) in a 437px frame; what the bridge said on ready and on
+ * inspect, asked with `ask` (the AI's component inspection adds readability and gaps).
+ */
+async function run(body: string, preview: object, ask: Record<string, unknown> = {}) {
   const browser = await chromium.launch({ headless: true, executablePath: chromium.executablePath() });
   try {
     const page = await browser.newPage();
@@ -32,7 +38,7 @@ async function run(body: string, preview: object) {
     });
     await page.goto(`${origin}/`);
     // Runs in the browser, so it is passed as text (the Node project has no DOM types).
-    return await page.evaluate<{ ready: { path: string; preview?: Preview }; report: { preview?: Preview; issues: Array<{ kind: string }>; viewportWidth: number } }>(`new Promise((done, fail) => {
+    return await page.evaluate<{ ready: { path: string; preview?: Preview }; report: { preview?: Preview; issues: Array<{ kind: string; desc?: object }>; viewportWidth: number; checks?: Record<string, { checked: number; failed: number }>; gaps?: unknown[] } }>(`new Promise((done, fail) => {
       const frame = document.createElement('iframe');
       frame.name = 'so-test';
       Object.assign(frame.style, { position: 'fixed', left: '-10000px', width: '437px', height: '900px', border: '0' });
@@ -40,7 +46,7 @@ async function run(body: string, preview: object) {
       window.addEventListener('message', (e) => {
         if (e.data?.type === 'ready') {
           ready = e.data.payload;
-          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'inspect', payload: { requestId: 'r' } }, '*');
+          frame.contentWindow.postMessage({ protocolVersion: 1, sessionId: 'so-test', type: 'inspect', payload: { requestId: 'r', ...${JSON.stringify(ask)} } }, '*');
         }
         if (e.data?.type === 'inspectResult') done({ ready, report: e.data.payload.report });
       });
@@ -168,4 +174,67 @@ describe('the bridge in an isolated component preview', () => {
     expect(ready.preview).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '' });
     expect(report.preview).toEqual({ key: 'abcdefabcdefabcdef', mounted: false, error: 'boom', bounds: null, text: '' });
   }, 20000);
+
+  it.skipIf(!browserInstalled)('checks contrast in a component shown on its own only when the AI asks to check the design (#362)', async () => {
+    const at = (node: string) => `data-so-ctx="preview:c1|preview" data-so-node="${node}"`;
+    // An inverse tone that left its text dark.
+    const body = `<main id="main"><div ${at('r')} style="background:#111;padding:20px"><p ${at('h')} style="color:#333;font:16px/20px sans-serif;margin:0">Dark on dark</p></div></main>`;
+    const plain = await run(body, { key: 'abcdefabcdefabcdef', mounted: true });
+    expect(plain.report.checks).toBeUndefined();
+    expect(plain.report.issues.map((i) => i.kind)).not.toContain('low-contrast');
+    // Asked as the AI's component inspection asks: with the gaps too.
+    const { report } = await run(body, { key: 'abcdefabcdefabcdef', mounted: true }, { readability: true, gaps: true });
+    expect(Array.isArray(report.gaps)).toBe(true);
+    expect(report.checks?.contrast.checked).toBeGreaterThan(0);
+    expect(report.issues.find((i) => i.kind === 'low-contrast')).toMatchObject({ desc: { ctx: 'preview:c1|preview', node: 'h' } });
+    expect(report.issues.map((i) => i.kind)).not.toContain('heading-structure');
+  }, 20000);
+
+  it.skipIf(!browserInstalled)('says how far apart stacked elements are, so spacing that went with an empty link is found (#362)', async () => {
+    const at = (node: string) => `data-so-ctx="preview:c1|preview" data-so-node="${node}"`;
+    const card = (container: string, row: string, links: boolean) =>
+      `<main id="main"><div ${at('r')} style="${container}"><h3 ${at('h')} style="margin:0;font:20px/24px sans-serif">Spring offer</h3>${links ? `<div ${at('row')} style="${row}"><span ${at('btn')}>Book</span></div>` : ''}<p ${at('p')} style="margin:0;font:16px/20px sans-serif">Ten percent off.</p></div></main>`;
+    const def = {
+      id: 'c1',
+      name: 'Offer',
+      parts: { title: { nodeId: 'h', label: 'Title' }, text: { nodeId: 'p', label: 'Text' } },
+      tree: { rootIds: ['r'], nodes: { r: { id: 'r', kind: 'element', tag: 'div', children: ['h', 'row', 'p'] }, h: { id: 'h', kind: 'text' }, row: { id: 'row', kind: 'element', tag: 'div', children: ['btn'] }, btn: { id: 'btn', kind: 'text' }, p: { id: 'p', kind: 'text' } } }
+    } as unknown as ComponentDefinition;
+    const cases: InspectCase[] = [
+      { label: 'filled', variants: {}, props: {} },
+      { label: 'empty', variants: {}, props: {}, control: 'filled' }
+    ];
+    const findings = async (container: string, row: string) => {
+      const results: ComponentPreviewResult[] = [];
+      for (const links of [true, false]) {
+        const { report } = await run(card(container, row, links), { key: 'abcdefabcdefabcdef', mounted: true }, { readability: true, gaps: true });
+        // Measured at one width here; the digest reads it as both.
+        results.push({ state: 'ready', width: 390, report }, { state: 'ready', width: 1280, report });
+      }
+      const d = digestComponentInspection({ def, select: { definitionId: 'c1' }, values: {}, variants: {}, notes: [] }, cases, results, { offset: 0, total: 2 });
+      return (d.content.findings as Array<{ kind: string; at?: { nodeId: string } }> | undefined) ?? [];
+    };
+    // The button row carries the space around it: with no link it is not shown, and the heading meets the text.
+    const collapsed = await findings('', 'margin:24px 0');
+    expect(collapsed).toEqual([expect.objectContaining({ kind: 'spacing-collapse', at: { nodeId: 'h', partId: 'title' } })]);
+    // The container's gap spaces them, whatever is shown.
+    expect(await findings('display:flex;flex-direction:column;gap:16px', '')).toEqual([]);
+  }, 40000);
+
+  it.skipIf(!browserInstalled)('measures gaps only from boxes a visitor sees in the flow, named by their list items (#362)', async () => {
+    const at = (node: string, items = '') => `data-so-ctx="preview:c1|preview" data-so-node="${node}"${items ? ` data-so-items="${items}"` : ''}`;
+    const body = `<main id="main"><div ${at('r')}><p ${at('a')} style="margin:0">A</p><p ${at('hidden')} style="margin:0;visibility:hidden">H</p><p ${at('b')} style="margin:0">B</p><span ${at('inline')}>I</span><div style="display:contents"><p ${at('c', 'i1')} style="margin:8px 0 0">C</p></div></div></main>`;
+    const { report } = await run(body, { key: 'abcdefabcdefabcdef', mounted: true }, { gaps: true });
+    const pairs = (report.gaps as Array<{ a: { node: string; items: string }; b: { node: string; items: string }; gap: number }>).map((g) => [g.a.node, g.b.node, g.b.items, g.gap]);
+    // The hidden box keeps a and b apart and is never an end; the inline box is never an end; the wrapper is looked through.
+    expect(pairs).toEqual([]);
+    // An inline block is a box of its own, measured like any other.
+    const plain = `<main id="main"><div ${at('r')}><p ${at('a')} style="margin:0">A</p><div style="display:contents"><p ${at('c', 'i1')} style="margin:8px 0 0">C</p></div><span ${at('cta')} style="display:inline-block;width:100%;margin-top:4px">Book</span></div></main>`;
+    const { report: second } = await run(plain, { key: 'abcdefabcdefabcdef', mounted: true }, { gaps: true });
+    const end = (node: string, items = '') => ({ ctx: 'preview:c1|preview', node, items, n: 0, of: 1 });
+    expect(second.gaps).toEqual([
+      { a: end('a'), b: end('c', 'i1'), gap: 8 },
+      { a: end('c', 'i1'), b: end('cta'), gap: 4 }
+    ]);
+  }, 30000);
 });
