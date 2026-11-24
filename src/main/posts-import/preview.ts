@@ -4,7 +4,7 @@ import { isImageBlock } from '@shared/richtext';
 import type { PostImportPlan } from './plan';
 
 export function postImportPreview(id: string, plan: PostImportPlan): PostImportPreview {
-  const labels = (tax: 'categories' | 'tags', ids: string[] | undefined) => (ids ?? []).map((t) => plan.taxonomies?.[tax]?.terms[t]?.label ?? t);
+  const labels = (tax: 'categories' | 'tags', ids: string[] | undefined) => (ids ?? []).map((t) => plan.termLabels[tax][t] ?? t);
   return {
     id,
     kind: plan.source.kind,
@@ -25,7 +25,8 @@ export function postImportPreview(id: string, plan: PostImportPlan): PostImportP
       tags: labels('tags', p.terms.tags),
       notes: p.notes
     })),
-    pictures: plan.media.length,
+    // The same file shown under two references (`photo.jpg`, `./photo.jpg`) is one picture.
+    pictures: new Set(plan.media.map((m) => m.path)).size,
     missing: plan.missing,
     newTerms: { categories: plan.newTerms.categories, tags: plan.newTerms.tags },
     redirects: plan.posts.filter((p) => p.redirectFrom).length,

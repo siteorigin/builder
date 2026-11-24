@@ -6,7 +6,7 @@
  */
 import { promises as fs } from 'node:fs';
 import { basename, join } from 'node:path';
-import type { LinkValue } from '@shared/types';
+import type { LinkValue, RichText } from '@shared/types';
 import { isArticleDate } from '@shared/articles';
 import { linkFromTarget, type RichPages } from '@shared/richtext';
 import { emptyReport, htmlToPlain, htmlToRichText } from './html';
@@ -63,7 +63,7 @@ function termList(v: FrontValue | undefined, spaces: boolean): SourceTerm[] {
   const raw = Array.isArray(v) ? v : typeof v === 'string' ? (v.includes(',') ? v.split(',') : spaces ? v.split(/\s+/) : [v]) : [];
   const out: SourceTerm[] = [];
   for (const r of raw) {
-    const label = r.trim().slice(0, 80);
+    const label = r.trim();
     if (label && !out.some((t) => t.label.toLowerCase() === label.toLowerCase())) out.push({ label });
   }
   return out;
@@ -78,13 +78,14 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
   const skipped: string[] = [];
   let total = 0;
   const read: Array<{ f: Found; key: string; text: string }> = [];
-  for (const f of found) {
+  for (const [n, f] of found.entries()) {
     try {
       const bytes = await readContained(realRoot, join(root, f.rel), MAX_MARKDOWN_FILE_BYTES);
       total += bytes.length;
       if (total > MAX_EXPORT_BYTES) {
-        skipped.push(`${f.rel}: the folder’s posts are larger than an import reads at once.`);
-        continue;
+        const rest = found.length - n;
+        skipped.push(`${rest} ${rest === 1 ? 'post' : 'posts'} from ${f.rel} on: the folder’s posts are larger than an import reads at once.`);
+        break;
       }
       read.push({ f, key: `md:${f.rel}`, text: bytes.toString('utf8') });
     } catch (e) {
@@ -96,8 +97,10 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
   const slugs = new Map<string, string | null>();
   const fronts = read.map((r) => {
     const fm = readFrontmatter(r.text);
-    const dated = DATED_NAME.exec(r.f.stem);
-    const slug = text(fm.data.slug) ?? (dated ? dated[2] : r.f.stem);
+    const named = DATED_NAME.exec(r.f.stem);
+    // A day the calendar has, or none: `2023-02-30-notes.md` is named, not dated.
+    const dated = named && isArticleDate(named[1]) ? named : null;
+    const slug = text(fm.data.slug) ?? (named ? named[2] : r.f.stem);
     const s = slug.toLowerCase();
     slugs.set(s, slugs.has(s) ? null : r.key);
     return { ...r, fm, slug, dated: dated?.[1] ?? null };
@@ -136,16 +139,18 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
       }
     }
     title ||= f.stem.replace(DATED_NAME, '$2').replace(/[-_]+/g, ' ').trim() || 'Untitled post';
-    let blocks;
+    let blocks: RichText;
+    let unread = false;
     try {
       blocks = htmlToRichText(markdownToHtml(body), { image: (img) => media.key(img.src, f.dir), link }, report);
     } catch (e) {
       blocks = [];
+      unread = true;
       notes.push(`Its text could not be read: ${(e as Error).message}`);
     }
     notes.push(...reportNotes(report));
     const date = day(fm.data.date) ?? day(fm.data.pubdate) ?? day(fm.data.publishdate) ?? day(fm.data.published_at) ?? day(fm.data.published) ?? dated;
-    const { draft, reason } = draftOf(fm.data);
+    const { draft, reason } = unread ? { draft: true, reason: 'its text could not be read' } : draftOf(fm.data, fm.unreadable);
     const excerpt = text(fm.data.description) ?? text(fm.data.excerpt) ?? text(fm.data.summary);
     const picture = text(fm.data.image) ?? text(fm.data.featured_image) ?? text(fm.data.featuredimage) ?? text(fm.data.cover) ?? text(fm.data.thumbnail) ?? text(fm.data.hero) ?? text(fm.data.banner);
     const author = text(fm.data.author);
@@ -168,16 +173,17 @@ export async function readMarkdownFolder(root: string, pages: RichPages): Promis
   }
   await media.resolve();
   if (over) skipped.push(`${over} more ${over === 1 ? 'post' : 'posts'}: an import brings at most ${MAX_IMPORT_POSTS}.`);
-  return { kind: 'markdown', label, root, posts, media: media.items, skipped };
+  return { kind: 'markdown', label, root, realRoot, posts, media: media.items, skipped };
 }
 
 /**
  * Whether a post is a draft: `draft: true` (Hugo, Eleventy, Astro) or `published: false` (Jekyll). A post saying
  * neither is published, as every generator publishes it; one whose draft setting can't be read stays a draft.
  */
-function draftOf(data: Record<string, FrontValue>): { draft: boolean; reason?: string } {
+function draftOf(data: Record<string, FrontValue>, unreadable: string[]): { draft: boolean; reason?: string } {
   const d = data.draft;
   const p = data.published;
+  if (unreadable.includes('draft') || unreadable.includes('published')) return { draft: true, reason: 'its draft setting could not be read' };
   if (d !== undefined && typeof d !== 'boolean') return { draft: true, reason: 'its draft setting is not true or false' };
   if (p !== undefined && typeof p !== 'boolean' && !day(p)) return { draft: true, reason: 'its published setting is not true or false' };
   if (d === true) return { draft: true };

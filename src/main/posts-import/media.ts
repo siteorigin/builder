@@ -110,7 +110,8 @@ export class MediaTable {
         if (found) break;
       }
       if (!found) p.media.problem = 'it is not in the chosen folder';
-      else if (!PICTURE_EXTENSIONS.includes(extname(found).slice(1).toLowerCase())) p.media.problem = 'it is not a picture the library takes (JPEG, PNG, WebP, GIF, AVIF or SVG)';
+      else if (extname(found).toLowerCase() === '.svg') p.media.problem = 'it is an SVG drawing, which is added in Assets rather than with posts';
+      else if (!PICTURE_EXTENSIONS.includes(extname(found).slice(1).toLowerCase())) p.media.problem = 'it is not a picture the library takes (JPEG, PNG, WebP, GIF or AVIF)';
       else p.media.path = found;
     }
   }

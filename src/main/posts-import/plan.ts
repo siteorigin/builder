@@ -5,7 +5,7 @@
  * project's history, undone in one step.
  */
 import type { AssetRecord, CollectionTaxonomy, LinkValue, ProjectState, RichBlock, RichSpan, RichText } from '@shared/types';
-import type { EditOperation } from '@shared/ops';
+import { validateOperation, type EditOperation } from '@shared/ops';
 import { POSTS_COLLECTION_ID, archiveRouteOwner, findEntry, isTermId, routeOwners, underArchiveFolder } from '@shared/collections';
 import { todayArticleDate } from '@shared/articles';
 import { addressSlug, numberedSlug, slugify, validateRoute, validateSegment } from '@shared/routes';
@@ -55,6 +55,8 @@ export interface PostImportPlan {
   collection: { id: string; name: string; route: string; create: boolean };
   /** The collection's whole set of groupings after the import, when the import changes it. */
   taxonomies: Record<string, CollectionTaxonomy> | null;
+  /** Every category's and tag's name by ID, as they will be: what the review shows. */
+  termLabels: Record<TaxonomyId, Record<string, string>>;
   newTerms: Record<TaxonomyId, string[]>;
   posts: PlannedPost[];
   /** The pictures the posts show that were found, to import as library images. */
@@ -92,26 +94,40 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
 
   // Categories and tags: the collection's own, then any the posts bring.
   const taxonomies: Record<string, CollectionTaxonomy> = structuredClone(existing?.settings.taxonomies ?? {});
+  const skipped = [...source.skipped];
   let taxChanged = !existing;
   for (const id of Object.keys(TAXONOMIES) as TaxonomyId[]) {
     const wanted = source.posts.some((p) => (id === 'categories' ? p.categories : p.tags).length);
     if (!Object.hasOwn(taxonomies, id) && (wanted || !existing)) {
-      if (Object.keys(taxonomies).length >= MAX_TAXONOMIES) continue;
+      if (Object.keys(taxonomies).length >= MAX_TAXONOMIES) {
+        if (wanted) skipped.push(`The posts’ ${id}: the ${name} collection has as many groupings as it can, so it has no room for ${TAXONOMIES[id]}.`);
+        continue;
+      }
       taxonomies[id] = { label: TAXONOMIES[id], terms: {} };
       taxChanged = true;
     }
   }
   const newTerms: Record<TaxonomyId, string[]> = { categories: [], tags: [] };
+  // Terms by their name, any case: one lookup each, however many the posts bring.
+  const byLabel = new Map(Object.keys(TAXONOMIES).map((tax) => [tax, new Map(Object.entries(taxonomies[tax]?.terms ?? {}).map(([id, v]) => [lower(v.label), id]))]));
+  /** New terms past the most a grouping takes: counted for the reason the import stops, never added. */
+  const over: Record<TaxonomyId, Set<string>> = { categories: new Set(), tags: new Set() };
   const termId = (tax: TaxonomyId, term: SourceTerm): string | null => {
     const t = taxonomies[tax];
     if (!t) return null;
-    const label = term.label.trim().slice(0, 80);
-    const found = Object.entries(t.terms).find(([, v]) => lower(v.label) === lower(label));
-    if (found) return found[0];
+    const label = clip(term.label, 80).text;
+    const index = byLabel.get(tax)!;
+    const found = index.get(lower(label));
+    if (found) return found;
+    if (index.size >= MAX_TERMS) {
+      over[tax].add(lower(label));
+      return null;
+    }
     const stem = [term.slug && isTermId(lower(term.slug)) ? lower(term.slug) : '', slugify(label).slice(0, 50)].find((s) => s && isTermId(s)) || 'term';
     let id = stem;
     for (let n = 2; Object.hasOwn(t.terms, id) || !isTermId(id); n++) id = `${stem.slice(0, 50)}-${n}`;
     t.terms[id] = { label };
+    index.set(lower(label), id);
     newTerms[tax].push(label);
     taxChanged = true;
     return id;
@@ -164,8 +180,16 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     if (title.cut) notes.push('Its title was shortened to 200 characters.');
     const excerpt = p.excerpt ? clip(p.excerpt, 320) : undefined;
     if (excerpt?.cut) notes.push('Its excerpt was shortened to 320 characters.');
-    const author = p.author ? clip(p.author, 80).text : undefined;
-    const body = planBody(p, media, used, missing, entryIds, notes);
+    const authorClip = p.author ? clip(p.author, 80) : undefined;
+    if (authorClip?.cut) notes.push('Its author’s name was shortened to 80 characters.');
+    const author = authorClip?.text;
+    const { blocks: body, cut } = planBody(p, media, missing, entryIds, notes);
+    // Only the pictures the entry shows are imported.
+    for (const b of body) if (isImageBlock(b)) used.add(b.assetId);
+    // Text that had to be cut is never published unread: the author checks it first.
+    const draft = p.draft || cut;
+    const draftReason = p.draftReason ?? (cut && !p.draft ? 'its text was longer than a post holds, so it was cut' : undefined);
+    if ([...p.categories, ...p.tags].some((t) => t.label.trim().length > 80)) notes.push('A category or tag name was shortened to 80 characters.');
     const linksEntries = body.some((b) => spanRuns(b).some((run) => run.some((s) => s.link?.type === 'entry')));
     let featured: string | undefined;
     if (p.featured) {
@@ -188,11 +212,13 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     let redirectFrom: string | undefined;
     if (p.oldPath && lower(p.oldPath) !== lower(entryRoute)) {
       const from = p.oldPath;
-      const why = p.draft
+      const why = draft
         ? null
         : from === '/' || validateRoute(from)
           ? `${validateRoute(from) ?? 'it is the Home page'}`
-          : taken.has(lower(from))
+          : lower(from) === lower(route)
+            ? `it is the address of the ${name} collection`
+            : taken.has(lower(from))
             ? `it is the address of ${taken.get(lower(from))}`
             : planned.has(lower(from))
               ? 'another imported post has that address'
@@ -215,8 +241,8 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
       route: entryRoute,
       ...(wanted ? { wantedSlug: wanted } : {}),
       date: p.date ?? today,
-      draft: p.draft,
-      ...(p.draftReason ? { draftReason: p.draftReason } : {}),
+      draft,
+      ...(draftReason ? { draftReason } : {}),
       ...(author ? { author } : {}),
       ...(excerpt ? { excerpt: excerpt.text } : {}),
       terms,
@@ -229,19 +255,21 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     };
   });
   for (const tax of Object.keys(TAXONOMIES) as TaxonomyId[]) {
-    const n = Object.keys(taxonomies[tax]?.terms ?? {}).length;
-    if (n > MAX_TERMS) problems.push(`The posts bring ${newTerms[tax].length} new ${tax}, which would give the collection ${n}: it can have at most ${MAX_TERMS}.`);
+    if (!over[tax].size) continue;
+    const n = Object.keys(taxonomies[tax]?.terms ?? {}).length + over[tax].size;
+    problems.push(`The posts bring ${newTerms[tax].length + over[tax].size} new ${tax}, which would give the collection ${n}: it can have at most ${MAX_TERMS}.`);
   }
   if (!source.posts.length) problems.push(`${source.label} has no posts to import.`);
   const plan: PostImportPlan = {
     source: { kind: source.kind, label: source.label, ...(source.site ? { site: source.site } : {}) },
     collection: { id: POSTS_COLLECTION_ID, name, route, create: !existing },
     taxonomies: taxChanged ? taxonomies : null,
+    termLabels: Object.fromEntries(Object.keys(TAXONOMIES).map((tax) => [tax, Object.fromEntries(Object.entries(taxonomies[tax]?.terms ?? {}).map(([id, v]) => [id, v.label]))])) as PostImportPlan['termLabels'],
     newTerms,
     posts,
     media: source.media.filter((m) => used.has(m.key)),
     missing,
-    skipped: source.skipped,
+    skipped,
     problems
   };
   if (!problems.length) {
@@ -250,7 +278,13 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
     const s = { ...state, assets: { ...state.assets, assets: { ...state.assets.assets } } };
     for (const m of plan.media) s.assets.assets[m.key] = { id: m.key, name: m.key, file: `static/assets/${m.key}.png`, mime: 'image/png', bytes: 1, hash: m.key, kind: 'image', createdAt: '' } as AssetRecord;
     try {
-      applyOperations(s, planOperations(plan, stand));
+      const ops = planOperations(plan, stand);
+      // Each operation as the session checks it, then the batch as the engine applies it.
+      for (const op of ops) {
+        const v = validateOperation(op);
+        if (!v.ok) throw new Error(v.message);
+      }
+      applyOperations(s, ops);
     } catch (e) {
       problems.push(`The posts can’t be imported: ${(e as Error).message.replace(/^Operation \d+ \([\w.]+\): /, '')}`);
     }
@@ -263,7 +297,7 @@ export function planPostImport(state: ProjectState, source: ParsedSource, today 
  * posts pointed at their entries, descriptions and captions kept within their limits, and the whole within what an
  * entry's text holds.
  */
-function planBody(p: SourcePost, media: Map<string, SourceMedia>, used: Set<string>, missing: PostImportPlan['missing'], entryIds: Map<string, string>, notes: string[]): RichText {
+function planBody(p: SourcePost, media: Map<string, SourceMedia>, missing: PostImportPlan['missing'], entryIds: Map<string, string>, notes: string[]): { blocks: RichText; cut: boolean } {
   const relink = (spans: RichSpan[]): RichSpan[] =>
     spans.map((s) => {
       const target = s.link?.type === 'entry' && s.link.target.startsWith(POST_LINK_PREFIX) ? entryIds.get(s.link.target.slice(POST_LINK_PREFIX.length)) : undefined;
@@ -272,6 +306,7 @@ function planBody(p: SourcePost, media: Map<string, SourceMedia>, used: Set<stri
       return target ? { ...rest, link: { ...link, target } as LinkValue } : rest;
     });
   let lost = 0;
+  let shortened = 0;
   const out: RichBlock[] = [];
   for (const b of p.body) {
     if (isImageBlock(b)) {
@@ -281,12 +316,14 @@ function planBody(p: SourcePost, media: Map<string, SourceMedia>, used: Set<stri
         missing.push({ post: p.title, ref: m?.ref ?? b.assetId, problem: m?.problem ?? 'it was not found' });
         continue;
       }
-      used.add(m.key);
-      const caption = b.caption ? clip(b.caption, MAX_CAPTION).text : '';
-      out.push({ type: 'image', assetId: m.key, alt: clip(b.alt, TEXT_LIMITS.imageAlt).text, ...(caption ? { caption } : {}) });
+      const caption = b.caption ? clip(b.caption, MAX_CAPTION) : undefined;
+      const alt = clip(b.alt, TEXT_LIMITS.imageAlt);
+      if (caption?.cut || alt.cut) shortened++;
+      out.push({ type: 'image', assetId: m.key, alt: alt.text, ...(caption?.text ? { caption: caption.text } : {}) });
     } else if (isListBlock(b)) out.push({ type: b.type, items: b.items.map(relink) });
     else out.push({ type: b.type, spans: relink(b.spans) });
   }
+  if (shortened) notes.push(`${shortened === 1 ? 'A picture’s description or caption was' : `${shortened} pictures’ descriptions or captions were`} shortened to ${MAX_CAPTION} characters.`);
   if (lost) notes.push(`${lost === 1 ? 'A picture it shows was' : `${lost} pictures it shows were`} not found in the chosen folder, so ${lost === 1 ? 'it was' : 'they were'} left out.`);
   // An entry's text has room for a long read; anything past that is cut, and said.
   let blocks = cleanBlocks(out);
@@ -298,11 +335,12 @@ function planBody(p: SourcePost, media: Map<string, SourceMedia>, used: Set<stri
     chars += n;
     fits.push(b);
   }
-  if (fits.length < blocks.length) {
+  const cut = fits.length < blocks.length;
+  if (cut) {
     notes.push(`Its text was longer than a post holds, so it ends after ${fits.length} of its ${blocks.length} paragraphs.`);
     blocks = fits;
   }
-  return blocks;
+  return { blocks, cut };
 }
 
 /**
@@ -316,7 +354,7 @@ export function planOperations(plan: PostImportPlan, assetIds: Map<string, strin
   if (c.create) ops.push({ type: 'collection.create', collectionId: c.id, ...(plan.taxonomies ? { taxonomies: plan.taxonomies } : {}) } as EditOperation);
   else if (plan.taxonomies) ops.push({ type: 'collection.update', collectionId: c.id, taxonomies: plan.taxonomies } as EditOperation);
   const body = (p: PlannedPost): RichText =>
-    p.body.flatMap((b) => {
+    p.body.flatMap((b): RichBlock[] => {
       if (!isImageBlock(b)) return [b];
       const id = assetIds.get(b.assetId);
       return id ? [{ ...b, assetId: id }] : [];

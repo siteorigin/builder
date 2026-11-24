@@ -59,6 +59,8 @@ export interface ParsedSource {
   label: string;
   /** The folder pictures are looked for in, which nothing read may be outside of. */
   root: string;
+  /** That folder's real path when it was read: the import reads its pictures from this very folder, never one moved into its place. */
+  realRoot: string;
   /** The old site's address, when the export says. */
   site?: string;
   posts: SourcePost[];
@@ -74,4 +76,5 @@ export const MAX_EXPORT_BYTES = 64 * 1024 * 1024;
 export const MAX_MARKDOWN_FILE_BYTES = 2 * 1024 * 1024;
 /** The largest picture imported, as the library takes them. */
 export const MAX_PICTURE_BYTES = 25 * 1024 * 1024;
-export const PICTURE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'svg'];
+/** Pictures an import brings. SVG drawings are added in Assets, where each is cleaned and checked on its own. */
+export const PICTURE_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif'];

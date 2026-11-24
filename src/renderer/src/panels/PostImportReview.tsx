@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { FileDown, TriangleAlert } from 'lucide-react';
-import type { PostImportKind, PostImportPreview, PostImportPreviewPost } from '@shared/api';
+import type { PostImportKind, PostImportPreview, PostImportPreviewPost, PostImportResult } from '@shared/api';
 import { formatArticleDate } from '@shared/articles';
 import { POSTS_COLLECTION_ID } from '@shared/collections';
 import { api, getState, setState, toast, undoAction, useStore } from '../store';
 import { Modal } from '../components/ui';
+import { flushOpenPost } from '../lib/post-draft';
 
 /**
  * Choose a WordPress export or a folder of Markdown posts and show what importing it would do. Nothing changes until
@@ -97,12 +98,21 @@ export function PostImportReviewModal({ preview, opening }: { preview: PostImpor
   const blocked = preview.problems.length > 0;
   const run = async () => {
     setBusy(true);
-    const r = await api.project.commitPostImport(preview.id, opening);
-    setBusy(false);
+    let r: PostImportResult;
+    try {
+      r = await api.project.commitPostImport(preview.id, opening);
+    } catch {
+      r = { ok: false, message: 'The posts could not be imported: the project could not be saved. Check that there is space on the disk, then try again.' };
+    } finally {
+      setBusy(false);
+    }
     close();
     if (getState().snapshot?.workspaceKey !== opening) return;
     if (!r.ok) return toast(r.message ?? 'The posts were not imported.', 'error');
-    if (r.firstEntryId) setState({ post: { collectionId: POSTS_COLLECTION_ID, entryId: r.firstEntryId }, postView: 'write', postReveal: null });
+    // The first imported post opens in the writer, but never over a post whose text could not be saved: that one stays,
+    // with what to do about it above its text.
+    if (r.firstEntryId && (await flushOpenPost()) && getState().snapshot?.workspaceKey === opening)
+      setState({ post: { collectionId: POSTS_COLLECTION_ID, entryId: r.firstEntryId }, postView: 'write', postReveal: null });
     const notes = r.notes?.length ? ` ${plural(r.notes.length, 'picture was', 'pictures were')} not added: ${r.notes[0]}` : '';
     toast(`Imported ${plural(r.imported ?? n, 'post', 'posts')}.${notes}`, notes ? 'error' : 'info', r.entryId && r.revision !== undefined ? undoAction({ entryId: r.entryId, revision: r.revision, workspaceKey: opening }) : undefined);
   };

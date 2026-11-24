@@ -593,7 +593,8 @@ describe('an imported post keeps its old address (#399)', () => {
 
   it('refuses an old address the site cannot have, Home, its own, or one something holds', () => {
     expect(() => create(blog(), '/?p=12')).toThrow(EngineError);
-    expect(() => create(blog(), '/')).toThrow(/Home/);
+    expect(() => create(blog(), '/?p=12/')).toThrow(/lowercase letters, numbers and hyphens/);
+    expect(() => create(blog(), '/')).toThrow(/the Home page keeps its own address/);
     expect(() => create(blog(), '/2019/03/01/a/b/')).toThrow(/four levels/);
     expect(() => create(blog(), '/blog/winter-workshop/')).toThrow(/its own address/);
     expect(() => create(blog(), '/about/')).toThrow(/already the address of the page/);
@@ -602,6 +603,11 @@ describe('an imported post keeps its old address (#399)', () => {
     const s = blog();
     s.site.redirects = [{ from: '/old/', pageId: pageAt(s, '/about/').id }];
     expect(() => create(s, '/old/')).toThrow(/already the address/);
+  });
+
+  it('is kept only for a published entry: a draft is no destination', () => {
+    expect(() => create(blog(), '/2019/03/winter-workshop/', { draft: true })).toThrow(/only for a published entry/);
+    expect(() => apply(blog(), [{ type: 'entry.create', collectionId: 'posts', title: 'Untold', redirectFrom: '/old/' } as EditOperation])).toThrow(/only for a published entry/);
   });
 
   it('is part of the batch: an entry created later cannot take the address it keeps', () => {

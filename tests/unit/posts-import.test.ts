@@ -10,6 +10,9 @@ import { join } from 'node:path';
 import type { ProjectState, RichText } from '@shared/types';
 import { createStarterState } from '@catalogue/starters';
 import { applyOperations } from '@engine/apply';
+import { validateOperation } from '@shared/ops';
+import { promises as fsp, realpathSync } from 'node:fs';
+import { vi } from 'vitest';
 import { validateState } from '@engine/validate';
 import { readWordPress, wordpressDay } from '../../src/main/posts-import/wxr';
 import { readMarkdownFolder } from '../../src/main/posts-import/folder';
@@ -19,7 +22,7 @@ import { createSourceReader, type ReadReply, type ReadRequest, type ReaderHandle
 import { readFrontmatter, markdownToHtml } from '../../src/main/posts-import/markdown';
 import { readContained } from '../../src/main/posts-import/files';
 import { segmentsWithin } from '../../src/main/posts-import/media';
-import type { ParsedSource } from '../../src/main/posts-import/source';
+import type { ParsedSource, SourcePost } from '../../src/main/posts-import/source';
 
 const FIXTURES = join(__dirname, 'fixtures', 'posts-import');
 const scratch = mkdtempSync(join(tmpdir(), 'posts-import-'));
@@ -55,7 +58,10 @@ function commit(state: ProjectState, source: ParsedSource) {
   expect(plan.problems).toEqual([]);
   const assets = plan.media.map((m) => ({ id: `a_img${pictures}`, name: m.key, file: `static/assets/img${pictures}-1a2b3c4d.jpg`, mime: 'image/jpeg', bytes: 10, hash: `h${pictures++}`, kind: 'image' as const, createdAt: '2026-01-01T00:00:00.000Z' }));
   const ids = new Map(plan.media.map((m, i) => [m.key, assets[i].id]));
-  const { state: after } = applyOperations(state, planOperations(plan, ids, assets));
+  const ops = planOperations(plan, ids, assets);
+  // Every operation as the session checks it before the engine applies the batch.
+  for (const op of ops) expect(validateOperation(op)).toMatchObject({ ok: true });
+  const { state: after } = applyOperations(state, ops);
   return { plan, after };
 }
 
@@ -191,8 +197,11 @@ describe('reading a folder of Markdown posts', () => {
 
   it('reads YAML and TOML frontmatter, passing over what it does not need', () => {
     expect(readFrontmatter('---\ntitle: \'It\'\'s here\'\ndraft: false\ntags: [a, "b, c"]\nlist:\n- x\n- y\nnested:\n  a: 1\nsummary: >\n  one\n  two\n---\nBody').data).toEqual({ title: "It's here", draft: false, tags: ['a', 'b, c'], list: ['x', 'y'], summary: 'one two' });
-    expect(readFrontmatter('---\ntitle: a\ntitle: b\n---\n').problems).toEqual(['line 3: title is given twice']);
-    expect(readFrontmatter('+++\ntitle = "T"\ndraft = true\n[params]\nx = 1\n+++\nB')).toEqual({ data: { title: 'T', draft: true }, problems: [], body: 'B' });
+    const twice = readFrontmatter('---\ntitle: a\ntitle: b\n---\n');
+    expect(twice.problems).toEqual(['line 3: title is given twice']);
+    expect([twice.data.title, twice.unreadable]).toEqual(['a', ['title']]);
+    expect(readFrontmatter('---\nnote: |\n  one\n  two\n---\n').data.note).toBe('one\ntwo');
+    expect(readFrontmatter('+++\ntitle = "T"\ndraft = true\n[params]\nx = 1\n+++\nB')).toEqual({ data: { title: 'T', draft: true }, problems: [], unreadable: [], body: 'B' });
     expect(readFrontmatter('No settings').body).toBe('No settings');
   });
 
@@ -223,6 +232,7 @@ describe('planning an import', () => {
     const [winter, spring] = entries;
     expect(winter.terms).toEqual({ categories: ['news', 'workshops'], tags: ['bread'] });
     expect(winter.featuredImage).toBe('a_img1');
+    expect(winter.excerpt).toBe('A hands-on bread workshop.');
     expect(winter.body.find((b) => b.type === 'image')).toEqual({ type: 'image', assetId: 'a_img0', alt: 'A fresh loaf', caption: 'Fresh from the oven' });
     // Links between imported posts go to their entries, each way.
     expect(JSON.stringify(winter.body)).toContain(`{"type":"entry","target":"${spring.id}"}`);
@@ -327,5 +337,281 @@ describe('the import reader process', () => {
     const read = reader.read('wordpress', '/x/export.xml', {});
     setTimeout(() => reader.stop(), 10);
     await expect(read).rejects.toThrow('The import was stopped.');
+  });
+});
+
+/** A WordPress export of `items` (each an <item>'s inner XML), in a folder of its own. */
+function wxr(items: string[], extra = ''): string {
+  const dir = mkdtempSync(join(scratch, 'wxr-'));
+  writeFileSync(
+    join(dir, 'export.xml'),
+    `<?xml version="1.0"?><rss xmlns:wp="w" xmlns:content="c" xmlns:dc="d" xmlns:excerpt="e"><channel><link>https://old.example</link><wp:wxr_version>1.2</wp:wxr_version>${extra}${items.map((i) => `<item>${i}</item>`).join('')}</channel></rss>`
+  );
+  return join(dir, 'export.xml');
+}
+const item = (id: number, fields: Record<string, string>, body = '') =>
+  `<wp:post_id>${id}</wp:post_id><wp:post_type>post</wp:post_type>${Object.entries(fields)
+    .map(([k, v]) => `<${k}><![CDATA[${v}]]></${k}>`)
+    .join('')}<content:encoded><![CDATA[${body}]]></content:encoded>`;
+
+describe('reading a WordPress export: statuses, dates and links', () => {
+  it('keeps a post a draft when it was private, password-protected or has no date', async () => {
+    const source = await readWordPress(
+      wxr([
+        item(1, { title: 'No date', 'wp:status': 'publish', 'wp:post_date': '0000-00-00 00:00:00' }),
+        item(2, { title: 'Locked', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00', 'wp:post_password': 'secret' }),
+        item(3, { title: 'Private', 'wp:status': 'private', 'wp:post_date': '2020-01-03 00:00:00' }),
+        item(4, { title: 'Open', 'wp:status': 'publish', 'wp:post_date': '2020-01-04 00:00:00' })
+      ]),
+      {}
+    );
+    expect(source.posts.map((p) => [p.title, p.draft, p.draftReason])).toEqual([
+      ['No date', true, 'it has no publication date'],
+      ['Locked', true, 'it was password-protected'],
+      ['Private', true, 'it was private'],
+      ['Open', false, undefined]
+    ]);
+  });
+
+  it('refuses an export whose root is not an RSS feed', async () => {
+    const dir = mkdtempSync(join(scratch, 'root-'));
+    writeFileSync(join(dir, 'x.xml'), '<feed><channel><wp:wxr_version>1.2</wp:wxr_version></channel></feed>');
+    await expect(readWordPress(join(dir, 'x.xml'), {})).rejects.toThrow(/is not a WordPress export\. In WordPress/);
+  });
+
+  it('reads the day an RSS date names, as the site wrote it', () => {
+    expect(wordpressDay('', 'Thu, 01 Mar 2018 00:30:00 +0200')).toBe('2018-03-01');
+  });
+
+  it('reads links as the old site did: relative to the post, by ?p= only for a post, and keeping a section', async () => {
+    const s = site();
+    const about = Object.values(s.pages).find((p) => p.route === '/about/')!;
+    const source = await readWordPress(
+      wxr([
+        item(10, { title: 'First', link: 'https://old.example/blog/2020/first/', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, '<p><a href="../second/">next</a> <a href="/?p=88">gone</a> <a href="/about/#team">team</a> <a href="https://old.example/?p=11">by id</a></p>'),
+        item(11, { title: 'Second', link: 'https://old.example/blog/2020/second/', 'wp:status': 'publish', 'wp:post_date': '2020-01-02 00:00:00' })
+      ]),
+      pages(s)
+    );
+    const links = source.posts[0].body.flatMap((b) => ('spans' in b ? b.spans : [])).filter((x) => x.link).map((x) => [x.text, x.link]);
+    expect(links).toEqual([
+      ['next', { type: 'entry', target: 'post:wp:11' }],
+      ['gone', { type: 'url', target: 'https://old.example/?p=88' }],
+      ['team', { type: 'page', target: about.id, anchor: 'team' }],
+      ['by id', { type: 'entry', target: 'post:wp:11' }]
+    ]);
+    expect(source.posts[0].notes).toContain('A link still goes to the old site.');
+  });
+
+  it('says when a featured picture is not in the export', async () => {
+    const source = await readWordPress(wxr([item(1, { title: 'Pictured', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, 'Text') + '<wp:postmeta><wp:meta_key>_thumbnail_id</wp:meta_key><wp:meta_value>99</wp:meta_value></wp:postmeta>']), {});
+    expect(source.posts[0].featured).toBeUndefined();
+    expect(source.posts[0].notes).toContain('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
+  });
+
+  it('leaves out SVG drawings, which are added in Assets', async () => {
+    const path = wxr([item(1, { title: 'Logo', 'wp:status': 'publish', 'wp:post_date': '2020-01-01 00:00:00' }, '<img src="https://old.example/wp-content/uploads/logo.svg" alt="Logo">')]);
+    mkdirSync(join(path, '..', 'uploads'));
+    writeFileSync(join(path, '..', 'uploads', 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const source = await readWordPress(path, {});
+    expect(source.media).toEqual([expect.objectContaining({ problem: 'it is an SVG drawing, which is added in Assets rather than with posts' })]);
+  });
+});
+
+/** A folder of Markdown files, by name. */
+function mdFolder(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(scratch, 'mdf-'));
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(join(dir, name, '..'), { recursive: true });
+    writeFileSync(join(dir, name), text);
+  }
+  return dir;
+}
+
+describe('reading Markdown posts: drafts, dates and text', () => {
+  it('never publishes a post whose draft setting it could not read', async () => {
+    const source = await readMarkdownFolder(
+      mdFolder({
+        'tagged.md': '---\ntitle: Tagged\ndate: 2020-01-01\ndraft: !!bool true\n---\nText',
+        'nested.md': '---\ntitle: Nested\ndate: 2020-01-01\ndraft:\n  value: true\n---\nText',
+        'twice.md': '---\ntitle: Twice\ndate: 2020-01-01\ndraft: false\ndraft: true\n---\nText',
+        'plain.md': '---\ntitle: Plain\ndate: 2020-01-01\n---\nText',
+        '_ignored.md': '---\ntitle: Ignored\n---\n'
+      }),
+      {}
+    );
+    expect(source.posts.map((p) => [p.title, p.draft, p.draftReason])).toEqual([
+      ['Nested', true, 'its draft setting could not be read'],
+      ['Plain', false, undefined],
+      ['Tagged', true, undefined],
+      ['Twice', true, 'its draft setting could not be read']
+    ]);
+  });
+
+  it('takes the date its settings give over its name, and a name’s date only when the calendar has it', async () => {
+    const source = await readMarkdownFolder(mdFolder({ '2023-02-30-notes.md': 'Notes', '2019-05-01-later.md': '---\ndate: 2019-06-02\n---\nText' }), {});
+    expect(source.posts.map((p) => [p.from, p.date, p.slug])).toEqual([
+      ['2019-05-01-later.md', '2019-06-02', 'later'],
+      ['2023-02-30-notes.md', null, 'notes']
+    ]);
+  });
+
+  it('keeps code as written: an indented block, and a reference inside a fence', async () => {
+    const html = markdownToHtml('Intro\n\n    <a href="https://x.example/">not a link</a>\n\n```\n[ref]: https://sample.example/\n```\n\n[manual][ref]\n\n[ref]: https://real.example/');
+    expect(html).toContain('<pre>&lt;a href="https://x.example/"&gt;not a link&lt;/a&gt;</pre>');
+    expect(html).toContain('<pre>[ref]: https://sample.example/</pre>');
+    expect(html).toContain('<a href="https://real.example/">manual</a>');
+  });
+
+  it('reads a destination’s character references once', () => {
+    const source = '[offers](https://example.org/?a=1&amp;b=2)';
+    const blocks = htmlToRichTextFromMarkdown(source);
+    expect(blocks[0]).toMatchObject({ spans: [{ text: 'offers', link: { type: 'url', target: 'https://example.org/?a=1&b=2' } }] });
+  });
+
+  it('stops a post whose references would grow it past what a post holds, and keeps it a draft', async () => {
+    const long = `https://example.org/${'a'.repeat(2000)}`;
+    const source = await readMarkdownFolder(mdFolder({ 'big.md': `---\ntitle: Big\ndate: 2020-01-01\n---\n${'[x][r] '.repeat(60_000)}\n\n[r]: ${long}` }), {});
+    expect(source.posts[0]).toMatchObject({ title: 'Big', draft: true, draftReason: 'its text could not be read', body: [] });
+    expect(source.posts[0].notes[0]).toMatch(/^Its text could not be read: its text is too long to read\./);
+  });
+
+  it('reads hostile Markdown in one pass: unclosed marks, brackets and tags', () => {
+    const t0 = performance.now();
+    markdownToHtml('**a '.repeat(2500));
+    markdownToHtml('['.repeat(200_000));
+    markdownToHtml('<a b'.repeat(50_000));
+    expect(performance.now() - t0).toBeLessThan(3000);
+  });
+});
+
+import { htmlToRichText } from '../../src/main/posts-import/html';
+import { linkFromTarget } from '@shared/richtext';
+const htmlToRichTextFromMarkdown = (md: string) => htmlToRichText(markdownToHtml(md), { image: () => null, link: (h, t) => linkFromTarget(h, {}, t) });
+
+describe('reading only inside the chosen folder', () => {
+  it('refuses a link to a file inside the folder, and a folder beside it that shares its name’s start', async () => {
+    const dir = markdownFolder();
+    const sibling = `${dir}-outside`;
+    mkdirSync(sibling);
+    writeFileSync(join(sibling, 'secret.jpg'), 'secret');
+    symlinkSync(join(dir, 'images', 'oven.png'), join(dir, 'images', 'alias.png'));
+    symlinkSync(sibling, join(dir, 'beside'));
+    writeFileSync(join(dir, 'links.md'), `---\ntitle: Links\ndate: 2019-01-01\n---\n![a](images/alias.png) ![b](beside/secret.jpg)`);
+    const source = await readMarkdownFolder(dir, {});
+    const keys = source.posts.find((p) => p.title === 'Links')!.body.flatMap((b) => ('assetId' in b ? [b.assetId] : []));
+    expect(source.media.filter((m) => keys.includes(m.key)).map((m) => [m.ref, m.path, m.problem])).toEqual([
+      ['images/alias.png', undefined, 'it is not in the chosen folder'],
+      ['beside/secret.jpg', undefined, 'it is not in the chosen folder']
+    ]);
+    const real = realpathSync(dir);
+    await expect(readContained(real, join(dir, 'images', 'alias.png'), 1000)).rejects.toThrow();
+  });
+
+  it('refuses a file that is not the one the folder holds at its path', async () => {
+    const dir = markdownFolder();
+    const real = realpathSync(dir);
+    const stat = fsp.stat;
+    const spy = vi.spyOn(fsp, 'stat').mockImplementation(async (p, o) => ({ ...(await stat(p, o as never)), ino: 1, dev: 1 }) as never);
+    try {
+      await expect(readContained(real, join(dir, 'images', 'oven.png'), 1000)).rejects.toThrow('it changed while it was being read.');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe('planning an import: limits, drafts and the review', () => {
+  const post = (key: string, over: Partial<SourcePost> = {}): SourcePost => ({ key, from: key, title: key, slug: '', date: '2020-01-01', draft: false, categories: [], tags: [], body: [{ type: 'p', spans: [{ text: 'Words' }] }], notes: [], ...over });
+  const src = (posts: SourcePost[], media: ParsedSource['media'] = []): ParsedSource => ({ kind: 'markdown', label: 'posts', root: '/x', realRoot: '/x', posts, media, skipped: [] });
+
+  it('keeps no old address for a draft, numbers two posts that want one slug, and reuses a term whatever its case', () => {
+    const s = site();
+    const first = commit(s, src([post('a', { slug: 'news', categories: [{ label: 'Local News' }] })])).after;
+    const { plan, after } = commit(first, src([post('b', { slug: 'same', draft: true, oldPath: '/old-b/' }), post('c', { slug: 'same', categories: [{ label: 'local news' }] })]));
+    expect(plan.posts.map((p) => [p.slug, p.wantedSlug, p.redirectFrom])).toEqual([
+      ['same', undefined, undefined],
+      ['same-2', 'same', undefined]
+    ]);
+    expect(after.site.redirects).toBeUndefined();
+    const c = Object.values(after.collections.posts.entries).find((e) => e.slug === 'same-2')!;
+    expect(c.terms.categories).toEqual(['local-news']);
+    // Nothing new to the collection: the review still names the term.
+    expect(plan.taxonomies).toBeNull();
+    expect(postImportPreview('r', plan).posts[1].categories).toEqual(['Local News']);
+  });
+
+  it('keeps a post whose text had to be cut as a draft, importing only the pictures it still shows', () => {
+    const big = 'x'.repeat(100_001);
+    const media = [{ key: 'm1', ref: 'a.jpg', path: '/x/a.jpg' }];
+    const plan = planPostImport(site(), src([post('long', { body: [{ type: 'p', spans: [{ text: big }] }, { type: 'image', assetId: 'm1', alt: '' }] })], media), '2026-11-24');
+    expect(plan.posts[0]).toMatchObject({ draft: true, draftReason: 'its text was longer than a post holds, so it was cut', body: [] });
+    expect(plan.media).toEqual([]);
+    expect(plan.problems).toEqual([]);
+  });
+
+  it('says what it shortened', () => {
+    const media = [{ key: 'm1', ref: 'a.jpg', path: '/x/a.jpg' }];
+    const plan = planPostImport(site(), src([post('p', { author: 'A'.repeat(81), categories: [{ label: 'C'.repeat(81) }], body: [{ type: 'image', assetId: 'm1', alt: 'd'.repeat(301), caption: 'c'.repeat(301) }] })], media), '2026-11-24');
+    expect(plan.posts[0].notes).toEqual(['Its author’s name was shortened to 80 characters.', 'A picture’s description or caption was shortened to 300 characters.', 'A category or tag name was shortened to 80 characters.']);
+    expect(plan.problems).toEqual([]);
+  });
+
+  it('stops on too many tags quickly, without adding past the limit', () => {
+    const posts = Array.from({ length: 1000 }, (_, i) => post(`p${i}`, { tags: Array.from({ length: 20 }, (_, k) => ({ label: `tag ${i}-${k}` })) }));
+    const t0 = performance.now();
+    const plan = planPostImport(site(), src(posts), '2026-11-24');
+    expect(performance.now() - t0).toBeLessThan(5000);
+    expect(plan.problems).toEqual(['The posts bring 20000 new tags, which would give the collection 20000: it can have at most 200.']);
+  });
+
+  it('says when the collection has no room for the posts’ tags', () => {
+    const s = site();
+    const taxonomies = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`g${i}`, { label: `Group ${i}` }]));
+    const made = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts', taxonomies } as never]).state;
+    const plan = planPostImport(made, src([post('p', { tags: [{ label: 'Bread' }] })]), '2026-11-24');
+    expect(plan.skipped).toEqual(['The posts’ tags: the Posts collection has as many groupings as it can, so it has no room for Tags.']);
+    expect(plan.problems).toEqual([]);
+  });
+
+  it('keeps no old address at the new blog’s own address, without stopping the import', () => {
+    const plan = planPostImport(site(), src([post('p', { slug: 'news', oldPath: '/blog/' })]), '2026-11-24');
+    expect(plan.problems).toEqual([]);
+    expect(plan.posts[0].notes).toContain('Its old address (/blog/) can’t keep working: it is the address of the Posts collection.');
+  });
+
+  it('refuses at review what the session would refuse at commit', () => {
+    const s = site();
+    const made = applyOperations(s, [{ type: 'collection.create', collectionId: 'posts' } as never]).state;
+    made.collections.posts.settings.taxonomies.categories.label = 'C'.repeat(61);
+    const plan = planPostImport(made, src([post('p', { tags: [{ label: 'Bread' }] })]), '2026-11-24');
+    expect(plan.problems[0]).toMatch(/^The posts can’t be imported: taxonomies\.categories\.label/);
+  });
+
+  it('counts one picture for one file, however it is referred to', () => {
+    const media = [
+      { key: 'm1', ref: 'photo.jpg', path: '/x/photo.jpg' },
+      { key: 'm2', ref: './photo.jpg', path: '/x/photo.jpg' }
+    ];
+    const plan = planPostImport(site(), src([post('p', { body: [{ type: 'image', assetId: 'm1', alt: '' }, { type: 'image', assetId: 'm2', alt: '' }] })], media), '2026-11-24');
+    expect(postImportPreview('r', plan).pictures).toBe(1);
+  });
+});
+
+describe('the import reader process: what it asks and how it stops', () => {
+  it('sends the project’s pages, and stop() ends every read in progress', async () => {
+    const sent: ReadRequest[] = [];
+    let killed = 0;
+    const spawn = (): ReaderHandle => ({ postMessage: (m) => void sent.push(m), on: () => undefined, kill: () => (killed++, true) }) as unknown as ReaderHandle;
+    const reader = createSourceReader(spawn, { timeoutMs: 5000 });
+    const pagesMap = { pg_1: { id: 'pg_1', route: '/about/' } };
+    const reads = [reader.read('wordpress', '/x/a.xml', pagesMap), reader.read('markdown', '/x/posts', {})];
+    expect(sent.map((m) => [m.kind, m.path, m.pages])).toEqual([
+      ['wordpress', '/x/a.xml', pagesMap],
+      ['markdown', '/x/posts', {}]
+    ]);
+    reader.stop();
+    for (const r of reads) await expect(r).rejects.toThrow('The import was stopped.');
+    expect(killed).toBe(2);
   });
 });

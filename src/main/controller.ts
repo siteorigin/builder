@@ -1784,19 +1784,21 @@ export class Controller {
       file = r.filePaths[0];
     }
     if (this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
+    // The pages the reader links to and the project the plan is made against are the same revision of it.
+    const revision = s.revision;
     const pages = Object.fromEntries(Object.values(s.state.pages).map((p) => [p.id, { id: p.id, route: p.route }]));
     let source: ParsedSource;
-    let realRoot: string;
     try {
       source = await postReader.read(kind, file, pages);
-      realRoot = await fs.realpath(source.root);
     } catch (e) {
       return { ok: false, message: (e as Error).message };
     }
     if (this.session !== s || opening !== this.workspaceKey || this.closing) return closed;
+    if (s.revision !== revision) return { ok: false, message: 'The project changed while the posts were being read. Choose Import posts again.' };
     const plan = planPostImport(s.state, source);
     const id = randomUUID();
-    this.postImport = { id, session: s, opening, revision: s.revision, plan, realRoot };
+    // Pictures are read later from the very folder the reader checked them in, never one moved into its place.
+    this.postImport = { id, session: s, opening, revision, plan, realRoot: source.realRoot };
     return { ok: true, preview: postImportPreview(id, plan) };
   }
 

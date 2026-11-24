@@ -90,10 +90,11 @@ const ALL_BLOCKS =
   '(?:table|thead|tfoot|caption|col|colgroup|tbody|tr|td|th|div|dl|dd|dt|ul|ol|li|pre|form|map|area|blockquote|address|math|style|p|h[1-6]|hr|fieldset|legend|section|article|aside|hgroup|header|footer|nav|figure|figcaption|details|menu|summary)';
 const OPEN_BLOCK = new RegExp(`(<${ALL_BLOCKS}[\\s/>])`, 'gi');
 const CLOSE_BLOCK = new RegExp(`(</${ALL_BLOCKS}>)`, 'gi');
-const P_AROUND_BLOCK = new RegExp(`<p>\\s*(</?${ALL_BLOCKS}[^>]*>)\\s*</p>`, 'gi');
-const P_BEFORE_BLOCK = new RegExp(`<p>\\s*(</?${ALL_BLOCKS}[^>]*>)`, 'gi');
-const P_AFTER_BLOCK = new RegExp(`(</?${ALL_BLOCKS}[^>]*>)\\s*</p>`, 'gi');
-const BR_AFTER_BLOCK = new RegExp(`(</?${ALL_BLOCKS}[^>]*>)\\s*<br />`, 'gi');
+// A tag's attributes never run past the next "<", so markup with unfinished tags is read in one pass.
+const P_AROUND_BLOCK = new RegExp(`<p>\\s*(</?${ALL_BLOCKS}[^<>]*>)\\s*</p>`, 'gi');
+const P_BEFORE_BLOCK = new RegExp(`<p>\\s*(</?${ALL_BLOCKS}[^<>]*>)`, 'gi');
+const P_AFTER_BLOCK = new RegExp(`(</?${ALL_BLOCKS}[^<>]*>)\\s*</p>`, 'gi');
+const BR_AFTER_BLOCK = new RegExp(`(</?${ALL_BLOCKS}[^<>]*>)\\s*<br />`, 'gi');
 
 /**
  * WordPress's automatic paragraphs (wpautop), as the classic editor stores posts: text separated by a blank line is a
@@ -103,9 +104,9 @@ export function autop(html: string): string {
   if (!html.trim()) return '';
   // Preformatted text keeps its own lines.
   const kept: string[] = [];
-  let text = html.replace(/<pre[\s>][\s\S]*?<\/pre>/gi, (m) => `<pre data-kept="${kept.push(m) - 1}"></pre>`);
+  let text = eachPair(html, '<pre', '</pre>', (m) => (/^<pre[\s>]/i.test(m) ? `<pre data-kept="${kept.push(m) - 1}"></pre>` : m));
   // A line break inside a tag is a space.
-  text = text.replace(/<[^>]*>/g, (m) => m.replace(/\n/g, ' '));
+  text = text.replace(/<[^<>]*>/g, (m) => m.replace(/\n/g, ' '));
   text = text.replace(/\r\n?/g, '\n').replace(/[ \t]+/g, ' ');
   text = text.replace(/<br\s*\/?>\s*<br\s*\/?>/gi, '\n\n');
   text = text.replace(OPEN_BLOCK, '\n\n$1').replace(CLOSE_BLOCK, '$1\n\n');
@@ -118,8 +119,27 @@ export function autop(html: string): string {
   text = text.replace(/<p>\s*<\/p>/g, '');
   text = text.replace(P_AROUND_BLOCK, '$1').replace(P_BEFORE_BLOCK, '$1').replace(P_AFTER_BLOCK, '$1');
   text = text.replace(/ ?\n/g, '<br />\n');
-  text = text.replace(BR_AFTER_BLOCK, '$1').replace(/<br \/>(\s*<\/?(?:p|li|div|dl|dd|dt|th|pre|td|ul|ol)[^>]*>)/gi, '$1');
+  text = text.replace(BR_AFTER_BLOCK, '$1').replace(/<br \/>(\s*<\/?(?:p|li|div|dl|dd|dt|th|pre|td|ul|ol)[^<>]*>)/gi, '$1');
   return text.replace(/<pre data-kept="(\d+)"><\/pre>/g, (_m, i: string) => kept[Number(i)]);
+}
+
+/**
+ * Each `open … close` pair in `text` (ignoring case) replaced by `fn` of the whole pair, in one forward scan: an
+ * `open` with no `close` after it ends the scan, since none after it can have one either.
+ */
+function eachPair(text: string, open: string, close: string, fn: (whole: string) => string): string {
+  const lower = text.toLowerCase();
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const a = lower.indexOf(open, i);
+    if (a < 0) break;
+    const b = lower.indexOf(close, a + open.length);
+    if (b < 0) break;
+    out += text.slice(i, a) + fn(text.slice(a, b + close.length));
+    i = b + close.length;
+  }
+  return out + text.slice(i);
 }
 
 /** Shortcodes WordPress and its common plugins write without a closing tag. */
@@ -138,7 +158,10 @@ export function readShortcodes(html: string, report: HtmlReport): string {
   const note = (n: string) => {
     if (!report.shortcodes.includes(n) && report.shortcodes.length < 20) report.shortcodes.push(n);
   };
-  let text = html.replace(/\[caption\b([^\]]*)\]([\s\S]*?)\[\/caption\]/gi, (_m, attrs: string, inner: string) => {
+  let text = eachPair(html, '[caption', '[/caption]', (whole) => {
+    const parts = /^\[caption\b([^\]]*)\]([\s\S]*)\[\/caption\]$/i.exec(whole);
+    if (!parts) return whole;
+    const [, attrs, inner] = parts;
     const pic = /^\s*((?:<a\b[^>]*>\s*)?<img\b[^>]*>(?:\s*<\/a>)?)([\s\S]*)$/i.exec(inner);
     if (!pic) return inner;
     const caption = pic[2].trim() || (/\bcaption=("|')([\s\S]*?)\1/i.exec(attrs)?.[2] ?? '');
@@ -148,7 +171,9 @@ export function readShortcodes(html: string, report: HtmlReport): string {
     report.embedLinks++;
     return `<p><a href="${url}">${url}</a></p>`;
   });
-  return text.replace(/\[(\/?)([a-z][a-z0-9_-]{0,40})\b((?:[^\][]|"[^"]*"|'[^']*'){0,2000})\]/gi, (whole, _slash: string, name: string) => {
+  // Attributes never hold a bracket, and each part is either quoted or not, so a shortcode left open is given up on at
+  // the next bracket: one pass, whatever the post holds.
+  return text.replace(/\[(\/?)([a-z][a-z0-9_-]{0,40})\b((?:[^\]["']|"[^"\][]{0,500}"|'[^'\][]{0,500}'){0,2000})\]/gi, (whole, _slash: string, name: string) => {
     const n = name.toLowerCase();
     if (!isShortcode(n)) return whole;
     note(n);
@@ -193,10 +218,11 @@ function parseHtml(html: string, report: HtmlReport): HNode[] {
   let dropping: { tag: string; depth: number } | null = null;
   const top = () => stack[stack.length - 1];
   const add = (n: HNode) => {
-    if (++nodes > MAX_NODES) throw new Error('it is too long to read.');
     const kids = top().children;
-    if (typeof n === 'string' && typeof kids[kids.length - 1] === 'string') kids[kids.length - 1] += n;
-    else kids.push(n);
+    // Text beside text is one run: only a node added counts.
+    if (typeof n === 'string' && typeof kids[kids.length - 1] === 'string') return void (kids[kids.length - 1] += n);
+    if (++nodes > MAX_NODES) throw new Error('it is too long to read.');
+    kids.push(n);
   };
   const popTo = (i: number) => {
     stack.length = i;
@@ -389,7 +415,7 @@ function convert(nodes: HNode[], opts: ReadHtmlOptions, report: HtmlReport, pre 
         const caption = oneLine(descendants(node, 'figcaption').map(textOf).join(' '));
         for (const img of imgs) {
           const key = opts.image({ src: img.attrs.src ?? '', alt: oneLine(img.attrs.alt ?? '') });
-          if (key) out.push({ tag: 'figure', image: { assetId: key, alt: oneLine(img.attrs.alt ?? ''), ...(caption && imgs.length === 1 ? { caption: caption.slice(0, 300) } : {}) }, children: [] });
+          if (key) out.push({ tag: 'figure', image: { assetId: key, alt: oneLine(img.attrs.alt ?? ''), ...(caption && imgs.length === 1 ? { caption } : {}) }, children: [] });
         }
       } else {
         const url = embedAddress(node);

@@ -16,16 +16,18 @@ import { MAX_EXPORT_BYTES, MAX_IMPORT_POSTS, POST_LINK_PREFIX, type ParsedSource
 import { reportNotes } from './notes';
 
 /** The calendar day a WordPress date (`2019-03-01 10:00:00`) or an RSS date (`Fri, 01 Mar 2019 10:00:00 +0000`) names. */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 export function wordpressDay(...dates: string[]): string | null {
   for (const raw of dates) {
     const d = raw.trim();
     if (/^\d{4}-\d{2}-\d{2}/.test(d) && isArticleDate(d.slice(0, 10))) return d.slice(0, 10);
-    if (/^[A-Z][a-z]{2}, \d{1,2} [A-Z][a-z]{2} \d{4}/.test(d)) {
-      const t = Date.parse(d);
-      if (Number.isFinite(t)) {
-        const day = new Date(t).toISOString().slice(0, 10);
-        if (isArticleDate(day)) return day;
-      }
+    // The day as the site wrote it, in its own time zone: never moved across midnight by a conversion.
+    const rss = /^[A-Z][a-z]{2}, (\d{1,2}) ([A-Z][a-z]{2}) (\d{4})/.exec(d);
+    const month = rss ? MONTHS.indexOf(rss[2]) + 1 : 0;
+    if (rss && month) {
+      const day = `${rss[3]}-${String(month).padStart(2, '0')}-${rss[1].padStart(2, '0')}`;
+      if (isArticleDate(day)) return day;
     }
   }
   return null;
@@ -129,12 +131,21 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
   for (const { item, key, status } of accepted) {
     const report = emptyReport();
     let oldSite = 0;
+    // A relative address is read from the post's own address, as a browser on the old site read it.
+    const ownLink = childText(item, 'link').trim();
+    let base = siteOrigin ? `${siteOrigin}/` : 'relative://site/';
+    try {
+      const own = new URL(ownLink, base);
+      if (own.origin === new URL(base).origin) base = own.href;
+    } catch {
+      // The site's root, then.
+    }
     const link = (href: string, newTab: boolean): LinkValue | null => {
       const t = href.trim();
       if (!t || /^(mailto|tel):/i.test(t) || t.startsWith('#')) return linkFromTarget(t, pages, newTab);
       let url: URL;
       try {
-        url = new URL(t, siteOrigin ? `${siteOrigin}/` : 'relative://site/');
+        url = new URL(t, base);
       } catch {
         return null;
       }
@@ -144,7 +155,9 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
       const p = url.searchParams.get('p');
       const post = (p && byId.get(p)) || byPath.get(sitePath(url.pathname).toLowerCase());
       if (post) return { type: 'entry', target: `${POST_LINK_PREFIX}${post}`, ...tab };
-      const page = linkFromTarget(sitePath(url.pathname), pages, newTab);
+      // A page of the project at the same address, its section kept; never for an address with a query (`/?p=88`),
+      // which named something other than the page at its path.
+      const page = url.search ? null : linkFromTarget(`${sitePath(url.pathname)}${url.hash}`, pages, newTab);
       if (page) return page;
       // Somewhere else on the old site: kept going there while it is still up.
       if (url.protocol === 'relative:') return null;
@@ -165,12 +178,14 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
     }
     const title = htmlToPlain(childText(item, 'title')) || 'Untitled post';
     const thumb = metaValue(item, '_thumbnail_id');
-    const thumbUrl = thumb ? attachments.get(childText(thumb, 'wp:meta_value').trim()) : undefined;
+    const thumbId = thumb ? childText(thumb, 'wp:meta_value').trim() : '';
+    const thumbUrl = thumbId ? attachments.get(thumbId) : undefined;
     const login = childText(item, 'dc:creator').trim();
     const date = wordpressDay(childText(item, 'wp:post_date'), childText(item, 'wp:post_date_gmt'), childText(item, 'pubDate'));
     const linkUrl = childText(item, 'link').trim();
     const notes = reportNotes(report);
     if (oldSite) notes.push(`${oldSite === 1 ? 'A link still goes' : `${oldSite} links still go`} to the old site.`);
+    if (thumbId && !thumbUrl) notes.push('Its featured picture was left out: the export does not include it. Export All content to bring pictures’ details along.');
     let oldPath: string | undefined;
     try {
       const url = new URL(linkUrl, siteOrigin ? `${siteOrigin}/` : undefined);
@@ -208,7 +223,7 @@ export async function readWordPress(file: string, pages: RichPages): Promise<Par
   }
   if (unpublished) out.push(`${unpublished} ${unpublished === 1 ? 'post' : 'posts'} in the trash or never started.`);
   if (over) out.push(`${over} more ${over === 1 ? 'post' : 'posts'}: an import brings at most ${MAX_IMPORT_POSTS}.`);
-  return { kind: 'wordpress', label, root, ...(siteOrigin ? { site: siteOrigin } : {}), posts, media: media.items, skipped: out };
+  return { kind: 'wordpress', label, root, realRoot, ...(siteOrigin ? { site: siteOrigin } : {}), posts, media: media.items, skipped: out };
 }
 
 /** A post whose text could not be read: imported with its details and no text, the reason in its notes. */
@@ -233,7 +248,7 @@ function terms(item: XmlElement, domain: string): SourceTerm[] {
     const label = htmlToPlain(textOf(c));
     const slug = decodeSlug(c.attrs.nicename ?? '');
     if (!label || (domain === 'category' && slug === 'uncategorized')) continue;
-    if (!out.some((t) => t.label.toLowerCase() === label.toLowerCase())) out.push({ label: label.slice(0, 80), ...(slug ? { slug } : {}) });
+    if (!out.some((t) => t.label.toLowerCase() === label.toLowerCase())) out.push({ label, ...(slug ? { slug } : {}) });
   }
   return out;
 }

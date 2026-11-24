@@ -479,6 +479,8 @@ function applyEntryFields(state: ProjectState, c: Collection, entry: EntryDoc, o
  */
 function keepOldAddress(state: ProjectState, c: Collection, entry: EntryDoc, from: string) {
   const label = `“${entry.title}”`;
+  // A draft is no destination: visitors at the old address would find nothing.
+  if (entry.draft !== false) fail(`${label}: an old address is kept working only for a published entry.`);
   const err = from === '/' ? 'the Home page keeps its own address.' : validateRoute(from);
   if (err) fail(`${label}: ${from.slice(0, 80)} cannot be kept as its old address: ${err}`);
   if (from.toLowerCase() === entryRoute(c, entry).toLowerCase()) fail(`${label}: ${from} is its own address, not an old one.`);

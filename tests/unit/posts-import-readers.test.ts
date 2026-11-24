@@ -17,11 +17,12 @@ const opts = (extra: Partial<ReadHtmlOptions> = {}): ReadHtmlOptions => ({
 
 describe('the XML reader', () => {
   it('reads elements, attributes, CDATA and the five entities', () => {
-    const doc = parseXml('<?xml version="1.0"?>\n<rss a="1 &amp; 2"><title>Tom &amp; Jerry &#8217;s &#x41;</title><body><![CDATA[<p>Hi & bye</p>]]><![CDATA[ more]]></body><!-- note --></rss>');
+    const doc = parseXml('<?xml version="1.0"?>\n<rss a="1 &amp; 2"><title>Tom &amp; Jerry &#8217;s &#x41; &lt;b&gt; &quot;q&quot; &apos;a&apos;</title><body><![CDATA[<p>Hi & bye &amp;</p>]]><![CDATA[ more]]></body><!-- note --></rss>');
     expect(doc.name).toBe('rss');
     expect(doc.attrs.a).toBe('1 & 2');
-    expect(childText(doc, 'title')).toBe('Tom & Jerry ’s A');
-    expect(childText(doc, 'body')).toBe('<p>Hi & bye</p> more');
+    expect(childText(doc, 'title')).toBe('Tom & Jerry ’s A <b> "q" \'a\'');
+    // CDATA is literal: a reference in it is the text as written.
+    expect(childText(doc, 'body')).toBe('<p>Hi & bye &amp;</p> more');
   });
 
   it('never reads a document type, so no entity is declared or expanded', () => {
@@ -29,6 +30,7 @@ describe('the XML reader', () => {
     expect(() => parseXml(laughs)).toThrow(/document type/);
     const xxe = `<?xml version="1.0"?><!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]><r>&x;</r>`;
     expect(() => parseXml(xxe)).toThrow(XmlError);
+    expect(() => parseXml(xxe)).toThrow(/declares a document type/);
     // A name nothing declared stays as written.
     expect(textOf(parseXml('<r>&x; &nbsp;</r>'))).toBe('&x; &nbsp;');
   });
@@ -46,6 +48,9 @@ describe('the XML reader', () => {
   it('caps nesting, size and the number of nodes', () => {
     expect(() => parseXml('<a>'.repeat(100) + '</a>'.repeat(100))).toThrow(/nested too deeply/);
     expect(() => parseXml(`<r>${'<i/>'.repeat(50)}</r>`, { maxChars: 1e6, maxDepth: 10, maxNodes: 20 })).toThrow(/more than/);
+    // Runs of text count too.
+    expect(() => parseXml('<r>x<a/>y</r>', { maxChars: 1e6, maxDepth: 10, maxNodes: 3 })).toThrow(/more than/);
+    expect(parseXml('<r>x<a/>y</r>', { maxChars: 1e6, maxDepth: 10, maxNodes: 4 }).children).toHaveLength(3);
     expect(() => parseXml(`<r>${'x'.repeat(200)}</r>`, { maxChars: 100, maxDepth: 10, maxNodes: 20 })).toThrow(/larger/);
   });
 
@@ -59,21 +64,21 @@ describe('the XML reader', () => {
 
 describe('the HTML reader', () => {
   it('keeps prose: paragraphs, headings, quotes, lists, marks and links', () => {
-    const blocks = htmlToRichText('<h1>Big</h1><p>Hello <strong>bold <em>both</em></strong> and <a href="https://example.com/x" target="_blank">a link</a>.</p><h3>Small</h3><blockquote><p>Quoted</p></blockquote><ul><li>One<li>Two</ul><ol><li>First</li></ol>', opts());
+    const blocks = htmlToRichText('<h1>Big</h1><p>Hello <strong>bold <em>both</em></strong> and <a href="https://example.com/x" target="_blank">a link</a>.</p><h3>Small</h3><blockquote><p>Quoted</p></blockquote><ul><li><em>One</em><li>Two</ul><ol><li><a href="https://example.com/y">First</a></li></ol>', opts());
     expect(blocks).toEqual([
       { type: 'h2', spans: [{ text: 'Big' }] },
       { type: 'p', spans: [{ text: 'Hello ' }, { text: 'bold', strong: true }, { text: ' ' }, { text: 'both', strong: true, em: true }, { text: ' and ' }, { text: 'a link', link: { type: 'url', target: 'https://example.com/x', newTab: true } }, { text: '.' }] },
       { type: 'h3', spans: [{ text: 'Small' }] },
       { type: 'blockquote', spans: [{ text: 'Quoted' }] },
-      { type: 'ul', items: [[{ text: 'One' }], [{ text: 'Two' }]] },
-      { type: 'ol', items: [[{ text: 'First' }]] }
+      { type: 'ul', items: [[{ text: 'One', em: true }], [{ text: 'Two' }]] },
+      { type: 'ol', items: [[{ text: 'First', link: { type: 'url', target: 'https://example.com/y' } }]] }
     ]);
   });
 
   it('drops scripts, styles, frames, forms and event handlers, and counts them', () => {
     const report = emptyReport();
     const blocks = htmlToRichText(
-      '<p onclick="steal()">Safe</p><script>alert(1)</script><style>p{}</style><iframe src="https://evil.example/x"></iframe><form><input name=a>Pay</form><object data="https://x/y.swf"><p>no</p></object><p><a href="javascript:alert(1)">click</a></p><svg><script>x</script></svg>',
+      '<p onload="steal()">Safe</p><script>alert(1)</script><style>p{}</style><iframe src="https://evil.example/x"></iframe><form><input name=a>Pay</form><object data="https://x/y.swf"><p>no</p></object><p><a href="javascript:alert(1)">click</a></p><svg><script>x</script></svg>',
       opts(),
       report
     );
@@ -84,9 +89,13 @@ describe('the HTML reader', () => {
 
   it('reads an unclosed script to the end without reading what follows as markup', () => {
     expect(htmlToRichText('<p>Before</p><script>document.write("<p>after</p>")', opts())).toEqual([{ type: 'p', spans: [{ text: 'Before' }] }]);
+    // An end tag never finished is no end: the rest is still the script's.
+    expect(htmlToRichText('<p>Before</p><script>x("<p>after</p>")</script', opts())).toEqual([{ type: 'p', spans: [{ text: 'Before' }] }]);
   });
 
   it('turns pictures into the import’s keys, with captions', () => {
+    // A picture not found leaves the words around it in one paragraph.
+    expect(htmlToRichText('<p>Before <img src="gone.png"> after</p>', opts())).toEqual([{ type: 'p', spans: [{ text: 'Before after' }] }]);
     const blocks = htmlToRichText('<p>Text <img src="a.jpg" alt="A cat"> more</p><figure class="wp-block-image"><img src="b.jpg" alt=""><figcaption>The <em>barn</em></figcaption></figure><img src="remote.png">', opts());
     expect(blocks).toEqual([
       { type: 'p', spans: [{ text: 'Text' }] },
@@ -126,8 +135,17 @@ describe('the HTML reader', () => {
     expect(report.tables).toBe(1);
   });
 
-  it('wpautop leaves block markup alone', () => {
+  it('wpautop leaves block markup and preformatted text alone', () => {
     expect(autop('<h2>Title</h2>\nText')).toBe('<h2>Title</h2>\n<p>Text</p>\n');
+    expect(autop('Intro\n\n<pre>a  b\nc</pre>')).toContain('<pre>a  b\nc</pre>');
+  });
+
+  it('reads hostile text in one pass: unclosed shortcodes, tags, captions and preformatted text', () => {
+    const t0 = performance.now();
+    htmlToRichText('[foo a="b" c="d'.repeat(20_000), opts({ autop: true, shortcodes: true }));
+    htmlToRichText('<'.repeat(200_000) + '<p><div'.repeat(20_000), opts({ autop: true, shortcodes: true }));
+    htmlToRichText('[caption]x'.repeat(20_000) + '<pre>x'.repeat(20_000), opts({ autop: true, shortcodes: true }));
+    expect(performance.now() - t0).toBeLessThan(3000);
   });
 
   it('reads plain text and entities', () => {
