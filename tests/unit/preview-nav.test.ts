@@ -115,13 +115,16 @@ describe.skipIf(!browserInstalled)('the preview frame answering the editor’s p
         <div data-so-ctx="page:p" data-so-node="b">B</div>
         <div data-so-ctx="page:p" data-so-node="w" style="display: contents"><span style="display: none; order: 0">hidden</span><span style="order: 2">shown</span></div>
       </div>
-      <div><div data-so-ctx="page:p" data-so-node="c" style="order: 1">C</div></div>\`)`);
-    const descs = ['a', 'b', 'w', 'c'].map((node) => ({ ctx: 'page:p', node, items: '' }));
+      <div><div data-so-ctx="page:p" data-so-node="c" style="order: 1">C</div></div>
+      <div style="display: grid"><div data-so-ctx="page:p" data-so-node="g" style="order: -1">G</div></div>
+      <div style="display: flex; position: relative"><div data-so-ctx="page:p" data-so-node="x" style="display: contents"><span style="position: absolute; order: 5">badge</span><span style="order: 3">item</span></div></div>\`)`);
+    const descs = ['a', 'b', 'w', 'c', 'g', 'x'].map((node) => ({ ctx: 'page:p', node, items: '' }));
     await command('measure', { requestId: 'm1', descs });
     await expect.poll(() => page.evaluate(`window.measured && window.measured.requestId`)).toBe('m1');
     // A block parent lays out by document order whatever its children's order says; a display: contents
     // wrapper is laid out as the child of it that shows.
-    expect(await page.evaluate(`window.measured.rects.map((r) => r && r.order)`)).toEqual([1, 0, 2, 0]);
+    // A grid orders its items as a flex row does; a positioned child takes no place among them.
+    expect(await page.evaluate(`window.measured.rects.map((r) => r && r.order)`)).toEqual([1, 0, 2, 0, -1, 3]);
   });
 
   it('still loads the page in full when its latest request cannot be made in the page', async () => {

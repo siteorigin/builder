@@ -73,6 +73,8 @@ function findAll(desc) {
  *  items. An element with display: contents is laid out as its first child that shows. */
 function layoutOrder(el) {
   const shows = (c) => {
+    const position = getComputedStyle(c).position;
+    if (position === 'absolute' || position === 'fixed') return false;
     const r = c.getBoundingClientRect();
     return r.width > 0 || r.height > 0;
   };
@@ -1214,12 +1216,12 @@ function openLinkEditor() {
   });
   root.addEventListener('focusout', (e) => {
     if (!linkEditor || linkEditor.input !== input || root.contains(e.relatedTarget)) return;
-    // A destination still being checked is not applied: the editor is told, as saving with the field open does.
-    const checking = !!linkEditor.check;
-    closeLinkEditor(false);
     // Back to the text or on to the toolbar: the edit goes on without the link still being typed.
-    if (editing && (e.relatedTarget === editing.el || (toolbar && e.relatedTarget === toolbar.host))) return updateToolbar();
-    if (checking && editing) send('linkDropped', { desc: editing.desc, editId: editing.editId });
+    if (editing && (e.relatedTarget === editing.el || (toolbar && e.relatedTarget === toolbar.host))) {
+      closeLinkEditor(false);
+      return updateToolbar();
+    }
+    // Leaving the field ends the edit (a destination still being checked is left out, and the editor told).
     commitEdit();
   });
   linkEditor = { host, input, error, range, check: null };
@@ -1874,6 +1876,8 @@ const committed = new Map();
 function commitEdit(detached = false) {
   if (!editing) return;
   const { el, desc, editId, rich, original, before } = editing;
+  // A destination still being checked in the link field is not applied: the editor is told, as saving does.
+  if (linkEditor && linkEditor.check) send('linkDropped', { desc, editId });
   // Nothing changed: end the edit without a commit, so no history entry or rebuild follows.
   if (el.innerHTML === original) {
     endEdit();
@@ -2244,8 +2248,22 @@ window.addEventListener('message', async (e) => {
         // Each edit's own record, so a reply for one never answers (or forgets) another.
         const c = committed.get(m.payload.editId);
         if (c && c.el.isConnected && editing?.el !== c.el && c.el.innerHTML === c.left) c.el.innerHTML = c.original;
-        // Edited again before the answer came, from the text that was not kept: Escape now goes back to what was.
-        else if (c && editing?.el === c.el && editing.original === c.left) editing.original = c.original;
+        else if (c && editing?.el === c.el && editing.original === c.left) {
+          // Edited again before the answer came, from the text that was not kept: with nothing typed yet the saved
+          // text comes back, to edit from; anything typed since is the new edit's, and Escape goes back to the saved text.
+          editing.original = c.original;
+          if (c.el.innerHTML === c.left) {
+            c.el.innerHTML = c.original;
+            if (!editing.rich) editing.before = c.el.innerText.replace(/\s+/g, ' ').trim();
+            const range = document.createRange();
+            range.selectNodeContents(c.el);
+            getSelection().removeAllRanges();
+            getSelection().addRange(range);
+          }
+        } else if (c) {
+          // A later edit of the element began from this text: what that one puts back is what was saved before.
+          for (const later of committed.values()) if (later !== c && later.el === c.el && later.original === c.left) later.original = c.original;
+        }
         committed.delete(m.payload.editId);
       }
       break;

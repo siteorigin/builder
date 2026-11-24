@@ -164,10 +164,14 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
     // Focus leaves the field (a click elsewhere in the page) before the editor answers.
     await frame.evaluate(`document.querySelector('[data-so-node="s"]').setAttribute('tabindex', '-1'); document.querySelector('[data-so-node="s"]').focus()`);
     await expect.poll(async () => (await field()).open).toBe(false);
-    await expect.poll(async () => (await messages()).some((m) => m.type === 'linkDropped' && m.payload.editId === `e${edits}`)).toBe(true);
+    await expect.poll(async () => (await messages()).some((m) => m.type === 'textCancel' || m.type === 'textCommit')).toBe(true);
+    // The editor hears of the link left out while the edit is still its own, before the edit ends.
+    const types = (await messages()).map((m) => m.type);
+    const dropped = types.indexOf('linkDropped');
+    expect(dropped).toBeGreaterThanOrEqual(0);
+    expect(dropped).toBeLessThan(types.findIndex((t) => t === 'textCancel' || t === 'textCommit'));
     // The late answer links nothing.
     await toFrame('linkChecked', { check });
-    await expect.poll(async () => (await messages()).some((m) => m.type === 'textCancel' || m.type === 'textCommit')).toBe(true);
     expect(await hrefs()).toEqual(['/about/']);
   });
 
@@ -195,10 +199,32 @@ describe.skipIf(!browserInstalled)('the link field on the canvas', () => {
     await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId: 'refused-2' });
     await expect.poll(async () => (await messages()).some((m) => m.type === 'textEditStarted')).toBe(true);
     await toFrame('restoreText', { editId: 'refused-1' });
-    // The edit open now is left alone until it ends; Escape then shows what was saved.
-    await page.evaluate(`new Promise((r) => setTimeout(r, 100))`);
-    expect(await frame.innerHTML('[data-so-node="r"]')).toBe('<p>Words the editor will not keep</p>');
+    // Nothing typed yet: the saved text comes back to edit from, and leaving it commits nothing.
+    await expect.poll(() => frame.innerHTML('[data-so-node="r"]')).toBe(RICH);
+    expect(await frame.getAttribute('[data-so-node="r"]', 'contenteditable')).toBe('true');
     await page.keyboard.press('Escape');
+    await expect.poll(async () => (await messages()).some((m) => m.type === 'textCancel' && m.payload.editId === 'refused-2')).toBe(true);
+    expect((await messages()).some((m) => m.type === 'textCommit')).toBe(false);
+    expect(await frame.innerHTML('[data-so-node="r"]')).toBe(RICH);
+  });
+
+  it('puts back the saved text when an edit is refused after the element was edited again from it', async () => {
+    await page.evaluate(`window.seen = []`);
+    await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(RICH)}`);
+    await page.evaluate(`document.querySelector('iframe').focus()`);
+    const edit = async (editId: string, html: string) => {
+      await toFrame('beginTextEdit', { desc: { ctx: 'page:p', node: 'r', items: '' }, editId });
+      await expect.poll(async () => (await messages()).filter((m) => m.type === 'textEditStarted').length).toBeGreaterThan(0);
+      await frame.evaluate(`document.querySelector('[data-so-node="r"]').innerHTML = ${JSON.stringify(html)}`);
+      await page.keyboard.press(`${MOD}+Enter`);
+      await expect.poll(async () => (await messages()).some((m) => m.type === 'textCommit' && m.payload.editId === editId)).toBe(true);
+      await page.evaluate(`window.seen = []`);
+    };
+    // Two edits committed one after the other, before the editor answers either: it keeps neither.
+    await edit('both-1', '<p>First words not kept</p>');
+    await edit('both-2', '<p>Second words not kept</p>');
+    await toFrame('restoreText', { editId: 'both-1' });
+    await toFrame('restoreText', { editId: 'both-2' });
     await expect.poll(() => frame.innerHTML('[data-so-node="r"]')).toBe(RICH);
   });
 });

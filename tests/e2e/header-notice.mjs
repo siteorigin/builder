@@ -69,6 +69,10 @@ step('a web address the project cannot store is explained beside the field, whic
 const linkType = notice.getByRole('combobox', { name: 'Notice link type', exact: true });
 await linkType.selectOption('url');
 const address = notice.getByRole('textbox', { name: 'Notice web address', exact: true });
+// A saved web address first, then one typed over it that the project cannot store.
+await address.fill('https://example.com/visit');
+await address.press('Enter');
+await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'url', target: 'https://example.com/visit' }, 'the web address is stored'));
 await address.fill('example.com');
 await address.press('Enter');
 const problem = notice.locator('.field-error[role="alert"]');
@@ -77,8 +81,8 @@ await eventually(async () => assert.equal(await problem.innerText(), 'A web addr
 await win.waitForTimeout(1000);
 assert.equal(await address.inputValue(), 'example.com', 'the field keeps what was typed');
 assert.equal(await address.getAttribute('aria-invalid'), 'true', 'the field is marked invalid');
-assert.equal(await address.getAttribute('aria-describedby'), await problem.getAttribute('id'), 'the message describes the field');
-assert.deepEqual((await headerProps()).noticeLink, { type: 'page', target: contact }, 'nothing is stored');
+assert.ok((await address.getAttribute('aria-describedby')).split(' ').includes(await problem.getAttribute('id')), 'the message describes the field');
+assert.deepEqual((await headerProps()).noticeLink, { type: 'url', target: 'https://example.com/visit' }, 'nothing is stored');
 await address.fill('https://example.com');
 await address.press('Enter');
 await eventually(async () => assert.deepEqual((await headerProps()).noticeLink, { type: 'url', target: 'https://example.com' }, 'the corrected address is stored'));
