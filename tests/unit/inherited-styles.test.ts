@@ -359,6 +359,18 @@ describe('a placement’s own grid for all sizes', () => {
     expect(styleUnder({ prop: 'columns', scope: 'base', styles: onlyTemplate, inherited: { base: { columns: 1 }, phone: { columns: 1 } }, wideColumns: true })).toEqual({ value: 1, from: 'design' });
   });
 
+  it('keeps a placement shown at every size where it is shown for all sizes and the design hides it', () => {
+    const inherited = { base: { hidden: true }, phone: { hidden: true }, tablet: { hidden: true }, desktop: { hidden: true } } as ResponsiveStyles;
+    const own = { base: { hidden: false }, phone: { hidden: false } } as ResponsiveStyles;
+    for (const scope of ['tablet', 'desktop'] as const) expect(styleUnder({ prop: 'hidden', scope, styles: own, inherited, wideColumns: true }), scope).toEqual({ value: false, from: 'all-sizes' });
+  });
+
+  it('offers no All sizes design column count that the placement’s own template leaves showing nowhere', () => {
+    const inherited = { base: { columns: 3 }, phone: { columns: 1 }, tablet: { columns: 3 }, desktop: { columns: 3 } } as ResponsiveStyles;
+    expect(styleUnder({ prop: 'columns', scope: 'base', styles: { base: { gridTemplate: '2fr 1fr' } }, inherited, wideColumns: true })).toEqual({ value: undefined, from: undefined });
+    expect(styleUnder({ prop: 'columns', scope: 'base', styles: undefined, inherited, wideColumns: true })).toEqual({ value: 3, from: 'design' });
+  });
+
   it('lets a design’s own size values beat its All sizes grid template while editing it everywhere', () => {
     const original = { base: { layout: 'grid', columns: 1 }, tablet: { columns: 2 }, desktop: { columns: 3 } } as ResponsiveStyles;
     const changed = { base: { gridTemplate: '2fr 1fr' } } as ResponsiveStyles;

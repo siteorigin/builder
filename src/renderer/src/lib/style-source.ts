@@ -34,14 +34,20 @@ export function styleUnder({ prop, scope, styles, inherited, designSizesWin, wid
   if (!designSizesWin && scope !== 'base') {
     const rest: ResponsiveStyles = { ...styles, [scope]: { ...styles?.[scope] } };
     delete rest[scope]![prop];
-    const ownAt = cascadeStyles([{ styles: rest, strength: 1, wideColumns }])[scope] ?? {};
+    // Its own "shown" undoes a hide the design gives this size, as the stylesheet writes it.
+    const ownAt = cascadeStyles([{ styles: rest, strength: 1, wideColumns, unhides: [inherited] }])[scope] ?? {};
     if (ownAt[prop] !== undefined) return { value: ownAt[prop], from: 'all-sizes' };
     if (cssRivals(prop).some((r) => ownAt[r] !== undefined)) return { value: undefined, from: undefined };
     const design = inherited?.[scope]?.[prop];
     return { value: design, from: design !== undefined ? 'design' : undefined };
   }
-  // Under All sizes, an own rival that reaches every size leaves nothing of the design's value to show.
-  if (!designSizesWin && cssRivals(prop).some((r) => allSizesReach(r, styles?.base?.[r], 'phone', wideColumns))) return { value: undefined, from: undefined };
+  // Under All sizes, the design's value shows only where neither it is replaced at that size nor an own value writing
+  // the same CSS wins there.
+  if (!designSizesWin && cssRivals(prop).length && inherited?.base?.[prop] !== undefined) {
+    const own = cascadeStyles([{ styles, strength: 1, wideColumns }]);
+    const shows = (['phone', 'tablet', 'desktop'] as const).some((s) => JSON.stringify(inherited[s]?.[prop]) === JSON.stringify(inherited.base![prop]) && !cssRivals(prop).some((r) => own[s]?.[r] !== undefined));
+    if (!shows) return { value: undefined, from: undefined };
+  }
   const designHere = scope !== 'base' ? inherited?.[scope]?.[prop] : undefined;
   const own = styles?.base?.[prop];
   const allSizes = scope !== 'base' && !(designSizesWin && designHere !== undefined) && allSizesReach(prop, own, scope, wideColumns) ? own : undefined;
