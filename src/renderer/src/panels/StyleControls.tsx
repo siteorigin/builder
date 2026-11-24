@@ -44,7 +44,7 @@ function tokenText(def: StylePropDef, tokens: TokenDef[], id: string): string {
 }
 
 /** How a value reads in the panel: a site style by name (with its size when short), an option by its label. */
-function describe(def: StylePropDef, v: StyleValue | undefined, tokens: TokenDef[]): string {
+export function describeStyleValue(def: StylePropDef, v: StyleValue | undefined, tokens: TokenDef[]): string {
   if (v === undefined) return '';
   if (isToken(v)) return tokenText(def, tokens, v.token);
   if (def.kind === 'boolean') return def.id === 'hidden' ? (v ? 'Hidden' : 'Visible') : v ? 'Yes' : 'No';
@@ -272,7 +272,7 @@ export function StyleControls({
     // What shows through when nothing is set here, and where it comes from.
     const shows = styleUnder({ prop: p.id, scope, styles, inherited, designSizesWin, wideColumns });
     const under = shows.value;
-    const underText = describe(p, under, tokens);
+    const underText = describeStyleValue(p, under, tokens);
     const underFrom = shows.from === 'all-sizes' ? 'From All sizes' : shows.from === 'design' ? 'From the design' : undefined;
     // Under All sizes, a size with its own value here wins over whatever is set for all sizes; so does the
     // design's own value for the previewed size when nothing here overrides it (or, for a component's own
@@ -280,15 +280,15 @@ export function StyleControls({
     const exceptions = scope === 'base' ? SIZES.filter((s) => styles?.[s]?.[p.id] !== undefined) : [];
     const lines: Array<{ text: string; previewed?: boolean; quiet?: boolean }> = [];
     if (value === undefined && underFrom) lines.push({ text: underFrom, quiet: underFrom === 'From the design' });
-    for (const s of exceptions) lines.push({ text: `${SCOPE_LABEL[s]} uses ${describe(p, styles![s]![p.id], tokens)}`, previewed: s === preview });
+    for (const s of exceptions) lines.push({ text: `${SCOPE_LABEL[s]} uses ${describeStyleValue(p, styles![s]![p.id], tokens)}`, previewed: s === preview });
     const designAtPreview = inherited?.[preview]?.[p.id];
     // A value for All sizes that the stylesheet keeps off phones (a grid of several columns): phones show the design.
     const ownReachesPreview = allSizesReach(p.id, value, preview, wideColumns);
     const designOnPhone = inherited?.phone?.[p.id];
     if (scope === 'base' && value !== undefined && !exceptions.includes('phone') && !allSizesReach(p.id, value, 'phone', wideColumns))
-      lines.push({ text: designOnPhone !== undefined ? `${SCOPE_LABEL.phone} uses ${describe(p, designOnPhone, tokens)} from the design` : 'Tablet and desktop only', previewed: preview === 'phone' });
+      lines.push({ text: designOnPhone !== undefined ? `${SCOPE_LABEL.phone} uses ${describeStyleValue(p, designOnPhone, tokens)} from the design` : 'Tablet and desktop only', previewed: preview === 'phone' });
     else if (scope === 'base' && (!ownReachesPreview || designSizesWin) && !exceptions.includes(preview) && designAtPreview !== undefined && JSON.stringify(designAtPreview) !== JSON.stringify(inherited?.base?.[p.id]))
-      lines.push({ text: `${SCOPE_LABEL[preview]} uses ${describe(p, designAtPreview, tokens)} from the design`, previewed: true });
+      lines.push({ text: `${SCOPE_LABEL[preview]} uses ${describeStyleValue(p, designAtPreview, tokens)} from the design`, previewed: true });
     const sourceId = `${moreId}-${p.id}-src`;
     const resetTo = underText ? ` to ${underText} ${underFrom === 'From All sizes' ? 'from All sizes' : 'from the design'}` : '';
     const resetName = `Reset ${label}${scope === 'base' ? '' : ` on ${sizeName(scope)}`}${resetTo}`;
@@ -592,7 +592,7 @@ function Control({
   const current = set ? value : under;
   const leadValue = custom ? undefined : current;
   const lead = isToken(leadValue) ? leadValue : undefined;
-  const linkedName = lead ? `${describe(def, lead, tokens)}, from Site styles` : undefined;
+  const linkedName = lead ? `${describeStyleValue(def, lead, tokens)}, from Site styles` : undefined;
   // What a custom value starts from: the value in effect, written out.
   const currentText = isToken(current) ? (typeof tokenOf(tokens, current.token)?.value === 'string' ? String(tokenOf(tokens, current.token)!.value) : undefined) : current === undefined ? undefined : String(current);
   // What the colour picker starts from: the colour in effect, a linked style followed to its end.
@@ -636,7 +636,7 @@ function Control({
               ))}
             </optgroup>
           )}
-          {linked && !tokOpts.some((t) => t.id === value.token) && <option value={`token:${value.token}`}>{describe(def, value, tokens)}</option>}
+          {linked && !tokOpts.some((t) => t.id === value.token) && <option value={`token:${value.token}`}>{describeStyleValue(def, value, tokens)}</option>}
           {def.kind !== 'textStyle' && <option value="custom">{custom ? 'Custom' : 'Custom value…'}</option>}
         </select>
       </span>

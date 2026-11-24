@@ -9,6 +9,7 @@ import { aiActivity, applyOps, commitDraft, getState, markDraft, setState, useSt
 import { rovingKeys, useMenu, useRovingTabStop } from '../components/ui';
 import { isImeComposing } from '../lib/ime';
 import { askAiAbout, deleteSelection, duplicateSelection, moveSelection } from '../lib/actions';
+import { styleCopyItems } from './StylePaste';
 import { everySizeEdits, eyeAction, hideHereEdits, layerLabel, rowVisibility, showHereEdits, sizesText, type HiddenBy, type RowVisibility, type VisibilityEdit } from '../lib/layers';
 import { OutlinePanel } from './OutlinePanel';
 
@@ -255,6 +256,7 @@ export function LayersPanel() {
     };
     const anchorOf = () => (el instanceof HTMLElement ? (() => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.bottom + 4 }; })() : el);
     const visibility = visibilityItems();
+    const styleItems = styleCopyItems(ref);
     const items = [
       { heading: name },
       ...(onRename ? [{ label: 'Rename', icon: <Pencil />, shortcut: 'F2', onSelect: onRename }] : []),
@@ -268,9 +270,10 @@ export function LayersPanel() {
           ]
         : []),
       ...(visibility.length ? [{ separator: true }, ...visibility] : []),
+      ...(styleItems.length ? [{ separator: true }, ...styleItems] : []),
       ...(editable
         ? [
-            ...(visibility.length ? [{ separator: true }] : []),
+            ...(visibility.length || styleItems.length ? [{ separator: true }] : []),
             { label: 'Duplicate', icon: <Copy />, shortcut: '⌘D', onSelect: () => void duplicateSelection() },
             { separator: true },
             { label: 'Delete', icon: <Trash2 />, shortcut: '⌫', danger: true, onSelect: () => void deleteSelection() }

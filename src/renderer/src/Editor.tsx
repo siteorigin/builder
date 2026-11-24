@@ -20,6 +20,7 @@ import { FindReplaceModal } from './panels/FindReplace';
 import { SourceModal, PageSourceModal, NewCodeComponentModal } from './panels/SourceModal';
 import { CreateComponentModal, DeletePageModal, EditDefinitionModal, HistoryModal, MakeUniqueModal, RenameComponentModal, SetHomeModal } from './panels/Dialogs';
 import { ImportReviewModal } from './panels/ImportReview';
+import { PasteStyleModal } from './panels/StylePaste';
 import { NewProjectModal, TrustProjectModal } from './components/ProjectDialogs';
 import { deleteSelection, duplicateSelection, moveSelection, askAiAbout, openSiteStyles, insertionPoint, structuralTarget } from './lib/actions';
 import { refLabel } from './lib/model';
@@ -518,6 +519,7 @@ export function Editor() {
       {modal?.kind === 'history' && <HistoryModal />}
       {modal?.kind === 'health' && <HealthModal />}
       {modal?.kind === 'import-review' && <ImportReviewModal key={modal.id} id={modal.id} rows={modal.rows} />}
+      {modal?.kind === 'paste-style' && <PasteStyleModal target={modal.ref} opening={modal.opening} />}
       {switching?.kind === 'new' && <NewProjectModal onClose={() => setSwitching(null)} />}
       {switching?.kind === 'trust' && <TrustProjectModal project={switching} onClose={() => setSwitching(null)} />}
     </div>
