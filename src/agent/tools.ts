@@ -121,8 +121,8 @@ function offeredOperations(codeEnabled: boolean, definitionOps: boolean) {
 }
 
 /**
- * Tool definitions for one run. Without Developer mode, code tools and code operations are left out, and
- * component contract operations are offered only when the run is working inside a component definition.
+ * Tool definitions for one run. Without Developer mode, code tools and code operations are left out. Component
+ * contract operations are offered when `definitionOps` says the run may change a component's design.
  */
 export function toolDefinitions(opts: { codeEnabled?: boolean; definitionOps?: boolean } = {}): ToolDefinition[] {
   const codeEnabled = opts.codeEnabled ?? true;
@@ -182,7 +182,18 @@ function askTools(codeEnabled: boolean): ToolDefinition[] {
  * them. A cloud model with room to spare also keeps the general tools for anything they cannot express, and a
  * selection they cannot cover (a layout element, a component's own definition) always uses the general tools.
  */
-export function toolsForRun(opts: { state: ProjectState; selection: SelectionTarget | null; capabilities: Pick<ModelCapabilities, 'toolCalling' | 'contextWindowTokens'>; codeEnabled: boolean; definitionOps: boolean; attachedImages?: boolean; ask?: boolean }): RunTools {
+export function toolsForRun(opts: {
+  state: ProjectState;
+  selection: SelectionTarget | null;
+  capabilities: Pick<ModelCapabilities, 'toolCalling' | 'contextWindowTokens'>;
+  codeEnabled: boolean;
+  definitionOps: boolean;
+  /** The run is about a component's own design (edited everywhere): the general tools, which the small sets cannot
+   *  replace, for its whole life, also once the user lets it change more. */
+  definition?: boolean;
+  attachedImages?: boolean;
+  ask?: boolean;
+}): RunTools {
   const { state, selection, capabilities, codeEnabled, definitionOps } = opts;
   const focused = capabilities.toolCalling === 'constrained-json' || capabilities.contextWindowTokens < FOCUSED_WINDOW_TOKENS;
   if (opts.ask) return { tools: askTools(codeEnabled), mode: 'ask', focused };
@@ -195,6 +206,7 @@ export function toolsForRun(opts: { state: ProjectState; selection: SelectionTar
     const assets = usesImage(micro) || opts.attachedImages ? general.filter((t) => t.name === 'search_assets' || t.name === 'request_clarification') : [];
     return { tools: focused ? [...micro, ...assets] : [...micro, ...general], mode: 'selection', focused };
   }
+  if (opts.definition) return { tools: general, mode: 'general', focused: false };
   const macros: ToolDefinition[] = [
     { name: 'upsert_page_with_sections', description: DESCRIPTIONS.upsert_page_with_sections, parameters: upsertToolSchema(state) },
     { name: 'update_site_brand', description: DESCRIPTIONS.update_site_brand, parameters: brandToolSchema(state) }

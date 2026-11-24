@@ -11,7 +11,7 @@ import type { AgentModelAdapter, CanonicalItem, ModelEvent, ToolCall } from './t
 import { describeOps, InspectionLog, pagesTouched } from './report';
 import { assetSummary, CODE_OPERATIONS, executeTool, imageAnswer, imageLabel, imageRef, libraryImage, MUTATING_TOOLS, REVISION_BOUND_TOOLS, serializeResult, toolsForRun, type RunTools, type ToolHost } from './tools';
 import { compactProjectSummary, describeSelection, projectSummary } from './context';
-import { authorityFor, checkAuthority, WIDEN_NO, WIDEN_YES, type Authority } from './scope';
+import { authorityFor, canEditContracts, checkAuthority, WIDEN_NO, WIDEN_YES, type Authority } from './scope';
 import { connectPendingLinks, newMacroMemory } from './macros';
 import { selectionTarget } from './selection';
 import { applyContextBudget } from './budget';
@@ -118,6 +118,24 @@ function attachedImages(state: ProjectState, ids: unknown): { images: ChatImageR
 }
 
 /** A request's selection: none, or an element reference whose parts can be read. */
+/** What the model is told about the component the author is editing everywhere. */
+function editingComponent(state: ProjectState, component: { id: string; name: string }) {
+  const def = state.components[component.id];
+  return {
+    id: component.id,
+    name: def?.name ?? component.name,
+    // Every top-level node: a design can have more than one.
+    rootIds: def?.tree?.rootIds ?? [],
+    note: 'Edit everywhere: every change applies to every placement of this component. Its nodes are owned by { kind: "component", id }; read_component shows its contract.'
+  };
+}
+
+/** The component a request edits everywhere, as the renderer sends it: absent, or its ID and name. */
+function readableComponent(c: unknown): boolean {
+  if (c === undefined || c === null) return true;
+  return typeof c === 'object' && !Array.isArray(c) && typeof (c as { id?: unknown }).id === 'string' && typeof (c as { name?: unknown }).name === 'string';
+}
+
 function readableSelection(sel: unknown): boolean {
   if (sel === null || sel === undefined) return true;
   if (typeof sel !== 'object') return false;
@@ -231,8 +249,9 @@ How the website is modelled:
 
 Scope:
 - When the user sends a request with a selected element, this run may only change that element and the content inside it. The app rejects other changes with SCOPE_MISMATCH.
+- When <editor_context> has editingComponent, the user is editing that component everywhere: this run may change only its own design (nodes owned by { kind: "component", id }, including new top-level nodes) and its contract (component.setPropSchema, setPropDefault, setPart, setVariant, setSlot and their removals, node.setBinding). Every change applies to every placement. To make content editable per placement, add a property and bind a node to it.
 - If the request clearly needs wider changes (other sections, other pages, site styles, navigation), call request_clarification with widenScope: true and a short question explaining what else you need to change. Continue only within what the user allows.
-- Without a selection, the run may change the whole site.
+- Without a selection or editingComponent, the run may change the whole site.
 
 Working rules:
 1. Read before you write (read_page, inspect_element, read_component). read_project with sections ["catalogue"] lists every section component you can insert, with its property signature, parts and variants, so you rarely need read_component. Pass the latest revision as expectedRevision; if it is stale, read again.
@@ -450,7 +469,15 @@ export class Orchestrator {
     if (conversationId !== undefined && conv.id !== conversationId) return { ok: false, message: 'That conversation is no longer open, so your message was not sent. It is still in the message box.' };
     // The message comes from the renderer: one that cannot be read never joins the conversation (nor starts a run that
     // could not name what it may change).
-    if (typeof text !== 'string' || !context || typeof context !== 'object' || Array.isArray(context) || !readableSelection(context.selection)) return { ok: false, message: 'Your message could not be read. Try sending it again.' };
+    if (typeof text !== 'string' || !context || typeof context !== 'object' || Array.isArray(context) || !readableSelection(context.selection) || !readableComponent(context.component))
+      return { ok: false, message: 'Your message could not be read. Try sending it again.' };
+    // A request about a component edited everywhere names a component design the project still has, and anything
+    // selected with it is one of that design's own nodes: the run is limited to what the author saw.
+    if (context.component) {
+      const def = session.state.components[context.component.id];
+      if (def?.kind !== 'managed' || !def.tree) return { ok: false, message: `${context.component.name || 'That component'} is no longer in the site. Choose what to change, then send again.` };
+      if (context.selection && (context.selection.owner.kind !== 'component' || context.selection.owner.id !== def.id)) return { ok: false, message: 'Your message could not be read. Try sending it again.' };
+    }
     // Attached images are checked against the project as it is now, before the request joins the conversation.
     const attached = attachedImages(session.state, context.assetIds);
     if ('error' in attached) return { ok: false, message: attached.error };
@@ -606,7 +633,9 @@ export class Orchestrator {
     /** The project the run reads: as asked about for a question, as it is now for an edit. */
     const readState = () => (ask ? startState : session.state);
     const readRevision = () => (ask ? startRevision : session.revision);
-    let authority: Authority = authorityFor(userMsg.context?.selection ?? null, userMsg.context?.selectionLabel ?? null);
+    let authority: Authority = authorityFor(userMsg.context?.selection ?? null, userMsg.context?.selectionLabel ?? null, userMsg.context?.component);
+    /** A request about a component's own design keeps the tools for it, even after the user widens it. */
+    const definitionRun = authority.kind === 'component' || (authority.kind === 'selection' && authority.owner.kind === 'component');
     // Stopped while preparing: the run is ending, not running.
     if (!signal.aborted) this.setStatus('running');
     // Problems the project already had (including components that already fail to build) are not the run's.
@@ -622,7 +651,11 @@ export class Orchestrator {
         selection: authority.kind === 'selection' ? selected : null,
         capabilities,
         codeEnabled,
-        definitionOps: codeEnabled || (authority.kind === 'selection' && authority.owner.kind === 'component'),
+        // Contract edits are visual changes to managed components: offered whenever the run may change a component's
+        // design (the whole site, a component edited everywhere, or a selection inside one), with or without
+        // Developer mode.
+        definitionOps: canEditContracts(authority),
+        definition: definitionRun,
         attachedImages: !!userMsg.images?.length,
         ask
       });
@@ -682,6 +715,8 @@ export class Orchestrator {
       text: `${userMsg.text}\n\n<editor_context>\n${JSON.stringify(
         {
           currentPage: ctx ? { id: ctx.pageId, title: ctx.pageTitle } : null,
+          // Edit everywhere: the request is about this component's design, shown through a placement on currentPage.
+          ...(ctx?.component ? { editingComponent: editingComponent(readState(), ctx.component) } : {}),
           selection: selection ? { label: ctx?.selectionLabel, ...selection } : null,
           previewWidth: ctx?.viewport,
           // The library images the user attached: their identity and text only, never the pictures.
@@ -691,9 +726,11 @@ export class Orchestrator {
             ? 'nothing: this is a read-only question'
             : authority.kind === 'site'
               ? 'whole site'
-              : `only ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}) unless the user approves more via request_clarification with widenScope`,
-          // A selection edit needs the element, not the whole site; the rest is one read away if it is widened.
-          project: authority.kind === 'selection' ? compactProjectSummary(readState(), readRevision()) : projectSummary(readState(), readRevision()),
+              : authority.kind === 'component'
+                ? `only the ${authority.label} component's own design (owner component:${authority.definitionId}): its nodes and its properties, defaults, parts, variants and slots, unless the user approves more via request_clarification with widenScope`
+                : `only ${authority.label} (owner ${authority.owner.kind}:${authority.owner.id}, node ${authority.nodeId}) unless the user approves more via request_clarification with widenScope`,
+          // A selection or component edit needs that, not the whole site; the rest is one read away if it is widened.
+          project: authority.kind !== 'site' ? compactProjectSummary(readState(), readRevision()) : projectSummary(readState(), readRevision()),
           ...(examples.length ? { workedExamples: examples } : {})
         },
         null,
@@ -754,7 +791,10 @@ export class Orchestrator {
           return {
             ok: false,
             revision: session.revision,
-            error: { code: 'SCOPE_MISMATCH', message: `${denied} This request was sent with ${authority.kind === 'selection' ? authority.label : 'a selection'} selected, so changes are limited to it. Ask the user with request_clarification (widenScope: true) if more is needed.` }
+            error: {
+              code: 'SCOPE_MISMATCH',
+              message: `${denied} ${authority.kind === 'component' ? `This request is about the ${authority.label} component, edited everywhere, so changes are limited to its design.` : `This request was sent with ${authority.kind === 'selection' ? authority.label : 'a selection'} selected, so changes are limited to it.`} Ask the user with request_clarification (widenScope: true) if more is needed.`
+            }
           };
         return session.apply({ operations, expectedRevision }, { label, source: 'ai', runId, history: false, idempotencyKey: `${runId}:${key}` });
       },
@@ -766,7 +806,8 @@ export class Orchestrator {
           if (signal.aborted) return resolve(STOPPED_ANSWER);
           activeMs += Date.now() - lastResume;
           // A question can never be granted more: nothing in it may change.
-          const widen = !ask && !!widenScope && authority.kind === 'selection';
+          const widen = !ask && !!widenScope && authority.kind !== 'site';
+          const limit = authority.kind === 'component' ? 'the component' : 'the selection';
           const id = newId('q');
           run.pendingQuestion = {
             id,
@@ -778,7 +819,7 @@ export class Orchestrator {
               if (widen && (a === WIDEN_YES || TYPED_YES.test(a))) {
                 authority = { kind: 'site' };
                 resolve(`${a}. You may now change anything needed for this request.`);
-              } else if (widen) resolve(`${a}. Keep changes within the selection.`);
+              } else if (widen) resolve(`${a}. Keep changes within ${limit}.`);
               else resolve(a);
             }
           };

@@ -7,11 +7,28 @@ import type { ComponentDefinition, ElementRef, OwnerRef, ProjectState } from '@s
 import type { EditOperation, OperationType } from '@shared/ops';
 import { getTree, subtreeIds } from '@engine/tree';
 
-export type Authority = { kind: 'site' } | { kind: 'selection'; owner: OwnerRef; nodeId: string; label: string };
+/**
+ * - site: anything the request needs.
+ * - selection: one element and what is inside it.
+ * - component: one component's whole design, edited everywhere: every node of it (all its top-level nodes) and its
+ *   own contract (properties, defaults, parts, variants and slots). Every change applies to every placement.
+ */
+export type Authority =
+  | { kind: 'site' }
+  | { kind: 'selection'; owner: OwnerRef; nodeId: string; label: string }
+  | { kind: 'component'; definitionId: string; label: string };
 
-export function authorityFor(selection: ElementRef | null, label: string | null): Authority {
-  if (!selection) return { kind: 'site' };
-  return { kind: 'selection', owner: selection.owner, nodeId: selection.instancePath[0] ?? selection.nodeId, label: label ?? 'the selection' };
+/** `component`: the component the author is editing everywhere; a selection inside it narrows the run further. */
+export function authorityFor(selection: ElementRef | null, label: string | null, component?: { id: string; name: string } | null): Authority {
+  if (selection) return { kind: 'selection', owner: selection.owner, nodeId: selection.instancePath[0] ?? selection.nodeId, label: label ?? 'the selection' };
+  if (component) return { kind: 'component', definitionId: component.id, label: component.name };
+  return { kind: 'site' };
+}
+
+/** Whether a run may change a component's own contract (its properties, parts, variants, slots and bindings). These
+ *  are visual edits to a managed component, never code, so they do not depend on Developer mode. */
+export function canEditContracts(authority: Authority): boolean {
+  return authority.kind !== 'selection' || authority.owner.kind === 'component';
 }
 
 /**
@@ -116,9 +133,66 @@ function addsOptionToExistingAxis(def: ComponentDefinition, option: string, axis
   return !!target && !Object.hasOwn(target.options, option);
 }
 
+/**
+ * Contract edits a run on a component's whole design may make to that component. Changing or removing an existing
+ * property, default, part, variant or slot is what editing a component everywhere is for; the engine still
+ * validates each one.
+ */
+const CONTRACT_EDITS = new Set<OperationType>([
+  'component.setPropSchema',
+  'component.removePropSchema',
+  'component.setPropDefault',
+  'component.setPart',
+  'component.removePart',
+  'component.setVariant',
+  'component.removeVariant',
+  'component.setSlot',
+  'component.removeSlot'
+]);
+
+/** Returns null when every operation stays within one component's own design, otherwise a reason. */
+function checkComponentAuthority(state: ProjectState, ops: EditOperation[], authority: Extract<Authority, { kind: 'component' }>): string | null {
+  const def = state.components[authority.definitionId];
+  if (!def?.tree) return `${authority.label} is no longer in the site.`;
+  const nodes = def.tree.nodes;
+  const mine = (o: OwnerRef) => o.kind === 'component' && o.id === def.id;
+  /** A node of the design, or its top level (null). */
+  const inside = (id: string | null | undefined) => !id || Object.hasOwn(nodes, id);
+  const outside = (op: EditOperation) => `${op.type} changes something outside ${authority.label}.`;
+  for (const op of ops) {
+    if (CONTRACT_EDITS.has(op.type)) {
+      if ((op as { definitionId?: string }).definitionId !== def.id) return outside(op);
+      continue;
+    }
+    switch (OP_REACH[op.type] ?? 'wider') {
+      case 'node': {
+        const o = op as unknown as { owner: OwnerRef; nodeId: string; parentId?: string | null };
+        if (!mine(o.owner) || !Object.hasOwn(nodes, o.nodeId)) return outside(op);
+        if (op.type === 'node.move' && !inside(o.parentId)) return `node.move would move content outside ${authority.label}.`;
+        break;
+      }
+      case 'insert': {
+        const o = op as Extract<EditOperation, { type: 'node.insert' }>;
+        if (!mine(o.owner) || !inside(o.parentId)) return `node.insert adds content outside ${authority.label}.`;
+        break;
+      }
+      case 'copy': {
+        // The source is only read, so it may be anywhere; the copy must land in the design.
+        const o = op as Extract<EditOperation, { type: 'node.copy' }>;
+        if (!mine(o.toOwner) || !inside(o.parentId)) return `node.copy adds content outside ${authority.label}.`;
+        break;
+      }
+      default:
+        return `${op.type} changes more than ${authority.label}.`;
+    }
+  }
+  return null;
+}
+
 /** Returns null when every operation stays within the authority, otherwise a reason. */
 export function checkAuthority(state: ProjectState, ops: EditOperation[], authority: Authority): string | null {
   if (authority.kind === 'site') return null;
+  if (authority.kind === 'component') return checkComponentAuthority(state, ops, authority);
   let allowed: Set<string>;
   try {
     const tree = getTree(state, authority.owner);

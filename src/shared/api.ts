@@ -302,6 +302,12 @@ export interface ChatContext {
   pageTitle: string;
   selection: ElementRef | null;
   selectionLabel: string | null;
+  /**
+   * The component the author was editing everywhere when the request was sent. The request is then about that
+   * component's design and every placement of it: `selection` is null for the whole design or one of its own nodes,
+   * and `pageId` is only the page the editor showed it on. Absent for a request about the site.
+   */
+  component?: { id: string; name: string };
   viewport: number;
   /** Library images the author attached to the request, by asset ID. The AI is told their IDs and what the library says about them (name, size, description, alt text), never the pictures or their files. */
   assetIds?: string[];

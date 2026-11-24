@@ -9,8 +9,8 @@ import type { AgentModelAdapter, CanonicalModelRequest, ModelEvent } from '@agen
 import { ProjectSession } from '../../src/main/project/session';
 import { compileProject } from '../../src/main/compile';
 import { LIMITS } from '@agent/orchestrator';
-import { imageRef, libraryImage, toolDefinitions } from '@agent/tools';
-import { checkAuthority, OP_REACH, type Authority } from '@agent/scope';
+import { imageRef, libraryImage, toolDefinitions, toolsForRun } from '@agent/tools';
+import { authorityFor, canEditContracts, checkAuthority, OP_REACH, type Authority } from '@agent/scope';
 import { OPERATION_SCHEMAS, type EditOperation, type OperationType } from '@shared/ops';
 import type { InstanceNode, ListItem, ProjectState } from '@shared/types';
 import { subtreeIds } from '@engine/tree';
@@ -1410,6 +1410,217 @@ describe('operation reach', () => {
     expect(offered({ codeEnabled: false })).not.toContain('component.setPropSchema');
     expect(offered({ codeEnabled: false, definitionOps: true })).toContain('node.setBinding');
     expect(offered({ codeEnabled: true })).toContain('component.setPropSchema');
+  });
+});
+
+describe('Edit everywhere without Developer mode (#191)', () => {
+  /** The operation types a request offered the model in apply_operations. */
+  const offeredOps = (req: CanonicalModelRequest) => {
+    const apply = req.tools.find((d) => d.name === 'apply_operations')?.parameters as { properties: { operations: { items: { oneOf?: Array<{ properties: { type: { const: string } } }>; anyOf?: Array<{ properties: { type: { const: string } } }> } } } } | undefined;
+    return (apply?.properties.operations.items.oneOf ?? apply?.properties.operations.items.anyOf ?? []).map((v) => v.properties.type.const);
+  };
+  const lastTool = (req: CanonicalModelRequest) => JSON.parse((req.items.at(-1) as { content: string }).content);
+  const contract = ['node.setBinding', 'component.setPropSchema', 'component.setPart', 'component.setVariant', 'component.setSlot'];
+
+  /** "Edit everywhere" on the home hero: a project copy every placement uses, as the editor makes it. */
+  async function editEverywhere(session: ProjectSession) {
+    const home = session.state.pages[session.state.site.homePageId];
+    const hero = home.nodes[home.rootIds[0]] as InstanceNode;
+    const r = await session.apply({ operations: [{ type: 'component.fork', definitionId: hero.definitionId }] }, { label: 'Edit everywhere', source: 'user' });
+    const id = (r.results?.[0] as { definitionId: string }).definitionId;
+    return { id, owner: { kind: 'component' as const, id }, root: session.state.components[id].tree!.rootIds[0] };
+  }
+
+  async function waitForQuestion(events: AiEvent[]) {
+    for (let i = 0; i < 300 && !events.some((e) => e.message?.questions); i++) await new Promise((res) => setTimeout(res, 10));
+    return events.find((e) => e.message?.questions)!.message!.questions![0];
+  }
+
+  it('adds an editable element to the whole component from its overview, and nothing outside it', async () => {
+    let def = { id: '', owner: { kind: 'component' as const, id: '' }, root: '' };
+    let offered: string[] = [];
+    let context = '';
+    let outside: { error?: { code?: string; message?: string } } = {};
+    let inserted: { error?: unknown; results?: Array<{ nodeId?: string }> } = {};
+    let bound: { error?: unknown } = {};
+    const env = await setup(
+      [
+        (req) => {
+          offered = offeredOps(req);
+          context = JSON.stringify(req.items.at(-1));
+          // The page behind the component is not part of this request.
+          const home = env.session.state.pages[env.session.state.site.homePageId];
+          return [call('d0', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'instance.setProp', owner: { kind: 'page', id: home.id }, nodeId: home.rootIds[1], prop: 'heading', value: 'Changed' }] })];
+        },
+        (req) => {
+          outside = lastTool(req);
+          return [
+            call('d1', 'apply_operations', {
+              expectedRevision: 1,
+              operations: [
+                { type: 'component.setPropSchema', definitionId: def.id, prop: 'tagline', schema: { type: 'string', label: 'Tagline', default: 'Made by hand' } },
+                // A new top-level node: a design can have more than one.
+                { type: 'node.insert', owner: def.owner, primitive: 'paragraph', text: 'Made by hand' }
+              ]
+            })
+          ];
+        },
+        (req) => {
+          inserted = lastTool(req);
+          const nodeId = inserted.results?.find((x) => x?.nodeId)?.nodeId ?? 'missing';
+          return [call('d2', 'apply_operations', { expectedRevision: 2, operations: [{ type: 'node.setBinding', owner: def.owner, nodeId, field: 'text', binding: { $prop: 'tagline' } }] })];
+        },
+        (req) => {
+          bound = lastTool(req);
+          return finish('Added an editable tagline.');
+        }
+      ],
+      { codeEnabled: false }
+    );
+    def = await editEverywhere(env.session);
+    const page = structuredClone(env.session.state.pages[env.session.state.site.homePageId]);
+    // What the composer sends while the component's overview is open: no selection, and the component.
+    const { result } = await env.run('Add an editable tagline to this hero', { selection: null, selectionLabel: null, component: { id: def.id, name: 'Split hero' } });
+    expect(offered).toEqual(expect.arrayContaining(contract));
+    expect(context).toContain('editingComponent');
+    expect(context).toContain(`only the Split hero component's own design (owner component:${def.id})`);
+    expect(outside.error?.code).toBe('SCOPE_MISMATCH');
+    expect(outside.error?.message).toMatch(/about the Split hero component, edited everywhere/);
+    expect(inserted.error).toBeUndefined();
+    expect(bound.error).toBeUndefined();
+    expect(result?.status).toBe('completed');
+    const after = env.session.state.components[def.id];
+    expect(after.properties.tagline).toMatchObject({ type: 'string', label: 'Tagline' });
+    expect(after.tree!.rootIds).toHaveLength(2);
+    const tagline = after.tree!.nodes[after.tree!.rootIds[1]];
+    expect(JSON.stringify(tagline)).toContain('"$prop":"tagline"');
+    // Nothing on the page behind the component changed.
+    expect(env.session.state.pages[env.session.state.site.homePageId]).toEqual(page);
+  });
+
+  it('refuses a request about a component the project no longer has', async () => {
+    const env = await setup([() => finish('Done.')], { codeEnabled: false });
+    const r = await env.orch.send('Add a tagline', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: 'proj.gone', name: 'Old hero' }, viewport: 1280 });
+    expect(r).toMatchObject({ ok: false, message: expect.stringMatching(/Old hero is no longer in the site/) });
+    const def = await editEverywhere(env.session);
+    // A selection sent with a component is one of that component's own nodes.
+    const home = env.session.state.pages[env.session.state.site.homePageId];
+    const onPage = await env.orch.send('Add a tagline', { pageId: home.id, pageTitle: 'Home', selection: { owner: { kind: 'page', id: home.id }, instancePath: [], nodeId: home.rootIds[0] }, selectionLabel: 'Hero', component: { id: def.id, name: 'Split hero' }, viewport: 1280 });
+    expect(onPage.ok).toBe(false);
+    const malformed = await env.orch.send('Add a tagline', { pageId: home.id, pageTitle: 'Home', selection: null, selectionLabel: null, component: { id: 7 } as unknown as { id: string; name: string }, viewport: 1280 });
+    expect(malformed.ok).toBe(false);
+  });
+
+  it('keeps contract operations after the author widens an Edit everywhere request', async () => {
+    let def = { id: '', owner: { kind: 'component' as const, id: '' }, root: '' };
+    const offered: string[][] = [];
+    let applied: { error?: unknown } = {};
+    const env = await setup(
+      [
+        (req) => {
+          offered.push(offeredOps(req));
+          return [call('w1', 'request_clarification', { question: 'This also changes every placement. Go ahead?', widenScope: true })];
+        },
+        (req) => {
+          offered.push(offeredOps(req));
+          return [call('w2', 'apply_operations', { expectedRevision: 1, operations: [{ type: 'component.setPropSchema', definitionId: def.id, prop: 'heading', schema: { type: 'string', label: 'Title', default: 'Hello' } }] })];
+        },
+        (req) => {
+          applied = lastTool(req);
+          return finish('Renamed the heading field.');
+        }
+      ],
+      { codeEnabled: false }
+    );
+    def = await editEverywhere(env.session);
+    const r = await env.orch.send('Rename the heading field to Title', { pageId: env.session.state.site.homePageId, pageTitle: 'Home', selection: { owner: def.owner, instancePath: [], nodeId: 'heading' }, selectionLabel: 'Heading', viewport: 1280 });
+    const q = await waitForQuestion(env.events);
+    expect(q.choices[0]).toMatch(/Yes, allow/);
+    expect(env.orch.answer(r.runId!, q.id!, q.choices[0])).toBe(true);
+    while (env.orch.busy) await new Promise((res) => setTimeout(res, 10));
+    expect(offered[0]).toEqual(expect.arrayContaining(contract));
+    expect(offered[1]).toEqual(expect.arrayContaining(contract));
+    expect(applied.error).toBeUndefined();
+    expect(env.session.state.components[def.id].properties.heading).toMatchObject({ label: 'Title' });
+  });
+
+  it('limits a whole-component request to that component, all of its top-level nodes and its contract', () => {
+    const base = createStarterState('business', 'Test', false);
+    const homeId = base.site.homePageId;
+    const hero = base.pages[homeId].nodes[base.pages[homeId].rootIds[0]] as InstanceNode;
+    const forked = applyOperations(base, [{ type: 'component.fork', definitionId: hero.definitionId }]);
+    const id = (forked.results[0] as { definitionId: string }).definitionId;
+    // A second top-level node, as an insert without a parent makes.
+    const { state } = applyOperations(forked.state, [{ type: 'node.insert', owner: { kind: 'component', id }, primitive: 'paragraph', text: 'Second' }]);
+    const def = state.components[id];
+    const [root, second] = def.tree!.rootIds;
+    const owner = { kind: 'component' as const, id };
+    const authority = authorityFor(null, null, { id, name: 'Split hero' });
+    expect(authority).toEqual({ kind: 'component', definitionId: id, label: 'Split hero' });
+    // A selection inside the component still narrows the request to it.
+    expect(authorityFor({ owner, instancePath: [], nodeId: 'heading' }, 'Heading', { id, name: 'Split hero' })).toMatchObject({ kind: 'selection', nodeId: 'heading' });
+    const allow = (op: unknown) => expect(checkAuthority(state, [op as EditOperation], authority)).toBeNull();
+    const deny = (op: unknown) => expect(checkAuthority(state, [op as EditOperation], authority)).toMatch(/outside|changes more than/);
+    allow({ type: 'node.setStyle', owner, nodeId: second, scope: 'base', style: 'color', value: '#000' });
+    allow({ type: 'node.insert', owner, parentId: null, primitive: 'paragraph' });
+    allow({ type: 'node.insert', owner, parentId: 'content', primitive: 'paragraph' });
+    allow({ type: 'node.move', owner, nodeId: second, parentId: null, index: 0 });
+    allow({ type: 'node.remove', owner, nodeId: second });
+    allow({ type: 'node.setBinding', owner, nodeId: 'eyebrow', field: 'text', binding: { $prop: 'tagline' } });
+    // Its existing contract is what editing a component everywhere changes.
+    allow({ type: 'component.setPropSchema', definitionId: id, prop: 'heading', schema: { type: 'string', label: 'Title', default: '' } });
+    allow({ type: 'component.removePropSchema', definitionId: id, prop: 'eyebrow' });
+    allow({ type: 'component.setPropDefault', definitionId: id, prop: 'heading', value: 'Hello' });
+    // Nothing else: the page behind it, another component, site styles, or the component's name and library entry.
+    deny({ type: 'instance.setProp', owner: { kind: 'page', id: homeId }, nodeId: hero.id, prop: 'heading', value: 'x' });
+    deny({ type: 'node.insert', owner: { kind: 'page', id: homeId }, parentId: null, primitive: 'paragraph' });
+    deny({ type: 'node.setStyle', owner, nodeId: 'n_nothere', scope: 'base', style: 'color', value: '#000' });
+    deny({ type: 'node.insert', owner, parentId: 'n_nothere', primitive: 'paragraph' });
+    deny({ type: 'component.setPropSchema', definitionId: 'foundation.cta.banner', prop: 'x', schema: { type: 'string', label: 'X', default: '' } });
+    deny({ type: 'node.setBinding', owner: { kind: 'component', id: 'foundation.cta.banner' }, nodeId: 'root', field: 'text', binding: { $prop: 'x' } });
+    deny({ type: 'token.set', tokenId: 'color.brand', value: '#000080' });
+    deny({ type: 'component.rename', definitionId: id, name: 'Other' });
+    deny({ type: 'page.create', title: 'New' });
+    // The component has gone (its copy was undone): nothing may change.
+    expect(checkAuthority(base, [{ type: 'node.remove', owner, nodeId: root }], authority)).toMatch(/no longer in the site/);
+  });
+
+  it('decides contract operations by what the run may change, never by Developer mode', () => {
+    expect(canEditContracts({ kind: 'site' })).toBe(true);
+    expect(canEditContracts({ kind: 'component', definitionId: 'proj.x', label: 'X' })).toBe(true);
+    expect(canEditContracts({ kind: 'selection', owner: { kind: 'component', id: 'proj.x' }, nodeId: 'a', label: 'A' })).toBe(true);
+    expect(canEditContracts({ kind: 'selection', owner: { kind: 'page', id: 'p' }, nodeId: 'a', label: 'A' })).toBe(false);
+  });
+
+  it('keeps a small model on the general tools for a component everywhere, also once it is widened', () => {
+    const state = createStarterState('business', 'Test', false);
+    const small = { toolCalling: 'constrained-json' as const, contextWindowTokens: 32_000 };
+    const names = (r: { tools: Array<{ name: string }> }) => r.tools.map((t) => t.name);
+    const component = toolsForRun({ state, selection: null, capabilities: small, codeEnabled: false, definitionOps: true, definition: true });
+    expect(component).toMatchObject({ mode: 'general', focused: false });
+    expect(offeredOps({ tools: component.tools } as CanonicalModelRequest)).toEqual(expect.arrayContaining(contract));
+    expect(names(component)).not.toContain('apply_source_patch');
+    // An ordinary site request on a small model keeps the page and brand tools only.
+    const site = toolsForRun({ state, selection: null, capabilities: small, codeEnabled: false, definitionOps: true });
+    expect(site).toMatchObject({ mode: 'site', focused: true });
+    expect(names(site)).not.toContain('apply_operations');
+  });
+
+  it('offers contract operations to a whole-site request without Developer mode', async () => {
+    let offered: string[] = [];
+    const env = await setup(
+      [
+        (req) => {
+          offered = offeredOps(req);
+          return finish('Nothing to change.');
+        }
+      ],
+      { codeEnabled: false }
+    );
+    await env.run('Make the hero tagline editable');
+    expect(offered).toEqual(expect.arrayContaining(contract));
+    // Code stays behind Developer mode.
+    expect(offered).not.toContain('component.createCode');
   });
 });
 
